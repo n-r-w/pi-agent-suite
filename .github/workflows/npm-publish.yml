@@ -26,7 +26,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Update npm
         run: npm install -g npm@latest
@@ -52,4 +51,9 @@ jobs:
 
       - name: Publish to npm
         working-directory: pi-package
-        run: npm publish
+        run: |
+          if [ -n "${NPM_CONFIG_USERCONFIG:-}" ]; then
+            rm -f "$NPM_CONFIG_USERCONFIG"
+          fi
+          unset NODE_AUTH_TOKEN
+          npm publish

@@ -24,6 +24,8 @@ Use the recommended publishing access option:
 
 No GitHub Actions secret is required. The workflow uses OIDC trusted publishing through `npm publish`. Npm automatically generates provenance for public packages published through Trusted Publisher.
 
+The workflow must not configure npm token authentication. It removes any temporary npm user config and unsets `NODE_AUTH_TOKEN` before publishing so npm uses OIDC trusted publishing.
+
 ## Release flow
 
 Choose the release type:
@@ -128,6 +130,8 @@ permissions:
 ```
 
 Trusted publishing requires npm CLI `11.5.1` or newer and Node.js `22.14.0` or newer. The workflow uses Node.js `24` and updates npm before publishing.
+
+The `repository.url` field in `pi-package/package.json` must match the GitHub repository configured in npm Trusted Publisher.
 
 ### Package contents look wrong
 
