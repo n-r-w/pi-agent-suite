@@ -24,6 +24,7 @@ coverage
 tmp
 temp
 .tmp
+/docs/ideas
 
 # Local pi runtime data
 .pi
