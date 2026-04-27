@@ -385,9 +385,9 @@ describe("context-projection", () => {
 	});
 
 	test("publishes projection footer status for disabled, invalid, ready, and projected states", async () => {
-		// Purpose: context-projection owns projection state and must publish only compact footer status text.
-		// Input and expected output: invalid uses error CP!, enabled ready uses plain CP~, projected entries use warning CPN, and disabled clears stale status.
-		// Edge case: the projected count is branch-local and counts removed tool result responses, not tokens.
+		// Purpose: context-projection owns projection state and must publish compact footer text with approximate token savings.
+		// Input and expected output: invalid uses error CP!, enabled ready uses plain ~0, projected entries use warning ~N, and disabled clears stale status.
+		// Edge case: savings subtract the placeholder text that remains in provider context.
 		// Dependencies: this test uses isolated config, a fake theme, and the context hook.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const { pi, contextHandler } = installContextProjectionTestHarness();
@@ -426,7 +426,7 @@ describe("context-projection", () => {
 			expect(result).toBeUndefined();
 			expect(context.uiCalls.at(-1)).toEqual({
 				method: "setStatus",
-				args: ["context-projection", "CP~"],
+				args: ["context-projection", "~0"],
 			});
 
 			await writeCustomConfig(
@@ -449,7 +449,7 @@ describe("context-projection", () => {
 			});
 			expect(context.uiCalls.at(-1)).toEqual({
 				method: "setStatus",
-				args: ["context-projection", "<warning>CP1</warning>"],
+				args: ["context-projection", "<warning>~7</warning>"],
 			});
 			expect(pi.appendEntryCalls).toEqual([
 				{
@@ -501,7 +501,7 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "CP~"],
+					args: ["context-projection", "~0"],
 				},
 			]);
 		});
@@ -567,7 +567,7 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>CP1</warning>"],
+					args: ["context-projection", "<warning>~7</warning>"],
 				},
 			]);
 		});
@@ -843,7 +843,11 @@ describe("context-projection", () => {
 			expect(activeContext.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>CP1</warning>"],
+					args: ["context-projection", "~0"],
+				},
+				{
+					method: "setStatus",
+					args: ["context-projection", "<warning>~11</warning>"],
 				},
 			]);
 
@@ -870,7 +874,7 @@ describe("context-projection", () => {
 			expect(inactiveContext.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "CP~"],
+					args: ["context-projection", "~0"],
 				},
 			]);
 		});
@@ -922,7 +926,7 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>CP1</warning>"],
+					args: ["context-projection", "~0"],
 				},
 			]);
 		});
@@ -1219,7 +1223,7 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>CP1</warning>"],
+					args: ["context-projection", "~0"],
 				},
 			]);
 		});
@@ -1266,7 +1270,7 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "CP~"],
+					args: ["context-projection", "~0"],
 				},
 			]);
 		});
@@ -1556,7 +1560,7 @@ describe("context-projection", () => {
 				expect(context.uiCalls).toEqual([
 					{
 						method: "setStatus",
-						args: ["context-projection", "CP~"],
+						args: ["context-projection", "~0"],
 					},
 				]);
 			});

@@ -335,7 +335,7 @@ describe("footer", () => {
 				new Map([
 					["codex-quota", "90%/2h 71%/5d"],
 					["agent", "Coder"],
-					["context-projection", "CP~"],
+					["context-projection", "~0"],
 				]),
 			),
 		);
@@ -348,7 +348,7 @@ describe("footer", () => {
 				"90%/2h 71%/5d",
 				"Coder",
 				"openai-codex/gpt-5.4/high",
-				"CP~",
+				"~0",
 				"0/223k/272k",
 			].join(SEGMENT_SEPARATOR),
 		);
@@ -405,7 +405,7 @@ describe("footer", () => {
 				new Map([
 					["codex-quota", "93%/3h 81%/5d"],
 					["agent", "Coder"],
-					["context-projection", "CP~"],
+					["context-projection", "~0"],
 				]),
 			),
 		);
@@ -415,7 +415,7 @@ describe("footer", () => {
 		expect(renderedText).toContain("93%/3h 81%/5d");
 		expect(renderedText).toContain("Coder");
 		expect(renderedText).toContain("openai-codex/gpt-5.4/high");
-		expect(renderedText).toContain("CP~");
+		expect(renderedText).toContain("~0");
 		expect(renderedText).toContain("42k/151k/200k");
 	});
 
@@ -689,11 +689,11 @@ describe("footer", () => {
 
 	test("keeps compact context projection statuses within terminal width", async () => {
 		// Purpose: context-projection status must fit narrow footers without custom Unicode handling.
-		// Input and expected output: CP! and CP~ statuses render without exceeding a narrow footer width.
+		// Input and expected output: CP!, ~0, and approximate saved-token statuses render without exceeding a narrow footer width.
 		// Edge case: status styling must not affect visible width checks.
 		// Dependencies: this test uses the existing footer renderer and pi-tui visible width calculation.
 		const { footerRenderer } = await installFooterTestHarness();
-		const statuses = ["<error>CP!</error>", "CP~", "<warning>CP3</warning>"];
+		const statuses = ["<error>CP!</error>", "~0", "<warning>~20k</warning>"];
 
 		for (const status of statuses) {
 			const footerComponent = createFooterComponent(

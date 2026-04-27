@@ -86,10 +86,7 @@ type CodexAuthResult =
 	| { readonly kind: "unavailable" };
 
 interface QuotaTheme {
-	fg(
-		color: "accent" | "muted" | "warning" | "error" | "dim",
-		text: string,
-	): string;
+	fg(color: "accent" | "warning" | "error", text: string): string;
 }
 
 interface QuotaSession {
@@ -162,7 +159,7 @@ export default function codexQuota(pi: ExtensionAPI): void {
 			clearInterval(refreshTimer);
 		}
 
-		session.ui.setStatus(STATUS_KEY, renderLoadingStatus(session.ui.theme));
+		session.ui.setStatus(STATUS_KEY, renderLoadingStatus());
 		await refreshQuotaStatus(session, () => generation === activeGeneration);
 		if (generation !== activeGeneration) {
 			return;
@@ -436,22 +433,17 @@ function formatWindowStatus(
 		typeof resetAfterSeconds === "number" && Number.isFinite(resetAfterSeconds)
 			? `/${formatDuration(resetAfterSeconds)}`
 			: "";
-	const styledResetText =
-		resetText && remainingPercent < HEALTHY_REMAINING_PERCENT
-			? theme.fg("dim", resetText)
-			: resetText;
-
-	return `${colorizePercent(theme, remainingPercent)}${styledResetText}`;
+	return `${colorizePercent(theme, remainingPercent)}${resetText}`;
 }
 
-/** Renders the first-refresh placeholder in muted footer color. */
-function renderLoadingStatus(theme: QuotaTheme): string {
-	return theme.fg("dim", "CX …");
+/** Renders the first-refresh placeholder in compact footer form. */
+function renderLoadingStatus(): string {
+	return "CX …";
 }
 
 /** Renders missing or expired auth in compact footer form. */
 function renderAuthStatus(theme: QuotaTheme): string {
-	return `${theme.fg("accent", "CX")} ${theme.fg("dim", "auth")}`;
+	return `${theme.fg("accent", "CX")} auth`;
 }
 
 /** Renders request failures in compact footer form. */

@@ -147,6 +147,23 @@ How it works:
 - Shows these footer parts: project, Codex quota, selected agent, model, context projection, MCP errors, context usage.
 - Shortens long text so the footer fits the terminal width.
 
+Example:
+
+```text
+workspace · 100%/5h 65%/5d · Coder · openai-codex/gpt-5.5/high · ~80k · 70k/262k/272k
+```
+
+| Segment | Example | Meaning |
+| --- | --- | --- |
+| Project | `workspace` | Current repository or directory. |
+| Codex quota | `100%/5h 65%/5d` | Remaining quota and reset windows. |
+| Agent | `Coder` | Selected main agent. |
+| Model | `openai-codex/gpt-5.5/high` | Provider, model, and reasoning level. |
+| Projection | `~80k` | Tokens saved by context projection. |
+| Context | `70k/262k/272k` | Current context use, context-overflow threshold, and maximum context size. |
+
+MCP error statuses may appear before the context segment when an MCP server reports a problem.
+
 ### `codex-verbosity`
 
 Why you need it:
@@ -242,6 +259,7 @@ How it works:
 - Keeps recent tool results visible.
 - Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, and configured ignored tool results visible.
 - Changes only what is sent to the model for the next request. It does not edit saved conversation history.
+- Footer status shows approximate context savings as `~0` or `~20k`, using four text characters as one estimated token.
 
 ### `context-overflow`
 

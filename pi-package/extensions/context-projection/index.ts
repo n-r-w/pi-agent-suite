@@ -27,8 +27,14 @@ const CONTEXT_PROJECTION_STATUS_KEY = "context-projection";
 /** Footer status text for an invalid projection config. */
 const INVALID_STATUS_TEXT = "CP!";
 
-/** Footer status text for valid enabled projection before any tool result is projected. */
-const READY_STATUS_TEXT = "CP~";
+/** Footer text for enabled projection when provider context is not reduced. */
+const READY_STATUS_TEXT = "~0";
+
+/** Character count used for the extension-local approximate token estimate. */
+const APPROXIMATE_CHARS_PER_TOKEN = 4;
+
+/** Threshold where compact token labels switch from exact counts to thousands. */
+const TOKEN_COMPACT_THRESHOLD = 1_000;
 
 /** Config key that disables or enables provider-context projection. */
 const ENABLED_CONFIG_KEY = "enabled";
@@ -119,6 +125,7 @@ interface MappedContextEntry {
 interface ProjectionDecision {
 	readonly messages: AgentMessage[];
 	readonly newProjectedEntries: ProjectedEntryState[];
+	readonly savedChars: number;
 	readonly changed: boolean;
 }
 
@@ -164,7 +171,7 @@ export default function contextProjection(pi: ExtensionAPI): void {
 		publishedStatusText = publishProjectionStatus(
 			ctx,
 			config,
-			projectedPlaceholdersByEntryId.size,
+			0,
 			publishedStatusText,
 		);
 	};
@@ -211,7 +218,6 @@ async function handleContextProjection({
 		return createContextProjectionNoChangeResult(
 			ctx,
 			config,
-			projectedPlaceholdersByEntryId.size,
 			publishedStatusText,
 		);
 	}
@@ -224,7 +230,6 @@ async function handleContextProjection({
 		return createContextProjectionNoChangeResult(
 			ctx,
 			config,
-			projectedPlaceholdersByEntryId.size,
 			publishedStatusText,
 		);
 	}
@@ -237,7 +242,6 @@ async function handleContextProjection({
 		return createContextProjectionNoChangeResult(
 			ctx,
 			config,
-			projectedPlaceholdersByEntryId.size,
 			publishedStatusText,
 		);
 	}
@@ -254,7 +258,6 @@ async function handleContextProjection({
 		return createContextProjectionNoChangeResult(
 			ctx,
 			config,
-			projectedPlaceholdersByEntryId.size,
 			publishedStatusText,
 		);
 	}
@@ -269,7 +272,7 @@ async function handleContextProjection({
 		statusText: publishProjectionStatus(
 			ctx,
 			config,
-			projectedPlaceholdersByEntryId.size,
+			estimateSavedTokens(decision.savedChars),
 			publishedStatusText,
 		),
 	};
@@ -279,17 +282,11 @@ async function handleContextProjection({
 function createContextProjectionNoChangeResult(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfigResult,
-	projectedCount: number,
 	publishedStatusText: string | undefined,
 ): HandleContextProjectionResult {
 	return {
 		contextResult: undefined,
-		statusText: publishProjectionStatus(
-			ctx,
-			config,
-			projectedCount,
-			publishedStatusText,
-		),
+		statusText: publishProjectionStatus(ctx, config, 0, publishedStatusText),
 	};
 }
 
@@ -311,10 +308,10 @@ function isProjectionThresholdExceeded(
 function publishProjectionStatus(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfigResult,
-	projectedCount: number,
+	savedTokens: number,
 	publishedStatusText: string | undefined,
 ): string | undefined {
-	const nextStatusText = formatProjectionStatus(ctx, config, projectedCount);
+	const nextStatusText = formatProjectionStatus(ctx, config, savedTokens);
 	if (ctx.hasUI !== false && nextStatusText !== publishedStatusText) {
 		ctx.ui.setStatus(CONTEXT_PROJECTION_STATUS_KEY, nextStatusText);
 	}
@@ -322,11 +319,11 @@ function publishProjectionStatus(
 	return nextStatusText;
 }
 
-/** Formats the footer status text according to the config and branch-local projection state. */
+/** Formats the footer status text according to config validity and current projection savings. */
 function formatProjectionStatus(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfigResult,
-	projectedCount: number,
+	savedTokens: number,
 ): string | undefined {
 	if (config.kind === "disabled") {
 		return undefined;
@@ -334,8 +331,8 @@ function formatProjectionStatus(
 	if (config.kind === "invalid") {
 		return ctx.ui.theme.fg("error", INVALID_STATUS_TEXT);
 	}
-	if (projectedCount > 0) {
-		return ctx.ui.theme.fg("warning", `CP${projectedCount}`);
+	if (savedTokens > 0) {
+		return ctx.ui.theme.fg("warning", `~${formatSavedTokens(savedTokens)}`);
 	}
 
 	return READY_STATUS_TEXT;
@@ -729,6 +726,7 @@ function projectContextMessages({
 	);
 	const ignoredTools = getProjectionIgnoredTools(config);
 	const newProjectedEntries: ProjectedEntryState[] = [];
+	let savedChars = 0;
 	let changed = false;
 	const messages = mappedContext.map(({ entry, message }) => {
 		if (entry.type !== "message" || !isSuccessfulTextToolResult(message)) {
@@ -745,11 +743,12 @@ function projectContextMessages({
 			return message;
 		}
 
+		const originalTextLength = getTextToolResultLength(message);
 		const alreadyProjected = projectedPlaceholdersByEntryId.has(entry.id);
 		const newlyEligible =
 			discoverNewEntries &&
 			!protectedEntryIds.has(entry.id) &&
-			getTextToolResultLength(message) >= config.minToolResultChars;
+			originalTextLength >= config.minToolResultChars;
 		if (!alreadyProjected && !newlyEligible) {
 			return message;
 		}
@@ -757,6 +756,10 @@ function projectContextMessages({
 		const placeholder = alreadyProjected
 			? (projectedPlaceholdersByEntryId.get(entry.id) ?? config.placeholder)
 			: config.placeholder;
+		savedChars += calculateProjectedTextSavings(
+			originalTextLength,
+			placeholder.length,
+		);
 		changed = true;
 		if (!alreadyProjected) {
 			newProjectedEntries.push({ entryId: entry.id, placeholder });
@@ -768,7 +771,29 @@ function projectContextMessages({
 		};
 	});
 
-	return { messages, newProjectedEntries, changed };
+	return { messages, newProjectedEntries, savedChars, changed };
+}
+
+/** Returns the approximate token count removed from provider context. */
+function estimateSavedTokens(savedChars: number): number {
+	return Math.ceil(savedChars / APPROXIMATE_CHARS_PER_TOKEN);
+}
+
+/** Formats approximate saved-token counts for compact footer display. */
+function formatSavedTokens(savedTokens: number): string {
+	if (savedTokens < TOKEN_COMPACT_THRESHOLD) {
+		return savedTokens.toString();
+	}
+
+	return `${Math.round(savedTokens / TOKEN_COMPACT_THRESHOLD)}k`;
+}
+
+/** Returns the text length removed after the original content is replaced by placeholder text. */
+function calculateProjectedTextSavings(
+	originalTextLength: number,
+	placeholderLength: number,
+): number {
+	return Math.max(0, originalTextLength - placeholderLength);
 }
 
 /** Returns true when projection must not hide this successful text tool result. */
