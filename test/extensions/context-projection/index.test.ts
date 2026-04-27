@@ -120,6 +120,7 @@ function createValidConfig(overrides?: Record<string, unknown>): unknown {
 		keepRecentTurnsPercent: 0,
 		minToolResultChars: 20,
 		placeholder: PLACEHOLDER,
+		projectionIgnoredTools: [],
 		...overrides,
 	};
 }
@@ -567,6 +568,82 @@ describe("context-projection", () => {
 				{
 					method: "setStatus",
 					args: ["context-projection", "<warning>CP1</warning>"],
+				},
+			]);
+		});
+	});
+
+	test("keeps consult_advisor and configured ignored tool results visible during projection", async () => {
+		// Purpose: projection must preserve advisor output and user-configured tool results while still projecting other eligible results.
+		// Input and expected output: consult_advisor and run_subagent outputs remain unchanged, while bash output is replaced with the placeholder.
+		// Edge case: consult_advisor is preserved even when projectionIgnoredTools omits it.
+		// Dependencies: this test observes provider-context copies and verifies stored session messages are unchanged.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					projectionIgnoredTools: ["run_subagent"],
+				}),
+			);
+			const { pi, contextHandler } = installContextProjectionTestHarness();
+			const user = userMessage();
+			const advisorAssistant = assistantMessage("call-advisor");
+			const advisorToolResult = toolResultMessage(
+				"call-advisor",
+				"advisor output ".repeat(5),
+				{ toolName: "consult_advisor" },
+			);
+			const subagentAssistant = assistantMessage("call-subagent");
+			const subagentToolResult = toolResultMessage(
+				"call-subagent",
+				"subagent output ".repeat(5),
+				{ toolName: "run_subagent" },
+			);
+			const bashAssistant = assistantMessage("call-bash");
+			const bashToolResult = toolResultMessage(
+				"call-bash",
+				"bash output ".repeat(5),
+			);
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", advisorAssistant, "01"),
+				messageEntry("03", advisorToolResult, "02"),
+				messageEntry("04", subagentAssistant, "03"),
+				messageEntry("05", subagentToolResult, "04"),
+				messageEntry("06", bashAssistant, "05"),
+				messageEntry("07", bashToolResult, "06"),
+			];
+			const context = createContextFake(branchEntries);
+
+			const result = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(result).toEqual({
+				messages: [
+					user,
+					advisorAssistant,
+					advisorToolResult,
+					subagentAssistant,
+					subagentToolResult,
+					bashAssistant,
+					{
+						...bashToolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
+			expect(messagesFromBranch(branchEntries)[2]).toBe(advisorToolResult);
+			expect(messagesFromBranch(branchEntries)[4]).toBe(subagentToolResult);
+			expect(messagesFromBranch(branchEntries)[6]).toBe(bashToolResult);
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: CUSTOM_TYPE,
+					data: {
+						projectedEntries: [{ entryId: "07", placeholder: PLACEHOLDER }],
+					},
 				},
 			]);
 		});
@@ -1494,6 +1571,18 @@ describe("context-projection", () => {
 				config: createValidConfig({
 					projectionRemainingTokens: "100",
 					keepRecentTurns: 0,
+				}),
+				expectedUiCalls: [
+					{
+						method: "setStatus",
+						args: ["context-projection", "<error>CP!</error>"],
+					},
+				],
+			},
+			{
+				config: createValidConfig({
+					keepRecentTurns: 0,
+					projectionIgnoredTools: ["run_subagent", "run_subagent"],
 				}),
 				expectedUiCalls: [
 					{

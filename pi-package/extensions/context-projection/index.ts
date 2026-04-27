@@ -45,8 +45,17 @@ const KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY = "keepRecentTurnsPercent";
 /** Config key for the minimum combined text length eligible for projection. */
 const MIN_TOOL_RESULT_CHARS_CONFIG_KEY = "minToolResultChars";
 
+/** Config key for tool names whose successful text results must stay visible. */
+const PROJECTION_IGNORED_TOOLS_CONFIG_KEY = "projectionIgnoredTools";
+
 /** Config key for the exact replacement text used in projected tool results. */
 const PLACEHOLDER_CONFIG_KEY = "placeholder";
+
+/** Advisor tool output must stay visible because it carries decision-critical guidance. */
+const CONSULT_ADVISOR_TOOL_NAME = "consult_advisor";
+
+/** Built-in tool names whose results are excluded from projection. */
+const BUILT_IN_PROJECTION_IGNORED_TOOLS = [CONSULT_ADVISOR_TOOL_NAME] as const;
 
 /** Default remaining-token threshold for explicit projection enablement. */
 const DEFAULT_PROJECTION_REMAINING_TOKENS = 49_152;
@@ -71,6 +80,7 @@ const CONTEXT_PROJECTION_CONFIG_KEYS = [
 	KEEP_RECENT_TURNS_CONFIG_KEY,
 	KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY,
 	MIN_TOOL_RESULT_CHARS_CONFIG_KEY,
+	PROJECTION_IGNORED_TOOLS_CONFIG_KEY,
 	PLACEHOLDER_CONFIG_KEY,
 ] as const;
 
@@ -88,6 +98,7 @@ interface ContextProjectionConfig {
 	readonly keepRecentTurns: number;
 	readonly keepRecentTurnsPercent: number;
 	readonly minToolResultChars: number;
+	readonly projectionIgnoredTools: readonly string[];
 	readonly placeholder: string;
 }
 
@@ -411,12 +422,15 @@ function parseContextProjectionConfig(
 		DEFAULT_KEEP_RECENT_TURNS_PERCENT;
 	const minToolResultChars =
 		config[MIN_TOOL_RESULT_CHARS_CONFIG_KEY] ?? DEFAULT_MIN_TOOL_RESULT_CHARS;
+	const projectionIgnoredTools =
+		config[PROJECTION_IGNORED_TOOLS_CONFIG_KEY] ?? [];
 	const placeholder = config[PLACEHOLDER_CONFIG_KEY] ?? DEFAULT_PLACEHOLDER;
 	if (
 		!isNonNegativeInteger(projectionRemainingTokens) ||
 		!isNonNegativeInteger(keepRecentTurns) ||
 		!isPercentNumber(keepRecentTurnsPercent) ||
 		!isNonNegativeInteger(minToolResultChars) ||
+		!isUniqueNonEmptyStringArray(projectionIgnoredTools) ||
 		typeof placeholder !== "string"
 	) {
 		return { kind: "invalid" };
@@ -430,6 +444,7 @@ function parseContextProjectionConfig(
 			keepRecentTurns,
 			keepRecentTurnsPercent,
 			minToolResultChars,
+			projectionIgnoredTools,
 			placeholder,
 		},
 	};
@@ -712,6 +727,7 @@ function projectContextMessages({
 		mappedContext,
 		cwd,
 	);
+	const ignoredTools = getProjectionIgnoredTools(config);
 	const newProjectedEntries: ProjectedEntryState[] = [];
 	let changed = false;
 	const messages = mappedContext.map(({ entry, message }) => {
@@ -719,7 +735,12 @@ function projectContextMessages({
 			return message;
 		}
 		if (
-			isLoadedSkillReadResult(message, readPathsByToolCallId, loadedSkillRoots)
+			shouldKeepToolResultVisible(
+				message,
+				readPathsByToolCallId,
+				loadedSkillRoots,
+				ignoredTools,
+			)
 		) {
 			return message;
 		}
@@ -748,6 +769,19 @@ function projectContextMessages({
 	});
 
 	return { messages, newProjectedEntries, changed };
+}
+
+/** Returns true when projection must not hide this successful text tool result. */
+function shouldKeepToolResultVisible(
+	message: Extract<AgentMessage, { role: "toolResult" }>,
+	readPathsByToolCallId: ReadonlyMap<string, string>,
+	loadedSkillRoots: readonly string[],
+	ignoredTools: ReadonlySet<string>,
+): boolean {
+	return (
+		ignoredTools.has(message.toolName) ||
+		isLoadedSkillReadResult(message, readPathsByToolCallId, loadedSkillRoots)
+	);
 }
 
 /** Returns tool result entry IDs from the newest assistant tool-use turns protected from first-time projection. */
@@ -892,6 +926,38 @@ function isNonNegativeInteger(value: unknown): value is number {
 /** Returns true when the value is a ratio from zero to one. */
 function isPercentNumber(value: unknown): value is number {
 	return typeof value === "number" && value >= 0 && value <= 1;
+}
+
+/** Returns true when a value is a duplicate-free list of non-empty tool names. */
+function isUniqueNonEmptyStringArray(
+	value: unknown,
+): value is readonly string[] {
+	if (!Array.isArray(value)) {
+		return false;
+	}
+
+	const seenValues = new Set<string>();
+	for (const item of value) {
+		if (typeof item !== "string" || item.trim() === "") {
+			return false;
+		}
+		if (seenValues.has(item)) {
+			return false;
+		}
+		seenValues.add(item);
+	}
+
+	return true;
+}
+
+/** Returns configured and built-in tool names whose results must stay visible. */
+function getProjectionIgnoredTools(
+	config: ContextProjectionConfig,
+): Set<string> {
+	return new Set([
+		...BUILT_IN_PROJECTION_IGNORED_TOOLS,
+		...config.projectionIgnoredTools,
+	]);
 }
 
 /** Returns true when a runtime value is a non-array object. */

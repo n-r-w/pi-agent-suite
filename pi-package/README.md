@@ -230,8 +230,9 @@ Options:
 - `enabled`: default `false`.
 - `projectionRemainingTokens`: default `49152`. Projection starts at or below this remaining-token count.
 - `keepRecentTurns`: default `5`. Keeps this many recent tool-use turns unchanged.
-- `keepRecentTurnsPercent`: default `0.1`. Keeps this share of recent tool-use turns unchanged.
-- `minToolResultChars`: default `4000`. Only larger tool results can be hidden.
+- `keepRecentTurnsPercent`: default `0.2`. Keeps this share of recent tool-use turns unchanged.
+- `minToolResultChars`: default `2000`. Only larger tool results can be hidden.
+- `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` is always ignored.
 - `placeholder`: default `[Old successful tool result omitted from current context]`.
 
 How it works:
@@ -239,7 +240,7 @@ How it works:
 - Runs only when the remaining context is low enough.
 - Replaces old large successful text-only tool results with the placeholder.
 - Keeps recent tool results visible.
-- Keeps failed results, non-text results, and loaded skill files visible.
+- Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, and configured ignored tool results visible.
 - Changes only what is sent to the model for the next request. It does not edit saved conversation history.
 
 ### `context-overflow`
