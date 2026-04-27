@@ -1,0 +1,22 @@
+{
+	"name": "pi-harness",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "bun test",
+		"typecheck": "tsc --noEmit",
+		"check": "biome check package.json pi-package/package.json tsconfig.json pi-package test",
+		"verify": "bun test && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.13",
+		"@mariozechner/pi-agent-core": "0.70.2",
+		"@mariozechner/pi-ai": "0.70.2",
+		"@mariozechner/pi-coding-agent": "0.70.2",
+		"@mariozechner/pi-tui": "0.70.2",
+		"@types/bun": "latest",
+		"typebox": "1.1.33",
+		"typescript": "^5.7.3"
+	}
+}

@@ -1,0 +1,173 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.4.13/schema.json",
+	"files": {
+		"includes": [
+			"package.json",
+			"pi-package/package.json",
+			"tsconfig.json",
+			"pi-package/**/*.ts",
+			"test/**/*.ts"
+		]
+	},
+	"formatter": {
+		"enabled": true
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true,
+			"complexity": {
+				"noExcessiveCognitiveComplexity": {
+					"level": "warn",
+					"options": {
+						"maxAllowedComplexity": 15
+					}
+				},
+				"noExcessiveLinesPerFunction": {
+					"level": "warn",
+					"options": {
+						"maxLines": 60,
+						"skipBlankLines": true,
+						"skipIifes": true
+					}
+				},
+				"useMaxParams": {
+					"level": "warn",
+					"options": {
+						"max": 4
+					}
+				},
+				"noImplicitCoercions": "error",
+				"noForEach": "error",
+				"noVoid": "error",
+				"useLiteralKeys": "off"
+			},
+			"style": {
+				"noMagicNumbers": "error",
+				"noDefaultExport": "error",
+				"noEnum": "error",
+				"noNestedTernary": "error",
+				"noNonNullAssertion": "error",
+				"noParameterAssign": "error",
+				"noProcessEnv": "error",
+				"useBlockStatements": "error",
+				"useConsistentArrayType": "error",
+				"useConsistentTypeDefinitions": "error",
+				"useExportType": "error",
+				"useImportType": "error",
+				"useNamingConvention": {
+					"level": "error",
+					"options": {
+						"strictCase": false,
+						"conventions": [
+							{
+								"selector": {
+									"kind": "typeMember"
+								},
+								"formats": ["camelCase", "CONSTANT_CASE", "snake_case"]
+							},
+							{
+								"selector": {
+									"kind": "objectLiteralMember"
+								},
+								"formats": [
+									"camelCase",
+									"PascalCase",
+									"CONSTANT_CASE",
+									"snake_case"
+								]
+							}
+						]
+					}
+				},
+				"useNodejsImportProtocol": "error",
+				"useThrowNewError": "error",
+				"useThrowOnlyError": "error"
+			},
+			"suspicious": {
+				"noConsole": "error",
+				"noExplicitAny": "error",
+				"noTsIgnore": "error",
+				"noSkippedTests": "error",
+				"noFocusedTests": "error",
+				"noBitwiseOperators": "error",
+				"noAssignInExpressions": "error",
+				"noDoubleEquals": "error",
+				"noImplicitAnyLet": "error"
+			},
+			"performance": {
+				"noAccumulatingSpread": "error",
+				"noAwaitInLoops": "warn",
+				"noBarrelFile": "error",
+				"noNamespaceImport": "error",
+				"noReExportAll": "error",
+				"useTopLevelRegex": "error"
+			},
+			"security": {
+				"noSecrets": {
+					"level": "error",
+					"options": {
+						"entropyThreshold": 50
+					}
+				},
+				"noBlankTarget": "error",
+				"noDangerouslySetInnerHtml": "error",
+				"noDangerouslySetInnerHtmlWithChildren": "error",
+				"noGlobalEval": "error"
+			}
+		}
+	},
+	"assist": {
+		"enabled": true,
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["pi-package/extensions/**/index.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noDefaultExport": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["pi-package/extensions/**/environment.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noProcessEnv": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["**/*.test.ts"],
+			"linter": {
+				"rules": {
+					"complexity": {
+						"noExcessiveCognitiveComplexity": "off",
+						"noExcessiveLinesPerFunction": "off",
+						"useMaxParams": "off"
+					},
+					"style": {
+						"noMagicNumbers": "off",
+						"noProcessEnv": "off",
+						"useNamingConvention": "off"
+					},
+					"performance": {
+						"noAwaitInLoops": "off"
+					},
+					"security": {
+						"noSecrets": "off"
+					}
+				}
+			}
+		}
+	]
+}

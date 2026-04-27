@@ -1,0 +1,29 @@
+{
+	"name": "pi-harness-pi-package",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"keywords": [
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions/footer/index.ts",
+			"./extensions/codex-verbosity/index.ts",
+			"./extensions/codex-quota/index.ts",
+			"./extensions/custom-compaction/index.ts",
+			"./extensions/context-projection/index.ts",
+			"./extensions/context-overflow/index.ts",
+			"./extensions/main-agent-selection/index.ts",
+			"./extensions/run-subagent/index.ts",
+			"./extensions/consult-advisor/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-agent-core": "*",
+		"@mariozechner/pi-ai": "*",
+		"@mariozechner/pi-coding-agent": "*",
+		"@mariozechner/pi-tui": "*",
+		"typebox": "*"
+	}
+}

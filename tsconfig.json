@@ -1,0 +1,21 @@
+{
+	"compilerOptions": {
+		"allowImportingTsExtensions": true,
+		"exactOptionalPropertyTypes": true,
+		"forceConsistentCasingInFileNames": true,
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"noEmit": true,
+		"noFallthroughCasesInSwitch": true,
+		"noImplicitOverride": true,
+		"noImplicitReturns": true,
+		"noPropertyAccessFromIndexSignature": true,
+		"noUncheckedIndexedAccess": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"target": "ES2022",
+		"types": ["bun-types"],
+		"verbatimModuleSyntax": true
+	},
+	"include": ["pi-package/**/*.ts", "test/**/*.ts"]
+}
