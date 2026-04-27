@@ -229,9 +229,9 @@ Options:
 
 - `enabled`: default `false`.
 - `projectionRemainingTokens`: default `49152`. Projection starts at or below this remaining-token count.
-- `keepRecentTurns`: default `5`. Keeps this many recent tool-use turns unchanged.
+- `keepRecentTurns`: default `10`. Keeps this many recent tool-use turns unchanged.
 - `keepRecentTurnsPercent`: default `0.2`. Keeps this share of recent tool-use turns unchanged.
-- `minToolResultChars`: default `2000`. Only larger tool results can be hidden.
+- `minToolResultChars`: default `3000`. Only larger tool results can be hidden.
 - `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` is always ignored.
 - `placeholder`: default `[Old successful tool result omitted from current context]`.
 

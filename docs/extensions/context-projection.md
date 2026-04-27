@@ -152,23 +152,14 @@ File: `~/.pi/agent/config/context-projection.json`.
 {
   "enabled": true,
   "projectionRemainingTokens": 49152,
-  "keepRecentTurns": 5,
-  "keepRecentTurnsPercent": 0.1,
-  "minToolResultChars": 4000,
+  "keepRecentTurns": 10,
+  "keepRecentTurnsPercent": 0.2,
+  "minToolResultChars": 3000,
   "placeholder": "[Old successful tool result omitted from current context]"
 }
 ```
 
 All fields are optional.
-
-Defaults:
-
-- `enabled`: `false`
-- `projectionRemainingTokens`: `49152`
-- `keepRecentTurns`: `5`
-- `keepRecentTurnsPercent`: `0.1`
-- `minToolResultChars`: `4000`
-- `placeholder`: `[Old successful tool result omitted from current context]`
 
 Rules:
 
@@ -183,19 +174,6 @@ Rules:
 - Invalid configuration disables projection.
 
 ## Tuning
-
-Safer starting values:
-
-```json
-{
-  "enabled": true,
-  "projectionRemainingTokens": 49152,
-  "keepRecentTurns": 5,
-  "keepRecentTurnsPercent": 0.1,
-  "minToolResultChars": 4000,
-  "placeholder": "[Old successful tool result omitted from current context]"
-}
-```
 
 Use larger `keepRecentTurns` when recent tool output remains important for several internal agent steps.
 

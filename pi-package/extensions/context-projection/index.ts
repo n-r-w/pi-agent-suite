@@ -61,13 +61,13 @@ const BUILT_IN_PROJECTION_IGNORED_TOOLS = [CONSULT_ADVISOR_TOOL_NAME] as const;
 const DEFAULT_PROJECTION_REMAINING_TOKENS = 49_152;
 
 /** Default newest tool-use turns kept visible before projection. */
-const DEFAULT_KEEP_RECENT_TURNS = 5;
+const DEFAULT_KEEP_RECENT_TURNS = 10;
 
 /** Default newest tool-use turn ratio kept visible in long sessions. */
 const DEFAULT_KEEP_RECENT_TURNS_PERCENT = 0.2;
 
 /** Default minimum text size for projecting a tool result. */
-const DEFAULT_MIN_TOOL_RESULT_CHARS = 2_000;
+const DEFAULT_MIN_TOOL_RESULT_CHARS = 3_000;
 
 /** Default replacement text for projected old tool results. */
 const DEFAULT_PLACEHOLDER =
