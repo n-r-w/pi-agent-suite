@@ -4,7 +4,7 @@
 
 Pi Agent Suite adds a configurable multi-agent layer to pi.
 
-Use it to define main agents, delegate work to allowed helper agents, and ask an advisor model for a second opinion. Context, Codex, and footer extensions support long-running agent sessions.
+Use it to define main agents, delegate work to allowed subagents, and ask an advisor model for a second opinion. Context, Codex, and footer extensions support long-running agent sessions.
 
 ## Extensions
 
@@ -17,14 +17,14 @@ Use it to define main agents, delegate work to allowed helper agents, and ask an
 | `context-projection` | No | Helps long sessions continue when old large tool outputs would otherwise fill the model context. |
 | `context-overflow` | Yes | Runs compaction before the next provider request fails because the context is already too large. |
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
-| `run-subagent` | Yes | Lets the main agent delegate focused tasks to helper agents. |
+| `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
 
 ## Best practices
 
 The most effective setup combines `main-agent-selection`, `run-subagent`, and `consult-advisor`.
 
-Use `main-agent-selection` to choose a focused main agent for the current work. Use `run-subagent` to delegate narrow tasks to helper agents. This keeps the main model focused and reduces context growth in large codebases, because investigation, extraction, review, and implementation tasks can run in separate helper-agent contexts.
+Use `main-agent-selection` to choose a focused main agent for the current work. Use `run-subagent` to delegate narrow tasks to subagents. This keeps the main model focused and reduces context growth in large codebases, because investigation, extraction, review, and implementation tasks can run in separate subagent contexts.
 
 Use `consult-advisor` when a cheaper model needs an audit from a stronger model. The main model can ask the advisor to check assumptions, risks, or decisions without paying for the stronger model on every turn.
 
@@ -70,7 +70,7 @@ Extension settings are stored in:
 
 ## Agent files
 
-Agent files define reusable work modes and helper agents.
+Agent files define reusable work modes and subagents.
 
 Location:
 
@@ -115,7 +115,7 @@ Fields:
 - `model.id`: optional model ID in `provider/model` form.
 - `model.thinking`: optional thinking level. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `tools`: optional list of allowed tools or narrow wildcard patterns. Exact tool names such as `read` are allowed. Narrow wildcard patterns such as `yandex_tracker_*` are allowed. Full wildcard `*` is not allowed. Empty list means no tools.
-- `agents`: optional list of helper agent IDs that this main agent may call through `run_subagent`. Missing list means all callable helper agents are available.
+- `agents`: optional list of subagent IDs that this main agent may call through `run_subagent`. Missing list means all callable subagents are available.
 
 Agent type behavior:
 
@@ -271,7 +271,7 @@ How it works:
 Why you need it:
 
 - Lets you keep reusable agent modes for different kinds of work.
-- Avoids repeating the same long instructions, model choice, thinking level, tool rules, and allowed helper agents.
+- Avoids repeating the same long instructions, model choice, thinking level, tool rules, and allowed subagents.
 
 Config file: `~/.pi/agent/config/main-agent-selection.json`
 
@@ -292,7 +292,7 @@ How it works:
 
 Why you need it:
 
-- Lets the main agent split work into focused helper tasks.
+- Lets the main agent split work into focused subagent tasks.
 - Keeps specialized investigation, review, extraction, or coding work separate from the main conversation.
 
 Config file: `~/.pi/agent/config/run-subagent.json`
@@ -305,16 +305,16 @@ Options:
 
 Tool input:
 
-- `agentId`: helper agent to run.
-- `prompt`: task for the helper agent.
+- `agentId`: subagent to run.
+- `prompt`: task for the subagent.
 
 How it works:
 
-- Shows callable helper agents to the main model.
+- Shows callable subagents to the main model.
 - Allows only subagents permitted by the selected main agent.
-- Starts a separate pi process for the selected helper agent.
-- Applies the helper agent's model, thinking level, and tools.
-- Shows live progress and returns the helper agent's final answer.
+- Starts a separate pi process for the selected subagent.
+- Applies the subagent's model, thinking level, and tools.
+- Shows live progress and returns the subagent's final answer.
 
 ### `consult-advisor`
 
