@@ -799,6 +799,58 @@ describe("context-projection", () => {
 		});
 	});
 
+	test("applies reconstructed projected entries even when usage is below the projection threshold", async () => {
+		// Purpose: stored projection state must keep provider context monotonic after a previous projection lowered usage.
+		// Input and expected output: threshold is not exceeded, but the reconstructed entry is still replaced with its placeholder.
+		// Edge case: the stored tool result is smaller than minToolResultChars, so only branch-local projection state can make it projected.
+		// Dependencies: this test drives session_start and context handlers with an isolated config and in-memory branch fixtures.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(agentDir, createValidConfig());
+			const { contextHandler, sessionStartHandler } =
+				installContextProjectionTestHarness();
+			const user = userMessage();
+			const assistant = assistantMessage("call-stored");
+			const storedToolResult = toolResultMessage("call-stored", "short output");
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", assistant, "01"),
+				messageEntry("03", storedToolResult, "02"),
+				projectionStateEntry(
+					"04",
+					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					"03",
+				),
+			];
+			const context = createContextFake(branchEntries, {
+				tokens: 100,
+				contextWindow: 1_000,
+			});
+
+			await sessionStartHandler({ type: "session_start" }, context.ctx);
+			const result = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(result).toEqual({
+				messages: [
+					user,
+					assistant,
+					{
+						...storedToolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
+			expect(context.uiCalls).toEqual([
+				{
+					method: "setStatus",
+					args: ["context-projection", "<warning>CP1</warning>"],
+				},
+			]);
+		});
+	});
+
 	test("does not project read results for files under loaded skill roots", async () => {
 		// Purpose: loaded skill files are instruction context, so projection must not hide their read results.
 		// Input and expected output: a read result under a loaded skill root stays intact while a non-skill read result is projected.

@@ -55,10 +55,10 @@ const DEFAULT_PROJECTION_REMAINING_TOKENS = 49_152;
 const DEFAULT_KEEP_RECENT_TURNS = 5;
 
 /** Default newest tool-use turn ratio kept visible in long sessions. */
-const DEFAULT_KEEP_RECENT_TURNS_PERCENT = 0.1;
+const DEFAULT_KEEP_RECENT_TURNS_PERCENT = 0.2;
 
 /** Default minimum text size for projecting a tool result. */
-const DEFAULT_MIN_TOOL_RESULT_CHARS = 4_000;
+const DEFAULT_MIN_TOOL_RESULT_CHARS = 2_000;
 
 /** Default replacement text for projected old tool results. */
 const DEFAULT_PLACEHOLDER =
@@ -117,6 +117,7 @@ interface ProjectContextMessagesOptions {
 	readonly config: ContextProjectionConfig;
 	readonly loadedSkillRoots: readonly string[];
 	readonly cwd: string;
+	readonly discoverNewEntries: boolean;
 }
 
 interface HandleContextProjectionOptions {
@@ -126,6 +127,11 @@ interface HandleContextProjectionOptions {
 	readonly projectedPlaceholdersByEntryId: Map<string, string>;
 	readonly publishedStatusText: string | undefined;
 	readonly loadedSkillRoots: readonly string[];
+}
+
+interface HandleContextProjectionResult {
+	readonly contextResult: { readonly messages?: AgentMessage[] } | undefined;
+	readonly statusText: string | undefined;
 }
 
 /** Extension entry point for provider-context projection of old tool results. */
@@ -188,33 +194,28 @@ async function handleContextProjection({
 	projectedPlaceholdersByEntryId,
 	publishedStatusText,
 	loadedSkillRoots,
-}: HandleContextProjectionOptions): Promise<{
-	readonly contextResult: { readonly messages?: AgentMessage[] } | undefined;
-	readonly statusText: string | undefined;
-}> {
+}: HandleContextProjectionOptions): Promise<HandleContextProjectionResult> {
 	const config = await readContextProjectionConfig();
 	if (config.kind !== "valid") {
-		return {
-			contextResult: undefined,
-			statusText: publishProjectionStatus(
-				ctx,
-				config,
-				projectedPlaceholdersByEntryId.size,
-				publishedStatusText,
-			),
-		};
+		return createContextProjectionNoChangeResult(
+			ctx,
+			config,
+			projectedPlaceholdersByEntryId.size,
+			publishedStatusText,
+		);
 	}
 
-	if (!isProjectionThresholdExceeded(ctx, config.config)) {
-		return {
-			contextResult: undefined,
-			statusText: publishProjectionStatus(
-				ctx,
-				config,
-				projectedPlaceholdersByEntryId.size,
-				publishedStatusText,
-			),
-		};
+	const shouldDiscoverNewEntries = isProjectionThresholdExceeded(
+		ctx,
+		config.config,
+	);
+	if (!shouldDiscoverNewEntries && projectedPlaceholdersByEntryId.size === 0) {
+		return createContextProjectionNoChangeResult(
+			ctx,
+			config,
+			projectedPlaceholdersByEntryId.size,
+			publishedStatusText,
+		);
 	}
 
 	const mappedContext = mapEventMessagesToBranchEntries(
@@ -222,15 +223,12 @@ async function handleContextProjection({
 		ctx.sessionManager.getBranch(),
 	);
 	if (mappedContext === undefined) {
-		return {
-			contextResult: undefined,
-			statusText: publishProjectionStatus(
-				ctx,
-				config,
-				projectedPlaceholdersByEntryId.size,
-				publishedStatusText,
-			),
-		};
+		return createContextProjectionNoChangeResult(
+			ctx,
+			config,
+			projectedPlaceholdersByEntryId.size,
+			publishedStatusText,
+		);
 	}
 
 	const decision = projectContextMessages({
@@ -239,17 +237,15 @@ async function handleContextProjection({
 		config: config.config,
 		loadedSkillRoots,
 		cwd: ctx.cwd,
+		discoverNewEntries: shouldDiscoverNewEntries,
 	});
 	if (!decision.changed) {
-		return {
-			contextResult: undefined,
-			statusText: publishProjectionStatus(
-				ctx,
-				config,
-				projectedPlaceholdersByEntryId.size,
-				publishedStatusText,
-			),
-		};
+		return createContextProjectionNoChangeResult(
+			ctx,
+			config,
+			projectedPlaceholdersByEntryId.size,
+			publishedStatusText,
+		);
 	}
 
 	recordNewProjectedEntries(
@@ -263,6 +259,24 @@ async function handleContextProjection({
 			ctx,
 			config,
 			projectedPlaceholdersByEntryId.size,
+			publishedStatusText,
+		),
+	};
+}
+
+/** Returns an unchanged provider context result while keeping footer status current. */
+function createContextProjectionNoChangeResult(
+	ctx: ExtensionContext,
+	config: ContextProjectionConfigResult,
+	projectedCount: number,
+	publishedStatusText: string | undefined,
+): HandleContextProjectionResult {
+	return {
+		contextResult: undefined,
+		statusText: publishProjectionStatus(
+			ctx,
+			config,
+			projectedCount,
 			publishedStatusText,
 		),
 	};
@@ -691,6 +705,7 @@ function projectContextMessages({
 	config,
 	loadedSkillRoots,
 	cwd,
+	discoverNewEntries,
 }: ProjectContextMessagesOptions): ProjectionDecision {
 	const protectedEntryIds = collectProtectedEntryIds(mappedContext, config);
 	const readPathsByToolCallId = collectReadPathsByToolCallId(
@@ -711,6 +726,7 @@ function projectContextMessages({
 
 		const alreadyProjected = projectedPlaceholdersByEntryId.has(entry.id);
 		const newlyEligible =
+			discoverNewEntries &&
 			!protectedEntryIds.has(entry.id) &&
 			getTextToolResultLength(message) >= config.minToolResultChars;
 		if (!alreadyProjected && !newlyEligible) {
