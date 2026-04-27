@@ -1,0 +1,52 @@
+name: Publish npm package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish pi-agent-suite to npm
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2.18"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify
+        run: bun run verify
+
+      - name: Check release tag matches package version
+        run: |
+          VERSION=$(node -p "require('./pi-package/package.json').version")
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "Release tag $TAG does not match pi-package version v$VERSION"
+            exit 1
+          fi
+
+      - name: Check npm package contents
+        working-directory: pi-package
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        working-directory: pi-package
+        run: npm publish --provenance
