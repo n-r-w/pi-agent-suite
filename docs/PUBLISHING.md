@@ -4,6 +4,8 @@ This project publishes the pi package from `pi-package/` to npm as `pi-agent-sui
 
 Publishing is done by GitHub Actions when a GitHub Release is published. Do not run `npm publish` locally.
 
+The local release check runs the full test suite, including the runtime integration check. The GitHub publish workflow runs unit-level tests, type checking, formatting checks, and npm package checks before publishing.
+
 ## One-time npm setup
 
 Configure npm Trusted Publisher for the package `pi-agent-suite`.
@@ -73,6 +75,8 @@ This runs:
 
 - `bun run verify`
 - `npm pack --dry-run` inside `pi-package/`
+
+The publish workflow runs `bun run verify:ci` because the runtime integration test depends on local pi CLI behavior and is covered by `make release-check` before the release commit.
 
 ## Version and tag rule
 

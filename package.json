@@ -8,6 +8,7 @@
 		"typecheck": "tsc --noEmit",
 		"check": "biome check package.json pi-package/package.json tsconfig.json pi-package test",
 		"verify": "bun test && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test",
+		"verify:ci": "bun test ./test/extensions ./test/shared && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test",
 		"release:sync-readme": "cp README.md pi-package/README.md",
 		"release:check": "bun run release:sync-readme && bun run verify && cd pi-package && npm pack --dry-run",
 		"release:prepare:patch": "cd pi-package && npm version patch --no-git-tag-version && cd .. && bun run release:check",
