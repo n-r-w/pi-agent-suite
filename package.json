@@ -1,5 +1,5 @@
 {
-	"name": "pi-harness",
+	"name": "pi-agent-suite",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",

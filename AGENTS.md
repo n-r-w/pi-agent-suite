@@ -13,6 +13,7 @@ Guidance for coding agents working in this repository.
 3. Follow best practices for pi extension development, don't reinvent the wheel.
 4. If open questions arise during coding that do not have a clear answer, stop immediately and ask the user for clarification.
 5. Keep documentation in `docs/extensions` up to date.
+6. Keep `README.md` and `pi-package/README.md` up to date.
 
 ## Project scope
 

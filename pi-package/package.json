@@ -1,10 +1,27 @@
 {
-	"name": "pi-harness-pi-package",
-	"version": "0.0.1",
-	"private": true,
+	"name": "pi-agent-suite",
+	"version": "0.1.0",
+	"description": "Adds a configurable multi-agent layer to pi, with context management, Codex quota status, a custom footer, and more.",
 	"type": "module",
 	"keywords": [
-		"pi-package"
+		"pi-package",
+		"pi",
+		"pi-agent",
+		"multi-agent"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/n-r-w/pi-agent-suite.git"
+	},
+	"bugs": {
+		"url": "https://github.com/n-r-w/pi-agent-suite/issues"
+	},
+	"homepage": "https://github.com/n-r-w/pi-agent-suite#readme",
+	"files": [
+		"extensions",
+		"shared",
+		"README.md",
+		"package.json"
 	],
 	"pi": {
 		"extensions": [
