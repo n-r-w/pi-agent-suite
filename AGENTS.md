@@ -104,9 +104,8 @@ Target extensions are:
 7. pi specific validation:
   1) Use `pi --no-session -p -e ./extensions/<extension>/index.ts` to validate single extension loading.
   2) Use `--no-extensions` to isolate package loading from globally configured extensions.
-  3) Use `--offline` only for checks that do not require an LLM provider response. It validates extension startup only and does not validate provider response.
-  4) Do not treat `--offline` timeouts from prompt-driven checks as extension failures when the check needs model output.
-  5) Use `pi --no-session -p -e .` to validate whole-package loading.
+  3) Use `--offline` only for checks that do not require an LLM provider response. Prompt passing is PROHIBITED in offline mode.
+  4) Use `pi --no-session -p -e .` to validate whole-package loading.
 8. For live checks of tool, agent, prompt, or active-tool availability, run the real `pi` CLI with the target package, a temporary cwd/state when needed, and a temporary debug extension that dumps `before_agent_start.systemPrompt` and `pi.getActiveTools()`. Inspect the dumped runtime data, not only unit-test fakes, and remove temporary state after the check.
 
 ## Release safety rules
