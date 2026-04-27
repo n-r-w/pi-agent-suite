@@ -49,6 +49,14 @@ jobs:
         working-directory: pi-package
         run: npm pack --dry-run
 
+      - name: Show GitHub OIDC claims
+        run: |
+          TOKEN_RESPONSE=$(curl -sSf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org")
+          ID_TOKEN=$(node -e "const fs = require('node:fs'); console.log(JSON.parse(fs.readFileSync(0, 'utf8')).value)" <<< "$TOKEN_RESPONSE")
+          ID_TOKEN="$ID_TOKEN" node -e "const token = process.env.ID_TOKEN; const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')); for (const key of ['iss', 'aud', 'sub', 'repository', 'repository_owner', 'repository_visibility', 'ref', 'event_name', 'workflow', 'workflow_ref', 'job_workflow_ref', 'environment']) console.log(key + '=' + (payload[key] ?? ''));"
+
       - name: Publish to npm
         working-directory: pi-package
         run: |
@@ -56,4 +64,4 @@ jobs:
             rm -f "$NPM_CONFIG_USERCONFIG"
           fi
           unset NODE_AUTH_TOKEN
-          npm publish
+          npm publish --loglevel verbose
