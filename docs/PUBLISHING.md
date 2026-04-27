@@ -22,7 +22,7 @@ Use the recommended publishing access option:
 
 - `Require two-factor authentication and disallow tokens (recommended)`
 
-No GitHub Actions secret is required. The workflow uses OIDC trusted publishing through `npm publish --provenance`.
+No GitHub Actions secret is required. The workflow uses OIDC trusted publishing through `npm publish`. Npm automatically generates provenance for public packages published through Trusted Publisher.
 
 ## Release flow
 
@@ -126,6 +126,8 @@ permissions:
   contents: read
   id-token: write
 ```
+
+Trusted publishing requires npm CLI `11.5.1` or newer and Node.js `22.14.0` or newer. The workflow uses Node.js `24` and updates npm before publishing.
 
 ### Package contents look wrong
 
