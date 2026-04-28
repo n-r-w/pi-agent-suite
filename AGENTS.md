@@ -17,8 +17,7 @@ Guidance for coding agents working in this repository.
 
 ## Project scope
 
-Target extensions are:
-
+Extensions `pi-package/extensions`:
 - `main-agent-selection`
 - `run-subagent`
 - `consult-advisor`
