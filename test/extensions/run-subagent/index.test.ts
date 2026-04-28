@@ -609,6 +609,144 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("keeps large child stderr bounded during failed execution", async () => {
+		// Purpose: child stderr diagnostics must not be accumulated without a runtime limit.
+		// Input and expected output: a failed child emits a very large stderr payload, but the tool returns bounded diagnostics.
+		// Edge case: the child exits with a non-zero code before producing a final assistant answer.
+		// Dependencies: this test uses temp agent files and a fake child process with controlled stderr output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const stderrText = `first-line\n${"x".repeat(200_000)}\nlast-line`;
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						process.stderr.emit("data", stderrText);
+						process.emit("close", 1);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content.length).toBeLessThan(100_000);
+			expect(content).toContain("child stderr truncated");
+			expect(content).not.toContain("first-line");
+			expect(content).toContain("last-line");
+		});
+	});
+
+	test("keeps a long unterminated stdout line from hiding later JSON events", async () => {
+		// Purpose: a noisy child must not keep an unbounded stdout line buffer or block later JSON-mode events.
+		// Input and expected output: a huge non-JSON partial line is discarded enough for the next final assistant event to be parsed.
+		// Edge case: the valid JSON event arrives after the first newline following the oversized partial line.
+		// Dependencies: this test uses temp agent files and a fake child process with controlled stdout chunks.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						process.stdout.emit("data", "x".repeat(200_000));
+						process.stdout.emit(
+							"data",
+							`\n${JSON.stringify({
+								type: "message_end",
+								message: {
+									role: "assistant",
+									content: [{ type: "text", text: "done after noise" }],
+								},
+							})}\n`,
+						);
+						process.emit("close", 0);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "done after noise" }],
+			});
+		});
+	});
+
+	test("parses a large single-line message_end event before truncating final output", async () => {
+		// Purpose: valid JSON-mode events must be parsed before the final assistant text is bounded for model-facing output.
+		// Input and expected output: one message_end line larger than the stdout partial-line limit still returns the child answer.
+		// Edge case: the full JSON event arrives in one stdout chunk with a trailing newline.
+		// Dependencies: this test uses temp agent files, Pi truncation constants, and a fake child process output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const finalOutput = `large-final-${"x".repeat(70_000)}-end`;
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								type: "message_end",
+								message: {
+									role: "assistant",
+									content: [{ type: "text", text: finalOutput }],
+								},
+							})}\n`,
+						);
+						process.emit("close", 0);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+			const details = result.details as { readonly fullOutputPath?: string };
+
+			expect(content).toContain("-end");
+			expect(content).not.toBe("Subagent completed.");
+			const fullOutputPath = details.fullOutputPath ?? "";
+			expect(fullOutputPath).toStartWith(join(tmpdir(), "pi-run-subagent-"));
+			expect(await readFile(fullOutputPath, "utf8")).toBe(finalOutput);
+			await rm(fullOutputPath, { force: true });
+		});
+	});
+
 	test("truncates large final child output and saves full output to a temp file", async () => {
 		// Purpose: model-facing run_subagent content must be bounded while complete child answers remain available from a temp file.
 		// Input and expected output: a child final answer over the Pi line limit returns tail-truncated content plus a full-output path.

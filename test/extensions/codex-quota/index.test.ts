@@ -835,6 +835,105 @@ describe("codex-quota", () => {
 		});
 	});
 
+	test("skips interval quota refresh while a previous refresh is still running", async () => {
+		// Purpose: quota polling must avoid overlapping requests when a previous interval refresh is still in flight.
+		// Input and expected output: two interval ticks during one pending refresh perform only one interval fetch.
+		// Edge case: the initial startup refresh has completed before the overlapping interval ticks are triggered.
+		// Dependencies: this test uses fake model registry, fake fetch, fake intervals, and a deferred response.
+		await withIsolatedAgentDir(async () => {
+			await withFakeIntervals(async (intervals) => {
+				const intervalResponse = createDeferred<Response>();
+				const fetchCalls: Parameters<FetchFake>[] = [];
+				await withFakeFetch(
+					async (input, init) => {
+						fetchCalls.push([input, init]);
+						if (fetchCalls.length === 1) {
+							return new Response(
+								JSON.stringify({
+									rate_limit: { primary_window: { used_percent: 1 } },
+								}),
+								{ status: 200 },
+							);
+						}
+
+						return await intervalResponse.promise;
+					},
+					async () => {
+						const pi = createExtensionApiFake();
+						const session = createSessionContextFake();
+						codexQuota(pi);
+
+						await startQuotaSession(pi, session.ctx);
+						const interval = requireFirstInterval(intervals);
+						interval.callback();
+						interval.callback();
+						await flushAsyncWork();
+
+						expect(fetchCalls).toHaveLength(2);
+						intervalResponse.resolve(
+							new Response(
+								JSON.stringify({
+									rate_limit: { primary_window: { used_percent: 2 } },
+								}),
+								{ status: 200 },
+							),
+						);
+						await flushAsyncWork();
+
+						expect(session.statuses.at(-1)).toEqual({
+							key: "codex-quota",
+							text: "98%",
+						});
+					},
+				);
+			});
+		});
+	});
+
+	test("aborts active quota fetch on session shutdown", async () => {
+		// Purpose: shutdown must abort an already-running quota request instead of waiting for network completion.
+		// Input and expected output: the active fetch receives an AbortSignal that is aborted by session_shutdown.
+		// Edge case: shutdown happens while the initial startup refresh is still pending.
+		// Dependencies: this test uses fake model registry, fake fetch, fake intervals, and a deferred response.
+		await withIsolatedAgentDir(async () => {
+			await withFakeIntervals(async () => {
+				const fetchEntered = createDeferred<void>();
+				const fetchResponse = createDeferred<Response>();
+				let requestSignal: AbortSignal | undefined;
+				await withFakeFetch(
+					async (_input, init) => {
+						requestSignal = init?.signal ?? undefined;
+						fetchEntered.resolve(undefined);
+						return await fetchResponse.promise;
+					},
+					async () => {
+						const pi = createExtensionApiFake();
+						const session = createSessionContextFake();
+						codexQuota(pi);
+
+						const startPromise = getHandler(pi, "session_start")(
+							{ type: "session_start", reason: "startup" },
+							session.ctx,
+						);
+						await fetchEntered.promise;
+						await shutdownQuotaSession(pi, session.ctx);
+
+						expect(requestSignal?.aborted).toBe(true);
+						fetchResponse.resolve(
+							new Response(
+								JSON.stringify({
+									rate_limit: { primary_window: { used_percent: 3 } },
+								}),
+								{ status: 200 },
+							),
+						);
+						await startPromise;
+					},
+				);
+			});
+		});
+	});
+
 	test("renders compact unknown and error quota statuses", async () => {
 		// Purpose: fallback status text must stay short when payload has no usable quota windows and when fetch fails.
 		// Input and expected output: empty usage response produces CX ?, then interval fetch 503 produces CX err.

@@ -460,15 +460,18 @@ function selectConfiguredOrCurrentModel(
 		return { kind: "valid", model: session.model };
 	}
 
-	const [provider, modelId] = config.model.split("/");
-	if (provider === undefined || modelId === undefined) {
+	const modelParts = splitModelId(config.model);
+	if (modelParts === undefined) {
 		return {
 			kind: "invalid",
 			issue: `${MODEL_CONFIG_KEY} must use provider/model`,
 		};
 	}
 
-	const model = session.modelRegistry.find(provider, modelId);
+	const model = session.modelRegistry.find(
+		modelParts.provider,
+		modelParts.modelId,
+	);
 	if (model === undefined) {
 		return { kind: "invalid", issue: `model ${config.model} was not found` };
 	}
@@ -751,14 +754,24 @@ function parseReasoning(value: unknown): Reasoning | undefined {
 	return isReasoning(value) ? value : undefined;
 }
 
-/** Returns true when a model ID uses provider/model with both segments present. */
-function isModelId(value: unknown): value is string {
-	if (typeof value !== "string") {
-		return false;
+/** Splits a model ID where only the first slash separates provider from provider-owned model ID. */
+function splitModelId(
+	value: string,
+): { readonly provider: string; readonly modelId: string } | undefined {
+	const separatorIndex = value.indexOf("/");
+	if (separatorIndex <= 0 || separatorIndex === value.length - 1) {
+		return undefined;
 	}
 
-	const [provider, modelId, extra] = value.split("/");
-	return provider !== "" && modelId !== "" && extra === undefined;
+	return {
+		provider: value.slice(0, separatorIndex),
+		modelId: value.slice(separatorIndex + 1),
+	};
+}
+
+/** Returns true when a model ID uses provider/model with both segments present. */
+function isModelId(value: unknown): value is string {
+	return typeof value === "string" && splitModelId(value) !== undefined;
 }
 
 /** Returns true when a failed config read means the config file is missing. */

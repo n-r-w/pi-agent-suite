@@ -127,6 +127,34 @@ interface UsageWindowRecord extends Record<string, unknown> {
 export default function codexQuota(pi: ExtensionAPI): void {
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let activeGeneration = 0;
+	let activeRefresh: Promise<void> | undefined;
+	let activeAbortController: AbortController | undefined;
+
+	const startRefresh = (
+		session: QuotaSession,
+		generation: number,
+	): Promise<void> => {
+		if (activeRefresh !== undefined) {
+			return activeRefresh;
+		}
+
+		const abortController = new AbortController();
+		activeAbortController = abortController;
+		const refresh = refreshQuotaStatus(
+			session,
+			() => generation === activeGeneration,
+			abortController.signal,
+		).finally(() => {
+			if (activeRefresh === refresh) {
+				activeRefresh = undefined;
+			}
+			if (activeAbortController === abortController) {
+				activeAbortController = undefined;
+			}
+		});
+		activeRefresh = refresh;
+		return refresh;
+	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		const session = ctx as QuotaSession;
@@ -136,6 +164,9 @@ export default function codexQuota(pi: ExtensionAPI): void {
 
 		const generation = activeGeneration + 1;
 		activeGeneration = generation;
+		activeAbortController?.abort();
+		activeAbortController = undefined;
+		activeRefresh = undefined;
 
 		const config = await readQuotaConfig();
 		if (generation !== activeGeneration) {
@@ -160,15 +191,13 @@ export default function codexQuota(pi: ExtensionAPI): void {
 		}
 
 		session.ui.setStatus(STATUS_KEY, renderLoadingStatus());
-		await refreshQuotaStatus(session, () => generation === activeGeneration);
+		await startRefresh(session, generation);
 		if (generation !== activeGeneration) {
 			return;
 		}
 
 		refreshTimer = setInterval(() => {
-			refreshQuotaStatus(session, () => generation === activeGeneration).catch(
-				() => {},
-			);
+			startRefresh(session, generation).catch(() => {});
 		}, refreshIntervalSeconds * SECOND_MS);
 	});
 
@@ -178,6 +207,7 @@ export default function codexQuota(pi: ExtensionAPI): void {
 			clearInterval(refreshTimer);
 			refreshTimer = undefined;
 		}
+		activeAbortController?.abort();
 
 		const session = ctx as QuotaSession;
 		if (session.hasUI !== false) {
@@ -274,6 +304,7 @@ function parseQuotaConfig(config: unknown): QuotaConfigResult {
 async function refreshQuotaStatus(
 	session: QuotaSession,
 	isCurrent: () => boolean,
+	signal: AbortSignal,
 ): Promise<void> {
 	const auth = await readCodexAuth(session.modelRegistry);
 	if (!isCurrent()) {
@@ -288,6 +319,7 @@ async function refreshQuotaStatus(
 	try {
 		const response = await fetch(CODEX_QUOTA_URL, {
 			method: "GET",
+			signal,
 			headers: {
 				Authorization: `Bearer ${auth.accessToken}`,
 				"chatgpt-account-id": auth.accountId,
@@ -318,7 +350,10 @@ async function refreshQuotaStatus(
 			STATUS_KEY,
 			formatQuotaStatus(payload, session.ui.theme),
 		);
-	} catch {
+	} catch (error) {
+		if (signal.aborted || isAbortError(error)) {
+			return;
+		}
 		if (isCurrent()) {
 			session.ui.setStatus(STATUS_KEY, renderErrorStatus(session.ui.theme));
 		}
@@ -525,6 +560,11 @@ function isUsageRateLimitRecord(value: unknown): value is UsageRateLimitRecord {
 /** Returns true when a runtime value can contain one Codex usage window. */
 function isUsageWindowRecord(value: unknown): value is UsageWindowRecord {
 	return isRecord(value);
+}
+
+/** Returns true when a fetch failure was caused by request cancellation. */
+function isAbortError(error: unknown): boolean {
+	return error instanceof DOMException && error.name === "AbortError";
 }
 
 /** Returns true when a runtime value is a non-array object. */

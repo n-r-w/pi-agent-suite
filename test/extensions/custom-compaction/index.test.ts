@@ -676,6 +676,40 @@ describe("custom-compaction", () => {
 		});
 	});
 
+	test("uses configured model IDs that contain slashes after the provider", async () => {
+		// Purpose: custom-compaction model config must match pi model IDs where only the first slash separates provider from model ID.
+		// Input and expected output: openrouter/ai21/jamba-large-1.7 resolves to provider openrouter and model ID ai21/jamba-large-1.7.
+		// Edge case: model IDs with provider-owned slash segments must not be rejected as malformed config.
+		// Dependencies: this test uses temp config/prompt files, fake model registry, and mocked completeSimple.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const promptFiles = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, {
+				enabled: true,
+				...promptFiles,
+				model: "openrouter/ai21/jamba-large-1.7",
+			});
+			completeSimpleMock.mockResolvedValue(
+				createAssistantResponse("configured summary"),
+			);
+			const configuredModel = createModel("openrouter", "ai21/jamba-large-1.7");
+			const pi = createExtensionApiFake();
+			const session = createSessionContextFake({ configuredModel });
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createHistoryCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "configured summary" },
+			});
+			expect(session.requestedModels).toEqual([configuredModel]);
+			const [model] = completeSimpleMock.mock.calls[0] ?? [];
+			expect(model).toBe(configuredModel);
+		});
+	});
+
 	test("uses configured model and reasoning when present", async () => {
 		// Purpose: explicit model and reasoning config must override current session values.
 		// Input and expected output: provider/model plus medium reasoning call the configured fake model with medium reasoning.

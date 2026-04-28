@@ -53,6 +53,11 @@ const DEFAULT_WIDGET_LINE_BUDGET = 7;
 const WIDGET_UPDATE_THROTTLE_MS = 120;
 const SECOND_MS = 1000;
 const ELAPSED_SECONDS_FRACTION_DIGITS = 1;
+const CHILD_STDERR_TEXT_LIMIT = 64_000;
+const CHILD_FINAL_TEXT_LIMIT = 1_000_000;
+const CHILD_STDOUT_JSON_OVERHEAD_LIMIT = 250_000;
+const CHILD_STDOUT_LINE_BUFFER_LIMIT =
+	CHILD_FINAL_TEXT_LIMIT + CHILD_STDOUT_JSON_OVERHEAD_LIMIT;
 const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
 
 const RunSubagentParameters = Type.Object({
@@ -115,6 +120,14 @@ interface ChildRunResult {
 	readonly exitCode: number;
 	readonly stdoutText: string;
 	readonly stderrText: string;
+}
+
+interface ChildStreamState {
+	stdoutBuffer: string;
+	stdoutBufferTruncated: boolean;
+	stderrText: string;
+	stderrTextTruncated: boolean;
+	finalText: string;
 }
 
 interface ExecuteRunSubagentOptions {
@@ -807,50 +820,141 @@ async function runChildPi(
 			env: options.env,
 			signal: options.signal,
 		});
-		let stdoutBuffer = "";
-		let stderrText = "";
-		let finalText = "";
-
-		const processLine = (line: string): void => {
-			if (line.trim().length === 0) {
-				return;
-			}
-
-			const event = parseJsonLine(line);
-			if (event === undefined) {
-				return;
-			}
-
-			options.onJsonEvent(event);
-			const text = extractAssistantText(event);
-			if (text !== undefined) {
-				finalText = text;
-			}
+		const streamState: ChildStreamState = {
+			stdoutBuffer: "",
+			stdoutBufferTruncated: false,
+			stderrText: "",
+			stderrTextTruncated: false,
+			finalText: "",
 		};
 
 		child.stdout.on("data", (data) => {
-			stdoutBuffer += String(data);
-			const lines = stdoutBuffer.split("\n");
-			stdoutBuffer = lines.pop() ?? "";
-			for (const line of lines) {
-				processLine(line);
-			}
+			handleChildStdoutData(streamState, data, options.onJsonEvent);
 		});
 		child.stderr.on("data", (data) => {
-			stderrText += String(data);
+			handleChildStderrData(streamState, data);
 		});
 		child.on("close", (code) => {
-			processLine(stdoutBuffer);
-			resolve({ exitCode: code ?? 0, stdoutText: finalText, stderrText });
+			if (!streamState.stdoutBufferTruncated) {
+				processChildOutputLine(
+					streamState,
+					streamState.stdoutBuffer,
+					options.onJsonEvent,
+				);
+			}
+			resolve({
+				exitCode: code ?? 0,
+				stdoutText: streamState.finalText,
+				stderrText: formatBoundedChildText(
+					streamState.stderrText,
+					streamState.stderrTextTruncated,
+					"child stderr",
+				),
+			});
 		});
 		child.on("error", (error) => {
 			resolve({
 				exitCode: 1,
-				stdoutText: finalText,
+				stdoutText: streamState.finalText,
 				stderrText: error.message,
 			});
 		});
 	});
+}
+
+/** Processes one stdout chunk from the child JSON-mode stream. */
+function handleChildStdoutData(
+	state: ChildStreamState,
+	data: unknown,
+	onJsonEvent: (event: unknown) => void,
+): void {
+	const boundedStdout = appendBoundedText(
+		state.stdoutBuffer,
+		String(data),
+		CHILD_STDOUT_LINE_BUFFER_LIMIT,
+	);
+	state.stdoutBuffer = boundedStdout.text;
+	state.stdoutBufferTruncated =
+		state.stdoutBufferTruncated || boundedStdout.truncated;
+
+	const lines = state.stdoutBuffer.split("\n");
+	state.stdoutBuffer = lines.pop() ?? "";
+	if (lines.length > 0) {
+		state.stdoutBufferTruncated = false;
+	}
+	for (const line of lines) {
+		processChildOutputLine(state, line, onJsonEvent);
+	}
+}
+
+/** Processes one stderr chunk from the child process diagnostics stream. */
+function handleChildStderrData(state: ChildStreamState, data: unknown): void {
+	const boundedStderr = appendBoundedText(
+		state.stderrText,
+		String(data),
+		CHILD_STDERR_TEXT_LIMIT,
+	);
+	state.stderrText = boundedStderr.text;
+	state.stderrTextTruncated =
+		state.stderrTextTruncated || boundedStderr.truncated;
+}
+
+/** Parses one child stdout line and updates progress and final answer state. */
+function processChildOutputLine(
+	state: ChildStreamState,
+	line: string,
+	onJsonEvent: (event: unknown) => void,
+): void {
+	if (line.trim().length === 0) {
+		return;
+	}
+
+	const event = parseJsonLine(line);
+	if (event === undefined) {
+		return;
+	}
+
+	onJsonEvent(event);
+	const text = extractAssistantText(event);
+	if (text !== undefined) {
+		const boundedFinalText = appendBoundedText(
+			"",
+			text,
+			CHILD_FINAL_TEXT_LIMIT,
+		);
+		state.finalText = formatBoundedChildText(
+			boundedFinalText.text,
+			boundedFinalText.truncated,
+			"child final output",
+		);
+	}
+}
+
+/** Appends a text chunk while preserving only the latest text inside the configured limit. */
+function appendBoundedText(
+	currentText: string,
+	chunkText: string,
+	limit: number,
+): { readonly text: string; readonly truncated: boolean } {
+	const combinedText = currentText + chunkText;
+	if (combinedText.length <= limit) {
+		return { text: combinedText, truncated: false };
+	}
+
+	return { text: combinedText.slice(-limit), truncated: true };
+}
+
+/** Adds a visible truncation marker when child-process text exceeded its streaming limit. */
+function formatBoundedChildText(
+	text: string,
+	truncated: boolean,
+	label: string,
+): string {
+	if (!truncated) {
+		return text;
+	}
+
+	return `[${label} truncated to last ${text.length} characters]\n${text}`;
 }
 
 /** Parses one JSON-mode output line without failing the whole tool on unrelated output. */
