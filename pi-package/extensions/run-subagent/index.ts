@@ -34,7 +34,7 @@ import {
 	appendSubagentStderr,
 	createSubagentProgressState,
 	finalizeSubagentProgressState,
-	recordSubagentJsonEvent,
+	recordSubagentSessionEvent,
 	type SubagentRunDetails,
 	type SubagentRunStatus,
 	toSubagentRunDetails,
@@ -56,6 +56,8 @@ const DEFAULT_WIDGET_LINE_BUDGET = 7;
 const WIDGET_UPDATE_THROTTLE_MS = 120;
 const SECOND_MS = 1000;
 const ELAPSED_SECONDS_FRACTION_DIGITS = 1;
+const CHILD_ABORT_FALLBACK_TIMEOUT_MS = 10_000;
+const CHILD_ABORT_KILL_TIMEOUT_MS = 5_000;
 const CHILD_STDERR_TEXT_LIMIT = 64_000;
 const BYTES_PER_KIB = 1024;
 const KIB_PER_MIB = 1024;
@@ -69,6 +71,15 @@ const CHILD_STREAMED_TEXT_BYTES_LIMIT =
 const OVERSIZED_CHILD_JSON_EVENT_ERROR =
 	"child pi output exceeded supported JSON event size before final response could be parsed";
 const OVERSIZED_CHILD_FINAL_RESPONSE_ERROR = `child pi final response exceeded ${CHILD_STREAMED_TEXT_MIB_LIMIT} MiB memory limit`;
+const MALFORMED_CHILD_RPC_OUTPUT_ERROR =
+	"child pi emitted malformed RPC output";
+const INCOMPLETE_CHILD_RPC_RUN_ERROR =
+	"subagent exited before completing the task";
+const MISSING_CHILD_FINAL_ANSWER_ERROR =
+	"subagent completed without a final answer";
+const ABORTED_CHILD_RPC_RUN_ERROR = "subagent execution aborted";
+const PROMPT_COMMAND_ID = "run-subagent-prompt";
+const ABORT_COMMAND_ID = "run-subagent-abort";
 const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
 
 const RunSubagentParameters = Type.Object({
@@ -104,12 +115,18 @@ interface DepthResult {
 }
 
 interface SpawnedProcess {
+	readonly stdin: {
+		write(data: string): boolean;
+		end(): void;
+		on(event: "error", handler: (error: Error) => void): void;
+	};
 	readonly stdout: {
 		on(event: "data", handler: (data: unknown) => void): void;
 	};
 	readonly stderr: {
 		on(event: "data", handler: (data: unknown) => void): void;
 	};
+	kill(signal?: string): boolean;
 	on(event: "close", handler: (code: number | null) => void): void;
 	on(event: "error", handler: (error: Error) => void): void;
 }
@@ -127,8 +144,12 @@ interface ChildToolPolicy {
 	readonly env: Record<string, string>;
 }
 
+type ChildRunStatus = "succeeded" | "failed" | "aborted";
+
 interface ChildRunResult {
 	readonly exitCode: number;
+	readonly status: ChildRunStatus;
+	readonly errorMessage?: string;
 	readonly stdoutText: string;
 	readonly stderrText: string;
 	readonly stdoutLineExceededLimit: boolean;
@@ -563,7 +584,7 @@ function updateSubagentWidget({
 	return now;
 }
 
-/** Runs the child process and records JSON-mode progress events. */
+/** Runs the child process and records RPC session progress events. */
 async function runResolvedChildPi(
 	options: ExecuteRunSubagentOptions,
 	plan: ResolvedRunSubagentExecution,
@@ -574,7 +595,6 @@ async function runResolvedChildPi(
 			modelId: plan.modelId,
 			thinking: plan.thinking,
 			toolPolicy: plan.childTools,
-			prompt: options.params.prompt,
 		}),
 		cwd: options.ctx.cwd,
 		env: createChildEnvironment({
@@ -583,8 +603,9 @@ async function runResolvedChildPi(
 			...plan.childTools.env,
 		}),
 		signal: options.signal,
-		onJsonEvent(event) {
-			if (recordSubagentJsonEvent(progress.state, event, Date.now())) {
+		prompt: options.params.prompt,
+		onSessionEvent(event) {
+			if (recordSubagentSessionEvent(progress.state, event, Date.now())) {
 				progress.emit("running");
 			}
 		},
@@ -599,24 +620,37 @@ async function finishRunSubagentExecution(
 	if (run.stderrText.length > 0) {
 		appendSubagentStderr(progress.state, run.stderrText);
 	}
-	if (run.exitCode !== 0) {
+
+	if (run.status === "aborted") {
+		const details = progress.emit("aborted", run.exitCode, true);
+		return errorResult(
+			run.errorMessage ?? ABORTED_CHILD_RPC_RUN_ERROR,
+			details,
+		);
+	}
+
+	if (run.streamedTextExceededLimit) {
+		const details = progress.emit("failed", run.exitCode, true);
+		return errorResult(OVERSIZED_CHILD_FINAL_RESPONSE_ERROR, details);
+	}
+
+	if (run.status === "failed" || run.exitCode !== 0) {
 		const details = progress.emit("failed", run.exitCode, true);
 		return errorResult(
-			run.stderrText || `child pi exited with code ${run.exitCode}`,
+			run.errorMessage ||
+				run.stderrText ||
+				`child pi exited with code ${run.exitCode}`,
 			details,
 		);
 	}
 
 	const details = progress.emit("succeeded", run.exitCode, true);
-	if (run.streamedTextExceededLimit) {
-		return errorResult(OVERSIZED_CHILD_FINAL_RESPONSE_ERROR, details);
-	}
 	if (run.stdoutText.length === 0 && run.stdoutLineExceededLimit) {
 		return errorResult(OVERSIZED_CHILD_JSON_EVENT_ERROR, details);
 	}
 
 	const output = await truncateToolTextOutput(
-		run.stdoutText || "Subagent completed.",
+		run.stdoutText,
 		"pi-run-subagent-",
 	);
 	return {
@@ -812,22 +846,20 @@ function buildChildArgs(options: {
 	readonly modelId: string;
 	readonly thinking: string;
 	readonly toolPolicy: ChildToolPolicy;
-	readonly prompt: string;
 }): string[] {
 	return [
 		"--mode",
-		"json",
+		"rpc",
 		"--no-session",
 		"--model",
 		options.modelId,
 		"--thinking",
 		options.thinking,
 		...options.toolPolicy.args,
-		options.prompt,
 	];
 }
 
-/** Runs the child pi process and extracts final assistant text from JSON-mode events. */
+/** Runs the child pi process and extracts final assistant text from RPC session events. */
 async function runChildPi(
 	spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>,
 	options: {
@@ -835,18 +867,62 @@ async function runChildPi(
 		readonly cwd: string;
 		readonly env: Record<string, string>;
 		readonly signal: AbortSignal | undefined;
-		readonly onJsonEvent: (event: unknown) => void;
+		readonly prompt: string;
+		readonly onSessionEvent: (event: unknown) => void;
 	},
 ): Promise<ChildRunResult> {
 	return new Promise((resolve) => {
 		const child = spawnPi("pi", options.args, {
 			cwd: options.cwd,
 			env: options.env,
-			signal: options.signal,
+			signal: undefined,
 		});
-		const stdoutDecoder = new StringDecoder("utf8");
-		const stderrDecoder = new StringDecoder("utf8");
-		const streamState: ChildStreamState = {
+		const rpcState = createChildRpcState();
+		const closeStdin = () => closeChildStdin(child, rpcState);
+		const writeRpcCommand = (command: Record<string, unknown>) =>
+			writeChildRpcCommand(child, rpcState, command, closeStdin);
+		const abort = () => abortChildRpcRun(child, rpcState, writeRpcCommand);
+		const handleRpcMessage = (message: unknown) =>
+			handleChildRpcMessage({
+				message,
+				rpcState,
+				onSessionEvent: options.onSessionEvent,
+				writeRpcCommand,
+				closeStdin,
+			});
+		const finish = (code: number | null) =>
+			finishChildRpcRun({
+				code,
+				rpcState,
+				signal: options.signal,
+				abort,
+				handleRpcMessage,
+				resolve,
+			});
+
+		attachChildRpcProcessHandlers(child, rpcState, handleRpcMessage, finish);
+		startChildRpcPrompt(options.signal, options.prompt, abort, writeRpcCommand);
+	});
+}
+
+interface ChildRpcState {
+	readonly streamState: ChildStreamState;
+	readonly stdoutDecoder: StringDecoder;
+	readonly stderrDecoder: StringDecoder;
+	agentCompleted: boolean;
+	aborted: boolean;
+	fatalError: string | undefined;
+	stdinClosed: boolean;
+	stdinFailed: boolean;
+	resolved: boolean;
+	abortFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+	abortKillTimer: ReturnType<typeof setTimeout> | undefined;
+}
+
+/** Creates mutable state for one child RPC process. */
+function createChildRpcState(): ChildRpcState {
+	return {
+		streamState: {
 			stdoutBuffer: "",
 			stdoutBufferTruncated: false,
 			stdoutLineExceededLimit: false,
@@ -856,54 +932,321 @@ async function runChildPi(
 			streamedTextBytes: 0,
 			streamedTextExceededLimit: false,
 			finalText: "",
-		};
+		},
+		stdoutDecoder: new StringDecoder("utf8"),
+		stderrDecoder: new StringDecoder("utf8"),
+		agentCompleted: false,
+		aborted: false,
+		fatalError: undefined,
+		stdinClosed: false,
+		stdinFailed: false,
+		resolved: false,
+		abortFallbackTimer: undefined,
+		abortKillTimer: undefined,
+	};
+}
 
-		child.stdout.on("data", (data) => {
-			handleChildStdoutData(
-				streamState,
-				stdoutDecoder.write(toBuffer(data)),
-				options.onJsonEvent,
-			);
-		});
-		child.stderr.on("data", (data) => {
-			handleChildStderrData(streamState, stderrDecoder.write(toBuffer(data)));
-		});
-		child.on("close", (code) => {
-			handleChildStdoutData(
-				streamState,
-				stdoutDecoder.end(),
-				options.onJsonEvent,
-			);
-			handleChildStderrData(streamState, stderrDecoder.end());
-			if (!streamState.stdoutBufferTruncated) {
-				processChildOutputLine(
-					streamState,
-					streamState.stdoutBuffer,
-					options.onJsonEvent,
-				);
-			}
-			resolve({
-				exitCode: code ?? 0,
-				stdoutText: streamState.finalText || streamState.streamedText,
-				stderrText: formatBoundedChildText(
-					streamState.stderrText,
-					streamState.stderrTextTruncated,
-					"child stderr",
-				),
-				stdoutLineExceededLimit: streamState.stdoutLineExceededLimit,
-				streamedTextExceededLimit: streamState.streamedTextExceededLimit,
-			});
-		});
-		child.on("error", (error) => {
-			resolve({
-				exitCode: 1,
-				stdoutText: streamState.finalText || streamState.streamedText,
-				stderrText: error.message,
-				stdoutLineExceededLimit: streamState.stdoutLineExceededLimit,
-				streamedTextExceededLimit: streamState.streamedTextExceededLimit,
-			});
-		});
+/** Closes RPC stdin once so the child can shut down after completion or failure. */
+function closeChildStdin(child: SpawnedProcess, state: ChildRpcState): void {
+	if (state.stdinClosed) {
+		return;
+	}
+	state.stdinClosed = true;
+	if (state.stdinFailed) {
+		return;
+	}
+	try {
+		child.stdin.end();
+	} catch (error) {
+		state.stdinFailed = true;
+		state.fatalError ??= `failed to close child stdin: ${formatError(error)}`;
+	}
+}
+
+/** Writes one JSONL RPC command to child stdin and fails closed on pipe errors. */
+function writeChildRpcCommand(
+	child: SpawnedProcess,
+	state: ChildRpcState,
+	command: Record<string, unknown>,
+	closeStdin: () => void,
+): void {
+	if (state.stdinClosed || state.stdinFailed) {
+		return;
+	}
+	try {
+		child.stdin.write(`${JSON.stringify(command)}\n`);
+	} catch (error) {
+		state.stdinFailed = true;
+		state.fatalError ??= `failed to write child RPC command: ${formatError(error)}`;
+		closeStdin();
+	}
+}
+
+/** Sends an RPC abort command and starts the force-termination fallback timer. */
+function abortChildRpcRun(
+	child: SpawnedProcess,
+	state: ChildRpcState,
+	writeRpcCommand: (command: Record<string, unknown>) => void,
+): void {
+	if (state.agentCompleted || state.resolved) {
+		return;
+	}
+	if (state.fatalError !== undefined) {
+		scheduleChildTerminationFallback(child, state);
+		return;
+	}
+	if (state.aborted) {
+		return;
+	}
+	state.aborted = true;
+	writeRpcCommand({ id: ABORT_COMMAND_ID, type: "abort" });
+	scheduleChildTerminationFallback(child, state);
+}
+
+/** Schedules idempotent child termination fallback for aborted or failed runs. */
+function scheduleChildTerminationFallback(
+	child: SpawnedProcess,
+	state: ChildRpcState,
+): void {
+	if (state.abortFallbackTimer !== undefined) {
+		return;
+	}
+	state.abortFallbackTimer = setTimeout(() => {
+		child.kill("SIGTERM");
+		state.abortKillTimer = setTimeout(() => {
+			child.kill("SIGKILL");
+		}, CHILD_ABORT_KILL_TIMEOUT_MS);
+	}, CHILD_ABORT_FALLBACK_TIMEOUT_MS);
+}
+
+/** Sends the single subagent prompt unless the parent was already aborted. */
+function startChildRpcPrompt(
+	signal: AbortSignal | undefined,
+	prompt: string,
+	abort: () => void,
+	writeRpcCommand: (command: Record<string, unknown>) => void,
+): void {
+	signal?.addEventListener("abort", abort, { once: true });
+	if (signal?.aborted) {
+		abort();
+		return;
+	}
+	writeRpcCommand({ id: PROMPT_COMMAND_ID, type: "prompt", message: prompt });
+}
+
+/** Attaches stdout, stderr, close, and error handlers for one child RPC process. */
+function attachChildRpcProcessHandlers(
+	child: SpawnedProcess,
+	state: ChildRpcState,
+	handleRpcMessage: (message: unknown) => void,
+	finish: (code: number | null) => void,
+): void {
+	child.stdin.on("error", (error) => {
+		state.stdinFailed = true;
+		state.stdinClosed = true;
+		state.fatalError ??= `child stdin error: ${error.message}`;
 	});
+	child.stdout.on("data", (data) => {
+		const lineError = handleChildStdoutData(
+			state.streamState,
+			state.stdoutDecoder.write(toBuffer(data)),
+			handleRpcMessage,
+		);
+		if (lineError !== undefined) {
+			state.fatalError ??= lineError;
+			closeChildStdin(child, state);
+		}
+	});
+	child.stderr.on("data", (data) => {
+		handleChildStderrData(
+			state.streamState,
+			state.stderrDecoder.write(toBuffer(data)),
+		);
+	});
+	child.on("close", finish);
+	child.on("error", (error) => {
+		state.fatalError ??= error.message;
+		finish(1);
+	});
+}
+
+/** Finalizes one child RPC run after the process exits or emits an error. */
+function finishChildRpcRun(options: {
+	readonly code: number | null;
+	readonly rpcState: ChildRpcState;
+	readonly signal: AbortSignal | undefined;
+	readonly abort: () => void;
+	readonly handleRpcMessage: (message: unknown) => void;
+	readonly resolve: (result: ChildRunResult) => void;
+}): void {
+	const { rpcState } = options;
+	if (rpcState.resolved) {
+		return;
+	}
+	rpcState.resolved = true;
+	clearAbortFallbackTimer(rpcState);
+	options.signal?.removeEventListener("abort", options.abort);
+	handleChildStderrData(rpcState.streamState, rpcState.stderrDecoder.end());
+	rpcState.fatalError ??= flushRemainingChildStdout(
+		rpcState,
+		options.handleRpcMessage,
+	);
+	options.resolve(buildChildRunResult(options.code ?? 0, rpcState));
+}
+
+/** Clears the abort fallback timer when a child process exits. */
+function clearAbortFallbackTimer(state: ChildRpcState): void {
+	if (state.abortFallbackTimer !== undefined) {
+		clearTimeout(state.abortFallbackTimer);
+	}
+	if (state.abortKillTimer !== undefined) {
+		clearTimeout(state.abortKillTimer);
+	}
+}
+
+/** Processes the final unterminated RPC stdout line after child process exit. */
+function flushRemainingChildStdout(
+	state: ChildRpcState,
+	handleRpcMessage: (message: unknown) => void,
+): string | undefined {
+	if (state.streamState.stdoutBufferTruncated) {
+		return undefined;
+	}
+	return processChildOutputLine(
+		state.streamState,
+		state.streamState.stdoutBuffer + state.stdoutDecoder.end(),
+		handleRpcMessage,
+	);
+}
+
+/** Builds the child process result while preserving exact optional property semantics. */
+function buildChildRunResult(
+	exitCode: number,
+	state: ChildRpcState,
+): ChildRunResult {
+	const status = resolveChildRunStatus({
+		exitCode,
+		aborted: state.aborted,
+		agentCompleted: state.agentCompleted,
+		fatalError: state.fatalError,
+		hasFinalAnswer: state.streamState.finalText.length > 0,
+	});
+	const result = {
+		exitCode,
+		status,
+		stdoutText: state.streamState.finalText,
+		stderrText: formatBoundedChildText(
+			state.streamState.stderrText,
+			state.streamState.stderrTextTruncated,
+			"child stderr",
+		),
+		stdoutLineExceededLimit: state.streamState.stdoutLineExceededLimit,
+		streamedTextExceededLimit: state.streamState.streamedTextExceededLimit,
+	};
+	const errorMessage = resolveChildRunErrorMessage(exitCode, status, state);
+	return errorMessage === undefined ? result : { ...result, errorMessage };
+}
+
+/** Resolves the user-facing child run error message for failed or aborted runs. */
+function resolveChildRunErrorMessage(
+	exitCode: number,
+	status: ChildRunStatus,
+	state: ChildRpcState,
+): string | undefined {
+	if (state.fatalError !== undefined) {
+		return state.fatalError;
+	}
+	if (status === "aborted") {
+		return ABORTED_CHILD_RPC_RUN_ERROR;
+	}
+	if (status !== "failed" || exitCode !== 0) {
+		return undefined;
+	}
+	return state.agentCompleted
+		? MISSING_CHILD_FINAL_ANSWER_ERROR
+		: INCOMPLETE_CHILD_RPC_RUN_ERROR;
+}
+
+/** Classifies one RPC stdout message and updates progress or protocol state. */
+function handleChildRpcMessage(options: {
+	readonly message: unknown;
+	readonly rpcState: ChildRpcState;
+	readonly onSessionEvent: (event: unknown) => void;
+	readonly writeRpcCommand: (command: Record<string, unknown>) => void;
+	readonly closeStdin: () => void;
+}): void {
+	const { message, rpcState } = options;
+	if (!isRecord(message)) {
+		return;
+	}
+	if (message["type"] === "response") {
+		handleChildRpcResponse(message, rpcState, options.closeStdin);
+		return;
+	}
+	if (message["type"] === "extension_ui_request") {
+		handleExtensionUiRequest(message, options.writeRpcCommand);
+		return;
+	}
+	handleChildRpcSessionEvent(message, options);
+}
+
+/** Handles RPC command responses without exposing them as progress events. */
+function handleChildRpcResponse(
+	message: Record<string, unknown>,
+	state: ChildRpcState,
+	closeStdin: () => void,
+): void {
+	if (message["command"] !== "prompt" || message["success"] !== false) {
+		return;
+	}
+	state.fatalError =
+		typeof message["error"] === "string"
+			? message["error"]
+			: "child pi rejected the prompt";
+	closeStdin();
+}
+
+/** Routes one RPC session event to progress and final-output extraction. */
+function handleChildRpcSessionEvent(
+	message: Record<string, unknown>,
+	options: {
+		readonly rpcState: ChildRpcState;
+		readonly onSessionEvent: (event: unknown) => void;
+		readonly closeStdin: () => void;
+	},
+): void {
+	if (options.rpcState.agentCompleted) {
+		return;
+	}
+	options.onSessionEvent(message);
+	recordChildAssistantDelta(options.rpcState.streamState, message);
+	recordChildAssistantText(options.rpcState.streamState, message);
+	if (message["type"] === "agent_end") {
+		options.rpcState.agentCompleted = true;
+		options.closeStdin();
+	}
+}
+
+/** Appends streamed assistant deltas from RPC session events. */
+function recordChildAssistantDelta(
+	state: ChildStreamState,
+	message: unknown,
+): void {
+	const delta = extractAssistantTextDelta(message);
+	if (delta !== undefined) {
+		appendStreamedTextDelta(state, delta);
+	}
+}
+
+/** Stores the latest completed assistant text observed before completion. */
+function recordChildAssistantText(
+	state: ChildStreamState,
+	message: unknown,
+): void {
+	const text = extractAssistantText(message);
+	if (text !== undefined) {
+		state.finalText = text;
+	}
 }
 
 /** Converts child process chunks into bytes for UTF-8 safe decoding. */
@@ -917,12 +1260,12 @@ function toBuffer(data: unknown): Buffer {
 	return Buffer.from(String(data));
 }
 
-/** Processes one stdout chunk from the child JSON-mode stream. */
+/** Processes one stdout chunk from the child RPC stream. */
 function handleChildStdoutData(
 	state: ChildStreamState,
 	data: unknown,
-	onJsonEvent: (event: unknown) => void,
-): void {
+	onRpcMessage: (message: unknown) => void,
+): string | undefined {
 	const boundedStdout = appendBoundedText(
 		state.stdoutBuffer,
 		String(data),
@@ -934,14 +1277,22 @@ function handleChildStdoutData(
 	state.stdoutLineExceededLimit =
 		state.stdoutLineExceededLimit || boundedStdout.truncated;
 
+	const skipFirstLine = state.stdoutBufferTruncated;
 	const lines = state.stdoutBuffer.split("\n");
 	state.stdoutBuffer = lines.pop() ?? "";
 	if (lines.length > 0) {
 		state.stdoutBufferTruncated = false;
 	}
-	for (const line of lines) {
-		processChildOutputLine(state, line, onJsonEvent);
+	for (const [index, line] of lines.entries()) {
+		if (skipFirstLine && index === 0) {
+			continue;
+		}
+		const lineError = processChildOutputLine(state, line, onRpcMessage);
+		if (lineError !== undefined) {
+			return lineError;
+		}
 	}
+	return undefined;
 }
 
 /** Processes one stderr chunk from the child process diagnostics stream. */
@@ -956,30 +1307,63 @@ function handleChildStderrData(state: ChildStreamState, data: unknown): void {
 		state.stderrTextTruncated || boundedStderr.truncated;
 }
 
-/** Parses one child stdout line and updates progress and final answer state. */
+/** Parses one child stdout JSONL record and routes the decoded RPC message. */
 function processChildOutputLine(
-	state: ChildStreamState,
+	_state: ChildStreamState,
 	line: string,
-	onJsonEvent: (event: unknown) => void,
-): void {
-	if (line.trim().length === 0) {
-		return;
+	onRpcMessage: (message: unknown) => void,
+): string | undefined {
+	const normalizedLine = line.endsWith("\r") ? line.slice(0, -1) : line;
+	if (normalizedLine.trim().length === 0) {
+		return undefined;
 	}
 
-	const event = parseJsonLine(line);
+	const event = parseJsonLine(normalizedLine);
 	if (event === undefined) {
+		return MALFORMED_CHILD_RPC_OUTPUT_ERROR;
+	}
+
+	onRpcMessage(event);
+	return undefined;
+}
+
+/** Resolves final child run status from RPC and process lifecycle state. */
+function resolveChildRunStatus(options: {
+	readonly exitCode: number;
+	readonly aborted: boolean;
+	readonly agentCompleted: boolean;
+	readonly fatalError: string | undefined;
+	readonly hasFinalAnswer: boolean;
+}): ChildRunStatus {
+	if (options.aborted) {
+		return "aborted";
+	}
+	if (
+		options.fatalError !== undefined ||
+		options.exitCode !== 0 ||
+		!options.hasFinalAnswer
+	) {
+		return "failed";
+	}
+	return options.agentCompleted ? "succeeded" : "failed";
+}
+
+/** Answers blocking RPC UI requests so child extensions cannot hang the subagent run. */
+function handleExtensionUiRequest(
+	message: Record<string, unknown>,
+	writeRpcCommand: (command: Record<string, unknown>) => void,
+): void {
+	const id = message["id"];
+	const method = message["method"];
+	if (typeof id !== "string") {
 		return;
 	}
-
-	onJsonEvent(event);
-	const delta = extractAssistantTextDelta(event);
-	if (delta !== undefined) {
-		appendStreamedTextDelta(state, delta);
+	if (method === "confirm") {
+		writeRpcCommand({ type: "extension_ui_response", id, confirmed: false });
+		return;
 	}
-
-	const text = extractAssistantText(event);
-	if (text !== undefined) {
-		state.finalText = text;
+	if (method === "select" || method === "input" || method === "editor") {
+		writeRpcCommand({ type: "extension_ui_response", id, cancelled: true });
 	}
 }
 
@@ -1027,7 +1411,7 @@ function formatBoundedChildText(
 	return `[${label} truncated to last ${text.length} characters]\n${text}`;
 }
 
-/** Parses one JSON-mode output line without failing the whole tool on unrelated output. */
+/** Parses one RPC JSONL output record. */
 function parseJsonLine(line: string): unknown | undefined {
 	try {
 		return JSON.parse(line);
@@ -1036,7 +1420,7 @@ function parseJsonLine(line: string): unknown | undefined {
 	}
 }
 
-/** Extracts one streamed assistant text delta from a pi JSON-mode message_update event. */
+/** Extracts one streamed assistant text delta from a child message_update event. */
 function extractAssistantTextDelta(event: unknown): string | undefined {
 	if (!isRecord(event)) {
 		return undefined;
@@ -1052,7 +1436,7 @@ function extractAssistantTextDelta(event: unknown): string | undefined {
 	return typeof delta === "string" ? delta : undefined;
 }
 
-/** Extracts assistant text from a pi JSON-mode message_end event. */
+/** Extracts assistant text from a child message_end event. */
 function extractAssistantText(event: unknown): string | undefined {
 	if (!isRecord(event)) {
 		return undefined;
@@ -1123,7 +1507,7 @@ function defaultSpawnPi(
 	return spawn(command, args, {
 		cwd: options.cwd,
 		env: options.env,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: ["pipe", "pipe", "pipe"],
 		signal: options.signal,
 	}) as SpawnedProcess;
 }

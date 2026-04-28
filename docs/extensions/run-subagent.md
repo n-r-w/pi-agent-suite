@@ -14,9 +14,15 @@
 - Restores the selected main agent before building the callable-agent prompt.
 - Filters callable agents by the selected main agent's `agents` allowlist.
 - Rejects tool calls for callable agents blocked by the selected main agent's `agents` allowlist.
-- Starts a child `pi` process with `--mode json`, `--no-session`, explicit `--model`, and explicit `--thinking`.
-- Converts child JSON output into logical progress events.
-- Ignores raw `text_delta` chunks for TUI progress.
+- Starts a child `pi` process with `--mode rpc`, `--no-session`, explicit `--model`, and explicit `--thinking`.
+- Sends the child prompt through RPC stdin.
+- Treats the RPC prompt response as prompt acceptance or prompt failure, not as subagent completion.
+- Treats `agent_end` as the completion event for one child prompt.
+- Cancels blocking child RPC UI requests with deterministic responses.
+- Closes child stdin after normal completion.
+- Sends RPC `abort` when the parent abort signal fires, waits for completion, closes child stdin, and terminates the child only after the abort timeout.
+- Converts child RPC session events into logical progress events.
+- Ignores raw `text_delta` chunks for TUI progress and never uses them as successful final output without a completed assistant message.
 - Applies Pi `truncateTail` behavior to the final child answer before returning model-facing tool result `content`.
 - Saves the complete final child answer to a system temp file when the answer exceeds Pi output truncation limits.
 - Adds a `Full output: {path}` notice to truncated model-facing `content`.
@@ -82,7 +88,7 @@ Tests must verify:
 
 - no tool registration when `enabled` is `false`;
 - unchanged public `run_subagent` schema;
-- child `pi` startup with `--mode json`, `--no-session`, `--model`, and `--thinking`;
+- child `pi` startup with `--mode rpc`, `--no-session`, `--model`, and `--thinking`;
 - environment contract propagation;
 - `--tools`, `--no-tools`, and missing `tools` behavior;
 - fail-closed behavior on configuration error;
@@ -92,6 +98,10 @@ Tests must verify:
 - callable-agent prompt filtering from the selected main agent's `agents` allowlist;
 - execution rejection for callable agents blocked by the selected main agent's `agents` allowlist;
 - TUI progress rendering that does not expose raw `text_delta` chunks;
+- final output extraction from completed assistant `message_end` events before `agent_end`;
+- deterministic cancellation of blocking RPC UI requests;
+- stdin close after normal completion and bounded stdin error diagnostics;
+- abort behavior that sends RPC `abort`, waits for completion, closes stdin, and terminates only after timeout;
 - runtime metadata placement in the `run_subagent` tool-call header;
 - absence of a standalone status/runtime row in the result body;
 - collapsed result preview height through `COLLAPSED_SUBAGENT_RESULT_LINES`;

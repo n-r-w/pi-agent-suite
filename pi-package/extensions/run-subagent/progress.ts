@@ -1,7 +1,7 @@
 /**
  * Subagent progress helpers.
  *
- * The child `pi --mode json` stream is noisy. This module keeps only logical
+ * The child pi session-event stream is noisy. This module keeps only logical
  * progress events so the parent TUI shows stable rows instead of raw token
  * deltas.
  */
@@ -45,7 +45,7 @@ export interface SubagentContextUsage {
 	readonly percent: number | null;
 }
 
-/** Stores one visible child-run event extracted from JSON-mode output. */
+/** Stores one visible child-run event extracted from child session events. */
 export interface SubagentProgressEvent {
 	readonly kind: SubagentProgressEventKind;
 	readonly title: string;
@@ -176,8 +176,8 @@ export function formatSubagentContextUsage(
 	return `${tokensText}/${formatTokenCount(contextUsage.contextWindow)}`;
 }
 
-/** Records one parsed JSON-mode event when it carries logical child progress. */
-export function recordSubagentJsonEvent(
+/** Records one parsed child session event when it carries logical progress. */
+export function recordSubagentSessionEvent(
 	state: SubagentProgressState,
 	event: unknown,
 	timestampMs: number,
@@ -502,7 +502,7 @@ function normalizeNonEmptyText(text: string): string | undefined {
 	return normalizedText.length > 0 ? normalizedText : undefined;
 }
 
-/** Extracts context usage from assistant usage metadata emitted by child JSON mode. */
+/** Extracts context usage from assistant usage metadata emitted by the child session. */
 function getMessageContextUsage(
 	message: Record<string, unknown>,
 	contextWindow: number | undefined,

@@ -63,22 +63,63 @@ interface SpawnCall {
 		readonly env: Record<string, string>;
 		readonly signal: AbortSignal | undefined;
 	};
+	readonly process: SpawnedProcessFake;
+}
+
+interface SpawnedProcessStdinFake extends EventEmitter {
+	readonly writes: string[];
+	ended: boolean;
+	write(data: string): boolean;
+	end(): void;
+	on(event: "error", handler: (error: Error) => void): this;
+	on(event: "write", handler: (data: string) => void): this;
+	on(event: "end", handler: () => void): this;
 }
 
 interface SpawnedProcessFake extends EventEmitter {
+	readonly stdin: SpawnedProcessStdinFake;
 	readonly stdout: EventEmitter;
 	readonly stderr: EventEmitter;
+	readonly killedSignals: string[];
+	kill(signal?: string): boolean;
 	on(event: "close", handler: (code: number | null) => void): this;
 	on(event: "error", handler: (error: Error) => void): this;
 }
 
-/** Fake child process with stdout, stderr, close, and error events. */
+/** Fake child stdin that records RPC commands and shutdown. */
+class SpawnedProcessStdinFakeImpl
+	extends EventEmitter
+	implements SpawnedProcessStdinFake
+{
+	public readonly writes: string[] = [];
+	public ended = false;
+
+	public write(data: string): boolean {
+		this.writes.push(data);
+		this.emit("write", data);
+		return true;
+	}
+
+	public end(): void {
+		this.ended = true;
+		this.emit("end");
+	}
+}
+
+/** Fake child process with stdin, stdout, stderr, close, error, and kill behavior. */
 class SpawnedProcessFakeImpl
 	extends EventEmitter
 	implements SpawnedProcessFake
 {
+	public readonly stdin = new SpawnedProcessStdinFakeImpl();
 	public readonly stdout = new EventEmitter();
 	public readonly stderr = new EventEmitter();
+	public readonly killedSignals: string[] = [];
+
+	public kill(signal = "SIGTERM"): boolean {
+		this.killedSignals.push(signal);
+		return true;
+	}
 }
 
 interface CommandContextFake {
@@ -428,8 +469,24 @@ function isPromptResult(
 	);
 }
 
-/** Creates a fake child process that can emit JSON-mode output and close. */
-function createSpawnFake(outputLines: readonly string[] = []): {
+/** Serializes an accepted prompt response followed by session events and completion. */
+function rpcOutputLines(
+	...events: readonly Record<string, unknown>[]
+): readonly string[] {
+	return [
+		JSON.stringify({
+			id: "run-subagent-prompt",
+			type: "response",
+			command: "prompt",
+			success: true,
+		}),
+		...events.map((event) => JSON.stringify(event)),
+		JSON.stringify({ type: "agent_end", messages: [] }),
+	];
+}
+
+/** Creates a fake child process that can emit RPC output and close. */
+function createSpawnFake(outputLines: readonly string[] = rpcOutputLines()): {
 	readonly calls: SpawnCall[];
 	readonly spawnPi: (
 		command: string,
@@ -446,8 +503,8 @@ function createSpawnFake(outputLines: readonly string[] = []): {
 			args: string[],
 			options: SpawnCall["options"],
 		): SpawnedProcessFake {
-			calls.push({ command, args, options });
 			const process = new SpawnedProcessFakeImpl();
+			calls.push({ command, args, options, process });
 			queueMicrotask(() => {
 				for (const line of outputLines) {
 					process.stdout.emit("data", `${line}\n`);
@@ -526,27 +583,29 @@ describe("run-subagent", () => {
 				model: { id: "openai/child", thinking: "low" },
 				tools: ["read", "grep*"],
 			});
-			const spawn = createSpawnFake([
-				JSON.stringify({
-					type: "message_update",
-					assistantMessageEvent: { type: "text_delta", delta: "wor" },
-				}),
-				JSON.stringify({
-					type: "message_update",
-					assistantMessageEvent: { type: "text_delta", delta: "kin" },
-				}),
-				JSON.stringify({
-					type: "message_update",
-					assistantMessageEvent: { type: "text_delta", delta: "g" },
-				}),
-				JSON.stringify({
-					type: "message_end",
-					message: {
-						role: "assistant",
-						content: [{ type: "text", text: "done" }],
+			const spawn = createSpawnFake(
+				rpcOutputLines(
+					{
+						type: "message_update",
+						assistantMessageEvent: { type: "text_delta", delta: "wor" },
 					},
-				}),
-			]);
+					{
+						type: "message_update",
+						assistantMessageEvent: { type: "text_delta", delta: "kin" },
+					},
+					{
+						type: "message_update",
+						assistantMessageEvent: { type: "text_delta", delta: "g" },
+					},
+					{
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "done" }],
+						},
+					},
+				),
+			);
 			const pi = createExtensionApiFake(["read", "grep", "write"]);
 			const ctx = createContext("/tmp/project");
 			await runSubagent(pi, { spawnPi: spawn.spawnPi });
@@ -561,7 +620,7 @@ describe("run-subagent", () => {
 				command: "pi",
 				args: [
 					"--mode",
-					"json",
+					"rpc",
 					"--no-session",
 					"--model",
 					"openai/child",
@@ -569,7 +628,6 @@ describe("run-subagent", () => {
 					"low",
 					"--tools",
 					"read,grep",
-					"Do work",
 				],
 				options: {
 					cwd: "/tmp/project",
@@ -581,6 +639,14 @@ describe("run-subagent", () => {
 					signal: undefined,
 				},
 			});
+			expect(spawn.calls[0]?.process.stdin.writes).toEqual([
+				`${JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "prompt",
+					message: "Do work",
+				})}\n`,
+			]);
+			expect(spawn.calls[0]?.process.stdin.ended).toBe(true);
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "done" }],
 			});
@@ -619,6 +685,1241 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("returns prompt response failures without treating them as completed work", async () => {
+		// Purpose: a failed RPC prompt response is a preflight failure, not a successful empty subagent run.
+		// Input and expected output: child returns success false for prompt and the tool returns the response error.
+		// Edge case: child process exits with code 0 after reporting prompt rejection.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: "prompt rejected",
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe("prompt rejected");
+			expect(spawn.calls[0]?.process.stdin.ended).toBe(true);
+		});
+	});
+
+	test("keeps prompt failure status when parent abort fires before child close", async () => {
+		// Purpose: parent abort must not replace an already-known prompt failure with aborted status.
+		// Input and expected output: prompt failure closes stdin, parent abort fires before close, and result remains failed.
+		// Edge case: abort happens after the failure is known but before child process close.
+		// Dependencies: this test uses temp agent files, AbortController, and captured fake stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const controller = new AbortController();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								id: "run-subagent-prompt",
+								type: "response",
+								command: "prompt",
+								success: false,
+								error: "prompt rejected",
+							})}\n`,
+						);
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = getRunSubagentTool(pi).execute(
+				"tool-call-1",
+				{ agentId: "helper", prompt: "Do work" },
+				controller.signal,
+				undefined,
+				ctx as never,
+			) as unknown as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			controller.abort();
+			process.emit("close", 0);
+
+			const result = await resultPromise;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+			const writes = process.stdin.writes.map((line) => JSON.parse(line));
+
+			expect(content).toBe("prompt rejected");
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"failed",
+			);
+			expect(writes).not.toContainEqual({
+				id: "run-subagent-abort",
+				type: "abort",
+			});
+		});
+	});
+
+	test("terminates the child after prompt failure when parent abort fires before close", async () => {
+		// Purpose: parent abort after a known prompt failure must clean up the child process without changing the failure result.
+		// Input and expected output: prompt failure, parent abort, SIGTERM, SIGKILL, then close returns the original failed result.
+		// Edge case: the child reports prompt failure but ignores stdin close and keeps running.
+		// Dependencies: this test patches global timers only for the duration of the scenario.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const timers: Array<{
+				readonly timeout: number | undefined;
+				readonly run: () => void;
+			}> = [];
+			const originalSetTimeout = globalThis.setTimeout;
+			const originalClearTimeout = globalThis.clearTimeout;
+			globalThis.setTimeout = ((
+				handler: Parameters<typeof globalThis.setTimeout>[0],
+				timeout?: number,
+			) => {
+				const run = () => {
+					if (typeof handler === "function") {
+						handler();
+					}
+				};
+				timers.push({ timeout, run });
+				return {} as ReturnType<typeof globalThis.setTimeout>;
+			}) as typeof globalThis.setTimeout;
+			globalThis.clearTimeout = (() =>
+				undefined) as typeof globalThis.clearTimeout;
+			try {
+				const controller = new AbortController();
+				const pi = createExtensionApiFake();
+				const ctx = createContext("/tmp/project");
+				await runSubagent(pi, {
+					spawnPi() {
+						const process = new SpawnedProcessFakeImpl();
+						resolveProcess(process);
+						queueMicrotask(() => {
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									id: "run-subagent-prompt",
+									type: "response",
+									command: "prompt",
+									success: false,
+									error: "prompt rejected",
+								})}\n`,
+							);
+						});
+						return process;
+					},
+				});
+
+				const resultPromise = getRunSubagentTool(pi).execute(
+					"tool-call-1",
+					{ agentId: "helper", prompt: "Do work" },
+					controller.signal,
+					undefined,
+					ctx as never,
+				) as unknown as Promise<AgentToolResult<unknown>>;
+				const process = await processReady;
+				await new Promise((resolve) => queueMicrotask(resolve));
+				controller.abort();
+
+				expect(timers.map((timer) => timer.timeout)).toEqual([10_000]);
+				timers[0]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM"]);
+				expect(timers.map((timer) => timer.timeout)).toEqual([10_000, 5_000]);
+				timers[1]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM", "SIGKILL"]);
+				process.emit("close", 0);
+
+				const result = await resultPromise;
+				const content =
+					result.content[0]?.type === "text" ? result.content[0].text : "";
+				const writes = process.stdin.writes.map((line) => JSON.parse(line));
+
+				expect(content).toBe("prompt rejected");
+				expect((result.details as { readonly status?: string }).status).toBe(
+					"failed",
+				);
+				expect(writes).not.toContainEqual({
+					id: "run-subagent-abort",
+					type: "abort",
+				});
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				globalThis.clearTimeout = originalClearTimeout;
+			}
+		});
+	});
+
+	test("fails when child RPC stdout is malformed", async () => {
+		// Purpose: malformed RPC stdout must be reported as a transport failure instead of being ignored.
+		// Input and expected output: invalid JSONL returns a bounded malformed-output error.
+		// Edge case: the child exits with code 0 after malformed output.
+		// Dependencies: this test uses temp agent files and a fake child process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake(["{not-json}"]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toContain("child pi emitted malformed RPC output");
+		});
+	});
+
+	test("keeps malformed output status when parent abort fires before child close", async () => {
+		// Purpose: parent abort must not replace an already-known transport failure with aborted status.
+		// Input and expected output: malformed output closes stdin, parent abort fires before close, and result remains failed.
+		// Edge case: abort happens after malformed RPC output but before child process close.
+		// Dependencies: this test uses temp agent files, AbortController, and captured fake stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const controller = new AbortController();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						process.stdout.emit("data", "{not-json}\n");
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = getRunSubagentTool(pi).execute(
+				"tool-call-1",
+				{ agentId: "helper", prompt: "Do work" },
+				controller.signal,
+				undefined,
+				ctx as never,
+			) as unknown as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			controller.abort();
+			process.emit("close", 0);
+
+			const result = await resultPromise;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+			const writes = process.stdin.writes.map((line) => JSON.parse(line));
+
+			expect(content).toContain("child pi emitted malformed RPC output");
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"failed",
+			);
+			expect(writes).not.toContainEqual({
+				id: "run-subagent-abort",
+				type: "abort",
+			});
+		});
+	});
+
+	test("terminates the child after malformed output when parent abort fires before close", async () => {
+		// Purpose: parent abort after a known malformed-output failure must clean up the child process without changing the failure result.
+		// Input and expected output: malformed stdout, parent abort, SIGTERM, SIGKILL, then close returns the original failed result.
+		// Edge case: the child emits invalid RPC output and then keeps running.
+		// Dependencies: this test patches global timers only for the duration of the scenario.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const timers: Array<{
+				readonly timeout: number | undefined;
+				readonly run: () => void;
+			}> = [];
+			const originalSetTimeout = globalThis.setTimeout;
+			const originalClearTimeout = globalThis.clearTimeout;
+			globalThis.setTimeout = ((
+				handler: Parameters<typeof globalThis.setTimeout>[0],
+				timeout?: number,
+			) => {
+				const run = () => {
+					if (typeof handler === "function") {
+						handler();
+					}
+				};
+				timers.push({ timeout, run });
+				return {} as ReturnType<typeof globalThis.setTimeout>;
+			}) as typeof globalThis.setTimeout;
+			globalThis.clearTimeout = (() =>
+				undefined) as typeof globalThis.clearTimeout;
+			try {
+				const controller = new AbortController();
+				const pi = createExtensionApiFake();
+				const ctx = createContext("/tmp/project");
+				await runSubagent(pi, {
+					spawnPi() {
+						const process = new SpawnedProcessFakeImpl();
+						resolveProcess(process);
+						queueMicrotask(() => {
+							process.stdout.emit("data", "{not-json}\n");
+						});
+						return process;
+					},
+				});
+
+				const resultPromise = getRunSubagentTool(pi).execute(
+					"tool-call-1",
+					{ agentId: "helper", prompt: "Do work" },
+					controller.signal,
+					undefined,
+					ctx as never,
+				) as unknown as Promise<AgentToolResult<unknown>>;
+				const process = await processReady;
+				await new Promise((resolve) => queueMicrotask(resolve));
+				controller.abort();
+
+				expect(timers.map((timer) => timer.timeout)).toEqual([10_000]);
+				timers[0]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM"]);
+				expect(timers.map((timer) => timer.timeout)).toEqual([10_000, 5_000]);
+				timers[1]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM", "SIGKILL"]);
+				process.emit("close", 0);
+
+				const result = await resultPromise;
+				const content =
+					result.content[0]?.type === "text" ? result.content[0].text : "";
+				const writes = process.stdin.writes.map((line) => JSON.parse(line));
+
+				expect(content).toContain("child pi emitted malformed RPC output");
+				expect((result.details as { readonly status?: string }).status).toBe(
+					"failed",
+				);
+				expect(writes).not.toContainEqual({
+					id: "run-subagent-abort",
+					type: "abort",
+				});
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				globalThis.clearTimeout = originalClearTimeout;
+			}
+		});
+	});
+
+	test("fails when the subagent exits before completing the task", async () => {
+		// Purpose: a zero-exit child process is not successful unless RPC completion was observed.
+		// Input and expected output: child exits after prompt acceptance but before completion and returns a clear user-facing failure.
+		// Edge case: exit code is 0, so process status alone would look successful.
+		// Dependencies: this test uses temp agent files and a fake child process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe("subagent exited before completing the task");
+		});
+	});
+
+	test("does not use streamed deltas as final output without a completed assistant message", async () => {
+		// Purpose: successful final output must come from assistant message_end, not from partial streaming deltas.
+		// Input and expected output: text_delta events followed by agent_end return the no-final-answer diagnostic.
+		// Edge case: the child completed normally but never emitted a completed assistant text message.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				...rpcOutputLines({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: "partial answer",
+					},
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe("subagent completed without a final answer");
+		});
+	});
+
+	test("uses the latest assistant message before RPC completion", async () => {
+		// Purpose: final output must be the latest completed assistant message before agent_end.
+		// Input and expected output: two assistant message_end events before completion return the second answer.
+		// Edge case: earlier completed text must be replaced only by another completed assistant text.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake(
+				rpcOutputLines(
+					{
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "first answer" }],
+						},
+					},
+					{
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "second answer" }],
+						},
+					},
+				),
+			);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "second answer" }],
+			});
+		});
+	});
+
+	test("handles async child stdin errors as bounded diagnostics", async () => {
+		// Purpose: child stdin stream errors must not crash the parent process.
+		// Input and expected output: stdin emits an error and the tool returns a bounded error message.
+		// Edge case: the stream error happens after prompt acceptance but before completion.
+		// Dependencies: this test uses temp agent files and the fake stdin EventEmitter.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								id: "run-subagent-prompt",
+								type: "response",
+								command: "prompt",
+								success: true,
+							})}\n`,
+						);
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			}) as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			expect(() => {
+				process.stdin.emit("error", new Error("EPIPE"));
+			}).not.toThrow();
+			process.emit("close", 1);
+
+			const result = await resultPromise;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toContain("child stdin error: EPIPE");
+		});
+	});
+
+	test("does not write UI cancellation responses after stdin is closed", async () => {
+		// Purpose: RPC UI cancellation must respect stdin shutdown state.
+		// Input and expected output: prompt failure closes stdin and a later UI request does not write a response.
+		// Edge case: the child emits a blocking UI request after prompt rejection.
+		// Dependencies: this test uses temp agent files and captured fake stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: "prompt rejected",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "select-after-close",
+					method: "select",
+					title: "Select",
+					options: ["A"],
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			});
+
+			const writes = spawn.calls[0]?.process.stdin.writes.map((line) =>
+				JSON.parse(line),
+			);
+			expect(writes).toEqual([
+				{ id: "run-subagent-prompt", type: "prompt", message: "Do work" },
+			]);
+		});
+	});
+
+	test("processes child output only after the RPC prompt write", async () => {
+		// Purpose: tests must prove the child prompt is sent through stdin before output is consumed.
+		// Input and expected output: fake child emits its RPC output from the prompt write handler.
+		// Edge case: no queued stdout exists before the prompt command.
+		// Dependencies: this test uses temp agent files and fake stdin write events.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					process.stdin.on("write", (data) => {
+						const command = JSON.parse(data) as { readonly type?: string };
+						if (command.type !== "prompt") {
+							return;
+						}
+						for (const line of rpcOutputLines({
+							type: "message_end",
+							message: {
+								role: "assistant",
+								content: [{ type: "text", text: "done after prompt" }],
+							},
+						})) {
+							process.stdout.emit("data", `${line}\n`);
+						}
+						process.emit("close", 0);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "done after prompt" }],
+			});
+		});
+	});
+
+	test("cancels blocking RPC UI requests and ignores fire-and-forget requests", async () => {
+		// Purpose: child extension UI requests must not hang headless subagent execution.
+		// Input and expected output: dialog requests get deterministic cancellation responses, while notify gets no response.
+		// Edge case: all supported blocking request methods appear before completion.
+		// Dependencies: this test uses temp agent files and captured fake stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "select-1",
+					method: "select",
+					title: "Select",
+					options: ["A"],
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "confirm-1",
+					method: "confirm",
+					title: "Confirm",
+					message: "Continue?",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "input-1",
+					method: "input",
+					title: "Input",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "editor-1",
+					method: "editor",
+					title: "Editor",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "notify-1",
+					method: "notify",
+					message: "info",
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			});
+
+			const writes = spawn.calls[0]?.process.stdin.writes.map((line) =>
+				JSON.parse(line),
+			);
+			expect(writes).toContainEqual({
+				type: "extension_ui_response",
+				id: "select-1",
+				cancelled: true,
+			});
+			expect(writes).toContainEqual({
+				type: "extension_ui_response",
+				id: "confirm-1",
+				confirmed: false,
+			});
+			expect(writes).toContainEqual({
+				type: "extension_ui_response",
+				id: "input-1",
+				cancelled: true,
+			});
+			expect(writes).toContainEqual({
+				type: "extension_ui_response",
+				id: "editor-1",
+				cancelled: true,
+			});
+			expect(
+				writes?.some(
+					(write) => (write as { readonly id?: string }).id === "notify-1",
+				),
+			).toBe(false);
+		});
+	});
+
+	test("ignores assistant messages emitted after RPC completion", async () => {
+		// Purpose: final output must come from the latest completed assistant message before agent completion.
+		// Input and expected output: a late assistant message after completion does not replace the completed answer.
+		// Edge case: late output arrives before the child close event.
+		// Dependencies: this test uses temp agent files and a fake child process output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "completed answer" }],
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "late answer" }],
+					},
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "completed answer" }],
+			});
+		});
+	});
+
+	test("keeps a completed run successful when parent abort fires before child close", async () => {
+		// Purpose: parent abort after RPC completion must not change an already completed child run into aborted.
+		// Input and expected output: message_end and agent_end arrive, parent aborts before close, and the final answer remains successful.
+		// Edge case: abort signal fires in the narrow window between agent_end and child process close.
+		// Dependencies: this test uses temp agent files, AbortController, and captured fake stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const controller = new AbortController();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						for (const line of rpcOutputLines({
+							type: "message_end",
+							message: {
+								role: "assistant",
+								content: [{ type: "text", text: "completed answer" }],
+							},
+						})) {
+							process.stdout.emit("data", `${line}\n`);
+						}
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = getRunSubagentTool(pi).execute(
+				"tool-call-1",
+				{ agentId: "helper", prompt: "Do work" },
+				controller.signal,
+				undefined,
+				ctx as never,
+			) as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			controller.abort();
+			process.emit("close", 0);
+
+			const result = await resultPromise;
+			const writes = process.stdin.writes.map((line) => JSON.parse(line));
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "completed answer" }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+			expect(writes).not.toContainEqual({
+				id: "run-subagent-abort",
+				type: "abort",
+			});
+			expect(process.killedSignals).toEqual([]);
+		});
+	});
+
+	test("fails as incomplete when assistant message_end arrives without agent_end", async () => {
+		// Purpose: a completed assistant message is not enough without the RPC completion event.
+		// Input and expected output: message_end without agent_end returns the incomplete-run diagnostic.
+		// Edge case: the child exits with code 0 after a final-looking assistant message.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "final-looking answer" }],
+					},
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe("subagent exited before completing the task");
+		});
+	});
+
+	test("kills the child after abort timeout when the child ignores RPC abort", async () => {
+		// Purpose: ignored child aborts must first request graceful process termination.
+		// Input and expected output: parent abort schedules a 10 second fallback and sends SIGTERM only when that timer fires.
+		// Edge case: the child accepts the prompt but never emits agent_end or close.
+		// Dependencies: this test patches global timers only for the duration of the scenario.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			let fallback: (() => void) | undefined;
+			const originalSetTimeout = globalThis.setTimeout;
+			const originalClearTimeout = globalThis.clearTimeout;
+			const fakeTimer = originalSetTimeout(() => undefined, 0);
+			originalClearTimeout(fakeTimer);
+			globalThis.setTimeout = ((
+				handler: Parameters<typeof globalThis.setTimeout>[0],
+				timeout?: number,
+			) => {
+				if (timeout === 10_000) {
+					fallback = () => {
+						if (typeof handler === "function") {
+							handler();
+						}
+					};
+				}
+				return fakeTimer;
+			}) as typeof globalThis.setTimeout;
+			globalThis.clearTimeout = ((
+				timer?: Parameters<typeof clearTimeout>[0],
+			) => {
+				expect(timer).toBe(fakeTimer);
+			}) as typeof globalThis.clearTimeout;
+			try {
+				const controller = new AbortController();
+				const pi = createExtensionApiFake();
+				const ctx = createContext("/tmp/project");
+				await runSubagent(pi, {
+					spawnPi() {
+						const process = new SpawnedProcessFakeImpl();
+						resolveProcess(process);
+						queueMicrotask(() => {
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									id: "run-subagent-prompt",
+									type: "response",
+									command: "prompt",
+									success: true,
+								})}\n`,
+							);
+						});
+						return process;
+					},
+				});
+
+				const resultPromise = getRunSubagentTool(pi).execute(
+					"tool-call-1",
+					{ agentId: "helper", prompt: "Do work" },
+					controller.signal,
+					undefined,
+					ctx as never,
+				) as unknown as Promise<AgentToolResult<unknown>>;
+				const process = await processReady;
+				await new Promise((resolve) => queueMicrotask(resolve));
+				controller.abort();
+
+				expect(process.killedSignals).toEqual([]);
+				fallback?.();
+				expect(process.killedSignals).toEqual(["SIGTERM"]);
+				process.emit("close", 1);
+				await resultPromise;
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				globalThis.clearTimeout = originalClearTimeout;
+			}
+		});
+	});
+
+	test("escalates abort from SIGTERM to SIGKILL when the child ignores termination", async () => {
+		// Purpose: a child that ignores graceful termination must receive a stronger termination signal.
+		// Input and expected output: parent abort sends SIGTERM after 10 seconds and SIGKILL 5 seconds later.
+		// Edge case: the child never emits close after SIGTERM.
+		// Dependencies: this test patches global timers only for the duration of the scenario.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const timers: Array<{
+				readonly timeout: number | undefined;
+				readonly run: () => void;
+			}> = [];
+			const originalSetTimeout = globalThis.setTimeout;
+			const originalClearTimeout = globalThis.clearTimeout;
+			const fakeTimer = originalSetTimeout(() => undefined, 0);
+			originalClearTimeout(fakeTimer);
+			globalThis.setTimeout = ((
+				handler: Parameters<typeof globalThis.setTimeout>[0],
+				timeout?: number,
+			) => {
+				const run = () => {
+					if (typeof handler === "function") {
+						handler();
+					}
+				};
+				timers.push({ timeout, run });
+				return fakeTimer;
+			}) as typeof globalThis.setTimeout;
+			globalThis.clearTimeout = (() =>
+				undefined) as typeof globalThis.clearTimeout;
+			try {
+				const controller = new AbortController();
+				const pi = createExtensionApiFake();
+				const ctx = createContext("/tmp/project");
+				await runSubagent(pi, {
+					spawnPi() {
+						const process = new SpawnedProcessFakeImpl();
+						resolveProcess(process);
+						queueMicrotask(() => {
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									id: "run-subagent-prompt",
+									type: "response",
+									command: "prompt",
+									success: true,
+								})}\n`,
+							);
+						});
+						return process;
+					},
+				});
+
+				const resultPromise = getRunSubagentTool(pi).execute(
+					"tool-call-1",
+					{ agentId: "helper", prompt: "Do work" },
+					controller.signal,
+					undefined,
+					ctx as never,
+				) as unknown as Promise<AgentToolResult<unknown>>;
+				const process = await processReady;
+				await new Promise((resolve) => queueMicrotask(resolve));
+				controller.abort();
+
+				expect(timers.map((timer) => timer.timeout)).toEqual([10_000]);
+				expect(process.killedSignals).toEqual([]);
+				timers[0]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM"]);
+				expect(timers.map((timer) => timer.timeout)).toEqual([10_000, 5_000]);
+				timers[1]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM", "SIGKILL"]);
+				process.emit("close", 1);
+				await resultPromise;
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				globalThis.clearTimeout = originalClearTimeout;
+			}
+		});
+	});
+
+	test("does not escalate to SIGKILL when the child exits after SIGTERM", async () => {
+		// Purpose: SIGKILL must not run after the child closes from graceful termination.
+		// Input and expected output: parent abort sends SIGTERM, child closes, and the SIGKILL timer is cleared.
+		// Edge case: close happens after SIGTERM timer fires but before SIGKILL timer fires.
+		// Dependencies: this test patches global timers only for the duration of the scenario.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const timers: Array<{
+				cleared: boolean;
+				readonly timeout: number | undefined;
+				readonly run: () => void;
+			}> = [];
+			const clearedTimers: unknown[] = [];
+			const originalSetTimeout = globalThis.setTimeout;
+			const originalClearTimeout = globalThis.clearTimeout;
+			globalThis.setTimeout = ((
+				handler: Parameters<typeof globalThis.setTimeout>[0],
+				timeout?: number,
+			) => {
+				const timer = {
+					cleared: false,
+					timeout,
+					run: () => {
+						if (!timer.cleared && typeof handler === "function") {
+							handler();
+						}
+					},
+				};
+				timers.push(timer);
+				return timer as unknown as ReturnType<typeof globalThis.setTimeout>;
+			}) as typeof globalThis.setTimeout;
+			globalThis.clearTimeout = ((
+				timer?: Parameters<typeof clearTimeout>[0],
+			) => {
+				clearedTimers.push(timer);
+				if (typeof timer === "object" && timer !== null && "cleared" in timer) {
+					(timer as { cleared: boolean }).cleared = true;
+				}
+			}) as typeof globalThis.clearTimeout;
+			try {
+				const controller = new AbortController();
+				const pi = createExtensionApiFake();
+				const ctx = createContext("/tmp/project");
+				await runSubagent(pi, {
+					spawnPi() {
+						const process = new SpawnedProcessFakeImpl();
+						resolveProcess(process);
+						queueMicrotask(() => {
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									id: "run-subagent-prompt",
+									type: "response",
+									command: "prompt",
+									success: true,
+								})}\n`,
+							);
+						});
+						return process;
+					},
+				});
+
+				const resultPromise = getRunSubagentTool(pi).execute(
+					"tool-call-1",
+					{ agentId: "helper", prompt: "Do work" },
+					controller.signal,
+					undefined,
+					ctx as never,
+				) as unknown as Promise<AgentToolResult<unknown>>;
+				const process = await processReady;
+				await new Promise((resolve) => queueMicrotask(resolve));
+				controller.abort();
+				timers[0]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM"]);
+				process.emit("close", 1);
+				await resultPromise;
+
+				expect(clearedTimers).toEqual([timers[0], timers[1]]);
+				timers[1]?.run();
+				expect(process.killedSignals).toEqual(["SIGTERM"]);
+			} finally {
+				globalThis.setTimeout = originalSetTimeout;
+				globalThis.clearTimeout = originalClearTimeout;
+			}
+		});
+	});
+
+	test("sends an RPC abort command when the parent abort signal fires", async () => {
+		// Purpose: parent cancellation must ask the child RPC session to abort before cleanup.
+		// Input and expected output: abort signal writes one abort command and returns aborted status details.
+		// Edge case: the child emits agent_end after abort handling.
+		// Dependencies: this test uses temp agent files, AbortController, and captured fake stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const controller = new AbortController();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								id: "run-subagent-prompt",
+								type: "response",
+								command: "prompt",
+								success: true,
+							})}\n`,
+						);
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = getRunSubagentTool(pi).execute(
+				"tool-call-1",
+				{ agentId: "helper", prompt: "Do work" },
+				controller.signal,
+				undefined,
+				ctx as never,
+			) as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			controller.abort();
+			process.stdout.emit(
+				"data",
+				`${JSON.stringify({ type: "agent_end", messages: [] })}\n`,
+			);
+			process.emit("close", 0);
+
+			const result = await resultPromise;
+			const writes = process.stdin.writes.map((line) => JSON.parse(line));
+
+			expect(writes).toContainEqual({
+				id: "run-subagent-abort",
+				type: "abort",
+			});
+			expect(process.stdin.ended).toBe(true);
+			expect(process.killedSignals).toEqual([]);
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"aborted",
+			);
+		});
+	});
+
 	test("decodes split UTF-8 stdout chunks before JSON parsing", async () => {
 		// Purpose: child stdout decoding must preserve multibyte UTF-8 characters split across process chunks.
 		// Input and expected output: a JSON message_end line containing an emoji split between Buffer chunks still parses and returns the emoji.
@@ -631,13 +1932,13 @@ describe("run-subagent", () => {
 				description: "Helps with code",
 				body: "Helper prompt",
 			});
-			const line = `${JSON.stringify({
+			const line = `${rpcOutputLines({
 				type: "message_end",
 				message: {
 					role: "assistant",
 					content: [{ type: "text", text: "done 🙂" }],
 				},
-			})}\n`;
+			}).join("\n")}\n`;
 			const bytes = Buffer.from(line, "utf8");
 			const splitIndex = bytes.indexOf(Buffer.from("🙂", "utf8")) + 2;
 			const pi = createExtensionApiFake();
@@ -745,10 +2046,10 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("keeps a long unterminated stdout line from hiding later JSON events", async () => {
-		// Purpose: a noisy child must not keep an unbounded stdout line buffer or block later JSON-mode events.
-		// Input and expected output: a huge non-JSON partial line is discarded enough for the next final assistant event to be parsed.
-		// Edge case: the valid JSON event arrives after the first newline following the oversized partial line.
+	test("fails on a long malformed stdout line before later RPC events", async () => {
+		// Purpose: malformed RPC stdout must fail deterministically without keeping an unbounded line buffer.
+		// Input and expected output: a huge non-JSON partial line returns a bounded malformed-output error.
+		// Edge case: a valid RPC event arrives after the malformed line and must not hide the protocol failure.
 		// Dependencies: this test uses temp agent files and a fake child process with controlled stdout chunks.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -785,16 +2086,17 @@ describe("run-subagent", () => {
 				prompt: "Do work",
 			})) as AgentToolResult<unknown>;
 
-			expect(result).toMatchObject({
-				content: [{ type: "text", text: "done after noise" }],
-			});
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toContain("child pi emitted malformed RPC output");
 		});
 	});
 
-	test("keeps large streamed final output when final message_end exceeds the line buffer", async () => {
-		// Purpose: the final subagent answer must come from text_delta events when the final message_end line is too large to parse.
-		// Input and expected output: streamed deltas produce the final answer even though the oversized message_end JSON line is discarded.
-		// Edge case: the final message_end line exceeds the raw stdout line buffer and cannot be used as fallback.
+	test("does not use streamed output when final message_end exceeds the line buffer", async () => {
+		// Purpose: final subagent output must not be synthesized from text_delta events when no completed assistant message was parsed.
+		// Input and expected output: streamed deltas plus an oversized message_end return the no-final-answer diagnostic.
+		// Edge case: the final message_end line exceeds the raw stdout line buffer and cannot be treated as completed output.
 		// Dependencies: this test uses temp agent files, Pi truncation constants, and a fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -810,6 +2112,15 @@ describe("run-subagent", () => {
 				spawnPi() {
 					const process = new SpawnedProcessFakeImpl();
 					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								id: "run-subagent-prompt",
+								type: "response",
+								command: "prompt",
+								success: true,
+							})}\n`,
+						);
 						for (const delta of finalOutput.match(/.{1,100000}/gs) ?? []) {
 							process.stdout.emit(
 								"data",
@@ -832,6 +2143,10 @@ describe("run-subagent", () => {
 								},
 							})}\n`,
 						);
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({ type: "agent_end", messages: [] })}\n`,
+						);
 						process.emit("close", 0);
 					});
 					return process;
@@ -844,20 +2159,14 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
-			const details = result.details as { readonly fullOutputPath?: string };
 
-			expect(content).toContain("-end");
-			expect(content).not.toBe("Subagent completed.");
-			const fullOutputPath = details.fullOutputPath ?? "";
-			expect(fullOutputPath).toStartWith(join(tmpdir(), "pi-run-subagent-"));
-			expect(await readFile(fullOutputPath, "utf8")).toBe(finalOutput);
-			await rm(fullOutputPath, { force: true });
+			expect(content).toBe("subagent completed without a final answer");
 		});
 	});
 
-	test("reports an error when final output is lost after stdout line overflow", async () => {
+	test("reports missing final answer when message_end is lost after stdout line overflow", async () => {
 		// Purpose: oversized final message_end output must not look like a successful empty subagent run.
-		// Input and expected output: an oversized message_end without text_delta fallback returns a clear execution error.
+		// Input and expected output: an oversized message_end without a parsed assistant message returns the no-final-answer diagnostic.
 		// Edge case: the child exits successfully but the only final-answer event exceeded the raw stdout line buffer.
 		// Dependencies: this test uses temp agent files and a fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -877,12 +2186,25 @@ describe("run-subagent", () => {
 						process.stdout.emit(
 							"data",
 							`${JSON.stringify({
+								id: "run-subagent-prompt",
+								type: "response",
+								command: "prompt",
+								success: true,
+							})}\n`,
+						);
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
 								type: "message_end",
 								message: {
 									role: "assistant",
 									content: [{ type: "text", text: finalOutput }],
 								},
 							})}\n`,
+						);
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({ type: "agent_end", messages: [] })}\n`,
 						);
 						process.emit("close", 0);
 					});
@@ -897,9 +2219,7 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe(
-				"child pi output exceeded supported JSON event size before final response could be parsed",
-			);
+			expect(content).toBe("subagent completed without a final answer");
 		});
 	});
 
@@ -921,6 +2241,15 @@ describe("run-subagent", () => {
 				spawnPi() {
 					const process = new SpawnedProcessFakeImpl();
 					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								id: "run-subagent-prompt",
+								type: "response",
+								command: "prompt",
+								success: true,
+							})}\n`,
+						);
 						const delta = "x".repeat(100_000);
 						for (let index = 0; index < 1_050; index += 1) {
 							process.stdout.emit(
@@ -934,6 +2263,10 @@ describe("run-subagent", () => {
 								})}\n`,
 							);
 						}
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({ type: "agent_end", messages: [] })}\n`,
+						);
 						process.emit("close", 0);
 					});
 					return process;
@@ -970,15 +2303,15 @@ describe("run-subagent", () => {
 				{ length: totalLines },
 				(_, index) => `child line ${index + 1}`,
 			).join("\n");
-			const spawn = createSpawnFake([
-				JSON.stringify({
+			const spawn = createSpawnFake(
+				rpcOutputLines({
 					type: "message_end",
 					message: {
 						role: "assistant",
 						content: [{ type: "text", text: finalOutput }],
 					},
 				}),
-			]);
+			);
 			const pi = createExtensionApiFake();
 			const ctx = createContext("/tmp/project");
 			await runSubagent(pi, { spawnPi: spawn.spawnPi });
