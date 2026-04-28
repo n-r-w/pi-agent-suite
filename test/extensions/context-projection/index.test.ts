@@ -1124,9 +1124,9 @@ describe("context-projection", () => {
 
 	test("retries failed summary requests before falling back to placeholder", async () => {
 		// Purpose: transient provider failures must not immediately lose summary value when retries are configured.
-		// Input and expected output: first summary call throws, retry succeeds, and the generated summary is persisted.
+		// Input and expected output: first summary call throws, retry succeeds, retry status is shown, progress status is restored, and the generated summary is persisted.
 		// Edge case: retry delay is configured to zero so the behavior is deterministic and fast.
-		// Dependencies: isolated config, fake completion function, and summary retry loop.
+		// Dependencies: isolated config, fake completion function, summary retry loop, and UI call recording.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeCustomConfig(
 				agentDir,
@@ -1176,6 +1176,30 @@ describe("context-projection", () => {
 			);
 
 			expect(callCount).toBe(2);
+			expect(
+				context.uiCalls.filter((call) => call.method === "notify"),
+			).toEqual([
+				{
+					method: "notify",
+					args: ["Projecting context: 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Retrying context projection summary: attempt 2/2", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 1/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Context projected: ~581 saved", "info"],
+				},
+			]);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
 				projectedEntries: [
 					{
@@ -1190,9 +1214,9 @@ describe("context-projection", () => {
 
 	test("does not retry aborted summary requests", async () => {
 		// Purpose: cancellation must stop retry work instead of treating abort as a transient provider failure.
-		// Input and expected output: summary call throws AbortError, no retry is attempted, and placeholder is persisted.
+		// Input and expected output: summary call throws AbortError, no retry is attempted, placeholder is persisted, and fallback is visible.
 		// Edge case: retryCount is positive but the error is fatal for the current operation.
-		// Dependencies: isolated config, fake completion function, and summary retry classification.
+		// Dependencies: isolated config, fake completion function, summary retry classification, and UI call recording.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeCustomConfig(
 				agentDir,
@@ -1231,6 +1255,29 @@ describe("context-projection", () => {
 			);
 
 			expect(callCount).toBe(1);
+			expect(
+				context.uiCalls.filter((call) => call.method === "notify"),
+			).toEqual([
+				{
+					method: "notify",
+					args: ["Projecting context: 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: [
+						"Context projection summary unavailable; using placeholder",
+						"info",
+					],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 1/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Context projected: ~595 saved", "info"],
+				},
+			]);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
 				projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
 			});

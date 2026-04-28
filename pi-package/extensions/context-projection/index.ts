@@ -135,6 +135,10 @@ interface ProjectionProgressReporter {
 	readonly total: number;
 	processed: number;
 	advance(): void;
+	notifyCurrent(): void;
+	notifyRetry(nextAttempt: number, totalAttempts: number): void;
+	notifySummaryUnavailable(): void;
+	notifySummaryNotSmaller(): void;
 }
 
 interface SummaryReplacementOptions {
@@ -358,10 +362,22 @@ function createProjectionProgressReporter(
 		processed: 0,
 		advance(): void {
 			progress.processed += 1;
+			progress.notifyCurrent();
+		},
+		notifyCurrent(): void {
 			notifyProjectionProgress(ctx, progress);
 		},
+		notifyRetry(nextAttempt: number, totalAttempts: number): void {
+			notifyProjectionSummaryRetry(ctx, nextAttempt, totalAttempts);
+		},
+		notifySummaryUnavailable(): void {
+			notifyProjectionSummaryUnavailable(ctx);
+		},
+		notifySummaryNotSmaller(): void {
+			notifyProjectionSummaryNotSmaller(ctx);
+		},
 	};
-	notifyProjectionProgress(ctx, progress);
+	progress.notifyCurrent();
 	return progress;
 }
 
@@ -395,6 +411,46 @@ function notifyProjectionCompleted(
 	);
 }
 
+/** Shows one visible retry attempt for a failed summary request. */
+function notifyProjectionSummaryRetry(
+	ctx: ExtensionContext,
+	nextAttempt: number,
+	totalAttempts: number,
+): void {
+	if (!ctx.hasUI) {
+		return;
+	}
+
+	ctx.ui.notify(
+		`Retrying context projection summary: attempt ${nextAttempt}/${totalAttempts}`,
+		"info",
+	);
+}
+
+/** Shows that summary generation failed and the projected entry uses the configured placeholder. */
+function notifyProjectionSummaryUnavailable(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) {
+		return;
+	}
+
+	ctx.ui.notify(
+		"Context projection summary unavailable; using placeholder",
+		"info",
+	);
+}
+
+/** Shows that a generated summary was rejected because it would not reduce context size. */
+function notifyProjectionSummaryNotSmaller(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) {
+		return;
+	}
+
+	ctx.ui.notify(
+		"Context projection summary not smaller; using placeholder",
+		"info",
+	);
+}
+
 /** Builds summary replacement text for newly projected entries when summary config is enabled. */
 async function createSummaryReplacementsByEntryId({
 	pi,
@@ -419,6 +475,7 @@ async function createSummaryReplacementsByEntryId({
 	);
 	if (runtimeConfig === undefined) {
 		for (const _entry of newProjectedEntries) {
+			progress.notifySummaryUnavailable();
 			progress.advance();
 		}
 		return new Map();
@@ -437,12 +494,16 @@ async function createSummaryReplacementsByEntryId({
 		candidates,
 		config.summary.maxConcurrency,
 		async (candidate) => {
-			const summary = await summarizeProjectionCandidateWithRetries(
+			const summary = await summarizeProjectionCandidateWithRetries({
 				candidate,
 				runtimeConfig,
 				completeSimple,
-				config.summary,
-			);
+				config: config.summary,
+				progress,
+			});
+			if (summary === undefined) {
+				progress.notifySummaryUnavailable();
+			}
 			progress.advance();
 			return summary;
 		},
@@ -460,6 +521,8 @@ async function createSummaryReplacementsByEntryId({
 			countProjectionTextTokens(replacement) >=
 			countProjectionTextTokens(candidate.text)
 		) {
+			progress.notifySummaryNotSmaller();
+			progress.notifyCurrent();
 			continue;
 		}
 
@@ -484,6 +547,7 @@ function collectNewProjectionSummaryCandidates({
 	for (const projectedEntry of newProjectedEntries) {
 		const candidate = candidatesByEntryId.get(projectedEntry.entryId);
 		if (candidate === undefined) {
+			progress.notifySummaryUnavailable();
 			progress.advance();
 			continue;
 		}
@@ -670,17 +734,25 @@ function collectToolCallContextById(
 }
 
 /** Retries transient summary failures before giving up on a generated replacement. */
-async function summarizeProjectionCandidateWithRetries(
-	candidate: ProjectionSummaryCandidate,
-	runtimeConfig: SummaryRuntimeConfig,
-	completeSimple: CompleteSimple,
-	config: ContextProjectionSummaryConfig,
-): Promise<string | undefined> {
+async function summarizeProjectionCandidateWithRetries({
+	candidate,
+	runtimeConfig,
+	completeSimple,
+	config,
+	progress,
+}: {
+	readonly candidate: ProjectionSummaryCandidate;
+	readonly runtimeConfig: SummaryRuntimeConfig;
+	readonly completeSimple: CompleteSimple;
+	readonly config: ContextProjectionSummaryConfig;
+	readonly progress: ProjectionProgressReporter;
+}): Promise<string | undefined> {
 	return summarizeProjectionCandidateAttempt({
 		candidate,
 		runtimeConfig,
 		completeSimple,
 		config,
+		progress,
 		attempt: 0,
 	});
 }
@@ -691,12 +763,14 @@ async function summarizeProjectionCandidateAttempt({
 	runtimeConfig,
 	completeSimple,
 	config,
+	progress,
 	attempt,
 }: {
 	readonly candidate: ProjectionSummaryCandidate;
 	readonly runtimeConfig: SummaryRuntimeConfig;
 	readonly completeSimple: CompleteSimple;
 	readonly config: ContextProjectionSummaryConfig;
+	readonly progress: ProjectionProgressReporter;
 	readonly attempt: number;
 }): Promise<string | undefined> {
 	const result = await summarizeProjectionCandidate(
@@ -711,6 +785,9 @@ async function summarizeProjectionCandidateAttempt({
 		return undefined;
 	}
 
+	const nextAttempt = attempt + 2;
+	const totalAttempts = config.retryCount + 1;
+	progress.notifyRetry(nextAttempt, totalAttempts);
 	const shouldContinue = await delay(
 		config.retryDelayMs,
 		runtimeConfig.options.signal,
@@ -718,12 +795,14 @@ async function summarizeProjectionCandidateAttempt({
 	if (!shouldContinue) {
 		return undefined;
 	}
+	progress.notifyCurrent();
 
 	return summarizeProjectionCandidateAttempt({
 		candidate,
 		runtimeConfig,
 		completeSimple,
 		config,
+		progress,
 		attempt: attempt + 1,
 	});
 }
