@@ -135,14 +135,21 @@ Why you need it:
 - Makes `grep`, `find`, and `ls` available when pi starts a session.
 - Gives agents fast project search and listing tools without enabling every built-in tool manually.
 
-Config file: none.
+Config file: `~/.pi/agent/config/enable-tools.json`
+
+Options:
+
+- `enabled`: default `true`. Enables or disables all behavior owned by this extension.
+- `include`: default `["grep", "find", "ls"]`. Tool names to add to active tools.
+- `exclude`: default `[]`. Tool names this extension must not add. `exclude` wins over `include`.
 
 How it works:
 
 - Runs when a pi session starts.
 - Reads all registered tools and current active tools.
-- Adds `grep`, `find`, and `ls` only when those tools are registered by pi.
+- Adds configured `include` tools only when those tools are registered by pi and absent from `exclude`.
 - Keeps already active tools unchanged.
+- Leaves active tools unchanged when config is invalid.
 
 ### `footer`
 
