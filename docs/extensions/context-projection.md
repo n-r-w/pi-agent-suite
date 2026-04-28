@@ -74,7 +74,7 @@ Assistant:
   Tool call: read(file A)
 
 Tool result: read(file A)
-  [Old successful tool result omitted from current context]
+  [Result omitted. Run tool again if you want to see it]
 
 Assistant:
   Tool call: bash(test)
@@ -189,7 +189,7 @@ File: `~/.pi/agent/config/context-projection.json`.
   "keepRecentTurnsPercent": 0.2,
   "minToolResultTokens": 2000,
   "projectionIgnoredTools": [],
-  "placeholder": "[Old successful tool result omitted from current context]",
+  "placeholder": "[Result omitted. Run tool again if you want to see it]",
   "summary": {
     "enabled": false,
     "model": null,

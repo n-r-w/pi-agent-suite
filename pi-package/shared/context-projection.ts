@@ -87,7 +87,7 @@ const DEFAULT_MIN_TOOL_RESULT_TOKENS = 2_000;
 
 /** Default replacement text for projected old tool results. */
 const DEFAULT_PLACEHOLDER =
-	"[Old successful tool result omitted from current context]";
+	"[Result omitted. Run tool again if you want to see it]";
 
 /** Default summary request concurrency. */
 const DEFAULT_SUMMARY_MAX_CONCURRENCY = 1;

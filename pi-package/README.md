@@ -251,7 +251,7 @@ Options:
 - `keepRecentTurnsPercent`: default `0.2`. Keeps this share of recent tool-use turns unchanged.
 - `minToolResultTokens`: default `2000`. Only larger tool results can be hidden.
 - `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` is always ignored.
-- `placeholder`: default `[Old successful tool result omitted from current context]`.
+- `placeholder`: default `[Result omitted. Run tool again if you want to see it]`.
 - `summary.enabled`: default `false`. Generates a short replacement summary before projection.
 - `summary.model`: optional. Uses the current model when missing or `null`.
 - `summary.thinking`: optional. Uses the current thinking level when missing or `null`. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.

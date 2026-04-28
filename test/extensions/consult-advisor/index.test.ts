@@ -1153,7 +1153,7 @@ describe("consult-advisor", () => {
 				completion.calls[0]?.context.messages,
 			);
 			expect(advisorMessages).toContain(
-				"[Old successful tool result omitted from current context]",
+				"[Result omitted. Run tool again if you want to see it]",
 			);
 			expect(advisorMessages).not.toContain("old output old output");
 		});
