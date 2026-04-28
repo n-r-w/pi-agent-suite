@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -39,6 +40,7 @@ const ISSUE_PREFIX = "[main-agent-selection]";
 const CONFIG_PATH = join("config", "main-agent-selection.json");
 const ENABLED_CONFIG_KEY = "enabled";
 const STATE_KEYS = ["cwd", "activeAgentId"] as const;
+const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 
 interface MainAgentSelectorTui {
 	requestRender(): void;
@@ -668,7 +670,18 @@ async function writeSelectedAgentState(
 
 /** Returns the deterministic selected-agent state path for one normalized working directory. */
 function selectedAgentStatePath(cwd: string): string {
-	return join(getAgentDir(), STATE_DIR, `${encodeURIComponent(cwd)}.json`);
+	return join(
+		getAgentDir(),
+		STATE_DIR,
+		`${selectedAgentStateFileName(cwd)}.json`,
+	);
+}
+
+/** Returns the fixed-length selected-agent state file name for one normalized working directory. */
+function selectedAgentStateFileName(cwd: string): string {
+	return createHash("sha256")
+		.update(cwd)
+		.digest(SELECTED_AGENT_STATE_HASH_ENCODING);
 }
 
 /** Normalizes working-directory identity before state reads and writes. */

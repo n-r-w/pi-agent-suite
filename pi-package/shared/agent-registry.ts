@@ -134,7 +134,7 @@ function parseModel(value: unknown): AgentDefinition["model"] | false {
 	}
 
 	const { id, thinking } = value;
-	if (id !== undefined && (typeof id !== "string" || id.trim().length === 0)) {
+	if (id !== undefined && !isModelId(id)) {
 		return false;
 	}
 
@@ -146,6 +146,16 @@ function parseModel(value: unknown): AgentDefinition["model"] | false {
 		...(typeof id === "string" ? { id } : {}),
 		...(isThinkingValue(thinking) ? { thinking } : {}),
 	};
+}
+
+/** Returns true when a model ID has provider and model parts separated by the first slash. */
+function isModelId(value: unknown): value is string {
+	if (typeof value !== "string") {
+		return false;
+	}
+
+	const separatorIndex = value.indexOf("/");
+	return separatorIndex > 0 && separatorIndex < value.length - 1;
 }
 
 /** Parses optional unique non-empty string lists from frontmatter. */

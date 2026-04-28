@@ -1,6 +1,8 @@
-export const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
-export const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
-export const SUBAGENT_TOOLS_ENV = "PI_SUBAGENT_TOOLS";
+import {
+	SUBAGENT_AGENT_ID_ENV,
+	SUBAGENT_DEPTH_ENV,
+	SUBAGENT_TOOLS_ENV,
+} from "../../shared/subagent-environment";
 
 /** Reads the effective child-agent id from the current process environment. */
 export function readSubagentAgentId(): string | undefined {

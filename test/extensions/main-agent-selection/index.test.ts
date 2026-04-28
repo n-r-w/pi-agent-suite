@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	mkdir,
 	mkdtemp,
@@ -12,11 +13,12 @@ import { join } from "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
+import { SUBAGENT_AGENT_ID_ENV } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
-const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
 const FRONTMATTER_MODEL_KEY = "model";
 const FRONTMATTER_TOOLS_KEY = "tools";
+const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -431,6 +433,11 @@ async function writeMainAgentSelectionConfig(
 		join(agentDir, "config", "main-agent-selection.json"),
 		JSON.stringify(config),
 	);
+}
+
+/** Returns the hash-based selected-agent state file name for one normalized working directory. */
+function selectedAgentStateFileName(cwd: string): string {
+	return `${createHash("sha256").update(cwd).digest(SELECTED_AGENT_STATE_HASH_ENCODING)}.json`;
 }
 
 /** Reads the only selected-agent state file written by a test. */
@@ -1129,7 +1136,7 @@ describe("main-agent-selection", () => {
 					agentDir,
 					"agent-selection",
 					"state",
-					`${encodeURIComponent("/tmp/project")}.json`,
+					selectedAgentStateFileName("/tmp/project"),
 				),
 				JSON.stringify({
 					cwd: "/tmp/project",
@@ -1219,6 +1226,130 @@ describe("main-agent-selection", () => {
 		});
 	});
 
+	test("skips agents with malformed model IDs during registry loading", async () => {
+		// Purpose: agent model IDs must be validated at the shared agent-registry boundary instead of failing later in one extension path.
+		// Input and expected output: an agent with model.id missing provider/model shape is not selectable, while a valid agent remains available.
+		// Edge case: model.thinking-only agents remain valid because model.id is optional.
+		// Dependencies: this test writes temporary Markdown agent files only.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "broken",
+				description: "Broken model id",
+				body: "Broken prompt",
+				model: { id: "missing-provider-separator" },
+			});
+			await writeAgent(agentDir, {
+				id: "valid",
+				description: "Valid agent",
+				body: "Valid prompt",
+				model: { thinking: "high" },
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await getCommand(pi, "agent").handler("broken", ctx);
+
+			expect(ctx.notifications).toEqual([
+				{
+					message: "[main-agent-selection] agent broken was not found",
+					type: "warning",
+				},
+			]);
+			await getCommand(pi, "agent").handler("valid", ctx);
+			expect(pi.thinkingCalls).toEqual(["high"]);
+		});
+	});
+
+	test("uses hash-based selected-agent state filenames for long working directories", async () => {
+		// Purpose: selected-agent state filenames must stay below filesystem name-length limits for long working directories.
+		// Input and expected output: a long cwd writes one fixed-length hash filename.
+		// Edge case: the raw cwd would be too long for an encodeURIComponent-based filename.
+		// Dependencies: this test writes only isolated selected-agent state files and temp agent definitions.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const longProjectDir = join(tmpdir(), "p".repeat(260));
+			await writeAgent(agentDir, {
+				id: "builder",
+				description: "Builds code",
+				body: "Builder system prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext(longProjectDir);
+			mainAgentSelection(pi);
+
+			const sessionStart = pi.handlers.find(
+				(item) => item.eventName === "session_start",
+			)?.handler;
+			if (typeof sessionStart !== "function") {
+				throw new Error("expected session_start handler to be registered");
+			}
+			await sessionStart({ type: "session_start", reason: "startup" }, ctx);
+
+			expect(ctx.notifications).toEqual([]);
+			expect(
+				await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base prompt" },
+					ctx,
+				),
+			).toBeUndefined();
+			await getCommand(pi, "agent").handler("builder", ctx);
+			const stateDir = join(agentDir, "agent-selection", "state");
+			const files = await readdir(stateDir);
+			const hashFileName = selectedAgentStateFileName(longProjectDir);
+
+			expect(files).toContain(hashFileName);
+			expect(Buffer.byteLength(hashFileName, "utf8")).toBeLessThanOrEqual(255);
+			expect(
+				JSON.parse(await readFile(join(stateDir, hashFileName), "utf8")),
+			).toEqual({ cwd: longProjectDir, activeAgentId: "builder" });
+		});
+	});
+
+	test("does not read legacy encodeURIComponent selected-agent state filenames", async () => {
+		// Purpose: selected-agent state reads must use only the hash-based filename format.
+		// Input and expected output: a matching legacy encoded state file exists but selected-agent state remains unset.
+		// Edge case: the legacy file content is otherwise valid for the current cwd.
+		// Dependencies: this test writes only isolated selected-agent state files and temp agent definitions.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "builder",
+				description: "Builds code",
+				body: "Builder system prompt",
+			});
+			await mkdir(join(agentDir, "agent-selection", "state"), {
+				recursive: true,
+			});
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					`${encodeURIComponent("/tmp/project")}.json`,
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "builder" }),
+			);
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			const sessionStart = pi.handlers.find(
+				(item) => item.eventName === "session_start",
+			)?.handler;
+			if (typeof sessionStart !== "function") {
+				throw new Error("expected session_start handler to be registered");
+			}
+			await sessionStart({ type: "session_start", reason: "startup" }, ctx);
+
+			expect(ctx.notifications).toEqual([]);
+			expect(
+				await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base prompt" },
+					ctx,
+				),
+			).toBeUndefined();
+		});
+	});
+
 	test("clears previous runtime contribution when a later model application fails", async () => {
 		// Purpose: fail-closed behavior must remove stale prompt, tools, and status from the previous agent.
 		// Input and expected output: first agent succeeds, second agent setModel returns false, baseline tools and empty prompt are restored.
@@ -1290,7 +1421,7 @@ describe("main-agent-selection", () => {
 					agentDir,
 					"agent-selection",
 					"state",
-					`${encodeURIComponent("/tmp/other")}.json`,
+					selectedAgentStateFileName("/tmp/other"),
 				),
 				"{",
 			);
@@ -1299,7 +1430,7 @@ describe("main-agent-selection", () => {
 					agentDir,
 					"agent-selection",
 					"state",
-					`${encodeURIComponent("/tmp/project")}.json`,
+					selectedAgentStateFileName("/tmp/project"),
 				),
 				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "reviewer" }),
 			);

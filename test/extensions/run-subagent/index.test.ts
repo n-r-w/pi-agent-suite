@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,11 +16,15 @@ import mainAgentSelection from "../../../pi-package/extensions/main-agent-select
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
 import { COLLAPSED_SUBAGENT_RESULT_LINES } from "../../../pi-package/extensions/run-subagent/rendering";
 import { formatSubagentWidgetPanel } from "../../../pi-package/extensions/run-subagent/widget";
+import {
+	SUBAGENT_AGENT_ID_ENV,
+	SUBAGENT_DEPTH_ENV,
+	SUBAGENT_TOOLS_ENV,
+} from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
-const DEPTH_ENV = "PI_SUBAGENT_DEPTH";
-const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
-const SUBAGENT_TOOLS_ENV = "PI_SUBAGENT_TOOLS";
+const DEPTH_ENV = SUBAGENT_DEPTH_ENV;
+const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 
 /** SGR reset sequence that would break parent panel styling when embedded in truncated text. */
 const SGR_RESET = `${String.fromCharCode(27)}[0m`;
@@ -352,9 +357,14 @@ async function writeSelectedAgentState(
 	const stateDir = join(agentDir, "agent-selection", "state");
 	await mkdir(stateDir, { recursive: true });
 	await writeFile(
-		join(stateDir, `${encodeURIComponent(cwd)}.json`),
+		join(stateDir, selectedAgentStateFileName(cwd)),
 		JSON.stringify({ cwd, activeAgentId }),
 	);
+}
+
+/** Returns the hash-based selected-agent state file name for one normalized working directory. */
+function selectedAgentStateFileName(cwd: string): string {
+	return `${createHash("sha256").update(cwd).digest(SELECTED_AGENT_STATE_HASH_ENCODING)}.json`;
 }
 
 /** Returns the registered run_subagent tool from the fake API. */
@@ -606,6 +616,92 @@ describe("run-subagent", () => {
 			expect(renderedResult?.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);
+		});
+	});
+
+	test("decodes split UTF-8 stdout chunks before JSON parsing", async () => {
+		// Purpose: child stdout decoding must preserve multibyte UTF-8 characters split across process chunks.
+		// Input and expected output: a JSON message_end line containing an emoji split between Buffer chunks still parses and returns the emoji.
+		// Edge case: the split happens inside the UTF-8 byte sequence, not at a JavaScript string boundary.
+		// Dependencies: this test uses temp agent files and a fake child process with Buffer stdout chunks.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const line = `${JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done 🙂" }],
+				},
+			})}\n`;
+			const bytes = Buffer.from(line, "utf8");
+			const splitIndex = bytes.indexOf(Buffer.from("🙂", "utf8")) + 2;
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						process.stdout.emit("data", bytes.subarray(0, splitIndex));
+						process.stdout.emit("data", bytes.subarray(splitIndex));
+						process.emit("close", 0);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "done 🙂" }],
+			});
+		});
+	});
+
+	test("decodes split UTF-8 stderr chunks before returning diagnostics", async () => {
+		// Purpose: child stderr diagnostics must preserve multibyte UTF-8 characters split across process chunks.
+		// Input and expected output: a failed child emits an emoji split between Buffer chunks and the returned error keeps the emoji intact.
+		// Edge case: the split happens inside the UTF-8 byte sequence, not at a JavaScript string boundary.
+		// Dependencies: this test uses temp agent files and a fake child process with Buffer stderr chunks.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const stderrText = "failed 🙂";
+			const bytes = Buffer.from(stderrText, "utf8");
+			const splitIndex = bytes.indexOf(Buffer.from("🙂", "utf8")) + 2;
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						process.stderr.emit("data", bytes.subarray(0, splitIndex));
+						process.stderr.emit("data", bytes.subarray(splitIndex));
+						process.emit("close", 1);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(stderrText);
 		});
 	});
 

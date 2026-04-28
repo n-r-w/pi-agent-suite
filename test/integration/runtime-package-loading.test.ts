@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -10,9 +11,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
+
 /** Writes one markdown agent definition into the isolated pi agent directory. */
 function writeAgent(agentDir: string, fileName: string, content: string): void {
 	writeFileSync(join(agentDir, "agents", fileName), content);
+}
+
+/** Returns the hash-based selected-agent state file name for one normalized working directory. */
+function selectedAgentStateFileName(cwd: string): string {
+	return `${createHash("sha256").update(cwd).digest(SELECTED_AGENT_STATE_HASH_ENCODING)}.json`;
 }
 
 /** Creates an isolated pi agent directory with selected TestAgent state. */
@@ -21,12 +29,7 @@ function createIsolatedAgentDir(cwd: string): string {
 	mkdirSync(join(agentDir, "agents"), { recursive: true });
 	mkdirSync(join(agentDir, "agent-selection", "state"), { recursive: true });
 	writeFileSync(
-		join(
-			agentDir,
-			"agent-selection",
-			"state",
-			`${encodeURIComponent(cwd)}.json`,
-		),
+		join(agentDir, "agent-selection", "state", selectedAgentStateFileName(cwd)),
 		JSON.stringify({ cwd, activeAgentId: "TestAgent" }),
 	);
 

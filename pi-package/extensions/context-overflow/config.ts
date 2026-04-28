@@ -3,13 +3,10 @@ import { join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 /** Relative config location owned only by context-overflow. */
-export const CONTEXT_OVERFLOW_CONFIG_PATH = join(
-	"config",
-	"context-overflow.json",
-);
+const CONTEXT_OVERFLOW_CONFIG_PATH = join("config", "context-overflow.json");
 
 /** Default remaining-token reserve that triggers standard compaction. */
-export const DEFAULT_COMPACT_REMAINING_TOKENS = 49_152;
+const DEFAULT_COMPACT_REMAINING_TOKENS = 49_152;
 
 /** Config key that disables or enables preventive compaction. */
 const ENABLED_CONFIG_KEY = "enabled";
@@ -26,7 +23,7 @@ const CONTEXT_OVERFLOW_CONFIG_KEYS = [
 /** Node.js error field used to detect absent config files. */
 const ERROR_CODE_KEY = "code";
 
-export type ContextOverflowConfigResult =
+type ContextOverflowConfigResult =
 	| { readonly kind: "valid"; readonly config: ContextOverflowConfig }
 	| { readonly kind: "invalid" };
 
@@ -62,7 +59,7 @@ export async function readContextOverflowConfig(): Promise<ContextOverflowConfig
 }
 
 /** Parses config JSON into the typed context-overflow contract used by turn handling and footer rendering. */
-export function parseContextOverflowConfig(
+function parseContextOverflowConfig(
 	config: unknown,
 ): ContextOverflowConfigResult {
 	if (!isRecord(config)) {

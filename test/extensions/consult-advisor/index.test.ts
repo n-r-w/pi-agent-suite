@@ -22,12 +22,17 @@ import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/c
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
+import {
+	SUBAGENT_AGENT_ID_ENV,
+	SUBAGENT_DEPTH_ENV,
+	SUBAGENT_TOOLS_ENV,
+} from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const SUBAGENT_ENV_KEYS = [
-	"PI_SUBAGENT_DEPTH",
-	"PI_SUBAGENT_AGENT_ID",
-	"PI_SUBAGENT_TOOLS",
+	SUBAGENT_DEPTH_ENV,
+	SUBAGENT_AGENT_ID_ENV,
+	SUBAGENT_TOOLS_ENV,
 ] as const;
 
 /** SGR reset sequence that would break parent panel styling when embedded in truncated text. */
@@ -1619,9 +1624,9 @@ describe("consult-advisor", () => {
 		const previousEnv = new Map(
 			SUBAGENT_ENV_KEYS.map((key) => [key, process.env[key]]),
 		);
-		process.env["PI_SUBAGENT_DEPTH"] = "1";
-		process.env["PI_SUBAGENT_AGENT_ID"] = "SubAgentSage";
-		process.env["PI_SUBAGENT_TOOLS"] = "read,bash";
+		process.env[SUBAGENT_DEPTH_ENV] = "1";
+		process.env[SUBAGENT_AGENT_ID_ENV] = "SubAgentSage";
+		process.env[SUBAGENT_TOOLS_ENV] = "read,bash";
 		try {
 			await withIsolatedAgentDir(async (agentDir) => {
 				await writeAgent(agentDir, "main", "main", "Main prompt", [

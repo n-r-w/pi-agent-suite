@@ -8,9 +8,6 @@ import cl100kBase from "js-tiktoken/ranks/cl100k_base";
 import o200kBase from "js-tiktoken/ranks/o200k_base";
 import r50kBase from "js-tiktoken/ranks/r50k_base";
 
-/** Character count used for approximate human-facing token estimates. */
-const APPROXIMATE_CHARS_PER_TOKEN = 4;
-
 /** Extra request framing reserve for chat wrappers, roles, and provider metadata. */
 const MODEL_INPUT_TOKEN_RESERVE = 256;
 
@@ -39,11 +36,6 @@ const MODERN_OPENAI_MODEL_PATTERN =
 	/(?:^|[/_-])(chatgpt-4o|gpt-4\.1|gpt-4o|gpt-5|o[134])(?:$|[._/-])/;
 
 type SupportedEncoding = keyof typeof TOKENIZERS;
-
-/** Returns an approximate token count for display-only savings estimates. */
-export function estimateApproximateTokensFromChars(charCount: number): number {
-	return Math.ceil(charCount / APPROXIMATE_CHARS_PER_TOKEN);
-}
 
 /** Returns a tokenizer-based estimate for model-visible context input. */
 export function estimateSerializedInputTokens(

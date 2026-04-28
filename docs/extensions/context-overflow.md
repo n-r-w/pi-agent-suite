@@ -17,8 +17,9 @@
 - Calls `ctx.compact()` without `customInstructions`.
 - Leaves `session_before_compact` and compaction summary content to standard pi compaction or the configured `custom-compaction` extension.
 - Waits for successful compaction before the `turn_end` handler returns.
-- Sends user message `continue` with follow-up delivery after successful compaction.
+- Sends user message `System message: Context summarization complete, continue` with follow-up delivery after successful compaction.
 - Sends no continuation when compaction fails.
+- Does not retry after compaction failure while usage stays at or below the threshold.
 - Prevents repeated or parallel compactions for one threshold exceedance.
 - Re-arms compaction only after a later known usage returns above the threshold.
 - Does not register or call UI APIs.
@@ -68,8 +69,9 @@ Tests must verify:
 - compaction when `remainingTokens` equals `compactRemainingTokens`;
 - `ctx.compact()` call without `customInstructions`;
 - `turn_end` waits for compaction completion before queuing continuation;
-- user message `continue` only after successful compaction;
+- user message `System message: Context summarization complete, continue` only after successful compaction;
 - no continuation after compaction failure;
+- no retry after compaction failure until known usage returns above the threshold and later crosses the threshold again;
 - duplicate and parallel compaction prevention for one threshold exceedance;
 - re-arming only after known usage returns above the threshold;
 - fail-closed behavior for disabled or invalid configuration;

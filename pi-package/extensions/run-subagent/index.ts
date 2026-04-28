@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import {
@@ -17,15 +18,17 @@ import {
 	getAgentRuntimeComposition,
 	type MainAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
+import {
+	SUBAGENT_AGENT_ID_ENV,
+	SUBAGENT_DEPTH_ENV,
+	SUBAGENT_TOOLS_ENV,
+} from "../../shared/subagent-environment";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import {
 	createChildEnvironment,
 	readSubagentAgentId,
 	readSubagentDepth,
-	SUBAGENT_AGENT_ID_ENV,
-	SUBAGENT_DEPTH_ENV,
-	SUBAGENT_TOOLS_ENV,
 } from "./environment";
 import {
 	appendSubagentStderr,
@@ -841,6 +844,8 @@ async function runChildPi(
 			env: options.env,
 			signal: options.signal,
 		});
+		const stdoutDecoder = new StringDecoder("utf8");
+		const stderrDecoder = new StringDecoder("utf8");
 		const streamState: ChildStreamState = {
 			stdoutBuffer: "",
 			stdoutBufferTruncated: false,
@@ -854,12 +859,22 @@ async function runChildPi(
 		};
 
 		child.stdout.on("data", (data) => {
-			handleChildStdoutData(streamState, data, options.onJsonEvent);
+			handleChildStdoutData(
+				streamState,
+				stdoutDecoder.write(toBuffer(data)),
+				options.onJsonEvent,
+			);
 		});
 		child.stderr.on("data", (data) => {
-			handleChildStderrData(streamState, data);
+			handleChildStderrData(streamState, stderrDecoder.write(toBuffer(data)));
 		});
 		child.on("close", (code) => {
+			handleChildStdoutData(
+				streamState,
+				stdoutDecoder.end(),
+				options.onJsonEvent,
+			);
+			handleChildStderrData(streamState, stderrDecoder.end());
 			if (!streamState.stdoutBufferTruncated) {
 				processChildOutputLine(
 					streamState,
@@ -889,6 +904,17 @@ async function runChildPi(
 			});
 		});
 	});
+}
+
+/** Converts child process chunks into bytes for UTF-8 safe decoding. */
+function toBuffer(data: unknown): Buffer {
+	if (Buffer.isBuffer(data)) {
+		return data;
+	}
+	if (data instanceof Uint8Array) {
+		return Buffer.from(data);
+	}
+	return Buffer.from(String(data));
 }
 
 /** Processes one stdout chunk from the child JSON-mode stream. */
