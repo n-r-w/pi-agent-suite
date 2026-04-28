@@ -18,6 +18,14 @@
 - Sends the child prompt through RPC stdin.
 - Treats the RPC prompt response as prompt acceptance or prompt failure, not as subagent completion.
 - Treats `agent_end` as the completion event for one child prompt.
+- Reads oversized child RPC stdout events through a `stream-json` projection layer so large `agent_end.messages` payloads do not block completion.
+- Extracts `text_delta` from oversized `message_update` events while ignoring large partial-message snapshots.
+- Applies the same streamed-answer memory limit to projected `text_delta` as to normal `message_update` events.
+- Ignores oversized `message_update` events without usable `text_delta` instead of failing the run.
+- Preserves assistant `message_start` role from oversized events so streamed-text state resets at assistant turn boundaries.
+- Uses completed assistant `message_end` text as the primary final-answer source.
+- Uses streamed `text_delta` only as fallback when `stream-json` projection confirms the completed assistant `message_end` text was skipped because the payload was too large.
+- Rejects assistant messages with tool calls as final answers.
 - Cancels blocking child RPC UI requests with deterministic responses.
 - Closes child stdin after normal completion.
 - Sends RPC `abort` when the parent abort signal fires, waits for completion, closes child stdin, and terminates the child only after the abort timeout.
@@ -105,6 +113,14 @@ Tests must verify:
 - execution rejection for callable agents blocked by the selected main agent's `agents` allowlist;
 - TUI progress rendering that does not expose raw `text_delta` chunks;
 - final output extraction from completed assistant `message_end` events before `agent_end`;
+- completion when `agent_end.messages` exceeds the child stdout line buffer;
+- extraction of `text_delta` from oversized `message_update` events with large partial-message snapshots;
+- preservation of large projected `text_delta` values up to the streamed-answer memory limit;
+- ignored oversized `message_update` events without usable `text_delta`;
+- oversized assistant `message_start` events that reset provisional streamed text;
+- fallback final output extraction from streamed text only when oversized `message_end` projection confirms skipped text;
+- rejection of streamed text when completed `message_end` confirms text is absent;
+- rejection of assistant tool-use messages as final output;
 - deterministic cancellation of blocking RPC UI requests;
 - stdin close after normal completion and bounded stdin error diagnostics;
 - abort behavior that sends RPC `abort`, waits for completion, closes stdin, and terminates only after timeout;

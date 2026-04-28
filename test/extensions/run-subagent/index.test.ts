@@ -1997,6 +1997,478 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("keeps completion when agent_end messages exceed the stdout line buffer", async () => {
+		// Purpose: completion must not depend on materializing the unbounded agent_end messages array.
+		// Input and expected output: a small final assistant message plus oversized agent_end messages succeeds with the final answer.
+		// Edge case: agent_end is a valid RPC control event whose data payload exceeds the raw JSONL line buffer.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "completed answer" }],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({
+					type: "agent_end",
+					messages: [
+						{
+							role: "assistant",
+							content: [
+								{ type: "text", text: `large-history-${"x".repeat(300_000)}` },
+							],
+							stopReason: "stop",
+						},
+					],
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "completed answer" }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+			expect(spawn.calls[0]?.process.stdin.ended).toBe(true);
+		});
+	});
+
+	test("uses streamed final text only when message_end text was skipped by the adapter limit", async () => {
+		// Purpose: oversized final message content may use matching streamed text as a bounded fallback.
+		// Input and expected output: text_delta rebuilds the answer when message_end metadata is present but text content is oversized.
+		// Edge case: message_end contains a huge text value that must not be materialized by the RPC adapter.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const streamedAnswer = "streamed fallback answer";
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: streamedAnswer,
+					},
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `${streamedAnswer}${"x".repeat(300_000)}` },
+						],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: streamedAnswer }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+		});
+	});
+
+	test("uses text delta from oversized message_update with large partial message", async () => {
+		// Purpose: oversized message_update must still contribute text_delta while ignoring large partial message snapshots.
+		// Input and expected output: a real-shaped message_update with large message plus text_delta feeds the skipped message_end fallback.
+		// Edge case: assistantMessageEvent appears after the large partial message and outside the raw stdout line buffer prefix.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const streamedAnswer = "oversized update answer";
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_update",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `large-partial-${"x".repeat(300_000)}` },
+						],
+					},
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: streamedAnswer,
+					},
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `${streamedAnswer}${"x".repeat(300_000)}` },
+						],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: streamedAnswer }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+		});
+	});
+
+	test("keeps a large text delta from oversized message_update", async () => {
+		// Purpose: oversized message_update projection must preserve text_delta values beyond small control-field limits.
+		// Input and expected output: one text_delta larger than 4096 characters feeds the skipped message_end fallback.
+		// Edge case: the large delta is valid streamed answer data, not small RPC control metadata.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const streamedAnswer = `large-delta-${"d".repeat(10_000)}-end`;
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_update",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `large-partial-${"x".repeat(300_000)}` },
+						],
+					},
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: streamedAnswer,
+					},
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `${streamedAnswer}${"x".repeat(300_000)}` },
+						],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: streamedAnswer }],
+			});
+			expect(
+				(result.details as { readonly finalOutput?: string }).finalOutput,
+			).toBe(streamedAnswer);
+		});
+	});
+
+	test("uses oversized assistant message_start to reset streamed text", async () => {
+		// Purpose: oversized message_start is a lifecycle event and must not fail the child run.
+		// Input and expected output: an oversized assistant message_start resets stale streamed text before the final answer.
+		// Edge case: role preservation is required so reset logic recognizes the assistant turn.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_start",
+					message: { role: "assistant" },
+				}),
+				JSON.stringify({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: "stale ",
+					},
+				}),
+				JSON.stringify({
+					type: "message_start",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `large-start-${"x".repeat(300_000)}` },
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: "fresh answer",
+					},
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `fresh answer${"x".repeat(300_000)}` },
+						],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "fresh answer" }],
+			});
+		});
+	});
+
+	test("ignores oversized message_update without usable text delta", async () => {
+		// Purpose: oversized non-text-delta message_update is progress only and must not fail the child run.
+		// Input and expected output: a large message_update without text_delta is ignored and the later final answer succeeds.
+		// Edge case: message_update has a valid event type but no usable assistant text delta.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_update",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: `large-partial-${"x".repeat(300_000)}` },
+						],
+					},
+					assistantMessageEvent: {
+						type: "metadata_update",
+					},
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "completed answer" }],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "completed answer" }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+		});
+	});
+
+	test("does not use streamed text when message_end confirms text is absent", async () => {
+		// Purpose: streamed text is only a fallback for skipped text, not a replacement for an intentionally textless final message.
+		// Input and expected output: text_delta plus a textless assistant message_end returns the missing-final-answer diagnostic.
+		// Edge case: provider streaming emitted text that is absent from the completed message.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: "streamed but absent",
+					},
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe("subagent completed without a final answer");
+		});
+	});
+
+	test("does not treat tool-use assistant text as the final subagent answer", async () => {
+		// Purpose: assistant messages that call tools are intermediate turns and must not become final output.
+		// Input and expected output: toolUse assistant message with text and toolCall plus agent_end returns the missing-final-answer diagnostic.
+		// Edge case: providers may emit explanatory text before a tool call.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: "intermediate tool preface" },
+							{ type: "toolCall", id: "call-1", name: "read", arguments: {} },
+						],
+						stopReason: "toolUse",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe("subagent completed without a final answer");
+		});
+	});
+
 	test("fails as incomplete when assistant message_end arrives without agent_end", async () => {
 		// Purpose: a completed assistant message is not enough without the RPC completion event.
 		// Input and expected output: message_end without agent_end returns the incomplete-run diagnostic.
@@ -2550,10 +3022,10 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("does not use streamed output when final message_end exceeds the line buffer", async () => {
-		// Purpose: final subagent output must not be synthesized from text_delta events when no completed assistant message was parsed.
-		// Input and expected output: streamed deltas plus an oversized message_end return the no-final-answer diagnostic.
-		// Edge case: the final message_end line exceeds the raw stdout line buffer and cannot be treated as completed output.
+	test("uses streamed output when oversized message_end metadata confirms skipped text", async () => {
+		// Purpose: oversized final message content may use matching streamed text only after message_end metadata confirms skipped text.
+		// Input and expected output: streamed deltas plus an oversized assistant message_end return the complete final answer.
+		// Edge case: the final message_end line exceeds the raw stdout line buffer but still carries parseable metadata.
 		// Dependencies: this test uses temp agent files, Pi truncation constants, and a fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -2614,10 +3086,89 @@ describe("run-subagent", () => {
 				agentId: "helper",
 				prompt: "Do work",
 			})) as AgentToolResult<unknown>;
-			const content =
-				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("subagent completed without a final answer");
+			const finalText = (result.details as { readonly finalOutput?: string })
+				.finalOutput;
+			expect(finalText?.startsWith("large-final-")).toBe(true);
+			expect(finalText?.endsWith("-end")).toBe(true);
+			expect(finalText?.length).toBe(finalOutput.length);
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+		});
+	});
+
+	test("uses streamed output when skipped text metadata appears after the stdout line buffer", async () => {
+		// Purpose: oversized message_end parsing must not depend on the needed content metadata being in the bounded prefix.
+		// Input and expected output: streamed deltas plus a message_end with large earlier metadata still return the streamed answer.
+		// Edge case: content.type and content.text appear only after the raw stdout line buffer limit.
+		// Dependencies: this test uses temp agent files, Pi truncation constants, and a fake child process output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const streamedAnswer = "late skipped text answer";
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								id: "run-subagent-prompt",
+								type: "response",
+								command: "prompt",
+								success: true,
+							})}\n`,
+						);
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								type: "message_update",
+								assistantMessageEvent: {
+									type: "text_delta",
+									delta: streamedAnswer,
+								},
+							})}\n`,
+						);
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								type: "message_end",
+								message: {
+									role: "assistant",
+									usage: { debug: "x".repeat(300_000) },
+									content: [{ type: "text", text: streamedAnswer }],
+									stopReason: "stop",
+								},
+							})}\n`,
+						);
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({ type: "agent_end", messages: [] })}\n`,
+						);
+						process.emit("close", 0);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: streamedAnswer }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
 		});
 	});
 

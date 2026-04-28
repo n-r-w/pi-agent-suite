@@ -352,6 +352,7 @@ How it works:
 - Allows only subagents permitted by the selected main agent.
 - Starts a separate pi process for the selected subagent.
 - Applies the subagent's model, thinking level, and tools.
+- Reads oversized child RPC progress.
 - Shows live progress and returns the subagent's final answer.
 
 ### `consult-advisor`
