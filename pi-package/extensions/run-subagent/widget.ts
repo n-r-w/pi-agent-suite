@@ -143,7 +143,7 @@ function renderSubagentWidget(
 ): { lines: string[]; hiddenCount: number } {
 	const normalizedBudget = Math.max(1, Math.floor(lineBudget));
 	const summary = summarizeSubagentTree(state.roots);
-	const header = `Subagents: ${summary.running} running · ${summary.failed} failed · ${summary.done} done`;
+	const header = formatSubagentWidgetHeader(summary, theme);
 	if (normalizedBudget === 1) {
 		return { lines: [header], hiddenCount: countNodes(state.roots) };
 	}
@@ -175,6 +175,31 @@ function renderSubagentWidget(
 	}
 
 	return { lines, hiddenCount: hiddenRows.length };
+}
+
+/** Formats summary counts while coloring only active non-zero values. */
+function formatSubagentWidgetHeader(
+	summary: ReturnType<typeof summarizeSubagentTree>,
+	theme: SubagentWidgetTheme | undefined,
+): string {
+	return [
+		"Subagents:",
+		`${formatSubagentSummaryCount(summary.running, "accent", theme)} running`,
+		"·",
+		`${formatSubagentSummaryCount(summary.failed, "error", theme)} failed`,
+		"·",
+		`${formatSubagentSummaryCount(summary.done, "success", theme)} done`,
+	].join(" ");
+}
+
+/** Colors a positive count and leaves zero or unthemed output plain. */
+function formatSubagentSummaryCount(
+	count: number,
+	color: ThemeColor,
+	theme: SubagentWidgetTheme | undefined,
+): string {
+	const label = String(count);
+	return theme !== undefined && count > 0 ? theme.fg(color, label) : label;
 }
 
 /** Converts serializable run details into widget tree nodes. */

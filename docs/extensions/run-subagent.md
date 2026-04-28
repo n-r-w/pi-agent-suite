@@ -31,6 +31,7 @@
 - Shows positive child-owned context-projection savings before the same child's context usage in widget rows.
 - Colors child-owned context-projection savings with the `warning` theme color in widget rows.
 - Colors subagent widget status icons by run status: `accent` for running, `success` for succeeded, and `error` for failed or aborted.
+- Colors only positive summary counts in the widget header: `accent` for running, `error` for failed, and `success` for done.
 - Colors child context usage in widget rows with the same context pressure thresholds as the footer: plain below 50%, `warning` from 50%, and `error` from 80%.
 - Does not copy parent footer statuses or context-overflow limits into subagent widget rows.
 - Renders collapsed and expanded tool results through width-aware components.
@@ -119,6 +120,7 @@ Tests must verify:
 - widget rows that show positive child-owned context-projection savings before the same child's context usage;
 - widget rows that color positive child-owned context-projection savings as `warning`;
 - widget rows that color status icons as `accent`, `success`, `error`, and `error` for running, succeeded, failed, and aborted statuses;
+- widget headers that color only positive summary counts as `accent`, `error`, and `success` for running, failed, and done counts;
 - widget rows that color child context usage with the same context pressure thresholds as the footer;
 - widget rows that ignore parent footer statuses, context-overflow limits, zero projection savings, projection errors, and cleared projection status;
 - widget and collapsed result lines that stay within the terminal width passed to `render(width)`.

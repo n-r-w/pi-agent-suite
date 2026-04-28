@@ -921,6 +921,61 @@ describe("run-subagent", () => {
 		expect(renderedWidget).not.toContain("<warning>■</warning>");
 	});
 
+	test("colors only positive subagent summary counts", () => {
+		// Purpose: the widget summary must highlight only active non-zero counts.
+		// Input and expected output: zero running stays plain, while one failed and one done color only the numbers.
+		// Edge case: labels stay uncolored even when their count is positive.
+		// Dependencies: this test uses the exported widget state updater and widget component factory.
+		const state = createSubagentWidgetState();
+		const statuses = [
+			{ runId: "failed", agentId: "FailedAgent", status: "failed" },
+			{ runId: "succeeded", agentId: "SucceededAgent", status: "succeeded" },
+		] as const;
+		for (const [index, status] of statuses.entries()) {
+			recordSubagentWidgetRun(
+				state,
+				{
+					runId: status.runId,
+					agentId: status.agentId,
+					depth: 1,
+					runtime: undefined,
+					contextUsage: undefined,
+					contextProjectionStatus: undefined,
+					status: status.status,
+					elapsedMs: 1000,
+					exitCode: undefined,
+					finalOutput: "",
+					stderr: "",
+					stopReason: undefined,
+					errorMessage: undefined,
+					events: [],
+					omittedEventCount: 0,
+					children: [],
+				},
+				index,
+			);
+		}
+		const theme: { fg(color: string, text: string): string } = {
+			fg(color: string, text: string): string {
+				return `<${color}>${text}</${color}>`;
+			},
+		};
+		const widgetFactory = createSubagentWidgetFactory(state, 1) as (
+			tui: unknown,
+			theme: { fg(color: string, text: string): string },
+		) => { render(width: number): string[] };
+		const renderedWidget = widgetFactory(undefined, theme)
+			.render(240)
+			.join("\n");
+
+		expect(renderedWidget).toContain(
+			"Subagents: 0 running · <error>1</error> failed · <success>1</success> done",
+		);
+		expect(renderedWidget).not.toContain("<accent>0</accent>");
+		expect(renderedWidget).not.toContain("<error>failed</error>");
+		expect(renderedWidget).not.toContain("<success>done</success>");
+	});
+
 	test("clears and ignores non-positive child projection statuses in widget rows", async () => {
 		// Purpose: widget rows must not show child projection states that do not represent positive savings.
 		// Input and expected output: positive, error, ready, and clear statuses result in plain context usage after the clear.
