@@ -54,10 +54,18 @@ const WIDGET_UPDATE_THROTTLE_MS = 120;
 const SECOND_MS = 1000;
 const ELAPSED_SECONDS_FRACTION_DIGITS = 1;
 const CHILD_STDERR_TEXT_LIMIT = 64_000;
-const CHILD_FINAL_TEXT_LIMIT = 1_000_000;
-const CHILD_STDOUT_JSON_OVERHEAD_LIMIT = 250_000;
+const BYTES_PER_KIB = 1024;
+const KIB_PER_MIB = 1024;
+const BYTES_PER_MIB = BYTES_PER_KIB * KIB_PER_MIB;
+const CHILD_STDOUT_LINE_BUFFER_KIB = 256;
 const CHILD_STDOUT_LINE_BUFFER_LIMIT =
-	CHILD_FINAL_TEXT_LIMIT + CHILD_STDOUT_JSON_OVERHEAD_LIMIT;
+	CHILD_STDOUT_LINE_BUFFER_KIB * BYTES_PER_KIB;
+const CHILD_STREAMED_TEXT_MIB_LIMIT = 100;
+const CHILD_STREAMED_TEXT_BYTES_LIMIT =
+	CHILD_STREAMED_TEXT_MIB_LIMIT * BYTES_PER_MIB;
+const OVERSIZED_CHILD_JSON_EVENT_ERROR =
+	"child pi output exceeded supported JSON event size before final response could be parsed";
+const OVERSIZED_CHILD_FINAL_RESPONSE_ERROR = `child pi final response exceeded ${CHILD_STREAMED_TEXT_MIB_LIMIT} MiB memory limit`;
 const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
 
 const RunSubagentParameters = Type.Object({
@@ -120,13 +128,19 @@ interface ChildRunResult {
 	readonly exitCode: number;
 	readonly stdoutText: string;
 	readonly stderrText: string;
+	readonly stdoutLineExceededLimit: boolean;
+	readonly streamedTextExceededLimit: boolean;
 }
 
 interface ChildStreamState {
 	stdoutBuffer: string;
 	stdoutBufferTruncated: boolean;
+	stdoutLineExceededLimit: boolean;
 	stderrText: string;
 	stderrTextTruncated: boolean;
+	streamedText: string;
+	streamedTextBytes: number;
+	streamedTextExceededLimit: boolean;
 	finalText: string;
 }
 
@@ -591,6 +605,13 @@ async function finishRunSubagentExecution(
 	}
 
 	const details = progress.emit("succeeded", run.exitCode, true);
+	if (run.streamedTextExceededLimit) {
+		return errorResult(OVERSIZED_CHILD_FINAL_RESPONSE_ERROR, details);
+	}
+	if (run.stdoutText.length === 0 && run.stdoutLineExceededLimit) {
+		return errorResult(OVERSIZED_CHILD_JSON_EVENT_ERROR, details);
+	}
+
 	const output = await truncateToolTextOutput(
 		run.stdoutText || "Subagent completed.",
 		"pi-run-subagent-",
@@ -823,8 +844,12 @@ async function runChildPi(
 		const streamState: ChildStreamState = {
 			stdoutBuffer: "",
 			stdoutBufferTruncated: false,
+			stdoutLineExceededLimit: false,
 			stderrText: "",
 			stderrTextTruncated: false,
+			streamedText: "",
+			streamedTextBytes: 0,
+			streamedTextExceededLimit: false,
 			finalText: "",
 		};
 
@@ -844,19 +869,23 @@ async function runChildPi(
 			}
 			resolve({
 				exitCode: code ?? 0,
-				stdoutText: streamState.finalText,
+				stdoutText: streamState.finalText || streamState.streamedText,
 				stderrText: formatBoundedChildText(
 					streamState.stderrText,
 					streamState.stderrTextTruncated,
 					"child stderr",
 				),
+				stdoutLineExceededLimit: streamState.stdoutLineExceededLimit,
+				streamedTextExceededLimit: streamState.streamedTextExceededLimit,
 			});
 		});
 		child.on("error", (error) => {
 			resolve({
 				exitCode: 1,
-				stdoutText: streamState.finalText,
+				stdoutText: streamState.finalText || streamState.streamedText,
 				stderrText: error.message,
+				stdoutLineExceededLimit: streamState.stdoutLineExceededLimit,
+				streamedTextExceededLimit: streamState.streamedTextExceededLimit,
 			});
 		});
 	});
@@ -876,6 +905,8 @@ function handleChildStdoutData(
 	state.stdoutBuffer = boundedStdout.text;
 	state.stdoutBufferTruncated =
 		state.stdoutBufferTruncated || boundedStdout.truncated;
+	state.stdoutLineExceededLimit =
+		state.stdoutLineExceededLimit || boundedStdout.truncated;
 
 	const lines = state.stdoutBuffer.split("\n");
 	state.stdoutBuffer = lines.pop() ?? "";
@@ -915,19 +946,32 @@ function processChildOutputLine(
 	}
 
 	onJsonEvent(event);
+	const delta = extractAssistantTextDelta(event);
+	if (delta !== undefined) {
+		appendStreamedTextDelta(state, delta);
+	}
+
 	const text = extractAssistantText(event);
 	if (text !== undefined) {
-		const boundedFinalText = appendBoundedText(
-			"",
-			text,
-			CHILD_FINAL_TEXT_LIMIT,
-		);
-		state.finalText = formatBoundedChildText(
-			boundedFinalText.text,
-			boundedFinalText.truncated,
-			"child final output",
-		);
+		state.finalText = text;
 	}
+}
+
+/** Appends one assistant text delta while enforcing the streamed-answer memory limit. */
+function appendStreamedTextDelta(state: ChildStreamState, delta: string): void {
+	if (state.streamedTextExceededLimit) {
+		return;
+	}
+
+	const nextBytes = state.streamedTextBytes + Buffer.byteLength(delta, "utf8");
+	if (nextBytes > CHILD_STREAMED_TEXT_BYTES_LIMIT) {
+		state.streamedText = "";
+		state.streamedTextExceededLimit = true;
+		return;
+	}
+
+	state.streamedText += delta;
+	state.streamedTextBytes = nextBytes;
 }
 
 /** Appends a text chunk while preserving only the latest text inside the configured limit. */
@@ -964,6 +1008,22 @@ function parseJsonLine(line: string): unknown | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+/** Extracts one streamed assistant text delta from a pi JSON-mode message_update event. */
+function extractAssistantTextDelta(event: unknown): string | undefined {
+	if (!isRecord(event)) {
+		return undefined;
+	}
+	const { type, assistantMessageEvent } = event;
+	if (type !== "message_update" || !isRecord(assistantMessageEvent)) {
+		return undefined;
+	}
+	if (assistantMessageEvent["type"] !== "text_delta") {
+		return undefined;
+	}
+	const delta = assistantMessageEvent["delta"];
+	return typeof delta === "string" ? delta : undefined;
 }
 
 /** Extracts assistant text from a pi JSON-mode message_end event. */

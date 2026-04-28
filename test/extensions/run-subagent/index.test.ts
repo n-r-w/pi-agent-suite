@@ -695,10 +695,10 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("parses a large single-line message_end event before truncating final output", async () => {
-		// Purpose: valid JSON-mode events must be parsed before the final assistant text is bounded for model-facing output.
-		// Input and expected output: one message_end line larger than the stdout partial-line limit still returns the child answer.
-		// Edge case: the full JSON event arrives in one stdout chunk with a trailing newline.
+	test("keeps large streamed final output when final message_end exceeds the line buffer", async () => {
+		// Purpose: the final subagent answer must come from text_delta events when the final message_end line is too large to parse.
+		// Input and expected output: streamed deltas produce the final answer even though the oversized message_end JSON line is discarded.
+		// Edge case: the final message_end line exceeds the raw stdout line buffer and cannot be used as fallback.
 		// Dependencies: this test uses temp agent files, Pi truncation constants, and a fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -707,13 +707,25 @@ describe("run-subagent", () => {
 				description: "Helps with code",
 				body: "Helper prompt",
 			});
-			const finalOutput = `large-final-${"x".repeat(70_000)}-end`;
+			const finalOutput = `large-final-${"x".repeat(300_000)}-end`;
 			const pi = createExtensionApiFake();
 			const ctx = createContext("/tmp/project");
 			await runSubagent(pi, {
 				spawnPi() {
 					const process = new SpawnedProcessFakeImpl();
 					queueMicrotask(() => {
+						for (const delta of finalOutput.match(/.{1,100000}/gs) ?? []) {
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									type: "message_update",
+									assistantMessageEvent: {
+										type: "text_delta",
+										delta,
+									},
+								})}\n`,
+							);
+						}
 						process.stdout.emit(
 							"data",
 							`${JSON.stringify({
@@ -744,6 +756,104 @@ describe("run-subagent", () => {
 			expect(fullOutputPath).toStartWith(join(tmpdir(), "pi-run-subagent-"));
 			expect(await readFile(fullOutputPath, "utf8")).toBe(finalOutput);
 			await rm(fullOutputPath, { force: true });
+		});
+	});
+
+	test("reports an error when final output is lost after stdout line overflow", async () => {
+		// Purpose: oversized final message_end output must not look like a successful empty subagent run.
+		// Input and expected output: an oversized message_end without text_delta fallback returns a clear execution error.
+		// Edge case: the child exits successfully but the only final-answer event exceeded the raw stdout line buffer.
+		// Dependencies: this test uses temp agent files and a fake child process output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const finalOutput = `lost-final-${"x".repeat(300_000)}-end`;
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({
+								type: "message_end",
+								message: {
+									role: "assistant",
+									content: [{ type: "text", text: finalOutput }],
+								},
+							})}\n`,
+						);
+						process.emit("close", 0);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(
+				"child pi output exceeded supported JSON event size before final response could be parsed",
+			);
+		});
+	});
+
+	test("reports an error when streamed final output exceeds the memory limit", async () => {
+		// Purpose: streamed final-answer accumulation must stop before a runaway child process can grow memory without a bound.
+		// Input and expected output: repeated text_delta events exceed the streamed-answer memory limit and return a clear execution error.
+		// Edge case: each delta fits the raw stdout line buffer, but the accumulated final answer does not fit the streamed-answer limit.
+		// Dependencies: this test uses temp agent files and fake child process output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helps with code",
+				body: "Helper prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					queueMicrotask(() => {
+						const delta = "x".repeat(100_000);
+						for (let index = 0; index < 1_050; index += 1) {
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									type: "message_update",
+									assistantMessageEvent: {
+										type: "text_delta",
+										delta,
+									},
+								})}\n`,
+							);
+						}
+						process.emit("close", 0);
+					});
+					return process;
+				},
+			});
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(
+				"child pi final response exceeded 100 MiB memory limit",
+			);
 		});
 	});
 
