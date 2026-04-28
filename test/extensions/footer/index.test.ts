@@ -7,6 +7,7 @@ import { visibleWidth } from "@mariozechner/pi-tui";
 import footer, {
 	SEGMENT_SEPARATOR,
 } from "../../../pi-package/extensions/footer/index";
+import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -122,9 +123,27 @@ function createExtensionApiFake(
 	options: Pick<SessionContextOptions, "thinkingLevel"> = {},
 ): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
+	const eventListeners = new Map<string, Set<() => void>>();
+	let currentActiveTools: string[] = [];
 
 	return {
 		handlers,
+		events: {
+			emit(eventName: string): void {
+				for (const listener of eventListeners.get(eventName) ?? []) {
+					listener();
+				}
+			},
+			on(eventName: string, listener: () => void): () => void {
+				const listeners =
+					eventListeners.get(eventName) ?? new Set<() => void>();
+				listeners.add(listener);
+				eventListeners.set(eventName, listeners);
+				return () => {
+					listeners.delete(listener);
+				};
+			},
+		},
 		async exec(command: string, args: string[], options: { cwd?: string }) {
 			expect(command).toBe("git");
 			expect(args).toEqual(["rev-parse", "--show-toplevel"]);
@@ -137,10 +156,16 @@ function createExtensionApiFake(
 		getThinkingLevel(): string {
 			return options.thinkingLevel ?? "high";
 		},
+		getActiveTools(): string[] {
+			return [...currentActiveTools];
+		},
+		setActiveTools(toolNames: string[]): void {
+			currentActiveTools = [...toolNames];
+		},
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
 		},
-	} as ExtensionApiFake;
+	} as unknown as ExtensionApiFake;
 }
 
 /** Creates the session context fake needed to install a footer and expose session-owned display state. */
@@ -272,6 +297,110 @@ describe("footer", () => {
 		await installFooterTestHarness();
 	});
 
+	test("renders No agent when runtime composition has no main-agent contribution", async () => {
+		// Purpose: the agent footer segment must reflect absence of the runtime main-agent contribution.
+		// Input and expected output: undefined mainAgentContribution renders `No agent`.
+		// Edge case: no legacy agent status is present in footerData.
+		// Dependencies: this test uses in-memory extension, session, footer data, and TUI fakes.
+		const { footerRenderer } = await installFooterTestHarness();
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(),
+		);
+
+		const renderedText = footerComponent.render(120).join("\n");
+
+		expect(renderedText).toContain("No agent");
+	});
+
+	test("renders the main-agent ID from runtime composition", async () => {
+		// Purpose: the agent footer segment must use the same in-memory contribution that prompt composition uses.
+		// Input and expected output: runtime mainAgentContribution with agent id Sage renders `Sage`.
+		// Edge case: contribution without custom tools still updates the agent segment.
+		// Dependencies: this test uses shared runtime composition through the fake ExtensionAPI event bus.
+		const { pi, footerRenderer } = await installFooterTestHarness();
+		getAgentRuntimeComposition(pi).setMainAgentContribution({
+			prompt: "Sage prompt",
+			agent: { id: "Sage" },
+		});
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(),
+		);
+
+		const renderedText = footerComponent.render(120).join("\n");
+
+		expect(renderedText).toContain("Sage");
+		expect(renderedText).not.toContain("No agent");
+	});
+
+	test("ignores legacy agent extension status when runtime composition has no main-agent contribution", async () => {
+		// Purpose: stale ctx.ui.setStatus("agent") data must not become a second source of truth.
+		// Input and expected output: footerData agent status Sage renders `No agent` because runtime composition is empty.
+		// Edge case: stale status text matches a valid agent-like label.
+		// Dependencies: this test uses footerData status without publishing a runtime contribution.
+		const { footerRenderer } = await installFooterTestHarness();
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(new Map([["agent", "Sage"]])),
+		);
+
+		const renderedText = footerComponent.render(120).join("\n");
+
+		expect(renderedText).toContain("No agent");
+		expect(renderedText).not.toContain("Sage");
+	});
+
+	test("ignores a stale pre-reload runtime composition object", async () => {
+		// Purpose: footer must not reuse runtime composition objects from older extension code after /reload.
+		// Input and expected output: a stale V2 object with agent Stale exists, but the footer renders `No agent` from a new runtime composition.
+		// Edge case: the stale property is non-configurable, matching previous runtime singleton storage.
+		// Dependencies: this test uses the real runtime composition lookup with an in-memory event bus fake.
+		const { pi, footerRenderer } = await installFooterTestHarness();
+		Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV2", {
+			configurable: false,
+			enumerable: false,
+			value: {
+				getMainAgentContribution: () => ({
+					prompt: "Stale prompt",
+					agent: { id: "Stale" },
+				}),
+			},
+			writable: false,
+		});
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(),
+		);
+
+		const renderedText = footerComponent.render(120).join("\n");
+
+		expect(renderedText).toContain("No agent");
+		expect(renderedText).not.toContain("Stale");
+	});
+
+	test("requests render after runtime main-agent contribution changes", async () => {
+		// Purpose: /agent changes must redraw the footer even though agent status is no longer written through ctx.ui.setStatus.
+		// Input and expected output: setting Sage after component creation triggers one render request and renders Sage.
+		// Edge case: the footer component reads the latest runtime state at render time.
+		// Dependencies: this test uses the runtime composition change listener and a TUI fake.
+		const { pi, footerRenderer } = await installFooterTestHarness();
+		const tui = createTuiFake();
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(),
+			tui,
+		);
+
+		getAgentRuntimeComposition(pi).setMainAgentContribution({
+			prompt: "Sage prompt",
+			agent: { id: "Sage" },
+		});
+
+		expect(tui.requestRenderCalls).toHaveLength(1);
+		expect(footerComponent.render(120).join("\n")).toContain("Sage");
+	});
+
 	test("does not install footer when explicitly disabled", async () => {
 		// Purpose: footer must be disabled by config without affecting other extensions that call ctx.ui.setStatus.
 		// Input and expected output: enabled false leaves the session without a custom footer renderer.
@@ -326,8 +455,12 @@ describe("footer", () => {
 		// Input and expected output: project, quota, agent, model display, context projection, and context usage render in one row.
 		// Edge case: a zero-token context usage remains visible as `0/223k/272k`.
 		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
-		const { footerRenderer } = await installFooterTestHarness({
+		const { pi, footerRenderer } = await installFooterTestHarness({
 			contextUsage: { tokens: 0, contextWindow: 272_000 },
+		});
+		getAgentRuntimeComposition(pi).setMainAgentContribution({
+			prompt: "Coder prompt",
+			agent: { id: "Coder" },
 		});
 		const footerComponent = createFooterComponent(
 			footerRenderer,
@@ -396,9 +529,13 @@ describe("footer", () => {
 		// Input and expected output: a long repository path renders with all non-project segments preserved.
 		// Edge case: the project segment receives only the width left after higher-priority segments are reserved.
 		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
-		const { footerRenderer } = await installFooterTestHarness(
+		const { pi, footerRenderer } = await installFooterTestHarness(
 			"/workspace/customer-platform-with-a-very-long-service-name/src/extensions/footer",
 		);
+		getAgentRuntimeComposition(pi).setMainAgentContribution({
+			prompt: "Coder prompt",
+			agent: { id: "Coder" },
+		});
 		const footerComponent = createFooterComponent(
 			footerRenderer,
 			createFooterDataFake(
@@ -565,7 +702,7 @@ describe("footer", () => {
 			const renderedText = footerComponent.render(120).join("\n");
 
 			expect(renderedText).toBe(
-				["pi-harness", "42k/151k/200k"].join(SEGMENT_SEPARATOR),
+				["pi-harness", "No agent", "42k/151k/200k"].join(SEGMENT_SEPARATOR),
 			);
 		});
 	});

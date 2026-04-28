@@ -146,7 +146,9 @@ Options:
 How it works:
 
 - Installs a custom footer when a pi session starts.
-- Shows these footer parts: project, Codex quota, selected agent, model, context projection, MCP errors, context usage.
+- Shows these footer parts: project, Codex quota, active main agent, model, context projection, MCP errors, context usage.
+- Shows `No agent` when no main agent is active.
+- Reads the agent label from the same runtime state that builds the system prompt.
 - Shortens long text so the footer fits the terminal width.
 
 Example:
@@ -159,7 +161,7 @@ workspace · 100%/5h 65%/5d · Coder · openai-codex/gpt-5.5/high · ~80k · 70k
 | --- | --- | --- |
 | Project | `workspace` | Current repository or directory. |
 | Codex quota | `100%/5h 65%/5d` | Remaining quota and reset windows. |
-| Agent | `Coder` | Selected main agent. |
+| Agent | `Coder` or `No agent` | Active main agent, or `No agent` when no main agent is active. |
 | Model | `openai-codex/gpt-5.5/high` | Provider, model, and reasoning level. |
 | Projection | `~80k` | Tokens saved by context projection. |
 | Context | `70k/262k/272k` | Current context use, context-overflow threshold, and maximum context size. |
@@ -325,6 +327,8 @@ How it works:
 - Supports `No agent` through the selector or `/agent none`.
 - Saves the selected agent for the current working directory.
 - Applies the selected agent's prompt, model, thinking level, tools, and allowed subagents.
+- Reads the saved selection on session start and `/reload`.
+- Keeps the active agent unchanged when selected-agent state files change during a running session.
 
 ### `run-subagent`
 

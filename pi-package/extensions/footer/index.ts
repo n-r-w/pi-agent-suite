@@ -3,6 +3,10 @@ import { basename, join } from "node:path";
 import { type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
 import { visibleWidth } from "@mariozechner/pi-tui";
 import {
+	getAgentRuntimeComposition,
+	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+} from "../../shared/agent-runtime-composition";
+import {
 	sliceTextByWidth,
 	sliceTextSuffixByWidth,
 	truncateTextByWidth,
@@ -12,8 +16,8 @@ import {
 	readContextOverflowConfig,
 } from "../context-overflow/config";
 
-/** Status key used by the agent-selection extension for the selected agent label. */
-const AGENT_STATUS_KEY = "agent";
+/** Footer label shown when no main-agent runtime contribution is active. */
+const NO_AGENT_LABEL = "No agent";
 
 /** Status key used by the Codex quota extension for quota text. */
 const CODEX_QUOTA_STATUS_KEY = "codex-quota";
@@ -90,6 +94,13 @@ interface FooterTui {
 	requestRender(): void;
 }
 
+interface FooterEventBus {
+	on(
+		eventName: typeof MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+		listener: () => void,
+	): () => void;
+}
+
 /** Minimal theme surface needed by the footer renderer. */
 interface FooterTheme {
 	fg(color: "warning" | "error", value: string): string;
@@ -126,6 +137,7 @@ type FooterConfigResult =
 
 /** Render input assembled from session-owned state. */
 interface FooterRenderState {
+	readonly agentLabel: string;
 	readonly thinkingLevel: string | undefined;
 	readonly contextUsage: FooterContextUsageState | undefined;
 }
@@ -359,6 +371,9 @@ function readFooterRenderState(
 	ctx: FooterSessionContext,
 ): FooterRenderState {
 	return {
+		agentLabel:
+			getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
+			NO_AGENT_LABEL,
 		thinkingLevel: pi.getThinkingLevel(),
 		contextUsage: ctx.getContextUsage(),
 	};
@@ -376,6 +391,11 @@ function buildStatusSegmentByKey(
 
 	const sanitizedValue = sanitizeStatusText(value);
 	return sanitizedValue || undefined;
+}
+
+/** Builds the agent segment from the runtime contribution used for prompt composition. */
+function buildAgentSegment(renderState: FooterRenderState): string {
+	return sanitizeStatusText(renderState.agentLabel) || NO_AGENT_LABEL;
 }
 
 /** Builds MCP status segments that report user-visible errors. */
@@ -424,7 +444,7 @@ function renderFooterLines({
 }: FooterRenderOptions): string[] {
 	const fixedPrioritySegments = [
 		buildStatusSegmentByKey(footerData, CODEX_QUOTA_STATUS_KEY),
-		buildStatusSegmentByKey(footerData, AGENT_STATUS_KEY),
+		buildAgentSegment(renderState),
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
 		buildContextSegment(renderState, theme, contextOverflowConfig),
@@ -450,7 +470,7 @@ function renderFooterLines({
 		: undefined;
 	const prioritySegments = [
 		buildStatusSegmentByKey(footerData, CODEX_QUOTA_STATUS_KEY),
-		buildStatusSegmentByKey(footerData, AGENT_STATUS_KEY),
+		buildAgentSegment(renderState),
 		modelDisplaySegment,
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
@@ -493,10 +513,15 @@ function createFooterComponent({
 	tui,
 }: CreateFooterComponentOptions): FooterComponent {
 	const requestRender = () => tui.requestRender();
+	const unsubscribeFromAgentChanges = (pi.events as FooterEventBus).on(
+		MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+		requestRender,
+	);
 	state.requestRender = requestRender;
 
 	return {
 		dispose() {
+			unsubscribeFromAgentChanges();
 			if (state.requestRender === requestRender) {
 				state.requestRender = undefined;
 			}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	mkdir,
 	mkdtemp,
@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
+import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
 import { SUBAGENT_AGENT_ID_ENV } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -24,6 +25,8 @@ interface RegisteredHandler {
 	readonly eventName: string;
 	readonly handler: unknown;
 }
+
+type MainAgentSelectionFactory = typeof mainAgentSelection;
 
 interface RegisteredCommandFake {
 	readonly name: string;
@@ -409,18 +412,26 @@ function getShortcut(
 	return registeredShortcut;
 }
 
+/** Returns one registered event handler from the fake API. */
+function getHandler(
+	pi: ExtensionApiFake,
+	eventName: string,
+): (event: unknown, ctx: unknown) => unknown {
+	const handler = pi.handlers.find(
+		(item) => item.eventName === eventName,
+	)?.handler;
+	if (typeof handler !== "function") {
+		throw new Error(`expected ${eventName} handler to be registered`);
+	}
+
+	return handler as (event: unknown, ctx: unknown) => unknown;
+}
+
 /** Returns the before-agent-start handler from the fake API. */
 function getBeforeAgentStartHandler(
 	pi: ExtensionApiFake,
 ): (event: unknown, ctx: unknown) => unknown {
-	const handler = pi.handlers.find(
-		(item) => item.eventName === "before_agent_start",
-	)?.handler;
-	if (typeof handler !== "function") {
-		throw new Error("expected before_agent_start handler to be registered");
-	}
-
-	return handler as (event: unknown, ctx: unknown) => unknown;
+	return getHandler(pi, "before_agent_start");
 }
 
 /** Writes main-agent-selection configuration into the isolated config directory. */
@@ -446,6 +457,15 @@ async function readOnlyStateFile(agentDir: string): Promise<unknown> {
 	const files = await readdir(stateDir);
 	expect(files).toHaveLength(1);
 	return JSON.parse(await readFile(join(stateDir, files[0] ?? ""), "utf8"));
+}
+
+/** Loads a fresh extension module instance, matching pi's hot session replacement loader behavior. */
+async function importFreshMainAgentSelection(): Promise<MainAgentSelectionFactory> {
+	const modulePath = `../../../pi-package/extensions/main-agent-selection/index.ts?fresh=${randomUUID()}`;
+	const module = (await import(modulePath)) as {
+		default: MainAgentSelectionFactory;
+	};
+	return module.default;
 }
 
 describe("main-agent-selection", () => {
@@ -507,6 +527,7 @@ describe("main-agent-selection", () => {
 			expect(pi.setModelCalls).toEqual([model]);
 			expect(pi.thinkingCalls).toEqual(["high"]);
 			expect(pi.activeToolCalls).toEqual([["read", "write"]]);
+			expect(ctx.statusCalls).toEqual([]);
 			expect(ctx.notifications).toEqual([]);
 
 			const result = await getBeforeAgentStartHandler(pi)(
@@ -519,6 +540,341 @@ describe("main-agent-selection", () => {
 			expect(result).toEqual({
 				systemPrompt: "Base prompt\n\nBuilder system prompt",
 			});
+		});
+	});
+
+	test("does not apply external selected-agent state changes before reload when the session started without an agent", async () => {
+		// Purpose: running sessions must not reread selected-agent state before each prompt.
+		// Input and expected output: missing state at startup keeps mainAgentContribution undefined after an external Sage state file appears.
+		// Edge case: the external state is valid for the current working directory.
+		// Dependencies: this test uses the session_start and before_agent_start handlers from the shared runtime composition.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Sage",
+				description: "Guides work",
+				body: "Sage prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+			const sessionStart = pi.handlers.find(
+				(item) => item.eventName === "session_start",
+			)?.handler;
+			if (typeof sessionStart !== "function") {
+				throw new Error("expected session_start handler to be registered");
+			}
+
+			await sessionStart({ type: "session_start", reason: "startup" }, ctx);
+			await mkdir(join(agentDir, "agent-selection", "state"), {
+				recursive: true,
+			});
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/project"),
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
+			);
+
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+			).toBeUndefined();
+			expect(
+				await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base prompt" },
+					ctx,
+				),
+			).toBeUndefined();
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+			).toBeUndefined();
+		});
+	});
+
+	test("reload rereads selected-agent state and updates runtime contribution", async () => {
+		// Purpose: /reload must be the boundary where persisted selected-agent state affects the running session.
+		// Input and expected output: missing state at startup then Sage state before reload publishes Sage prompt after reload.
+		// Edge case: reload uses the same extension instance in this unit test, matching the observable session_start contract.
+		// Dependencies: this test writes only isolated agent definitions and selected-agent state files.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Sage",
+				description: "Guides work",
+				body: "Sage prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+			const sessionStart = pi.handlers.find(
+				(item) => item.eventName === "session_start",
+			)?.handler;
+			if (typeof sessionStart !== "function") {
+				throw new Error("expected session_start handler to be registered");
+			}
+
+			await sessionStart({ type: "session_start", reason: "startup" }, ctx);
+			await mkdir(join(agentDir, "agent-selection", "state"), {
+				recursive: true,
+			});
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/project"),
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
+			);
+
+			await sessionStart({ type: "session_start", reason: "reload" }, ctx);
+
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("Sage");
+			expect(
+				await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base prompt" },
+					ctx,
+				),
+			).toEqual({ systemPrompt: "Base prompt\n\nSage prompt" });
+		});
+	});
+
+	test("new session keeps current main-agent runtime contribution", async () => {
+		// Purpose: /new must start a fresh chat without changing the active main agent.
+		// Input and expected output: Coder is active, persisted state changes to Sage, and session_start reason new keeps Coder prompt active.
+		// Edge case: the external state is valid and would switch the agent if /new reread selected-agent state.
+		// Dependencies: this test uses only isolated agent files, selected-agent state, and in-memory session handlers.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Coder",
+				description: "Writes code",
+				body: "Coder prompt",
+			});
+			await writeAgent(agentDir, {
+				id: "Sage",
+				description: "Guides work",
+				body: "Sage prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+			const sessionStart = getHandler(pi, "session_start");
+
+			await getCommand(pi, "agent").handler("Coder", ctx);
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/project"),
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
+			);
+
+			await sessionStart({ type: "session_start", reason: "new" }, ctx);
+
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("Coder");
+			expect(
+				await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base prompt" },
+					ctx,
+				),
+			).toEqual({ systemPrompt: "Base prompt\n\nCoder prompt" });
+		});
+	});
+
+	test("new session preserves current main agent across fresh extension instances", async () => {
+		// Purpose: real /new replaces the extension runtime, so the selected main agent must cross that boundary.
+		// Input and expected output: old Coder selection plus a later Sage state file still starts the new runtime with Coder prompt, tools, model, and thinking.
+		// Edge case: each extension instance is imported separately to match pi's moduleCache false extension loader.
+		// Dependencies: this test uses isolated agent files, selected-agent state, fake model calls, and fake runtime composition per ExtensionAPI instance.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = createModel("openai", "gpt-test");
+			await writeAgent(agentDir, {
+				id: "Coder",
+				description: "Writes code",
+				body: "Coder prompt",
+				model: { id: "openai/gpt-test", thinking: "high" },
+				tools: ["read", "write"],
+			});
+			await writeAgent(agentDir, {
+				id: "Sage",
+				description: "Guides work",
+				body: "Sage prompt",
+			});
+			const oldPi = createExtensionApiFake({
+				activeTools: ["read", "bash"],
+				allTools: ["read", "bash", "edit", "write"],
+			});
+			const oldCtx = createCommandContext("/tmp/project", undefined, [model]);
+			const oldMainAgentSelection = await importFreshMainAgentSelection();
+			oldMainAgentSelection(oldPi);
+
+			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/project"),
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
+			);
+			await getHandler(oldPi, "session_shutdown")(
+				{ type: "session_shutdown", reason: "new" },
+				oldCtx,
+			);
+
+			const newPi = createExtensionApiFake({
+				activeTools: ["read", "bash"],
+				allTools: ["read", "bash", "edit", "write"],
+			});
+			const newCtx = createCommandContext("/tmp/project", undefined, [model]);
+			const newMainAgentSelection = await importFreshMainAgentSelection();
+			newMainAgentSelection(newPi);
+
+			await getHandler(newPi, "session_start")(
+				{ type: "session_start", reason: "new" },
+				newCtx,
+			);
+
+			expect(newPi.setModelCalls).toEqual([model]);
+			expect(newPi.thinkingCalls).toEqual(["high"]);
+			expect(newPi.activeToolCalls).toEqual([["read", "write"]]);
+			expect(
+				getAgentRuntimeComposition(newPi).getMainAgentContribution()?.agent?.id,
+			).toBe("Coder");
+			expect(
+				await getBeforeAgentStartHandler(newPi)(
+					{ systemPrompt: "Base prompt" },
+					newCtx,
+				),
+			).toEqual({ systemPrompt: "Base prompt\n\nCoder prompt" });
+			expect(await readOnlyStateFile(agentDir)).toEqual({
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
+		});
+	});
+
+	test("new session handoff is consumed once", async () => {
+		// Purpose: a /new handoff must not restore a stale agent after the first replacement runtime consumes it.
+		// Input and expected output: Coder is restored once, then a second fresh new-session runtime without a preceding shutdown has no contribution.
+		// Edge case: persisted state names Sage, but reason new must not reread disk after the handoff is gone.
+		// Dependencies: this test uses fresh extension imports to simulate replacement runtimes.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Coder",
+				description: "Writes code",
+				body: "Coder prompt",
+			});
+			await writeAgent(agentDir, {
+				id: "Sage",
+				description: "Guides work",
+				body: "Sage prompt",
+			});
+			const oldPi = createExtensionApiFake();
+			const oldCtx = createCommandContext("/tmp/project");
+			const oldMainAgentSelection = await importFreshMainAgentSelection();
+			oldMainAgentSelection(oldPi);
+
+			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/project"),
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
+			);
+			await getHandler(oldPi, "session_shutdown")(
+				{ type: "session_shutdown", reason: "new" },
+				oldCtx,
+			);
+
+			const firstNewPi = createExtensionApiFake();
+			const firstNewCtx = createCommandContext("/tmp/project");
+			const firstNewMainAgentSelection = await importFreshMainAgentSelection();
+			firstNewMainAgentSelection(firstNewPi);
+			await getHandler(firstNewPi, "session_start")(
+				{ type: "session_start", reason: "new" },
+				firstNewCtx,
+			);
+
+			const secondNewPi = createExtensionApiFake();
+			const secondNewCtx = createCommandContext("/tmp/project");
+			const secondNewMainAgentSelection = await importFreshMainAgentSelection();
+			secondNewMainAgentSelection(secondNewPi);
+			await getHandler(secondNewPi, "session_start")(
+				{ type: "session_start", reason: "new" },
+				secondNewCtx,
+			);
+
+			expect(
+				getAgentRuntimeComposition(firstNewPi).getMainAgentContribution()?.agent
+					?.id,
+			).toBe("Coder");
+			expect(
+				getAgentRuntimeComposition(secondNewPi).getMainAgentContribution(),
+			).toBeUndefined();
+			expect(
+				await getBeforeAgentStartHandler(secondNewPi)(
+					{ systemPrompt: "Base prompt" },
+					secondNewCtx,
+				),
+			).toBeUndefined();
+		});
+	});
+
+	test("reload rereads no-agent state and clears current main-agent runtime contribution", async () => {
+		// Purpose: /reload must still apply a persisted No agent state.
+		// Input and expected output: Coder is active, persisted state changes to null, and reload clears the prompt contribution.
+		// Edge case: the active runtime contribution exists before reload.
+		// Dependencies: this test uses only isolated agent files, selected-agent state, and in-memory session handlers.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Coder",
+				description: "Writes code",
+				body: "Coder prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+			const sessionStart = pi.handlers.find(
+				(item) => item.eventName === "session_start",
+			)?.handler;
+			if (typeof sessionStart !== "function") {
+				throw new Error("expected session_start handler to be registered");
+			}
+
+			await getCommand(pi, "agent").handler("Coder", ctx);
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/project"),
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: null }),
+			);
+
+			await sessionStart({ type: "session_start", reason: "reload" }, ctx);
+
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+			).toBeUndefined();
+			expect(
+				await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base prompt" },
+					ctx,
+				),
+			).toBeUndefined();
 		});
 	});
 
@@ -657,10 +1013,7 @@ describe("main-agent-selection", () => {
 				activeAgentId: null,
 			});
 			expect(pi.activeToolCalls).toEqual([["write"], ["read"]]);
-			expect(ctx.statusCalls.at(-1)).toEqual({
-				key: "agent",
-				text: "no agent",
-			});
+			expect(ctx.statusCalls).toEqual([]);
 			expect(
 				await getBeforeAgentStartHandler(pi)(
 					{ systemPrompt: "Base prompt" },
@@ -1167,7 +1520,7 @@ describe("main-agent-selection", () => {
 	});
 
 	test("fails closed when model application fails", async () => {
-		// Purpose: a selected agent must not publish prompt, tools, thinking, or status when its configured model cannot be applied.
+		// Purpose: a selected agent must not publish prompt, tools, thinking, or runtime contribution when its configured model cannot be applied.
 		// Input and expected output: setModel returns false, selection reports a warning, and no runtime contribution is applied.
 		// Edge case: the agent also defines thinking and tools, which must remain unapplied after model failure.
 		// Dependencies: this test uses a fake model registry and fake setModel result.
@@ -1192,7 +1545,7 @@ describe("main-agent-selection", () => {
 			expect(ctx.notifications[0]?.type).toBe("warning");
 			expect(pi.thinkingCalls).toEqual([]);
 			expect(pi.activeToolCalls).toEqual([]);
-			expect(ctx.statusCalls).toEqual([{ key: "agent", text: undefined }]);
+			expect(ctx.statusCalls).toEqual([]);
 			expect(
 				await getBeforeAgentStartHandler(pi)(
 					{ systemPrompt: "Base prompt" },
@@ -1351,7 +1704,7 @@ describe("main-agent-selection", () => {
 	});
 
 	test("clears previous runtime contribution when a later model application fails", async () => {
-		// Purpose: fail-closed behavior must remove stale prompt, tools, and status from the previous agent.
+		// Purpose: fail-closed behavior must remove stale prompt, tools, and runtime contribution from the previous agent.
 		// Input and expected output: first agent succeeds, second agent setModel returns false, baseline tools and empty prompt are restored.
 		// Edge case: the previous agent had both prompt and restricted tools.
 		// Dependencies: this test uses ordered fake setModel results and fake active-tool state.
@@ -1389,10 +1742,7 @@ describe("main-agent-selection", () => {
 				"[main-agent-selection]",
 			);
 			expect(pi.activeToolCalls).toEqual([["write"], ["read"]]);
-			expect(ctx.statusCalls).toEqual([
-				{ key: "agent", text: "writer" },
-				{ key: "agent", text: undefined },
-			]);
+			expect(ctx.statusCalls).toEqual([]);
 			expect(
 				await getBeforeAgentStartHandler(pi)(
 					{ systemPrompt: "Base prompt" },

@@ -55,7 +55,7 @@ test("does not reuse stale runtime composition objects from previous reloads", a
 	// Edge case: the stale property may be non-configurable because previous versions stored it as a permanent event-bus property.
 	// Dependencies: this test uses the real shared module and an ExtensionAPI fake.
 	const { pi, handlers } = createCompositionApiFake();
-	Object.defineProperty(pi.events, "__piHarnessAgentRuntimeComposition", {
+	Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV2", {
 		configurable: false,
 		enumerable: false,
 		value: {

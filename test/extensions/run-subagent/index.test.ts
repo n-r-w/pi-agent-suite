@@ -3905,7 +3905,7 @@ describe("run-subagent", () => {
 	});
 
 	test("restores selected main-agent allowlist before exposing callable agents", async () => {
-		// Purpose: callable-agent prompt must use the persisted selected main agent even when no session_start ran after extension load.
+		// Purpose: callable-agent prompt must use the persisted selected main agent after session_start restores it.
 		// Input and expected output: persisted TestAgent allows only SubAgentExtractor, so other callable agents and TestAgent itself are omitted.
 		// Edge case: TestAgent has type both and would be globally callable without the selected main-agent allowlist.
 		// Dependencies: this test uses temp agent files, temp selected-agent state, main-agent-selection, and run-subagent composition.
@@ -3941,6 +3941,13 @@ describe("run-subagent", () => {
 			const ctx = createContext("/tmp/project");
 			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
 			mainAgentSelection(pi);
+			for (const item of pi.handlers.filter(
+				(handler) => handler.eventName === "session_start",
+			)) {
+				if (typeof item.handler === "function") {
+					await item.handler({ type: "session_start", reason: "startup" }, ctx);
+				}
+			}
 
 			const result = await runBeforeAgentStartHandlers(
 				pi,
@@ -4050,7 +4057,7 @@ describe("run-subagent", () => {
 	test("hides run_subagent tool and prompt when current subagent depth reaches maxDepth", async () => {
 		// Purpose: an agent at maxDepth must not see or receive run_subagent in its effective tool policy or prompt.
 		// Input and expected output: depth 1 with maxDepth 1 keeps the selected main prompt, removes run_subagent, and omits callable-agent guidance.
-		// Edge case: main-agent selection restores run_subagent before composition, so the depth filter must run after restoration.
+		// Edge case: session_start restores run_subagent before composition, so the depth filter must run after restoration.
 		// Dependencies: this test uses temp agent files, selected-agent state, main-agent-selection, and run-subagent composition.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -4072,6 +4079,13 @@ describe("run-subagent", () => {
 			const ctx = createContext("/tmp/project");
 			mainAgentSelection(pi);
 			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
+			for (const item of pi.handlers.filter(
+				(handler) => handler.eventName === "session_start",
+			)) {
+				if (typeof item.handler === "function") {
+					await item.handler({ type: "session_start", reason: "startup" }, ctx);
+				}
+			}
 
 			const result = await runBeforeAgentStartHandlers(
 				pi,

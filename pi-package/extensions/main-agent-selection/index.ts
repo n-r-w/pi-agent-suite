@@ -75,7 +75,6 @@ interface MainAgentContext {
 			) => Component | Promise<Component>,
 		): Promise<T>;
 		notify(message: string, type?: "info" | "warning" | "error"): void;
-		setStatus?(key: string, text: string | undefined): void;
 	};
 	readonly modelRegistry: {
 		find(provider: string, modelId: string): Model<Api> | undefined;
@@ -86,6 +85,25 @@ interface SelectedAgentState {
 	readonly cwd: string;
 	readonly activeAgentId: string | null;
 }
+
+interface SessionStartEventLike {
+	readonly reason?: string;
+}
+
+interface SessionShutdownEventLike {
+	readonly reason?: string;
+}
+
+const NEW_SESSION_HANDOFFS_PROPERTY =
+	"__piHarnessMainAgentSelectionNewSessionHandoffs";
+
+interface NewSessionHandoffCarrier {
+	[NEW_SESSION_HANDOFFS_PROPERTY]?: Map<string, string | null>;
+}
+
+type NewSessionHandoff =
+	| { readonly found: false }
+	| { readonly found: true; readonly activeAgentId: string | null };
 
 interface SearchableAgentSelectorOptions {
 	readonly options: readonly SelectItem[];
@@ -273,7 +291,7 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 		return;
 	}
 
-	const composition = getAgentRuntimeComposition(pi);
+	getAgentRuntimeComposition(pi);
 
 	pi.registerCommand(COMMAND_NAME, {
 		description: "Select the main agent for this working directory",
@@ -299,24 +317,113 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 		},
 	});
 
-	composition.setBeforeComposeHandler(async (ctx) => {
-		if (
-			isChildSubagentProcess() ||
-			composition.getMainAgentContribution() !== undefined
-		) {
-			return;
-		}
-
-		await restoreSelectedMainAgent(pi, ctx as MainAgentContext);
-	});
-
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		if (isChildSubagentProcess()) {
 			return;
 		}
 
+		if (await restoreNewSessionMainAgent(pi, event, ctx as MainAgentContext)) {
+			return;
+		}
+
+		if (!shouldRestoreSelectedMainAgent(event)) {
+			return;
+		}
+
 		await restoreSelectedMainAgent(pi, ctx as MainAgentContext);
 	});
+
+	pi.on("session_shutdown", (event, ctx) => {
+		if (isChildSubagentProcess()) {
+			return;
+		}
+
+		captureNewSessionMainAgent(pi, event, ctx as MainAgentContext);
+	});
+}
+
+/** Returns whether this session-start reason must refresh selected-agent state from disk. */
+function shouldRestoreSelectedMainAgent(event: unknown): boolean {
+	const reason = (event as SessionStartEventLike).reason;
+	return reason === "startup" || reason === "reload";
+}
+
+/** Captures the selected agent ID before pi tears down the old runtime for /new. */
+function captureNewSessionMainAgent(
+	pi: ExtensionAPI,
+	event: unknown,
+	mainContext: MainAgentContext,
+): void {
+	if ((event as SessionShutdownEventLike).reason !== "new") {
+		return;
+	}
+
+	const normalizedCwd = normalizeCwd(mainContext.cwd);
+	const activeAgentId =
+		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
+		null;
+	getNewSessionHandoffStore().set(normalizedCwd, activeAgentId);
+}
+
+/** Restores a /new handoff without consulting or rewriting persisted selected-agent state. */
+async function restoreNewSessionMainAgent(
+	pi: ExtensionAPI,
+	event: unknown,
+	mainContext: MainAgentContext,
+): Promise<boolean> {
+	if ((event as SessionStartEventLike).reason !== "new") {
+		return false;
+	}
+
+	const handoff = consumeNewSessionHandoff(normalizeCwd(mainContext.cwd));
+	if (!handoff.found) {
+		return false;
+	}
+	if (handoff.activeAgentId === null) {
+		getAgentRuntimeComposition(pi).clearMainAgentContribution();
+		return true;
+	}
+
+	const agents = await loadSelectableAgents();
+	const agent = agents.find(
+		(candidate) => candidate.id === handoff.activeAgentId,
+	);
+	if (agent === undefined) {
+		reportIssue(
+			mainContext,
+			`selected agent ${handoff.activeAgentId} was not found`,
+		);
+		getAgentRuntimeComposition(pi).clearMainAgentContribution();
+		return true;
+	}
+
+	await applyAgentSelection(pi, mainContext, agent);
+	return true;
+}
+
+/** Returns the process-wide /new handoff store shared by freshly loaded extension modules. */
+function getNewSessionHandoffStore(): Map<string, string | null> {
+	const carrier = globalThis as NewSessionHandoffCarrier;
+	const existing = carrier[NEW_SESSION_HANDOFFS_PROPERTY];
+	if (existing !== undefined) {
+		return existing;
+	}
+
+	const store = new Map<string, string | null>();
+	carrier[NEW_SESSION_HANDOFFS_PROPERTY] = store;
+	return store;
+}
+
+/** Reads and deletes one /new handoff so a stale agent cannot be restored later. */
+function consumeNewSessionHandoff(cwd: string): NewSessionHandoff {
+	const store = getNewSessionHandoffStore();
+	if (!store.has(cwd)) {
+		return { found: false };
+	}
+
+	const activeAgentId = store.get(cwd) ?? null;
+	store.delete(cwd);
+	return { found: true, activeAgentId };
 }
 
 /** Returns true only for a present valid config that explicitly disables main-agent selection. */
@@ -340,15 +447,16 @@ async function restoreSelectedMainAgent(
 	const normalizedCwd = normalizeCwd(mainContext.cwd);
 	const state = await readSelectedAgentState(normalizedCwd);
 	if (state.kind === "missing") {
+		composition.clearMainAgentContribution();
 		return;
 	}
 	if (state.kind === "invalid") {
+		composition.clearMainAgentContribution();
 		reportIssue(mainContext, state.issue);
 		return;
 	}
 	if (state.state.activeAgentId === null) {
-		composition.setMainAgentContribution(undefined);
-		setAgentStatus(mainContext, "no agent");
+		composition.clearMainAgentContribution();
 		return;
 	}
 
@@ -361,6 +469,7 @@ async function restoreSelectedMainAgent(
 			mainContext,
 			`selected agent ${state.state.activeAgentId} was not found`,
 		);
+		composition.clearMainAgentContribution();
 		return;
 	}
 
@@ -375,7 +484,7 @@ async function selectMainAgent(
 ): Promise<void> {
 	const agents = await loadSelectableAgents();
 	const selectedAgentId =
-		explicitAgentId ?? (await promptForAgent(ctx, agents));
+		explicitAgentId ?? (await promptForAgent(pi, ctx, agents));
 	if (selectedAgentId === undefined) {
 		return;
 	}
@@ -416,6 +525,7 @@ async function loadSelectableAgents(): Promise<AgentDefinition[]> {
 
 /** Prompts the user to choose an agent and maps the selected label back to an agent ID. */
 async function promptForAgent(
+	pi: ExtensionAPI,
 	ctx: MainAgentContext,
 	agents: readonly AgentDefinition[],
 ): Promise<string | null | undefined> {
@@ -424,7 +534,9 @@ async function promptForAgent(
 		return undefined;
 	}
 
-	const currentAgentId = await readCurrentSelectedAgentId(ctx.cwd);
+	const currentAgentId =
+		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
+		null;
 	const options: SelectItem[] = [
 		{ value: NO_AGENT_VALUE, label: NO_AGENT_LABEL },
 		...agents.map((agent) => ({
@@ -470,12 +582,6 @@ async function promptForAgent(
 	return selected === NO_AGENT_VALUE ? null : selected;
 }
 
-/** Reads the persisted selector value so `/agent` can reopen on the current selection. */
-async function readCurrentSelectedAgentId(cwd: string): Promise<string | null> {
-	const state = await readSelectedAgentState(normalizeCwd(cwd));
-	return state.kind === "valid" ? state.state.activeAgentId : null;
-}
-
 /** Stores the explicit no-agent state and removes the main-agent runtime contribution. */
 async function selectNoMainAgent(
 	pi: ExtensionAPI,
@@ -483,7 +589,6 @@ async function selectNoMainAgent(
 ): Promise<void> {
 	const normalizedCwd = normalizeCwd(ctx.cwd);
 	getAgentRuntimeComposition(pi).clearMainAgentContribution();
-	setAgentStatus(ctx, "no agent");
 
 	await writeSelectedAgentState({
 		cwd: normalizedCwd,
@@ -491,7 +596,7 @@ async function selectNoMainAgent(
 	});
 }
 
-/** Applies selected agent model, thinking, status, and runtime composition contribution. */
+/** Applies selected agent model, thinking, and runtime composition contribution. */
 async function applyAgentSelection(
 	pi: ExtensionAPI,
 	ctx: MainAgentContext,
@@ -499,7 +604,7 @@ async function applyAgentSelection(
 ): Promise<boolean> {
 	const resolvedTools = resolveMainAgentTools(pi, agent);
 	if ("issue" in resolvedTools) {
-		clearMainAgentSelection(pi, ctx);
+		clearMainAgentSelection(pi);
 		reportIssue(ctx, resolvedTools.issue);
 		return false;
 	}
@@ -507,14 +612,14 @@ async function applyAgentSelection(
 	if (agent.model?.id !== undefined) {
 		const model = resolveModel(ctx, agent.model.id);
 		if (model === undefined) {
-			clearMainAgentSelection(pi, ctx);
+			clearMainAgentSelection(pi);
 			reportIssue(ctx, `model ${agent.model.id} was not found`);
 			return false;
 		}
 
 		const modelApplied = await pi.setModel(model);
 		if (!modelApplied) {
-			clearMainAgentSelection(pi, ctx);
+			clearMainAgentSelection(pi);
 			reportIssue(ctx, `model ${agent.model.id} could not be applied`);
 			return false;
 		}
@@ -537,7 +642,6 @@ async function applyAgentSelection(
 			? { tools: resolvedTools.tools }
 			: {}),
 	});
-	setAgentStatus(ctx, agent.id);
 	return true;
 }
 
@@ -580,12 +684,8 @@ function formatAgentOption(agent: AgentDefinition): string {
 }
 
 /** Clears selected runtime contribution after failed selection so stale agents cannot stay active. */
-function clearMainAgentSelection(
-	pi: ExtensionAPI,
-	ctx: MainAgentContext,
-): void {
+function clearMainAgentSelection(pi: ExtensionAPI): void {
 	getAgentRuntimeComposition(pi).clearMainAgentContribution();
-	setAgentStatus(ctx, undefined);
 }
 
 /** Reads selected-agent state for the current working directory. */
@@ -687,15 +787,6 @@ function selectedAgentStateFileName(cwd: string): string {
 /** Normalizes working-directory identity before state reads and writes. */
 function normalizeCwd(cwd: string): string {
 	return resolve(cwd);
-}
-
-/** Updates selected-agent footer status only when the current mode has an interactive UI. */
-function setAgentStatus(ctx: MainAgentContext, text: string | undefined): void {
-	if (ctx.hasUI === false) {
-		return;
-	}
-
-	ctx.ui.setStatus?.("agent", text);
 }
 
 /** Reports a visible issue scoped only to main-agent-selection. */

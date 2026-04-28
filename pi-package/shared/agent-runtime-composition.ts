@@ -22,7 +22,6 @@ interface BeforeAgentStartEventLike {
 	readonly systemPrompt?: string;
 }
 
-type BeforeComposeHandler = (ctx: unknown) => Promise<void> | void;
 type ActiveToolFilter = (
 	toolNames: readonly string[],
 	ctx: unknown,
@@ -35,7 +34,6 @@ export interface AgentRuntimeComposition {
 	): void;
 	clearMainAgentContribution(): void;
 	getMainAgentContribution(): MainAgentContribution | undefined;
-	setBeforeComposeHandler(handler: BeforeComposeHandler | undefined): void;
 	setRunSubagentContribution(
 		contribution: PromptContribution | undefined,
 	): void;
@@ -45,10 +43,20 @@ export interface AgentRuntimeComposition {
 	): void;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV2";
+const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV3";
+
+export const MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT =
+	"pi-harness:main-agent-contribution-change";
 
 interface RuntimeCompositionCarrier {
 	[RUNTIME_PROPERTY]?: AgentRuntimeComposition;
+}
+
+interface AgentRuntimeEventBus {
+	emit(
+		eventName: typeof MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+		data: undefined,
+	): void;
 }
 
 /** Returns the singleton runtime composition owner for one extension runtime. */
@@ -77,12 +85,10 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private runSubagentContribution: PromptContribution | undefined;
 	private runSubagentActiveToolFilter: ActiveToolFilter | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
-	private beforeComposeHandler: BeforeComposeHandler | undefined;
 	private baselineActiveTools: string[] | undefined;
 
 	public constructor(private readonly pi: ExtensionAPI) {
 		this.pi.on("before_agent_start", async (event, ctx) => {
-			await this.beforeComposeHandler?.(ctx);
 			const activeToolNames = await this.resolveActiveToolNames(ctx);
 			const contributionPrompts = (
 				await Promise.all([
@@ -123,6 +129,10 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 				? [...contribution.tools]
 				: this.baselineActiveTools,
 		);
+		(this.pi.events as unknown as AgentRuntimeEventBus).emit(
+			MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+			undefined,
+		);
 	}
 
 	public clearMainAgentContribution(): void {
@@ -135,12 +145,6 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 
 	public getMainAgentContribution(): MainAgentContribution | undefined {
 		return this.mainAgentContribution;
-	}
-
-	public setBeforeComposeHandler(
-		handler: BeforeComposeHandler | undefined,
-	): void {
-		this.beforeComposeHandler = handler;
 	}
 
 	public setRunSubagentContribution(
