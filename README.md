@@ -28,6 +28,8 @@ Use `main-agent-selection` to choose a focused main agent for the current work. 
 
 Use `consult-advisor` when a cheaper model needs an audit from a stronger model. The main model can ask the advisor to check assumptions, risks, or decisions without paying for the stronger model on every turn.
 
+Use `context-projection` for long tool-heavy sessions. With suitable thresholds and summary mode, it can make the usable context behave like a much larger window, often close to doubling the effective available context, without noticeable LLM quality loss when projected outputs are old or non-critical.
+
 `consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, uses the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
 
 ## How to connect to pi
@@ -260,6 +262,12 @@ Options:
 - `summary.retryDelayMs`: default `5000`. Waits between summary retry attempts.
 - `summary.systemPromptFile`: optional custom system prompt path.
 - `summary.userPromptFile`: optional custom user prompt path appended after tool-result text.
+
+Recommended setup:
+
+- Use `context-projection` for long tool-heavy sessions where old large outputs fill context. With summary mode and suitable thresholds, it can often make the usable context behave close to twice the raw model context window without noticeable quality loss.
+- Use a fast model for `summary.model`, such as `gpt-5.3-codex-spark` through the provider configured in your pi model registry, or a comparable fast summarization model.
+- Keep `summary.maxConcurrency` low unless the provider rate limit and cost impact are acceptable.
 
 How it works:
 

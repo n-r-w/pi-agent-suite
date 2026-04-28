@@ -242,7 +242,11 @@ Use smaller `projectionRemainingTokens` when projection starts too early.
 
 Use a short placeholder. Do not say that the model can read omitted content from session history. The model only sees the current provider context.
 
-Enable `summary` when blind placeholders remove information that the model still needs. Keep `summary.maxConcurrency` low unless the provider rate limit and cost impact are acceptable.
+Enable `summary` when blind placeholders remove information that the model still needs. With suitable thresholds, summary mode can often make the usable context behave close to twice the raw model context window without noticeable quality loss when projected outputs are old or non-critical.
+
+Use a fast model for `summary.model`, such as `gpt-5.3-codex-spark` through the provider configured in your pi model registry, or a comparable fast summarization model.
+
+Keep `summary.maxConcurrency` low unless the provider rate limit and cost impact are acceptable.
 
 Custom `summary.systemPromptFile` and `summary.userPromptFile` paths resolve as absolute paths, `~/...`, or paths relative to `~/.pi/agent/config`. Bundled prompts are:
 
