@@ -685,6 +685,85 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("keeps widget state current when first activity arrives inside throttle window", async () => {
+		// Purpose: widget state must not stay at starting when real child activity arrives before the next repaint is allowed.
+		// Input and expected output: initial running update is followed by an assistant message in the same throttle window, and the existing widget factory renders that activity.
+		// Edge case: no second setWidget call happens before the render inspection.
+		// Dependencies: this test uses temp agent files, a fake child process, and a fixed Date.now value.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const originalDateNow = Date.now;
+			Date.now = () => 1_000;
+			try {
+				const pi = createExtensionApiFake();
+				const ctx = createContext("/tmp/project");
+				await runSubagent(pi, {
+					spawnPi() {
+						const process = new SpawnedProcessFakeImpl();
+						resolveProcess(process);
+						queueMicrotask(() => {
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									id: "run-subagent-prompt",
+									type: "response",
+									command: "prompt",
+									success: true,
+								})}\n`,
+							);
+							process.stdout.emit(
+								"data",
+								`${JSON.stringify({
+									type: "message_end",
+									message: {
+										role: "assistant",
+										content: [{ type: "text", text: "first activity" }],
+									},
+								})}\n`,
+							);
+						});
+						return process;
+					},
+				});
+
+				const resultPromise = executeRunSubagent(pi, ctx, {
+					agentId: "helper",
+					prompt: "Do work",
+				}) as Promise<AgentToolResult<unknown>>;
+				const process = await processReady;
+				await new Promise((resolve) => queueMicrotask(resolve));
+
+				expect(ctx.widgets).toHaveLength(1);
+				const widgetFactory = ctx.widgets.at(-1)?.content;
+				expect(typeof widgetFactory).toBe("function");
+				const widget = (
+					widgetFactory as () => { render(width: number): string[] }
+				)();
+				const renderedWidget = widget.render(120).join("\n");
+				expect(renderedWidget).toContain("assistant first activity");
+				expect(renderedWidget).not.toContain("starting");
+
+				process.stdout.emit(
+					"data",
+					`${JSON.stringify({ type: "agent_end", messages: [] })}\n`,
+				);
+				process.emit("close", 0);
+				await resultPromise;
+			} finally {
+				Date.now = originalDateNow;
+			}
+		});
+	});
+
 	test("returns prompt response failures without treating them as completed work", async () => {
 		// Purpose: a failed RPC prompt response is a preflight failure, not a successful empty subagent run.
 		// Input and expected output: child returns success false for prompt and the tool returns the response error.

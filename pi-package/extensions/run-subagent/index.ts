@@ -564,16 +564,19 @@ function updateSubagentWidget({
 	readonly forceWidgetUpdate: boolean;
 }): number {
 	const now = Date.now();
-	if (
-		!(options.ctx.hasUI ?? true) ||
-		(!forceWidgetUpdate &&
-			lastWidgetUpdateAt !== 0 &&
-			now - lastWidgetUpdateAt < WIDGET_UPDATE_THROTTLE_MS)
-	) {
+	if (!(options.ctx.hasUI ?? true)) {
 		return lastWidgetUpdateAt;
 	}
 
 	recordSubagentWidgetRun(options.subagentWidgetState, details, now);
+	if (
+		!forceWidgetUpdate &&
+		lastWidgetUpdateAt !== 0 &&
+		now - lastWidgetUpdateAt < WIDGET_UPDATE_THROTTLE_MS
+	) {
+		return lastWidgetUpdateAt;
+	}
+
 	options.ctx.ui.setWidget(
 		SUBAGENT_WIDGET_KEY,
 		createSubagentWidgetFactory(
