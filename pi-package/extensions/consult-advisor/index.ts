@@ -13,7 +13,6 @@ import {
 	type SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 import {
-	buildSessionContext,
 	convertToLlm,
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -21,6 +20,11 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import {
+	collectLoadedSkillRoots,
+	replayContextProjection,
+} from "../../shared/context-projection";
+import { estimateSerializedInputTokens } from "../../shared/context-size";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 import {
 	renderConsultAdvisorCall,
@@ -33,6 +37,7 @@ const CONFIG_PATH = join("config", "consult-advisor.json");
 const ENABLED_CONFIG_KEY = "enabled";
 const ADVISOR_VISIBLE_RESPONSE_INSTRUCTION =
 	"Return the advice as visible text. If you cannot answer a request, explain the limit in visible text.";
+const ADVISOR_CONTEXT_TOO_LARGE_ERROR = "context is too large";
 
 /** Extension-local prompt used when config does not provide a custom advisor prompt file. */
 const DEFAULT_ADVISOR_PROMPT_FILE = join(
@@ -80,6 +85,14 @@ interface AdvisorRuntime {
 	readonly headers?: Record<string, string>;
 }
 
+interface AdvisorContextBuildOptions {
+	readonly ctx: AdvisorContext;
+	readonly advisorPrompt: string;
+	readonly question: string;
+	readonly toolCallId: string;
+	readonly loadedSkillRoots: readonly string[];
+}
+
 interface AdvisorContext extends ExtensionContext {
 	readonly model: Model<Api> | undefined;
 }
@@ -93,6 +106,7 @@ interface ExecuteConsultAdvisorOptions {
 	readonly signal: AbortSignal | undefined;
 	readonly ctx: AdvisorContext;
 	readonly currentThinkingLevel: unknown;
+	readonly loadedSkillRoots: readonly string[];
 }
 
 /** Extension entry point for advisor consultation behavior. */
@@ -107,6 +121,12 @@ export default function consultAdvisor(
 	}
 
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
+	let loadedSkillRoots: readonly string[] = [];
+
+	pi.on("before_agent_start", (event) => {
+		loadedSkillRoots = collectLoadedSkillRoots(event);
+	});
+
 	getAgentRuntimeComposition(pi).setConsultAdvisorContribution({
 		requiredToolName: TOOL_NAME,
 		prompt:
@@ -128,6 +148,7 @@ export default function consultAdvisor(
 				signal,
 				ctx: ctx as AdvisorContext,
 				currentThinkingLevel: pi.getThinkingLevel(),
+				loadedSkillRoots,
 			});
 		},
 	});
@@ -141,6 +162,7 @@ async function executeConsultAdvisor({
 	signal,
 	ctx,
 	currentThinkingLevel,
+	loadedSkillRoots,
 }: ExecuteConsultAdvisorOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readAdvisorConfig();
 	if ("disabled" in configResult) {
@@ -166,12 +188,17 @@ async function executeConsultAdvisor({
 		return errorResult(runtimeResult.issue);
 	}
 
-	const context = buildAdvisorContext(
+	const context = await buildAdvisorContext({
 		ctx,
-		promptResult.prompt,
-		params.question,
+		advisorPrompt: promptResult.prompt,
+		question: params.question,
 		toolCallId,
-	);
+		loadedSkillRoots,
+	});
+	if (!doesAdvisorInputFitContextWindow(context, runtimeResult.runtime.model)) {
+		return errorResult(ADVISOR_CONTEXT_TOO_LARGE_ERROR);
+	}
+
 	const options = buildAdvisorOptions(
 		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel),
 		signal,
@@ -392,20 +419,21 @@ async function readAdvisorPrompt(
 	}
 }
 
-/** Builds advisor context from current session while removing the pending advisor tool call. */
-function buildAdvisorContext(
-	ctx: AdvisorContext,
-	advisorPrompt: string,
-	question: string,
-	toolCallId: string,
-): Context {
-	const entries = ctx.sessionManager.getEntries();
-	const sessionContext = buildSessionContext(
-		entries,
-		ctx.sessionManager.getLeafId(),
-	);
+/** Builds advisor context from current branch while replaying recorded context projection state. */
+async function buildAdvisorContext({
+	ctx,
+	advisorPrompt,
+	question,
+	toolCallId,
+	loadedSkillRoots,
+}: AdvisorContextBuildOptions): Promise<Context> {
+	const projectedMessages = await replayContextProjection({
+		branchEntries: ctx.sessionManager.getBranch(),
+		cwd: ctx.cwd,
+		loadedSkillRoots,
+	});
 	const messages = removePendingAdvisorCall(
-		convertToLlm(sessionContext.messages),
+		convertToLlm(projectedMessages),
 		toolCallId,
 	);
 	messages.push({ role: "user", content: question, timestamp: Date.now() });
@@ -414,6 +442,22 @@ function buildAdvisorContext(
 		messages,
 		tools: [],
 	};
+}
+
+/** Returns true when the estimated advisor input fits the resolved advisor model window. */
+function doesAdvisorInputFitContextWindow(
+	context: Context,
+	model: Model<Api>,
+): boolean {
+	return estimateAdvisorInputTokens(context, model) <= model.contextWindow;
+}
+
+/** Estimates advisor input with tokenizer-based counting before provider execution. */
+function estimateAdvisorInputTokens(
+	context: Context,
+	model: Model<Api>,
+): number {
+	return estimateSerializedInputTokens(context, model.id, model.provider);
 }
 
 /** Removes consult_advisor tool calls and matching tool results from the advisor transcript. */

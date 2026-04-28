@@ -412,7 +412,7 @@ describe("codex-quota", () => {
 
 	test("uses default refresh interval, refreshes quota with pi OAuth and fetch, and shuts down polling", async () => {
 		// Purpose: session lifecycle must start quota polling, update the footer status, and clean up the timer.
-		// Input and expected output: missing config, pi-managed Codex OAuth, and fake wham usage response produce plain healthy quota percentages with reset times.
+		// Input and expected output: missing config, pi-managed Codex OAuth, and fake wham usage response produce plain loading text and healthy quota percentages with reset times.
 		// Edge case: missing config must use the default refresh interval instead of reporting an issue.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake, fake theme, fake model registry, fake fetch, and fake intervals.
 		await withIsolatedAgentDir(async () => {
@@ -464,7 +464,7 @@ describe("codex-quota", () => {
 							},
 						]);
 						expect(session.statuses).toEqual([
-							{ key: "codex-quota", text: "<dim>CX …</dim>" },
+							{ key: "codex-quota", text: "CX …" },
 							{
 								key: "codex-quota",
 								text: "91%/4h 100%/6d",
@@ -582,15 +582,15 @@ describe("codex-quota", () => {
 	});
 
 	test("colorizes remaining quota as normal, warning, and error thresholds", async () => {
-		// Purpose: quota health colors must match the footer threshold contract without adding a quota label prefix.
-		// Input and expected output: 70 remains plain, 30 remains warning, and 29 or 0 remain error.
-		// Edge cases: exact boundary values 70, 30, 29, and 0 are covered.
+		// Purpose: quota health colors must match the footer threshold contract without changing reset window text.
+		// Input and expected output: 70 remains plain, 30 remains warning, and 29 or 0 remain error while /10m remains plain.
+		// Edge cases: exact boundary values 70, 30, 29, and 0 are covered with a reset window.
 		// Dependencies: this test uses fake model registry, fake fetch, fake theme, and fake intervals.
 		const cases = [
-			{ remainingPercent: 70, expectedText: "70%" },
-			{ remainingPercent: 30, expectedText: "<warning>30%</warning>" },
-			{ remainingPercent: 29, expectedText: "<error>29%</error>" },
-			{ remainingPercent: 0, expectedText: "<error>0%</error>" },
+			{ remainingPercent: 70, expectedText: "70%/10m" },
+			{ remainingPercent: 30, expectedText: "<warning>30%</warning>/10m" },
+			{ remainingPercent: 29, expectedText: "<error>29%</error>/10m" },
+			{ remainingPercent: 0, expectedText: "<error>0%</error>/10m" },
 		] as const;
 
 		for (const { remainingPercent, expectedText } of cases) {
@@ -603,6 +603,7 @@ describe("codex-quota", () => {
 									rate_limit: {
 										primary_window: {
 											used_percent: 100 - remainingPercent,
+											reset_after_seconds: 600,
 										},
 									},
 								}),
@@ -669,7 +670,7 @@ describe("codex-quota", () => {
 
 	test("does not fetch quota when pi Codex OAuth is unavailable", async () => {
 		// Purpose: missing pi OAuth must not break the footer or trigger an unauthenticated network request.
-		// Input and expected output: no pi-managed openai-codex token produces an auth-unavailable status and zero fetch calls.
+		// Input and expected output: no pi-managed openai-codex token produces an auth-unavailable status with plain auth text and zero fetch calls.
 		// Edge case: the agent directory exists, but pi has no openai-codex OAuth token.
 		// Dependencies: this test uses a temp agent directory, fake model registry, fake fetch, and fake intervals.
 		await withIsolatedAgentDir(async () => {
@@ -682,7 +683,10 @@ describe("codex-quota", () => {
 					},
 					async () => {
 						const pi = createExtensionApiFake();
-						const session = createSessionContextFake({ accessToken: null });
+						const session = createSessionContextFake({
+							accessToken: null,
+							colorized: true,
+						});
 						codexQuota(pi);
 
 						await startQuotaSession(pi, session.ctx);
@@ -691,7 +695,7 @@ describe("codex-quota", () => {
 						expect(fetchCallCount).toBe(0);
 						expect(session.statuses.at(-1)).toEqual({
 							key: "codex-quota",
-							text: "CX auth",
+							text: "<accent>CX</accent> auth",
 						});
 					},
 				);

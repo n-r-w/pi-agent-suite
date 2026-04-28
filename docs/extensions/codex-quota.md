@@ -19,7 +19,8 @@
 - Extracts `chatgpt-account-id` from the access token claim `https://api.openai.com/auth.chatgpt_account_id`.
 - Sends both bearer token and `chatgpt-account-id` to the Codex usage endpoint.
 - Shows quota in compact footer format: `91%/4h 100%/6d`.
-- Colors remaining quota as plain text from `70%` to `100%`, warning from `30%` to `69%`, and error from `0%` to `29%`.
+- Colors only the remaining quota percentage: plain text from `70%` to `100%`, warning from `30%` to `69%`, and error from `0%` to `29%`.
+- Leaves reset windows and compact non-data text plain.
 - Shows compact non-data states: `CX auth`, `CX err`, or `CX ?`.
 - Does not break the footer when Codex auth is unavailable.
 - Stops background refresh on session shutdown.

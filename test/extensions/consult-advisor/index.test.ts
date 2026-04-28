@@ -13,15 +13,22 @@ import type {
 import {
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
+	type SessionEntry,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { Box, Text, visibleWidth } from "@mariozechner/pi-tui";
 import consultAdvisor from "../../../pi-package/extensions/consult-advisor/index";
 import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/consult-advisor/rendering";
+import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const SUBAGENT_ENV_KEYS = [
+	"PI_SUBAGENT_DEPTH",
+	"PI_SUBAGENT_AGENT_ID",
+	"PI_SUBAGENT_TOOLS",
+] as const;
 
 /** SGR reset sequence that would break parent panel styling when embedded in truncated text. */
 const SGR_RESET = `${String.fromCharCode(27)}[0m`;
@@ -41,6 +48,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 	readonly tools: ToolDefinition[];
 	readonly commands: RegisteredCommandFake[];
 	readonly activeToolCalls: string[][];
+	readonly appendEntryCalls: Array<{ customType: string; data: unknown }>;
 }
 
 interface CompletionCall {
@@ -66,22 +74,33 @@ interface ContextFake {
 	};
 	readonly sessionManager: {
 		getEntries(): unknown[];
+		getBranch(): SessionEntry[];
 		getLeafId(): string | null;
 	};
 	readonly ui: {
+		readonly theme: { fg(color: string, value: string): string };
 		notify(message: string, type?: string): void;
 		setStatus(key: string, text: string | undefined): void;
 		select(title: string, options: string[]): Promise<string | undefined>;
 	};
+	getContextUsage():
+		| { tokens: number | null; contextWindow: number }
+		| undefined;
 }
 
-/** Runs a test with an isolated pi agent directory. */
+/** Runs a test with isolated pi agent and subagent environment state. */
 async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousSubagentEnv = new Map(
+		SUBAGENT_ENV_KEYS.map((key) => [key, process.env[key]]),
+	);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-consult-advisor-"));
 	process.env[AGENT_DIR_ENV] = agentDir;
+	for (const key of SUBAGENT_ENV_KEYS) {
+		delete process.env[key];
+	}
 	try {
 		return await action(agentDir);
 	} finally {
@@ -89,6 +108,14 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		for (const key of SUBAGENT_ENV_KEYS) {
+			const previousValue = previousSubagentEnv.get(key);
+			if (previousValue === undefined) {
+				delete process.env[key];
+			} else {
+				process.env[key] = previousValue;
+			}
 		}
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -102,6 +129,7 @@ function createExtensionApiFake(
 	const tools: ToolDefinition[] = [];
 	const commands: RegisteredCommandFake[] = [];
 	const activeToolCalls: string[][] = [];
+	const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
 	let activeTools: string[] = [];
 
 	return {
@@ -109,6 +137,7 @@ function createExtensionApiFake(
 		tools,
 		commands,
 		activeToolCalls,
+		appendEntryCalls,
 		events: {
 			emit(): void {},
 			on(): () => void {
@@ -128,6 +157,9 @@ function createExtensionApiFake(
 			commands.push({ name, handler: options.handler });
 		},
 		registerShortcut(): void {},
+		appendEntry(customType: string, data: unknown): void {
+			appendEntryCalls.push({ customType, data });
+		},
 		getAllTools() {
 			return allToolNames.map((name) => ({
 				name,
@@ -203,6 +235,9 @@ function createContext(
 			getEntries(): unknown[] {
 				return entries;
 			},
+			getBranch(): SessionEntry[] {
+				return entries as SessionEntry[];
+			},
 			getLeafId(): string | null {
 				const lastEntry = entries.at(-1);
 				if (!isRecord(lastEntry)) {
@@ -213,6 +248,11 @@ function createContext(
 			},
 		},
 		ui: {
+			theme: {
+				fg(color: string, value: string): string {
+					return `<${color}>${value}</${color}>`;
+				},
+			},
 			notify(message: string, type?: string): void {
 				notifications.push({ message, type });
 			},
@@ -220,6 +260,9 @@ function createContext(
 			async select(): Promise<string | undefined> {
 				return undefined;
 			},
+		},
+		getContextUsage(): { tokens: number; contextWindow: number } {
+			return { tokens: 950, contextWindow: 1_000 };
 		},
 	};
 }
@@ -249,6 +292,18 @@ async function writeConfig(agentDir: string, config: unknown): Promise<void> {
 	await mkdir(join(agentDir, "config"), { recursive: true });
 	await writeFile(
 		join(agentDir, "config", "consult-advisor.json"),
+		JSON.stringify(config),
+	);
+}
+
+/** Writes context-projection config under the isolated pi agent directory. */
+async function writeProjectionConfig(
+	agentDir: string,
+	config: unknown,
+): Promise<void> {
+	await mkdir(join(agentDir, "config"), { recursive: true });
+	await writeFile(
+		join(agentDir, "config", "context-projection.json"),
 		JSON.stringify(config),
 	);
 }
@@ -285,17 +340,32 @@ function getConsultTool(pi: ExtensionApiFake): ToolDefinition {
 	return tool;
 }
 
-/** Returns the before-agent-start handler registered by Agent Runtime Composition. */
-function getBeforeAgentStartHandler(
+/** Emits before-agent-start handlers in registration order and returns the latest non-empty result. */
+async function emitBeforeAgentStartHandlers(
 	pi: ExtensionApiFake,
-): (event: unknown, ctx: unknown) => unknown {
-	const handler = pi.handlers.find(
-		(item) => item.eventName === "before_agent_start",
-	)?.handler;
-	if (typeof handler !== "function") {
+	event: unknown,
+	ctx: unknown,
+): Promise<unknown> {
+	const handlers = pi.handlers
+		.filter((item) => item.eventName === "before_agent_start")
+		.map((item) => item.handler)
+		.filter(
+			(handler): handler is (event: unknown, ctx: unknown) => unknown =>
+				typeof handler === "function",
+		);
+	if (handlers.length === 0) {
 		throw new Error("expected before_agent_start handler");
 	}
-	return handler as (event: unknown, ctx: unknown) => unknown;
+
+	let result: unknown;
+	for (const handler of handlers) {
+		const nextResult = await handler(event, ctx);
+		if (nextResult !== undefined) {
+			result = nextResult;
+		}
+	}
+
+	return result;
 }
 
 /** Executes the registered consult_advisor tool. */
@@ -319,14 +389,29 @@ function createAdvisorToolCallMessage(
 	question: string,
 	timestamp: number,
 ): AssistantMessage {
+	return createToolCallMessage(
+		toolCallId,
+		"consult_advisor",
+		{ question },
+		timestamp,
+	);
+}
+
+/** Creates an assistant message that calls a tool. */
+function createToolCallMessage(
+	toolCallId: string,
+	toolName: string,
+	args: Record<string, unknown>,
+	timestamp: number,
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [
 			{
 				type: "toolCall",
 				id: toolCallId,
-				name: "consult_advisor",
-				arguments: { question },
+				name: toolName,
+				arguments: args,
 			},
 		],
 		api: "fake-api",
@@ -345,6 +430,23 @@ function createAdvisorToolCallMessage(
 	};
 }
 
+/** Creates an extension-owned projection state entry. */
+function createProjectionStateEntry(
+	id: string,
+	projectedEntryId: string,
+	placeholder: string,
+	parentId: string | null,
+): SessionEntry {
+	return {
+		type: "custom",
+		id,
+		parentId,
+		timestamp: "t",
+		customType: "context-projection",
+		data: { projectedEntries: [{ entryId: projectedEntryId, placeholder }] },
+	} as SessionEntry;
+}
+
 /** Creates fake completeSimple and its observable call list. */
 function createCompletionFake(
 	responseContent: AssistantMessage["content"] = [
@@ -352,8 +454,8 @@ function createCompletionFake(
 	],
 ): {
 	readonly calls: CompletionCall[];
-	readonly completeSimple: (
-		model: Model<Api>,
+	readonly completeSimple: <TApi extends Api>(
+		model: Model<TApi>,
 		context: Context,
 		options?: SimpleStreamOptions,
 	) => Promise<AssistantMessage>;
@@ -361,8 +463,12 @@ function createCompletionFake(
 	const calls: CompletionCall[] = [];
 	return {
 		calls,
-		async completeSimple(model, context, options) {
-			calls.push({ model, context, options });
+		async completeSimple<TApi extends Api>(
+			model: Model<TApi>,
+			context: Context,
+			options?: SimpleStreamOptions,
+		): Promise<AssistantMessage> {
+			calls.push({ model: model as Model<Api>, context, options });
 			return {
 				role: "assistant",
 				content: responseContent,
@@ -837,6 +943,574 @@ describe("consult-advisor", () => {
 		});
 	});
 
+	test("replays persisted context projection state before calling the advisor", async () => {
+		// Purpose: advisor input must match the projected task state when context-projection has recorded omitted tool results.
+		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded placeholder.
+		// Edge case: the current pending consult_advisor call is still removed after projection replay.
+		// Dependencies: temp context-projection config, fake model registry, fake completion function, and fake session entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+			const placeholder = "[projected old output]";
+			const model = createModel("openai", "advisor");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const entries = [
+				{
+					type: "message",
+					id: "1",
+					parentId: null,
+					timestamp: "t",
+					message: { role: "user", content: "hello", timestamp: 1 },
+				},
+				{
+					type: "message",
+					id: "2",
+					parentId: "1",
+					timestamp: "t",
+					message: createToolCallMessage("old-tool", "bash", {}, 2),
+				},
+				{
+					type: "message",
+					id: "3",
+					parentId: "2",
+					timestamp: "t",
+					message: {
+						role: "toolResult",
+						toolCallId: "old-tool",
+						toolName: "bash",
+						content: [{ type: "text", text: "old full tool output" }],
+						isError: false,
+						timestamp: 3,
+					},
+				},
+				createProjectionStateEntry("4", "3", placeholder, "3"),
+				{
+					type: "message",
+					id: "5",
+					parentId: "4",
+					timestamp: "t",
+					message: createAdvisorToolCallMessage(
+						"call-1",
+						"current question",
+						5,
+					),
+				},
+			];
+			const ctx = createContext([model], entries);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			await executeConsult(pi, ctx, "Should we proceed?");
+
+			expect(completion.calls).toHaveLength(1);
+			const advisorMessages = JSON.stringify(
+				completion.calls[0]?.context.messages,
+			);
+			expect(advisorMessages).toContain(placeholder);
+			expect(advisorMessages).not.toContain("old full tool output");
+			expect(advisorMessages).not.toContain("current question");
+			expect(advisorMessages).not.toContain("call-1");
+		});
+	});
+
+	test("matches main projection view for the same persisted projection state", async () => {
+		// Purpose: advisor projection replay must produce the same projected tool-result view as the main context-projection hook.
+		// Input and expected output: one persisted projection state replaces the same old tool result in both main and advisor contexts.
+		// Edge case: advisor uses a separate execution path and must still share projection semantics with the main model path.
+		// Dependencies: context-projection and consult-advisor factories, fake completion function, and in-memory session entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+			const placeholder = "[projected shared output]";
+			const model = createModel("openai", "advisor");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const branchEntries = [
+				{
+					type: "message",
+					id: "1",
+					parentId: null,
+					timestamp: "t",
+					message: { role: "user", content: "hello", timestamp: 1 },
+				},
+				{
+					type: "message",
+					id: "2",
+					parentId: "1",
+					timestamp: "t",
+					message: createToolCallMessage("old-tool", "bash", {}, 2),
+				},
+				{
+					type: "message",
+					id: "3",
+					parentId: "2",
+					timestamp: "t",
+					message: {
+						role: "toolResult",
+						toolCallId: "old-tool",
+						toolName: "bash",
+						content: [{ type: "text", text: "old full tool output" }],
+						isError: false,
+						timestamp: 3,
+					},
+				},
+				createProjectionStateEntry("4", "3", placeholder, "3"),
+			] satisfies SessionEntry[];
+			const ctx = createContext([model], branchEntries);
+			contextProjection(pi);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+			const sessionStartHandler = pi.handlers.find(
+				(handler) => handler.eventName === "session_start",
+			)?.handler;
+			const contextHandler = pi.handlers.find(
+				(handler) => handler.eventName === "context",
+			)?.handler;
+			if (typeof sessionStartHandler !== "function") {
+				throw new Error("expected session_start handler");
+			}
+			if (typeof contextHandler !== "function") {
+				throw new Error("expected context handler");
+			}
+
+			await sessionStartHandler({ type: "session_start" }, ctx);
+			const mainResult = (await contextHandler(
+				{
+					type: "context",
+					messages: branchEntries
+						.filter((entry) => entry.type === "message")
+						.map((entry) => entry.message),
+				},
+				ctx,
+			)) as { messages: unknown[] };
+			await executeConsult(pi, ctx, "Should we proceed?");
+
+			const mainProjectedToolResult = JSON.stringify(mainResult.messages[2]);
+			const advisorProjectedToolResult = JSON.stringify(
+				completion.calls[0]?.context.messages[2],
+			);
+			expect(mainProjectedToolResult).toContain(placeholder);
+			expect(advisorProjectedToolResult).toBe(mainProjectedToolResult);
+			expect(advisorProjectedToolResult).not.toContain("old full tool output");
+		});
+	});
+
+	test("uses live projection state before the persisted custom entry appears in the active branch", async () => {
+		// Purpose: advisor replay must use context-projection's runtime state from the same process, not only persisted branch entries.
+		// Input and expected output: context-projection records an omission in memory, and consult_advisor receives the placeholder without the custom state entry in branch.
+		// Edge case: projection state has been appended by the context hook but is not part of the active branch snapshot used by the advisor tool call.
+		// Dependencies: context-projection and consult-advisor factories share the same imported projection state module.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				keepRecentTurns: 0,
+				keepRecentTurnsPercent: 0,
+			});
+			const model = createModel("openai", "advisor");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const branchEntries = [
+				{
+					type: "message",
+					id: "1",
+					parentId: null,
+					timestamp: "t",
+					message: createToolCallMessage("old-tool", "bash", {}, 1),
+				},
+				{
+					type: "message",
+					id: "2",
+					parentId: "1",
+					timestamp: "t",
+					message: {
+						role: "toolResult",
+						toolCallId: "old-tool",
+						toolName: "bash",
+						content: [{ type: "text", text: "old output ".repeat(400) }],
+						isError: false,
+						timestamp: 2,
+					},
+				},
+			];
+			const ctx = createContext([model], branchEntries);
+			contextProjection(pi);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+			const contextHandler = pi.handlers.find(
+				(handler) => handler.eventName === "context",
+			)?.handler;
+			if (typeof contextHandler !== "function") {
+				throw new Error("expected context handler");
+			}
+
+			await contextHandler(
+				{
+					type: "context",
+					messages: branchEntries.map((entry) => entry.message),
+				},
+				ctx,
+			);
+			await executeConsult(pi, ctx, "Should we proceed?");
+
+			const advisorMessages = JSON.stringify(
+				completion.calls[0]?.context.messages,
+			);
+			expect(advisorMessages).toContain(
+				"[Old successful tool result omitted from current context]",
+			);
+			expect(advisorMessages).not.toContain("old output old output");
+		});
+	});
+
+	test("replays live generated projection summaries to the advisor before state persistence reaches the branch", async () => {
+		// Purpose: advisor replay must use summary replacement text from context-projection runtime state in the same process.
+		// Input and expected output: summary-enabled projection records a generated summary, and advisor input contains that summary instead of old output.
+		// Edge case: the active branch does not contain the custom projection state entry yet.
+		// Dependencies: context-projection summary fake, consult-advisor fake, and shared runtime projection state.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				keepRecentTurns: 0,
+				keepRecentTurnsPercent: 0,
+				summary: {
+					enabled: true,
+					minToolResultTokens: 1,
+					maxConcurrency: 1,
+				},
+			});
+			const model = createModel("openai", "advisor");
+			const summaryCompletion = createCompletionFake([
+				{ type: "text", text: "Generated projection summary" },
+			]);
+			const advisorCompletion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const branchEntries = [
+				{
+					type: "message",
+					id: "1",
+					parentId: null,
+					timestamp: "t",
+					message: createToolCallMessage("old-tool", "bash", {}, 1),
+				},
+				{
+					type: "message",
+					id: "2",
+					parentId: "1",
+					timestamp: "t",
+					message: {
+						role: "toolResult",
+						toolCallId: "old-tool",
+						toolName: "bash",
+						content: [{ type: "text", text: "old output ".repeat(400) }],
+						isError: false,
+						timestamp: 2,
+					},
+				},
+			] satisfies SessionEntry[];
+			const ctx = createContext([model], branchEntries);
+			contextProjection(pi, {
+				completeSimple: summaryCompletion.completeSimple,
+			});
+			consultAdvisor(pi, { completeSimple: advisorCompletion.completeSimple });
+			const contextHandler = pi.handlers.find(
+				(handler) => handler.eventName === "context",
+			)?.handler;
+			if (typeof contextHandler !== "function") {
+				throw new Error("expected context handler");
+			}
+
+			await contextHandler(
+				{
+					type: "context",
+					messages: branchEntries.map((entry) => entry.message),
+				},
+				ctx,
+			);
+			await executeConsult(pi, ctx, "Should we proceed?");
+
+			const advisorToolResult = advisorCompletion.calls[0]?.context.messages[1];
+			if (advisorToolResult?.role !== "toolResult") {
+				throw new Error("expected advisor tool result");
+			}
+			const advisorReplacement = advisorToolResult.content[0];
+			if (advisorReplacement?.type !== "text") {
+				throw new Error("expected advisor text replacement");
+			}
+			expect(summaryCompletion.calls).toHaveLength(1);
+			expect(advisorReplacement.text).toContain(
+				'<tool_result full_result="omitted" content="summary">',
+			);
+			expect(advisorReplacement.text).toContain("Generated projection summary");
+			expect(advisorReplacement.text).not.toContain("old output old output");
+			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				projectedEntries: [
+					{
+						entryId: "2",
+						placeholder:
+							'<tool_result full_result="omitted" content="summary">\nGenerated projection summary\n</tool_result>',
+					},
+				],
+			});
+		});
+	});
+
+	test("does not let stored projection state hide loaded skill read results from the advisor", async () => {
+		// Purpose: advisor projection replay must preserve skill instructions even when stale projection state references a skill read result.
+		// Input and expected output: loaded skill root plus stored projection state keeps the read output visible and omits the placeholder.
+		// Edge case: stale projection state exists for the same read result entry.
+		// Dependencies: before_agent_start hook, temp context-projection config, fake completion function, and in-memory session entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+			const placeholder = "[projected skill output]";
+			const model = createModel("openai", "advisor");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext(
+				[model],
+				[
+					{
+						type: "message",
+						id: "1",
+						parentId: null,
+						timestamp: "t",
+						message: createToolCallMessage(
+							"read-skill",
+							"read",
+							{ path: "/tmp/project/skills/SKILL.md" },
+							1,
+						),
+					},
+					{
+						type: "message",
+						id: "2",
+						parentId: "1",
+						timestamp: "t",
+						message: {
+							role: "toolResult",
+							toolCallId: "read-skill",
+							toolName: "read",
+							content: [{ type: "text", text: "skill instruction text" }],
+							isError: false,
+							timestamp: 2,
+						},
+					},
+					createProjectionStateEntry("3", "2", placeholder, "2"),
+				],
+			);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+			await emitBeforeAgentStartHandlers(
+				pi,
+				{
+					systemPrompt: "Base",
+					systemPromptOptions: { skills: [{ baseDir: "/tmp/project/skills" }] },
+				},
+				ctx,
+			);
+
+			await executeConsult(pi, ctx, "Should we proceed?");
+
+			const advisorMessages = JSON.stringify(
+				completion.calls[0]?.context.messages,
+			);
+			expect(advisorMessages).toContain("skill instruction text");
+			expect(advisorMessages).not.toContain(placeholder);
+		});
+	});
+
+	test("returns an explicit error when advisor input exceeds the advisor model context window", async () => {
+		// Purpose: consult_advisor must fail before provider execution when projected-or-full advisor input is too large.
+		// Input and expected output: a tiny advisor context window rejects a large stored user message and completeSimple is not called.
+		// Edge case: projection config is absent, so the full context path still needs the same guard.
+		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
+		await withIsolatedAgentDir(async () => {
+			const model = { ...createModel("openai", "advisor"), contextWindow: 8 };
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext(
+				[model],
+				[
+					{
+						type: "message",
+						id: "1",
+						parentId: null,
+						timestamp: "t",
+						message: {
+							role: "user",
+							content: "large advisor context ".repeat(20),
+							timestamp: 1,
+						},
+					},
+				],
+			);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			const result = (await executeConsult(
+				pi,
+				ctx,
+				"Question",
+			)) as AgentToolResult<unknown>;
+
+			expect(completion.calls).toEqual([]);
+			expect(result.content).toEqual([
+				{
+					type: "text",
+					text: "context is too large",
+				},
+			]);
+		});
+	});
+
+	test("rejects advisor input when approximate character counting would undercount dense text", async () => {
+		// Purpose: context-window protection must fail closed when a chars-per-token estimate cannot prove advisor input fit.
+		// Input and expected output: dense multibyte text fits chars-per-token counting but is rejected before completeSimple.
+		// Edge case: provider-independent guard must not rely on optimistic tokenizer behavior.
+		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
+		await withIsolatedAgentDir(async () => {
+			const model = { ...createModel("openai", "advisor"), contextWindow: 80 };
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext(
+				[model],
+				[
+					{
+						type: "message",
+						id: "1",
+						parentId: null,
+						timestamp: "t",
+						message: {
+							role: "user",
+							content: "界".repeat(80),
+							timestamp: 1,
+						},
+					},
+				],
+			);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			const result = (await executeConsult(
+				pi,
+				ctx,
+				"Question",
+			)) as AgentToolResult<unknown>;
+
+			expect(completion.calls).toEqual([]);
+			expect(result.content).toEqual([
+				{
+					type: "text",
+					text: "context is too large",
+				},
+			]);
+		});
+	});
+
+	test("does not reject advisor input only because serialized bytes exceed the context window", async () => {
+		// Purpose: the guard must estimate tokens, not compare raw serialized bytes to a token context window.
+		// Input and expected output: serialized request bytes exceed the model window, but estimated tokens fit and completeSimple is called.
+		// Edge case: prevents false overflow for large contexts that the same model can still process.
+		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
+		await withIsolatedAgentDir(async () => {
+			const model = {
+				...createModel("openai", "advisor"),
+				contextWindow: 1_500,
+			};
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext(
+				[model],
+				[
+					{
+						type: "message",
+						id: "1",
+						parentId: null,
+						timestamp: "t",
+						message: {
+							role: "user",
+							content: "large but valid advisor context ".repeat(70),
+							timestamp: 1,
+						},
+					},
+				],
+			);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			await executeConsult(pi, ctx, "Question");
+
+			expect(completion.calls).toHaveLength(1);
+		});
+	});
+
+	test("does not count internal assistant metadata as advisor model input", async () => {
+		// Purpose: advisor guard must estimate model-visible input instead of serializing internal message metadata.
+		// Input and expected output: huge usage metadata with tiny visible content still calls completeSimple.
+		// Edge case: assistant messages carry provider/model/usage/cost fields that provider converters do not send as prompt text.
+		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
+		await withIsolatedAgentDir(async () => {
+			const model = {
+				...createModel("openai", "advisor"),
+				contextWindow: 1_200,
+			};
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const metadataHeavyAssistant = createToolCallMessage(
+				"metadata-tool",
+				"bash",
+				{ command: "true" },
+				1,
+			);
+			metadataHeavyAssistant.model = "metadata ".repeat(2_000);
+			metadataHeavyAssistant.responseId = "response ".repeat(2_000);
+			const ctx = createContext(
+				[model],
+				[
+					{
+						type: "message",
+						id: "1",
+						parentId: null,
+						timestamp: "t",
+						message: metadataHeavyAssistant,
+					},
+				],
+			);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			await executeConsult(pi, ctx, "Question");
+
+			expect(completion.calls).toHaveLength(1);
+		});
+	});
+
+	test("uses modern OpenAI-family tokenizer for Codex advisor models before fallback", async () => {
+		// Purpose: OpenAI-family providers must not be treated as unknown models when a modern tokenizer is appropriate.
+		// Input and expected output: o200k token count fits the model window, while unknown fallback max would reject it.
+		// Edge case: Codex model IDs can be newer than js-tiktoken's explicit model map.
+		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
+		await withIsolatedAgentDir(async () => {
+			const model = {
+				...createModel("openai-codex", "gpt-5.1-codex"),
+				contextWindow: 2_000,
+			};
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext(
+				[model],
+				[
+					{
+						type: "message",
+						id: "1",
+						parentId: null,
+						timestamp: "t",
+						message: {
+							role: "user",
+							content: "界".repeat(1_000),
+							timestamp: 1,
+						},
+					},
+				],
+			);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			await executeConsult(pi, ctx, "Question");
+
+			expect(completion.calls).toHaveLength(1);
+		});
+	});
+
 	test("fails closed when advisor model auth is unavailable", async () => {
 		// Purpose: advisor execution must use pi model-registry auth and stop before provider calls when auth is unavailable.
 		// Input and expected output: getApiKeyAndHeaders returns an error, so completeSimple is not called and a warning is returned.
@@ -933,6 +1607,71 @@ describe("consult-advisor", () => {
 		});
 	});
 
+	test("keeps cross-extension composition isolated from parent subagent environment", async () => {
+		// Purpose: cross-extension prompt composition tests must not inherit subagent depth filtering from the runner process.
+		// Input and expected output: parent PI_SUBAGENT_* values are set, but run_subagent guidance remains visible for the selected main agent.
+		// Edge case: this test can run inside a pi subagent process.
+		// Dependencies: temp agent files plus main-agent-selection, run-subagent, and consult-advisor factories.
+		const previousEnv = new Map(
+			SUBAGENT_ENV_KEYS.map((key) => [key, process.env[key]]),
+		);
+		process.env["PI_SUBAGENT_DEPTH"] = "1";
+		process.env["PI_SUBAGENT_AGENT_ID"] = "SubAgentSage";
+		process.env["PI_SUBAGENT_TOOLS"] = "read,bash";
+		try {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeAgent(agentDir, "main", "main", "Main prompt", [
+					"run_subagent",
+				]);
+				await writeAgent(agentDir, "helper", "subagent", "Helper prompt");
+				const pi = createExtensionApiFake(["run_subagent", "consult_advisor"]);
+				const ctx = createContext([]);
+				mainAgentSelection(pi);
+				await runSubagent(pi, {
+					spawnPi: () => {
+						throw new Error("not used");
+					},
+				});
+				consultAdvisor(pi);
+
+				const command = pi.commands.find(
+					(registeredCommand) => registeredCommand.name === "agent",
+				);
+				if (command === undefined) {
+					throw new Error("agent command was not captured");
+				}
+				await command.handler("main", ctx);
+				const result = await emitBeforeAgentStartHandlers(
+					pi,
+					{ systemPrompt: "Base" },
+					ctx,
+				);
+
+				expect(result).toEqual({
+					systemPrompt: [
+						"Base",
+						"Main prompt",
+						[
+							"Callable agents available through run_subagent:",
+							"- agentId: helper\n  description: helper",
+							"Use run_subagent with exactly one agentId and one prompt.",
+							"For independent work, emit multiple run_subagent tool calls in the same assistant response so pi can run them in parallel.",
+						].join("\n"),
+					].join("\n\n"),
+				});
+			});
+		} finally {
+			for (const key of SUBAGENT_ENV_KEYS) {
+				const previousValue = previousEnv.get(key);
+				if (previousValue === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = previousValue;
+				}
+			}
+		}
+	});
+
 	test("omits advisor guidance when effective agent lacks consult_advisor", async () => {
 		// Purpose: advisor guidance must appear only when the current effective agent can call consult_advisor.
 		// Input and expected output: selected main agent has only run_subagent, so composed prompt omits consult_advisor guidance.
@@ -960,7 +1699,8 @@ describe("consult-advisor", () => {
 				throw new Error("agent command was not captured");
 			}
 			await command.handler("main", ctx);
-			const result = await getBeforeAgentStartHandler(pi)(
+			const result = await emitBeforeAgentStartHandlers(
+				pi,
 				{ systemPrompt: "Base" },
 				ctx,
 			);
@@ -1182,7 +1922,8 @@ async function loadAgentRelatedOrder(
 	await command.handler("main", ctx);
 
 	return {
-		promptResult: await getBeforeAgentStartHandler(pi)(
+		promptResult: await emitBeforeAgentStartHandlers(
+			pi,
 			{ systemPrompt: "Base" },
 			ctx,
 		),

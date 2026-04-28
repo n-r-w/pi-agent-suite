@@ -42,5 +42,8 @@
 		"@mariozechner/pi-coding-agent": "*",
 		"@mariozechner/pi-tui": "*",
 		"typebox": "*"
+	},
+	"dependencies": {
+		"js-tiktoken": "^1.0.21"
 	}
 }

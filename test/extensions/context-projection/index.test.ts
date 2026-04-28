@@ -3,6 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type {
+	Api,
+	Context,
+	AssistantMessage as LlmAssistantMessage,
+	Model,
+	SimpleStreamOptions,
+} from "@mariozechner/pi-ai";
 import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 
@@ -38,17 +45,42 @@ interface UiCall {
 	readonly args: readonly unknown[];
 }
 
+interface CompletionCall {
+	readonly model: Model<Api>;
+	readonly context: Context;
+	readonly options: SimpleStreamOptions | undefined;
+}
+
+interface CompletionFake {
+	readonly calls: CompletionCall[];
+	readonly completeSimple: <TApi extends Api>(
+		model: Model<TApi>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	) => Promise<LlmAssistantMessage>;
+}
+
 interface ContextFake {
 	readonly uiCalls: readonly UiCall[];
 	readonly ctx: {
 		readonly cwd: string;
 		readonly hasUI: true;
 		readonly ui: Record<string, unknown>;
+		readonly model: Model<Api>;
+		readonly modelRegistry: {
+			find(provider: string, modelId: string): Model<Api> | undefined;
+			getApiKeyAndHeaders(model: Model<Api>): Promise<{
+				readonly ok: true;
+				readonly apiKey?: string;
+				readonly headers?: Record<string, string>;
+			}>;
+		};
 		readonly sessionManager: {
 			getBranch(): SessionEntry[];
 			getEntries(): SessionEntry[];
 			getLeafId(): string | null;
 		};
+		readonly signal: AbortSignal;
 		getContextUsage(): ContextUsageFake | undefined;
 	};
 }
@@ -66,6 +98,9 @@ function createExtensionApiFake(): ExtensionApiFake {
 		},
 		appendEntry(customType: string, data: unknown): void {
 			appendEntryCalls.push({ customType, data });
+		},
+		getThinkingLevel(): string {
+			return "high";
 		},
 	} as ExtensionApiFake;
 }
@@ -126,7 +161,9 @@ function createValidConfig(overrides?: Record<string, unknown>): unknown {
 }
 
 /** Installs the extension and returns observable event handlers. */
-function installContextProjectionTestHarness(): {
+function installContextProjectionTestHarness(dependencies?: {
+	readonly completeSimple?: CompletionFake["completeSimple"];
+}): {
 	readonly pi: ExtensionApiFake;
 	readonly sessionStartHandler: (event: unknown, ctx: unknown) => unknown;
 	readonly beforeAgentStartHandler: (event: unknown, ctx: unknown) => unknown;
@@ -136,7 +173,7 @@ function installContextProjectionTestHarness(): {
 	) => Promise<unknown> | unknown;
 } {
 	const pi = createExtensionApiFake();
-	contextProjection(pi);
+	contextProjection(pi, dependencies);
 
 	const sessionStartHandler = pi.handlers.find(
 		(registeredHandler) => registeredHandler.eventName === "session_start",
@@ -186,11 +223,30 @@ function createContextFake(
 			uiCalls.push({ method, args });
 		};
 
+	const currentModel = createModel("openai", "current-model");
+
 	return {
 		uiCalls,
 		ctx: {
 			cwd,
 			hasUI: true,
+			model: currentModel,
+			modelRegistry: {
+				find(provider: string, modelId: string): Model<Api> | undefined {
+					return createModel(provider, modelId);
+				},
+				async getApiKeyAndHeaders(): Promise<{
+					readonly ok: true;
+					readonly apiKey: string;
+					readonly headers: Record<string, string>;
+				}> {
+					return {
+						ok: true,
+						apiKey: "summary-api-key",
+						headers: { "x-summary": "enabled" },
+					};
+				},
+			},
 			ui: {
 				theme: {
 					fg(color: string, value: string): string {
@@ -216,9 +272,71 @@ function createContextFake(
 					return branchEntries.at(-1)?.id ?? null;
 				},
 			},
+			signal: new AbortController().signal,
 			getContextUsage(): ContextUsageFake | undefined {
 				return usage;
 			},
+		},
+	};
+}
+
+/** Creates a model fixture for summary runtime tests. */
+function createModel(provider: string, id: string): Model<Api> {
+	return {
+		provider,
+		id,
+		name: id,
+		api: "openai-responses",
+		input: ["text"],
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 128_000,
+		maxTokens: 4096,
+		reasoning: true,
+	} as Model<Api>;
+}
+
+/** Creates a completion fake that records summary requests and returns one text block. */
+function createCompletionFake(
+	text = "Summary: important projected result.",
+): CompletionFake {
+	const calls: CompletionCall[] = [];
+
+	return {
+		calls,
+		async completeSimple<TApi extends Api>(
+			model: Model<TApi>,
+			context: Context,
+			options?: SimpleStreamOptions,
+		): Promise<LlmAssistantMessage> {
+			calls.push({ model: model as Model<Api>, context, options });
+			return {
+				role: "assistant",
+				content: [{ type: "text", text }],
+				api: "openai-responses",
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				},
+				stopReason: "stop",
+				timestamp: 1,
+			};
 		},
 	};
 }
@@ -447,9 +565,13 @@ describe("context-projection", () => {
 					},
 				],
 			});
-			expect(context.uiCalls.at(-1)).toEqual({
+			expect(context.uiCalls.at(-2)).toEqual({
 				method: "setStatus",
-				args: ["context-projection", "<warning>~7</warning>"],
+				args: ["context-projection", "<warning>~5</warning>"],
+			});
+			expect(context.uiCalls.at(-1)).toEqual({
+				method: "notify",
+				args: ["Context projected: ~5 saved", "info"],
 			});
 			expect(pi.appendEntryCalls).toEqual([
 				{
@@ -469,6 +591,42 @@ describe("context-projection", () => {
 			expect(context.uiCalls.at(-1)).toEqual({
 				method: "setStatus",
 				args: ["context-projection", undefined],
+			});
+		});
+	});
+
+	test("publishes tokenizer-based reconstructed projection savings on session start", async () => {
+		// Purpose: after reload, footer status must reflect branch-local persisted projection state instead of showing ready state.
+		// Input and expected output: a stored projected entry with dense CJK text reports tokenizer savings instead of chars/4 savings.
+		// Edge case: status is published before a new context hook runs.
+		// Dependencies: isolated projection config, fake theme, and session_start handler.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const { sessionStartHandler } = installContextProjectionTestHarness();
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-old"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-old", "界".repeat(100)),
+					"02",
+				),
+				projectionStateEntry(
+					"04",
+					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					"03",
+				),
+			];
+			const context = createContextFake(branchEntries);
+
+			await sessionStartHandler({ type: "session_start" }, context.ctx);
+
+			expect(context.uiCalls.at(-1)).toEqual({
+				method: "setStatus",
+				args: ["context-projection", "<warning>~94</warning>"],
 			});
 		});
 	});
@@ -566,8 +724,489 @@ describe("context-projection", () => {
 			]);
 			expect(context.uiCalls).toEqual([
 				{
+					method: "notify",
+					args: ["Projecting context: 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 1/1 tool results processed", "info"],
+				},
+				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>~7</warning>"],
+					args: ["context-projection", "<warning>~5</warning>"],
+				},
+				{
+					method: "notify",
+					args: ["Context projected: ~5 saved", "info"],
+				},
+			]);
+		});
+	});
+
+	test("shows total saved tokens in footer and latest additional saved tokens in chat status", async () => {
+		// Purpose: footer and chat status must not use the same metric after a session already has projected entries.
+		// Input and expected output: one persisted projection plus one new projection makes footer show total savings and chat status show only the new savings.
+		// Edge case: persisted projection is replayed while a new eligible tool result is discovered in the same context event.
+		// Dependencies: isolated config, reconstructed projection state, context hook, and UI call recording.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const { pi, sessionStartHandler, contextHandler } =
+				installContextProjectionTestHarness();
+			const user = userMessage();
+			const firstAssistant = assistantMessage("call-first");
+			const firstToolResult = toolResultMessage(
+				"call-first",
+				"old output ".repeat(5),
+			);
+			const secondAssistant = assistantMessage("call-second");
+			const secondToolResult = toolResultMessage(
+				"call-second",
+				"old output ".repeat(5),
+			);
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", firstAssistant, "01"),
+				messageEntry("03", firstToolResult, "02"),
+				projectionStateEntry(
+					"04",
+					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					"03",
+				),
+				messageEntry("05", secondAssistant, "04"),
+				messageEntry("06", secondToolResult, "05"),
+			];
+			const context = createContextFake(branchEntries);
+
+			await sessionStartHandler({ type: "session_start" }, context.ctx);
+			const result = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(result).toEqual({
+				messages: [
+					user,
+					firstAssistant,
+					{
+						...firstToolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+					secondAssistant,
+					{
+						...secondToolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: CUSTOM_TYPE,
+					data: {
+						projectedEntries: [{ entryId: "06", placeholder: PLACEHOLDER }],
+					},
+				},
+			]);
+			expect(context.uiCalls).toEqual([
+				{
+					method: "setStatus",
+					args: ["context-projection", "<warning>~5</warning>"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 1/1 tool results processed", "info"],
+				},
+				{
+					method: "setStatus",
+					args: ["context-projection", "<warning>~10</warning>"],
+				},
+				{
+					method: "notify",
+					args: ["Context projected: ~5 saved", "info"],
+				},
+			]);
+		});
+	});
+
+	test("uses a generated summary as the projection replacement for large projected tool results", async () => {
+		// Purpose: summary-enabled projection should preserve a short factual result summary instead of a blind placeholder.
+		// Input and expected output: one eligible tool result above the summary token threshold is replaced with the summary text and persisted with that replacement.
+		// Edge case: summary uses separate system and user prompts, with the user instruction placed after the tool result data.
+		// Dependencies: isolated config, custom prompt files, fake completion function, fake model registry, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const systemPromptFile = join(agentDir, "config", "summary-system.md");
+			const userPromptFile = join(agentDir, "config", "summary-user.md");
+			await mkdir(join(agentDir, "config"), { recursive: true });
+			await writeFile(
+				systemPromptFile,
+				"You are responsible for summarizing tool results.",
+			);
+			await writeFile(
+				userPromptFile,
+				"<task>\nSummarize the tool result now.\n</task>",
+			);
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: {
+						enabled: true,
+						model: null,
+						thinking: null,
+						minToolResultTokens: 1,
+						maxConcurrency: 1,
+						systemPromptFile,
+						userPromptFile,
+					},
+				}),
+			);
+			const completion = createCompletionFake(
+				"Summary: command output proves the projection summary path.",
+			);
+			const { pi, contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const user = userMessage();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage(
+				"call-old",
+				"important projected result ".repeat(200),
+			);
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", assistant, "01"),
+				messageEntry("03", toolResult, "02"),
+			];
+			const context = createContextFake(branchEntries);
+
+			const result = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(result).toEqual({
+				messages: [
+					user,
+					assistant,
+					{
+						...toolResult,
+						content: [
+							{
+								type: "text",
+								text: '<tool_result full_result="omitted" content="summary">\nSummary: command output proves the projection summary path.\n</tool_result>',
+							},
+						],
+					},
+				],
+			});
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: CUSTOM_TYPE,
+					data: {
+						projectedEntries: [
+							{
+								entryId: "03",
+								placeholder:
+									'<tool_result full_result="omitted" content="summary">\nSummary: command output proves the projection summary path.\n</tool_result>',
+							},
+						],
+					},
+				},
+			]);
+			expect(completion.calls).toHaveLength(1);
+			expect(completion.calls[0]?.model.id).toBe("current-model");
+			expect(completion.calls[0]?.context.systemPrompt).toBe(
+				"You are responsible for summarizing tool results.",
+			);
+			const summaryUserMessage = JSON.stringify(
+				completion.calls[0]?.context.messages,
+			);
+			expect(summaryUserMessage).toContain("<tool_call>");
+			expect(summaryUserMessage).toContain("echo test");
+			expect(summaryUserMessage).toContain("</tool_call>");
+			expect(summaryUserMessage).toContain("<tool_result>");
+			expect(summaryUserMessage).toContain("</tool_result>");
+			expect(summaryUserMessage).toContain("<task>");
+			expect(summaryUserMessage).toContain("Summarize the tool result now.");
+			expect(summaryUserMessage.indexOf("<tool_call>")).toBeLessThan(
+				summaryUserMessage.indexOf("<tool_result>"),
+			);
+			expect(summaryUserMessage.indexOf("<tool_result>")).toBeLessThan(
+				summaryUserMessage.indexOf("<task>"),
+			);
+			expect(completion.calls[0]?.options).toMatchObject({
+				apiKey: "summary-api-key",
+				headers: { "x-summary": "enabled" },
+				reasoning: "high",
+			});
+		});
+	});
+
+	test("falls back to placeholder when generated summary replacement is not smaller than the original tool result", async () => {
+		// Purpose: summary mode must not persist replacements that increase or fail to reduce provider context size.
+		// Input and expected output: one short eligible tool result receives a longer generated summary, so placeholder is persisted instead.
+		// Edge case: summary call succeeds but wrapped summary replacement has zero token savings.
+		// Dependencies: isolated config, fake completion function, and tokenizer-based projection savings.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: {
+						enabled: true,
+						minToolResultTokens: 1,
+						maxConcurrency: 1,
+					},
+				}),
+			);
+			const completion = createCompletionFake("long summary ".repeat(200));
+			const { pi, contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const user = userMessage();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage(
+				"call-old",
+				"small result ".repeat(3),
+			);
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", assistant, "01"),
+				messageEntry("03", toolResult, "02"),
+			];
+			const context = createContextFake(branchEntries);
+
+			const result = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(result).toEqual({
+				messages: [
+					user,
+					assistant,
+					{
+						...toolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
+			expect(completion.calls).toHaveLength(1);
+			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
+			});
+		});
+	});
+
+	test("retries failed summary requests before falling back to placeholder", async () => {
+		// Purpose: transient provider failures must not immediately lose summary value when retries are configured.
+		// Input and expected output: first summary call throws, retry succeeds, and the generated summary is persisted.
+		// Edge case: retry delay is configured to zero so the behavior is deterministic and fast.
+		// Dependencies: isolated config, fake completion function, and summary retry loop.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: {
+						enabled: true,
+						minToolResultTokens: 1,
+						maxConcurrency: 1,
+						retryCount: 1,
+						retryDelayMs: 0,
+					},
+				}),
+			);
+			const completion = createCompletionFake("Recovered summary");
+			let callCount = 0;
+			const completeSimple: CompletionFake["completeSimple"] = async (
+				model,
+				context,
+				options,
+			) => {
+				callCount += 1;
+				if (callCount === 1) {
+					throw new Error("temporary provider failure");
+				}
+
+				return completion.completeSimple(model, context, options);
+			};
+			const { pi, contextHandler } = installContextProjectionTestHarness({
+				completeSimple,
+			});
+			const user = userMessage();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage(
+				"call-old",
+				"large old result ".repeat(200),
+			);
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", assistant, "01"),
+				messageEntry("03", toolResult, "02"),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(callCount).toBe(2);
+			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				projectedEntries: [
+					{
+						entryId: "03",
+						placeholder:
+							'<tool_result full_result="omitted" content="summary">\nRecovered summary\n</tool_result>',
+					},
+				],
+			});
+		});
+	});
+
+	test("limits concurrent projection summary requests and keeps projected entries in branch order", async () => {
+		// Purpose: summary generation must use bounded concurrency so projection does not start all provider calls at once.
+		// Input and expected output: three projected tool results with maxConcurrency 2 produce three summaries and never exceed two active calls.
+		// Edge case: state persistence stays in branch order even though summary calls complete independently.
+		// Dependencies: fake completion function with async delay and context hook projection discovery.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: {
+						enabled: true,
+						minToolResultTokens: 1,
+						maxConcurrency: 2,
+					},
+				}),
+			);
+			let activeCalls = 0;
+			let maxActiveCalls = 0;
+			let nextSummary = 0;
+			const completion: CompletionFake = {
+				calls: [],
+				async completeSimple<TApi extends Api>(
+					model: Model<TApi>,
+					context: Context,
+					options?: SimpleStreamOptions,
+				): Promise<LlmAssistantMessage> {
+					completion.calls.push({
+						model: model as Model<Api>,
+						context,
+						options,
+					});
+					activeCalls += 1;
+					maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					activeCalls -= 1;
+					nextSummary += 1;
+					return {
+						role: "assistant",
+						content: [{ type: "text", text: `Summary ${nextSummary}` }],
+						api: "openai-responses",
+						provider: model.provider,
+						model: model.id,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "stop",
+						timestamp: 1,
+					};
+				},
+			};
+			const { pi, contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(200)),
+					"02",
+				),
+				messageEntry("04", assistantMessage("call-2"), "03"),
+				messageEntry(
+					"05",
+					toolResultMessage("call-2", "two ".repeat(200)),
+					"04",
+				),
+				messageEntry("06", assistantMessage("call-3"), "05"),
+				messageEntry(
+					"07",
+					toolResultMessage("call-3", "three ".repeat(200)),
+					"06",
+				),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(maxActiveCalls).toBe(2);
+			expect(completion.calls).toHaveLength(3);
+			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				projectedEntries: [
+					{
+						entryId: "03",
+						placeholder:
+							'<tool_result full_result="omitted" content="summary">\nSummary 1\n</tool_result>',
+					},
+					{
+						entryId: "05",
+						placeholder:
+							'<tool_result full_result="omitted" content="summary">\nSummary 2\n</tool_result>',
+					},
+					{
+						entryId: "07",
+						placeholder:
+							'<tool_result full_result="omitted" content="summary">\nSummary 3\n</tool_result>',
+					},
+				],
+			});
+			expect(
+				context.uiCalls.filter((call) => call.method === "notify"),
+			).toEqual([
+				{
+					method: "notify",
+					args: ["Projecting context: 0/3 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 1/3 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 2/3 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: 3/3 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Context projected: ~540 saved", "info"],
 				},
 			]);
 		});
@@ -843,11 +1482,7 @@ describe("context-projection", () => {
 			expect(activeContext.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "~0"],
-				},
-				{
-					method: "setStatus",
-					args: ["context-projection", "<warning>~11</warning>"],
+					args: ["context-projection", "<warning>~5</warning>"],
 				},
 			]);
 
@@ -1223,6 +1858,10 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
+					args: ["context-projection", "<warning>~5</warning>"],
+				},
+				{
+					method: "setStatus",
 					args: ["context-projection", "~0"],
 				},
 			]);
@@ -1273,6 +1912,45 @@ describe("context-projection", () => {
 					args: ["context-projection", "~0"],
 				},
 			]);
+		});
+	});
+
+	test("does not protect tool results separated from the tool-call turn by an intervening user message", async () => {
+		// Purpose: recent-turn protection must apply only to direct tool results that still belong to the assistant tool-call turn.
+		// Input and expected output: a user message between assistant tool call and tool result breaks the turn, so the tool result is projected.
+		// Edge case: keepRecentTurns would protect the latest tool-use turn if the tool result were directly attached.
+		// Dependencies: isolated config, context hook, and branch/message mapping.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 1 }),
+			);
+			const { contextHandler } = installContextProjectionTestHarness();
+			const assistant = assistantMessage("call-old");
+			const interveningUser = userMessage("new user message");
+			const toolResult = toolResultMessage("call-old", "old output ".repeat(5));
+			const branchEntries = [
+				messageEntry("01", assistant, null),
+				messageEntry("02", interveningUser, "01"),
+				messageEntry("03", toolResult, "02"),
+			];
+			const context = createContextFake(branchEntries);
+
+			const result = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(result).toEqual({
+				messages: [
+					assistant,
+					interveningUser,
+					{
+						...toolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
 		});
 	});
 
@@ -1576,6 +2254,24 @@ describe("context-projection", () => {
 					projectionRemainingTokens: "100",
 					keepRecentTurns: 0,
 				}),
+				expectedUiCalls: [
+					{
+						method: "setStatus",
+						args: ["context-projection", "<error>CP!</error>"],
+					},
+				],
+			},
+			{
+				config: createValidConfig({ keepRecentTurns: 0, placeholder: "" }),
+				expectedUiCalls: [
+					{
+						method: "setStatus",
+						args: ["context-projection", "<error>CP!</error>"],
+					},
+				],
+			},
+			{
+				config: createValidConfig({ keepRecentTurns: 0, placeholder: "   " }),
 				expectedUiCalls: [
 					{
 						method: "setStatus",

@@ -19,11 +19,13 @@
 - Does not add `~/` path support.
 - Requires a readable and non-empty advisor prompt.
 - Resolves the advisor model, API key, and request headers through the pi model registry.
-- Builds an advisor transcript from the current stored session context.
-- Does not use the provider context modified by `context-projection`.
-- Keeps full stored tool results visible to the advisor unless they were removed by session compaction.
+- Builds an advisor transcript from the current active branch context.
+- Replays valid persisted `context-projection` placeholders before calling the advisor.
+- Uses the full branch context when `context-projection` config is missing, disabled, invalid, or has no valid projection state.
+- Keeps `consult-advisor` independent from raw `context-projection` custom-entry details by using the shared projection replay abstraction.
 - Removes the pending `consult_advisor` tool call from the advisor transcript.
-- Calls the advisor through `completeSimple`.
+- Calls the advisor through `completeSimple` only when a tokenizer-based serialized-input estimate fits the advisor model context window.
+- Returns an explicit context-size error without calling the provider when the advisor input may be too large.
 - Sends the advisor context with `tools: []`.
 - Adds a visible-text response instruction to prevent reasoning-only advisor output.
 - Returns an explicit empty-response error when the provider returns no visible text.
@@ -97,6 +99,9 @@ Tests must verify:
 - exact full-output temp file content for truncated advisor answers;
 - unchanged model-facing content when the advisor answer does not exceed Pi output truncation limits;
 - pending `consult_advisor` call removal from the advisor transcript;
+- projection replay from valid persisted `context-projection` state;
+- full-context behavior when projection config is missing, disabled, invalid, or state is empty;
+- provider call prevention when advisor input exceeds the advisor model context window;
 - issue creation only for `consult-advisor` on configuration error;
 - contribution publication to `Agent Runtime Composition` without direct `pi.setActiveTools()` calls;
 - advisor guidance omission when the current effective agent does not enable `consult_advisor`.

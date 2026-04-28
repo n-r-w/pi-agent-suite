@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`context-projection` reduces provider context pressure during long agent runs by replacing old large non-critical successful text-only tool results with a short placeholder before a model request.
+`context-projection` reduces provider context pressure during long agent runs by replacing old large non-critical successful text-only tool results with a short replacement before a model request. The replacement is a placeholder by default. It can be a generated summary when summary mode is enabled.
 
 Projection is disabled by default. It becomes active only when `enabled` is `true` in `~/.pi/agent/config/context-projection.json`.
 
@@ -29,13 +29,22 @@ Projection changes only the provider context for the current request. It does no
 - Keeps recent tool-use turns unprojected by using `keepRecentTurns` and `keepRecentTurnsPercent`.
 - Replaces only the `content` field of an eligible `toolResult`.
 - Preserves `role`, `toolCallId`, `toolName`, `isError`, `timestamp`, and `details`.
-- Stores projected entry IDs and their first placeholder in extension-owned custom session entries.
-- Reuses the first placeholder for the same projected entry on the same branch, even if config changes later.
+- Stores projected entry IDs and their first replacement text in extension-owned custom session entries.
+- Reuses the first replacement text for the same projected entry on the same branch, even if config changes later.
 - Reconstructs projection state from the active branch on session start and session tree changes.
 - Keeps projection state branch-local.
 - Publishes footer status through status key `context-projection` when UI is available.
+- Shows UI-only chat status when a new projection operation starts and completes.
 - Does not perform compaction.
-- Does not summarize omitted content.
+- Summarizes projected tool results only when `summary.enabled` is `true` and the tool result reaches `summary.minToolResultTokens`.
+- Runs summary requests with bounded concurrency from `summary.maxConcurrency`.
+- Retries failed summary requests using `summary.retryCount` and `summary.retryDelayMs`.
+- Uses the current main model when `summary.model` is not set.
+- Uses the current thinking level when `summary.thinking` is not set.
+- Uses bundled summary prompts when `summary.systemPromptFile` and `summary.userPromptFile` are not set.
+- Sends the matched tool-call context and tool-result text to the summary model.
+- Appends the summary user prompt after the tool-result text.
+- Uses a generated summary only when the wrapped summary is smaller than the original tool result by tokenizer count.
 - Does not rewrite provider-specific request payloads.
 
 ## Provider context shape
@@ -56,7 +65,7 @@ Tool result: bash(test)
   <recent output>
 ```
 
-After projection:
+After projection without summary:
 
 ```text
 Assistant:
@@ -72,7 +81,25 @@ Tool result: bash(test)
   <recent output>
 ```
 
-The `toolResult` message stays in place. Only its text content changes.
+After projection with summary:
+
+```text
+Assistant:
+  Tool call: read(file A)
+
+Tool result: read(file A)
+  <tool_result full_result="omitted" content="summary">
+  Summary of the old read output.
+  </tool_result>
+
+Assistant:
+  Tool call: bash(test)
+
+Tool result: bash(test)
+  <recent output>
+```
+
+The `toolResult` message stays in place. Only its text content changes. Generated summaries are wrapped to show the model that the full tool result was omitted.
 
 ## Recent tool-use turn protection
 
@@ -139,10 +166,12 @@ States:
 
 - Missing config file or `enabled: false`: no visible status.
 - Invalid config: `CP!` in the theme `error` color.
-- Valid enabled config with no projected tool results on the active branch: `CP~` in plain footer text.
-- Valid enabled config with branch-local projected tool result state: `CPN` in the theme `warning` color, where `N` is the number of stored projected tool result entries on the active branch.
+- Valid enabled config with no projected text removed from the current provider context: `~0` in plain footer text.
+- Valid enabled config with projected text removed from the current active branch: `~N` in the theme `warning` color, where `N` is the approximate total token count saved by replacing old tool output with replacement text.
 
-`N` counts branch-local projection state entries. It does not estimate saved tokens. Critical protection can keep a counted entry visible in the current provider request.
+Footer `N` is calculated across all currently projected entries in the active branch. Critical protection can keep a stored projection state entry visible in the current provider request.
+
+When a new projection operation starts, the UI-only chat status shows progress as `Projecting context: X/Y tool results processed`. After completion, it shows `Context projected: ~N saved`, where `N` is the additional token count saved by the latest operation only. This completion value does not include entries projected earlier in the session.
 
 ## Configuration
 
@@ -155,7 +184,19 @@ File: `~/.pi/agent/config/context-projection.json`.
   "keepRecentTurns": 10,
   "keepRecentTurnsPercent": 0.2,
   "minToolResultChars": 3000,
-  "placeholder": "[Old successful tool result omitted from current context]"
+  "projectionIgnoredTools": [],
+  "placeholder": "[Old successful tool result omitted from current context]",
+  "summary": {
+    "enabled": false,
+    "model": null,
+    "thinking": null,
+    "minToolResultTokens": 2000,
+    "maxConcurrency": 1,
+    "retryCount": 1,
+    "retryDelayMs": 5000,
+    "systemPromptFile": null,
+    "userPromptFile": null
+  }
 }
 ```
 
@@ -168,7 +209,18 @@ Rules:
 - `keepRecentTurns` must be a non-negative integer when present.
 - `keepRecentTurnsPercent` must be a number from `0` to `1` when present.
 - `minToolResultChars` must be a non-negative integer when present.
-- `placeholder` must be a string when present.
+- `projectionIgnoredTools` must be a duplicate-free array of non-empty strings when present.
+- `placeholder` must be a non-empty string after whitespace is ignored.
+- `summary` must be an object when present.
+- `summary.enabled` must be a boolean value when present.
+- `summary.model` must be `null` or a `provider/model` string when present.
+- `summary.thinking` must be `null`, `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` when present.
+- `summary.minToolResultTokens` must be a non-negative integer when present.
+- `summary.maxConcurrency` must be a positive integer when present.
+- `summary.retryCount` must be a non-negative integer when present.
+- `summary.retryDelayMs` must be a non-negative integer when present.
+- `summary.systemPromptFile` must be `null` or a non-empty string when present.
+- `summary.userPromptFile` must be `null` or a non-empty string when present.
 - Unsupported keys make the configuration invalid.
 - Missing config file disables projection and is not an error.
 - Invalid configuration disables projection.
@@ -184,6 +236,13 @@ Use larger `minToolResultChars` when projection removes too many medium-size out
 Use smaller `projectionRemainingTokens` when projection starts too early.
 
 Use a short placeholder. Do not say that the model can read omitted content from session history. The model only sees the current provider context.
+
+Enable `summary` when blind placeholders remove information that the model still needs. Keep `summary.maxConcurrency` low unless the provider rate limit and cost impact are acceptable.
+
+Custom `summary.systemPromptFile` and `summary.userPromptFile` paths resolve as absolute paths, `~/...`, or paths relative to `~/.pi/agent/config`. Bundled prompts are:
+
+- `pi-package/extensions/context-projection/prompts/tool-result-summary-system.md`
+- `pi-package/extensions/context-projection/prompts/tool-result-summary-user.md`
 
 ## Troubleshooting
 
@@ -202,6 +261,16 @@ Projection may not happen when:
 - the tool result belongs to a protected recent tool-use turn;
 - provider-context messages cannot be exactly mapped to active branch entries.
 
+Summary may not happen when:
+
+- summary mode is disabled;
+- the tool result is below `summary.minToolResultTokens`;
+- the summary prompt file cannot be read;
+- the summary model or auth cannot be resolved;
+- the summary model response does not contain text after all retry attempts.
+
+When summary generation fails for one tool result, or when the wrapped summary is not smaller than the original tool result, that result still uses the configured placeholder if it is otherwise eligible for projection.
+
 ## Verification
 
 Tests must verify:
@@ -217,9 +286,15 @@ Tests must verify:
 - stable first placeholder after config changes;
 - branch-local state reconstruction;
 - exact mapping failure causing no projection;
+- summary replacement for eligible projected tool results;
+- placeholder fallback when a generated summary replacement would not reduce token count;
+- bounded summary request concurrency;
+- retry after transient summary request failure;
 - hybrid recent-turn formula using the larger value from absolute count and percentage;
 - absolute `keepRecentTurns` behavior when percentage is smaller;
 - counting only assistant messages with tool calls as tool-use turns;
 - projection of otherwise eligible unattached tool results;
 - invalid `keepRecentTurnsPercent` values disabling projection;
-- footer status for disabled, invalid, ready, and projected states.
+- footer status for disabled, invalid, ready, and projected states;
+- UI-only chat status when a new projection operation starts and completes;
+- footer total savings and latest-operation chat savings as separate metrics.

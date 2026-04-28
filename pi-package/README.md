@@ -28,7 +28,7 @@ Use `main-agent-selection` to choose a focused main agent for the current work. 
 
 Use `consult-advisor` when a cheaper model needs an audit from a stronger model. The main model can ask the advisor to check assumptions, risks, or decisions without paying for the stronger model on every turn.
 
-`consult-advisor` works like a context fork: the advisor sees the current stored conversation context of the main model and returns advice back to it. This makes the advice practical because the advisor can review the same task state, tool results, constraints, and decisions that the main model used.
+`consult-advisor` works like a context fork: the advisor sees the current conversation context of the main model and returns advice back to it. When `context-projection` has recorded omitted tool results, the advisor request replays those placeholders instead of sending the hidden full outputs. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
 
 ## How to connect to pi
 
@@ -203,6 +203,7 @@ How it works:
 - Uses pi's OpenAI Codex login data.
 - Requests quota from the Codex usage endpoint.
 - Shows quota in the footer, for example `91%/4h 100%/6d`.
+- Colors only the quota percentage; reset windows and compact non-data text stay plain.
 - Shows `CX auth`, `CX err`, or `CX ?` when quota cannot be shown.
 
 ### `custom-compaction`
@@ -251,15 +252,26 @@ Options:
 - `minToolResultChars`: default `3000`. Only larger tool results can be hidden.
 - `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` is always ignored.
 - `placeholder`: default `[Old successful tool result omitted from current context]`.
+- `summary.enabled`: default `false`. Generates a short replacement summary before projection.
+- `summary.model`: optional. Uses the current model when missing or `null`.
+- `summary.thinking`: optional. Uses the current thinking level when missing or `null`. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `summary.minToolResultTokens`: default `2000`. Summarizes only larger projected tool results.
+- `summary.maxConcurrency`: default `1`. Limits parallel summary requests.
+- `summary.retryCount`: default `1`. Retries failed summary requests after the first attempt.
+- `summary.retryDelayMs`: default `5000`. Waits between summary retry attempts.
+- `summary.systemPromptFile`: optional custom system prompt path.
+- `summary.userPromptFile`: optional custom user prompt path appended after tool-result text.
 
 How it works:
 
 - Runs only when the remaining context is low enough.
-- Replaces old large successful text-only tool results with the placeholder.
+- Replaces old large successful text-only tool results with the placeholder or an XML-wrapped generated summary that marks the full result as omitted. Summary is used only when it reduces token count.
 - Keeps recent tool results visible.
 - Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, and configured ignored tool results visible.
 - Changes only what is sent to the model for the next request. It does not edit saved conversation history.
-- Footer status shows approximate context savings as `~0` or `~20k`, using four text characters as one estimated token.
+- Shows UI-only chat progress while a new projection operation processes tool results.
+- Completion chat status shows only the additional savings from the latest projection operation.
+- Footer status shows total active-branch context savings as `~0` or `~20k`, using tokenizer counts for the original and replacement text.
 
 ### `context-overflow`
 
@@ -358,8 +370,10 @@ Tool input:
 
 How it works:
 
-- Builds an advisor request from the saved conversation.
+- Builds an advisor request from the active conversation branch.
+- Replays valid persisted `context-projection` placeholders when projection is active.
 - Removes the pending `consult_advisor` tool call from that request.
-- Calls the configured advisor model without tools.
+- Calls the configured advisor model without tools only when the request fits the advisor model context window.
+- Returns a clear error when the advisor request is too large.
 - Returns the advisor's visible answer.
 - Saves very large answers to a temporary file and returns a short result with the file path.
