@@ -35,7 +35,10 @@ import {
 	publishRuntimeProjectedPlaceholders,
 	readContextProjectionConfig,
 } from "../../shared/context-projection";
-import { countProjectionTextTokens } from "../../shared/context-size";
+import {
+	countProjectionTextTokens,
+	estimateSerializedInputTokens,
+} from "../../shared/context-size";
 
 /** Directory that stores the bundled context projection prompts. */
 const DEFAULT_PROMPT_DIR = join(
@@ -111,6 +114,11 @@ interface ProjectionSummaryCandidate {
 	readonly message: Extract<AgentMessage, { role: "toolResult" }>;
 	readonly toolCallContext: string | undefined;
 }
+
+type SummaryAttemptResult =
+	| { readonly kind: "success"; readonly summary: string }
+	| { readonly kind: "retryable" }
+	| { readonly kind: "fatal" };
 
 interface ProjectionDecisionOptions {
 	readonly pi: Pick<ExtensionAPI, "getThinkingLevel">;
@@ -410,19 +418,17 @@ async function createSummaryReplacementsByEntryId({
 		config.summary,
 	);
 	if (runtimeConfig === undefined) {
+		for (const _entry of newProjectedEntries) {
+			progress.advance();
+		}
 		return new Map();
 	}
 
-	const candidatesByEntryId = collectSummaryCandidates(mappedContext, config);
-	const candidates: ProjectionSummaryCandidate[] = [];
-	for (const projectedEntry of newProjectedEntries) {
-		const candidate = candidatesByEntryId.get(projectedEntry.entryId);
-		if (candidate === undefined) {
-			progress.advance();
-			continue;
-		}
-		candidates.push(candidate);
-	}
+	const candidates = collectNewProjectionSummaryCandidates({
+		mappedContext,
+		newProjectedEntries,
+		progress,
+	});
 	if (candidates.length === 0) {
 		return new Map();
 	}
@@ -463,9 +469,41 @@ async function createSummaryReplacementsByEntryId({
 	return replacementsByEntryId;
 }
 
+/** Collects summary candidates for new projections and advances progress for entries skipped before provider calls. */
+function collectNewProjectionSummaryCandidates({
+	mappedContext,
+	newProjectedEntries,
+	progress,
+}: {
+	readonly mappedContext: readonly MappedContextEntry[];
+	readonly newProjectedEntries: readonly ProjectedEntryState[];
+	readonly progress: ProjectionProgressReporter;
+}): ProjectionSummaryCandidate[] {
+	const candidatesByEntryId = collectSummaryCandidates(mappedContext);
+	const candidates: ProjectionSummaryCandidate[] = [];
+	for (const projectedEntry of newProjectedEntries) {
+		const candidate = candidatesByEntryId.get(projectedEntry.entryId);
+		if (candidate === undefined) {
+			progress.advance();
+			continue;
+		}
+		candidates.push(candidate);
+	}
+
+	return candidates;
+}
+
 /** Marks generated summaries as omitted full tool results in the final projected context. */
 function wrapSummaryReplacement(summary: string): string {
-	return `<tool_result full_result="omitted" content="summary">\n${summary}\n</tool_result>`;
+	return `<tool_result full_result="omitted" content="summary">\n${escapeXmlText(summary)}\n</tool_result>`;
+}
+
+/** Escapes XML delimiter characters inside untrusted model-visible data. */
+function escapeXmlText(text: string): string {
+	return text
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;");
 }
 
 /** Selects the model, thinking level, auth, and prompt used for one-tool-result summaries. */
@@ -584,7 +622,6 @@ function resolveSummaryPromptPath(
 /** Collects new projected tool results that are large enough to summarize. */
 function collectSummaryCandidates(
 	mappedContext: readonly MappedContextEntry[],
-	config: ContextProjectionConfig,
 ): Map<string, ProjectionSummaryCandidate> {
 	const toolCallContextById = collectToolCallContextById(mappedContext);
 	const candidatesByEntryId = new Map<string, ProjectionSummaryCandidate>();
@@ -593,10 +630,7 @@ function collectSummaryCandidates(
 			continue;
 		}
 		const text = getToolResultText(message);
-		if (
-			text === undefined ||
-			countProjectionTextTokens(text) < config.summary.minToolResultTokens
-		) {
+		if (text === undefined) {
 			continue;
 		}
 
@@ -665,19 +699,26 @@ async function summarizeProjectionCandidateAttempt({
 	readonly config: ContextProjectionSummaryConfig;
 	readonly attempt: number;
 }): Promise<string | undefined> {
-	const summary = await summarizeProjectionCandidate(
+	const result = await summarizeProjectionCandidate(
 		candidate,
 		runtimeConfig,
 		completeSimple,
 	);
-	if (summary !== undefined) {
-		return summary;
+	if (result.kind === "success") {
+		return result.summary;
 	}
-	if (attempt >= config.retryCount) {
+	if (result.kind === "fatal" || attempt >= config.retryCount) {
 		return undefined;
 	}
 
-	await delay(config.retryDelayMs);
+	const shouldContinue = await delay(
+		config.retryDelayMs,
+		runtimeConfig.options.signal,
+	);
+	if (!shouldContinue) {
+		return undefined;
+	}
+
 	return summarizeProjectionCandidateAttempt({
 		candidate,
 		runtimeConfig,
@@ -687,35 +728,86 @@ async function summarizeProjectionCandidateAttempt({
 	});
 }
 
-/** Summarizes one projected tool result and returns model-visible replacement text. */
+/** Summarizes one projected tool result and classifies failures for retry handling. */
 async function summarizeProjectionCandidate(
 	candidate: ProjectionSummaryCandidate,
 	runtimeConfig: SummaryRuntimeConfig,
 	completeSimple: CompleteSimple,
-): Promise<string | undefined> {
+): Promise<SummaryAttemptResult> {
+	const context = buildSummaryContext(candidate, runtimeConfig);
+	if (!doesSummaryInputFitContextWindow(context, runtimeConfig)) {
+		return { kind: "fatal" };
+	}
+	if (runtimeConfig.options.signal?.aborted === true) {
+		return { kind: "fatal" };
+	}
+
 	try {
 		const response = await completeSimple(
 			runtimeConfig.model,
-			buildSummaryContext(candidate, runtimeConfig),
+			context,
 			runtimeConfig.options,
 		);
 		if (response.stopReason === "error") {
-			return undefined;
+			return { kind: "retryable" };
 		}
 
-		return extractSummaryText(response.content);
-	} catch {
-		return undefined;
+		const summary = extractSummaryText(response.content);
+		return summary === undefined
+			? { kind: "retryable" }
+			: { kind: "success", summary };
+	} catch (error) {
+		return isAbortError(error) || runtimeConfig.options.signal?.aborted
+			? { kind: "fatal" }
+			: { kind: "retryable" };
 	}
 }
 
-/** Waits before retrying a failed summary request. */
-async function delay(delayMs: number): Promise<void> {
+/** Checks summary input locally to avoid provider calls that cannot fit the summary model window. */
+function doesSummaryInputFitContextWindow(
+	context: Context,
+	runtimeConfig: SummaryRuntimeConfig,
+): boolean {
+	return (
+		estimateSerializedInputTokens(
+			context,
+			runtimeConfig.model.id,
+			runtimeConfig.model.provider,
+		) <= runtimeConfig.model.contextWindow
+	);
+}
+
+/** Returns true when a thrown provider error means the current operation was aborted. */
+function isAbortError(error: unknown): boolean {
+	return (
+		(error instanceof DOMException && error.name === "AbortError") ||
+		(error instanceof Error && error.name === "AbortError")
+	);
+}
+
+/** Waits before retrying a failed summary request unless the operation is aborted. */
+async function delay(
+	delayMs: number,
+	signal: AbortSignal | undefined,
+): Promise<boolean> {
+	if (signal?.aborted === true) {
+		return false;
+	}
 	if (delayMs === 0) {
-		return;
+		return true;
 	}
 
-	await new Promise((resolve) => setTimeout(resolve, delayMs));
+	return new Promise((resolve) => {
+		const timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve(true);
+		}, delayMs);
+		const onAbort = (): void => {
+			clearTimeout(timeout);
+			resolve(false);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 /** Builds the isolated summary request context for one tool result. */
@@ -723,12 +815,13 @@ function buildSummaryContext(
 	candidate: ProjectionSummaryCandidate,
 	runtimeConfig: SummaryRuntimeConfig,
 ): Context {
-	const toolCallContext =
+	const toolCallContext = escapeXmlText(
 		candidate.toolCallContext ??
-		JSON.stringify({
-			name: candidate.message.toolName,
-			toolCallId: candidate.message.toolCallId,
-		});
+			JSON.stringify({
+				name: candidate.message.toolName,
+				toolCallId: candidate.message.toolCallId,
+			}),
+	);
 	return {
 		systemPrompt: runtimeConfig.systemPrompt,
 		messages: [
@@ -743,7 +836,7 @@ function buildSummaryContext(
 							"</tool_call>",
 							"",
 							"<tool_result>",
-							candidate.text,
+							escapeXmlText(candidate.text),
 							"</tool_result>",
 							"",
 							runtimeConfig.userPrompt,
@@ -782,7 +875,7 @@ function getToolResultText(
 		return undefined;
 	}
 
-	return message.content.map((block) => block.text).join("\n");
+	return message.content.map((block) => block.text).join("");
 }
 
 /** Maps values through an async worker pool with deterministic result ordering. */

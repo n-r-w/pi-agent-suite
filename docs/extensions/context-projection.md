@@ -25,7 +25,7 @@ Projection changes only the provider context for the current request. It does no
 - Projects only text-only tool result content.
 - Projects only non-critical tool results.
 - Treats `read` tool results for loaded skill-owned files as critical.
-- Projects only tool results whose combined text length is at least `minToolResultChars`.
+- Projects only tool results whose combined token count is at least `minToolResultTokens`.
 - Keeps recent tool-use turns unprojected by using `keepRecentTurns` and `keepRecentTurnsPercent`.
 - Replaces only the `content` field of an eligible `toolResult`.
 - Preserves `role`, `toolCallId`, `toolName`, `isError`, `timestamp`, and `details`.
@@ -36,14 +36,16 @@ Projection changes only the provider context for the current request. It does no
 - Publishes footer status through status key `context-projection` when UI is available.
 - Shows UI-only chat status when a new projection operation starts and completes.
 - Does not perform compaction.
-- Summarizes projected tool results only when `summary.enabled` is `true` and the tool result reaches `summary.minToolResultTokens`.
+- Summarizes newly projected tool results only when `summary.enabled` is `true`.
 - Runs summary requests with bounded concurrency from `summary.maxConcurrency`.
 - Retries failed summary requests using `summary.retryCount` and `summary.retryDelayMs`.
 - Uses the current main model when `summary.model` is not set.
 - Uses the current thinking level when `summary.thinking` is not set.
 - Uses bundled summary prompts when `summary.systemPromptFile` and `summary.userPromptFile` are not set.
 - Sends the matched tool-call context and tool-result text to the summary model.
+- Escapes XML delimiter characters inside tool-call context, tool-result text, and generated summary text.
 - Appends the summary user prompt after the tool-result text.
+- Checks summary input size against the summary model context window before calling the provider.
 - Uses a generated summary only when the wrapped summary is smaller than the original tool result by tokenizer count.
 - Does not rewrite provider-specific request payloads.
 
@@ -138,6 +140,8 @@ Text-only assistant messages do not count as tool-use turns.
 
 Tool results that are not attached to a counted tool-use turn are outside the recent-turn protection window. They can be projected when they are otherwise eligible.
 
+A tool result is attached to a tool-use turn only when its `toolCallId` matches one of the `toolCall` IDs from that assistant message. A `user`, `custom`, `branch_summary`, or non-tool assistant message between the tool call and tool result breaks the attachment.
+
 ## Critical tool result protection
 
 Some tool results contain instructions that control later agent behavior. These results must stay visible in provider context because replacing them with a placeholder changes the model's active instruction set.
@@ -152,7 +156,7 @@ Critical skill-owned paths include:
 - files under `scripts/`;
 - any other file under the loaded skill root.
 
-Critical skill-owned `read` tool results are not projected, even when they are old, successful, text-only, and longer than `minToolResultChars`.
+Critical skill-owned `read` tool results are not projected, even when they are old, successful, text-only, and at or above `minToolResultTokens`.
 
 A previously stored projection state entry does not override critical protection. If a tool result is now classified as critical, it remains unprojected for the current provider request.
 
@@ -183,14 +187,13 @@ File: `~/.pi/agent/config/context-projection.json`.
   "projectionRemainingTokens": 49152,
   "keepRecentTurns": 10,
   "keepRecentTurnsPercent": 0.2,
-  "minToolResultChars": 3000,
+  "minToolResultTokens": 2000,
   "projectionIgnoredTools": [],
   "placeholder": "[Old successful tool result omitted from current context]",
   "summary": {
     "enabled": false,
     "model": null,
     "thinking": null,
-    "minToolResultTokens": 2000,
     "maxConcurrency": 1,
     "retryCount": 1,
     "retryDelayMs": 5000,
@@ -208,14 +211,13 @@ Rules:
 - `projectionRemainingTokens` must be a non-negative integer when present.
 - `keepRecentTurns` must be a non-negative integer when present.
 - `keepRecentTurnsPercent` must be a number from `0` to `1` when present.
-- `minToolResultChars` must be a non-negative integer when present.
+- `minToolResultTokens` must be a non-negative integer when present.
 - `projectionIgnoredTools` must be a duplicate-free array of non-empty strings when present.
 - `placeholder` must be a non-empty string after whitespace is ignored.
 - `summary` must be an object when present.
 - `summary.enabled` must be a boolean value when present.
 - `summary.model` must be `null` or a `provider/model` string when present.
 - `summary.thinking` must be `null`, `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` when present.
-- `summary.minToolResultTokens` must be a non-negative integer when present.
 - `summary.maxConcurrency` must be a positive integer when present.
 - `summary.retryCount` must be a non-negative integer when present.
 - `summary.retryDelayMs` must be a non-negative integer when present.
@@ -231,7 +233,7 @@ Use larger `keepRecentTurns` when recent tool output remains important for sever
 
 Use larger `keepRecentTurnsPercent` when long sessions need a wider recent context window.
 
-Use larger `minToolResultChars` when projection removes too many medium-size outputs.
+Use larger `minToolResultTokens` when projection removes too many medium-size outputs.
 
 Use smaller `projectionRemainingTokens` when projection starts too early.
 
@@ -257,16 +259,17 @@ Projection may not happen when:
 - the tool result is failed;
 - the tool result has non-text content;
 - the tool result is a critical skill-owned `read` result;
-- the tool result is shorter than `minToolResultChars`;
+- the tool result is shorter than `minToolResultTokens`;
 - the tool result belongs to a protected recent tool-use turn;
 - provider-context messages cannot be exactly mapped to active branch entries.
 
 Summary may not happen when:
 
 - summary mode is disabled;
-- the tool result is below `summary.minToolResultTokens`;
 - the summary prompt file cannot be read;
 - the summary model or auth cannot be resolved;
+- the summary input does not fit the summary model context window;
+- the summary request is aborted;
 - the summary model response does not contain text after all retry attempts.
 
 When summary generation fails for one tool result, or when the wrapped summary is not smaller than the original tool result, that result still uses the configured placeholder if it is otherwise eligible for projection.
@@ -288,8 +291,12 @@ Tests must verify:
 - exact mapping failure causing no projection;
 - summary replacement for eligible projected tool results;
 - placeholder fallback when a generated summary replacement would not reduce token count;
+- progress completion when summary runtime cannot be resolved;
 - bounded summary request concurrency;
 - retry after transient summary request failure;
+- no retry for aborted summary requests;
+- no provider call when summary input cannot fit the summary model context window;
+- escaping of XML delimiters in summary input and replacement output;
 - hybrid recent-turn formula using the larger value from absolute count and percentage;
 - absolute `keepRecentTurns` behavior when percentage is smaller;
 - counting only assistant messages with tool calls as tool-use turns;

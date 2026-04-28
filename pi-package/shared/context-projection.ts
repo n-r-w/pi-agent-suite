@@ -31,8 +31,8 @@ const KEEP_RECENT_TURNS_CONFIG_KEY = "keepRecentTurns";
 /** Config key for the newest tool-use turn ratio kept unprojected in long sessions. */
 const KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY = "keepRecentTurnsPercent";
 
-/** Config key for the minimum combined text length eligible for projection. */
-const MIN_TOOL_RESULT_CHARS_CONFIG_KEY = "minToolResultChars";
+/** Config key for the minimum combined token count eligible for projection. */
+const MIN_TOOL_RESULT_TOKENS_CONFIG_KEY = "minToolResultTokens";
 
 /** Config key for tool names whose successful text results must stay visible. */
 const PROJECTION_IGNORED_TOOLS_CONFIG_KEY = "projectionIgnoredTools";
@@ -51,9 +51,6 @@ const SUMMARY_MODEL_CONFIG_KEY = "model";
 
 /** Config key for the thinking level used by summary generation. */
 const SUMMARY_THINKING_CONFIG_KEY = "thinking";
-
-/** Config key for the token threshold that enables summary generation for one tool result. */
-const SUMMARY_MIN_TOOL_RESULT_TOKENS_CONFIG_KEY = "minToolResultTokens";
 
 /** Config key for the maximum number of concurrent summary requests. */
 const SUMMARY_MAX_CONCURRENCY_CONFIG_KEY = "maxConcurrency";
@@ -85,15 +82,12 @@ const DEFAULT_KEEP_RECENT_TURNS = 10;
 /** Default newest tool-use turn ratio kept visible in long sessions. */
 const DEFAULT_KEEP_RECENT_TURNS_PERCENT = 0.2;
 
-/** Default minimum text size for projecting a tool result. */
-const DEFAULT_MIN_TOOL_RESULT_CHARS = 3_000;
+/** Default minimum token count for projecting a tool result. */
+const DEFAULT_MIN_TOOL_RESULT_TOKENS = 2_000;
 
 /** Default replacement text for projected old tool results. */
 const DEFAULT_PLACEHOLDER =
 	"[Old successful tool result omitted from current context]";
-
-/** Default minimum original tool-result token count required before summary generation. */
-const DEFAULT_SUMMARY_MIN_TOOL_RESULT_TOKENS = 2_000;
 
 /** Default summary request concurrency. */
 const DEFAULT_SUMMARY_MAX_CONCURRENCY = 1;
@@ -119,7 +113,6 @@ const CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS = [
 	SUMMARY_ENABLED_CONFIG_KEY,
 	SUMMARY_MODEL_CONFIG_KEY,
 	SUMMARY_THINKING_CONFIG_KEY,
-	SUMMARY_MIN_TOOL_RESULT_TOKENS_CONFIG_KEY,
 	SUMMARY_MAX_CONCURRENCY_CONFIG_KEY,
 	SUMMARY_RETRY_COUNT_CONFIG_KEY,
 	SUMMARY_RETRY_DELAY_MS_CONFIG_KEY,
@@ -133,7 +126,7 @@ const CONTEXT_PROJECTION_CONFIG_KEYS = [
 	PROJECTION_REMAINING_TOKENS_CONFIG_KEY,
 	KEEP_RECENT_TURNS_CONFIG_KEY,
 	KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY,
-	MIN_TOOL_RESULT_CHARS_CONFIG_KEY,
+	MIN_TOOL_RESULT_TOKENS_CONFIG_KEY,
 	PROJECTION_IGNORED_TOOLS_CONFIG_KEY,
 	PLACEHOLDER_CONFIG_KEY,
 	SUMMARY_CONFIG_KEY,
@@ -151,7 +144,6 @@ type ContextProjectionSummaryThinking =
 	(typeof SUMMARY_THINKING_VALUES)[number];
 
 interface EnabledSummaryConfigValues {
-	readonly minToolResultTokens: number;
 	readonly maxConcurrency: number;
 	readonly retryCount: number;
 	readonly retryDelayMs: number;
@@ -165,7 +157,6 @@ export interface ContextProjectionSummaryConfig {
 	readonly enabled: boolean;
 	readonly model?: string;
 	readonly thinking?: ContextProjectionSummaryThinking;
-	readonly minToolResultTokens: number;
 	readonly maxConcurrency: number;
 	readonly retryCount: number;
 	readonly retryDelayMs: number;
@@ -178,7 +169,7 @@ export interface ContextProjectionConfig {
 	readonly projectionRemainingTokens: number;
 	readonly keepRecentTurns: number;
 	readonly keepRecentTurnsPercent: number;
-	readonly minToolResultChars: number;
+	readonly minToolResultTokens: number;
 	readonly projectionIgnoredTools: readonly string[];
 	readonly placeholder: string;
 	readonly summary: ContextProjectionSummaryConfig;
@@ -315,8 +306,8 @@ function parseContextProjectionConfig(
 	const keepRecentTurnsPercent =
 		config[KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY] ??
 		DEFAULT_KEEP_RECENT_TURNS_PERCENT;
-	const minToolResultChars =
-		config[MIN_TOOL_RESULT_CHARS_CONFIG_KEY] ?? DEFAULT_MIN_TOOL_RESULT_CHARS;
+	const minToolResultTokens =
+		config[MIN_TOOL_RESULT_TOKENS_CONFIG_KEY] ?? DEFAULT_MIN_TOOL_RESULT_TOKENS;
 	const projectionIgnoredTools =
 		config[PROJECTION_IGNORED_TOOLS_CONFIG_KEY] ?? [];
 	const placeholder = config[PLACEHOLDER_CONFIG_KEY] ?? DEFAULT_PLACEHOLDER;
@@ -327,7 +318,7 @@ function parseContextProjectionConfig(
 		!isNonNegativeInteger(projectionRemainingTokens) ||
 		!isNonNegativeInteger(keepRecentTurns) ||
 		!isPercentNumber(keepRecentTurnsPercent) ||
-		!isNonNegativeInteger(minToolResultChars) ||
+		!isNonNegativeInteger(minToolResultTokens) ||
 		!isUniqueNonEmptyStringArray(projectionIgnoredTools) ||
 		!isNonEmptyString(placeholder) ||
 		summary === undefined
@@ -342,7 +333,7 @@ function parseContextProjectionConfig(
 			projectionRemainingTokens,
 			keepRecentTurns,
 			keepRecentTurnsPercent,
-			minToolResultChars,
+			minToolResultTokens,
 			projectionIgnoredTools,
 			placeholder,
 			summary,
@@ -381,9 +372,6 @@ function parseContextProjectionSummaryConfig(
 
 	const model = config[SUMMARY_MODEL_CONFIG_KEY];
 	const thinking = config[SUMMARY_THINKING_CONFIG_KEY];
-	const minToolResultTokens =
-		config[SUMMARY_MIN_TOOL_RESULT_TOKENS_CONFIG_KEY] ??
-		DEFAULT_SUMMARY_MIN_TOOL_RESULT_TOKENS;
 	const maxConcurrency =
 		config[SUMMARY_MAX_CONCURRENCY_CONFIG_KEY] ??
 		DEFAULT_SUMMARY_MAX_CONCURRENCY;
@@ -396,7 +384,6 @@ function parseContextProjectionSummaryConfig(
 	const values = parseEnabledSummaryConfigValues({
 		model,
 		thinking,
-		minToolResultTokens,
 		maxConcurrency,
 		retryCount,
 		retryDelayMs,
@@ -417,7 +404,6 @@ function parseContextProjectionSummaryConfig(
 function parseEnabledSummaryConfigValues({
 	model,
 	thinking,
-	minToolResultTokens,
 	maxConcurrency,
 	retryCount,
 	retryDelayMs,
@@ -426,7 +412,6 @@ function parseEnabledSummaryConfigValues({
 }: {
 	readonly model: unknown;
 	readonly thinking: unknown;
-	readonly minToolResultTokens: unknown;
 	readonly maxConcurrency: unknown;
 	readonly retryCount: unknown;
 	readonly retryDelayMs: unknown;
@@ -436,7 +421,6 @@ function parseEnabledSummaryConfigValues({
 	if (
 		!isOptionalModelId(model) ||
 		!isOptionalSummaryThinking(thinking) ||
-		!isNonNegativeInteger(minToolResultTokens) ||
 		!isPositiveInteger(maxConcurrency) ||
 		!isNonNegativeInteger(retryCount) ||
 		!isNonNegativeInteger(retryDelayMs) ||
@@ -447,7 +431,6 @@ function parseEnabledSummaryConfigValues({
 	}
 
 	return {
-		minToolResultTokens,
 		maxConcurrency,
 		retryCount,
 		retryDelayMs,
@@ -462,7 +445,6 @@ function parseEnabledSummaryConfigValues({
 function createDisabledSummaryConfig(): ContextProjectionSummaryConfig {
 	return {
 		enabled: false,
-		minToolResultTokens: DEFAULT_SUMMARY_MIN_TOOL_RESULT_TOKENS,
 		maxConcurrency: DEFAULT_SUMMARY_MAX_CONCURRENCY,
 		retryCount: DEFAULT_SUMMARY_RETRY_COUNT,
 		retryDelayMs: DEFAULT_SUMMARY_RETRY_DELAY_MS,
@@ -739,7 +721,8 @@ function projectMappedContextEntry({
 	const newlyEligible =
 		discoverNewEntries &&
 		!protectedEntryIds.has(entry.id) &&
-		getTextToolResultLength(message) >= config.minToolResultChars;
+		countProjectionTextTokens(getTextToolResultText(message)) >=
+			config.minToolResultTokens;
 	if (!alreadyProjected && !newlyEligible) {
 		return { kind: "unchanged", message };
 	}
@@ -932,21 +915,31 @@ function collectProtectedEntryIds(
 	mappedContext: readonly MappedContextEntry[],
 	config: ContextProjectionConfig,
 ): Set<string> {
-	let currentToolUseTurnOrdinal: number | undefined;
+	let currentToolUseTurn:
+		| { readonly ordinal: number; readonly toolCallIds: ReadonlySet<string> }
+		| undefined;
 	let toolUseTurnCount = 0;
 	const toolResultTurns = new Map<string, number>();
 	for (const { entry, message } of mappedContext) {
-		if (message.role === "assistant" && isAssistantToolUseMessage(message)) {
-			currentToolUseTurnOrdinal = toolUseTurnCount;
+		const toolCallIds = collectAssistantToolCallIds(message);
+		if (toolCallIds.size > 0) {
+			currentToolUseTurn = {
+				ordinal: toolUseTurnCount,
+				toolCallIds,
+			};
 			toolUseTurnCount += 1;
 			continue;
 		}
 		if (message.role !== "toolResult") {
-			currentToolUseTurnOrdinal = undefined;
+			currentToolUseTurn = undefined;
 			continue;
 		}
-		if (entry.type === "message" && currentToolUseTurnOrdinal !== undefined) {
-			toolResultTurns.set(entry.id, currentToolUseTurnOrdinal);
+		if (
+			entry.type === "message" &&
+			currentToolUseTurn !== undefined &&
+			currentToolUseTurn.toolCallIds.has(message.toolCallId)
+		) {
+			toolResultTurns.set(entry.id, currentToolUseTurn.ordinal);
 		}
 	}
 
@@ -983,14 +976,20 @@ function getEffectiveKeepRecentTurns(
 	);
 }
 
-/** Returns true when an assistant message starts a tool-use turn. */
-function isAssistantToolUseMessage(
-	message: Extract<AgentMessage, { role: "assistant" }>,
-): boolean {
-	return (
-		Array.isArray(message.content) &&
-		message.content.some((contentBlock) => contentBlock.type === "toolCall")
-	);
+/** Collects tool-call IDs when an assistant message starts a tool-use turn. */
+function collectAssistantToolCallIds(message: AgentMessage): Set<string> {
+	const toolCallIds = new Set<string>();
+	if (message.role !== "assistant" || !Array.isArray(message.content)) {
+		return toolCallIds;
+	}
+
+	for (const contentBlock of message.content) {
+		if (contentBlock.type === "toolCall") {
+			toolCallIds.add(contentBlock.id);
+		}
+	}
+
+	return toolCallIds;
 }
 
 /** Returns true when the message is a successful tool result that contains only text blocks. */
@@ -1014,13 +1013,6 @@ function getTextToolResultText(
 			contentBlock.type === "text" ? contentBlock.text : "",
 		)
 		.join("");
-}
-
-/** Returns the combined character length of text blocks in a text-only tool result. */
-function getTextToolResultLength(
-	message: Extract<AgentMessage, { role: "toolResult" }>,
-): number {
-	return getTextToolResultText(message).length;
 }
 
 /** Returns true when custom entry data matches the projection state contract. */

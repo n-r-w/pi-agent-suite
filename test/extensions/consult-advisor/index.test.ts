@@ -1102,6 +1102,7 @@ describe("consult-advisor", () => {
 				enabled: true,
 				keepRecentTurns: 0,
 				keepRecentTurnsPercent: 0,
+				minToolResultTokens: 1,
 			});
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
@@ -1168,9 +1169,9 @@ describe("consult-advisor", () => {
 				enabled: true,
 				keepRecentTurns: 0,
 				keepRecentTurnsPercent: 0,
+				minToolResultTokens: 1,
 				summary: {
 					enabled: true,
-					minToolResultTokens: 1,
 					maxConcurrency: 1,
 				},
 			});

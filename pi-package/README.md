@@ -249,13 +249,12 @@ Options:
 - `projectionRemainingTokens`: default `49152`. Projection starts at or below this remaining-token count.
 - `keepRecentTurns`: default `10`. Keeps this many recent tool-use turns unchanged.
 - `keepRecentTurnsPercent`: default `0.2`. Keeps this share of recent tool-use turns unchanged.
-- `minToolResultChars`: default `3000`. Only larger tool results can be hidden.
+- `minToolResultTokens`: default `2000`. Only larger tool results can be hidden.
 - `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` is always ignored.
 - `placeholder`: default `[Old successful tool result omitted from current context]`.
 - `summary.enabled`: default `false`. Generates a short replacement summary before projection.
 - `summary.model`: optional. Uses the current model when missing or `null`.
 - `summary.thinking`: optional. Uses the current thinking level when missing or `null`. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
-- `summary.minToolResultTokens`: default `2000`. Summarizes only larger projected tool results.
 - `summary.maxConcurrency`: default `1`. Limits parallel summary requests.
 - `summary.retryCount`: default `1`. Retries failed summary requests after the first attempt.
 - `summary.retryDelayMs`: default `5000`. Waits between summary retry attempts.
@@ -265,7 +264,7 @@ Options:
 How it works:
 
 - Runs only when the remaining context is low enough.
-- Replaces old large successful text-only tool results with the placeholder or an XML-wrapped generated summary that marks the full result as omitted. Summary is used only when it reduces token count.
+- Replaces old large successful text-only tool results with the placeholder or an XML-wrapped generated summary that marks the full result as omitted. Summary is used only when it fits the summary model context window and reduces token count.
 - Keeps recent tool results visible.
 - Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, and configured ignored tool results visible.
 - Changes only what is sent to the model for the next request. It does not edit saved conversation history.
