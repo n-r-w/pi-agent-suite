@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`footer` owns the custom pi footer for the `pi-harness` package.
+`footer` owns the custom pi footer for this package.
 
 ## Behavior
 

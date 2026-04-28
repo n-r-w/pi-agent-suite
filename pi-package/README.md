@@ -28,7 +28,7 @@ Use `main-agent-selection` to choose a focused main agent for the current work. 
 
 Use `consult-advisor` when a cheaper model needs an audit from a stronger model. The main model can ask the advisor to check assumptions, risks, or decisions without paying for the stronger model on every turn.
 
-`consult-advisor` works like a context fork: the advisor sees the current conversation context of the main model and returns advice back to it. When `context-projection` has recorded omitted tool results, the advisor request replays those placeholders instead of sending the hidden full outputs. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
+`consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, uses the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
 
 ## How to connect to pi
 
@@ -370,9 +370,11 @@ Tool input:
 How it works:
 
 - Builds an advisor request from the active conversation branch.
-- Replays valid persisted `context-projection` placeholders when projection is active.
+- Replays recorded `context-projection` placeholders or summaries when projection is active.
 - Removes the pending `consult_advisor` tool call from that request.
-- Calls the configured advisor model without tools only when the request fits the advisor model context window.
+- Appends the advisor question as a user message.
+- Uses the advisor system prompt and disables tools.
+- Calls the configured advisor model only when the request fits the advisor model context window.
 - Returns a clear error when the advisor request is too large.
 - Returns the advisor's visible answer.
 - Saves very large answers to a temporary file and returns a short result with the file path.

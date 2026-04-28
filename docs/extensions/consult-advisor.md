@@ -19,14 +19,16 @@
 - Does not add `~/` path support.
 - Requires a readable and non-empty advisor prompt.
 - Resolves the advisor model, API key, and request headers through the pi model registry.
-- Builds an advisor transcript from the current active branch context.
-- Replays valid persisted `context-projection` placeholders before calling the advisor.
-- Uses the full branch context when `context-projection` config is missing, disabled, invalid, or has no valid projection state.
+- Builds an advisor transcript from active branch conversation messages.
+- Replays recorded `context-projection` placeholders or summaries before calling the advisor.
+- Uses the full branch conversation messages when `context-projection` config is missing, disabled, invalid, or has no valid projection state.
 - Keeps `consult-advisor` independent from raw `context-projection` custom-entry details by using the shared projection replay abstraction.
 - Removes the pending `consult_advisor` tool call from the advisor transcript.
+- Appends the advisor question as a user message.
+- Uses the advisor system prompt instead of the main model system prompt.
+- Sends the advisor context with `tools: []`.
 - Calls the advisor through `completeSimple` only when a tokenizer-based serialized-input estimate fits the advisor model context window.
 - Returns an explicit context-size error without calling the provider when the advisor input may be too large.
-- Sends the advisor context with `tools: []`.
 - Adds a visible-text response instruction to prevent reasoning-only advisor output.
 - Returns an explicit empty-response error when the provider returns no visible text.
 - Applies Pi `truncateTail` behavior to the advisor answer before returning model-facing tool result `content`.
@@ -55,7 +57,7 @@ File: `~/.pi/agent/config/consult-advisor.json`.
     "id": "provider/model",
     "thinking": "high"
   },
-  "debugPayloadFile": "/Users/rvnikulenk/dev/nrw/pi-harness/debug/consult-advisor-payload.json"
+  "debugPayloadFile": "./debug/consult-advisor-payload.json"
 }
 ```
 
@@ -99,7 +101,9 @@ Tests must verify:
 - exact full-output temp file content for truncated advisor answers;
 - unchanged model-facing content when the advisor answer does not exceed Pi output truncation limits;
 - pending `consult_advisor` call removal from the advisor transcript;
-- projection replay from valid persisted `context-projection` state;
+- advisor question appended as a user message;
+- advisor system prompt use instead of the main model system prompt;
+- projection replay from recorded `context-projection` state;
 - full-context behavior when projection config is missing, disabled, invalid, or state is empty;
 - provider call prevention when advisor input exceeds the advisor model context window;
 - issue creation only for `consult-advisor` on configuration error;
