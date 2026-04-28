@@ -516,7 +516,7 @@ async function createSummaryReplacementsByEntryId({
 			continue;
 		}
 
-		const replacement = wrapSummaryReplacement(summary);
+		const replacement = wrapSummaryReplacement(summary, config.placeholder);
 		if (
 			countProjectionTextTokens(replacement) >=
 			countProjectionTextTokens(candidate.text)
@@ -558,8 +558,8 @@ function collectNewProjectionSummaryCandidates({
 }
 
 /** Marks generated summaries as omitted full tool results in the final projected context. */
-function wrapSummaryReplacement(summary: string): string {
-	return `<tool_result full_result="omitted" content="summary">\n${escapeXmlText(summary)}\n</tool_result>`;
+function wrapSummaryReplacement(summary: string, placeholder: string): string {
+	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeXmlText(placeholder)}</notice>\n<summary>\n${escapeXmlText(summary)}\n</summary>\n</tool_result>`;
 }
 
 /** Escapes XML delimiter characters inside untrusted model-visible data. */

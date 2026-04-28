@@ -1237,6 +1237,9 @@ describe("consult-advisor", () => {
 			expect(advisorReplacement.text).toContain(
 				'<tool_result full_result="omitted" content="summary">',
 			);
+			expect(advisorReplacement.text).toContain(
+				"<notice>[Result omitted. Run tool again if you want to see it]</notice>",
+			);
 			expect(advisorReplacement.text).toContain("Generated projection summary");
 			expect(advisorReplacement.text).not.toContain("old output old output");
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
@@ -1244,7 +1247,7 @@ describe("consult-advisor", () => {
 					{
 						entryId: "2",
 						placeholder:
-							'<tool_result full_result="omitted" content="summary">\nGenerated projection summary\n</tool_result>',
+							'<tool_result full_result="omitted" content="summary">\n<notice>[Result omitted. Run tool again if you want to see it]</notice>\n<summary>\nGenerated projection summary\n</summary>\n</tool_result>',
 					},
 				],
 			});

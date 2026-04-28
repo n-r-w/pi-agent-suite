@@ -91,7 +91,10 @@ Assistant:
 
 Tool result: read(file A)
   <tool_result full_result="omitted" content="summary">
+  <notice>[Result omitted. Run tool again if you want to see it]</notice>
+  <summary>
   Summary of the old read output.
+  </summary>
   </tool_result>
 
 Assistant:
@@ -101,7 +104,7 @@ Tool result: bash(test)
   <recent output>
 ```
 
-The `toolResult` message stays in place. Only its text content changes. Generated summaries are wrapped to show the model that the full tool result was omitted.
+The `toolResult` message stays in place. Only its text content changes. Generated summaries are wrapped to show the model that the full tool result was omitted. The `<notice>` text uses the same configured placeholder as projection without summary.
 
 ## Recent tool-use turn protection
 
