@@ -642,6 +642,60 @@ describe("main-agent-selection", () => {
 		});
 	});
 
+	test("resume restores persisted main agent across fresh extension instances", async () => {
+		// Purpose: real /resume replaces the extension runtime, so the selected main agent must be restored for the resumed cwd.
+		// Input and expected output: Coder persisted before resume starts the new runtime with Coder prompt, tools, model, and thinking.
+		// Edge case: each extension instance is imported separately to match pi's moduleCache false extension loader.
+		// Dependencies: this test uses isolated agent files, selected-agent state, fake model calls, and fake runtime composition per ExtensionAPI instance.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = createModel("openai", "gpt-test");
+			await writeAgent(agentDir, {
+				id: "Coder",
+				description: "Writes code",
+				body: "Coder prompt",
+				model: { id: "openai/gpt-test", thinking: "high" },
+				tools: ["read", "write"],
+			});
+			const oldPi = createExtensionApiFake({
+				activeTools: ["read", "bash"],
+				allTools: ["read", "bash", "edit", "write"],
+			});
+			const oldCtx = createCommandContext("/tmp/project", undefined, [model]);
+			const oldMainAgentSelection = await importFreshMainAgentSelection();
+			oldMainAgentSelection(oldPi);
+			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
+
+			const resumedPi = createExtensionApiFake({
+				activeTools: ["read", "bash"],
+				allTools: ["read", "bash", "edit", "write"],
+			});
+			const resumedCtx = createCommandContext("/tmp/project", undefined, [
+				model,
+			]);
+			const resumedMainAgentSelection = await importFreshMainAgentSelection();
+			resumedMainAgentSelection(resumedPi);
+
+			await getHandler(resumedPi, "session_start")(
+				{ type: "session_start", reason: "resume" },
+				resumedCtx,
+			);
+
+			expect(resumedPi.setModelCalls).toEqual([model]);
+			expect(resumedPi.thinkingCalls).toEqual(["high"]);
+			expect(resumedPi.activeToolCalls).toEqual([["read", "write"]]);
+			expect(
+				getAgentRuntimeComposition(resumedPi).getMainAgentContribution()?.agent
+					?.id,
+			).toBe("Coder");
+			expect(
+				await getBeforeAgentStartHandler(resumedPi)(
+					{ systemPrompt: "Base prompt" },
+					resumedCtx,
+				),
+			).toEqual({ systemPrompt: "Base prompt\n\nCoder prompt" });
+		});
+	});
+
 	test("new session keeps current main-agent runtime contribution", async () => {
 		// Purpose: /new must start a fresh chat without changing the active main agent.
 		// Input and expected output: Coder is active, persisted state changes to Sage, and session_start reason new keeps Coder prompt active.

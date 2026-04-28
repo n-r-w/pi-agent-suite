@@ -25,6 +25,7 @@
 	],
 	"pi": {
 		"extensions": [
+			"./extensions/enable-tools/index.ts",
 			"./extensions/footer/index.ts",
 			"./extensions/codex-verbosity/index.ts",
 			"./extensions/codex-quota/index.ts",

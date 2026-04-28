@@ -345,7 +345,7 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 /** Returns whether this session-start reason must refresh selected-agent state from disk. */
 function shouldRestoreSelectedMainAgent(event: unknown): boolean {
 	const reason = (event as SessionStartEventLike).reason;
-	return reason === "startup" || reason === "reload";
+	return reason === "startup" || reason === "reload" || reason === "resume";
 }
 
 /** Captures the selected agent ID before pi tears down the old runtime for /new. */

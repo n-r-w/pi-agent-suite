@@ -10,6 +10,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 
 | Extension | Enabled by default | Why you need it |
 |---|---:|---|
+| `enable-tools` | Yes | Enables built-in search tools that this package expects agents to use. |
 | `footer` | Yes | Keeps important session status visible without opening menus or logs. |
 | `codex-verbosity` | No | Lets you control how detailed OpenAI Codex answers are. |
 | `codex-quota` | No | Helps avoid unexpected Codex quota exhaustion during work. |
@@ -126,6 +127,22 @@ Agent type behavior:
 - `both`: appears in `/agent` and can also be called by `run_subagent`.
 
 ## Extension details
+
+### `enable-tools`
+
+Why you need it:
+
+- Makes `grep`, `find`, and `ls` available when pi starts a session.
+- Gives agents fast project search and listing tools without enabling every built-in tool manually.
+
+Config file: none.
+
+How it works:
+
+- Runs when a pi session starts.
+- Reads all registered tools and current active tools.
+- Adds `grep`, `find`, and `ls` only when those tools are registered by pi.
+- Keeps already active tools unchanged.
 
 ### `footer`
 
