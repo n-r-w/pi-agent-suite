@@ -28,6 +28,8 @@
 - Adds a `Full output: {path}` notice to truncated model-facing `content`.
 - Stores `truncation` and `fullOutputPath` in tool result `details` when the final child answer is truncated.
 - Renders live subagent status through a width-aware widget component.
+- Shows positive child-owned context-projection savings before the same child's context usage in widget rows.
+- Does not copy parent footer statuses or context-overflow limits into subagent widget rows.
 - Renders collapsed and expanded tool results through width-aware components.
 - Renders child agent, model, thinking level, context usage, and elapsed time in the `run_subagent` tool-call header.
 - Does not repeat child runtime metadata as a separate row in collapsed or expanded result body.
@@ -111,4 +113,6 @@ Tests must verify:
 - exact full-output temp file content for truncated final child answers;
 - unchanged model-facing content when the final child answer does not exceed Pi output truncation limits;
 - Pi-style hidden-line expansion hint for collapsed long progress;
+- widget rows that show positive child-owned context-projection savings before the same child's context usage;
+- widget rows that ignore parent footer statuses, context-overflow limits, zero projection savings, projection errors, and cleared projection status;
 - widget and collapsed result lines that stay within the terminal width passed to `render(width)`.

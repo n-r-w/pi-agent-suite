@@ -685,6 +685,175 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("renders child projection savings before child context usage in widget rows", async () => {
+		// Purpose: widget rows must show the projection state published by the same child process.
+		// Input and expected output: child setStatus(context-projection, ~65k) plus usage renders ~65k/154.7k/272k.
+		// Edge case: parent/global statuses and context-overflow status must not be copied into the child row.
+		// Dependencies: this test uses temp agent files, fake context statuses, and fake child RPC output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/child", thinking: "low" },
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "projection-status-1",
+					method: "setStatus",
+					statusKey: "context-projection",
+					statusText: "\u001b[33m~65k\u001b[39m",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "context-overflow-status-1",
+					method: "setStatus",
+					statusKey: "context-overflow",
+					statusText: "262k",
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+						usage: { totalTokens: 154700 },
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const childModel = {
+				...createModel("openai", "child"),
+				contextWindow: 272000,
+			};
+			const ctx = createContext(
+				"/tmp/project",
+				createModel("openai", "parent"),
+				[childModel],
+			);
+			ctx.ui.setStatus("context-projection", "~99k");
+			ctx.ui.setStatus("context-overflow", "262k");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			});
+
+			const widgetFactory = ctx.widgets.at(-1)?.content;
+			expect(typeof widgetFactory).toBe("function");
+			const widget = (
+				widgetFactory as () => { render(width: number): string[] }
+			)();
+			const renderedWidget = widget.render(160).join("\n");
+			expect(renderedWidget).toContain("~65k/154.7k/272k");
+			expect(renderedWidget).not.toContain("~99k");
+			expect(renderedWidget).not.toContain("262k");
+			expect(renderedWidget).not.toContain("\u001b[33m");
+			expect(renderedWidget).not.toContain("\u001b[39m");
+			expect(
+				spawn.calls[0]?.process.stdin.writes.some(
+					(line) => JSON.parse(line).id === "projection-status-1",
+				),
+			).toBe(false);
+		});
+	});
+
+	test("clears and ignores non-positive child projection statuses in widget rows", async () => {
+		// Purpose: widget rows must not show child projection states that do not represent positive savings.
+		// Input and expected output: positive, error, ready, and clear statuses result in plain context usage after the clear.
+		// Edge case: a later non-positive status must clear a stale positive projection value.
+		// Dependencies: this test uses temp agent files and fake child RPC output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/child", thinking: "low" },
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "projection-status-positive",
+					method: "setStatus",
+					statusKey: "context-projection",
+					statusText: "~65k",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "projection-status-error",
+					method: "setStatus",
+					statusKey: "context-projection",
+					statusText: "CP!",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "projection-status-ready",
+					method: "setStatus",
+					statusKey: "context-projection",
+					statusText: "~0",
+				}),
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "projection-status-clear",
+					method: "setStatus",
+					statusKey: "context-projection",
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+						usage: { totalTokens: 154700 },
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const childModel = {
+				...createModel("openai", "child"),
+				contextWindow: 272000,
+			};
+			const ctx = createContext(
+				"/tmp/project",
+				createModel("openai", "parent"),
+				[childModel],
+			);
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			});
+
+			const widgetFactory = ctx.widgets.at(-1)?.content;
+			expect(typeof widgetFactory).toBe("function");
+			const widget = (
+				widgetFactory as () => { render(width: number): string[] }
+			)();
+			const renderedWidget = widget.render(160).join("\n");
+			expect(renderedWidget).toContain("154.7k/272k");
+			expect(renderedWidget).not.toContain("~65k");
+			expect(renderedWidget).not.toContain("~0");
+			expect(renderedWidget).not.toContain("CP!");
+		});
+	});
+
 	test("keeps widget state current when first activity arrives inside throttle window", async () => {
 		// Purpose: widget state must not stay at starting when real child activity arrives before the next repaint is allowed.
 		// Input and expected output: initial running update is followed by an assistant message in the same throttle window, and the existing widget factory renders that activity.

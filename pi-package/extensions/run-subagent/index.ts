@@ -1187,6 +1187,7 @@ function handleChildRpcMessage(options: {
 		return;
 	}
 	if (message["type"] === "extension_ui_request") {
+		options.onSessionEvent(message);
 		handleExtensionUiRequest(message, options.writeRpcCommand);
 		return;
 	}

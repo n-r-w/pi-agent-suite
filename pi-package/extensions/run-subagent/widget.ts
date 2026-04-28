@@ -36,6 +36,7 @@ export interface SubagentWidgetNode {
 	readonly updatedAtMs: number;
 	readonly elapsedMs: number;
 	readonly contextUsage: SubagentContextUsage | undefined;
+	readonly contextProjectionStatus: string | undefined;
 	readonly activity: string | undefined;
 	readonly children: readonly SubagentWidgetNode[];
 }
@@ -159,6 +160,7 @@ function toWidgetNode(
 		contextUsage: details.contextUsage
 			? { ...details.contextUsage }
 			: undefined,
+		contextProjectionStatus: details.contextProjectionStatus,
 		activity: getCurrentActivity(details),
 		children: details.children.map((child) => toWidgetNode(child, nowMs)),
 	};
@@ -298,12 +300,27 @@ function formatWidgetNode(
 	node: SubagentWidgetNode,
 	activityPreviewLength: number,
 ): string {
-	const contextUsage = formatSubagentContextUsage(node.contextUsage);
+	const contextUsage = formatWidgetContextUsage(node);
 	const contextText = contextUsage ? ` · ${contextUsage}` : "";
 	const activity = node.activity
 		? ` · ${formatWidgetPreview(node.activity, activityPreviewLength)}`
 		: "";
 	return `${formatWidgetStatusIcon(node.status)} ${node.agentId} ${formatElapsedMs(node.elapsedMs)}${contextText}${activity}`;
+}
+
+/** Formats child-owned projection savings next to the same child context usage. */
+function formatWidgetContextUsage(
+	node: SubagentWidgetNode,
+): string | undefined {
+	const contextUsage = formatSubagentContextUsage(node.contextUsage);
+	if (contextUsage === undefined) {
+		return undefined;
+	}
+	if (node.contextProjectionStatus === undefined) {
+		return contextUsage;
+	}
+
+	return `${node.contextProjectionStatus}/${contextUsage}`;
 }
 
 /** Assigns lower numeric values to rows that must stay visible first. */

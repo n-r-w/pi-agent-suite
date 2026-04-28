@@ -21,6 +21,24 @@ const TOKEN_THOUSAND = 1000;
 /** Fraction digits used for non-integer compact token counts. */
 const TOKEN_FRACTION_DIGITS = 1;
 
+/** Identifies child footer status updates for context projection savings. */
+const CONTEXT_PROJECTION_STATUS_KEY = "context-projection";
+
+/** ASCII code for the escape character used by terminal control sequences. */
+const ASCII_ESCAPE_CODE = 27;
+
+/** Escape character used to build the SGR pattern without embedding a control character in source. */
+const ESCAPE_CHARACTER = String.fromCharCode(ASCII_ESCAPE_CODE);
+
+/** Matches terminal SGR sequences because child RPC status text can be themed. */
+const ANSI_SGR_PATTERN = new RegExp(
+	`${ESCAPE_CHARACTER}\\[[0-?]*[ -/]*[@-~]`,
+	"g",
+);
+
+/** Matches positive compact projection savings such as `~65k`. */
+const POSITIVE_PROJECTION_STATUS_PATTERN = /^~(\d+(?:\.\d+)?)(k?)$/;
+
 /** Defines the lifecycle states shown for one child agent process. */
 export type SubagentRunStatus = "running" | "succeeded" | "failed" | "aborted";
 
@@ -60,6 +78,7 @@ export interface SubagentProgressState {
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
 	contextUsage: SubagentContextUsage | undefined;
+	contextProjectionStatus: string | undefined;
 	readonly startedAtMs: number;
 	finalOutput: string;
 	stderr: string;
@@ -77,6 +96,7 @@ export interface SubagentRunDetails {
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
 	readonly contextUsage: SubagentContextUsage | undefined;
+	readonly contextProjectionStatus: string | undefined;
 	readonly status: SubagentRunStatus;
 	readonly elapsedMs: number;
 	readonly exitCode: number | undefined;
@@ -116,6 +136,7 @@ export function createSubagentProgressState(
 					percent: null,
 				}
 			: undefined,
+		contextProjectionStatus: undefined,
 		startedAtMs: options.startedAtMs,
 		finalOutput: "",
 		stderr: "",
@@ -140,6 +161,7 @@ export function toSubagentRunDetails(
 		depth: state.depth,
 		runtime: state.runtime,
 		contextUsage: state.contextUsage ? { ...state.contextUsage } : undefined,
+		contextProjectionStatus: state.contextProjectionStatus,
 		status,
 		elapsedMs: Math.max(0, nowMs - state.startedAtMs),
 		exitCode,
@@ -176,6 +198,55 @@ export function formatSubagentContextUsage(
 	return `${tokensText}/${formatTokenCount(contextUsage.contextWindow)}`;
 }
 
+/** Records the child-owned positive projection status for the current run only. */
+function recordContextProjectionStatus(
+	state: SubagentProgressState,
+	event: Record<string, unknown>,
+): boolean {
+	if (
+		getStringField(event, "method") !== "setStatus" ||
+		getStringField(event, "statusKey") !== CONTEXT_PROJECTION_STATUS_KEY
+	) {
+		return false;
+	}
+
+	const nextStatus = normalizePositiveProjectionStatus(
+		getStringField(event, "statusText"),
+	);
+	if (state.contextProjectionStatus === nextStatus) {
+		return false;
+	}
+
+	state.contextProjectionStatus = nextStatus;
+	return true;
+}
+
+/** Keeps only positive projection savings and removes child theme escape codes. */
+function normalizePositiveProjectionStatus(
+	statusText: string | undefined,
+): string | undefined {
+	if (statusText === undefined) {
+		return undefined;
+	}
+
+	const normalizedText = statusText
+		.replace(ANSI_SGR_PATTERN, "")
+		.replace(/[\r\n\t]/g, " ")
+		.replace(/ +/g, " ")
+		.trim();
+	const match = POSITIVE_PROJECTION_STATUS_PATTERN.exec(normalizedText);
+	if (match === null) {
+		return undefined;
+	}
+
+	const savedTokens = Number(match[1]);
+	if (!Number.isFinite(savedTokens) || savedTokens <= 0) {
+		return undefined;
+	}
+
+	return `~${match[1]}${match[2] ?? ""}`;
+}
+
 /** Records one parsed child session event when it carries logical progress. */
 export function recordSubagentSessionEvent(
 	state: SubagentProgressState,
@@ -187,6 +258,9 @@ export function recordSubagentSessionEvent(
 	}
 
 	const eventType = getStringField(event, "type");
+	if (eventType === "extension_ui_request") {
+		return recordContextProjectionStatus(state, event);
+	}
 	if (eventType === "tool_execution_start") {
 		recordToolExecutionStart(state, event, timestampMs);
 		return true;
@@ -398,6 +472,7 @@ function cloneSubagentRunDetails(
 		contextUsage: details.contextUsage
 			? { ...details.contextUsage }
 			: undefined,
+		contextProjectionStatus: details.contextProjectionStatus,
 		events: details.events.map((event) => ({ ...event })),
 		children: details.children.map(cloneSubagentRunDetails),
 	};
