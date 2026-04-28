@@ -15,7 +15,12 @@ import { visibleWidth } from "@mariozechner/pi-tui";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
 import { COLLAPSED_SUBAGENT_RESULT_LINES } from "../../../pi-package/extensions/run-subagent/rendering";
-import { formatSubagentWidgetPanel } from "../../../pi-package/extensions/run-subagent/widget";
+import {
+	createSubagentWidgetFactory,
+	createSubagentWidgetState,
+	formatSubagentWidgetPanel,
+	recordSubagentWidgetRun,
+} from "../../../pi-package/extensions/run-subagent/widget";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -765,6 +770,155 @@ describe("run-subagent", () => {
 				),
 			).toBe(false);
 		});
+	});
+
+	test("colors subagent widget projection and context usage like footer context", () => {
+		// Purpose: widget rows must use the same context pressure colors as the footer and warning color for projection savings.
+		// Input and expected output: low, warning, and error context rows render plain, warning, and error context values.
+		// Edge case: projection savings use warning independently from the context pressure color.
+		// Dependencies: this test uses the exported widget state updater and widget component factory.
+		const state = createSubagentWidgetState();
+		const contextWindow = 272000;
+		const commonDetails = {
+			depth: 1,
+			runtime: {
+				modelId: "openai/child",
+				thinking: "low",
+				contextWindow,
+			},
+			status: "running" as const,
+			elapsedMs: 199000,
+			exitCode: undefined,
+			finalOutput: "",
+			stderr: "",
+			stopReason: undefined,
+			errorMessage: undefined,
+			events: [],
+			omittedEventCount: 0,
+			children: [],
+		};
+		recordSubagentWidgetRun(
+			state,
+			{
+				...commonDetails,
+				runId: "low",
+				agentId: "LowAgent",
+				contextUsage: {
+					tokens: 100000,
+					contextWindow,
+					percent: 36.76,
+				},
+				contextProjectionStatus: undefined,
+			},
+			1,
+		);
+		recordSubagentWidgetRun(
+			state,
+			{
+				...commonDetails,
+				runId: "warning",
+				agentId: "WarningAgent",
+				contextUsage: {
+					tokens: 187300,
+					contextWindow,
+					percent: 68.86,
+				},
+				contextProjectionStatus: "~51k",
+			},
+			2,
+		);
+		recordSubagentWidgetRun(
+			state,
+			{
+				...commonDetails,
+				runId: "error",
+				agentId: "ErrorAgent",
+				contextUsage: {
+					tokens: 220000,
+					contextWindow,
+					percent: 80.88,
+				},
+				contextProjectionStatus: undefined,
+			},
+			3,
+		);
+		const theme: { fg(color: string, text: string): string } = {
+			fg(color: string, text: string): string {
+				return `<${color}>${text}</${color}>`;
+			},
+		};
+		const widgetFactory = createSubagentWidgetFactory(state, 4) as (
+			tui: unknown,
+			theme: { fg(color: string, text: string): string },
+		) => { render(width: number): string[] };
+		const renderedWidget = widgetFactory(undefined, theme)
+			.render(240)
+			.join("\n");
+
+		expect(renderedWidget).toContain("LowAgent 199s · 100k/272k");
+		expect(renderedWidget).toContain(
+			"WarningAgent 199s · <warning>~51k</warning>/<warning>187.3k/272k</warning>",
+		);
+		expect(renderedWidget).toContain(
+			"ErrorAgent 199s · <error>220k/272k</error>",
+		);
+		expect(renderedWidget).not.toContain("<warning>100k/272k</warning>");
+	});
+
+	test("colors subagent widget status icons by run status", () => {
+		// Purpose: widget status icons must use the requested theme color for each run status.
+		// Input and expected output: running, succeeded, failed, and aborted rows render accent, success, error, and error icons.
+		// Edge case: aborted and failed both use error color while keeping different glyphs.
+		// Dependencies: this test uses the exported widget state updater and widget component factory.
+		const state = createSubagentWidgetState();
+		const statuses = [
+			{ runId: "running", agentId: "RunningAgent", status: "running" },
+			{ runId: "succeeded", agentId: "SucceededAgent", status: "succeeded" },
+			{ runId: "failed", agentId: "FailedAgent", status: "failed" },
+			{ runId: "aborted", agentId: "AbortedAgent", status: "aborted" },
+		] as const;
+		for (const [index, status] of statuses.entries()) {
+			recordSubagentWidgetRun(
+				state,
+				{
+					runId: status.runId,
+					agentId: status.agentId,
+					depth: 1,
+					runtime: undefined,
+					contextUsage: undefined,
+					contextProjectionStatus: undefined,
+					status: status.status,
+					elapsedMs: 1000,
+					exitCode: undefined,
+					finalOutput: "",
+					stderr: "",
+					stopReason: undefined,
+					errorMessage: undefined,
+					events: [],
+					omittedEventCount: 0,
+					children: [],
+				},
+				index,
+			);
+		}
+		const theme: { fg(color: string, text: string): string } = {
+			fg(color: string, text: string): string {
+				return `<${color}>${text}</${color}>`;
+			},
+		};
+		const widgetFactory = createSubagentWidgetFactory(state, 5) as (
+			tui: unknown,
+			theme: { fg(color: string, text: string): string },
+		) => { render(width: number): string[] };
+		const renderedWidget = widgetFactory(undefined, theme)
+			.render(240)
+			.join("\n");
+
+		expect(renderedWidget).toContain("<accent>⏳</accent> RunningAgent");
+		expect(renderedWidget).toContain("<success>✓</success> SucceededAgent");
+		expect(renderedWidget).toContain("<error>✗</error> FailedAgent");
+		expect(renderedWidget).toContain("<error>■</error> AbortedAgent");
+		expect(renderedWidget).not.toContain("<warning>■</warning>");
 	});
 
 	test("clears and ignores non-positive child projection statuses in widget rows", async () => {

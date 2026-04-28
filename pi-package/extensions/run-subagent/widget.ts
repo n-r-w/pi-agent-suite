@@ -5,7 +5,9 @@
  * return lines wider than the `render(width)` argument.
  */
 
+import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import type { Component } from "@mariozechner/pi-tui";
+import { truncateToWidth } from "@mariozechner/pi-tui";
 import { truncateTextByWidth } from "../../shared/display-width";
 import {
 	formatSubagentContextUsage,
@@ -26,6 +28,9 @@ const ABORTED_STATUS_PRIORITY = 1;
 const RUNNING_STATUS_PRIORITY = 2;
 const COMPLETED_STATUS_PRIORITY = 3;
 const SECOND_MS = 1000;
+const CONTEXT_WARNING_USED_PERCENT = 50;
+const CONTEXT_ERROR_USED_PERCENT = 80;
+const PERCENT_FACTOR = 100;
 
 /** Stores one node in the UI-only subagent run tree. */
 export interface SubagentWidgetNode {
@@ -44,6 +49,11 @@ export interface SubagentWidgetNode {
 /** Stores the root runs currently known by the widget. */
 export interface SubagentWidgetState {
 	readonly roots: SubagentWidgetNode[];
+}
+
+/** Defines the theme subset used to color widget context values. */
+interface SubagentWidgetTheme {
+	fg(color: ThemeColor, text: string): string;
 }
 
 /** Creates an empty subagent widget state for one extension runtime. */
@@ -73,15 +83,22 @@ export function recordSubagentWidgetRun(
 export function createSubagentWidgetFactory(
 	state: SubagentWidgetState,
 	lineBudget: number,
-): () => Component {
-	return () => ({
+): (_tui?: unknown, theme?: SubagentWidgetTheme) => Component {
+	return (_tui?: unknown, theme?: SubagentWidgetTheme) => ({
 		render(width: number): string[] {
 			const safeWidth = Math.max(
 				SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH,
 				Math.floor(width),
 			);
-			const rendered = renderSubagentWidget(state, lineBudget, safeWidth).lines;
-			return formatSubagentWidgetPanel(rendered, safeWidth);
+			const rendered = renderSubagentWidget(
+				state,
+				lineBudget,
+				safeWidth,
+				theme,
+			).lines;
+			return theme === undefined
+				? formatSubagentWidgetPanel(rendered, safeWidth)
+				: formatStyledSubagentWidgetPanel(rendered, safeWidth);
 		},
 		invalidate(): void {},
 	});
@@ -102,11 +119,27 @@ export function formatSubagentWidgetPanel(
 	return ["─".repeat(safeContainerWidth), ...constrainedLines];
 }
 
+/** Adds a separator and constrains styled widget rows to the terminal width. */
+function formatStyledSubagentWidgetPanel(
+	lines: readonly string[],
+	containerWidth: number,
+): string[] {
+	const safeContainerWidth = Math.max(
+		SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH,
+		Math.floor(containerWidth),
+	);
+	const constrainedLines = lines.map((line) =>
+		truncateToWidth(line, safeContainerWidth, "..."),
+	);
+	return ["─".repeat(safeContainerWidth), ...constrainedLines];
+}
+
 /** Renders compact widget lines within the configured line budget. */
 function renderSubagentWidget(
 	state: SubagentWidgetState,
 	lineBudget: number,
 	width: number,
+	theme: SubagentWidgetTheme | undefined,
 ): { lines: string[]; hiddenCount: number } {
 	const normalizedBudget = Math.max(1, Math.floor(lineBudget));
 	const summary = summarizeSubagentTree(state.roots);
@@ -119,12 +152,12 @@ function renderSubagentWidget(
 		MIN_ACTIVITY_PREVIEW_LENGTH,
 		width - ACTIVITY_PREVIEW_RESERVED_WIDTH,
 	);
-	const candidates = flattenTreeRows(
-		state.roots,
-		"",
-		{ value: 0 },
-		previewLength,
-	);
+	const candidates = flattenTreeRows(state.roots, {
+		prefix: "",
+		orderRef: { value: 0 },
+		activityPreviewLength: previewLength,
+		theme,
+	});
 	const bodyBudget = normalizedBudget - 1;
 	const selectedRows = selectWidgetRows(candidates, bodyBudget);
 	const hiddenRows = candidates.filter(
@@ -240,12 +273,17 @@ interface WidgetRow {
 	readonly order: number;
 }
 
+interface FlattenTreeRowsOptions {
+	readonly prefix: string;
+	readonly orderRef: { value: number };
+	readonly activityPreviewLength: number;
+	readonly theme: SubagentWidgetTheme | undefined;
+}
+
 /** Flattens the tree while preserving visible parent-child indentation. */
 function flattenTreeRows(
 	nodes: readonly SubagentWidgetNode[],
-	prefix = "",
-	orderRef = { value: 0 },
-	activityPreviewLength = 80,
+	options: FlattenTreeRowsOptions,
 ): WidgetRow[] {
 	const rows: WidgetRow[] = [];
 	for (let index = 0; index < nodes.length; index += 1) {
@@ -255,20 +293,18 @@ function flattenTreeRows(
 		}
 		const isLast = index === nodes.length - 1;
 		const branch = isLast ? "└─" : "├─";
-		const childPrefix = `${prefix}${isLast ? "   " : "│  "}`;
+		const childPrefix = `${options.prefix}${isLast ? "   " : "│  "}`;
 		rows.push({
-			text: `${prefix}${branch} ${formatWidgetNode(node, activityPreviewLength)}`,
+			text: `${options.prefix}${branch} ${formatWidgetNode(node, options.activityPreviewLength, options.theme)}`,
 			node,
-			order: orderRef.value,
+			order: options.orderRef.value,
 		});
-		orderRef.value += 1;
+		options.orderRef.value += 1;
 		rows.push(
-			...flattenTreeRows(
-				node.children,
-				childPrefix,
-				orderRef,
-				activityPreviewLength,
-			),
+			...flattenTreeRows(node.children, {
+				...options,
+				prefix: childPrefix,
+			}),
 		);
 	}
 
@@ -299,28 +335,76 @@ function selectWidgetRows(
 function formatWidgetNode(
 	node: SubagentWidgetNode,
 	activityPreviewLength: number,
+	theme: SubagentWidgetTheme | undefined,
 ): string {
-	const contextUsage = formatWidgetContextUsage(node);
+	const contextUsage = formatWidgetContextUsage(node, theme);
 	const contextText = contextUsage ? ` · ${contextUsage}` : "";
 	const activity = node.activity
 		? ` · ${formatWidgetPreview(node.activity, activityPreviewLength)}`
 		: "";
-	return `${formatWidgetStatusIcon(node.status)} ${node.agentId} ${formatElapsedMs(node.elapsedMs)}${contextText}${activity}`;
+	return `${formatWidgetStatusIcon(node.status, theme)} ${node.agentId} ${formatElapsedMs(node.elapsedMs)}${contextText}${activity}`;
 }
 
 /** Formats child-owned projection savings next to the same child context usage. */
 function formatWidgetContextUsage(
 	node: SubagentWidgetNode,
+	theme: SubagentWidgetTheme | undefined,
 ): string | undefined {
 	const contextUsage = formatSubagentContextUsage(node.contextUsage);
 	if (contextUsage === undefined) {
 		return undefined;
 	}
+
+	const styledContextUsage = styleWidgetContextUsage(
+		contextUsage,
+		node.contextUsage,
+		theme,
+	);
 	if (node.contextProjectionStatus === undefined) {
-		return contextUsage;
+		return styledContextUsage;
 	}
 
-	return `${node.contextProjectionStatus}/${contextUsage}`;
+	const styledProjectionStatus =
+		theme === undefined
+			? node.contextProjectionStatus
+			: theme.fg("warning", node.contextProjectionStatus);
+	return `${styledProjectionStatus}/${styledContextUsage}`;
+}
+
+/** Applies the same pressure colors as the footer context segment. */
+function styleWidgetContextUsage(
+	label: string,
+	contextUsage: SubagentContextUsage | undefined,
+	theme: SubagentWidgetTheme | undefined,
+): string {
+	const color = getWidgetContextUsageColor(contextUsage);
+	return color === undefined || theme === undefined
+		? label
+		: theme.fg(color, label);
+}
+
+/** Returns context pressure color using the footer threshold contract. */
+function getWidgetContextUsageColor(
+	contextUsage: SubagentContextUsage | undefined,
+): "warning" | "error" | undefined {
+	if (contextUsage?.tokens === undefined || contextUsage.tokens === null) {
+		return undefined;
+	}
+	const usedPercent =
+		contextUsage.contextWindow > 0
+			? (contextUsage.tokens / contextUsage.contextWindow) * PERCENT_FACTOR
+			: null;
+	if (usedPercent === null) {
+		return undefined;
+	}
+	if (usedPercent >= CONTEXT_ERROR_USED_PERCENT) {
+		return "error";
+	}
+	if (usedPercent >= CONTEXT_WARNING_USED_PERCENT) {
+		return "warning";
+	}
+
+	return undefined;
 }
 
 /** Assigns lower numeric values to rows that must stay visible first. */
@@ -339,18 +423,30 @@ function getStatusPriority(status: SubagentRunStatus): number {
 }
 
 /** Selects the status icon used in the widget. */
-function formatWidgetStatusIcon(status: SubagentRunStatus): string {
+function formatWidgetStatusIcon(
+	status: SubagentRunStatus,
+	theme: SubagentWidgetTheme | undefined,
+): string {
 	if (status === "running") {
-		return "⏳";
+		return styleWidgetStatusIcon("⏳", "accent", theme);
 	}
 	if (status === "succeeded") {
-		return "✓";
+		return styleWidgetStatusIcon("✓", "success", theme);
 	}
 	if (status === "aborted") {
-		return "■";
+		return styleWidgetStatusIcon("■", "error", theme);
 	}
 
-	return "✗";
+	return styleWidgetStatusIcon("✗", "error", theme);
+}
+
+/** Applies status color while preserving plain rendering without a theme. */
+function styleWidgetStatusIcon(
+	icon: string,
+	color: ThemeColor,
+	theme: SubagentWidgetTheme | undefined,
+): string {
+	return theme === undefined ? icon : theme.fg(color, icon);
 }
 
 /** Formats elapsed milliseconds into compact widget text. */
