@@ -278,6 +278,10 @@ interface ChildRpcLineProjectionState {
 	assistantMessageEventDeltaExceededLimit: boolean;
 	hasSkippedText: boolean;
 	hasToolCall: boolean;
+	toolCallId: string | undefined;
+	toolName: string | undefined;
+	toolIsError: boolean | undefined;
+	toolResultText: string | undefined;
 }
 
 interface JsonProjectionContainer {
@@ -288,8 +292,10 @@ interface JsonProjectionContainer {
 }
 
 interface JsonProjectionContentPart {
+	readonly owner: "message" | "toolResult";
 	type: string | undefined;
 	hasText: boolean;
+	text: string | undefined;
 }
 
 interface JsonProjectionString {
@@ -1705,6 +1711,10 @@ function createChildRpcLineProjection(): ChildRpcLineProjection {
 		assistantMessageEventDeltaExceededLimit: false,
 		hasSkippedText: false,
 		hasToolCall: false,
+		toolCallId: undefined,
+		toolName: undefined,
+		toolIsError: undefined,
+		toolResultText: undefined,
 	};
 	const stream = streamJsonParser.parser.asStream({
 		packKeys: false,
@@ -1795,17 +1805,21 @@ function recordChildRpcProjectionToken(
 			recordJsonProjectionStringChunk(state, token.value);
 			return;
 		case "numberValue":
-		case "trueValue":
-		case "falseValue":
 		case "nullValue":
 			consumeJsonProjectionValuePath(state);
+			return;
+		case "trueValue":
+			recordJsonProjectionBooleanValue(state, true);
+			return;
+		case "falseValue":
+			recordJsonProjectionBooleanValue(state, false);
 			return;
 		default:
 			return;
 	}
 }
 
-/** Pushes a JSON container and records whether it is a message content part. */
+/** Pushes a JSON container and marks payload areas that need bounded metadata. */
 function pushJsonProjectionContainer(
 	state: ChildRpcLineProjectionState,
 	kind: "object" | "array",
@@ -1815,14 +1829,44 @@ function pushJsonProjectionContainer(
 		kind,
 		path,
 		pendingKey: undefined,
-		contentPart:
-			kind === "object" && isJsonProjectionPath(path, "message", "content", "*")
-				? { type: undefined, hasText: false }
-				: undefined,
+		contentPart: createJsonProjectionContentPart(kind, path),
 	});
 }
 
-/** Pops a JSON container and records completed message content metadata. */
+/**
+ * Creates content-part metadata for payloads that affect parent progress.
+ * Message content is tracked only as final-answer metadata; tool-result content is tracked only for bounded text.
+ */
+function createJsonProjectionContentPart(
+	kind: "object" | "array",
+	path: readonly string[],
+): JsonProjectionContentPart | undefined {
+	if (kind !== "object") {
+		return undefined;
+	}
+	if (isJsonProjectionPath(path, "message", "content", "*")) {
+		return {
+			owner: "message",
+			type: undefined,
+			hasText: false,
+			text: undefined,
+		};
+	}
+	if (isJsonProjectionPath(path, "result", "content", "*")) {
+		return {
+			owner: "toolResult",
+			type: undefined,
+			hasText: false,
+			text: undefined,
+		};
+	}
+	return undefined;
+}
+
+/**
+ * Pops a JSON container and commits bounded content metadata.
+ * Image and binary parts are ignored here because they can exceed the child stdout line limit and are not useful in parent progress.
+ */
 function popJsonProjectionContainer(
 	state: ChildRpcLineProjectionState,
 	kind: "object" | "array",
@@ -1835,25 +1879,51 @@ function popJsonProjectionContainer(
 	if (contentPart === undefined) {
 		return;
 	}
-	if (contentPart.type === "text" && contentPart.hasText) {
-		state.hasSkippedText = true;
+	if (contentPart.owner === "message") {
+		if (contentPart.type === "text" && contentPart.hasText) {
+			state.hasSkippedText = true;
+		}
+		if (contentPart.type === "toolCall") {
+			state.hasToolCall = true;
+		}
+		return;
 	}
-	if (contentPart.type === "toolCall") {
-		state.hasToolCall = true;
+	if (contentPart.type === "text" && contentPart.text !== undefined) {
+		state.toolResultText = appendProjectedToolResultText(
+			state.toolResultText,
+			contentPart.text,
+		);
 	}
 }
 
-/** Starts collecting a string value only when its path can affect control flow. */
+/**
+ * Appends one text tool-result part while preserving the projection memory bound.
+ * Oversized text is dropped instead of being partially trusted because progress text is diagnostic, not required for run completion.
+ */
+function appendProjectedToolResultText(
+	currentText: string | undefined,
+	partText: string,
+): string | undefined {
+	const nextText =
+		currentText === undefined ? partText : `${currentText}\n${partText}`;
+	return nextText.length > CHILD_RPC_PROJECTED_SCALAR_TEXT_LIMIT
+		? undefined
+		: nextText;
+}
+
+/** Starts collecting a string value only when its path can affect control flow or safe progress text. */
 function startJsonProjectionStringValue(
 	state: ChildRpcLineProjectionState,
 ): void {
 	const path = consumeJsonProjectionValuePath(state);
 	const contentPart = getCurrentJsonProjectionContentPart(state);
-	if (
-		contentPart !== undefined &&
-		isJsonProjectionPath(path, "message", "content", "*", "text")
-	) {
-		contentPart.hasText = true;
+	if (contentPart !== undefined) {
+		if (isJsonProjectionPath(path, "message", "content", "*", "text")) {
+			contentPart.hasText = true;
+		}
+		if (isJsonProjectionPath(path, "result", "content", "*", "text")) {
+			contentPart.hasText = true;
+		}
 	}
 	state.currentString = createJsonProjectionString("value", path);
 }
@@ -1866,7 +1936,10 @@ function createJsonProjectionString(
 	return { kind, path, text: "", truncated: false };
 }
 
-/** Records one string chunk without collecting large final-answer text payloads. */
+/**
+ * Records one string chunk without collecting large payloads.
+ * Assistant message text is skipped because the streamed delta path owns final-answer recovery.
+ */
 function recordJsonProjectionStringChunk(
 	state: ChildRpcLineProjectionState,
 	value: unknown,
@@ -1973,7 +2046,7 @@ function finishJsonProjectionStringValue(
 	);
 }
 
-/** Applies one completed string value to the projected RPC event metadata. */
+/** Applies one completed bounded string value to projected RPC event metadata. */
 function recordJsonProjectionStringValue(
 	state: ChildRpcLineProjectionState,
 	path: readonly string[],
@@ -1995,11 +2068,44 @@ function recordJsonProjectionStringValue(
 		state.assistantMessageEventType = value;
 		return;
 	}
+	if (isJsonProjectionPath(path, "toolCallId")) {
+		state.toolCallId = value;
+		return;
+	}
+	if (isJsonProjectionPath(path, "toolName")) {
+		state.toolName = value;
+		return;
+	}
 	if (isJsonProjectionPath(path, "message", "content", "*", "type")) {
 		const contentPart = getCurrentJsonProjectionContentPart(state);
 		if (contentPart !== undefined) {
 			contentPart.type = value;
 		}
+		return;
+	}
+	if (isJsonProjectionPath(path, "result", "content", "*", "type")) {
+		const contentPart = getCurrentJsonProjectionContentPart(state);
+		if (contentPart !== undefined) {
+			contentPart.type = value;
+		}
+		return;
+	}
+	if (isJsonProjectionPath(path, "result", "content", "*", "text")) {
+		const contentPart = getCurrentJsonProjectionContentPart(state);
+		if (contentPart !== undefined) {
+			contentPart.text = value;
+		}
+	}
+}
+
+/** Applies one completed boolean value to the projected RPC event metadata. */
+function recordJsonProjectionBooleanValue(
+	state: ChildRpcLineProjectionState,
+	value: boolean,
+): void {
+	const path = consumeJsonProjectionValuePath(state);
+	if (isJsonProjectionPath(path, "isError")) {
+		state.toolIsError = value;
 	}
 }
 
@@ -2045,6 +2151,10 @@ function buildProjectedChildRpcEvent(
 			return buildProjectedMessageUpdateEvent(state);
 		case "message_end":
 			return buildProjectedMessageEndEvent(state);
+		case "tool_execution_end":
+			return buildProjectedToolExecutionEndEvent(state);
+		case "turn_end":
+			return buildProjectedTurnEndEvent();
 		default:
 			return undefined;
 	}
@@ -2099,6 +2209,36 @@ function buildProjectedMessageEndEvent(
 				: { stopReason: state.stopReason }),
 		},
 	};
+}
+
+/**
+ * Builds a minimal tool_execution_end event without large result payloads.
+ * The parent needs tool identity and short text progress only; image/base64 data must stay out of run details and UI updates.
+ */
+function buildProjectedToolExecutionEndEvent(
+	state: ChildRpcLineProjectionState,
+): Record<string, unknown> {
+	return {
+		type: "tool_execution_end",
+		...(state.toolCallId === undefined ? {} : { toolCallId: state.toolCallId }),
+		...(state.toolName === undefined ? {} : { toolName: state.toolName }),
+		...(state.toolIsError === undefined ? {} : { isError: state.toolIsError }),
+		...(state.toolResultText === undefined
+			? {}
+			: {
+					result: {
+						content: [{ type: "text", text: state.toolResultText }],
+					},
+				}),
+	};
+}
+
+/**
+ * Builds a minimal turn_end event without replaying toolResults.
+ * Pi turn_end repeats completed tool results, so keeping it as a lifecycle marker prevents image results from being parsed twice.
+ */
+function buildProjectedTurnEndEvent(): Record<string, unknown> {
+	return { type: "turn_end" };
 }
 
 /** Compares a JSON projection path with a finite path pattern. */

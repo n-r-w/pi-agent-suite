@@ -2056,6 +2056,150 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("keeps completion when image tool result exceeds the stdout line buffer", async () => {
+		// Purpose: valid oversized tool result events must not make child RPC output look malformed.
+		// Input and expected output: an oversized read image result followed by a final assistant answer succeeds with that answer.
+		// Edge case: image data exceeds the raw JSONL line buffer and must not be surfaced as final output.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const finalAnswer = "image inspected";
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "tool_execution_end",
+					toolCallId: "call-read-image",
+					toolName: "read",
+					result: {
+						content: [
+							{ type: "text", text: "Read image file [image/jpeg]" },
+							{
+								type: "image",
+								data: "a".repeat(300_000),
+								mimeType: "image/jpeg",
+							},
+						],
+					},
+					isError: false,
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: finalAnswer }],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: finalAnswer }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+			expect(
+				(result.details as { readonly finalOutput?: string }).finalOutput,
+			).toBe(finalAnswer);
+		});
+	});
+
+	test("keeps completion when turn_end tool results exceed the stdout line buffer", async () => {
+		// Purpose: valid oversized turn_end events must not make child RPC output look malformed.
+		// Input and expected output: a final assistant answer plus oversized turn_end tool results succeeds with that answer.
+		// Edge case: turn_end repeats image tool results after the separate tool_execution_end event.
+		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const finalAnswer = "continued after image read";
+			const imageResult = {
+				content: [
+					{ type: "text", text: "Read image file [image/jpeg]" },
+					{
+						type: "image",
+						data: "a".repeat(300_000),
+						mimeType: "image/jpeg",
+					},
+				],
+			};
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: true,
+				}),
+				JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: finalAnswer }],
+						stopReason: "stop",
+					},
+				}),
+				JSON.stringify({
+					type: "turn_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: finalAnswer }],
+						stopReason: "stop",
+					},
+					toolResults: [
+						{
+							toolCallId: "call-read-image",
+							toolName: "read",
+							result: imageResult,
+							isError: false,
+						},
+					],
+				}),
+				JSON.stringify({ type: "agent_end", messages: [] }),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: finalAnswer }],
+			});
+			expect((result.details as { readonly status?: string }).status).toBe(
+				"succeeded",
+			);
+			expect(
+				(result.details as { readonly finalOutput?: string }).finalOutput,
+			).toBe(finalAnswer);
+		});
+	});
+
 	test("uses streamed final text only when message_end text was skipped by the adapter limit", async () => {
 		// Purpose: oversized final message content may use matching streamed text as a bounded fallback.
 		// Input and expected output: text_delta rebuilds the answer when message_end metadata is present but text content is oversized.
