@@ -65,6 +65,9 @@ interface MainAgentSelectorKeybindings {
 interface MainAgentContext {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
+	readonly sessionManager: {
+		getSessionFile(): string | undefined;
+	};
 	readonly ui: {
 		custom?<T>(
 			factory: (
@@ -92,16 +95,17 @@ interface SessionStartEventLike {
 
 interface SessionShutdownEventLike {
 	readonly reason?: string;
+	readonly targetSessionFile?: string;
 }
 
-const NEW_SESSION_HANDOFFS_PROPERTY =
-	"__piHarnessMainAgentSelectionNewSessionHandoffs";
+const SESSION_REPLACEMENT_HANDOFFS_PROPERTY =
+	"__piHarnessMainAgentSelectionSessionReplacementHandoffs";
 
-interface NewSessionHandoffCarrier {
-	[NEW_SESSION_HANDOFFS_PROPERTY]?: Map<string, string | null>;
+interface SessionReplacementHandoffCarrier {
+	[SESSION_REPLACEMENT_HANDOFFS_PROPERTY]?: Map<string, string | null>;
 }
 
-type NewSessionHandoff =
+type SessionReplacementHandoff =
 	| { readonly found: false }
 	| { readonly found: true; readonly activeAgentId: string | null };
 
@@ -322,7 +326,13 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 			return;
 		}
 
-		if (await restoreNewSessionMainAgent(pi, event, ctx as MainAgentContext)) {
+		if (
+			await restoreSessionReplacementMainAgent(
+				pi,
+				event,
+				ctx as MainAgentContext,
+			)
+		) {
 			return;
 		}
 
@@ -338,7 +348,7 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 			return;
 		}
 
-		captureNewSessionMainAgent(pi, event, ctx as MainAgentContext);
+		captureSessionReplacementMainAgent(pi, event, ctx as MainAgentContext);
 	});
 }
 
@@ -348,34 +358,38 @@ function shouldRestoreSelectedMainAgent(event: unknown): boolean {
 	return reason === "startup" || reason === "reload" || reason === "resume";
 }
 
-/** Captures the selected agent ID before pi tears down the old runtime for /new. */
-function captureNewSessionMainAgent(
+/** Captures the selected agent ID before pi tears down a runtime that must preserve the current agent. */
+function captureSessionReplacementMainAgent(
 	pi: ExtensionAPI,
 	event: unknown,
 	mainContext: MainAgentContext,
 ): void {
-	if ((event as SessionShutdownEventLike).reason !== "new") {
+	const handoffKey = getSessionReplacementShutdownHandoffKey(
+		event,
+		mainContext,
+	);
+	if (handoffKey === undefined) {
 		return;
 	}
 
-	const normalizedCwd = normalizeCwd(mainContext.cwd);
 	const activeAgentId =
 		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
 		null;
-	getNewSessionHandoffStore().set(normalizedCwd, activeAgentId);
+	getSessionReplacementHandoffStore().set(handoffKey, activeAgentId);
 }
 
-/** Restores a /new handoff without consulting or rewriting persisted selected-agent state. */
-async function restoreNewSessionMainAgent(
+/** Restores a replacement-runtime handoff without consulting or rewriting persisted selected-agent state. */
+async function restoreSessionReplacementMainAgent(
 	pi: ExtensionAPI,
 	event: unknown,
 	mainContext: MainAgentContext,
 ): Promise<boolean> {
-	if ((event as SessionStartEventLike).reason !== "new") {
+	const handoffKey = getSessionReplacementStartHandoffKey(event, mainContext);
+	if (handoffKey === undefined) {
 		return false;
 	}
 
-	const handoff = consumeNewSessionHandoff(normalizeCwd(mainContext.cwd));
+	const handoff = consumeSessionReplacementHandoff(handoffKey);
 	if (!handoff.found) {
 		return false;
 	}
@@ -401,22 +415,63 @@ async function restoreNewSessionMainAgent(
 	return true;
 }
 
-/** Returns the process-wide /new handoff store shared by freshly loaded extension modules. */
-function getNewSessionHandoffStore(): Map<string, string | null> {
-	const carrier = globalThis as NewSessionHandoffCarrier;
-	const existing = carrier[NEW_SESSION_HANDOFFS_PROPERTY];
+/** Returns true when pi replaces the runtime without changing the current main-agent selection. */
+function isSessionReplacementHandoffReason(
+	reason: string | undefined,
+): boolean {
+	return reason === "new" || reason === "fork" || reason === "resume";
+}
+
+/** Returns the handoff key used before the old runtime is destroyed. */
+function getSessionReplacementShutdownHandoffKey(
+	event: unknown,
+	mainContext: MainAgentContext,
+): string | undefined {
+	const shutdownEvent = event as SessionShutdownEventLike;
+	if (!isSessionReplacementHandoffReason(shutdownEvent.reason)) {
+		return undefined;
+	}
+
+	return (
+		shutdownEvent.targetSessionFile ??
+		mainContext.sessionManager.getSessionFile() ??
+		normalizeCwd(mainContext.cwd)
+	);
+}
+
+/** Returns the handoff key used after the replacement runtime is bound. */
+function getSessionReplacementStartHandoffKey(
+	event: unknown,
+	mainContext: MainAgentContext,
+): string | undefined {
+	const startEvent = event as SessionStartEventLike;
+	if (!isSessionReplacementHandoffReason(startEvent.reason)) {
+		return undefined;
+	}
+
+	return (
+		mainContext.sessionManager.getSessionFile() ?? normalizeCwd(mainContext.cwd)
+	);
+}
+
+/** Returns the process-wide handoff store shared by freshly loaded extension modules. */
+function getSessionReplacementHandoffStore(): Map<string, string | null> {
+	const carrier = globalThis as SessionReplacementHandoffCarrier;
+	const existing = carrier[SESSION_REPLACEMENT_HANDOFFS_PROPERTY];
 	if (existing !== undefined) {
 		return existing;
 	}
 
 	const store = new Map<string, string | null>();
-	carrier[NEW_SESSION_HANDOFFS_PROPERTY] = store;
+	carrier[SESSION_REPLACEMENT_HANDOFFS_PROPERTY] = store;
 	return store;
 }
 
-/** Reads and deletes one /new handoff so a stale agent cannot be restored later. */
-function consumeNewSessionHandoff(cwd: string): NewSessionHandoff {
-	const store = getNewSessionHandoffStore();
+/** Reads and deletes one handoff so a stale agent cannot be restored later. */
+function consumeSessionReplacementHandoff(
+	cwd: string,
+): SessionReplacementHandoff {
+	const store = getSessionReplacementHandoffStore();
 	if (!store.has(cwd)) {
 		return { found: false };
 	}

@@ -74,6 +74,9 @@ interface KeybindingsFake {
 interface CommandContextFake {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
+	readonly sessionManager: {
+		getSessionFile(): string | undefined;
+	};
 	readonly ui: {
 		custom<T>(
 			factory: (
@@ -314,6 +317,7 @@ function createCommandContext(
 	hasUI?: boolean,
 	customInputs: readonly string[] = [],
 	keybindings: KeybindingsFake = createKeybindingsFake(),
+	sessionFile: string | undefined = join(cwd, "session.json"),
 ): CommandContextFake & {
 	readonly notifications: Notification[];
 	readonly customCalls: Array<{
@@ -337,6 +341,9 @@ function createCommandContext(
 
 	return {
 		cwd,
+		sessionManager: {
+			getSessionFile: () => sessionFile,
+		},
 		notifications,
 		customCalls,
 		customCompletions,
@@ -642,11 +649,11 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("resume restores persisted main agent across fresh extension instances", async () => {
-		// Purpose: real /resume replaces the extension runtime, so the selected main agent must be restored for the resumed cwd.
-		// Input and expected output: Coder persisted before resume starts the new runtime with Coder prompt, tools, model, and thinking.
-		// Edge case: each extension instance is imported separately to match pi's moduleCache false extension loader.
-		// Dependencies: this test uses isolated agent files, selected-agent state, fake model calls, and fake runtime composition per ExtensionAPI instance.
+	test("resume preserves current main agent across fresh extension instances", async () => {
+		// Purpose: /resume must keep the active main agent across the replacement runtime.
+		// Input and expected output: old runtime has Coder active, target cwd state names Sage, and resumed runtime keeps Coder active.
+		// Edge case: the resumed session uses a different cwd, so the handoff cannot be keyed only by cwd.
+		// Dependencies: this test uses isolated agent files, selected-agent state, fake model calls, fake session files, and fake runtime composition per ExtensionAPI instance.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const model = createModel("openai", "gpt-test");
 			await writeAgent(agentDir, {
@@ -656,27 +663,68 @@ describe("main-agent-selection", () => {
 				model: { id: "openai/gpt-test", thinking: "high" },
 				tools: ["read", "write"],
 			});
+			await writeAgent(agentDir, {
+				id: "Sage",
+				description: "Guides work",
+				body: "Sage prompt",
+			});
 			const oldPi = createExtensionApiFake({
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "edit", "write"],
 			});
-			const oldCtx = createCommandContext("/tmp/project", undefined, [model]);
+			const oldCtx = createCommandContext(
+				"/tmp/source-project",
+				undefined,
+				[model],
+				undefined,
+				[],
+				createKeybindingsFake(),
+				"/tmp/source-session.json",
+			);
 			const oldMainAgentSelection = await importFreshMainAgentSelection();
 			oldMainAgentSelection(oldPi);
+
 			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/target-project"),
+				),
+				JSON.stringify({ cwd: "/tmp/target-project", activeAgentId: "Sage" }),
+			);
+			await getHandler(oldPi, "session_shutdown")(
+				{
+					type: "session_shutdown",
+					reason: "resume",
+					targetSessionFile: "/tmp/target-session.json",
+				},
+				oldCtx,
+			);
 
 			const resumedPi = createExtensionApiFake({
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "edit", "write"],
 			});
-			const resumedCtx = createCommandContext("/tmp/project", undefined, [
-				model,
-			]);
+			const resumedCtx = createCommandContext(
+				"/tmp/target-project",
+				undefined,
+				[model],
+				undefined,
+				[],
+				createKeybindingsFake(),
+				"/tmp/target-session.json",
+			);
 			const resumedMainAgentSelection = await importFreshMainAgentSelection();
 			resumedMainAgentSelection(resumedPi);
 
 			await getHandler(resumedPi, "session_start")(
-				{ type: "session_start", reason: "resume" },
+				{
+					type: "session_start",
+					reason: "resume",
+					previousSessionFile: "/tmp/source-session.json",
+				},
 				resumedCtx,
 			);
 
@@ -883,6 +931,69 @@ describe("main-agent-selection", () => {
 					secondNewCtx,
 				),
 			).toBeUndefined();
+		});
+	});
+
+	test("fork lifecycle preserves current main agent for /fork and /clone", async () => {
+		// Purpose: /fork and /clone must keep the active main agent across the replacement runtime.
+		// Input and expected output: old runtime has Coder active, persisted state changes to Sage, and the forked runtime keeps Coder active.
+		// Edge case: pi exposes both /fork and /clone to extensions as session_start reason fork, so state must not be reread for that reason.
+		// Dependencies: this test uses fresh extension imports to simulate pi's replacement runtime after a fork lifecycle.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Coder",
+				description: "Writes code",
+				body: "Coder prompt",
+			});
+			await writeAgent(agentDir, {
+				id: "Sage",
+				description: "Guides work",
+				body: "Sage prompt",
+			});
+			const oldPi = createExtensionApiFake();
+			const oldCtx = createCommandContext("/tmp/project");
+			const oldMainAgentSelection = await importFreshMainAgentSelection();
+			oldMainAgentSelection(oldPi);
+
+			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
+			await writeFile(
+				join(
+					agentDir,
+					"agent-selection",
+					"state",
+					selectedAgentStateFileName("/tmp/project"),
+				),
+				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
+			);
+			await getHandler(oldPi, "session_shutdown")(
+				{ type: "session_shutdown", reason: "fork" },
+				oldCtx,
+			);
+
+			const forkedPi = createExtensionApiFake();
+			const forkedCtx = createCommandContext("/tmp/project");
+			const forkedMainAgentSelection = await importFreshMainAgentSelection();
+			forkedMainAgentSelection(forkedPi);
+
+			await getHandler(forkedPi, "session_start")(
+				{ type: "session_start", reason: "fork" },
+				forkedCtx,
+			);
+
+			expect(
+				getAgentRuntimeComposition(forkedPi).getMainAgentContribution()?.agent
+					?.id,
+			).toBe("Coder");
+			expect(
+				await getBeforeAgentStartHandler(forkedPi)(
+					{ systemPrompt: "Base prompt" },
+					forkedCtx,
+				),
+			).toEqual({ systemPrompt: "Base prompt\n\nCoder prompt" });
+			expect(await readOnlyStateFile(agentDir)).toEqual({
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
 		});
 	});
 
