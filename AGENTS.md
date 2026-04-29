@@ -15,6 +15,7 @@ Guidance for coding agents working in this repository.
 5. Keep documentation in `docs/extensions` up to date.
 6. Keep `README.md` and `pi-package/README.md` up to date.
 7. Keep files small and readable. Avoid giant dump files.
+8. Suppressing a literal is prohibited without user approval.
 
 ## Project scope
 
