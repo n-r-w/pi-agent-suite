@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import codexQuota from "../../../pi-package/extensions/codex-quota/index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const HOME_ENV = "HOME";
 
 interface RegisteredHandler {
@@ -143,10 +144,12 @@ async function withIsolatedAgentDir<T>(
 	options: { readonly writeDefaultEnabledConfig?: boolean } = {},
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const previousHome = process.env[HOME_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-codex-quota-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	process.env[HOME_ENV] = agentDir;
 	try {
 		if (options.writeDefaultEnabledConfig ?? true) {
@@ -159,6 +162,11 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		if (previousAgentSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
 		}
 		if (previousHome === undefined) {
 			delete process.env[HOME_ENV];
@@ -248,6 +256,24 @@ async function writeQuotaConfig(
 ): Promise<void> {
 	await mkdir(join(agentDir, "config"), { recursive: true });
 	await writeFile(join(agentDir, "config", "codex-quota.json"), content);
+}
+
+/** Writes an isolated codex-quota config file into the agent-suite storage layout. */
+async function writeSuiteQuotaConfig(
+	agentDir: string,
+	content: string,
+): Promise<void> {
+	await writeSuiteQuotaConfigAtRoot(join(agentDir, "agent-suite"), content);
+}
+
+/** Writes an isolated codex-quota config file into a caller-selected agent-suite directory. */
+async function writeSuiteQuotaConfigAtRoot(
+	suiteDir: string,
+	content: string,
+): Promise<void> {
+	const configDir = join(suiteDir, "codex-quota");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(join(configDir, "config.json"), content);
 }
 
 /** Starts a quota session through the registered extension handler. */
@@ -358,6 +384,74 @@ describe("codex-quota", () => {
 			},
 			{ writeDefaultEnabledConfig: false },
 		);
+	});
+
+	test("reads config from PI_AGENT_SUITE_DIR before legacy config", async () => {
+		// Purpose: codex-quota must honor the agent-suite directory override and prefer suite config over legacy config.
+		// Input and expected output: overridden suite config enables polling with a 10-second interval while legacy disabled config is ignored.
+		// Edge case: both config locations exist, so precedence is observable.
+		// Dependencies: this test uses fake timers, fake fetch, and isolated config directories.
+		await withIsolatedAgentDir(
+			async (agentDir) => {
+				const suiteDir = join(agentDir, "custom-agent-suite");
+				process.env[AGENT_SUITE_DIR_ENV] = suiteDir;
+				await writeQuotaConfig(agentDir, JSON.stringify({ enabled: false }));
+				await writeSuiteQuotaConfigAtRoot(
+					suiteDir,
+					JSON.stringify({ enabled: true, refreshInterval: 10 }),
+				);
+
+				await withFakeIntervals(async (intervals) => {
+					await withFakeFetch(
+						async () => new Response(JSON.stringify({}), { status: 200 }),
+						async () => {
+							const pi = createExtensionApiFake();
+							const session = createSessionContextFake();
+							codexQuota(pi);
+
+							await startQuotaSession(pi, session.ctx);
+
+							expect(requireFirstInterval(intervals).intervalMs).toBe(10_000);
+							expect(session.notifications).toEqual([]);
+						},
+					);
+				});
+			},
+			{ writeDefaultEnabledConfig: false },
+		);
+	});
+
+	test("does not fall back to legacy config when suite config is invalid", async () => {
+		// Purpose: invalid suite config must fail closed instead of hiding the error behind a valid legacy file.
+		// Input and expected output: suite invalid JSON reports codex-quota issue and uses the safe default interval.
+		// Edge case: a valid legacy config exists but must not override the invalid suite config.
+		// Dependencies: this test uses fake timers, fake fetch, and isolated config directories.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeQuotaConfig(
+				agentDir,
+				JSON.stringify({ enabled: true, refreshInterval: 10 }),
+			);
+			await writeSuiteQuotaConfig(agentDir, "{");
+
+			await withFakeIntervals(async (intervals) => {
+				await withFakeFetch(
+					async () => new Response(JSON.stringify({}), { status: 200 }),
+					async () => {
+						const pi = createExtensionApiFake();
+						const session = createSessionContextFake();
+						codexQuota(pi);
+
+						await startQuotaSession(pi, session.ctx);
+
+						expect(requireFirstInterval(intervals).intervalMs).toBe(60_000);
+						expect(session.notifications).toHaveLength(1);
+						expect(session.notifications[0]?.message).toStartWith(
+							"[codex-quota]",
+						);
+					},
+				);
+			});
+		});
 	});
 
 	test("uses pi openai-codex OAuth token for quota requests", async () => {

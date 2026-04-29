@@ -28,7 +28,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/context-overflow.json`.
+File: `~/.pi/agent/agent-suite/context-overflow/config.json`.
 
 ```json
 {

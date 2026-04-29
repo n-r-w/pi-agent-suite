@@ -6,7 +6,7 @@
 
 ## Behavior
 
-- Is enabled by default when `main-agent-selection.json` is missing.
+- Is enabled by default when `config.json` is missing.
 - Registers command `/agent`.
 - Supports `/agent none` to store the explicit no-agent state for the current directory.
 - Registers shortcut `Ctrl+Shift+A`.
@@ -15,8 +15,8 @@
 - Restores the selected main agent before each model turn when runtime composition needs selected-agent state.
 - Does not restore persisted main-agent state inside child subagent processes because `run-subagent` owns child prompt and tool policy.
 - Resolves exact tool names and wildcard tool patterns with the same policy as `run-subagent` before applying active tools.
-- Reads agent definitions from `~/.pi/agent/agents`.
-- Owns selected-agent state under `~/.pi/agent/agent-selection/state/`.
+- Reads agent definitions from `~/.pi/agent/agent-suite/agent-selection/agents`.
+- Owns selected-agent state under `~/.pi/agent/agent-suite/agent-selection/state/`.
 - Stores only `cwd` and `activeAgentId` in the state file.
 - Stores `activeAgentId: null` for the explicit no-agent state.
 - Does not store model, thinking level, or tools in the state file.
@@ -30,7 +30,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/main-agent-selection.json`.
+File: `~/.pi/agent/agent-suite/agent-selection/config.json`.
 
 ```json
 {
@@ -72,7 +72,7 @@ Allowed `model.thinking` values:
 
 ## State contract
 
-Directory: `~/.pi/agent/agent-selection/state/`.
+Directory: `~/.pi/agent/agent-suite/agent-selection/state/`.
 
 Allowed fields:
 
@@ -90,7 +90,7 @@ Tests must verify:
 - no-agent selection through `/agent none` and the interactive `No agent` option;
 - current selection restoration when opening `/agent` without arguments;
 - agent selection through `Ctrl+Shift+A`;
-- state file persistence under `~/.pi/agent/agent-selection/state/`;
+- state file persistence under `~/.pi/agent/agent-suite/agent-selection/state/`;
 - strict state file schema;
 - separate model and thinking level application;
 - contribution publication to `Agent Runtime Composition` without direct `pi.setActiveTools()` calls.

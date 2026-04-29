@@ -7,8 +7,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import customCompaction from "../../../pi-package/extensions/custom-compaction/index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
-const HOME_ENV = "HOME";
-
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const completeSimpleMock = mock();
 
 mock.module("@mariozechner/pi-ai", () => ({
@@ -110,9 +109,11 @@ async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-custom-compaction-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	try {
 		return await action(agentDir);
 	} finally {
@@ -120,6 +121,11 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		if (previousAgentSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
 		}
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -510,67 +516,63 @@ describe("custom-compaction", () => {
 		});
 	});
 
-	test("resolves absolute, home, and config-relative prompt paths", async () => {
-		// Purpose: all supported prompt path forms must point to the intended files.
-		// Input and expected output: absolute, ~/ and relative paths are read and sent to the fake model context.
-		// Edge case: supported path forms are mixed in one config file.
-		// Dependencies: this test writes only temp files and temporarily sets HOME for ~/ resolution.
-		await withIsolatedAgentDir(async (agentDir) => {
-			const previousHome = process.env[HOME_ENV];
-			const homeDir = await mkdtemp(
-				join(tmpdir(), "pi-custom-compaction-home-"),
-			);
-			process.env[HOME_ENV] = homeDir;
-			try {
-				const configDir = join(agentDir, "config");
-				const absoluteSystemPrompt = join(agentDir, "absolute-system.md");
-				const absolutePrompt = join(agentDir, "absolute-history.md");
-				const homePrompt = join(homeDir, "home-update.md");
-				const relativePrompt = "relative-turn-prefix.md";
-				await mkdir(configDir, { recursive: true });
-				await writeFile(absoluteSystemPrompt, "absolute system prompt");
-				await writeFile(absolutePrompt, "absolute history prompt");
-				await writeFile(homePrompt, "home update prompt");
-				await writeFile(
-					join(configDir, relativePrompt),
-					"relative turn prompt",
-				);
-				await writeConfig(agentDir, {
-					enabled: true,
-					systemPromptFile: absoluteSystemPrompt,
-					historyPromptFile: absolutePrompt,
-					updatePromptFile: "~/home-update.md",
-					turnPrefixPromptFile: relativePrompt,
-				});
-				completeSimpleMock
-					.mockResolvedValueOnce(createAssistantResponse("history summary"))
-					.mockResolvedValueOnce(createAssistantResponse("turn summary"));
-				const pi = createExtensionApiFake();
-				const session = createSessionContextFake();
-				customCompaction(pi);
+	test("fails startup when a configured prompt file path is not absolute", async () => {
+		// Purpose: configured custom-compaction prompt files must use absolute paths so startup cannot depend on config-relative or home expansion.
+		// Input and expected output: each non-absolute prompt path causes extension loading to throw.
+		// Edge case: every prompt field is validated independently.
+		// Dependencies: isolated config file, prompt files, and in-memory ExtensionAPI fake.
+		const fields: Array<keyof PromptFiles> = [
+			"systemPromptFile",
+			"historyPromptFile",
+			"updatePromptFile",
+			"turnPrefixPromptFile",
+		];
+		for (const field of fields) {
+			for (const invalidPath of [`${field}.md`, `~/${field}.md`]) {
+				await withIsolatedAgentDir(async (agentDir) => {
+					const promptFiles = await writePromptFiles(join(agentDir, "prompts"));
+					await writeConfig(agentDir, {
+						enabled: true,
+						...promptFiles,
+						[field]: invalidPath,
+					});
+					const pi = createExtensionApiFake();
 
-				await getCompactionHandler(pi)(createCompactionEvent(), session.ctx);
-
-				const [, context] = completeSimpleMock.mock.calls[0] ?? [];
-				const [, turnContext] = completeSimpleMock.mock.calls[1] ?? [];
-				expect(context).toMatchObject({
-					systemPrompt: "absolute system prompt",
+					expect(() => customCompaction(pi)).toThrow(
+						`[custom-compaction] ${field} must be an absolute path`,
+					);
 				});
-				expect(turnContext).toMatchObject({
-					systemPrompt: "absolute system prompt",
-				});
-				expect(getSummaryRequestText(context)).toContain("home update prompt");
-				expect(getSummaryRequestText(turnContext)).toContain(
-					"relative turn prompt",
-				);
-			} finally {
-				if (previousHome === undefined) {
-					delete process.env[HOME_ENV];
-				} else {
-					process.env[HOME_ENV] = previousHome;
-				}
-				await rm(homeDir, { recursive: true, force: true });
 			}
+		}
+	});
+
+	test("reads configured absolute prompt paths", async () => {
+		// Purpose: configured custom-compaction prompt files must be read only from absolute paths.
+		// Input and expected output: four absolute prompt paths are read and sent to the fake model context.
+		// Edge case: the optional turn-prefix prompt path uses the same absolute-path rule as required prompts.
+		// Dependencies: this test writes only temp prompt files and uses mocked model completion.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const promptFiles = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, { enabled: true, ...promptFiles });
+			completeSimpleMock
+				.mockResolvedValueOnce(createAssistantResponse("history summary"))
+				.mockResolvedValueOnce(createAssistantResponse("turn summary"));
+			const pi = createExtensionApiFake();
+			const session = createSessionContextFake();
+			customCompaction(pi);
+
+			await getCompactionHandler(pi)(createCompactionEvent(), session.ctx);
+
+			const [, context] = completeSimpleMock.mock.calls[0] ?? [];
+			const [, turnContext] = completeSimpleMock.mock.calls[1] ?? [];
+			expect(context).toMatchObject({ systemPrompt: "prompt text system" });
+			expect(turnContext).toMatchObject({
+				systemPrompt: "prompt text system",
+			});
+			expect(getSummaryRequestText(context)).toContain("prompt text update");
+			expect(getSummaryRequestText(turnContext)).toContain(
+				"prompt text turn prefix",
+			);
 		});
 	});
 

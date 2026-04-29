@@ -1,9 +1,11 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 
-/** Relative config location owned only by this extension. */
-const ENABLE_TOOLS_CONFIG_PATH = join("config", "enable-tools.json");
+/** Suite directory owned only by this extension. */
+const ENABLE_TOOLS_EXTENSION_DIR = "enable-tools";
+
+/** Legacy config file name supported for existing installations. */
+const ENABLE_TOOLS_LEGACY_CONFIG_FILE = "enable-tools.json";
 
 /** Default tools enabled when config is missing or omits include. */
 const DEFAULT_INCLUDED_TOOLS = ["grep", "find", "ls"] as const;
@@ -23,9 +25,6 @@ const ENABLE_TOOLS_CONFIG_KEYS = [
 	INCLUDE_CONFIG_KEY,
 	EXCLUDE_CONFIG_KEY,
 ] as const;
-
-/** Node.js error field used to detect absent config files. */
-const ERROR_CODE_KEY = "code";
 
 interface EnableToolsConfig {
 	readonly enabled: boolean;
@@ -77,23 +76,24 @@ export default function enableSearchTools(pi: ExtensionAPI): void {
 
 /** Reads and validates enable-tools config while missing config keeps default search tools enabled. */
 async function readEnableToolsConfig(): Promise<EnableToolsConfigResult> {
-	const configPath = join(getAgentDir(), ENABLE_TOOLS_CONFIG_PATH);
-	let content: string;
-	try {
-		content = await readFile(configPath, "utf8");
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return {
-				kind: "valid",
-				config: buildEnableToolsConfig({}),
-			};
-		}
-
-		return invalidConfig(`failed to read config: ${formatError(error)}`);
+	const configFile = await readExtensionConfigFile({
+		extensionDir: ENABLE_TOOLS_EXTENSION_DIR,
+		legacyConfigFileName: ENABLE_TOOLS_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return {
+			kind: "valid",
+			config: buildEnableToolsConfig({}),
+		};
+	}
+	if (configFile.kind === "read-error") {
+		return invalidConfig(
+			`failed to read config: ${formatError(configFile.error)}`,
+		);
 	}
 
 	try {
-		const config: unknown = JSON.parse(content);
+		const config: unknown = JSON.parse(configFile.file.content);
 
 		return parseEnableToolsConfig(config);
 	} catch (error) {
@@ -186,11 +186,6 @@ function isToolNameArray(value: unknown): value is readonly string[] {
 		Array.isArray(value) &&
 		value.every((item) => typeof item === "string" && item.length > 0)
 	);
-}
-
-/** Returns true when a failed config read means the config file is missing. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error[ERROR_CODE_KEY] === "ENOENT";
 }
 
 /** Converts unknown failures into safe diagnostics for config issue messages. */

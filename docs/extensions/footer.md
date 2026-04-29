@@ -6,14 +6,14 @@
 
 ## Behavior
 
-- Is enabled by default when `footer.json` is missing.
+- Is enabled by default when `config.json` is missing.
 - Installs one custom footer for the active pi session.
 - Shows footer segments in this order: project, Codex quota, selected agent, model display, context projection, MCP errors, and context usage.
 - Shows the model display as `provider/model/thinking-level` by default.
 - Does not show the git branch.
 - Shows context usage as `current/context-overflow-limit/full-window` when `context-overflow` is enabled.
 - Shows context usage as `current/full-window` when `context-overflow` is disabled or its config is invalid.
-- Computes `context-overflow-limit` as `contextWindow - compactRemainingTokens` from `~/.pi/agent/config/context-overflow.json`.
+- Computes `context-overflow-limit` as `contextWindow - compactRemainingTokens` from `~/.pi/agent/agent-suite/context-overflow/config.json`.
 - Colors context usage by used context percentage: plain text below `50%`, warning from `50%` to below `80%`, and error from `80%`.
 - Colors reasoning levels: `xhigh` uses error, `low`, `minimal`, and `off` use warning, and `high` and `medium` use plain text.
 - Shows the selected agent status from status key `agent`.
@@ -27,7 +27,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/footer.json`.
+File: `~/.pi/agent/agent-suite/footer/config.json`.
 
 ```json
 {

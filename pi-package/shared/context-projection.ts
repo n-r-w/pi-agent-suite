@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -8,13 +7,14 @@ import {
 	getAgentDir,
 	type SessionEntry,
 } from "@mariozechner/pi-coding-agent";
+import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
 
-/** Relative config location owned by context-projection. */
-const CONTEXT_PROJECTION_CONFIG_PATH = join(
-	"config",
-	"context-projection.json",
-);
+/** Suite directory owned by context-projection. */
+const CONTEXT_PROJECTION_EXTENSION_DIR = "context-projection";
+
+/** Legacy config file name supported for existing installations. */
+const CONTEXT_PROJECTION_LEGACY_CONFIG_FILE = "context-projection.json";
 
 /** Extension-owned custom entry type used for branch-local projection state. */
 export const CONTEXT_PROJECTION_CUSTOM_TYPE = "context-projection";
@@ -132,13 +132,17 @@ const CONTEXT_PROJECTION_CONFIG_KEYS = [
 	SUMMARY_CONFIG_KEY,
 ] as const;
 
-/** Node.js error field used to detect absent config files. */
-const ERROR_CODE_KEY = "code";
-
 export type ContextProjectionConfigResult =
-	| { readonly kind: "valid"; readonly config: ContextProjectionConfig }
+	| {
+			readonly kind: "valid";
+			readonly config: ContextProjectionConfig;
+	  }
 	| { readonly kind: "disabled" }
-	| { readonly kind: "invalid" };
+	| {
+			readonly kind: "invalid";
+			readonly issue?: string;
+			readonly fatal?: boolean;
+	  };
 
 type ContextProjectionSummaryThinking =
 	(typeof SUMMARY_THINKING_VALUES)[number];
@@ -251,23 +255,25 @@ const runtimeProjectedPlaceholdersByScope = new Map<
 
 /** Reads and validates context-projection config while absent config keeps projection disabled. */
 export async function readContextProjectionConfig(): Promise<ContextProjectionConfigResult> {
-	const configPath = join(getAgentDir(), CONTEXT_PROJECTION_CONFIG_PATH);
-	let content: string;
-	try {
-		content = await readFile(configPath, "utf8");
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return { kind: "disabled" };
-		}
-
+	const configFile = await readExtensionConfigFile({
+		extensionDir: CONTEXT_PROJECTION_EXTENSION_DIR,
+		legacyConfigFileName: CONTEXT_PROJECTION_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return { kind: "disabled" };
+	}
+	if (configFile.kind === "read-error") {
 		return { kind: "invalid" };
 	}
 
 	try {
-		const config: unknown = JSON.parse(content);
+		const config: unknown = JSON.parse(configFile.file.content);
 
 		return parseContextProjectionConfig(config);
-	} catch {
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith("summary.")) {
+			return { kind: "invalid", issue: error.message, fatal: true };
+		}
 		return { kind: "invalid" };
 	}
 }
@@ -428,6 +434,12 @@ function parseEnabledSummaryConfigValues({
 		!isOptionalNonEmptyString(userPromptFile)
 	) {
 		return undefined;
+	}
+	if (typeof systemPromptFile === "string" && !isAbsolute(systemPromptFile)) {
+		throw new Error("summary.systemPromptFile must be an absolute path");
+	}
+	if (typeof userPromptFile === "string" && !isAbsolute(userPromptFile)) {
+		throw new Error("summary.userPromptFile must be an absolute path");
 	}
 
 	return {
@@ -1166,11 +1178,6 @@ function mergeProjectedPlaceholders(
 /** Returns true when a runtime value is a non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Returns true when a failed config read means the config file is missing. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error[ERROR_CODE_KEY] === "ENOENT";
 }
 
 /** Returns the token count removed after the original content is replaced by placeholder text. */

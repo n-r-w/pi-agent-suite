@@ -19,7 +19,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/enable-tools.json`.
+File: `~/.pi/agent/agent-suite/enable-tools/config.json`.
 
 ```json
 {

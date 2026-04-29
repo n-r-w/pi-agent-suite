@@ -65,11 +65,15 @@ Manual settings entry in `~/.pi/agent/settings.json`:
 }
 ```
 
-Extension settings are stored in:
+Extension settings and artifacts are stored under the suite directory:
 
 ```text
-~/.pi/agent/config/
+~/.pi/agent/agent-suite/
 ```
+
+Set `PI_AGENT_SUITE_DIR` to use another suite directory.
+
+Compatibility with earlier storage paths is documented in the legacy storage guide: [docs/extensions/legacy-storage.md](docs/extensions/legacy-storage.md).
 
 ## Agent files
 
@@ -78,7 +82,7 @@ Agent files define reusable work modes and subagents.
 Location:
 
 ```text
-~/.pi/agent/agents/
+~/.pi/agent/agent-suite/agent-selection/agents/
 ```
 
 File rules:
@@ -135,7 +139,7 @@ Why you need it:
 - Makes `grep`, `find`, and `ls` available when pi starts a session.
 - Gives agents fast project search and listing tools without enabling every built-in tool manually.
 
-Config file: `~/.pi/agent/config/enable-tools.json`
+Config file: `~/.pi/agent/agent-suite/enable-tools/config.json`
 
 Options:
 
@@ -158,7 +162,7 @@ Why you need it:
 - Shows the current session state in one compact line.
 - Makes it easier to notice the selected agent, model, quota, context usage, and MCP errors while working.
 
-Config file: `~/.pi/agent/config/footer.json`
+Config file: `~/.pi/agent/agent-suite/footer/config.json`
 
 Options:
 
@@ -199,7 +203,7 @@ Why you need it:
 - Lets you choose whether Codex should answer briefly or with more detail.
 - Helps match answer length to the task: quick checks, normal coding, or detailed reasoning.
 
-Config file: `~/.pi/agent/config/codex-verbosity.json`
+Config file: `~/.pi/agent/agent-suite/codex-verbosity/config.json`
 
 Options:
 
@@ -219,7 +223,7 @@ Why you need it:
 - Shows how much Codex usage remains before you hit a limit.
 - Helps decide when to continue with Codex and when to switch model or reduce usage.
 
-Config file: `~/.pi/agent/config/codex-quota.json`
+Config file: `~/.pi/agent/agent-suite/codex-quota/config.json`
 
 Options:
 
@@ -241,24 +245,25 @@ Why you need it:
 - Keeps long conversations usable after old messages are summarized.
 - Reduces the chance that important decisions, constraints, and current task state are lost during compaction.
 
-Config file: `~/.pi/agent/config/custom-compaction.json`
+Config file: `~/.pi/agent/agent-suite/custom-compaction/config.json`
 
 Options:
 
 - `enabled`: default `true`.
 - `model`: optional. Uses the current model when missing.
 - `reasoning`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
-- `systemPromptFile`: optional custom prompt path.
-- `historyPromptFile`: optional custom prompt path.
-- `updatePromptFile`: optional custom prompt path.
-- `turnPrefixPromptFile`: optional custom prompt path.
+- `systemPromptFile`: optional absolute custom prompt path.
+- `historyPromptFile`: optional absolute custom prompt path.
+- `updatePromptFile`: optional absolute custom prompt path.
+- `turnPrefixPromptFile`: optional absolute custom prompt path.
 
 How it works:
 
 - Replaces pi's default compaction flow.
 - Uses bundled prompts when custom prompt files are not set.
 - Sends the old conversation to the model as one conversation block to create or update the summary.
-- Disables itself when the config or a custom prompt file is invalid.
+- Stops startup when a configured custom prompt file path is not absolute.
+- Disables itself for other config or custom prompt file errors.
 
 ### `context-projection`
 
@@ -269,7 +274,7 @@ Why you need it:
 - This extension keeps the session moving by hiding old bulky successful tool outputs from the next model request.
 - It does not delete saved conversation history.
 
-Config file: `~/.pi/agent/config/context-projection.json`
+Config file: `~/.pi/agent/agent-suite/context-projection/config.json`
 
 Options:
 
@@ -286,8 +291,8 @@ Options:
 - `summary.maxConcurrency`: default `1`. Limits parallel summary requests.
 - `summary.retryCount`: default `1`. Retries failed summary requests after the first attempt.
 - `summary.retryDelayMs`: default `5000`. Waits between summary retry attempts.
-- `summary.systemPromptFile`: optional custom system prompt path.
-- `summary.userPromptFile`: optional custom user prompt path appended after tool-result text.
+- `summary.systemPromptFile`: optional absolute custom system prompt path.
+- `summary.userPromptFile`: optional absolute custom user prompt path appended after tool-result text.
 
 Recommended setup:
 
@@ -299,6 +304,7 @@ How it works:
 
 - Runs only when the remaining context is low enough.
 - Replaces old large successful text-only tool results with the placeholder or an XML-wrapped generated summary that marks the full result as omitted. Summary is used only when it fits the summary model context window and reduces token count.
+- Stops startup when a configured summary prompt path is not absolute.
 - Keeps recent tool results visible.
 - Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, and configured ignored tool results visible.
 - Changes only what is sent to the model for the next request. It does not edit saved conversation history.
@@ -315,7 +321,7 @@ Why you need it:
 - When that happens, compaction is triggered by a provider error instead of by a safe pi-side threshold.
 - This extension starts compaction earlier, after a successful turn, while the session still has a configured token reserve.
 
-Config file: `~/.pi/agent/config/context-overflow.json`
+Config file: `~/.pi/agent/agent-suite/context-overflow/config.json`
 
 Options:
 
@@ -337,7 +343,7 @@ Why you need it:
 - Lets you keep reusable agent modes for different kinds of work.
 - Avoids repeating the same long instructions, model choice, thinking level, tool rules, and allowed subagents.
 
-Config file: `~/.pi/agent/config/main-agent-selection.json`
+Config file: `~/.pi/agent/agent-suite/agent-selection/config.json`
 
 Options:
 
@@ -361,7 +367,7 @@ Why you need it:
 - Lets the main agent split work into focused subagent tasks.
 - Keeps specialized investigation, review, extraction, or coding work separate from the main conversation.
 
-Config file: `~/.pi/agent/config/run-subagent.json`
+Config file: `~/.pi/agent/agent-suite/run-subagent/config.json`
 
 Options:
 
@@ -390,14 +396,14 @@ Why you need it:
 - Gives the main agent a second opinion before important decisions.
 - Helps catch mistakes, missing options, or weak assumptions without changing the main agent.
 
-Config file: `~/.pi/agent/config/consult-advisor.json`
+Config file: `~/.pi/agent/agent-suite/consult-advisor/config.json`
 
 Options:
 
 - `enabled`: default `true`. Enables the `consult_advisor` tool.
 - `model.id`: optional. Uses the current model when missing.
 - `model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
-- `promptFile`: optional custom advisor prompt path.
+- `promptFile`: optional absolute custom advisor prompt path.
 - `debugPayloadFile`: optional file path for saving the advisor request.
 
 Tool input:

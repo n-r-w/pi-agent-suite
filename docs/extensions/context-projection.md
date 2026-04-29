@@ -4,18 +4,18 @@
 
 `context-projection` reduces provider context pressure during long agent runs by replacing old large non-critical successful text-only tool results with a short replacement before a model request. The replacement is a placeholder by default. It can be a generated summary when summary mode is enabled.
 
-Projection is disabled by default. It becomes active only when `enabled` is `true` in `~/.pi/agent/config/context-projection.json`.
+Projection is disabled by default. It becomes active only when `enabled` is `true` in `~/.pi/agent/agent-suite/context-projection/config.json`.
 
 Projection changes only the provider context for the current request. It does not rewrite stored session entries. Content omitted from provider context is not visible to the model in that request.
 
 ## Behavior
 
 - Handles `session_start`, `session_tree`, and `context`.
-- Reads configuration from `~/.pi/agent/config/context-projection.json`.
+- Reads configuration from `~/.pi/agent/agent-suite/context-projection/config.json`.
 - Is disabled by default.
 - Leaves provider context unchanged when the config file is missing.
-- Treats missing `~/.pi/agent/config/context-projection.json` as a normal disabled state, not as an error.
-- Leaves provider context unchanged when configuration is invalid.
+- Treats missing `~/.pi/agent/agent-suite/context-projection/config.json` as a normal disabled state, not as an error.
+- Leaves provider context unchanged when configuration is invalid, except non-absolute summary prompt paths stop startup.
 - Computes `remainingTokens = contextWindow - tokens` through `ctx.getContextUsage()`.
 - Runs projection only when `remainingTokens <= projectionRemainingTokens`.
 - Maps provider-context messages back to active branch entries before changing messages.
@@ -42,6 +42,7 @@ Projection changes only the provider context for the current request. It does no
 - Uses the current main model when `summary.model` is not set.
 - Uses the current thinking level when `summary.thinking` is not set.
 - Uses bundled summary prompts when `summary.systemPromptFile` and `summary.userPromptFile` are not set.
+- Requires custom summary prompt paths to be absolute paths.
 - Sends the matched tool-call context and tool-result text to the summary model.
 - Escapes XML delimiter characters inside tool-call context, tool-result text, and generated summary text.
 - Appends the summary user prompt after the tool-result text.
@@ -182,7 +183,7 @@ When a new projection operation starts, the UI-only chat status shows progress a
 
 ## Configuration
 
-File: `~/.pi/agent/config/context-projection.json`.
+File: `~/.pi/agent/agent-suite/context-projection/config.json`.
 
 ```json
 {
@@ -224,11 +225,11 @@ Rules:
 - `summary.maxConcurrency` must be a positive integer when present.
 - `summary.retryCount` must be a non-negative integer when present.
 - `summary.retryDelayMs` must be a non-negative integer when present.
-- `summary.systemPromptFile` must be `null` or a non-empty string when present.
-- `summary.userPromptFile` must be `null` or a non-empty string when present.
+- `summary.systemPromptFile` must be `null` or an absolute path when present.
+- `summary.userPromptFile` must be `null` or an absolute path when present.
 - Unsupported keys make the configuration invalid.
 - Missing config file disables projection and is not an error.
-- Invalid configuration disables projection.
+- Invalid configuration disables projection, except non-absolute summary prompt paths stop startup.
 
 ## Tuning
 
@@ -248,7 +249,7 @@ Use a fast model for `summary.model`, such as `gpt-5.3-codex-spark` through the 
 
 Keep `summary.maxConcurrency` low unless the provider rate limit and cost impact are acceptable.
 
-Custom `summary.systemPromptFile` and `summary.userPromptFile` paths resolve as absolute paths, `~/...`, or paths relative to `~/.pi/agent/config`. Bundled prompts are:
+Custom `summary.systemPromptFile` and `summary.userPromptFile` paths must be absolute paths. Bundled prompts are:
 
 - `pi-package/extensions/context-projection/prompts/tool-result-summary-system.md`
 - `pi-package/extensions/context-projection/prompts/tool-result-summary-user.md`

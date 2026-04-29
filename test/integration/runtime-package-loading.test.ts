@@ -12,10 +12,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
+const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
+const SUBAGENT_TOOLS_ENV = "PI_SUBAGENT_TOOLS";
 
-/** Writes one markdown agent definition into the isolated pi agent directory. */
+/** Writes one markdown agent definition into the isolated suite agent directory. */
 function writeAgent(agentDir: string, fileName: string, content: string): void {
-	writeFileSync(join(agentDir, "agents", fileName), content);
+	writeFileSync(
+		join(agentDir, "agent-suite", "agent-selection", "agents", fileName),
+		content,
+	);
 }
 
 /** Returns the hash-based selected-agent state file name for one normalized working directory. */
@@ -26,10 +33,20 @@ function selectedAgentStateFileName(cwd: string): string {
 /** Creates an isolated pi agent directory with selected TestAgent state. */
 function createIsolatedAgentDir(cwd: string): string {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-runtime-package-"));
-	mkdirSync(join(agentDir, "agents"), { recursive: true });
-	mkdirSync(join(agentDir, "agent-selection", "state"), { recursive: true });
+	mkdirSync(join(agentDir, "agent-suite", "agent-selection", "agents"), {
+		recursive: true,
+	});
+	mkdirSync(join(agentDir, "agent-suite", "agent-selection", "state"), {
+		recursive: true,
+	});
 	writeFileSync(
-		join(agentDir, "agent-selection", "state", selectedAgentStateFileName(cwd)),
+		join(
+			agentDir,
+			"agent-suite",
+			"agent-selection",
+			"state",
+			selectedAgentStateFileName(cwd),
+		),
 		JSON.stringify({ cwd, activeAgentId: "TestAgent" }),
 	);
 
@@ -97,8 +114,22 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 	const cwd = process.cwd();
 	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-package-debug-"));
 	const agentDir = createIsolatedAgentDir(cwd);
+	const poisonedSuiteDir = mkdtempSync(
+		join(tmpdir(), "pi-runtime-poison-suite-"),
+	);
 	const promptDumpFile = join(scratchDir, "system-prompt.txt");
 	const debugExtensionPath = writePromptDumpExtension(scratchDir);
+	const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
+	process.env[AGENT_SUITE_DIR_ENV] = poisonedSuiteDir;
+	const childEnv: Record<string, string | undefined> = {
+		...process.env,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+		PI_PROMPT_DUMP_FILE: promptDumpFile,
+	};
+	delete childEnv[SUBAGENT_AGENT_ID_ENV];
+	delete childEnv[SUBAGENT_DEPTH_ENV];
+	delete childEnv[SUBAGENT_TOOLS_ENV];
 
 	try {
 		const result = spawnSync(
@@ -117,11 +148,7 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 			{
 				cwd,
 				encoding: "utf8",
-				env: {
-					...process.env,
-					PI_CODING_AGENT_DIR: agentDir,
-					PI_PROMPT_DUMP_FILE: promptDumpFile,
-				},
+				env: childEnv,
 				timeout: 30_000,
 			},
 		);
@@ -135,7 +162,13 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 		expect(prompt).not.toContain("- agentId: SubAgentCoder");
 		expect(prompt).not.toContain("- agentId: TestAgent");
 	} finally {
+		if (previousSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
+		}
 		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(poisonedSuiteDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });
 	}
 });

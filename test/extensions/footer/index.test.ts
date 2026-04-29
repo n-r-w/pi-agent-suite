@@ -66,6 +66,7 @@ interface FooterTestHarness {
 
 /** SGR reset sequence inserted by pi-tui truncation helpers. */
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const SGR_RESET = `${String.fromCharCode(27)}[0m`;
 
 /** Runs a test with an isolated pi agent directory so footer config reads never touch real user files. */
@@ -73,8 +74,10 @@ async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-"));
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	try {
 		return await action(agentDir);
 	} finally {
@@ -82,6 +85,11 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		if (previousAgentSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
 		}
 		await rm(agentDir, { recursive: true, force: true });
 	}

@@ -1,9 +1,10 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 
-/** Relative config location owned only by context-overflow. */
-const CONTEXT_OVERFLOW_CONFIG_PATH = join("config", "context-overflow.json");
+/** Suite directory owned only by context-overflow. */
+const CONTEXT_OVERFLOW_EXTENSION_DIR = "context-overflow";
+
+/** Legacy config file name supported for existing installations. */
+const CONTEXT_OVERFLOW_LEGACY_CONFIG_FILE = "context-overflow.json";
 
 /** Default remaining-token reserve that triggers standard compaction. */
 const DEFAULT_COMPACT_REMAINING_TOKENS = 49_152;
@@ -20,9 +21,6 @@ const CONTEXT_OVERFLOW_CONFIG_KEYS = [
 	COMPACT_REMAINING_TOKENS_CONFIG_KEY,
 ] as const;
 
-/** Node.js error field used to detect absent config files. */
-const ERROR_CODE_KEY = "code";
-
 type ContextOverflowConfigResult =
 	| { readonly kind: "valid"; readonly config: ContextOverflowConfig }
 	| { readonly kind: "invalid" };
@@ -34,23 +32,22 @@ export interface ContextOverflowConfig {
 
 /** Reads and parses the context-overflow config while missing config keeps default behavior enabled. */
 export async function readContextOverflowConfig(): Promise<ContextOverflowConfigResult> {
-	const configPath = join(getAgentDir(), CONTEXT_OVERFLOW_CONFIG_PATH);
-	let content: string;
-	try {
-		content = await readFile(configPath, "utf8");
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return {
-				kind: "valid",
-				config: buildContextOverflowConfig({}),
-			};
-		}
-
+	const configFile = await readExtensionConfigFile({
+		extensionDir: CONTEXT_OVERFLOW_EXTENSION_DIR,
+		legacyConfigFileName: CONTEXT_OVERFLOW_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return {
+			kind: "valid",
+			config: buildContextOverflowConfig({}),
+		};
+	}
+	if (configFile.kind === "read-error") {
 		return { kind: "invalid" };
 	}
 
 	try {
-		const config: unknown = JSON.parse(content);
+		const config: unknown = JSON.parse(configFile.file.content);
 
 		return parseContextOverflowConfig(config);
 	} catch {
@@ -126,9 +123,4 @@ function isValidCompactRemainingTokens(value: unknown): value is number {
 /** Returns true when a runtime value is a non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Returns true when a failed config read means the config file is missing. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error[ERROR_CODE_KEY] === "ENOENT";
 }

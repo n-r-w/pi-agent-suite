@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,10 +15,13 @@ import {
 	convertToLlm,
 	type ExtensionAPI,
 	type ExtensionContext,
-	getAgentDir,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import {
+	readExtensionConfigFile,
+	readExtensionConfigFileSync,
+} from "../../shared/agent-suite-storage";
 import {
 	collectLoadedSkillRoots,
 	replayContextProjection,
@@ -33,7 +35,8 @@ import {
 
 const TOOL_NAME = "consult_advisor";
 const ISSUE_PREFIX = "[consult-advisor]";
-const CONFIG_PATH = join("config", "consult-advisor.json");
+const CONSULT_ADVISOR_EXTENSION_DIR = "consult-advisor";
+const CONSULT_ADVISOR_LEGACY_CONFIG_FILE = "consult-advisor.json";
 const ENABLED_CONFIG_KEY = "enabled";
 const ADVISOR_VISIBLE_RESPONSE_INSTRUCTION =
 	"Return the advice as visible text. If you cannot answer a request, explain the limit in visible text.";
@@ -119,6 +122,7 @@ export default function consultAdvisor(
 	if (isConsultAdvisorDisabled()) {
 		return;
 	}
+	assertAdvisorPromptFileIsAbsolute();
 
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	let loadedSkillRoots: readonly string[] = [];
@@ -233,13 +237,45 @@ async function executeConsultAdvisor({
 
 /** Returns true only for a present valid config that explicitly disables consult-advisor. */
 function isConsultAdvisorDisabled(): boolean {
+	const configFile = readExtensionConfigFileSync({
+		extensionDir: CONSULT_ADVISOR_EXTENSION_DIR,
+		legacyConfigFileName: CONSULT_ADVISOR_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind !== "found") {
+		return false;
+	}
+
 	try {
-		const config: unknown = JSON.parse(
-			readFileSync(join(getAgentDir(), CONFIG_PATH), "utf8"),
-		);
+		const config: unknown = JSON.parse(configFile.file.content);
 		return isRecord(config) && config[ENABLED_CONFIG_KEY] === false;
 	} catch {
 		return false;
+	}
+}
+
+/** Fails startup when an enabled advisor config uses a non-absolute prompt file. */
+function assertAdvisorPromptFileIsAbsolute(): void {
+	const configFile = readExtensionConfigFileSync({
+		extensionDir: CONSULT_ADVISOR_EXTENSION_DIR,
+		legacyConfigFileName: CONSULT_ADVISOR_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind !== "found") {
+		return;
+	}
+
+	try {
+		const config: unknown = JSON.parse(configFile.file.content);
+		if (!isRecord(config) || config[ENABLED_CONFIG_KEY] === false) {
+			return;
+		}
+		const promptFile = config["promptFile"];
+		if (typeof promptFile === "string" && !isAbsolute(promptFile)) {
+			throw new Error(`${ISSUE_PREFIX} promptFile must be an absolute path`);
+		}
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith(ISSUE_PREFIX)) {
+			throw error;
+		}
 	}
 }
 
@@ -249,19 +285,25 @@ async function readAdvisorConfig(): Promise<
 	| { readonly config: ConsultAdvisorConfig }
 	| { readonly issue: string }
 > {
-	const configFile = join(getAgentDir(), CONFIG_PATH);
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(await readFile(configFile, "utf8"));
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return { config: buildAdvisorConfig({}, dirname(configFile)) };
-		}
-
-		return { issue: `failed to read config: ${formatError(error)}` };
+	const configFile = await readExtensionConfigFile({
+		extensionDir: CONSULT_ADVISOR_EXTENSION_DIR,
+		legacyConfigFileName: CONSULT_ADVISOR_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return { config: buildAdvisorConfig({}, "") };
+	}
+	if (configFile.kind === "read-error") {
+		return { issue: `failed to read config: ${formatError(configFile.error)}` };
 	}
 
-	const config = parseAdvisorConfig(parsed, dirname(configFile));
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(configFile.file.content);
+	} catch (error) {
+		return { issue: `failed to parse config: ${formatError(error)}` };
+	}
+
+	const config = parseAdvisorConfig(parsed, configFile.file.directory);
 	if ("issue" in config || "disabled" in config) {
 		return config;
 	}
@@ -269,7 +311,7 @@ async function readAdvisorConfig(): Promise<
 	return { config };
 }
 
-/** Parses strict advisor config and resolves config-relative paths. */
+/** Parses strict advisor config and keeps debug payload paths relative to the active config directory. */
 function parseAdvisorConfig(
 	value: unknown,
 	configDir: string,
@@ -288,7 +330,7 @@ function parseAdvisorConfig(
 	return buildAdvisorConfig(validationResult.config, configDir);
 }
 
-/** Validates raw advisor config before config-relative path resolution. */
+/** Validates raw advisor config before building the typed config contract. */
 function validateAdvisorConfig(
 	value: unknown,
 ): { readonly config: Record<string, unknown> } | { readonly issue: string } {
@@ -362,6 +404,9 @@ function validateOptionalPathConfig(
 	) {
 		return "promptFile must be a non-empty string";
 	}
+	if (typeof promptFile === "string" && !isAbsolute(promptFile)) {
+		return "promptFile must be an absolute path";
+	}
 	if (
 		debugPayloadFile !== undefined &&
 		(typeof debugPayloadFile !== "string" || debugPayloadFile.length === 0)
@@ -390,16 +435,14 @@ function buildAdvisorConfig(
 	return {
 		...(model !== undefined ? { model } : {}),
 		promptFile:
-			typeof promptFile === "string"
-				? resolveConfigPath(configDir, promptFile)
-				: DEFAULT_ADVISOR_PROMPT_FILE,
+			typeof promptFile === "string" ? promptFile : DEFAULT_ADVISOR_PROMPT_FILE,
 		...(typeof debugPayloadFile === "string"
 			? { debugPayloadFile: resolveConfigPath(configDir, debugPayloadFile) }
 			: {}),
 	};
 }
 
-/** Resolves absolute paths and config-relative paths without adding home expansion. */
+/** Resolves debug payload paths using the active config directory as the relative base. */
 function resolveConfigPath(configDir: string, path: string): string {
 	return isAbsolute(path) ? path : join(configDir, path);
 }
@@ -623,11 +666,6 @@ function isThinking(value: unknown): value is Thinking {
 /** Parses an unknown active thinking level into an advisor reasoning value. */
 function parseThinking(value: unknown): Thinking | undefined {
 	return isThinking(value) ? value : undefined;
-}
-
-/** Returns true when a filesystem error represents a missing config file. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error["code"] === "ENOENT";
 }
 
 /** Converts unknown failures into safe diagnostics. */

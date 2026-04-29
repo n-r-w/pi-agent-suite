@@ -1,13 +1,15 @@
 import { Buffer } from "node:buffer";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 
 /** Footer status key owned by the Codex quota extension. */
 const STATUS_KEY = "codex-quota";
 
-/** Relative config location owned only by this extension. */
-const CODEX_QUOTA_CONFIG_PATH = join("config", "codex-quota.json");
+/** Suite directory owned only by this extension. */
+const CODEX_QUOTA_EXTENSION_DIR = "codex-quota";
+
+/** Legacy config file name supported for existing installations. */
+const CODEX_QUOTA_LEGACY_CONFIG_FILE = "codex-quota.json";
 
 /** ChatGPT endpoint used by Codex quota status checks. */
 const CODEX_QUOTA_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -62,9 +64,6 @@ const CODEX_QUOTA_CONFIG_KEYS = [
 	ENABLED_CONFIG_KEY,
 	REFRESH_INTERVAL_CONFIG_KEY,
 ] as const;
-
-/** Node.js error field used to detect absent config files. */
-const ERROR_CODE_KEY = "code";
 
 /** Number of dot-separated segments expected in a JWT. */
 const JWT_SEGMENT_COUNT = 3;
@@ -218,39 +217,41 @@ export default function codexQuota(pi: ExtensionAPI): void {
 
 /** Reads quota config and converts invalid input into an isolated extension issue. */
 async function readQuotaConfig(): Promise<QuotaConfigResult> {
-	const configPath = join(getAgentDir(), CODEX_QUOTA_CONFIG_PATH);
-	let content: string;
-	try {
-		content = await readFile(configPath, "utf8");
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return { kind: "disabled" };
-		}
-
+	const configFile = await readExtensionConfigFile({
+		extensionDir: CODEX_QUOTA_EXTENSION_DIR,
+		legacyConfigFileName: CODEX_QUOTA_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return { kind: "disabled" };
+	}
+	if (configFile.kind === "read-error") {
 		return {
 			kind: "invalid",
-			issue: `failed to read ${CODEX_QUOTA_CONFIG_PATH}: ${formatError(error)}`,
+			issue: `failed to read ${configFile.location.displayPath}: ${formatError(configFile.error)}`,
 		};
 	}
 
 	try {
-		const config: unknown = JSON.parse(content);
+		const config: unknown = JSON.parse(configFile.file.content);
 
-		return parseQuotaConfig(config);
+		return parseQuotaConfig(config, configFile.file.displayPath);
 	} catch (error) {
 		return {
 			kind: "invalid",
-			issue: `failed to parse ${CODEX_QUOTA_CONFIG_PATH}: ${formatError(error)}`,
+			issue: `failed to parse ${configFile.file.displayPath}: ${formatError(error)}`,
 		};
 	}
 }
 
 /** Parses quota config JSON before session lifecycle logic uses it. */
-function parseQuotaConfig(config: unknown): QuotaConfigResult {
+function parseQuotaConfig(
+	config: unknown,
+	configDisplayPath: string,
+): QuotaConfigResult {
 	if (!isRecord(config)) {
 		return {
 			kind: "invalid",
-			issue: `${CODEX_QUOTA_CONFIG_PATH} must contain a JSON object`,
+			issue: `${configDisplayPath} must contain a JSON object`,
 		};
 	}
 
@@ -263,7 +264,7 @@ function parseQuotaConfig(config: unknown): QuotaConfigResult {
 	if (unsupportedKey !== undefined) {
 		return {
 			kind: "invalid",
-			issue: `unsupported key "${unsupportedKey}" in ${CODEX_QUOTA_CONFIG_PATH}`,
+			issue: `unsupported key "${unsupportedKey}" in ${configDisplayPath}`,
 		};
 	}
 
@@ -570,11 +571,6 @@ function isAbortError(error: unknown): boolean {
 /** Returns true when a runtime value is a non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Returns true when a failed config read means the config file is missing. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error[ERROR_CODE_KEY] === "ENOENT";
 }
 
 /** Converts unknown failures into safe diagnostics for config issue messages. */

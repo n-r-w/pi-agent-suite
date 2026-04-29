@@ -14,6 +14,7 @@ import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const CUSTOM_TYPE = "context-projection";
 const PLACEHOLDER = "[old tool result projected]";
 
@@ -110,9 +111,11 @@ async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-context-projection-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	try {
 		return await action(agentDir);
 	} finally {
@@ -120,6 +123,11 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		if (previousAgentSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
 		}
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -593,6 +601,39 @@ describe("context-projection", () => {
 				args: ["context-projection", undefined],
 			});
 		});
+	});
+
+	test("fails startup when a summary prompt file path is not absolute", async () => {
+		// Purpose: configured context-projection summary prompt files must use absolute paths so startup cannot depend on config-relative or home expansion.
+		// Input and expected output: each non-absolute summary prompt path rejects session_start.
+		// Edge case: summary is enabled and all numeric fields are valid, so the prompt path is the only invalid field.
+		// Dependencies: isolated config file and session_start handler.
+		const fields = ["systemPromptFile", "userPromptFile"] as const;
+		for (const field of fields) {
+			for (const invalidPath of [`${field}.md`, `~/${field}.md`]) {
+				await withIsolatedAgentDir(async (agentDir) => {
+					await writeCustomConfig(
+						agentDir,
+						createValidConfig({
+							summary: {
+								enabled: true,
+								maxConcurrency: 1,
+								[field]: invalidPath,
+							},
+						}),
+					);
+					const { sessionStartHandler } = installContextProjectionTestHarness();
+					const context = createContextFake([]);
+
+					await expect(
+						sessionStartHandler(
+							{ type: "session_start", reason: "startup" },
+							context.ctx,
+						),
+					).rejects.toThrow(`summary.${field} must be an absolute path`);
+				});
+			}
+		}
 	});
 
 	test("publishes tokenizer-based reconstructed projection savings on session start", async () => {
@@ -1297,7 +1338,7 @@ describe("context-projection", () => {
 					summary: {
 						enabled: true,
 						maxConcurrency: 1,
-						systemPromptFile: "missing-system.md",
+						systemPromptFile: join(agentDir, "config", "missing-system.md"),
 					},
 				}),
 			);

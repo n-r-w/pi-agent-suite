@@ -12,14 +12,19 @@ import {
 	type CompactionResult,
 	convertToLlm,
 	type ExtensionAPI,
-	getAgentDir,
 	type SessionBeforeCompactEvent,
 	serializeConversation,
 } from "@mariozechner/pi-coding-agent";
-import { readHomeDirectory } from "./environment";
+import {
+	readExtensionConfigFile,
+	readExtensionConfigFileSync,
+} from "../../shared/agent-suite-storage";
 
-/** Relative config location owned only by this extension. */
-const CUSTOM_COMPACTION_CONFIG_PATH = join("config", "custom-compaction.json");
+/** Suite directory owned only by this extension. */
+const CUSTOM_COMPACTION_EXTENSION_DIR = "custom-compaction";
+
+/** Legacy config file name supported for existing installations. */
+const CUSTOM_COMPACTION_LEGACY_CONFIG_FILE = "custom-compaction.json";
 
 /** Extension issue prefix used for isolated diagnostics. */
 const ISSUE_PREFIX = "[custom-compaction]";
@@ -72,9 +77,6 @@ const REASONING_VALUES = [
 	"high",
 	"xhigh",
 ] as const;
-
-/** Node.js error field used to detect absent config files. */
-const ERROR_CODE_KEY = "code";
 
 /** History summaries receive most of the reserved compaction output budget. */
 const HISTORY_SUMMARY_RESERVE_RATIO = 0.8;
@@ -160,6 +162,8 @@ interface TextBlockRecord extends Record<string, unknown> {
 
 /** Extension entry point for custom compaction handling. */
 export default function customCompaction(pi: ExtensionAPI): void {
+	assertConfiguredPromptPathsAreAbsolute();
+
 	pi.on("session_before_compact", async (event, ctx) => {
 		const session = ctx as unknown as CustomCompactionSession;
 		const config = await readCustomCompactionConfig();
@@ -212,41 +216,74 @@ export default function customCompaction(pi: ExtensionAPI): void {
 	});
 }
 
-/** Reads and validates the extension config without falling back to legacy files. */
-async function readCustomCompactionConfig(): Promise<ConfigReadResult> {
-	const configPath = join(getAgentDir(), CUSTOM_COMPACTION_CONFIG_PATH);
-	let content: string;
-	try {
-		content = await readFile(configPath, "utf8");
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return {
-				kind: "valid",
-				config: buildCustomCompactionConfig({}),
-			};
-		}
+/** Fails startup when enabled config uses prompt paths that depend on config-relative or home expansion. */
+function assertConfiguredPromptPathsAreAbsolute(): void {
+	const configFile = readExtensionConfigFileSync({
+		extensionDir: CUSTOM_COMPACTION_EXTENSION_DIR,
+		legacyConfigFileName: CUSTOM_COMPACTION_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind !== "found") {
+		return;
+	}
 
+	try {
+		const config: unknown = JSON.parse(configFile.file.content);
+		if (!isRecord(config) || config[ENABLED_CONFIG_KEY] === false) {
+			return;
+		}
+		for (const key of PROMPT_FILE_KEYS) {
+			const value = config[key];
+			if (typeof value === "string" && !isAbsolute(value)) {
+				throw new Error(`${ISSUE_PREFIX} ${key} must be an absolute path`);
+			}
+		}
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith(ISSUE_PREFIX)) {
+			throw error;
+		}
+	}
+}
+
+/** Reads and validates the extension config with suite-first storage lookup. */
+async function readCustomCompactionConfig(): Promise<ConfigReadResult> {
+	const configFile = await readExtensionConfigFile({
+		extensionDir: CUSTOM_COMPACTION_EXTENSION_DIR,
+		legacyConfigFileName: CUSTOM_COMPACTION_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return {
+			kind: "valid",
+			config: buildCustomCompactionConfig({}),
+		};
+	}
+	if (configFile.kind === "read-error") {
 		return {
 			kind: "invalid",
-			issue: `failed to read ${CUSTOM_COMPACTION_CONFIG_PATH}: ${formatError(error)}`,
+			issue: `failed to read ${configFile.location.displayPath}: ${formatError(configFile.error)}`,
 		};
 	}
 
 	try {
-		const config: unknown = JSON.parse(content);
+		const config: unknown = JSON.parse(configFile.file.content);
 
-		return parseCustomCompactionConfig(config);
+		return parseCustomCompactionConfig(config, configFile.file.displayPath);
 	} catch (error) {
 		return {
 			kind: "invalid",
-			issue: `failed to parse ${CUSTOM_COMPACTION_CONFIG_PATH}: ${formatError(error)}`,
+			issue: `failed to parse ${configFile.file.displayPath}: ${formatError(error)}`,
 		};
 	}
 }
 
 /** Parses config JSON into a typed custom compaction contract. */
-function parseCustomCompactionConfig(config: unknown): ConfigReadResult {
-	const validationResult = validateCustomCompactionConfig(config);
+function parseCustomCompactionConfig(
+	config: unknown,
+	configDisplayPath: string,
+): ConfigReadResult {
+	const validationResult = validateCustomCompactionConfig(
+		config,
+		configDisplayPath,
+	);
 	if ("issue" in validationResult) {
 		return { kind: "invalid", issue: validationResult.issue };
 	}
@@ -264,10 +301,11 @@ function parseCustomCompactionConfig(config: unknown): ConfigReadResult {
 /** Validates raw custom compaction config before any path resolution. */
 function validateCustomCompactionConfig(
 	config: unknown,
+	configDisplayPath: string,
 ): { readonly config: Record<string, unknown> } | { readonly issue: string } {
 	if (!isRecord(config)) {
 		return {
-			issue: `${CUSTOM_COMPACTION_CONFIG_PATH} must contain a JSON object`,
+			issue: `${configDisplayPath} must contain a JSON object`,
 		};
 	}
 
@@ -277,7 +315,7 @@ function validateCustomCompactionConfig(
 	);
 	if (unsupportedKey !== undefined) {
 		return {
-			issue: `unsupported key "${unsupportedKey}" in ${CUSTOM_COMPACTION_CONFIG_PATH}`,
+			issue: `unsupported key "${unsupportedKey}" in ${configDisplayPath}`,
 		};
 	}
 
@@ -321,6 +359,9 @@ function validatePromptFileConfig(
 		) {
 			return `${key} must be a non-empty string`;
 		}
+		if (typeof value === "string" && !isAbsolute(value)) {
+			return `${key} must be an absolute path`;
+		}
 	}
 
 	return undefined;
@@ -340,19 +381,19 @@ function buildCustomCompactionConfig(
 	return {
 		systemPromptFile:
 			typeof systemPromptFile === "string"
-				? resolvePromptPath(systemPromptFile)
+				? systemPromptFile
 				: DEFAULT_PROMPT_FILES.systemPromptFile,
 		historyPromptFile:
 			typeof historyPromptFile === "string"
-				? resolvePromptPath(historyPromptFile)
+				? historyPromptFile
 				: DEFAULT_PROMPT_FILES.historyPromptFile,
 		updatePromptFile:
 			typeof updatePromptFile === "string"
-				? resolvePromptPath(updatePromptFile)
+				? updatePromptFile
 				: DEFAULT_PROMPT_FILES.updatePromptFile,
 		turnPrefixPromptFile:
 			typeof turnPrefixPromptFile === "string"
-				? resolvePromptPath(turnPrefixPromptFile)
+				? turnPrefixPromptFile
 				: DEFAULT_PROMPT_FILES.turnPrefixPromptFile,
 		...(typeof model === "string" ? { model } : {}),
 		...(isReasoning(reasoning) ? { reasoning } : {}),
@@ -706,22 +747,6 @@ function extractTextSummary(content: readonly unknown[]): string | undefined {
 	return undefined;
 }
 
-/** Resolves prompt paths using the config directory as the relative base. */
-function resolvePromptPath(path: string): string {
-	if (isAbsolute(path)) {
-		return path;
-	}
-	const homeDirectory = readHomeDirectory();
-	if (path === "~") {
-		return homeDirectory;
-	}
-	if (path.startsWith("~/")) {
-		return join(homeDirectory, path.slice(2));
-	}
-
-	return join(getAgentDir(), "config", path);
-}
-
 /** Reports invalid custom-compaction state without affecting other extensions. */
 function reportIssue(session: CustomCompactionSession, issue: string): void {
 	if (session.hasUI === false) {
@@ -772,11 +797,6 @@ function splitModelId(
 /** Returns true when a model ID uses provider/model with both segments present. */
 function isModelId(value: unknown): value is string {
 	return typeof value === "string" && splitModelId(value) !== undefined;
-}
-
-/** Returns true when a failed config read means the config file is missing. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error[ERROR_CODE_KEY] === "ENOENT";
 }
 
 /** Converts unknown failures into safe diagnostics for config issue messages. */

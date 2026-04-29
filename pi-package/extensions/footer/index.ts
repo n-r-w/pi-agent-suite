@@ -1,11 +1,11 @@
-import { readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
-import { type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
+import { basename } from "node:path";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { visibleWidth } from "@mariozechner/pi-tui";
 import {
 	getAgentRuntimeComposition,
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
+import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 import {
 	sliceTextByWidth,
 	sliceTextSuffixByWidth,
@@ -25,8 +25,11 @@ const CODEX_QUOTA_STATUS_KEY = "codex-quota";
 /** Status key used by the context-projection extension for provider-context projection state. */
 const CONTEXT_PROJECTION_STATUS_KEY = "context-projection";
 
-/** Relative config location owned only by this extension. */
-const FOOTER_CONFIG_PATH = join("config", "footer.json");
+/** Suite directory owned only by this extension. */
+const FOOTER_EXTENSION_DIR = "footer";
+
+/** Legacy config file name supported for existing installations. */
+const FOOTER_LEGACY_CONFIG_FILE = "footer.json";
 
 /** Config key that disables or enables the custom footer. */
 const ENABLED_CONFIG_KEY = "enabled";
@@ -47,9 +50,6 @@ const FOOTER_CONFIG_KEYS = [
 	SHOW_MODEL_CONFIG_KEY,
 	SHOW_THINKING_LEVEL_CONFIG_KEY,
 ] as const;
-
-/** Node.js error field used to detect absent config files. */
-const ERROR_CODE_KEY = "code";
 
 /** Separator between footer segments in the current minimal renderer. */
 export const SEGMENT_SEPARATOR = " · ";
@@ -587,15 +587,22 @@ async function readFooterContextOverflowConfig(): Promise<
 
 /** Reads footer config while missing config keeps the footer enabled with defaults. */
 async function readFooterConfig(): Promise<FooterConfigResult> {
+	const configFile = await readExtensionConfigFile({
+		extensionDir: FOOTER_EXTENSION_DIR,
+		legacyConfigFileName: FOOTER_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return { kind: "enabled", config: buildFooterConfig({}) };
+	}
+	if (configFile.kind === "read-error") {
+		return { kind: "invalid" };
+	}
+
 	try {
-		const config: unknown = JSON.parse(
-			await readFile(join(getAgentDir(), FOOTER_CONFIG_PATH), "utf8"),
-		);
+		const config: unknown = JSON.parse(configFile.file.content);
 		return parseFooterConfig(config);
-	} catch (error) {
-		return isFileNotFoundError(error)
-			? { kind: "enabled", config: buildFooterConfig({}) }
-			: { kind: "invalid" };
+	} catch {
+		return { kind: "invalid" };
 	}
 }
 
@@ -653,11 +660,6 @@ function buildFooterConfig(config: Record<string, unknown>): FooterConfig {
 /** Returns true when a runtime value is a non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Returns true when a failed config read means the config file is missing. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error[ERROR_CODE_KEY] === "ENOENT";
 }
 
 /** Extension entry point for custom footer runtime behavior. */

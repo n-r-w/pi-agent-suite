@@ -17,6 +17,7 @@ import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-run
 import { SUBAGENT_AGENT_ID_ENV } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const FRONTMATTER_MODEL_KEY = "model";
 const FRONTMATTER_TOOLS_KEY = "tools";
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
@@ -206,10 +207,12 @@ async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const previousSubagentAgentId = process.env[SUBAGENT_AGENT_ID_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-main-agent-selection-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	delete process.env[SUBAGENT_AGENT_ID_ENV];
 	try {
 		return await action(agentDir);
@@ -218,6 +221,11 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		if (previousAgentSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
 		}
 		if (previousSubagentAgentId === undefined) {
 			delete process.env[SUBAGENT_AGENT_ID_ENV];
@@ -249,7 +257,26 @@ async function writeAgent(
 	agentDir: string,
 	agent: AgentFixture,
 ): Promise<void> {
-	await mkdir(join(agentDir, "agents"), { recursive: true });
+	await writeAgentToDirectory(join(agentDir, "agents"), agent);
+}
+
+/** Writes one agent Markdown file into the agent-suite layout. */
+async function writeSuiteAgent(
+	agentDir: string,
+	agent: AgentFixture,
+): Promise<void> {
+	await writeAgentToDirectory(
+		join(agentDir, "agent-suite", "agent-selection", "agents"),
+		agent,
+	);
+}
+
+/** Writes one agent Markdown file into a caller-selected directory. */
+async function writeAgentToDirectory(
+	agentsDir: string,
+	agent: AgentFixture,
+): Promise<void> {
+	await mkdir(agentsDir, { recursive: true });
 	const frontmatter: Record<string, unknown> = {
 		description: agent.description,
 		type: agent.type ?? "main",
@@ -286,7 +313,7 @@ async function writeAgent(
 		agent.body,
 	];
 
-	await writeFile(join(agentDir, "agents", `${agent.id}.md`), lines.join("\n"));
+	await writeFile(join(agentsDir, `${agent.id}.md`), lines.join("\n"));
 }
 
 /** Creates keybinding behavior for custom component input tests. */
@@ -453,14 +480,103 @@ async function writeMainAgentSelectionConfig(
 	);
 }
 
+/** Writes main-agent-selection configuration into the agent-suite layout. */
+async function writeSuiteMainAgentSelectionConfig(
+	agentDir: string,
+	config: unknown,
+): Promise<void> {
+	const configDir = join(agentDir, "agent-suite", "agent-selection");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(join(configDir, "config.json"), JSON.stringify(config));
+}
+
 /** Returns the hash-based selected-agent state file name for one normalized working directory. */
 function selectedAgentStateFileName(cwd: string): string {
 	return `${createHash("sha256").update(cwd).digest(SELECTED_AGENT_STATE_HASH_ENCODING)}.json`;
 }
 
+/** Writes selected-agent state into the legacy location used for fallback coverage. */
+async function writeLegacySelectedAgentState(
+	agentDir: string,
+	cwd: string,
+	state: unknown,
+): Promise<void> {
+	await writeSelectedAgentStateToDirectory(
+		join(agentDir, "agent-selection", "state"),
+		cwd,
+		state,
+	);
+}
+
+/** Writes selected-agent state into the suite location used by current storage. */
+async function writeSuiteSelectedAgentState(
+	agentDir: string,
+	cwd: string,
+	state: unknown,
+): Promise<void> {
+	await writeSelectedAgentStateToDirectory(
+		join(agentDir, "agent-suite", "agent-selection", "state"),
+		cwd,
+		state,
+	);
+}
+
+/** Writes selected-agent state into a caller-selected state directory. */
+async function writeSelectedAgentStateToDirectory(
+	stateDir: string,
+	cwd: string,
+	state: unknown,
+): Promise<void> {
+	await mkdir(stateDir, { recursive: true });
+	await writeFile(
+		join(stateDir, selectedAgentStateFileName(cwd)),
+		typeof state === "string" ? state : JSON.stringify(state),
+	);
+}
+
 /** Reads the only selected-agent state file written by a test. */
 async function readOnlyStateFile(agentDir: string): Promise<unknown> {
-	const stateDir = join(agentDir, "agent-selection", "state");
+	const suiteStateDir = join(
+		agentDir,
+		"agent-suite",
+		"agent-selection",
+		"state",
+	);
+	try {
+		return await readOnlyStateFileFromDirectory(suiteStateDir);
+	} catch (error) {
+		if (!isFileNotFoundError(error)) {
+			throw error;
+		}
+	}
+
+	return readOnlyStateFileFromDirectory(
+		join(agentDir, "agent-selection", "state"),
+	);
+}
+
+/** Reads the only selected-agent state file from one state directory. */
+async function readOnlyStateFileFromDirectory(
+	stateDir: string,
+): Promise<unknown> {
+	const files = await readdir(stateDir);
+	expect(files).toHaveLength(1);
+	return JSON.parse(await readFile(join(stateDir, files[0] ?? ""), "utf8"));
+}
+
+/** Returns true when a filesystem error represents an absent file or directory. */
+function isFileNotFoundError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { readonly code?: unknown }).code === "ENOENT"
+	);
+}
+
+/** Reads the only selected-agent state file written into the agent-suite layout. */
+async function readOnlySuiteStateFile(agentDir: string): Promise<unknown> {
+	const stateDir = join(agentDir, "agent-suite", "agent-selection", "state");
 	const files = await readdir(stateDir);
 	expect(files).toHaveLength(1);
 	return JSON.parse(await readFile(join(stateDir, files[0] ?? ""), "utf8"));
@@ -489,6 +605,257 @@ describe("main-agent-selection", () => {
 
 			expect(pi.commands).toEqual([]);
 			expect(pi.shortcuts).toEqual([]);
+		});
+	});
+
+	test("uses agent-suite config before legacy main-agent-selection config", async () => {
+		// Purpose: main-agent-selection must prefer suite-owned config over legacy config.
+		// Input and expected output: suite config disables command and shortcut even when legacy config enables them.
+		// Edge case: both config files exist, so precedence is observable.
+		// Dependencies: this test uses isolated config files and an in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeMainAgentSelectionConfig(agentDir, { enabled: true });
+			await writeSuiteMainAgentSelectionConfig(agentDir, { enabled: false });
+			const pi = createExtensionApiFake();
+
+			mainAgentSelection(pi);
+
+			expect(pi.commands).toEqual([]);
+			expect(pi.shortcuts).toEqual([]);
+		});
+	});
+
+	test("fails startup when active main-agent-selection config cannot be read", async () => {
+		// Purpose: active main-agent-selection config read errors must stop startup instead of silently enabling selection.
+		// Input and expected output: suite config path that is a directory throws during extension loading.
+		// Edge case: a valid legacy config exists but must not hide the unreadable suite config.
+		// Dependencies: this test uses isolated suite and legacy config paths and an in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeMainAgentSelectionConfig(agentDir, { enabled: false });
+			await mkdir(
+				join(agentDir, "agent-suite", "agent-selection", "config.json"),
+				{ recursive: true },
+			);
+			const pi = createExtensionApiFake();
+
+			expect(() => mainAgentSelection(pi)).toThrow(
+				"[main-agent-selection] failed to read agent-suite/agent-selection/config.json",
+			);
+		});
+	});
+
+	test("fails startup when active main-agent-selection config cannot be parsed", async () => {
+		// Purpose: active main-agent-selection config errors must stop startup instead of silently enabling selection.
+		// Input and expected output: malformed suite config throws during extension loading.
+		// Edge case: a valid legacy config exists but must not hide the malformed suite config.
+		// Dependencies: this test uses isolated suite and legacy config files and an in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeMainAgentSelectionConfig(agentDir, { enabled: false });
+			const configDir = join(agentDir, "agent-suite", "agent-selection");
+			await mkdir(configDir, { recursive: true });
+			await writeFile(join(configDir, "config.json"), "{");
+			const pi = createExtensionApiFake();
+
+			expect(() => mainAgentSelection(pi)).toThrow(
+				"[main-agent-selection] failed to parse agent-suite/agent-selection/config.json",
+			);
+		});
+	});
+
+	test("fails startup when suite agents directory cannot be read without selected state", async () => {
+		// Purpose: broken suite agent storage must stop startup even when no agent is currently selected.
+		// Input and expected output: non-directory suite agents path rejects session_start.
+		// Edge case: no selected-agent state exists, so startup validation must not be state-dependent.
+		// Dependencies: this test uses isolated suite storage and the session_start handler.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const suiteAgentsPath = join(
+				agentDir,
+				"agent-suite",
+				"agent-selection",
+				"agents",
+			);
+			await mkdir(join(suiteAgentsPath, ".."), { recursive: true });
+			await writeFile(suiteAgentsPath, "not a directory");
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await expect(
+				getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				),
+			).rejects.toThrow("failed to read suite agents directory");
+		});
+	});
+
+	test("fails startup when suite agents directory cannot be read", async () => {
+		// Purpose: a broken suite agents path must stop startup instead of looking like no selected agent exists.
+		// Input and expected output: selected state plus non-directory suite agents path rejects session_start.
+		// Edge case: legacy agents exist but must not hide the suite directory read failure.
+		// Dependencies: this test uses isolated state, suite storage, legacy agent files, and the session_start handler.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeLegacySelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "legacy-builder",
+			});
+			await writeAgent(agentDir, {
+				id: "legacy-builder",
+				description: "Legacy builder",
+				body: "Legacy prompt",
+			});
+			const suiteAgentsPath = join(
+				agentDir,
+				"agent-suite",
+				"agent-selection",
+				"agents",
+			);
+			await mkdir(join(suiteAgentsPath, ".."), { recursive: true });
+			await writeFile(suiteAgentsPath, "not a directory");
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await expect(
+				getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				),
+			).rejects.toThrow("failed to read suite agents directory");
+		});
+	});
+
+	test("fails startup when a suite agent definition file cannot be read without selected state", async () => {
+		// Purpose: broken suite agent files must stop startup even when no agent is currently selected.
+		// Input and expected output: directory named broken.md rejects session_start.
+		// Edge case: no selected-agent state exists, so startup validation must not be state-dependent.
+		// Dependencies: this test uses isolated suite storage and the session_start handler.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await mkdir(
+				join(agentDir, "agent-suite", "agent-selection", "agents", "broken.md"),
+				{ recursive: true },
+			);
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await expect(
+				getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				),
+			).rejects.toThrow("failed to read suite agent definition broken.md");
+		});
+	});
+
+	test("fails startup when a suite agent definition file cannot be read", async () => {
+		// Purpose: unreadable suite agent files must stop startup instead of being skipped as malformed agents.
+		// Input and expected output: selected state plus directory named broken.md rejects session_start.
+		// Edge case: the entry has the .md suffix, so it would otherwise be treated as an agent definition.
+		// Dependencies: this test uses isolated suite state and the session_start handler.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "broken",
+			});
+			await mkdir(
+				join(agentDir, "agent-suite", "agent-selection", "agents", "broken.md"),
+				{ recursive: true },
+			);
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await expect(
+				getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				),
+			).rejects.toThrow("failed to read suite agent definition broken.md");
+		});
+	});
+
+	test("loads suite agents and writes selected-agent state under agent-suite", async () => {
+		// Purpose: agent-selection must store its agent definitions and current selection under the suite root.
+		// Input and expected output: /agent suite-builder loads the suite agent and writes cwd plus activeAgentId into suite state.
+		// Edge case: no legacy agent files exist, so suite agent loading is required.
+		// Dependencies: this test uses temp suite agent files, temp suite state, and runtime composition fake through ExtensionAPI.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeSuiteAgent(agentDir, {
+				id: "suite-builder",
+				description: "Builds code",
+				body: "Suite builder prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await getCommand(pi, "agent").handler("suite-builder", ctx);
+
+			expect(await readOnlySuiteStateFile(agentDir)).toEqual({
+				cwd: "/tmp/project",
+				activeAgentId: "suite-builder",
+			});
+			await expect(
+				readdir(join(agentDir, "agent-selection", "state")),
+			).rejects.toMatchObject({ code: "ENOENT" });
+			expect(ctx.notifications).toEqual([]);
+
+			const result = await getBeforeAgentStartHandler(pi)(
+				{
+					type: "before_agent_start",
+					systemPrompt: "Base prompt",
+				},
+				ctx,
+			);
+			expect(result).toEqual({
+				systemPrompt: "Base prompt\n\nSuite builder prompt",
+			});
+		});
+	});
+
+	test("uses only suite agents when the suite agents directory exists", async () => {
+		// Purpose: suite agents must not be merged with legacy agents once the suite agents directory exists.
+		// Input and expected output: legacy-only agent is not selectable, and duplicate IDs use the suite prompt.
+		// Edge case: both suite and legacy directories exist with overlapping IDs.
+		// Dependencies: this test uses isolated suite and legacy agent files plus the runtime prompt composition handler.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeSuiteAgent(agentDir, {
+				id: "builder",
+				description: "Suite builder",
+				body: "Suite prompt",
+			});
+			await writeAgent(agentDir, {
+				id: "builder",
+				description: "Legacy builder",
+				body: "Legacy prompt",
+			});
+			await writeAgent(agentDir, {
+				id: "legacy-only",
+				description: "Legacy only",
+				body: "Legacy only prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await getCommand(pi, "agent").handler("legacy-only", ctx);
+			expect(ctx.notifications).toContainEqual({
+				message: "[main-agent-selection] agent legacy-only was not found",
+				type: "warning",
+			});
+
+			await getCommand(pi, "agent").handler("builder", ctx);
+			const result = await getBeforeAgentStartHandler(pi)(
+				{
+					type: "before_agent_start",
+					systemPrompt: "Base prompt",
+				},
+				ctx,
+			);
+			expect(result).toEqual({
+				systemPrompt: "Base prompt\n\nSuite prompt",
+			});
 		});
 	});
 
@@ -575,15 +942,10 @@ describe("main-agent-selection", () => {
 			await mkdir(join(agentDir, "agent-selection", "state"), {
 				recursive: true,
 			});
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
 
 			expect(
 				getAgentRuntimeComposition(pi).getMainAgentContribution(),
@@ -625,15 +987,10 @@ describe("main-agent-selection", () => {
 			await mkdir(join(agentDir, "agent-selection", "state"), {
 				recursive: true,
 			});
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
 
 			await sessionStart({ type: "session_start", reason: "reload" }, ctx);
 
@@ -685,15 +1042,10 @@ describe("main-agent-selection", () => {
 			oldMainAgentSelection(oldPi);
 
 			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/target-project"),
-				),
-				JSON.stringify({ cwd: "/tmp/target-project", activeAgentId: "Sage" }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/target-project", {
+				cwd: "/tmp/target-project",
+				activeAgentId: "Sage",
+			});
 			await getHandler(oldPi, "session_shutdown")(
 				{
 					type: "session_shutdown",
@@ -766,15 +1118,10 @@ describe("main-agent-selection", () => {
 			const sessionStart = getHandler(pi, "session_start");
 
 			await getCommand(pi, "agent").handler("Coder", ctx);
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
 
 			await sessionStart({ type: "session_start", reason: "new" }, ctx);
 
@@ -818,15 +1165,10 @@ describe("main-agent-selection", () => {
 			oldMainAgentSelection(oldPi);
 
 			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
 			await getHandler(oldPi, "session_shutdown")(
 				{ type: "session_shutdown", reason: "new" },
 				oldCtx,
@@ -886,15 +1228,10 @@ describe("main-agent-selection", () => {
 			oldMainAgentSelection(oldPi);
 
 			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
 			await getHandler(oldPi, "session_shutdown")(
 				{ type: "session_shutdown", reason: "new" },
 				oldCtx,
@@ -956,15 +1293,10 @@ describe("main-agent-selection", () => {
 			oldMainAgentSelection(oldPi);
 
 			await getCommand(oldPi, "agent").handler("Coder", oldCtx);
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({ cwd: "/tmp/project", activeAgentId: "Sage" }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "Sage",
+			});
 			await getHandler(oldPi, "session_shutdown")(
 				{ type: "session_shutdown", reason: "fork" },
 				oldCtx,
@@ -1019,15 +1351,10 @@ describe("main-agent-selection", () => {
 			}
 
 			await getCommand(pi, "agent").handler("Coder", ctx);
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({ cwd: "/tmp/project", activeAgentId: null }),
-			);
+			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: null,
+			});
 
 			await sessionStart({ type: "session_start", reason: "reload" }, ctx);
 
@@ -1646,22 +1973,11 @@ describe("main-agent-selection", () => {
 		// Edge case: the state file exists under the selected-agent state directory but violates the strict schema.
 		// Dependencies: this test uses temp state and an in-memory session_start context.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await mkdir(join(agentDir, "agent-selection", "state"), {
-				recursive: true,
+			await writeLegacySelectedAgentState(agentDir, "/tmp/project", {
+				cwd: "/tmp/project",
+				activeAgentId: "builder",
+				model: "bad",
 			});
-			await writeFile(
-				join(
-					agentDir,
-					"agent-selection",
-					"state",
-					selectedAgentStateFileName("/tmp/project"),
-				),
-				JSON.stringify({
-					cwd: "/tmp/project",
-					activeAgentId: "builder",
-					model: "bad",
-				}),
-			);
 			const pi = createExtensionApiFake();
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
@@ -1811,7 +2127,12 @@ describe("main-agent-selection", () => {
 				),
 			).toBeUndefined();
 			await getCommand(pi, "agent").handler("builder", ctx);
-			const stateDir = join(agentDir, "agent-selection", "state");
+			const stateDir = join(
+				agentDir,
+				"agent-suite",
+				"agent-selection",
+				"state",
+			);
 			const files = await readdir(stateDir);
 			const hashFileName = selectedAgentStateFileName(longProjectDir);
 

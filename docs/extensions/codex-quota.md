@@ -7,8 +7,8 @@
 ## Behavior
 
 - Uses status key `codex-quota`.
-- Reads configuration from `~/.pi/agent/config/codex-quota.json`.
-- Is disabled by default when `codex-quota.json` is missing.
+- Reads configuration from `~/.pi/agent/agent-suite/codex-quota/config.json`.
+- Is disabled by default when `config.json` is missing.
 - Requires `enabled: true` before polling starts.
 - Uses `60` seconds as the default `refreshInterval` when enabled.
 - Requires `refreshInterval` to be a finite number greater than or equal to `10`.
@@ -27,7 +27,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/codex-quota.json`.
+File: `~/.pi/agent/agent-suite/codex-quota/config.json`.
 
 ```json
 {

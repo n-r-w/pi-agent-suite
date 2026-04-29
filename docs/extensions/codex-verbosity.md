@@ -7,8 +7,8 @@
 ## Behavior
 
 - Handles only OpenAI Codex provider requests.
-- Reads configuration from `~/.pi/agent/config/codex-verbosity.json`.
-- Is disabled by default when `codex-verbosity.json` is missing.
+- Reads configuration from `~/.pi/agent/agent-suite/codex-verbosity/config.json`.
+- Is disabled by default when `config.json` is missing.
 - Requires `enabled: true` before injecting `text.verbosity`.
 - Uses `medium` as the default `verbosity` when enabled config omits `verbosity`.
 - Leaves the provider request unchanged and creates an issue only for `codex-verbosity` when configuration is invalid.
@@ -16,7 +16,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/codex-verbosity.json`.
+File: `~/.pi/agent/agent-suite/codex-verbosity/config.json`.
 
 ```json
 {

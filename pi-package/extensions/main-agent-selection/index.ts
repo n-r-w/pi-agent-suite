@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
@@ -18,6 +17,10 @@ import {
 	loadAgentDefinitions,
 } from "../../shared/agent-registry";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import {
+	getSuiteExtensionDir,
+	readExtensionConfigFileSync,
+} from "../../shared/agent-suite-storage";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import { isChildSubagentProcess } from "./environment";
 
@@ -35,9 +38,11 @@ const NO_AGENT_VALUE = "__none__";
 type ShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
 
 const SHORTCUT = "Ctrl+Shift+A" as ShortcutKey;
-const STATE_DIR = join("agent-selection", "state");
+const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
+const LEGACY_STATE_DIR = join("agent-selection", "state");
+const STATE_SUBDIR = "state";
 const ISSUE_PREFIX = "[main-agent-selection]";
-const CONFIG_PATH = join("config", "main-agent-selection.json");
+const LEGACY_CONFIG_FILE = "main-agent-selection.json";
 const ENABLED_CONFIG_KEY = "enabled";
 const STATE_KEYS = ["cwd", "activeAgentId"] as const;
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
@@ -483,13 +488,26 @@ function consumeSessionReplacementHandoff(
 
 /** Returns true only for a present valid config that explicitly disables main-agent selection. */
 function isMainAgentSelectionDisabled(): boolean {
-	try {
-		const config: unknown = JSON.parse(
-			readFileSync(join(getAgentDir(), CONFIG_PATH), "utf8"),
-		);
-		return isRecord(config) && config[ENABLED_CONFIG_KEY] === false;
-	} catch {
+	const configFile = readExtensionConfigFileSync({
+		extensionDir: AGENT_SELECTION_EXTENSION_DIR,
+		legacyConfigFileName: LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
 		return false;
+	}
+	if (configFile.kind === "read-error") {
+		throw new Error(
+			`${ISSUE_PREFIX} failed to read ${configFile.location.displayPath}: ${formatError(configFile.error)}`,
+		);
+	}
+
+	try {
+		const config: unknown = JSON.parse(configFile.file.content);
+		return isRecord(config) && config[ENABLED_CONFIG_KEY] === false;
+	} catch (error) {
+		throw new Error(
+			`${ISSUE_PREFIX} failed to parse ${configFile.file.displayPath}: ${formatError(error)}`,
+		);
 	}
 }
 
@@ -500,6 +518,7 @@ async function restoreSelectedMainAgent(
 ): Promise<void> {
 	const composition = getAgentRuntimeComposition(pi);
 	const normalizedCwd = normalizeCwd(mainContext.cwd);
+	const agents = await loadSelectableAgents();
 	const state = await readSelectedAgentState(normalizedCwd);
 	if (state.kind === "missing") {
 		composition.clearMainAgentContribution();
@@ -515,7 +534,6 @@ async function restoreSelectedMainAgent(
 		return;
 	}
 
-	const agents = await loadSelectableAgents();
 	const agent = agents.find(
 		(candidate) => candidate.id === state.state.activeAgentId,
 	);
@@ -751,17 +769,21 @@ async function readSelectedAgentState(
 	| { readonly kind: "valid"; readonly state: SelectedAgentState }
 	| { readonly kind: "invalid"; readonly issue: string }
 > {
+	const stateFile = await readSelectedAgentStateFile(cwd);
+	if (stateFile.kind === "missing") {
+		return { kind: "missing" };
+	}
+	if (stateFile.kind === "invalid") {
+		return stateFile;
+	}
+
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(await readFile(selectedAgentStatePath(cwd), "utf8"));
+		parsed = JSON.parse(stateFile.content);
 	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return { kind: "missing" };
-		}
-
 		return {
 			kind: "invalid",
-			issue: `failed to read selected-agent state: ${formatError(error)}`,
+			issue: `failed to parse selected-agent state: ${formatError(error)}`,
 		};
 	}
 
@@ -815,7 +837,7 @@ function parseSelectedAgentState(
 async function writeSelectedAgentState(
 	state: SelectedAgentState,
 ): Promise<void> {
-	const stateDir = join(getAgentDir(), STATE_DIR);
+	const stateDir = selectedAgentStateDir();
 	await mkdir(stateDir, { recursive: true });
 	await writeFile(
 		selectedAgentStatePath(state.cwd),
@@ -823,11 +845,66 @@ async function writeSelectedAgentState(
 	);
 }
 
+/** Reads selected-agent state from suite storage and falls back to legacy storage only when suite state is absent. */
+async function readSelectedAgentStateFile(
+	cwd: string,
+): Promise<
+	| { readonly kind: "missing" }
+	| { readonly kind: "valid"; readonly content: string }
+	| { readonly kind: "invalid"; readonly issue: string }
+> {
+	try {
+		return {
+			kind: "valid",
+			content: await readFile(selectedAgentStatePath(cwd), "utf8"),
+		};
+	} catch (error) {
+		if (!isFileNotFoundError(error)) {
+			return {
+				kind: "invalid",
+				issue: `failed to read selected-agent state: ${formatError(error)}`,
+			};
+		}
+	}
+
+	try {
+		return {
+			kind: "valid",
+			content: await readFile(legacySelectedAgentStatePath(cwd), "utf8"),
+		};
+	} catch (error) {
+		if (isFileNotFoundError(error)) {
+			return { kind: "missing" };
+		}
+
+		return {
+			kind: "invalid",
+			issue: `failed to read selected-agent state: ${formatError(error)}`,
+		};
+	}
+}
+
+/** Returns the suite-owned selected-agent state directory. */
+function selectedAgentStateDir(): string {
+	return join(
+		getSuiteExtensionDir(AGENT_SELECTION_EXTENSION_DIR),
+		STATE_SUBDIR,
+	);
+}
+
 /** Returns the deterministic selected-agent state path for one normalized working directory. */
 function selectedAgentStatePath(cwd: string): string {
 	return join(
+		selectedAgentStateDir(),
+		`${selectedAgentStateFileName(cwd)}.json`,
+	);
+}
+
+/** Returns the legacy selected-agent state path for one normalized working directory. */
+function legacySelectedAgentStatePath(cwd: string): string {
+	return join(
 		getAgentDir(),
-		STATE_DIR,
+		LEGACY_STATE_DIR,
 		`${selectedAgentStateFileName(cwd)}.json`,
 	);
 }

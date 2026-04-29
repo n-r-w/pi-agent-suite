@@ -8,15 +8,15 @@
 
 - Registers tool `consult_advisor`.
 - Accepts only `question`.
-- Reads configuration from `~/.pi/agent/config/consult-advisor.json`.
-- Is enabled by default when `consult-advisor.json` is missing.
+- Reads configuration from `~/.pi/agent/agent-suite/consult-advisor/config.json`.
+- Is enabled by default when `config.json` is missing.
 - Uses the current session model when `model.id` is missing.
 - Uses the current thinking level when `model.thinking` is missing.
 - Uses the bundled advisor prompt when `promptFile` is missing.
 - Bundled advisor prompt lives at `pi-package/extensions/consult-advisor/prompts/advisor.md`.
 - Allows optional `promptFile` and `debugPayloadFile`.
-- Resolves `promptFile` and `debugPayloadFile` as absolute paths or relative paths from the directory that contains `consult-advisor.json`.
-- Does not add `~/` path support.
+- Requires `promptFile` to be an absolute path.
+- Resolves `debugPayloadFile` as an absolute path or a relative path from the directory that contains `config.json`.
 - Requires a readable and non-empty advisor prompt.
 - Resolves the advisor model, API key, and request headers through the pi model registry.
 - Builds an advisor transcript from active branch conversation messages.
@@ -48,7 +48,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/consult-advisor.json`.
+File: `~/.pi/agent/agent-suite/consult-advisor/config.json`.
 
 ```json
 {

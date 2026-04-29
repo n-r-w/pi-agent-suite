@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 
 /** Provider name used by the built-in OpenAI provider. */
 const OPENAI_PROVIDER = "openai";
@@ -8,8 +7,11 @@ const OPENAI_PROVIDER = "openai";
 /** Provider API used by OpenAI Codex responses requests. */
 const OPENAI_CODEX_API = "openai-codex-responses";
 
-/** Relative config location owned only by this extension. */
-const CODEX_VERBOSITY_CONFIG_PATH = join("config", "codex-verbosity.json");
+/** Suite directory owned only by this extension. */
+const CODEX_VERBOSITY_EXTENSION_DIR = "codex-verbosity";
+
+/** Legacy config file name supported for existing installations. */
+const CODEX_VERBOSITY_LEGACY_CONFIG_FILE = "codex-verbosity.json";
 
 /** Accepted verbosity values supported by the OpenAI Codex request payload. */
 const CODEX_VERBOSITY_VALUES = ["low", "medium", "high"] as const;
@@ -32,9 +34,6 @@ const CODEX_VERBOSITY_CONFIG_KEYS = [
 /** Provider payload key that carries text generation options. */
 const TEXT_PAYLOAD_KEY = "text";
 
-/** Node.js error field used to detect absent config files. */
-const ERROR_CODE_KEY = "code";
-
 type CodexVerbosity = (typeof CODEX_VERBOSITY_VALUES)[number];
 
 type VerbosityConfigResult =
@@ -55,39 +54,41 @@ function shouldHandleRequest(model: ProviderRequestModel | undefined): boolean {
 
 /** Reads and parses the extension config without leaking failures outside this extension. */
 async function readConfiguredVerbosity(): Promise<VerbosityConfigResult> {
-	const configPath = join(getAgentDir(), CODEX_VERBOSITY_CONFIG_PATH);
-	let content: string;
-	try {
-		content = await readFile(configPath, "utf8");
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return { kind: "disabled" };
-		}
-
+	const configFile = await readExtensionConfigFile({
+		extensionDir: CODEX_VERBOSITY_EXTENSION_DIR,
+		legacyConfigFileName: CODEX_VERBOSITY_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return { kind: "disabled" };
+	}
+	if (configFile.kind === "read-error") {
 		return {
 			kind: "invalid",
-			issue: `failed to read ${CODEX_VERBOSITY_CONFIG_PATH}: ${formatError(error)}`,
+			issue: `failed to read ${configFile.location.displayPath}: ${formatError(configFile.error)}`,
 		};
 	}
 
 	try {
-		const config: unknown = JSON.parse(content);
+		const config: unknown = JSON.parse(configFile.file.content);
 
-		return parseConfiguredVerbosity(config);
+		return parseConfiguredVerbosity(config, configFile.file.displayPath);
 	} catch (error) {
 		return {
 			kind: "invalid",
-			issue: `failed to parse ${CODEX_VERBOSITY_CONFIG_PATH}: ${formatError(error)}`,
+			issue: `failed to parse ${configFile.file.displayPath}: ${formatError(error)}`,
 		};
 	}
 }
 
 /** Parses config JSON into a typed result before request mutation logic can use it. */
-function parseConfiguredVerbosity(config: unknown): VerbosityConfigResult {
+function parseConfiguredVerbosity(
+	config: unknown,
+	configDisplayPath: string,
+): VerbosityConfigResult {
 	if (!isRecord(config)) {
 		return {
 			kind: "invalid",
-			issue: `${CODEX_VERBOSITY_CONFIG_PATH} must contain a JSON object`,
+			issue: `${configDisplayPath} must contain a JSON object`,
 		};
 	}
 
@@ -100,7 +101,7 @@ function parseConfiguredVerbosity(config: unknown): VerbosityConfigResult {
 	if (unsupportedKey !== undefined) {
 		return {
 			kind: "invalid",
-			issue: `unsupported key "${unsupportedKey}" in ${CODEX_VERBOSITY_CONFIG_PATH}`,
+			issue: `unsupported key "${unsupportedKey}" in ${configDisplayPath}`,
 		};
 	}
 
@@ -155,11 +156,6 @@ function isCodexVerbosity(value: unknown): value is CodexVerbosity {
 		typeof value === "string" &&
 		(CODEX_VERBOSITY_VALUES as readonly string[]).includes(value)
 	);
-}
-
-/** Returns true when a failed config read means the config file is missing. */
-function isFileNotFoundError(error: unknown): boolean {
-	return isRecord(error) && error[ERROR_CODE_KEY] === "ENOENT";
 }
 
 /** Converts unknown failures into safe diagnostics for config issue messages. */

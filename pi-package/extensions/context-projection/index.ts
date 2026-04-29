@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
@@ -17,7 +16,6 @@ import type {
 	ExtensionContext,
 	SessionEntry,
 } from "@mariozechner/pi-coding-agent";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import {
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
 	type ContextProjectionConfig,
@@ -176,6 +174,7 @@ export default function contextProjection(
 
 	const publishCurrentStatus = async (ctx: ExtensionContext): Promise<void> => {
 		const config = await readContextProjectionConfig();
+		assertNoFatalConfigIssue(config);
 		publishedStatusText = publishProjectionStatus(
 			ctx,
 			config,
@@ -229,6 +228,7 @@ async function handleContextProjection({
 	completeSimple,
 }: HandleContextProjectionOptions): Promise<HandleContextProjectionResult> {
 	const config = await readContextProjectionConfig();
+	assertNoFatalConfigIssue(config);
 	if (config.kind !== "valid") {
 		return createContextProjectionNoChangeResult(
 			ctx,
@@ -662,25 +662,12 @@ async function readPromptFile(path: string): Promise<string | undefined> {
 	}
 }
 
-/** Resolves custom summary prompt paths using the same config-relative rules as prompt-owning extensions. */
+/** Resolves custom summary prompt paths after config validation guarantees absolute paths. */
 function resolveSummaryPromptPath(
 	promptFile: string | undefined,
 	defaultPromptFile: string,
 ): string {
-	if (promptFile === undefined) {
-		return defaultPromptFile;
-	}
-	if (promptFile === "~") {
-		return homedir();
-	}
-	if (promptFile.startsWith("~/")) {
-		return join(homedir(), promptFile.slice(2));
-	}
-	if (isAbsolute(promptFile)) {
-		return promptFile;
-	}
-
-	return join(getAgentDir(), "config", promptFile);
+	return promptFile ?? defaultPromptFile;
 }
 
 /** Collects new projected tool results that are large enough to summarize. */
@@ -1082,6 +1069,13 @@ function isProjectionThresholdExceeded(
 
 	const remainingTokens = usage.contextWindow - usage.tokens;
 	return remainingTokens <= config.projectionRemainingTokens;
+}
+
+/** Throws config errors that must stop startup or context handling instead of being shown as footer state. */
+function assertNoFatalConfigIssue(config: ContextProjectionConfigResult): void {
+	if (config.kind === "invalid" && config.fatal === true) {
+		throw new Error(`[context-projection] ${config.issue}`);
+	}
 }
 
 /** Publishes compact footer state while leaving missing and disabled config hidden. */

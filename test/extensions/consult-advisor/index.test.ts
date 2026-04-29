@@ -29,6 +29,7 @@ import {
 } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const SUBAGENT_ENV_KEYS = [
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_AGENT_ID_ENV,
@@ -98,11 +99,13 @@ async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const previousSubagentEnv = new Map(
 		SUBAGENT_ENV_KEYS.map((key) => [key, process.env[key]]),
 	);
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-consult-advisor-"));
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	for (const key of SUBAGENT_ENV_KEYS) {
 		delete process.env[key];
 	}
@@ -113,6 +116,11 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		if (previousAgentSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
 		}
 		for (const key of SUBAGENT_ENV_KEYS) {
 			const previousValue = previousSubagentEnv.get(key);
@@ -747,6 +755,27 @@ describe("consult-advisor", () => {
 		});
 	});
 
+	test("fails startup when advisor promptFile is not absolute", async () => {
+		// Purpose: configured advisor prompt files must use absolute paths so startup cannot depend on config-relative or home expansion.
+		// Input and expected output: non-absolute promptFile values cause extension loading to throw.
+		// Edge case: model settings are valid, so the prompt path is the only invalid field.
+		// Dependencies: isolated config file and in-memory ExtensionAPI fake.
+		for (const promptFile of ["advisor.md", "~/advisor.md"]) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeConfig(agentDir, {
+					enabled: true,
+					model: { id: "openai/advisor", thinking: "high" },
+					promptFile,
+				});
+				const pi = createExtensionApiFake();
+
+				expect(() => consultAdvisor(pi)).toThrow(
+					"[consult-advisor] promptFile must be an absolute path",
+				);
+			});
+		}
+	});
+
 	test("uses bundled default advisor prompt when config omits promptFile", async () => {
 		// Purpose: consult-advisor must work without a custom prompt path when the extension bundles a default prompt.
 		// Input and expected output: config with only model settings calls completeSimple with the extension-local advisor prompt.
@@ -853,7 +882,7 @@ describe("consult-advisor", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				model: { id: "openai/advisor", thinking: "high" },
-				promptFile: "advisor.md",
+				promptFile,
 				debugPayloadFile: "payload.json",
 			});
 			const model = createModel("openai", "advisor");
@@ -1739,7 +1768,7 @@ describe("consult-advisor", () => {
 				await writeConfig(agentDir, {
 					enabled: true,
 					model: { id: modelId, thinking: "high" },
-					promptFile: "advisor.md",
+					promptFile: join(agentDir, "config", "advisor.md"),
 				});
 				const completion = createCompletionFake();
 				const pi = createExtensionApiFake();
@@ -1768,7 +1797,7 @@ describe("consult-advisor", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				model: { id: "openai/advisor", thinking: "high" },
-				promptFile: "missing.md",
+				promptFile: join(agentDir, "config", "missing.md"),
 			});
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1789,7 +1818,7 @@ describe("consult-advisor", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				model: { id: "openai/advisor", thinking: "high" },
-				promptFile: "empty.md",
+				promptFile: join(agentDir, "config", "empty.md"),
 			});
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1817,7 +1846,7 @@ describe("consult-advisor", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				model: { id: "openai/advisor", thinking: "extreme" },
-				promptFile: "advisor.md",
+				promptFile: join(agentDir, "config", "advisor.md"),
 			});
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1852,7 +1881,7 @@ describe("consult-advisor", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				model: { id: "openai/advisor", thinking: "off" },
-				promptFile: "advisor.md",
+				promptFile: join(agentDir, "config", "advisor.md"),
 			});
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1877,7 +1906,7 @@ describe("consult-advisor", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				model: { id: "openai/advisor", thinking: "extreme" },
-				promptFile: "advisor.md",
+				promptFile: join(agentDir, "config", "advisor.md"),
 			});
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();

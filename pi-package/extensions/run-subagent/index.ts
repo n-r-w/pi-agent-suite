@@ -1,14 +1,11 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
-import {
-	type ExtensionAPI,
-	type ExtensionContext,
-	getAgentDir,
+import type {
+	ExtensionAPI,
+	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -19,6 +16,7 @@ import {
 	getAgentRuntimeComposition,
 	type MainAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
+import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -57,7 +55,8 @@ const streamJsonParser = requireStreamJson("stream-json/parser.js") as {
 
 const TOOL_NAME = "run_subagent";
 const ISSUE_PREFIX = "[run-subagent]";
-const CONFIG_PATH = join("config", "run-subagent.json");
+const RUN_SUBAGENT_EXTENSION_DIR = "run-subagent";
+const RUN_SUBAGENT_LEGACY_CONFIG_FILE = "run-subagent.json";
 const ENABLED_CONFIG_KEY = "enabled";
 /** Default maximum child-subagent nesting depth when config omits maxDepth. */
 const DEFAULT_MAX_DEPTH = 1;
@@ -779,24 +778,26 @@ async function finishRunSubagentExecution(
 
 /** Reads and validates run-subagent configuration from the isolated pi agent directory. */
 async function readRunSubagentConfig(): Promise<RunSubagentConfig> {
-	let raw: string;
-	try {
-		raw = await readFile(join(getAgentDir(), CONFIG_PATH), "utf8");
-	} catch (error) {
-		if (isFileNotFoundError(error)) {
-			return {
-				enabled: true,
-				maxDepth: DEFAULT_MAX_DEPTH,
-				widgetLineBudget: DEFAULT_WIDGET_LINE_BUDGET,
-			};
-		}
-
-		return invalidConfig(`failed to read config: ${formatError(error)}`);
+	const configFile = await readExtensionConfigFile({
+		extensionDir: RUN_SUBAGENT_EXTENSION_DIR,
+		legacyConfigFileName: RUN_SUBAGENT_LEGACY_CONFIG_FILE,
+	});
+	if (configFile.kind === "missing") {
+		return {
+			enabled: true,
+			maxDepth: DEFAULT_MAX_DEPTH,
+			widgetLineBudget: DEFAULT_WIDGET_LINE_BUDGET,
+		};
+	}
+	if (configFile.kind === "read-error") {
+		return invalidConfig(
+			`failed to read config: ${formatError(configFile.error)}`,
+		);
 	}
 
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(raw);
+		parsed = JSON.parse(configFile.file.content);
 	} catch (error) {
 		return invalidConfig(`failed to parse config: ${formatError(error)}`);
 	}
@@ -2440,14 +2441,4 @@ function isToolCallPart(value: unknown): boolean {
 /** Converts unknown failures into safe diagnostics. */
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-}
-
-/** Returns true when a filesystem error represents a missing config file. */
-function isFileNotFoundError(error: unknown): boolean {
-	if (!isRecord(error)) {
-		return false;
-	}
-
-	const { code } = error;
-	return code === "ENOENT";
 }

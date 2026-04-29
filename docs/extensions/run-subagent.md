@@ -6,7 +6,7 @@
 
 ## Behavior
 
-- Is enabled by default when `run-subagent.json` is missing.
+- Is enabled by default when `config.json` is missing.
 - Registers tool `run_subagent`.
 - Accepts `agentId` and `prompt`.
 - Runs one callable agent per tool call.
@@ -67,7 +67,7 @@
 
 ## Configuration
 
-File: `~/.pi/agent/config/run-subagent.json`.
+File: `~/.pi/agent/agent-suite/run-subagent/config.json`.
 
 ```json
 {

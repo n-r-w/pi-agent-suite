@@ -1,7 +1,12 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { getAgentDir, parseFrontmatter } from "@mariozechner/pi-coding-agent";
+import {
+	getSuiteExtensionDir,
+	isFileNotFoundError,
+} from "./agent-suite-storage";
 
+const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
 const AGENTS_DIR = "agents";
 const AGENT_FILE_EXTENSION = ".md";
 const TOP_LEVEL_KEYS = [
@@ -41,30 +46,80 @@ export interface AgentDefinition {
 
 /** Loads valid agent definitions from the isolated pi agent directory. */
 export async function loadAgentDefinitions(): Promise<AgentDefinition[]> {
-	const agentsDir = join(getAgentDir(), AGENTS_DIR);
-	let entries: string[];
-	try {
-		entries = await readdir(agentsDir);
-	} catch {
+	const agentsDir = await resolveAgentsDir();
+	if (agentsDir === undefined) {
 		return [];
 	}
 
-	const agentEntries = [...entries]
+	const agentEntries = [...agentsDir.entries]
 		.sort()
 		.filter((entry) => entry.endsWith(AGENT_FILE_EXTENSION));
 	const agents = await Promise.all(
-		agentEntries.map((entry) => readAgentDefinition(agentsDir, entry)),
+		agentEntries.map((entry) =>
+			readAgentDefinition(agentsDir.path, entry, agentsDir.source),
+		),
 	);
 	return agents.filter((agent) => agent !== undefined);
+}
+
+/** Resolves suite-owned agent definitions and falls back to the legacy directory only when the suite directory is absent. */
+async function resolveAgentsDir(): Promise<
+	| {
+			readonly path: string;
+			readonly entries: readonly string[];
+			readonly source: "suite" | "legacy";
+	  }
+	| undefined
+> {
+	const suiteAgentsDir = join(
+		getSuiteExtensionDir(AGENT_SELECTION_EXTENSION_DIR),
+		AGENTS_DIR,
+	);
+	try {
+		return {
+			path: suiteAgentsDir,
+			entries: await readdir(suiteAgentsDir),
+			source: "suite",
+		};
+	} catch (error) {
+		if (!isFileNotFoundError(error)) {
+			throw new Error(
+				`failed to read suite agents directory: ${formatError(error)}`,
+			);
+		}
+	}
+
+	const legacyAgentsDir = join(getAgentDir(), AGENTS_DIR);
+	try {
+		return {
+			path: legacyAgentsDir,
+			entries: await readdir(legacyAgentsDir),
+			source: "legacy",
+		};
+	} catch {
+		return undefined;
+	}
 }
 
 /** Reads and parses one agent definition while isolating malformed files. */
 async function readAgentDefinition(
 	agentsDir: string,
 	entry: string,
+	source: "suite" | "legacy",
 ): Promise<AgentDefinition | undefined> {
+	let content: string;
 	try {
-		const content = await readFile(join(agentsDir, entry), "utf8");
+		content = await readFile(join(agentsDir, entry), "utf8");
+	} catch (error) {
+		if (source === "suite") {
+			throw new Error(
+				`failed to read suite agent definition ${entry}: ${formatError(error)}`,
+			);
+		}
+		return undefined;
+	}
+
+	try {
 		return parseAgentDefinition(entry, content);
 	} catch {
 		return undefined;
@@ -205,6 +260,11 @@ function isAgentType(value: unknown): value is AgentType {
 		typeof value === "string" &&
 		(AGENT_TYPES as readonly string[]).includes(value)
 	);
+}
+
+/** Converts unknown filesystem failures to safe diagnostics without exposing raw objects. */
+function formatError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /** Returns true when a runtime value is a supported thinking level. */

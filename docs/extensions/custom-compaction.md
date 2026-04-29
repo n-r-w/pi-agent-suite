@@ -7,8 +7,8 @@
 ## Behavior
 
 - Handles `session_before_compact`.
-- Reads configuration from `~/.pi/agent/config/custom-compaction.json`.
-- Is enabled by default when `custom-compaction.json` is missing.
+- Reads configuration from `~/.pi/agent/agent-suite/custom-compaction/config.json`.
+- Is enabled by default when `config.json` is missing.
 - Uses bundled prompt files when `systemPromptFile`, `historyPromptFile`, `updatePromptFile`, or `turnPrefixPromptFile` is missing.
 - Bundled prompt files live under `pi-package/extensions/custom-compaction/prompts/`.
 - Serializes compacted history into one `<conversation>` block before sending it to the model, so the model summarizes the discarded conversation instead of continuing it.
@@ -16,15 +16,15 @@
 - Uses `historyPromptFile` as the user command when there is no previous summary.
 - Uses `updatePromptFile` as the user command when a previous summary exists.
 - Uses `turnPrefixPromptFile` as the user command in a separate model request when compaction cuts through one turn.
-- Disables custom compaction and creates an issue only for `custom-compaction` when configuration is invalid.
-- Supports three custom prompt path forms: absolute path, `~/` path, and relative path from the directory that contains `custom-compaction.json`.
+- Stops startup when a configured custom prompt file path is not absolute.
+- Disables custom compaction and creates an issue only for `custom-compaction` for other configuration errors.
 - Uses the current session model when `model` is missing.
 - Uses the current thinking level when `reasoning` is missing.
 - Does not read configuration for other extensions.
 
 ## Configuration
 
-File: `~/.pi/agent/config/custom-compaction.json`.
+File: `~/.pi/agent/agent-suite/custom-compaction/config.json`.
 
 ```json
 {
@@ -62,7 +62,7 @@ Tests must verify:
 - successful reading of bundled default prompt files;
 - successful reading of all custom prompt files;
 - custom compaction disablement for an empty custom prompt file;
-- absolute path, `~/` path, and relative path resolution;
-- issue creation only for `custom-compaction` on configuration error;
+- startup failure for non-absolute custom prompt paths;
+- issue creation only for `custom-compaction` on non-path configuration error;
 - model calls through a fake model layer without real models;
 - serialized `<conversation>` requests instead of direct chat-message continuation.
