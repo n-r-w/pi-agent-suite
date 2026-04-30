@@ -64,6 +64,11 @@ export interface CouncilContext extends ExtensionContext {
 	readonly model: Model<Api> | undefined;
 }
 
+export interface ProjectContextFile {
+	readonly path: string;
+	readonly content: string;
+}
+
 export interface ExecuteConveneCouncilOptions {
 	readonly completeSimple: NonNullable<
 		ConveneCouncilDependencies["completeSimple"]
@@ -74,6 +79,7 @@ export interface ExecuteConveneCouncilOptions {
 	readonly ctx: CouncilContext;
 	readonly currentThinkingLevel: unknown;
 	readonly loadedSkillRoots: readonly string[];
+	readonly contextFiles: readonly ProjectContextFile[];
 }
 
 export interface ParticipantState {
@@ -81,7 +87,7 @@ export interface ParticipantState {
 	readonly history: readonly Message[];
 	readonly runtime: ParticipantRuntime;
 	readonly reviewedOpponent: boolean;
-	readonly latest?: ParticipantDiscussionResponse;
+	readonly latest?: ParticipantOpinion;
 }
 
 export interface CouncilIssue {
@@ -89,16 +95,36 @@ export interface CouncilIssue {
 	readonly message: string;
 }
 
-export interface ParticipantDiscussionResponse {
-	readonly status: ParticipantStatus;
+export interface ParticipantOpinion {
 	readonly opinion: string;
+	readonly status?: ParticipantStatus;
+}
+
+export interface ParticipantDiscussionResponse extends ParticipantOpinion {
+	readonly status: ParticipantStatus;
 }
 
 export interface AcceptedParticipantResponse {
-	readonly response: ParticipantDiscussionResponse;
+	readonly response: ParticipantOpinion;
 	readonly assistantMessage: AssistantMessage;
 	readonly taskMessage: Message;
 }
+
+export interface PlainParticipantRequestOptions {
+	readonly participant: ParticipantState;
+	readonly task: string;
+	readonly config: ConveneCouncilConfig;
+	readonly completeSimple: NonNullable<
+		ConveneCouncilDependencies["completeSimple"]
+	>;
+	readonly signal: AbortSignal | undefined;
+	readonly contextFiles: readonly ProjectContextFile[];
+}
+
+export type InitialOpinionRequestOptions = PlainParticipantRequestOptions;
+
+export type MissingInformationResponseRequestOptions =
+	PlainParticipantRequestOptions;
 
 export interface ParticipantRequestOptions {
 	readonly participant: ParticipantState;
@@ -109,6 +135,7 @@ export interface ParticipantRequestOptions {
 		ConveneCouncilDependencies["completeSimple"]
 	>;
 	readonly signal: AbortSignal | undefined;
+	readonly contextFiles: readonly ProjectContextFile[];
 }
 
 export interface FinalAnswerRequestOptions {
@@ -119,4 +146,5 @@ export interface FinalAnswerRequestOptions {
 		ConveneCouncilDependencies["completeSimple"]
 	>;
 	readonly signal: AbortSignal | undefined;
+	readonly contextFiles: readonly ProjectContextFile[];
 }

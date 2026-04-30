@@ -12,8 +12,8 @@ import {
 	parseParticipantResponse,
 } from "./parser";
 import {
-	buildFinalAnswerRepairInstruction,
 	buildFinalAnswerSystemPrompt,
+	buildInitialParticipantSystemPrompt,
 	buildParticipantRepairInstruction,
 	buildParticipantSystemPrompt,
 	createTaskMessage,
@@ -24,10 +24,81 @@ import type {
 	ConveneCouncilDependencies,
 	CouncilIssue,
 	FinalAnswerRequestOptions,
+	InitialOpinionRequestOptions,
+	MissingInformationResponseRequestOptions,
 	ParticipantRequestOptions,
 	ParticipantRuntime,
 	ParticipantState,
+	PlainParticipantRequestOptions,
+	ProjectContextFile,
 } from "./types";
+
+/** Requests one first-turn free-form participant opinion with response-defect retries. */
+export function requestInitialOpinion(
+	options: InitialOpinionRequestOptions,
+): Promise<AcceptedParticipantResponse | CouncilIssue> {
+	return requestPlainParticipantResponse(
+		options,
+		0,
+		`${options.participant.id} returned an unusable initial opinion.`,
+	);
+}
+
+/** Requests one free-form missing-information clarification with response-defect retries. */
+export function requestMissingInformationResponse(
+	options: MissingInformationResponseRequestOptions,
+): Promise<AcceptedParticipantResponse | CouncilIssue> {
+	return requestPlainParticipantResponse(
+		options,
+		0,
+		`${options.participant.id} returned an unusable clarification.`,
+	);
+}
+
+/** Executes one free-form participant attempt and recurses only when repair is allowed. */
+async function requestPlainParticipantResponse(
+	options: PlainParticipantRequestOptions,
+	attempt: number,
+	failureMessage: string,
+): Promise<AcceptedParticipantResponse | CouncilIssue> {
+	const { participant, task, config, completeSimple, signal, contextFiles } =
+		options;
+	if (attempt > config.responseDefectRetries) {
+		return logicalIssue(failureMessage);
+	}
+
+	const taskMessage = createTaskMessage(task);
+	const context = buildPlainParticipantContext(
+		participant,
+		taskMessage,
+		contextFiles,
+	);
+	if (!doesInputFitContextWindow(context, participant.runtime.model)) {
+		return toolErrorIssue(COUNCIL_CONTEXT_TOO_LARGE_ERROR);
+	}
+
+	const providerResult = await callProviderWithRetries({
+		completeSimple,
+		runtime: participant.runtime,
+		context,
+		config,
+		signal,
+	});
+	if ("kind" in providerResult) {
+		return providerResult;
+	}
+
+	const opinion = getAssistantText(providerResult.message);
+	if (opinion.length > 0) {
+		return {
+			response: { opinion },
+			assistantMessage: providerResult.message,
+			taskMessage,
+		};
+	}
+
+	return requestPlainParticipantResponse(options, attempt + 1, failureMessage);
+}
 
 /** Requests one structured participant discussion response with response-defect repair retries. */
 export function requestParticipantDiscussion(
@@ -41,7 +112,8 @@ async function requestParticipantDiscussionAttempt(
 	options: ParticipantRequestOptions,
 	attempt: number,
 ): Promise<AcceptedParticipantResponse | CouncilIssue> {
-	const { participant, task, config, completeSimple, signal } = options;
+	const { participant, task, config, completeSimple, signal, contextFiles } =
+		options;
 	if (attempt > config.responseDefectRetries) {
 		return logicalIssue(
 			`${participant.id} returned unusable participant output.`,
@@ -51,7 +123,11 @@ async function requestParticipantDiscussionAttempt(
 	const taskMessage = createTaskMessage(
 		attempt === 0 ? task : `${task}\n\n${buildParticipantRepairInstruction()}`,
 	);
-	const context = buildParticipantContext(participant, taskMessage);
+	const context = buildParticipantContext(
+		participant,
+		taskMessage,
+		contextFiles,
+	);
 	if (!doesInputFitContextWindow(context, participant.runtime.model)) {
 		return toolErrorIssue(COUNCIL_CONTEXT_TOO_LARGE_ERROR);
 	}
@@ -95,15 +171,18 @@ async function requestFinalAnswerAttempt(
 	options: FinalAnswerRequestOptions,
 	attempt: number,
 ): Promise<{ readonly answer: string } | CouncilIssue> {
-	const { participant, task, config, completeSimple, signal } = options;
+	const { participant, task, config, completeSimple, signal, contextFiles } =
+		options;
 	if (attempt > config.responseDefectRetries) {
 		return logicalIssue("Council returned an unusable final answer.");
 	}
 
-	const taskMessage = createTaskMessage(
-		attempt === 0 ? task : `${task}\n\n${buildFinalAnswerRepairInstruction()}`,
+	const taskMessage = createTaskMessage(task);
+	const context = buildFinalAnswerContext(
+		participant,
+		taskMessage,
+		contextFiles,
 	);
-	const context = buildFinalAnswerContext(participant, taskMessage);
 	if (!doesInputFitContextWindow(context, participant.runtime.model)) {
 		return toolErrorIssue(COUNCIL_CONTEXT_TOO_LARGE_ERROR);
 	}
@@ -209,9 +288,23 @@ async function waitForRetryDelay(
 function buildFinalAnswerContext(
 	participant: ParticipantState,
 	taskMessage: Message,
+	contextFiles: readonly ProjectContextFile[],
 ): Context {
 	return {
-		systemPrompt: buildFinalAnswerSystemPrompt(),
+		systemPrompt: buildFinalAnswerSystemPrompt(contextFiles),
+		messages: [...participant.history, taskMessage],
+		tools: [],
+	};
+}
+
+/** Builds one free-form participant context without structured output rules. */
+function buildPlainParticipantContext(
+	participant: ParticipantState,
+	taskMessage: Message,
+	contextFiles: readonly ProjectContextFile[],
+): Context {
+	return {
+		systemPrompt: buildInitialParticipantSystemPrompt(contextFiles),
 		messages: [...participant.history, taskMessage],
 		tools: [],
 	};
@@ -221,9 +314,10 @@ function buildFinalAnswerContext(
 function buildParticipantContext(
 	participant: ParticipantState,
 	taskMessage: Message,
+	contextFiles: readonly ProjectContextFile[],
 ): Context {
 	return {
-		systemPrompt: buildParticipantSystemPrompt(participant.id),
+		systemPrompt: buildParticipantSystemPrompt(contextFiles),
 		messages: [...participant.history, taskMessage],
 		tools: [],
 	};

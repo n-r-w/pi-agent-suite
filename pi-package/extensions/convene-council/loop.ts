@@ -8,9 +8,15 @@ import {
 	buildFinalAnswerTask,
 	buildInitialOpinionTask,
 	buildMissingInformationResponseTask,
+	buildNoConsensusResult,
 	buildOpinionReviewTask,
 } from "./prompts";
-import { requestFinalAnswer, requestParticipantDiscussion } from "./provider";
+import {
+	requestFinalAnswer,
+	requestInitialOpinion,
+	requestMissingInformationResponse,
+	requestParticipantDiscussion,
+} from "./provider";
 import { resolveCouncilRuntime } from "./runtime";
 import { formatToolOutput } from "./tool-output";
 import type {
@@ -21,7 +27,6 @@ import type {
 	ExecuteConveneCouncilOptions,
 	ParticipantState,
 } from "./types";
-import { escapeXmlText } from "./xml";
 
 /** Executes the bounded two-participant council loop. */
 export async function executeConveneCouncil({
@@ -32,6 +37,7 @@ export async function executeConveneCouncil({
 	ctx,
 	currentThinkingLevel,
 	loadedSkillRoots,
+	contextFiles,
 }: ExecuteConveneCouncilOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readConveneCouncilConfig();
 	if ("disabled" in configResult) {
@@ -52,7 +58,6 @@ export async function executeConveneCouncil({
 
 	const baseMessages = await buildBaseCouncilMessages({
 		ctx,
-		question: params.question,
 		toolCallId,
 		loadedSkillRoots,
 	});
@@ -72,6 +77,7 @@ export async function executeConveneCouncil({
 		completeSimple,
 		signal,
 		ctx,
+		contextFiles,
 		remainingIterations: configResult.config.participantIterationLimit,
 	});
 }
@@ -164,26 +170,26 @@ function needsMutualMissingInfo(
 
 /** Runs the first participant iteration where no opponent opinion exists yet. */
 async function runInitialPair(options: PairOptions): Promise<PairResult> {
-	const llm1Result = await requestParticipantDiscussion({
+	const llm1Result = await requestInitialOpinion({
 		participant: options.llm1,
 		task: buildInitialOpinionTask(options.question),
-		requiredStatus: "NEED_INFO",
 		config: options.config,
 		completeSimple: options.completeSimple,
 		signal: options.signal,
+		contextFiles: options.contextFiles,
 	});
 	if ("kind" in llm1Result) {
 		return llm1Result;
 	}
 	const llm1 = applyParticipantResponse(options.llm1, llm1Result, false);
 
-	const llm2Result = await requestParticipantDiscussion({
+	const llm2Result = await requestInitialOpinion({
 		participant: options.llm2,
 		task: buildInitialOpinionTask(options.question),
-		requiredStatus: "NEED_INFO",
 		config: options.config,
 		completeSimple: options.completeSimple,
 		signal: options.signal,
+		contextFiles: options.contextFiles,
 	});
 	if ("kind" in llm2Result) {
 		return llm2Result;
@@ -202,13 +208,11 @@ async function runOpinionExchangePair(
 ): Promise<PairResult> {
 	const llm1Result = await requestParticipantDiscussion({
 		participant: options.llm1,
-		task: buildOpinionReviewTask(
-			options.question,
-			requireLatestOpinion(options.llm2),
-		),
+		task: buildOpinionReviewTask(requireLatestOpinion(options.llm2)),
 		config: options.config,
 		completeSimple: options.completeSimple,
 		signal: options.signal,
+		contextFiles: options.contextFiles,
 	});
 	if ("kind" in llm1Result) {
 		return llm1Result;
@@ -217,10 +221,11 @@ async function runOpinionExchangePair(
 
 	const llm2Result = await requestParticipantDiscussion({
 		participant: options.llm2,
-		task: buildOpinionReviewTask(options.question, requireLatestOpinion(llm1)),
+		task: buildOpinionReviewTask(requireLatestOpinion(llm1)),
 		config: options.config,
 		completeSimple: options.completeSimple,
 		signal: options.signal,
+		contextFiles: options.contextFiles,
 	});
 	if ("kind" in llm2Result) {
 		return llm2Result;
@@ -321,16 +326,13 @@ async function answerMissingInformation(
 	participant: ParticipantState,
 	missingInformationRequest: string,
 ): Promise<ParticipantUpdateResult> {
-	const responseResult = await requestParticipantDiscussion({
+	const responseResult = await requestMissingInformationResponse({
 		participant,
-		task: buildMissingInformationResponseTask(
-			options.question,
-			missingInformationRequest,
-		),
-		requiredStatus: "DIFF",
+		task: buildMissingInformationResponseTask(missingInformationRequest),
 		config: options.config,
 		completeSimple: options.completeSimple,
 		signal: options.signal,
+		contextFiles: options.contextFiles,
 	});
 	return "kind" in responseResult
 		? responseResult
@@ -351,10 +353,11 @@ async function reviewClarification(
 ): Promise<ParticipantUpdateResult> {
 	const reviewResult = await requestParticipantDiscussion({
 		participant,
-		task: buildClarificationReviewTask(options.question, clarification),
+		task: buildClarificationReviewTask(clarification),
 		config: options.config,
 		completeSimple: options.completeSimple,
 		signal: options.signal,
+		contextFiles: options.contextFiles,
 	});
 	return "kind" in reviewResult
 		? reviewResult
@@ -412,14 +415,11 @@ async function finishAgreedCouncil(
 			: options.llm2;
 	const finalResult = await requestFinalAnswer({
 		participant: finalParticipant,
-		task: buildFinalAnswerTask(
-			options.question,
-			requireLatestOpinion(options.llm1),
-			requireLatestOpinion(options.llm2),
-		),
+		task: buildFinalAnswerTask(),
 		config: options.config,
 		completeSimple: options.completeSimple,
 		signal: options.signal,
+		contextFiles: options.contextFiles,
 	});
 	if ("kind" in finalResult) {
 		return handleCouncilIssue(options.ctx, finalResult);
@@ -437,7 +437,7 @@ function finishWithoutAgreement(
 	}
 
 	return formatToolOutput(
-		`<answer1>${escapeXmlText(llm1.latest.opinion)}</answer1><answer2>${escapeXmlText(llm2.latest.opinion)}</answer2>`,
+		buildNoConsensusResult(llm1.latest.opinion, llm2.latest.opinion),
 	);
 }
 
@@ -477,6 +477,7 @@ interface PairOptions {
 	readonly config: ConveneCouncilConfig;
 	readonly completeSimple: CompleteSimple;
 	readonly signal: AbortSignal | undefined;
+	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
 }
 
 type PairResult =

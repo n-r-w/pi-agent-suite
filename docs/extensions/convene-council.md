@@ -18,18 +18,21 @@ Use it when a high-impact question benefits from two model participants comparin
 - Builds one base transcript from active branch conversation messages.
 - Replays recorded `context-projection` placeholders or summaries before participant calls.
 - Removes the pending `convene_council` tool call from participant transcripts.
-- Appends the council question as a user message before participant-specific tasks.
-- Gives LLM1 and LLM2 equivalent initial context and the same question.
+- Gives LLM1 and LLM2 equivalent base context.
+- Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to participant system prompts.
+- Sends the council question through the first-turn task prompt.
+- Uses a first-turn participant system prompt without structured output rules.
 - Sends participant contexts with `tools: []`.
-- Requires participant discussion responses as `<status>{AGREE|DIFF|NEED_INFO}</status><opinion>{text}</opinion>`.
+- Accepts first-turn participant opinions as non-empty text.
+- Requires later participant discussion responses as `<status>{AGREE|DIFF|NEED_INFO}</status><opinion>{text}</opinion>`.
 - Retries malformed participant responses using `responseDefectRetries`.
 - Retries defective final answers using `responseDefectRetries`.
 - Retries provider request failures using `providerRequestRetries` and `providerRetryDelayMs`.
 - Counts one participant iteration only after both LLM1 and LLM2 return accepted discussion responses.
 - Stops when both participants report `AGREE` after reviewing an opponent opinion.
 - Stops when `participantIterationLimit` is reached.
-- Requests a plain final answer from `finalAnswerParticipant` after agreement.
-- Returns `<answer1>...</answer1><answer2>...</answer2>` when the iteration limit is reached without agreement.
+- Requests the final answer from `finalAnswerParticipant` after agreement.
+- Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
 - Applies Pi-style output truncation to large tool results and writes the full result to a system temp file.
 - Stores only truncation details when output is truncated.
 - Publishes prompt guidance through `Agent Runtime Composition` only when `convene_council` is active for the current effective agent.
@@ -99,15 +102,24 @@ Allowed thinking values:
 
 ## Output
 
-Agreement output is the plain final answer from the configured final answer participant.
+Agreement output is the final answer from the configured final answer participant.
 
 Non-agreement output is:
 
 ```xml
-<answer1>latest LLM1 opinion</answer1><answer2>latest LLM2 opinion</answer2>
+<result>
+Consensus was not reached.
+<answer1> and <answer2> contain two different opinions.
+</result>
+<answer1>
+latest LLM1 opinion
+</answer1>
+<answer2>
+latest LLM2 opinion
+</answer2>
 ```
 
-The ordinary tool response does not include stop reason, iteration count, retry count, participant statuses, or raw discussion history.
+The no-agreement output text is generated from `pi-package/extensions/convene-council/prompts/no-consensus-result.md`. The ordinary tool response does not include iteration count, retry count, participant statuses, or raw discussion history.
 
 ## Verification
 

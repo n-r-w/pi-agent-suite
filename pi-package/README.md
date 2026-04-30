@@ -36,7 +36,7 @@ Use `context-projection` for long tool-heavy sessions. With suitable thresholds 
 
 `consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, uses the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
 
-`convene-council` uses the same active branch context pattern, then gives LLM1 and LLM2 equivalent initial context and the same question. The participants exchange structured opinions until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
+`convene-council` uses the same active branch context pattern, then gives LLM1 and LLM2 equivalent base context, Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md`, and the same initial question task. The participants provide free-form first opinions, then exchange structured review responses until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
 
 ## How to connect to pi
 
@@ -461,9 +461,10 @@ How it works:
 - Builds one base request from the active conversation branch.
 - Replays recorded `context-projection` placeholders or summaries when projection is active.
 - Removes the pending `convene_council` tool call from participant requests.
-- Sends equivalent initial context and the same question to LLM1 and LLM2.
-- Requires participant discussion responses in `<status>...</status><opinion>...</opinion>` format.
+- Sends equivalent base context, Pi-loaded context files, and the same initial question task to LLM1 and LLM2.
+- Accepts first-turn participant opinions as non-empty text.
+- Requires later participant discussion responses in `<status>...</status><opinion>...</opinion>` format.
 - Stops when both participants report `AGREE` after reviewing the opponent or when the iteration limit is reached.
-- Requests a plain final answer from the configured final answer participant after agreement.
-- Returns `<answer1>...</answer1><answer2>...</answer2>` when the iteration limit is reached without agreement.
+- Requests the final answer from the configured final answer participant after agreement.
+- Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
 - Saves very large answers to a temporary file and returns a short result with the file path.

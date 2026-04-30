@@ -2,11 +2,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Message } from "@mariozechner/pi-ai";
-import type { ParticipantId } from "./types";
+import type { ProjectContextFile } from "./types";
 import { escapeXmlText } from "./xml";
 
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "prompts");
 const PARTICIPANT_SYSTEM_PROMPT = readPromptFile("participant-system.md");
+const INITIAL_PARTICIPANT_SYSTEM_PROMPT = readPromptFile(
+	"initial-participant-system.md",
+);
 const FINAL_ANSWER_SYSTEM_PROMPT = readPromptFile("final-answer-system.md");
 const INITIAL_OPINION_PROMPT = readPromptFile("initial-opinion.md");
 const OPINION_REVIEW_PROMPT = readPromptFile("opinion-review.md");
@@ -16,77 +19,70 @@ const MISSING_INFORMATION_RESPONSE_PROMPT = readPromptFile(
 const CLARIFICATION_REVIEW_PROMPT = readPromptFile("clarification-review.md");
 const FINAL_ANSWER_PROMPT = readPromptFile("final-answer.md");
 const PARTICIPANT_REPAIR_PROMPT = readPromptFile("participant-repair.md");
-const FINAL_ANSWER_REPAIR_PROMPT = readPromptFile("final-answer-repair.md");
+const NO_CONSENSUS_RESULT_PROMPT = readPromptFile("no-consensus-result.md");
 const RUNTIME_GUIDANCE_PROMPT = readPromptFile("runtime-guidance.md");
 
-/** Builds the stable system prompt for one participant. */
+/** Builds the strict system prompt for structured participant discussion turns. */
 export function buildParticipantSystemPrompt(
-	participantId: ParticipantId,
+	contextFiles: readonly ProjectContextFile[] = [],
 ): string {
-	return renderTemplate(PARTICIPANT_SYSTEM_PROMPT, { participantId });
+	return appendProjectContext(PARTICIPANT_SYSTEM_PROMPT, contextFiles);
+}
+
+/** Builds the first-turn participant system prompt without structured output rules. */
+export function buildInitialParticipantSystemPrompt(
+	contextFiles: readonly ProjectContextFile[] = [],
+): string {
+	return appendProjectContext(INITIAL_PARTICIPANT_SYSTEM_PROMPT, contextFiles);
 }
 
 /** Builds the plain-text system prompt for final-answer generation. */
-export function buildFinalAnswerSystemPrompt(): string {
-	return FINAL_ANSWER_SYSTEM_PROMPT;
+export function buildFinalAnswerSystemPrompt(
+	contextFiles: readonly ProjectContextFile[] = [],
+): string {
+	return appendProjectContext(FINAL_ANSWER_SYSTEM_PROMPT, contextFiles);
 }
 
-/** Builds the first-turn task that requires an initial NEED_INFO status. */
+/** Builds the first-turn task with the original question. */
 export function buildInitialOpinionTask(question: string): string {
 	return renderTemplate(INITIAL_OPINION_PROMPT, { question });
 }
 
 /** Builds a normal opponent-opinion review task. */
-export function buildOpinionReviewTask(
-	question: string,
-	opponentOpinion: string,
-): string {
-	return renderTemplate(OPINION_REVIEW_PROMPT, { question, opponentOpinion });
+export function buildOpinionReviewTask(opponentOpinion: string): string {
+	return renderTemplate(OPINION_REVIEW_PROMPT, { opponentOpinion });
 }
 
 /** Builds a task for answering the opponent's missing-information request. */
 export function buildMissingInformationResponseTask(
-	question: string,
 	missingInformationRequest: string,
 ): string {
 	return renderTemplate(MISSING_INFORMATION_RESPONSE_PROMPT, {
-		question,
 		missingInformationRequest,
 	});
 }
 
 /** Builds a task for reviewing an opponent clarification response. */
-export function buildClarificationReviewTask(
-	question: string,
-	clarification: string,
-): string {
-	return renderTemplate(CLARIFICATION_REVIEW_PROMPT, {
-		question,
-		clarification,
-	});
+export function buildClarificationReviewTask(clarification: string): string {
+	return renderTemplate(CLARIFICATION_REVIEW_PROMPT, { clarification });
 }
 
 /** Builds the final-answer task after both participants have agreed. */
-export function buildFinalAnswerTask(
-	question: string,
-	llm1Opinion: string,
-	llm2Opinion: string,
+export function buildFinalAnswerTask(): string {
+	return FINAL_ANSWER_PROMPT;
+}
+
+/** Builds the no-consensus tool result from the latest participant opinions. */
+export function buildNoConsensusResult(
+	answer1: string,
+	answer2: string,
 ): string {
-	return renderTemplate(FINAL_ANSWER_PROMPT, {
-		question,
-		llm1Opinion,
-		llm2Opinion,
-	});
+	return renderTemplate(NO_CONSENSUS_RESULT_PROMPT, { answer1, answer2 });
 }
 
 /** Builds a repair instruction for malformed participant discussion responses. */
 export function buildParticipantRepairInstruction(): string {
 	return PARTICIPANT_REPAIR_PROMPT;
-}
-
-/** Builds a repair instruction for defective final answers. */
-export function buildFinalAnswerRepairInstruction(): string {
-	return FINAL_ANSWER_REPAIR_PROMPT;
 }
 
 /** Returns the tool-gated system prompt guidance for the main agent. */
@@ -102,6 +98,21 @@ export function createTaskMessage(task: string): Message {
 /** Reads one bundled prompt file and trims trailing file whitespace. */
 function readPromptFile(fileName: string): string {
 	return readFileSync(join(PROMPTS_DIR, fileName), "utf8").trim();
+}
+
+/** Appends Pi-loaded project context files to one council system prompt. */
+function appendProjectContext(
+	systemPrompt: string,
+	contextFiles: readonly ProjectContextFile[],
+): string {
+	if (contextFiles.length === 0) {
+		return systemPrompt;
+	}
+
+	const projectContext = contextFiles
+		.map(({ path, content }) => `## ${path}\n\n${content}`)
+		.join("\n\n");
+	return `${systemPrompt}\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n${projectContext}`;
 }
 
 /** Replaces named prompt variables without adding runtime prompt logic elsewhere. */

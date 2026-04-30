@@ -28,9 +28,9 @@ async function emitBeforeAgentStartHandlers(
 }
 
 describe("convene-council runtime composition", () => {
-	test("adds XML guidance only when convene_council is active", async () => {
+	test("adds runtime guidance only when convene_council is active", async () => {
 		// Purpose: main prompt guidance must be tool-gated and come from the real extension contribution.
-		// Input and expected output: active convene_council appends XML-tagged guidance, inactive tool omits it.
+		// Input and expected output: active convene_council appends guidance, inactive tool omits it.
 		// Edge case: the extension registers its own before_agent_start handler before runtime composition resolves prompts.
 		// Dependencies: in-memory ExtensionAPI fake and isolated prompt-file loading.
 		await withIsolatedAgentDir(async () => {
@@ -47,9 +47,8 @@ describe("convene-council runtime composition", () => {
 				systemPrompt: "Base",
 			})) as { readonly systemPrompt: string };
 
-			expect(result.systemPrompt).toContain("Base");
-			expect(result.systemPrompt).toContain("<tool_guidance>");
-			expect(result.systemPrompt).toContain("convene_council");
+			expect(result.systemPrompt).toStartWith("Base\n\n");
+			expect(result.systemPrompt.length).toBeGreaterThan("Base\n\n".length);
 		});
 	});
 

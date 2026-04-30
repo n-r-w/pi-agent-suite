@@ -15,6 +15,7 @@ import type {
 	ConveneCouncilDependencies,
 	ConveneCouncilParams,
 	CouncilContext,
+	ProjectContextFile,
 } from "./types";
 
 const ConveneCouncilParameters = Type.Object(
@@ -40,9 +41,11 @@ export default function conveneCouncil(
 
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	let loadedSkillRoots: readonly string[] = [];
+	let contextFiles: readonly ProjectContextFile[] = [];
 
 	pi.on("before_agent_start", (event) => {
 		loadedSkillRoots = collectLoadedSkillRoots(event);
+		contextFiles = event.systemPromptOptions?.contextFiles ?? [];
 	});
 
 	if (registrationState.kind === "enabled") {
@@ -68,6 +71,7 @@ export default function conveneCouncil(
 				ctx: ctx as CouncilContext,
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
+				contextFiles,
 			});
 		},
 	});

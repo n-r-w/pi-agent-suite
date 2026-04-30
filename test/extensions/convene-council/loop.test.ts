@@ -20,26 +20,68 @@ import {
 } from "./support/messages";
 import { createModel } from "./support/models";
 import { stripMessageTimestamps } from "./support/normalize";
-import { finalAnswer, participantResponse } from "./support/responses";
+import {
+	finalAnswer,
+	initialOpinion,
+	participantResponse,
+} from "./support/responses";
 import { executeCouncil } from "./support/tool";
+
+const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
+const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
+
+function expectNoConsensusResult(
+	text: string,
+	answer1: string,
+	answer2: string,
+): void {
+	expect(text).toStartWith("<result>\n");
+	expect(text).toContain("\n</result>");
+	expect(text.match(ANSWER1_BLOCK_PATTERN)?.[1]).toBe(answer1);
+	expect(text.match(ANSWER2_BLOCK_PATTERN)?.[1]).toBe(answer2);
+}
+
+async function emitContextFiles(
+	pi: ReturnType<typeof createExtensionApiFake>,
+): Promise<void> {
+	for (const handler of pi.handlers
+		.filter((item) => item.eventName === "before_agent_start")
+		.map((item) => item.handler)) {
+		if (typeof handler !== "function") {
+			continue;
+		}
+		await handler({
+			systemPrompt: "Base",
+			systemPromptOptions: {
+				contextFiles: [
+					{
+						path: "/tmp/project/AGENTS.md",
+						content: "Project rule: use the project validation scripts.",
+					},
+				],
+			},
+		});
+	}
+}
 
 describe("convene-council loop", () => {
 	test("uses equivalent initial context and returns final answer from llm2 by default", async () => {
-		// Purpose: both participants must start from the same caller context and question before discussion.
-		// Input and expected output: two initial NEED_INFO answers, two AGREE reviews, then a plain final answer from LLM2.
-		// Edge case: initial NEED_INFO does not stop or ask for clarification.
+		// Purpose: both participants must start from the same caller context and receive the same initial question task.
+		// Input and expected output: two initial participant answers, two AGREE reviews, then a plain final answer from LLM2.
+		// Edge case: the question belongs to the initial task message, not the replayed base history.
 		// Dependencies: fake model calls and a branch containing the pending tool call.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final council answer"),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			await emitContextFiles(pi);
 			const entries = [
 				messageEntry("01", userMessage("caller context"), null),
 				messageEntry("02", councilToolCallMessage(), "01"),
@@ -53,22 +95,44 @@ describe("convene-council loop", () => {
 				details: undefined,
 			});
 			expect(completion.calls).toHaveLength(5);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"/tmp/project/AGENTS.md",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"Project rule: use the project validation scripts.",
+			);
+			expect(completion.calls[2]?.context.systemPrompt).toContain(
+				"/tmp/project/AGENTS.md",
+			);
+			expect(completion.calls[2]?.context.systemPrompt).toContain(
+				"Project rule: use the project validation scripts.",
+			);
+			expect(completion.calls[4]?.context.systemPrompt).toContain(
+				"/tmp/project/AGENTS.md",
+			);
+			expect(completion.calls[4]?.context.systemPrompt).toContain(
+				"Project rule: use the project validation scripts.",
+			);
 			expect(
 				stripMessageTimestamps(completion.calls[0]?.context.messages),
 			).toEqual(stripMessageTimestamps(completion.calls[1]?.context.messages));
-			expect(JSON.stringify(completion.calls[0]?.context)).toContain(
+			const firstMessages = completion.calls[0]?.context.messages ?? [];
+			expect(firstMessages.at(-1)?.content).toContain("What should we do?");
+			expect(JSON.stringify(firstMessages.slice(0, -1))).not.toContain(
 				"What should we do?",
 			);
 			expect(JSON.stringify(completion.calls[0]?.context)).not.toContain(
 				"convene_council",
 			);
+			expect(completion.calls[0]?.context.systemPrompt).not.toContain(
+				"<status>",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).not.toContain(
+				"<opinion>",
+			);
+			expect(completion.calls[2]?.context.systemPrompt).toContain("<status>");
+			expect(completion.calls[2]?.context.systemPrompt).toContain("<opinion>");
 			expect(completion.calls[4]?.model).toBe(model);
-			expect(completion.calls[4]?.context.systemPrompt).not.toContain(
-				"Return exactly: <status>",
-			);
-			expect(completion.calls[4]?.context.systemPrompt).toContain(
-				"Return plain visible text only.",
-			);
 		});
 	});
 
@@ -87,8 +151,8 @@ describe("convene-council loop", () => {
 			const llm1Model = createModel("provider-a", "model-a");
 			const llm2Model = createModel("provider-b", "model-b");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("llm1 final answer"),
@@ -130,15 +194,15 @@ describe("convene-council loop", () => {
 	});
 
 	test("returns the two latest opinions when the iteration limit is reached without agreement", async () => {
-		// Purpose: non-converged discussion must stop at the configured iteration limit and return only answer tags.
+		// Purpose: non-converged discussion must stop at the configured iteration limit and return the no-consensus result.
 		// Input and expected output: default limit allows three participant iterations and returns latest opinions.
 		// Edge case: no final answer model call is made after the limit is reached.
 		// Dependencies: fake participant responses only.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("DIFF", "llm1 second"),
 				participantResponse("DIFF", "llm2 second"),
 				participantResponse("DIFF", "llm1 latest"),
@@ -150,15 +214,15 @@ describe("convene-council loop", () => {
 
 			const result = await executeCouncil(pi, ctx, "Compare approaches");
 
-			expect(result).toEqual({
-				content: [
-					{
-						type: "text",
-						text: "<answer1>llm1 latest</answer1><answer2>llm2 latest</answer2>",
-					},
-				],
-				details: undefined,
-			});
+			expect(result.details).toBeUndefined();
+			expect(result.content[0]?.type).toBe("text");
+			if (result.content[0]?.type === "text") {
+				expectNoConsensusResult(
+					result.content[0].text,
+					"llm1 latest",
+					"llm2 latest",
+				);
+			}
 			expect(completion.calls).toHaveLength(6);
 		});
 	});
@@ -177,8 +241,8 @@ describe("convene-council loop", () => {
 			const currentModel = createModel("openai", "main-model");
 			const llm2Model = createModel("provider-b", "model-b");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final answer"),
@@ -215,8 +279,8 @@ describe("convene-council loop", () => {
 			await writeProjectionConfig(agentDir, { enabled: true });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final council answer"),
@@ -259,11 +323,11 @@ describe("convene-council loop", () => {
 			await writeConfig(agentDir, { participantIterationLimit: 4 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("NEED_INFO", "need details from llm2"),
 				participantResponse("DIFF", "llm2 reviewed need"),
-				participantResponse("DIFF", "llm2 gives details"),
+				initialOpinion("llm2 gives details"),
 				participantResponse("AGREE", "llm1 accepts details"),
 				participantResponse("AGREE", "llm1 reviews after details"),
 				participantResponse("AGREE", "llm2 reviews after details"),
@@ -282,60 +346,61 @@ describe("convene-council loop", () => {
 				completion.calls[4]?.context.messages.at(-1),
 			);
 			expect(clarificationTask).toContain("need details from llm2");
-			expect(clarificationTask).toContain("Use <status>DIFF</status>");
-			expect(clarificationTask).toContain("does not count as agreement");
+			expect(clarificationTask).not.toContain("<status>");
+			expect(clarificationTask).not.toContain("<opinion>");
 			expect(JSON.stringify(completion.calls[5]?.context)).toContain(
 				"llm2 gives details",
 			);
 		});
 	});
 
-	test("rejects missing-information responses that are not DIFF", async () => {
-		// Purpose: clarification responders must use DIFF so clarification does not masquerade as agreement.
-		// Input and expected output: AGREE in a missing-information response is rejected as unusable output.
-		// Edge case: the same AGREE status remains valid in later clarification review, not in the response itself.
-		// Dependencies: suite config and fake queued participant responses.
+	test("accepts free-form missing-information responses before structured clarification review", async () => {
+		// Purpose: missing-information answers are clarifications, not agreement decisions.
+		// Input and expected output: statusless clarification is accepted, then the requester decides AGREE in structured review.
+		// Edge case: clarification itself does not count as reviewed agreement.
+		// Dependencies: fake queued participant responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				participantIterationLimit: 4,
-				responseDefectRetries: 0,
-				providerRequestRetries: 0,
-			});
+			await writeConfig(agentDir, { participantIterationLimit: 4 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("NEED_INFO", "need details from llm2"),
 				participantResponse("DIFF", "llm2 reviewed need"),
-				participantResponse("AGREE", "llm2 invalid clarification"),
+				initialOpinion("llm2 clarification without status"),
+				participantResponse("AGREE", "llm1 accepts clarification"),
+				participantResponse("AGREE", "llm1 reviews after clarification"),
+				participantResponse("AGREE", "llm2 reviews after clarification"),
+				finalAnswer("final after statusless clarification"),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
 			const ctx = createContext([model]);
 
-			const result = await executeCouncil(pi, ctx, "Strict clarification");
+			const result = await executeCouncil(pi, ctx, "Statusless clarification");
 
 			expect(result.content).toEqual([
-				{
-					type: "text",
-					text: "llm2 returned unusable participant output.",
-				},
+				{ type: "text", text: "final after statusless clarification" },
 			]);
-			expect(completion.calls).toHaveLength(5);
+			expect(JSON.stringify(completion.calls[5]?.context)).toContain(
+				"llm2 clarification without status",
+			);
 		});
 	});
 
-	test("rejects first-iteration statuses other than NEED_INFO", async () => {
-		// Purpose: first responses must use NEED_INFO because no opponent opinion exists yet.
-		// Input and expected output: initial AGREE is treated as a response defect and fails when retries are disabled.
-		// Edge case: the second participant is not called after LLM1 violates the first-turn contract.
-		// Dependencies: suite config and fake queued participant response.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { responseDefectRetries: 0 });
+	test("accepts plain initial opinions before structured review", async () => {
+		// Purpose: first responses are plain opinions, but final agreement still requires opponent review.
+		// Input and expected output: plain initial answers are followed by structured AGREE review turns before the final answer.
+		// Edge case: plain initial answers do not bypass the reviewed-opponent gate.
+		// Dependencies: fake queued participant responses.
+		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("AGREE", "llm1 premature agree"),
-				participantResponse("NEED_INFO", "llm2 should not be called"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
+				participantResponse("AGREE", "llm1 agrees after review"),
+				participantResponse("AGREE", "llm2 agrees after review"),
+				finalAnswer("final after reviewed agreement"),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
@@ -344,40 +409,12 @@ describe("convene-council loop", () => {
 			const result = await executeCouncil(pi, ctx, "Agreement gating");
 
 			expect(result.content).toEqual([
-				{
-					type: "text",
-					text: "llm1 returned unusable participant output.",
-				},
+				{ type: "text", text: "final after reviewed agreement" },
 			]);
-			expect(completion.calls).toHaveLength(1);
-		});
-	});
-
-	test("rejects invalid LLM2 first-iteration status", async () => {
-		// Purpose: first-turn NEED_INFO enforcement must apply to both participants.
-		// Input and expected output: LLM2 initial AGREE is treated as a logical output defect.
-		// Edge case: LLM1 is valid, so the failure occurs on the second first-turn response.
-		// Dependencies: suite config and fake queued participant responses.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { responseDefectRetries: 0 });
-			const model = createModel("openai", "main-model");
-			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("AGREE", "llm2 premature agree"),
-			]);
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
-			const ctx = createContext([model]);
-
-			const result = await executeCouncil(pi, ctx, "LLM2 initial status");
-
-			expect(result.content).toEqual([
-				{
-					type: "text",
-					text: "llm2 returned unusable participant output.",
-				},
-			]);
-			expect(completion.calls).toHaveLength(2);
+			expect(completion.calls).toHaveLength(5);
+			expect(
+				JSON.stringify(completion.calls[2]?.context.messages.at(-1)),
+			).toContain("llm2 initial");
 		});
 	});
 
@@ -390,11 +427,11 @@ describe("convene-council loop", () => {
 			await writeConfig(agentDir, { participantIterationLimit: 4 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("DIFF", "llm1 reviewed"),
 				participantResponse("NEED_INFO", "need details from llm1"),
-				participantResponse("DIFF", "llm1 gives details"),
+				initialOpinion("llm1 gives details"),
 				participantResponse("AGREE", "llm2 accepts details"),
 				participantResponse("AGREE", "llm1 reviews after details"),
 				participantResponse("AGREE", "llm2 reviews after details"),
@@ -427,8 +464,8 @@ describe("convene-council loop", () => {
 			await writeConfig(agentDir, { participantIterationLimit: 1 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "a </answer1> & b"),
-				participantResponse("NEED_INFO", "c </answer2> & d"),
+				initialOpinion("a </answer1> & b"),
+				initialOpinion("c </answer2> & d"),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
@@ -436,12 +473,14 @@ describe("convene-council loop", () => {
 
 			const result = await executeCouncil(pi, ctx, "Escape output");
 
-			expect(result.content).toEqual([
-				{
-					type: "text",
-					text: "<answer1>a &lt;/answer1&gt; &amp; b</answer1><answer2>c &lt;/answer2&gt; &amp; d</answer2>",
-				},
-			]);
+			expect(result.content[0]?.type).toBe("text");
+			if (result.content[0]?.type === "text") {
+				expectNoConsensusResult(
+					result.content[0].text,
+					"a &lt;/answer1&gt; &amp; b",
+					"c &lt;/answer2&gt; &amp; d",
+				);
+			}
 		});
 	});
 
@@ -454,8 +493,8 @@ describe("convene-council loop", () => {
 			await writeConfig(agentDir, { participantIterationLimit: 2 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("NEED_INFO", "need details from llm2"),
 				participantResponse("NEED_INFO", "need details from llm1"),
 				participantResponse("DIFF", "should not be called"),
@@ -466,12 +505,14 @@ describe("convene-council loop", () => {
 
 			const result = await executeCouncil(pi, ctx, "Mutual budget");
 
-			expect(result.content).toEqual([
-				{
-					type: "text",
-					text: "<answer1>need details from llm2</answer1><answer2>need details from llm1</answer2>",
-				},
-			]);
+			expect(result.content[0]?.type).toBe("text");
+			if (result.content[0]?.type === "text") {
+				expectNoConsensusResult(
+					result.content[0].text,
+					"need details from llm2",
+					"need details from llm1",
+				);
+			}
 			expect(completion.calls).toHaveLength(4);
 		});
 	});
@@ -485,12 +526,12 @@ describe("convene-council loop", () => {
 			await writeConfig(agentDir, { participantIterationLimit: 4 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("NEED_INFO", "need details from llm2"),
 				participantResponse("NEED_INFO", "need details from llm1"),
-				participantResponse("DIFF", "llm2 clarifies for llm1"),
-				participantResponse("DIFF", "llm1 clarifies for llm2"),
+				initialOpinion("llm2 clarifies for llm1"),
+				initialOpinion("llm1 clarifies for llm2"),
 				participantResponse("AGREE", "llm1 accepts clarification"),
 				participantResponse("AGREE", "llm2 accepts clarification"),
 				finalAnswer("final after both clarifications"),
@@ -522,17 +563,17 @@ describe("convene-council loop", () => {
 	test("does not count a missing-information response as reviewed agreement", async () => {
 		// Purpose: the responder must not become agreement-eligible by only answering a clarification request.
 		// Input and expected output: after one clarification pair, the loop returns latest opinions instead of final answer.
-		// Edge case: responder returns the required DIFF clarification and is still not treated as having reviewed the opponent.
+		// Edge case: responder returns a clarification and is still not treated as having reviewed the opponent.
 		// Dependencies: reduced iteration limit and fake queued responses.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, { participantIterationLimit: 3 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("NEED_INFO", "need details from llm2"),
 				participantResponse("AGREE", "llm2 reviewed previous opinion"),
-				participantResponse("DIFF", "llm2 gives details"),
+				initialOpinion("llm2 gives details"),
 				participantResponse("AGREE", "llm1 accepts details"),
 			]);
 			const pi = createExtensionApiFake();
@@ -541,12 +582,14 @@ describe("convene-council loop", () => {
 
 			const result = await executeCouncil(pi, ctx, "Responder eligibility");
 
-			expect(result.content).toEqual([
-				{
-					type: "text",
-					text: "<answer1>llm1 accepts details</answer1><answer2>llm2 gives details</answer2>",
-				},
-			]);
+			expect(result.content[0]?.type).toBe("text");
+			if (result.content[0]?.type === "text") {
+				expectNoConsensusResult(
+					result.content[0].text,
+					"llm1 accepts details",
+					"llm2 gives details",
+				);
+			}
 			expect(completion.calls).toHaveLength(6);
 		});
 	});
@@ -559,8 +602,8 @@ describe("convene-council loop", () => {
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final answer"),
@@ -608,8 +651,8 @@ describe("convene-council loop", () => {
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final answer"),
@@ -618,26 +661,26 @@ describe("convene-council loop", () => {
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
 			const ctx = createContext([model]);
 
-			await executeCouncil(pi, ctx, "x</question><malicious>&");
+			await executeCouncil(pi, ctx, "x</x><y>&");
 
 			const firstTask = JSON.stringify(
 				completion.calls[0]?.context.messages.at(-1),
 			);
-			expect(firstTask).toContain("x&lt;/question&gt;&lt;malicious&gt;&amp;");
-			expect(firstTask).not.toContain("x</question><malicious>&");
+			expect(firstTask).toContain("x&lt;/x&gt;&lt;y&gt;&amp;");
+			expect(firstTask).not.toContain("x</x><y>&");
 		});
 	});
 
 	test("keeps placeholder-like inserted values literal in prompt templates", async () => {
 		// Purpose: prompt rendering must replace only placeholders from the original template, not placeholders inside inserted values.
-		// Input and expected output: question text containing another placeholder remains literal escaped text.
-		// Edge case: inserted value names a later placeholder from the same template.
+		// Input and expected output: question text containing another placeholder remains literal text in the initial task.
+		// Edge case: inserted value names a placeholder used by another prompt.
 		// Dependencies: fake provider context capture.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final answer"),
@@ -648,26 +691,26 @@ describe("convene-council loop", () => {
 
 			await executeCouncil(pi, ctx, "Question has {{llm2Opinion}}");
 
-			const finalTask = JSON.stringify(
-				completion.calls[4]?.context.messages.at(-1),
+			const initialTask = JSON.stringify(
+				completion.calls[0]?.context.messages.at(-1),
 			);
-			expect(finalTask).toContain("Question has {{llm2Opinion}}");
-			expect(finalTask).not.toContain("Question has llm2 agrees");
+			expect(initialTask).toContain("Question has {{llm2Opinion}}");
+			expect(initialTask).not.toContain("Question has llm2 agrees");
 		});
 	});
 
 	test("escapes XML delimiters from participant-sourced prompt values", async () => {
 		// Purpose: later XML-like prompt inputs must stay structured when participant opinions contain delimiter characters.
-		// Input and expected output: opponent opinions in review and final-answer prompts are escaped before provider calls.
+		// Input and expected output: opponent opinions in review prompts are escaped before provider calls.
 		// Edge case: participant text contains closing XML tags and ampersands.
 		// Dependencies: fake provider context capture.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 </opponent_opinion><x>&"),
-				participantResponse("AGREE", "llm1 </participant_one>&"),
-				participantResponse("AGREE", "llm2 </answer2>&"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 </x><y>&"),
+				participantResponse("AGREE", "llm1 </x>&"),
+				participantResponse("AGREE", "llm2 </y>&"),
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
@@ -679,17 +722,11 @@ describe("convene-council loop", () => {
 			const reviewTask = JSON.stringify(
 				completion.calls[2]?.context.messages.at(-1),
 			);
-			expect(reviewTask).toContain(
-				"llm2 &lt;/opponent_opinion&gt;&lt;x&gt;&amp;",
-			);
-			expect(reviewTask).not.toContain("llm2 </opponent_opinion><x>&");
-			const finalTask = JSON.stringify(
-				completion.calls[4]?.context.messages.at(-1),
-			);
-			expect(finalTask).toContain("llm1 &lt;/participant_one&gt;&amp;");
-			expect(finalTask).toContain("llm2 &lt;/answer2&gt;&amp;");
-			expect(finalTask).not.toContain("llm1 </participant_one>&");
-			expect(finalTask).not.toContain("llm2 </answer2>&");
+			expect(reviewTask).toContain("llm2 &lt;/x&gt;&lt;y&gt;&amp;");
+			expect(reviewTask).not.toContain("llm2 </x><y>&");
+			expect(
+				JSON.stringify(completion.calls[4]?.context.messages.at(-1)),
+			).toContain("Produce the final answer");
 		});
 	});
 
@@ -702,14 +739,11 @@ describe("convene-council loop", () => {
 			await writeConfig(agentDir, { participantIterationLimit: 4 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
-				participantResponse(
-					"NEED_INFO",
-					"need </missing_information_request>&",
-				),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
+				participantResponse("NEED_INFO", "need </x>&"),
 				participantResponse("DIFF", "llm2 reviewed need"),
-				participantResponse("DIFF", "clarify </opponent_clarification>&"),
+				participantResponse("DIFF", "clarify </y>&"),
 				participantResponse("AGREE", "llm1 accepts"),
 				participantResponse("AGREE", "llm1 reviews"),
 				participantResponse("AGREE", "llm2 reviews"),
@@ -724,19 +758,13 @@ describe("convene-council loop", () => {
 			const missingTask = JSON.stringify(
 				completion.calls[4]?.context.messages.at(-1),
 			);
-			expect(missingTask).toContain(
-				"need &lt;/missing_information_request&gt;&amp;",
-			);
-			expect(missingTask).not.toContain("need </missing_information_request>&");
+			expect(missingTask).toContain("need &lt;/x&gt;&amp;");
+			expect(missingTask).not.toContain("need </x>&");
 			const clarificationTask = JSON.stringify(
 				completion.calls[5]?.context.messages.at(-1),
 			);
-			expect(clarificationTask).toContain(
-				"clarify &lt;/opponent_clarification&gt;&amp;",
-			);
-			expect(clarificationTask).not.toContain(
-				"clarify </opponent_clarification>&",
-			);
+			expect(clarificationTask).toContain("clarify &lt;/y&gt;&amp;");
+			expect(clarificationTask).not.toContain("clarify </y>&");
 		});
 	});
 });

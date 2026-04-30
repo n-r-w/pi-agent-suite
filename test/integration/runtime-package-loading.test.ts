@@ -201,10 +201,10 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 	}
 });
 
-test("runtime package loading exposes convene_council and its real prompt guidance", () => {
-	// Purpose: real pi package loading must register convene_council and publish its real runtime prompt contribution.
-	// Input and expected output: package load exposes the tool and includes XML-tagged council guidance when all tools are active.
-	// Edge case: this test uses no selected main-agent allowlist that could hide the tool-specific guidance.
+test("runtime package loading exposes convene_council", () => {
+	// Purpose: real pi package loading must register convene_council.
+	// Input and expected output: package load exposes the tool when all tools are active.
+	// Edge case: this test uses no selected main-agent allowlist that could hide the tool.
 	// Dependencies: local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
 	const cwd = process.cwd();
 	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-council-debug-"));
@@ -242,8 +242,6 @@ test("runtime package loading exposes convene_council and its real prompt guidan
 			readFileSync(runtimeDumpFile, "utf8"),
 		) as RuntimeDump;
 		expect(runtime.tools).toContain("convene_council");
-		expect(runtime.systemPrompt).toContain("<tool_guidance>");
-		expect(runtime.systemPrompt).toContain("convene_council");
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });

@@ -1,5 +1,10 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 
+/** Formats a plain first-turn participant opinion. */
+export function initialOpinion(opinion: string): AssistantMessage["content"] {
+	return [{ type: "text", text: opinion }];
+}
+
 /** Formats a valid participant discussion response. */
 export function participantResponse(
 	status: "AGREE" | "DIFF" | "NEED_INFO",

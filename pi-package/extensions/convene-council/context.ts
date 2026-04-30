@@ -11,7 +11,6 @@ import type {
 /** Builds base context once so LLM1 and LLM2 start from equivalent messages. */
 export async function buildBaseCouncilMessages(options: {
 	readonly ctx: CouncilContext;
-	readonly question: string;
 	readonly toolCallId: string;
 	readonly loadedSkillRoots: readonly string[];
 }): Promise<readonly Message[]> {
@@ -20,16 +19,10 @@ export async function buildBaseCouncilMessages(options: {
 		cwd: options.ctx.cwd,
 		loadedSkillRoots: options.loadedSkillRoots,
 	});
-	const messages = removePendingCouncilCall(
+	return removePendingCouncilCall(
 		convertToLlm(projectedMessages),
 		options.toolCallId,
 	);
-	messages.push({
-		role: "user",
-		content: `Question for both council participants:\n${options.question}`,
-		timestamp: Date.now(),
-	});
-	return messages;
 }
 
 /** Creates the initial participant state with an isolated conversation history. */

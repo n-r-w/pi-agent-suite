@@ -11,7 +11,11 @@ import {
 	createExtensionApiFake,
 } from "./support/fakes";
 import { createModel } from "./support/models";
-import { finalAnswer, participantResponse } from "./support/responses";
+import {
+	finalAnswer,
+	initialOpinion,
+	participantResponse,
+} from "./support/responses";
 import { executeCouncil } from "./support/tool";
 
 describe("convene-council config", () => {
@@ -218,8 +222,8 @@ describe("convene-council config", () => {
 			const llm1Model = createModel("provider-a", "model-a");
 			const llm2Model = createModel("provider-b", "model-b");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("llm2 final"),

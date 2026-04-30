@@ -10,10 +10,25 @@ import {
 import { createModel } from "./support/models";
 import {
 	finalAnswer,
+	initialOpinion,
 	nonTextFinalAnswer,
 	participantResponse,
 } from "./support/responses";
 import { executeCouncil } from "./support/tool";
+
+const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
+const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
+
+function expectNoConsensusResult(
+	text: string,
+	answer1: string,
+	answer2: string,
+): void {
+	expect(text).toStartWith("<result>\n");
+	expect(text).toContain("\n</result>");
+	expect(text.match(ANSWER1_BLOCK_PATTERN)?.[1]).toBe(answer1);
+	expect(text.match(ANSWER2_BLOCK_PATTERN)?.[1]).toBe(answer2);
+}
 
 describe("convene-council retries", () => {
 	test("retries malformed participant output as a response defect", async () => {
@@ -24,9 +39,9 @@ describe("convene-council retries", () => {
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				finalAnswer("malformed"),
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final after retry"),
@@ -41,7 +56,7 @@ describe("convene-council retries", () => {
 				{ type: "text", text: "final after retry" },
 			]);
 			expect(completion.calls).toHaveLength(6);
-			expect(JSON.stringify(completion.calls[2]?.context)).not.toContain(
+			expect(JSON.stringify(completion.calls[4]?.context)).not.toContain(
 				"malformed",
 			);
 		});
@@ -57,8 +72,8 @@ describe("convene-council retries", () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				new Error("temporary network failure"),
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final after provider retry"),
@@ -85,8 +100,8 @@ describe("convene-council retries", () => {
 			await writeConfig(agentDir, { providerRetryDelayMs: 0 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				new Error("temporary later participant failure"),
 				participantResponse("AGREE", "llm2 agrees"),
@@ -118,8 +133,8 @@ describe("convene-council retries", () => {
 			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final after string throw"),
@@ -154,8 +169,8 @@ describe("convene-council retries", () => {
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("final answer"),
@@ -183,29 +198,27 @@ describe("convene-council retries", () => {
 	});
 
 	test("rejects empty or tagged final answers before returning tool content", async () => {
-		// Purpose: final answers must be plain visible text without discussion tags.
-		// Input and expected output: tagged final answer is retried once and then plain text is returned.
+		// Purpose: final answers must not contain discussion tags.
+		// Input and expected output: tagged final answer is retried once and then final answer text is returned.
 		// Edge case: final-answer retry uses the same response-defect retry budget as participant defects.
 		// Dependencies: fake convergence and final-answer responses.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("<answer1>bad</answer1>"),
-				finalAnswer("plain final answer"),
+				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
 			const ctx = createContext([model]);
 
-			const result = await executeCouncil(pi, ctx, "Return plain answer");
+			const result = await executeCouncil(pi, ctx, "Return final answer");
 
-			expect(result.content).toEqual([
-				{ type: "text", text: "plain final answer" },
-			]);
+			expect(result.content).toEqual([{ type: "text", text: "final answer" }]);
 			expect(completion.calls).toHaveLength(6);
 		});
 	});
@@ -217,15 +230,16 @@ describe("convene-council retries", () => {
 		// Dependencies: suite config and fake queued model responses.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
-				participantIterationLimit: 1,
+				participantIterationLimit: 2,
 				responseDefectRetries: 0,
 			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				finalAnswer(
 					"<status>NEED_INFO</status><opinion>a</opinion><opinion>b</opinion>",
 				),
-				participantResponse("NEED_INFO", "llm2 should not complete pair"),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
@@ -239,13 +253,18 @@ describe("convene-council retries", () => {
 					text: "llm1 returned unusable participant output.",
 				},
 			]);
-			expect(completion.calls).toHaveLength(1);
+			expect(completion.calls).toHaveLength(3);
 		});
 
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { responseDefectRetries: 0 });
+			await writeConfig(agentDir, {
+				participantIterationLimit: 2,
+				responseDefectRetries: 0,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				finalAnswer(" <status>NEED_INFO</status><opinion>a</opinion>"),
 			]);
 			const pi = createExtensionApiFake();
@@ -264,7 +283,7 @@ describe("convene-council retries", () => {
 					text: "llm1 returned unusable participant output.",
 				},
 			]);
-			expect(completion.calls).toHaveLength(1);
+			expect(completion.calls).toHaveLength(3);
 		});
 	});
 
@@ -294,9 +313,16 @@ describe("convene-council retries", () => {
 
 		for (const testCase of participantCases) {
 			await withIsolatedAgentDir(async (agentDir) => {
-				await writeConfig(agentDir, { responseDefectRetries: 0 });
+				await writeConfig(agentDir, {
+					participantIterationLimit: 2,
+					responseDefectRetries: 0,
+				});
 				const model = createModel("openai", "main-model");
-				const completion = createCompletionQueue([testCase.response]);
+				const completion = createCompletionQueue([
+					initialOpinion("llm1 initial"),
+					initialOpinion("llm2 initial"),
+					testCase.response,
+				]);
 				const pi = createExtensionApiFake();
 				conveneCouncil(pi, { completeSimple: completion.completeSimple });
 				const ctx = createContext([model]);
@@ -309,7 +335,7 @@ describe("convene-council retries", () => {
 						text: "llm1 returned unusable participant output.",
 					},
 				]);
-				expect(completion.calls).toHaveLength(1);
+				expect(completion.calls).toHaveLength(3);
 			});
 		}
 
@@ -323,8 +349,8 @@ describe("convene-council retries", () => {
 				await writeConfig(agentDir, { responseDefectRetries: 0 });
 				const model = createModel("openai", "main-model");
 				const completion = createCompletionQueue([
-					participantResponse("NEED_INFO", "llm1 initial"),
-					participantResponse("NEED_INFO", "llm2 initial"),
+					initialOpinion("llm1 initial"),
+					initialOpinion("llm2 initial"),
 					participantResponse("AGREE", "llm1 agrees"),
 					participantResponse("AGREE", "llm2 agrees"),
 					testCase.response,
@@ -352,9 +378,16 @@ describe("convene-council retries", () => {
 		// Edge case: responseDefectRetries zero allows only the first defective response.
 		// Dependencies: suite config and fake queued responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { responseDefectRetries: 0 });
+			await writeConfig(agentDir, {
+				participantIterationLimit: 2,
+				responseDefectRetries: 0,
+			});
 			const model = createModel("openai", "main-model");
-			const completion = createCompletionQueue([finalAnswer("malformed")]);
+			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
+				finalAnswer("malformed"),
+			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
 			const ctx = createContext([model]);
@@ -373,8 +406,8 @@ describe("convene-council retries", () => {
 			await writeConfig(agentDir, { responseDefectRetries: 0 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("<status>bad</status>"),
@@ -402,8 +435,8 @@ describe("convene-council retries", () => {
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer("An internal process handles scheduling."),
@@ -572,8 +605,8 @@ describe("convene-council retries", () => {
 				(_, index) => `llm2-${index}`,
 			).join("\n");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", llm1Opinion),
-				participantResponse("NEED_INFO", llm2Opinion),
+				initialOpinion(llm1Opinion),
+				initialOpinion(llm2Opinion),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
@@ -584,9 +617,12 @@ describe("convene-council retries", () => {
 			const text =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("Full output:");
-			const fullOutput = `<answer1>${llm1Opinion}</answer1><answer2>${llm2Opinion}</answer2>`;
 			const details = expectMinimalTruncationDetails(result.details);
-			expect(await readFile(details.fullOutputPath, "utf8")).toBe(fullOutput);
+			expectNoConsensusResult(
+				await readFile(details.fullOutputPath, "utf8"),
+				llm1Opinion,
+				llm2Opinion,
+			);
 		});
 	});
 
@@ -602,8 +638,8 @@ describe("convene-council retries", () => {
 				(_, index) => `line-${index}`,
 			).join("\n");
 			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "llm1 initial"),
-				participantResponse("NEED_INFO", "llm2 initial"),
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
 				participantResponse("AGREE", "llm1 agrees"),
 				participantResponse("AGREE", "llm2 agrees"),
 				finalAnswer(largeAnswer),

@@ -1,11 +1,10 @@
 <task>
-  Review the opponent opinion.
-  Compare it with your previous answer.
-  Choose the best or improved solution.
-  Report defects in the opponent opinion when defects exist.
+  1. Review the opponent opinion.
+  2. Compare it with your previous answer.
+  3. Choose the best or improved solution.
+  4. Report defects in the opponent opinion when defects exist.
 </task>
 
-<input>
-  <question>{{question}}</question>
-  <opponent_opinion>{{opponentOpinion}}</opponent_opinion>
-</input>
+<opponent_opinion>
+{{opponentOpinion}}
+</opponent_opinion>
