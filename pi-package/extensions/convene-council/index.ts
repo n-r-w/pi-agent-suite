@@ -55,8 +55,7 @@ export default function conveneCouncil(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Convene council",
-		description:
-			"Ask two participant LLMs to discuss one question over the same context until agreement or an iteration limit.",
+		description: "Convene a council of experts to solve a very complex problem",
 		parameters: ConveneCouncilParameters,
 		renderCall: renderConveneCouncilCall,
 		renderResult: renderConveneCouncilResult,

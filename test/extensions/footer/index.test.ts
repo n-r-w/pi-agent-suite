@@ -8,6 +8,10 @@ import footer, {
 	SEGMENT_SEPARATOR,
 } from "../../../pi-package/extensions/footer/index";
 import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
+import {
+	addPendingProjectionSavings,
+	resetPendingProjectionSavings,
+} from "../../../pi-package/shared/context-projection";
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -18,6 +22,9 @@ interface SessionContextFake {
 	readonly installedFooters: unknown[];
 	readonly cwd: string;
 	readonly hasUI?: boolean;
+	readonly sessionManager: {
+		getSessionId(): string;
+	};
 	readonly ui: {
 		setFooter(footerRenderer: unknown): void;
 	};
@@ -27,16 +34,18 @@ interface SessionContextFake {
 		reasoning: boolean;
 		contextWindow: number;
 	};
-	getContextUsage(): { tokens: number; contextWindow: number };
+	getContextUsage(): { tokens: number; contextWindow: number; percent: number };
 }
 
 interface SessionContextOptions {
 	readonly cwd?: string;
 	readonly hasUI?: boolean;
 	readonly thinkingLevel?: string;
+	readonly sessionId?: string;
 	readonly contextUsage?: {
 		readonly tokens: number;
 		readonly contextWindow: number;
+		readonly percent?: number;
 	};
 }
 
@@ -181,15 +190,26 @@ function createSessionContextFake(
 	options: SessionContextOptions = {},
 ): SessionContextFake {
 	const installedFooters: unknown[] = [];
-	const contextUsage = options.contextUsage ?? {
+	const rawContextUsage = options.contextUsage ?? {
 		tokens: 42000,
 		contextWindow: 200000,
+	};
+	const contextUsage = {
+		...rawContextUsage,
+		percent:
+			rawContextUsage.percent ??
+			(rawContextUsage.tokens / rawContextUsage.contextWindow) * 100,
 	};
 
 	return {
 		installedFooters,
 		cwd: options.cwd ?? "/workspace/pi-harness",
 		...(options.hasUI !== undefined ? { hasUI: options.hasUI } : {}),
+		sessionManager: {
+			getSessionId(): string {
+				return options.sessionId ?? "footer-test-session";
+			},
+		},
 		ui: {
 			setFooter(footerRenderer: unknown): void {
 				installedFooters.push(footerRenderer);
@@ -601,6 +621,43 @@ describe("footer", () => {
 
 		expect(renderedText).toContain("openai-codex/gpt-5.4/high");
 		expect(renderedText).toContain("42k/151k/200k");
+	});
+
+	test("renders projection-aware context usage while provider usage is stale", async () => {
+		// Purpose: footer context usage must match the projected provider payload after projection succeeds but provider usage is still stale.
+		// Input and expected output: 48k pending projection savings turns raw `130k/262k/272k` into `82k/262k/272k`.
+		// Edge case: context-overflow limit remains based on the full context window and is not reduced by projection.
+		// Dependencies: shared in-memory projection state and footer renderer fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeContextOverflowConfig(agentDir, {
+				enabled: true,
+				compactRemainingTokens: 10_000,
+			});
+			const sessionId = "footer-projection-aware-usage";
+			resetPendingProjectionSavings(sessionId);
+			addPendingProjectionSavings(sessionId, 48_000, {
+				branchLeafId: "leaf-1",
+				entryIds: ["entry-1"],
+			});
+			try {
+				const { footerRenderer } = await installFooterTestHarness({
+					sessionId,
+					contextUsage: { tokens: 130_000, contextWindow: 272_000 },
+				});
+				const footerComponent = createFooterComponent(
+					footerRenderer,
+					createFooterDataFake(new Map([["context-projection", "~48k"]])),
+				);
+
+				const renderedText = footerComponent.render(120).join("\n");
+
+				expect(renderedText).toContain("~48k");
+				expect(renderedText).toContain("82k/262k/272k");
+				expect(renderedText).not.toContain("130k/262k/272k");
+			} finally {
+				resetPendingProjectionSavings(sessionId);
+			}
+		});
 	});
 
 	test("omits the context-overflow limit when context-overflow is disabled", async () => {

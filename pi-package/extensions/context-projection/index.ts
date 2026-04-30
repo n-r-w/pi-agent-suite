@@ -17,14 +17,18 @@ import type {
 	SessionEntry,
 } from "@mariozechner/pi-coding-agent";
 import {
+	addPendingProjectionSavings,
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
 	type ContextProjectionConfig,
 	type ContextProjectionConfigResult,
 	type ContextProjectionSummaryConfig,
 	collectLoadedSkillRoots,
 	collectProjectedPlaceholders,
+	estimatePendingProjectionSavings,
 	estimateProjectedSavedTokens,
 	estimateSavedTokens,
+	getProjectionAwareContextUsage,
+	hasValidAssistantContextUsage,
 	type MappedContextEntry,
 	mapEventMessagesToBranchEntries,
 	type ProjectedEntryState,
@@ -32,6 +36,8 @@ import {
 	projectContextMessages,
 	publishRuntimeProjectedPlaceholders,
 	readContextProjectionConfig,
+	resetPendingProjectionSavings,
+	setPendingProjectionSavings,
 } from "../../shared/context-projection";
 import {
 	countProjectionTextTokens,
@@ -149,6 +155,16 @@ interface SummaryReplacementOptions {
 	readonly progress: ProjectionProgressReporter;
 }
 
+interface RecordNewProjectedEntriesOptions {
+	readonly pi: Pick<ExtensionAPI, "appendEntry">;
+	readonly cwd: string;
+	readonly sessionId: string;
+	readonly branchLeafId: string | null;
+	readonly projectedPlaceholdersByEntryId: Map<string, string>;
+	readonly newProjectedEntries: readonly ProjectedEntryState[];
+	readonly newSavedTokens: number;
+}
+
 /** Extension entry point for provider-context projection of old tool results. */
 export default function contextProjection(
 	pi: ExtensionAPI,
@@ -174,6 +190,7 @@ export default function contextProjection(
 
 	const publishCurrentStatus = async (ctx: ExtensionContext): Promise<void> => {
 		const config = await readContextProjectionConfig();
+		syncPendingProjectionSavings(ctx, config, loadedSkillRoots);
 		assertNoFatalConfigIssue(config);
 		publishedStatusText = publishProjectionStatus(
 			ctx,
@@ -215,6 +232,12 @@ export default function contextProjection(
 		publishedStatusText = result.statusText;
 		return result.contextResult;
 	});
+
+	pi.on("message_end", (event, ctx) => {
+		if (hasValidAssistantContextUsage(event.message)) {
+			resetPendingProjectionSavings(ctx.sessionManager.getSessionId());
+		}
+	});
 }
 
 /** Handles one context event by projecting eligible tool results when the active config and usage permit it. */
@@ -228,6 +251,7 @@ async function handleContextProjection({
 	completeSimple,
 }: HandleContextProjectionOptions): Promise<HandleContextProjectionResult> {
 	const config = await readContextProjectionConfig();
+	syncPendingProjectionSavings(ctx, config, loadedSkillRoots);
 	assertNoFatalConfigIssue(config);
 	if (config.kind !== "valid") {
 		return createContextProjectionNoChangeResult(
@@ -996,12 +1020,15 @@ function createContextProjectionChangeResult({
 	publishedStatusText,
 	decision,
 }: ContextProjectionChangeResultOptions): HandleContextProjectionResult {
-	recordNewProjectedEntries(
+	recordNewProjectedEntries({
 		pi,
-		ctx.cwd,
+		cwd: ctx.cwd,
+		sessionId: ctx.sessionManager.getSessionId(),
+		branchLeafId: ctx.sessionManager.getLeafId(),
 		projectedPlaceholdersByEntryId,
-		decision.newProjectedEntries,
-	);
+		newProjectedEntries: decision.newProjectedEntries,
+		newSavedTokens: decision.newSavedTokens,
+	});
 	const statusText = publishProjectionStatus(
 		ctx,
 		config,
@@ -1038,6 +1065,32 @@ function createContextProjectionNoChangeResult(
 	};
 }
 
+/** Rebuilds pending projection savings from branch state when the active session changes. */
+function syncPendingProjectionSavings(
+	ctx: ExtensionContext,
+	config: ContextProjectionConfigResult,
+	loadedSkillRoots: readonly string[],
+): void {
+	if (config.kind !== "valid") {
+		resetPendingProjectionSavings(ctx.sessionManager.getSessionId());
+		return;
+	}
+
+	const branchEntries = ctx.sessionManager.getBranch();
+	const pendingSavings = estimatePendingProjectionSavings({
+		branchEntries,
+		cwd: ctx.cwd,
+		config: config.config,
+		loadedSkillRoots,
+	});
+	setPendingProjectionSavings(
+		ctx.sessionManager.getSessionId(),
+		pendingSavings.savedTokens,
+		pendingSavings.entryIds,
+		new Set(branchEntries.map((entry) => entry.id)),
+	);
+}
+
 function estimateCurrentProjectedSavedTokens(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfigResult,
@@ -1062,7 +1115,10 @@ function isProjectionThresholdExceeded(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfig,
 ): boolean {
-	const usage = ctx.getContextUsage();
+	const usage = getProjectionAwareContextUsage(
+		ctx.sessionManager.getSessionId(),
+		ctx.getContextUsage(),
+	);
 	if (usage === undefined || usage.tokens === null) {
 		return false;
 	}
@@ -1113,16 +1169,34 @@ function formatProjectionStatus(
 }
 
 /** Persists newly projected entries as one branch-local extension-owned custom entry. */
-function recordNewProjectedEntries(
-	pi: Pick<ExtensionAPI, "appendEntry">,
-	cwd: string,
-	projectedPlaceholdersByEntryId: Map<string, string>,
-	newProjectedEntries: readonly ProjectedEntryState[],
-): void {
+function recordNewProjectedEntries({
+	pi,
+	cwd,
+	sessionId,
+	branchLeafId,
+	projectedPlaceholdersByEntryId,
+	newProjectedEntries,
+	newSavedTokens,
+}: RecordNewProjectedEntriesOptions): void {
 	if (newProjectedEntries.length === 0) {
 		return;
 	}
 
+	if (branchLeafId === null) {
+		throw new Error(
+			"cannot record pending projection savings without an active branch leaf",
+		);
+	}
+
+	const projectionState = { projectedEntries: newProjectedEntries };
+	try {
+		pi.appendEntry(CONTEXT_PROJECTION_CUSTOM_TYPE, projectionState);
+	} catch (error) {
+		// Pi keeps this data object in the in-memory branch before persistence can fail.
+		// Clearing it prevents failed projection state from being replayed in this process.
+		projectionState.projectedEntries = [];
+		throw error;
+	}
 	for (const projectedEntry of newProjectedEntries) {
 		projectedPlaceholdersByEntryId.set(
 			projectedEntry.entryId,
@@ -1130,8 +1204,11 @@ function recordNewProjectedEntries(
 		);
 	}
 	publishRuntimeProjectedPlaceholders(cwd, projectedPlaceholdersByEntryId);
-	pi.appendEntry(CONTEXT_PROJECTION_CUSTOM_TYPE, {
-		projectedEntries: newProjectedEntries,
+	addPendingProjectionSavings(sessionId, estimateSavedTokens(newSavedTokens), {
+		branchLeafId,
+		entryIds: newProjectedEntries.map(
+			(projectedEntry) => projectedEntry.entryId,
+		) as [string, ...string[]],
 	});
 }
 

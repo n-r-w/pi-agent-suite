@@ -102,6 +102,9 @@ const DEFAULT_SUMMARY_RETRY_COUNT = 1;
 /** Default pause between summary retry attempts. */
 const DEFAULT_SUMMARY_RETRY_DELAY_MS = 5_000;
 
+/** Factor used to render token usage as a percentage of the context window. */
+const PERCENT_FACTOR = 100;
+
 /** Thinking values accepted by context projection summary configuration. */
 const SUMMARY_THINKING_VALUES = [
 	"off",
@@ -223,6 +226,13 @@ interface ProjectionSavingsEstimateOptions {
 	readonly loadedSkillRoots?: readonly string[];
 }
 
+interface PendingProjectionSavingsEstimateOptions {
+	readonly branchEntries: readonly SessionEntry[];
+	readonly cwd: string;
+	readonly config: ContextProjectionConfig;
+	readonly loadedSkillRoots?: readonly string[];
+}
+
 interface ProjectMappedContextEntryOptions {
 	readonly entry: SessionEntry;
 	readonly message: AgentMessage;
@@ -256,6 +266,179 @@ const runtimeProjectedPlaceholdersByScope = new Map<
 	string,
 	Map<string, string>
 >();
+
+interface PendingProjectionSavingsBatch {
+	readonly branchLeafId: string;
+	readonly entryIds: readonly [string, ...string[]];
+	readonly savedTokens: number;
+}
+
+interface PendingProjectionSavingsState {
+	readonly branchSavedTokens: number;
+	readonly liveBatches: readonly PendingProjectionSavingsBatch[];
+}
+
+export interface PendingProjectionSavingsEstimate {
+	readonly savedTokens: number;
+	readonly entryIds: readonly string[];
+}
+
+export interface LivePendingProjectionSavings {
+	readonly branchLeafId: string;
+	readonly entryIds: readonly [string, ...string[]];
+}
+
+const pendingProjectionSavingsByScope = new Map<
+	string,
+	PendingProjectionSavingsState
+>();
+
+export interface ContextProjectionUsage {
+	readonly tokens: number | null;
+	readonly contextWindow: number;
+	readonly percent: number | null;
+}
+
+/** Records token savings that have not been confirmed by a later successful provider usage. */
+export function addPendingProjectionSavings(
+	sessionId: string,
+	savedTokens: number,
+	liveSavings: LivePendingProjectionSavings,
+): void {
+	if (savedTokens <= 0) {
+		return;
+	}
+
+	const scope = getRuntimePendingProjectionScope(sessionId);
+	const state = getPendingProjectionSavingsState(scope);
+	pendingProjectionSavingsByScope.set(scope, {
+		branchSavedTokens: state.branchSavedTokens,
+		liveBatches: [
+			...state.liveBatches,
+			{
+				branchLeafId: liveSavings.branchLeafId,
+				entryIds: [...new Set(liveSavings.entryIds)] as [string, ...string[]],
+				savedTokens,
+			},
+		],
+	});
+}
+
+/** Replaces branch-backed pending savings while preserving live projections that are not branch-visible yet. */
+export function setPendingProjectionSavings(
+	sessionId: string,
+	savedTokens: number,
+	entryIds: readonly string[],
+	activeBranchEntryIds: ReadonlySet<string>,
+): void {
+	const scope = getRuntimePendingProjectionScope(sessionId);
+	const state = getPendingProjectionSavingsState(scope);
+	const branchEntryIds = new Set(entryIds);
+	const liveBatches = state.liveBatches.filter((batch) => {
+		if (!activeBranchEntryIds.has(batch.branchLeafId)) {
+			return false;
+		}
+
+		return !batch.entryIds.every((entryId) => branchEntryIds.has(entryId));
+	});
+	const nextState = {
+		branchSavedTokens: Math.max(0, savedTokens),
+		liveBatches,
+	};
+	if (getPendingProjectionSavingsTotal(nextState) <= 0) {
+		pendingProjectionSavingsByScope.delete(scope);
+		return;
+	}
+
+	pendingProjectionSavingsByScope.set(scope, nextState);
+}
+
+/** Clears pending token savings after provider usage catches up with the projected context. */
+export function resetPendingProjectionSavings(sessionId: string): void {
+	pendingProjectionSavingsByScope.delete(
+		getRuntimePendingProjectionScope(sessionId),
+	);
+}
+
+/** Returns context usage adjusted by projection savings not yet reflected by provider usage. */
+export function getProjectionAwareContextUsage(
+	sessionId: string,
+	usage: ContextProjectionUsage | undefined,
+): ContextProjectionUsage | undefined {
+	if (usage === undefined || usage.tokens === null) {
+		return usage;
+	}
+
+	const pendingSavings = getPendingProjectionSavingsTotal(
+		pendingProjectionSavingsByScope.get(
+			getRuntimePendingProjectionScope(sessionId),
+		),
+	);
+	if (pendingSavings <= 0) {
+		return usage;
+	}
+
+	const tokens = Math.max(0, usage.tokens - pendingSavings);
+	return {
+		...usage,
+		tokens,
+		percent:
+			usage.contextWindow > 0
+				? (tokens / usage.contextWindow) * PERCENT_FACTOR
+				: null,
+	};
+}
+
+/** Returns existing pending savings state or the empty state for one runtime scope. */
+function getPendingProjectionSavingsState(
+	scope: string,
+): PendingProjectionSavingsState {
+	return (
+		pendingProjectionSavingsByScope.get(scope) ?? {
+			branchSavedTokens: 0,
+			liveBatches: [],
+		}
+	);
+}
+
+/** Sums branch-backed and live savings that provider usage has not confirmed yet. */
+function getPendingProjectionSavingsTotal(
+	state: PendingProjectionSavingsState | undefined,
+): number {
+	if (state === undefined) {
+		return 0;
+	}
+
+	return (
+		state.branchSavedTokens +
+		state.liveBatches.reduce((total, batch) => total + batch.savedTokens, 0)
+	);
+}
+
+/** Estimates projected savings that are newer than the latest successful provider usage. */
+export function estimatePendingProjectionSavings({
+	branchEntries,
+	cwd,
+	config,
+	loadedSkillRoots = [],
+}: PendingProjectionSavingsEstimateOptions): PendingProjectionSavingsEstimate {
+	const pendingPlaceholders =
+		collectPendingProjectedPlaceholders(branchEntries);
+	if (pendingPlaceholders.size === 0) {
+		return { savedTokens: 0, entryIds: [] };
+	}
+
+	return {
+		savedTokens: estimateProjectedSavedTokens({
+			branchEntries,
+			cwd,
+			projectedPlaceholdersByEntryId: pendingPlaceholders,
+			config,
+			loadedSkillRoots,
+		}),
+		entryIds: [...pendingPlaceholders.keys()],
+	};
+}
 
 /** Reads and validates context-projection config while absent config keeps projection disabled. */
 export async function readContextProjectionConfig(): Promise<ContextProjectionConfigResult> {
@@ -503,8 +686,30 @@ export async function replayContextProjection({
 export function collectProjectedPlaceholders(
 	branchEntries: readonly SessionEntry[],
 ): Map<string, string> {
+	return collectProjectedPlaceholdersFromEntries(branchEntries);
+}
+
+/** Collects projection state appended after the latest valid provider usage. */
+function collectPendingProjectedPlaceholders(
+	branchEntries: readonly SessionEntry[],
+): Map<string, string> {
+	const latestValidUsageIndex = findLastEntryIndex(
+		branchEntries,
+		(entry) =>
+			entry.type === "message" && hasValidAssistantContextUsage(entry.message),
+	);
+
+	return collectProjectedPlaceholdersFromEntries(
+		branchEntries.slice(latestValidUsageIndex + 1),
+	);
+}
+
+/** Collects projection placeholders from extension-owned custom state entries. */
+function collectProjectedPlaceholdersFromEntries(
+	entries: readonly SessionEntry[],
+): Map<string, string> {
 	const projectedPlaceholdersByEntryId = new Map<string, string>();
-	for (const entry of branchEntries) {
+	for (const entry of entries) {
 		if (
 			entry.type !== "custom" ||
 			entry.customType !== CONTEXT_PROJECTION_CUSTOM_TYPE ||
@@ -522,6 +727,29 @@ export function collectProjectedPlaceholders(
 	}
 
 	return projectedPlaceholdersByEntryId;
+}
+
+/** Returns true when an assistant message contains provider usage that reflects its request. */
+export function hasValidAssistantContextUsage(message: AgentMessage): boolean {
+	if (message.role !== "assistant") {
+		return false;
+	}
+
+	return (
+		message.stopReason !== "aborted" &&
+		message.stopReason !== "error" &&
+		estimateAssistantUsageTokens(message.usage) > 0
+	);
+}
+
+/** Returns the provider-reported context size for assistant usage objects. */
+function estimateAssistantUsageTokens(
+	usage: Extract<AgentMessage, { role: "assistant" }>["usage"],
+): number {
+	return (
+		usage.totalTokens ||
+		usage.input + usage.output + usage.cacheRead + usage.cacheWrite
+	);
 }
 
 /** Publishes active in-memory projection state for other extension entry points in the same process. */
@@ -1170,6 +1398,10 @@ function getRuntimeProjectedPlaceholders(
 
 function getRuntimeProjectionScope(cwd: string): string {
 	return `${getAgentDir()}\0${cwd}`;
+}
+
+function getRuntimePendingProjectionScope(sessionId: string): string {
+	return `${getAgentDir()}\0${sessionId}`;
 }
 
 function mergeProjectedPlaceholders(

@@ -140,7 +140,7 @@ export default function consultAdvisor(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Consult advisor",
-		description: "Ask an independent advisor model a focused question.",
+		description: "Ask an independent advisor model a focused question",
 		parameters: ConsultAdvisorParameters,
 		renderCall: renderConsultAdvisorCall,
 		renderResult: renderConsultAdvisorResult,

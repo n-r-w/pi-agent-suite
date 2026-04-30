@@ -16,8 +16,8 @@ Projection changes only the provider context for the current request. It does no
 - Leaves provider context unchanged when the config file is missing.
 - Treats missing `~/.pi/agent/agent-suite/context-projection/config.json` as a normal disabled state, not as an error.
 - Leaves provider context unchanged when configuration is invalid, except non-absolute summary prompt paths stop startup.
-- Computes `remainingTokens = contextWindow - tokens` through `ctx.getContextUsage()`.
-- Runs projection only when `remainingTokens <= projectionRemainingTokens`.
+- Computes `remainingTokens = contextWindow - tokens` from projection-aware context usage.
+- Runs projection only when projection-aware `remainingTokens <= projectionRemainingTokens`.
 - Maps provider-context messages back to active branch entries before changing messages.
 - Skips projection when provider-context messages do not exactly match active branch entries.
 - Projects only messages with `role: "toolResult"`.
@@ -33,6 +33,14 @@ Projection changes only the provider context for the current request. It does no
 - Reuses the first replacement text for the same projected entry on the same branch, even if config changes later.
 - Reconstructs projection state from the active branch on session start and session tree changes.
 - Keeps projection state branch-local.
+- Tracks pending projection savings while provider usage still reflects the pre-projection context.
+- Keeps pending projection savings after provider errors and aborted assistant messages.
+- Clears pending projection savings after a successful assistant message with valid context usage.
+- Clears pending projection savings when projection is disabled or configuration is invalid.
+- Rebuilds pending projection savings from active branch state when valid configuration returns before provider usage catches up.
+- Recomputes pending projection savings after loaded skill roots change projection eligibility.
+- Clears branch-owned live pending savings when `session_tree` switches to another branch.
+- Invalidates failed projection payloads when projection state append fails, so replay and projection-aware usage do not use failed projection state.
 - Publishes footer status through status key `context-projection` when UI is available.
 - Shows UI-only chat status when a new projection operation starts and completes.
 - Does not perform compaction.
@@ -179,6 +187,8 @@ States:
 
 Footer `N` is calculated across all currently projected entries in the active branch. Critical protection can keep a stored projection state entry visible in the current provider request.
 
+Footer context usage, context-overflow checks, and projection threshold checks use projection-aware context usage while provider usage is stale after projection. This prevents provider errors from temporarily showing or acting on the larger pre-projection context size.
+
 When a new projection operation starts, the UI-only chat status shows progress as `Projecting context: X/Y tool results processed`. After completion, it shows `Context projected: ~N saved`, where `N` is the additional token count saved by the latest operation only. This completion value does not include entries projected earlier in the session.
 
 ## Configuration
@@ -272,6 +282,8 @@ Projection may not happen when:
 - the tool result belongs to a protected recent tool-use turn;
 - provider-context messages cannot be exactly mapped to active branch entries.
 
+Context usage may appear lower than raw provider usage after projection if the provider has not yet returned a later successful assistant message with valid usage. This correction is cleared after valid usage, invalid configuration, disabled projection, or branch switch to a branch that does not own the live projection.
+
 Summary may not happen when:
 
 - summary mode is disabled;
@@ -282,6 +294,10 @@ Summary may not happen when:
 - the summary model response does not contain text after all retry attempts.
 
 When summary generation fails for one tool result, or when the wrapped summary is not smaller than the original tool result, that result still uses the configured placeholder if it is otherwise eligible for projection.
+
+## Known limitation
+
+If `pi.appendEntry` fails while writing projection state, pi may already have changed the in-memory session tree before the file write error is raised. `context-projection` invalidates the failed projection payload so replay and projection-aware usage do not use it. Full rollback of the in-memory session tree, including the active leaf, requires an atomic append or rollback capability in pi runtime.
 
 ## Verification
 
@@ -313,4 +329,13 @@ Tests must verify:
 - invalid `keepRecentTurnsPercent` values disabling projection;
 - footer status for disabled, invalid, ready, and projected states;
 - UI-only chat status when a new projection operation starts and completes;
-- footer total savings and latest-operation chat savings as separate metrics.
+- footer total savings and latest-operation chat savings as separate metrics;
+- pending projection savings after provider errors;
+- pending projection savings after aborted assistant messages;
+- pending projection savings clearing after valid assistant usage;
+- pending projection savings clearing after disabled, invalid, and fatal invalid configuration;
+- pending projection savings rebuild when valid configuration returns before provider usage catches up;
+- projection-aware threshold decisions while provider usage is stale;
+- loaded skill root changes recomputing pending projection savings;
+- `session_tree` branch switch clearing live pending savings from the previous branch;
+- failed projection state append invalidating projection payloads before replay or projection-aware usage can use them.

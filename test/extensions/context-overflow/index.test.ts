@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import contextOverflow from "../../../pi-package/extensions/context-overflow/index";
+import {
+	addPendingProjectionSavings,
+	resetPendingProjectionSavings,
+} from "../../../pi-package/shared/context-projection";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -46,6 +50,9 @@ interface ContextFake {
 	readonly uiCalls: UiCall[];
 	readonly ctx: {
 		readonly hasUI: boolean;
+		readonly sessionManager: {
+			getSessionId(): string;
+		};
 		readonly ui: Record<string, (...args: unknown[]) => void>;
 		getContextUsage(): ContextUsageFake | undefined;
 		compact(options?: CompactCall["options"]): void;
@@ -139,6 +146,7 @@ async function waitForCompactCall(
 function createContextFake(
 	usage: ContextUsageFake | undefined,
 	hasUI = true,
+	sessionId = "context-overflow-test-session",
 ): ContextFake {
 	const compactCalls: CompactCall[] = [];
 	const uiCalls: UiCall[] = [];
@@ -151,6 +159,11 @@ function createContextFake(
 		uiCalls,
 		ctx: {
 			hasUI,
+			sessionManager: {
+				getSessionId(): string {
+					return sessionId;
+				},
+			},
 			ui: {
 				notify: recordUiCall("notify"),
 				setStatus: recordUiCall("setStatus"),
@@ -281,6 +294,44 @@ describe("context-overflow", () => {
 
 			expect(context.compactCalls).toEqual([]);
 			expect(context.uiCalls).toEqual([]);
+		});
+	});
+
+	test("does not compact when projection-aware usage is above the threshold", async () => {
+		// Purpose: projected context should prevent redundant standard compaction while provider usage is stale after a failed provider response.
+		// Input and expected output: raw usage crosses the reserve, but 2k pending projection savings moves effective usage above the threshold and no compaction starts.
+		// Edge case: pending projection savings must affect the same threshold boundary as raw usage.
+		// Dependencies: shared in-memory projection state and context-overflow turn_end handler.
+		await withIsolatedAgentDir(async () => {
+			const sessionId = "context-overflow-projection-aware";
+			resetPendingProjectionSavings(sessionId);
+			addPendingProjectionSavings(sessionId, 2_000, {
+				branchLeafId: "leaf-1",
+				entryIds: ["entry-1"],
+			});
+			try {
+				const { turnEndHandler } = installContextOverflowTestHarness();
+				const context = createContextFake(
+					{
+						tokens: 151_000,
+						contextWindow: 200_000,
+					},
+					true,
+					sessionId,
+				);
+
+				const turnEndPromise = Promise.resolve(
+					turnEndHandler({ type: "turn_end" }, context.ctx),
+				);
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				context.compactCalls[0]?.options.onComplete?.({});
+				await turnEndPromise;
+
+				expect(context.compactCalls).toEqual([]);
+				expect(context.uiCalls).toEqual([]);
+			} finally {
+				resetPendingProjectionSavings(sessionId);
+			}
 		});
 	});
 

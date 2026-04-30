@@ -6,6 +6,7 @@ import {
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
+import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import {
 	sliceTextByWidth,
 	sliceTextSuffixByWidth,
@@ -108,8 +109,9 @@ interface FooterTheme {
 
 /** Context usage fields that the footer displays without owning context calculation. */
 interface FooterContextUsageState {
-	readonly tokens?: number | null;
-	readonly contextWindow?: number;
+	readonly tokens: number | null;
+	readonly contextWindow: number;
+	readonly percent: number | null;
 }
 
 /** Mutable session state updated by pi events and read by the footer renderer. */
@@ -158,6 +160,9 @@ interface FooterSessionContext {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
 	readonly model: FooterModelState | undefined;
+	readonly sessionManager: {
+		getSessionId(): string;
+	};
 	getContextUsage(): FooterContextUsageState | undefined;
 	readonly ui: {
 		setFooter(
@@ -375,7 +380,10 @@ function readFooterRenderState(
 			getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
 			NO_AGENT_LABEL,
 		thinkingLevel: pi.getThinkingLevel(),
-		contextUsage: ctx.getContextUsage(),
+		contextUsage: getProjectionAwareContextUsage(
+			ctx.sessionManager.getSessionId(),
+			ctx.getContextUsage(),
+		),
 	};
 }
 

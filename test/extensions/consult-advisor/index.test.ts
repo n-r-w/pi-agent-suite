@@ -79,6 +79,7 @@ interface ContextFake {
 		>;
 	};
 	readonly sessionManager: {
+		getSessionId(): string;
 		getEntries(): unknown[];
 		getBranch(): SessionEntry[];
 		getLeafId(): string | null;
@@ -245,6 +246,9 @@ function createContext(
 			},
 		},
 		sessionManager: {
+			getSessionId(): string {
+				return "consult-advisor-test-session";
+			},
 			getEntries(): unknown[] {
 				return entries;
 			},

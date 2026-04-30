@@ -5,10 +5,15 @@ import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { SessionEntry } from "@mariozechner/pi-coding-agent";
 import {
+	addPendingProjectionSavings,
 	type ContextProjectionConfig,
+	estimatePendingProjectionSavings,
+	getProjectionAwareContextUsage,
 	type MappedContextEntry,
 	projectContextMessages,
 	replayContextProjection,
+	resetPendingProjectionSavings,
+	setPendingProjectionSavings,
 } from "../../pi-package/shared/context-projection";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -108,7 +113,10 @@ function userMessage(text = "hello"): AgentMessage {
 }
 
 /** Creates an assistant tool-call message. */
-function assistantMessage(toolCallId: string, toolName = "bash"): AgentMessage {
+function assistantMessage(
+	toolCallId: string,
+	toolName = "bash",
+): Extract<AgentMessage, { role: "assistant" }> {
 	return {
 		role: "assistant",
 		content: [
@@ -150,6 +158,185 @@ function toolResultMessage(
 		timestamp: 3,
 	};
 }
+
+describe("projection-aware context usage", () => {
+	test("subtracts only pending projection savings from known context usage", () => {
+		// Purpose: UI and overflow checks must show provider-context size while provider usage is stale after projection.
+		// Input and expected output: 48k pending savings turns raw 130k usage into 82k and recomputes percent.
+		// Edge case: pending savings larger than raw tokens clamps usage to zero.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-usage";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-1"],
+		});
+
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: 47.79,
+			}),
+		).toEqual({
+			tokens: 82_000,
+			contextWindow: 272_000,
+			percent: (82_000 / 272_000) * 100,
+		});
+
+		addPendingProjectionSavings(sessionId, 100_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-2"],
+		});
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 90_000,
+				contextWindow: 272_000,
+				percent: (90_000 / 272_000) * 100,
+			}),
+		).toEqual({ tokens: 0, contextWindow: 272_000, percent: 0 });
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("preserves live pending savings during branch sync and deduplicates them after persistence", () => {
+		// Purpose: context sync must not lose a live projection before its custom entry is visible in the branch.
+		// Input and expected output: a live 48k saving remains after empty branch sync, then branch-backed sync for the same entry still subtracts 48k only once.
+		// Edge case: branch synchronization runs between provider context projection and custom entry visibility.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-live-sync";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-1"],
+		});
+
+		setPendingProjectionSavings(sessionId, 0, [], new Set(["leaf-1"]));
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: (130_000 / 272_000) * 100,
+			}),
+		).toEqual({
+			tokens: 82_000,
+			contextWindow: 272_000,
+			percent: (82_000 / 272_000) * 100,
+		});
+
+		setPendingProjectionSavings(
+			sessionId,
+			48_000,
+			["entry-1"],
+			new Set(["leaf-1"]),
+		);
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: (130_000 / 272_000) * 100,
+			}),
+		).toEqual({
+			tokens: 82_000,
+			contextWindow: 272_000,
+			percent: (82_000 / 272_000) * 100,
+		});
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("clears live pending savings when branch sync moves to another branch", () => {
+		// Purpose: live pending savings from one branch must not undercount context usage after tree navigation.
+		// Input and expected output: a live 48k saving anchored to branch A is removed when branch sync observes branch B.
+		// Edge case: branch B has no persisted pending projection state yet uses the same session id.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-branch-sync";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-a",
+			entryIds: ["entry-a"],
+		});
+
+		setPendingProjectionSavings(sessionId, 0, [], new Set(["leaf-b"]));
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: (130_000 / 272_000) * 100,
+			}),
+		).toEqual({
+			tokens: 130_000,
+			contextWindow: 272_000,
+			percent: (130_000 / 272_000) * 100,
+		});
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("keeps unknown context usage unknown while projection savings are pending", () => {
+		// Purpose: pending projection savings must not invent a token count when pi reports unknown usage.
+		// Input and expected output: null tokens stay null after pending savings are recorded.
+		// Edge case: post-compaction unknown usage uses the same null shape.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-null-usage";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-1"],
+		});
+
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: null,
+				contextWindow: 272_000,
+				percent: null,
+			}),
+		).toEqual({ tokens: null, contextWindow: 272_000, percent: null });
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("estimates pending savings only for projection state after the latest valid assistant usage", () => {
+		// Purpose: session reload must preserve the stale-usage correction only when provider usage has not caught up.
+		// Input and expected output: projection state after latest successful usage is pending; a later successful assistant clears it.
+		// Edge case: error assistant messages after projection do not clear pending savings.
+		// Dependencies: in-memory branch entries and shared token estimation.
+		const projectedBranch = [
+			messageEntry("01", assistantMessage("call-old"), null),
+			messageEntry(
+				"02",
+				toolResultMessage("call-old", "old output ".repeat(20)),
+				"01",
+			),
+			projectionStateEntry("03", "02", PLACEHOLDER, "02"),
+			messageEntry(
+				"04",
+				{ ...assistantMessage("call-error"), stopReason: "error" },
+				"03",
+			),
+			messageEntry(
+				"05",
+				{ ...assistantMessage("call-aborted"), stopReason: "aborted" },
+				"04",
+			),
+		];
+
+		expect(
+			estimatePendingProjectionSavings({
+				branchEntries: projectedBranch,
+				cwd: "/tmp/project",
+				config: PROJECTION_CONFIG,
+			}).savedTokens,
+		).toBeGreaterThan(0);
+
+		expect(
+			estimatePendingProjectionSavings({
+				branchEntries: [
+					...projectedBranch,
+					messageEntry("06", assistantMessage("call-new"), "05"),
+				],
+				cwd: "/tmp/project",
+				config: PROJECTION_CONFIG,
+			}).savedTokens,
+		).toBe(0);
+	});
+});
 
 describe("context projection replay", () => {
 	test("replays persisted placeholders when projection config is valid", async () => {

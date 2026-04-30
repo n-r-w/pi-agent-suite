@@ -3,6 +3,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import { readContextOverflowConfig } from "./config";
 
 /** Continuation message sent after successful preventive compaction. */
@@ -10,6 +11,7 @@ const CONTINUATION_MESSAGE =
 	"System message: Context summarization complete, continue";
 
 interface ContextOverflowSession {
+	readonly sessionManager: ExtensionContext["sessionManager"];
 	getContextUsage(): ExtensionContext["getContextUsage"] extends () => infer T
 		? T
 		: never;
@@ -32,7 +34,10 @@ export default function contextOverflow(pi: ExtensionAPI): void {
 		}
 
 		const session = ctx as unknown as ContextOverflowSession;
-		const usage = session.getContextUsage();
+		const usage = getProjectionAwareContextUsage(
+			session.sessionManager.getSessionId(),
+			session.getContextUsage(),
+		);
 		if (usage === undefined || usage.tokens === null) {
 			return;
 		}

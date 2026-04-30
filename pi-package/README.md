@@ -257,6 +257,8 @@ Options:
 - `enabled`: default `true`.
 - `model`: optional. Uses the current model when missing.
 - `reasoning`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `historySummaryReserveRatio`: optional. Defaults to `0.8`. Must be greater than `0` and less than or equal to `1`.
+- `turnPrefixSummaryReserveRatio`: optional. Defaults to `0.5`. Must be greater than `0` and less than or equal to `1`.
 - `systemPromptFile`: optional absolute custom prompt path.
 - `historyPromptFile`: optional absolute custom prompt path.
 - `updatePromptFile`: optional absolute custom prompt path.
@@ -267,6 +269,7 @@ How it works:
 - Replaces pi's default compaction flow.
 - Uses bundled prompts when custom prompt files are not set.
 - Sends the old conversation to the model as one conversation block to create or update the summary.
+- Sets summary `maxTokens` by multiplying pi compaction `reserveTokens` by the configured reserve ratio.
 - Stops startup when a configured custom prompt file path is not absolute.
 - Disables itself for other config or custom prompt file errors.
 
