@@ -41,9 +41,12 @@ export interface AgentRuntimeComposition {
 	setConsultAdvisorContribution(
 		contribution: PromptContribution | undefined,
 	): void;
+	setConveneCouncilContribution(
+		contribution: PromptContribution | undefined,
+	): void;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV3";
+const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV4";
 
 export const MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT =
 	"pi-harness:main-agent-contribution-change";
@@ -85,6 +88,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private runSubagentContribution: PromptContribution | undefined;
 	private runSubagentActiveToolFilter: ActiveToolFilter | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
+	private conveneCouncilContribution: PromptContribution | undefined;
 	private baselineActiveTools: string[] | undefined;
 
 	public constructor(private readonly pi: ExtensionAPI) {
@@ -99,6 +103,10 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 					),
 					resolvePromptContribution(
 						this.consultAdvisorContribution,
+						activeToolNames,
+					),
+					resolvePromptContribution(
+						this.conveneCouncilContribution,
 						activeToolNames,
 					),
 				])
@@ -163,6 +171,12 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		contribution: PromptContribution | undefined,
 	): void {
 		this.consultAdvisorContribution = contribution;
+	}
+
+	public setConveneCouncilContribution(
+		contribution: PromptContribution | undefined,
+	): void {
+		this.conveneCouncilContribution = contribution;
 	}
 
 	/** Applies dynamic tool filters after selected-agent restoration and before prompt composition. */

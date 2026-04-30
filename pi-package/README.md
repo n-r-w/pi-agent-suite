@@ -20,18 +20,23 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
+| `convene-council` | Yes | Lets two model participants discuss one question and return one bounded answer. |
 
 ## Best practices
 
-The most effective setup combines `main-agent-selection`, `run-subagent`, and `consult-advisor`.
+The most effective setup combines `main-agent-selection`, `run-subagent`, `consult-advisor`, and `convene-council`.
 
 Use `main-agent-selection` to choose a focused main agent for the current work. Use `run-subagent` to delegate narrow tasks to subagents. This keeps the main model focused and reduces context growth in large codebases, because investigation, extraction, review, and implementation tasks can run in separate subagent contexts.
 
 Use `consult-advisor` when a cheaper model needs an audit from a stronger model. The main model can ask the advisor to check assumptions, risks, or decisions without paying for the stronger model on every turn.
 
+Use `convene-council` when one answer benefits from two model participants challenging each other before the main model decides. It costs more and takes longer than `consult-advisor`, so reserve it for high-impact trade-offs, architecture choices, or risky interpretation questions.
+
 Use `context-projection` for long tool-heavy sessions. With suitable thresholds and summary mode, it can make the usable context behave like a much larger window, often close to doubling the effective available context, without noticeable LLM quality loss when projected outputs are old or non-critical.
 
 `consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, uses the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
+
+`convene-council` uses the same active branch context pattern, then gives LLM1 and LLM2 equivalent initial context and the same question. The participants exchange structured opinions until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
 
 ## How to connect to pi
 
@@ -283,7 +288,7 @@ Options:
 - `keepRecentTurns`: default `10`. Keeps this many recent tool-use turns unchanged.
 - `keepRecentTurnsPercent`: default `0.2`. Keeps this share of recent tool-use turns unchanged.
 - `minToolResultTokens`: default `2000`. Only larger tool results can be hidden.
-- `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` is always ignored.
+- `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` and `convene_council` are always ignored.
 - `placeholder`: default `[Result omitted. Run tool again if you want to see it]`.
 - `summary.enabled`: default `false`. Generates a short replacement summary before projection.
 - `summary.model`: optional. Uses the current model when missing or `null`.
@@ -306,7 +311,7 @@ How it works:
 - Replaces old large successful text-only tool results with the placeholder or an XML-wrapped generated summary that marks the full result as omitted. Summary is used only when it fits the summary model context window and reduces token count.
 - Stops startup when a configured summary prompt path is not absolute.
 - Keeps recent tool results visible.
-- Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, and configured ignored tool results visible.
+- Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, `convene_council` results, and configured ignored tool results visible.
 - Changes only what is sent to the model for the next request. It does not edit saved conversation history.
 - Shows UI-only chat progress while a new projection operation processes tool results.
 - Completion chat status shows only the additional savings from the latest projection operation.
@@ -420,4 +425,42 @@ How it works:
 - Calls the configured advisor model only when the request fits the advisor model context window.
 - Returns a clear error when the advisor request is too large.
 - Returns the advisor's visible answer.
+- Saves very large answers to a temporary file and returns a short result with the file path.
+
+### `convene-council`
+
+Why you need it:
+
+- Lets two model participants challenge each other before returning one answer.
+- Helps expose disagreement, missing information, and weak alternatives on high-impact questions.
+
+Config file: `~/.pi/agent/agent-suite/convene-council/config.json`
+
+Options:
+
+- `enabled`: default `true`. Enables the `convene_council` tool.
+- `llm1.model.id`: optional. Uses the current model when missing.
+- `llm1.model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `llm2.model.id`: optional. Uses the current model when missing.
+- `llm2.model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `participantIterationLimit`: default `3`. Maximum completed LLM1 and LLM2 discussion pairs.
+- `finalAnswerParticipant`: default `llm2`. Allowed values: `llm1`, `llm2`.
+- `responseDefectRetries`: default `1`. Retries malformed participant responses and defective final answers.
+- `providerRequestRetries`: default `4`. Retries provider request failures after the first failed attempt.
+- `providerRetryDelayMs`: default `1000`. Delay between provider retry attempts.
+
+Tool input:
+
+- `question`: question for both council participants.
+
+How it works:
+
+- Builds one base request from the active conversation branch.
+- Replays recorded `context-projection` placeholders or summaries when projection is active.
+- Removes the pending `convene_council` tool call from participant requests.
+- Sends equivalent initial context and the same question to LLM1 and LLM2.
+- Requires participant discussion responses in `<status>...</status><opinion>...</opinion>` format.
+- Stops when both participants report `AGREE` after reviewing the opponent or when the iteration limit is reached.
+- Requests a plain final answer from the configured final answer participant after agreement.
+- Returns `<answer1>...</answer1><answer2>...</answer2>` when the iteration limit is reached without agreement.
 - Saves very large answers to a temporary file and returns a short result with the file path.

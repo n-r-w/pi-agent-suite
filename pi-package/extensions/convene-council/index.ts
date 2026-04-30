@@ -1,0 +1,75 @@
+import { completeSimple as defaultCompleteSimple } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "typebox";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import { collectLoadedSkillRoots } from "../../shared/context-projection";
+import { readConveneCouncilRegistrationState } from "./config";
+import { TOOL_NAME } from "./constants";
+import { executeConveneCouncil } from "./loop";
+import { buildRuntimeGuidancePrompt } from "./prompts";
+import {
+	renderConveneCouncilCall,
+	renderConveneCouncilResult,
+} from "./rendering";
+import type {
+	ConveneCouncilDependencies,
+	ConveneCouncilParams,
+	CouncilContext,
+} from "./types";
+
+const ConveneCouncilParameters = Type.Object(
+	{
+		question: Type.String({
+			description: "Question to discuss with the council",
+		}),
+	},
+	{ additionalProperties: false },
+);
+
+/** Extension entry point for council consultation behavior. */
+export default function conveneCouncil(
+	pi: ExtensionAPI,
+	dependencies: ConveneCouncilDependencies = {
+		completeSimple: defaultCompleteSimple,
+	},
+): void {
+	const registrationState = readConveneCouncilRegistrationState();
+	if (registrationState.kind === "disabled") {
+		return;
+	}
+
+	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
+	let loadedSkillRoots: readonly string[] = [];
+
+	pi.on("before_agent_start", (event) => {
+		loadedSkillRoots = collectLoadedSkillRoots(event);
+	});
+
+	if (registrationState.kind === "enabled") {
+		getAgentRuntimeComposition(pi).setConveneCouncilContribution({
+			requiredToolName: TOOL_NAME,
+			prompt: buildRuntimeGuidancePrompt(),
+		});
+	}
+
+	pi.registerTool({
+		name: TOOL_NAME,
+		label: "Convene council",
+		description:
+			"Ask two participant LLMs to discuss one question over the same context until agreement or an iteration limit.",
+		parameters: ConveneCouncilParameters,
+		renderCall: renderConveneCouncilCall,
+		renderResult: renderConveneCouncilResult,
+		async execute(...[toolCallId, params, signal, _onUpdate, ctx]) {
+			return executeConveneCouncil({
+				completeSimple,
+				toolCallId,
+				params: params as ConveneCouncilParams,
+				signal,
+				ctx: ctx as CouncilContext,
+				currentThinkingLevel: pi.getThinkingLevel(),
+				loadedSkillRoots,
+			});
+		},
+	});
+}

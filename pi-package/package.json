@@ -34,7 +34,8 @@
 			"./extensions/context-overflow/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
-			"./extensions/consult-advisor/index.ts"
+			"./extensions/consult-advisor/index.ts",
+			"./extensions/convene-council/index.ts"
 		]
 	},
 	"peerDependencies": {

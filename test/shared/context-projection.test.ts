@@ -4,29 +4,58 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { SessionEntry } from "@mariozechner/pi-coding-agent";
-import { replayContextProjection } from "../../pi-package/shared/context-projection";
+import {
+	type ContextProjectionConfig,
+	type MappedContextEntry,
+	projectContextMessages,
+	replayContextProjection,
+} from "../../pi-package/shared/context-projection";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const CUSTOM_TYPE = "context-projection";
 const PLACEHOLDER = "[projected]";
+const PROJECTION_CONFIG: ContextProjectionConfig = {
+	enabled: true,
+	projectionRemainingTokens: 100_000,
+	keepRecentTurns: 0,
+	keepRecentTurnsPercent: 0,
+	minToolResultTokens: 0,
+	projectionIgnoredTools: [],
+	placeholder: PLACEHOLDER,
+	summary: {
+		enabled: false,
+		maxConcurrency: 1,
+		retryCount: 1,
+		retryDelayMs: 0,
+	},
+};
 
 /** Runs a test with an isolated pi agent directory. */
 async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-projection-replay-"));
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	try {
 		return await action(agentDir);
 	} finally {
-		if (previousAgentDir === undefined) {
-			delete process.env[AGENT_DIR_ENV];
-		} else {
-			process.env[AGENT_DIR_ENV] = previousAgentDir;
-		}
+		restoreEnv(AGENT_DIR_ENV, previousAgentDir);
+		restoreEnv(AGENT_SUITE_DIR_ENV, previousAgentSuiteDir);
 		await rm(agentDir, { recursive: true, force: true });
 	}
+}
+
+/** Restores an environment variable to its previous value. */
+function restoreEnv(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+		return;
+	}
+	process.env[key] = value;
 }
 
 /** Writes context-projection config into the isolated agent directory. */
@@ -107,11 +136,15 @@ function assistantMessage(toolCallId: string, toolName = "bash"): AgentMessage {
 }
 
 /** Creates a successful text tool result. */
-function toolResultMessage(toolCallId: string, text: string): AgentMessage {
+function toolResultMessage(
+	toolCallId: string,
+	text: string,
+	toolName = "bash",
+): AgentMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
-		toolName: "bash",
+		toolName,
 		content: [{ type: "text", text }],
 		isError: false,
 		timestamp: 3,
@@ -141,6 +174,108 @@ describe("context projection replay", () => {
 			expect(JSON.stringify(messages)).not.toContain("old output");
 			expect(JSON.stringify(messages)).toContain(PLACEHOLDER);
 		});
+	});
+
+	test("keeps protected council results visible during projection replay", async () => {
+		// Purpose: replay must not hide built-in protected tool results even when stale projection state contains their entry IDs.
+		// Input and expected output: convene_council output stays visible, while ordinary bash output replays its persisted placeholder.
+		// Edge case: both entries have persisted placeholders, but built-in protection takes precedence for the council result.
+		// Dependencies: isolated agent config and in-memory session entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry(
+					"02",
+					assistantMessage("call-council", "convene_council"),
+					"01",
+				),
+				messageEntry(
+					"03",
+					toolResultMessage(
+						"call-council",
+						"council output",
+						"convene_council",
+					),
+					"02",
+				),
+				messageEntry("04", assistantMessage("call-bash"), "03"),
+				messageEntry("05", toolResultMessage("call-bash", "bash output"), "04"),
+				projectionStateEntry("06", "03", "[hidden council]", "05"),
+				projectionStateEntry("07", "05", PLACEHOLDER, "06"),
+			];
+
+			const replayed = JSON.stringify(
+				await replayContextProjection({ branchEntries, cwd: "/tmp/project" }),
+			);
+
+			expect(replayed).toContain("council output");
+			expect(replayed).not.toContain("[hidden council]");
+			expect(replayed).not.toContain("bash output");
+			expect(replayed).toContain(PLACEHOLDER);
+		});
+	});
+
+	test("keeps protected council results visible during first-time projection discovery", () => {
+		// Purpose: projection discovery must never persist convene_council results as newly projected entries.
+		// Input and expected output: bash is projected, while convene_council remains visible and absent from newProjectedEntries.
+		// Edge case: discovery is enabled with zero recent-turn and token protections.
+		// Dependencies: direct shared projection decision helper and in-memory mapped context.
+		const mappedContext: readonly MappedContextEntry[] = [
+			{
+				entry: messageEntry(
+					"01",
+					assistantMessage("call-council", "convene_council"),
+					null,
+				),
+				message: assistantMessage("call-council", "convene_council"),
+			},
+			{
+				entry: messageEntry(
+					"02",
+					toolResultMessage(
+						"call-council",
+						"council output",
+						"convene_council",
+					),
+					"01",
+				),
+				message: toolResultMessage(
+					"call-council",
+					"council output",
+					"convene_council",
+				),
+			},
+			{
+				entry: messageEntry("03", assistantMessage("call-bash"), "02"),
+				message: assistantMessage("call-bash"),
+			},
+			{
+				entry: messageEntry(
+					"04",
+					toolResultMessage("call-bash", "bash output"),
+					"03",
+				),
+				message: toolResultMessage("call-bash", "bash output"),
+			},
+		];
+
+		const decision = projectContextMessages({
+			mappedContext,
+			projectedPlaceholdersByEntryId: new Map(),
+			config: PROJECTION_CONFIG,
+			loadedSkillRoots: [],
+			cwd: "/tmp/project",
+			discoverNewEntries: true,
+		});
+		const projected = JSON.stringify(decision.messages);
+
+		expect(projected).toContain("council output");
+		expect(projected).not.toContain("bash output");
+		expect(projected).toContain(PLACEHOLDER);
+		expect(decision.newProjectedEntries).toEqual([
+			{ entryId: "04", placeholder: PLACEHOLDER },
+		]);
 	});
 
 	test("returns full context when projection config is disabled or invalid", async () => {

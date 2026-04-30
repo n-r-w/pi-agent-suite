@@ -51,11 +51,11 @@ async function importIsolatedRuntimeCompositionModule(
 
 test("does not reuse stale runtime composition objects from previous reloads", async () => {
 	// Purpose: /reload must not reuse an older runtime composition object that lacks newly added methods.
-	// Input and expected output: an old singleton at the previous event-bus key is ignored and a new composition with active-tool filtering is created.
+	// Input and expected output: an old singleton at the previous event-bus key is ignored and a new composition with council contribution support is created.
 	// Edge case: the stale property may be non-configurable because previous versions stored it as a permanent event-bus property.
 	// Dependencies: this test uses the real shared module and an ExtensionAPI fake.
 	const { pi, handlers } = createCompositionApiFake();
-	Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV2", {
+	Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV3", {
 		configurable: false,
 		enumerable: false,
 		value: {
@@ -68,12 +68,13 @@ test("does not reuse stale runtime composition objects from previous reloads", a
 	const composition = module.getAgentRuntimeComposition(pi);
 
 	expect(typeof composition.setRunSubagentActiveToolFilter).toBe("function");
+	expect(typeof composition.setConveneCouncilContribution).toBe("function");
 	expect(handlers).toHaveLength(1);
 });
 
 test("shares one runtime composition across isolated module instances", async () => {
 	// Purpose: split pi package entry points must coordinate through one runtime composition even when the shared module is loaded more than once.
-	// Input and expected output: one isolated module sets the main-agent contribution, another sets run-subagent contribution, and one handler composes both.
+	// Input and expected output: isolated modules set main-agent, run-subagent, and council contributions, and one handler composes all.
 	// Edge case: duplicate module instances must not create duplicate before_agent_start handlers with disconnected state.
 	// Dependencies: this test uses Bun dynamic imports and an ExtensionAPI fake; it does not depend on extension load order.
 	const moduleA = await importIsolatedRuntimeCompositionModule("a");
@@ -90,12 +91,13 @@ test("shares one runtime composition across isolated module instances", async ()
 		buildPrompt: () =>
 			compositionB.getMainAgentContribution()?.agent?.agents?.join(","),
 	});
+	compositionB.setConveneCouncilContribution({ prompt: "Council prompt" });
 
 	expect(compositionB.getMainAgentContribution()?.agent?.agents).toEqual([
 		"helper",
 	]);
 	expect(handlers).toHaveLength(1);
 	expect(await handlers[0]?.handler({ systemPrompt: "Base" }, {})).toEqual({
-		systemPrompt: "Base\n\nMain prompt\n\nhelper",
+		systemPrompt: "Base\n\nMain prompt\n\nhelper\n\nCouncil prompt",
 	});
 });

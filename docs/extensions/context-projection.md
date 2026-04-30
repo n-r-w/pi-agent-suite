@@ -217,6 +217,7 @@ Rules:
 - `keepRecentTurnsPercent` must be a number from `0` to `1` when present.
 - `minToolResultTokens` must be a non-negative integer when present.
 - `projectionIgnoredTools` must be a duplicate-free array of non-empty strings when present.
+- `consult_advisor` and `convene_council` results always stay visible even when `projectionIgnoredTools` does not list them.
 - `placeholder` must be a non-empty string after whitespace is ignored.
 - `summary` must be an object when present.
 - `summary.enabled` must be a boolean value when present.

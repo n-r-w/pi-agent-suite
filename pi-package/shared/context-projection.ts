@@ -67,11 +67,15 @@ const SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY = "systemPromptFile";
 /** Config key for the custom summary user prompt path. */
 const SUMMARY_USER_PROMPT_FILE_CONFIG_KEY = "userPromptFile";
 
-/** Advisor tool output must stay visible because it carries decision-critical guidance. */
+/** Advisor and council outputs must stay visible because they carry decision-critical guidance. */
 const CONSULT_ADVISOR_TOOL_NAME = "consult_advisor";
+const CONVENE_COUNCIL_TOOL_NAME = "convene_council";
 
 /** Built-in tool names whose results are excluded from projection. */
-const BUILT_IN_PROJECTION_IGNORED_TOOLS = [CONSULT_ADVISOR_TOOL_NAME] as const;
+const BUILT_IN_PROJECTION_IGNORED_TOOLS = [
+	CONSULT_ADVISOR_TOOL_NAME,
+	CONVENE_COUNCIL_TOOL_NAME,
+] as const;
 
 /** Default remaining-token threshold for explicit projection enablement. */
 const DEFAULT_PROJECTION_REMAINING_TOKENS = 49_152;
