@@ -17,6 +17,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `custom-compaction` | Yes | Keeps long conversations useful after compaction by using better summary prompts. |
 | `context-projection` | No | Helps long sessions continue when old large tool outputs would otherwise fill the model context. |
 | `context-overflow` | Yes | Runs compaction before the next provider request fails because the context is already too large. |
+| `completion-sound` | Yes | Plays a completion sound only when the top-level agent finishes. |
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
@@ -340,6 +341,30 @@ How it works:
 - Uses the normal compaction flow, so `custom-compaction` can still provide the summary prompt.
 - Sends `System message: Context summarization complete, continue` after successful compaction.
 - Prevents repeated or parallel compactions while usage stays below the limit.
+
+### `completion-sound`
+
+Why you need it:
+
+- Plays a sound when the top-level pi agent finishes a prompt.
+- Suppresses completion sounds in child subagent processes so delegated work does not create duplicate sounds.
+
+Config file: `~/.pi/agent/agent-suite/completion-sound/config.json`
+
+Options:
+
+- `enabled`: default `true`. Enables or disables all behavior owned by this extension.
+- `command`: optional non-empty string. Overrides the platform default playback executable.
+- `args`: optional array of strings. Arguments passed to `command`. `command` is required when `args` is set.
+
+How it works:
+
+- Runs on `agent_end`.
+- Skips playback when `PI_SUBAGENT_AGENT_ID` or `PI_SUBAGENT_DEPTH` exists.
+- Uses `afplay /System/Library/Sounds/Glass.aiff` on macOS when config is missing.
+- Uses `paplay /usr/share/sounds/freedesktop/stereo/complete.oga` on Linux when config is missing.
+- Uses `powershell.exe` with `[console]::beep(880,180)` on Windows when config is missing.
+- Ignores playback process failures so sound issues do not interrupt the agent.
 
 ### `main-agent-selection`
 
