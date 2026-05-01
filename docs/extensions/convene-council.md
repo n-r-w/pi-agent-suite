@@ -15,16 +15,19 @@ Use it when a high-impact question benefits from two model participants comparin
 - Uses the current session model for each participant when that participant has no configured model ID.
 - Uses the current thinking level for each participant when that participant has no configured thinking level.
 - Allows LLM1 and LLM2 to use the same model or different configured models.
-- Builds one base transcript from active branch conversation messages.
-- Replays recorded `context-projection` placeholders or summaries before participant calls.
-- Removes the pending `convene_council` tool call from participant transcripts.
-- Gives LLM1 and LLM2 equivalent base context.
+- Builds one external `<context>` package from active branch conversation messages.
+- Treats `<context>` as external evidence, not participant session memory, tool availability, or instructions.
+- Replays recorded `context-projection` placeholders or summaries before rendering `<context>`.
+- Removes only the current pending `convene_council` tool call and matching result from `<context>`.
+- Keeps previous completed `convene_council` results in `<context>` as prior evidence.
+- Sends the same `<context>` package to LLM1 and LLM2 in the first participant prompt only.
+- Does not seed participant sessions with main-agent conversation messages.
 - Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to participant system prompts.
 - Starts isolated child `pi --mode rpc` sessions for participant prompts.
 - Shares only tools configured by `tools` with each participant.
+- Allows participants to use configured tools only to gather evidence for the council question.
 - Sends no tools to participants when `tools` is missing or empty.
 - Sends the council question through the first-turn task prompt.
-- Uses a first-turn participant system prompt without structured output rules.
 - Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
 - Runs mutual missing-information answers and their clarification reviews in parallel.
@@ -51,6 +54,9 @@ Use it when a high-impact question benefits from two model participants comparin
 - Does not show raw transcripts, provider payloads, token deltas, or unbounded intermediate answers in progress rows.
 - Publishes prompt guidance through `Agent Runtime Composition` only when `convene_council` is active for the current effective agent.
 - Does not call `pi.setActiveTools()` directly.
+- Estimates first participant requests before child startup. The estimate includes the participant system prompt, first task prompt, external `<context>`, and configured tool schemas.
+- Summarizes only the external `<context>` package with Pi `generateSummary(...)` when the first request exceeds `contextWindowUsageLimit`.
+- Fails before child startup when summary input cannot fit the summary model or when the summarized first request still exceeds the participant limit.
 - Does not own main-agent selection, `run_subagent`, or `consult_advisor`.
 
 ## Configuration
@@ -75,7 +81,14 @@ File: `~/.pi/agent/agent-suite/convene-council/config.json`.
   "participantIterationLimit": 3,
   "finalAnswerParticipant": "llm2",
   "responseDefectRetries": 1,
-  "tools": ["read", "grep"]
+  "tools": ["read", "grep"],
+  "contextWindowUsageLimit": 0.7,
+  "contextSummary": {
+    "model": {
+      "id": "provider/summary-model",
+      "thinking": "medium"
+    }
+  }
 }
 ```
 
@@ -92,6 +105,9 @@ Options:
 - `finalAnswerParticipant`: default `llm2`. Allowed values: `llm1`, `llm2`.
 - `responseDefectRetries`: default `1`. Must be a non-negative integer.
 - `tools`: optional array of non-empty tool-name patterns. Missing or empty means participants receive no tools. Exact tool names and constrained wildcard patterns are allowed. Full wildcard `*` is rejected.
+- `contextWindowUsageLimit`: default `0.7`. Must be greater than `0` and less than or equal to `1`. The limit is applied to each participant model context window before child startup.
+- `contextSummary.model.id`: optional `provider/model` string. Uses the current model when missing and summarization is needed.
+- `contextSummary.model.thinking`: optional thinking level. Uses the current thinking level when missing and summarization is needed.
 
 Allowed thinking values:
 
@@ -179,8 +195,11 @@ Tests must verify:
 - public `convene_council` schema with only `question`;
 - default enabled behavior when config is missing;
 - participant model configuration and current-model fallback;
-- context parity for LLM1 and LLM2;
-- pending `convene_council` tool call removal from participant transcripts;
+- equivalent first-prompt external `<context>` for LLM1 and LLM2;
+- participant sessions without main-agent conversation messages;
+- pending current `convene_council` tool call removal from external `<context>`;
+- previous completed `convene_council` results retained in external `<context>`;
+- context-size preflight, summary trigger, real Pi summary prompt envelope overflow, post-summary overflow, and tool schema budgeting;
 - agreement only after opponent review;
 - default final answer participant `llm2`;
 - configured final answer participant `llm1`;

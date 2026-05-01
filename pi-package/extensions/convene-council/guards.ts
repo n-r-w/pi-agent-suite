@@ -51,6 +51,11 @@ export function isNonNegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
+/** Returns true when a runtime value is a context-window fraction in the accepted range. */
+export function isContextWindowUsageLimit(value: unknown): value is number {
+	return typeof value === "number" && value > 0 && value <= 1;
+}
+
 /** Returns true when a Node.js file operation failed because the target is absent. */
 export function isFileNotFoundError(error: unknown): boolean {
 	return (

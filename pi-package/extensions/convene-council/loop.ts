@@ -1,8 +1,17 @@
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { Message } from "@mariozechner/pi-ai";
+import type {
+	AgentMessage,
+	AgentToolResult,
+} from "@mariozechner/pi-agent-core";
+import type { Context, Tool } from "@mariozechner/pi-ai";
+import { generateSummary } from "@mariozechner/pi-coding-agent";
+import { escapeUTF8 } from "entities";
+import { estimateSerializedInputTokens } from "../../shared/context-size";
 import { readConveneCouncilConfig } from "./config";
-import { ISSUE_PREFIX } from "./constants";
-import { buildBaseCouncilMessages, createParticipantState } from "./context";
+import { COUNCIL_CONTEXT_TOO_LARGE_ERROR, ISSUE_PREFIX } from "./constants";
+import {
+	buildExternalCouncilContextPackage,
+	createParticipantState,
+} from "./context";
 import { parseThinking } from "./guards";
 import {
 	type CouncilProgressReporter,
@@ -24,25 +33,32 @@ import {
 	requestMissingInformationResponse,
 	requestParticipantDiscussion,
 } from "./provider";
-import { resolveCouncilRuntime } from "./runtime";
-import { seedParticipantSessions } from "./session";
+import { resolveContextSummaryRuntime, resolveCouncilRuntime } from "./runtime";
+import { createParticipantSessions } from "./session";
 import { resolveCouncilToolArgsForNames } from "./startup";
+import {
+	createSummarySourceMessage,
+	validateSummaryInputSize,
+} from "./summary-preflight";
 import { formatToolOutput } from "./tool-output";
 import type {
 	AcceptedParticipantResponse,
 	ChildStartupPlan,
+	ContextSummaryGenerator,
 	ConveneCouncilConfig,
 	CouncilIssue,
 	CouncilRuntime,
 	ExecuteConveneCouncilOptions,
 	ParticipantRunner,
 	ParticipantRunnerFactory,
+	ParticipantRuntime,
 	ParticipantState,
 } from "./types";
 
 /** Executes the bounded two-participant council loop. */
 export async function executeConveneCouncil({
 	createParticipantRunner,
+	generateContextSummary,
 	resolveStartupPlan,
 	toolCallId,
 	params,
@@ -51,7 +67,7 @@ export async function executeConveneCouncil({
 	currentThinkingLevel,
 	loadedSkillRoots,
 	contextFiles,
-	availableToolNames,
+	availableTools,
 	onUpdate,
 }: ExecuteConveneCouncilOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readConveneCouncilConfig();
@@ -78,7 +94,7 @@ export async function executeConveneCouncil({
 
 	const toolArgs = resolveCouncilToolArgsForNames(
 		configResult.config,
-		availableToolNames,
+		availableTools.map((tool) => tool.name),
 	);
 	if ("issue" in toolArgs) {
 		throw reportToolError(ctx, toolArgs.issue);
@@ -93,13 +109,14 @@ export async function executeConveneCouncil({
 	});
 	progress.setPhase("preparing context");
 
-	const baseMessages = await buildBaseCouncilMessages({
+	const externalContextPackage = await buildExternalCouncilContextPackage({
 		ctx,
 		toolCallId,
 		loadedSkillRoots,
 	});
-	return runCouncilWithSeededParticipants({
-		baseMessages,
+	return runCouncilWithOwnedParticipants({
+		externalContextPackage,
+		...(generateContextSummary === undefined ? {} : { generateContextSummary }),
 		config: configResult.config,
 		contextFiles,
 		createParticipantRunner,
@@ -110,12 +127,16 @@ export async function executeConveneCouncil({
 		signal,
 		startupPlan,
 		toolArgs: toolArgs.args,
+		tools: selectParticipantTools(toolArgs.args, availableTools),
 	});
 }
 
 /** Creates temporary participant sessions, runs the council, and cleans every owned resource. */
-async function runCouncilWithSeededParticipants(options: {
-	readonly baseMessages: readonly Message[];
+async function runCouncilWithOwnedParticipants(options: {
+	readonly externalContextPackage: string;
+	readonly generateContextSummary?:
+		| ExecuteConveneCouncilOptions["generateContextSummary"]
+		| undefined;
 	readonly config: ConveneCouncilConfig;
 	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
 	readonly createParticipantRunner: ParticipantRunnerFactory;
@@ -126,22 +147,28 @@ async function runCouncilWithSeededParticipants(options: {
 	readonly signal: AbortSignal | undefined;
 	readonly startupPlan: ChildStartupPlan;
 	readonly toolArgs: readonly string[];
+	readonly tools: readonly Tool[];
 }): Promise<AgentToolResult<unknown>> {
-	const seededSessions = await seedParticipantSessions({
+	const preparedContext = await prepareExternalContextForFirstPrompt(options);
+	if ("issue" in preparedContext) {
+		throw reportToolError(options.ctx, preparedContext.issue);
+	}
+
+	const participantSessions = await createParticipantSessions({
 		cwd: options.ctx.cwd,
-		messages: options.baseMessages,
 	});
 	const runners: ParticipantRunner[] = [];
 	try {
 		const llm1Runner = await options.createParticipantRunner({
 			participantId: "llm1",
 			runtime: options.runtime.llm1,
-			sessionFile: seededSessions.sessions.llm1.sessionFile,
-			sessionDir: seededSessions.sessions.llm1.sessionDir,
+			sessionFile: participantSessions.sessions.llm1.sessionFile,
+			sessionDir: participantSessions.sessions.llm1.sessionDir,
 			systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
 			config: options.config,
 			startupPlan: options.startupPlan,
 			toolArgs: options.toolArgs,
+			tools: options.tools,
 			ctx: options.ctx,
 			signal: options.signal,
 		});
@@ -149,41 +176,219 @@ async function runCouncilWithSeededParticipants(options: {
 		const llm2Runner = await options.createParticipantRunner({
 			participantId: "llm2",
 			runtime: options.runtime.llm2,
-			sessionFile: seededSessions.sessions.llm2.sessionFile,
-			sessionDir: seededSessions.sessions.llm2.sessionDir,
+			sessionFile: participantSessions.sessions.llm2.sessionFile,
+			sessionDir: participantSessions.sessions.llm2.sessionDir,
 			systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
 			config: options.config,
 			startupPlan: options.startupPlan,
 			toolArgs: options.toolArgs,
+			tools: options.tools,
 			ctx: options.ctx,
 			signal: options.signal,
 		});
 		runners.push(llm2Runner);
 		return await runCouncilIterations({
-			llm1: createParticipantState(
-				"llm1",
-				options.runtime.llm1,
-				llm1Runner,
-				options.baseMessages,
-			),
-			llm2: createParticipantState(
-				"llm2",
-				options.runtime.llm2,
-				llm2Runner,
-				options.baseMessages,
-			),
+			llm1: createParticipantState("llm1", options.runtime.llm1, llm1Runner),
+			llm2: createParticipantState("llm2", options.runtime.llm2, llm2Runner),
 			question: options.question,
 			config: options.config,
 			signal: options.signal,
 			ctx: options.ctx,
 			contextFiles: options.contextFiles,
+			externalContextPackage: preparedContext.contextPackage,
 			progress: options.progress,
 			remainingIterations: options.config.participantIterationLimit,
 		});
 	} finally {
 		await Promise.allSettled(runners.map((runner) => runner.dispose()));
-		await seededSessions.cleanup();
+		await participantSessions.cleanup();
 	}
+}
+
+/** Selects the concrete tool schemas sent to child participants from resolved CLI tool args. */
+function selectParticipantTools(
+	toolArgs: readonly string[],
+	availableTools: ExecuteConveneCouncilOptions["availableTools"],
+): readonly Tool[] {
+	const toolsFlagIndex = toolArgs.indexOf("--tools");
+	const toolsValue =
+		toolsFlagIndex === -1 ? undefined : toolArgs[toolsFlagIndex + 1];
+	if (toolsValue === undefined) {
+		return [];
+	}
+	const selectedNames = new Set(
+		toolsValue.split(",").filter((toolName) => toolName.length > 0),
+	);
+	return availableTools
+		.filter((tool) => selectedNames.has(tool.name))
+		.map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+		}));
+}
+
+/** Prepares the external context package so both first participant requests fit their budgets. */
+async function prepareExternalContextForFirstPrompt(options: {
+	readonly externalContextPackage: string;
+	readonly generateContextSummary?: ContextSummaryGenerator | undefined;
+	readonly config: ConveneCouncilConfig;
+	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
+	readonly ctx: ExecuteConveneCouncilOptions["ctx"];
+	readonly question: string;
+	readonly runtime: CouncilRuntime;
+	readonly signal: AbortSignal | undefined;
+	readonly tools: readonly Tool[];
+}): Promise<{ readonly contextPackage: string } | { readonly issue: string }> {
+	if (firstParticipantRequestsFit(options, options.externalContextPackage)) {
+		return { contextPackage: options.externalContextPackage };
+	}
+
+	const summaryRuntime = resolveContextSummaryRuntime(
+		options.ctx,
+		options.config,
+		options.runtime.llm1.thinking,
+	);
+	if ("issue" in summaryRuntime) {
+		return summaryRuntime;
+	}
+
+	const reserveTokens = calculateSummaryReserveTokens(options);
+	if (reserveTokens <= 0) {
+		return { issue: COUNCIL_CONTEXT_TOO_LARGE_ERROR };
+	}
+
+	const summaryInputIssue = validateSummaryInputSize({
+		contextPackage: options.externalContextPackage,
+		runtime: summaryRuntime.runtime,
+		reserveTokens,
+	});
+	if (summaryInputIssue !== undefined) {
+		return { issue: summaryInputIssue };
+	}
+
+	const summaryGenerator =
+		options.generateContextSummary ?? defaultContextSummary;
+	const summary = await summaryGenerator({
+		contextPackage: options.externalContextPackage,
+		runtime: summaryRuntime.runtime,
+		reserveTokens,
+		signal: options.signal,
+		ctx: options.ctx,
+	});
+	const summarizedContextPackage = `<context>\n<summary>\n${escapeUTF8(summary)}\n</summary>\n</context>`;
+	return firstParticipantRequestsFit(options, summarizedContextPackage)
+		? { contextPackage: summarizedContextPackage }
+		: { issue: COUNCIL_CONTEXT_TOO_LARGE_ERROR };
+}
+
+/** Returns true when both participant first requests fit the configured budget. */
+function firstParticipantRequestsFit(
+	options: {
+		readonly config: ConveneCouncilConfig;
+		readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
+		readonly question: string;
+		readonly runtime: CouncilRuntime;
+		readonly tools: readonly Tool[];
+	},
+	contextPackage: string,
+): boolean {
+	return [options.runtime.llm1, options.runtime.llm2].every((runtime) => {
+		const estimate = estimateFirstParticipantRequestTokens({
+			contextFiles: options.contextFiles,
+			contextPackage,
+			question: options.question,
+			runtime,
+			tools: options.tools,
+		});
+		return estimate <= getParticipantTokenLimit(runtime, options.config);
+	});
+}
+
+/** Estimates the model-visible first request for one participant. */
+function estimateFirstParticipantRequestTokens(options: {
+	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
+	readonly contextPackage: string;
+	readonly question: string;
+	readonly runtime: ParticipantRuntime;
+	readonly tools: readonly Tool[];
+}): number {
+	const context: Context = {
+		systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
+		messages: [
+			{
+				role: "user",
+				content: buildInitialOpinionTask(
+					options.question,
+					options.contextPackage,
+				),
+				timestamp: Date.now(),
+			},
+		],
+		tools: [...options.tools],
+	};
+	return estimateSerializedInputTokens(
+		context,
+		options.runtime.model.id,
+		options.runtime.model.provider,
+	);
+}
+
+/** Returns the configured first-request token budget for one participant. */
+function getParticipantTokenLimit(
+	runtime: ParticipantRuntime,
+	config: ConveneCouncilConfig,
+): number {
+	return Math.floor(
+		runtime.model.contextWindow * config.contextWindowUsageLimit,
+	);
+}
+
+/** Computes the summary output reserve from the stricter participant budget. */
+function calculateSummaryReserveTokens(options: {
+	readonly config: ConveneCouncilConfig;
+	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
+	readonly question: string;
+	readonly runtime: CouncilRuntime;
+	readonly tools: readonly Tool[];
+}): number {
+	const emptyContextPackage = "<context>\n</context>";
+	return Math.min(
+		...([options.runtime.llm1, options.runtime.llm2] as const).map(
+			(runtime) =>
+				getParticipantTokenLimit(runtime, options.config) -
+				estimateFirstParticipantRequestTokens({
+					contextFiles: options.contextFiles,
+					contextPackage: emptyContextPackage,
+					question: options.question,
+					runtime,
+					tools: options.tools,
+				}),
+		),
+	);
+}
+
+/** Uses Pi compaction summarization for the rendered external context package. */
+async function defaultContextSummary(
+	request: Parameters<ContextSummaryGenerator>[0],
+): Promise<string> {
+	const auth = await request.ctx.modelRegistry.getApiKeyAndHeaders(
+		request.runtime.model,
+	);
+	if (!auth.ok) {
+		throw new Error(`context summary model auth unavailable: ${auth.error}`);
+	}
+	return generateSummary(
+		[createSummarySourceMessage(request.contextPackage) as AgentMessage],
+		request.runtime.model,
+		request.reserveTokens,
+		auth.apiKey ?? "",
+		auth.headers,
+		request.signal,
+		undefined,
+		undefined,
+		request.runtime.thinking,
+	);
 }
 
 /** Runs council iterations sequentially because every pair depends on prior opinions. */
@@ -291,7 +496,10 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 	options.progress.setPhase("A initial opinion", options.iteration);
 	const llm1Promise = requestInitialOpinion({
 		participant: options.llm1,
-		task: buildInitialOpinionTask(options.question),
+		task: buildInitialOpinionTask(
+			options.question,
+			options.externalContextPackage,
+		),
 		config: options.config,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
@@ -306,7 +514,10 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 	options.progress.setPhase("B initial opinion", options.iteration);
 	const llm2Promise = requestInitialOpinion({
 		participant: options.llm2,
-		task: buildInitialOpinionTask(options.question),
+		task: buildInitialOpinionTask(
+			options.question,
+			options.externalContextPackage,
+		),
 		config: options.config,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
@@ -672,6 +883,7 @@ interface BaseCouncilOptions {
 	readonly llm1: ParticipantState;
 	readonly llm2: ParticipantState;
 	readonly question: string;
+	readonly externalContextPackage: string;
 	readonly config: ConveneCouncilConfig;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];

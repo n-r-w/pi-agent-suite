@@ -1,32 +1,28 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Message } from "@mariozechner/pi-ai";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import type { ParticipantId } from "./types";
 
-const SESSION_ENTRY_ID_BYTES = 4;
-
 /** Owns the temporary session files created for one council run. */
-export interface ParticipantSessionSeed {
+export interface ParticipantSessionSet {
 	readonly rootDir: string;
 	readonly sessions: Record<ParticipantId, ParticipantSessionFile>;
 	cleanup(): Promise<void>;
 }
 
-/** Identifies one seeded participant session file. */
+/** Identifies one participant-owned session file. */
 export interface ParticipantSessionFile {
 	readonly participantId: ParticipantId;
 	readonly sessionDir: string;
 	readonly sessionFile: string;
 }
 
-/** Creates persisted participant sessions from the parent context snapshot. */
-export async function seedParticipantSessions(options: {
+/** Creates persisted participant-owned sessions without parent transcript messages. */
+export async function createParticipantSessions(options: {
 	readonly cwd: string;
-	readonly messages: readonly Message[];
-}): Promise<ParticipantSessionSeed> {
+}): Promise<ParticipantSessionSet> {
 	const rootDir = await mkdtemp(join(tmpdir(), "pi-convene-council-"));
 	try {
 		const sessions = {
@@ -52,49 +48,18 @@ async function writeParticipantSession(
 	participantId: ParticipantId,
 	options: {
 		readonly cwd: string;
-		readonly messages: readonly Message[];
 	},
 ): Promise<ParticipantSessionFile> {
 	const sessionDir = join(rootDir, participantId);
 	await mkdir(sessionDir, { recursive: true });
 	const sessionFile = join(sessionDir, `${Date.now()}_${randomUUID()}.jsonl`);
-	const lines = [
-		JSON.stringify({
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: randomUUID(),
-			timestamp: new Date().toISOString(),
-			cwd: options.cwd,
-		}),
-		...options.messages.map((message, index) =>
-			JSON.stringify({
-				type: "message",
-				id: createEntryId(),
-				parentId: index === 0 ? null : undefined,
-				timestamp: new Date(message.timestamp ?? Date.now()).toISOString(),
-				message,
-			}),
-		),
-	];
-
-	let previousId: string | null = null;
-	const entries = lines.map((line, index) => {
-		if (index === 0) {
-			return line;
-		}
-		const entry = JSON.parse(line) as {
-			id: string;
-			parentId: string | null | undefined;
-		};
-		entry.parentId = previousId;
-		previousId = entry.id;
-		return JSON.stringify(entry);
+	const header = JSON.stringify({
+		type: "session",
+		version: CURRENT_SESSION_VERSION,
+		id: randomUUID(),
+		timestamp: new Date().toISOString(),
+		cwd: options.cwd,
 	});
-	await writeFile(sessionFile, `${entries.join("\n")}\n`, "utf8");
+	await writeFile(sessionFile, `${header}\n`, "utf8");
 	return { participantId, sessionDir, sessionFile };
-}
-
-/** Creates the compact entry IDs used by Pi session files. */
-function createEntryId(): string {
-	return randomBytes(SESSION_ENTRY_ID_BYTES).toString("hex");
 }

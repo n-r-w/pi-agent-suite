@@ -189,10 +189,10 @@ export function createCompletionQueue(
 						{
 							systemPrompt: options.systemPrompt,
 							messages: [
-								...readSeedMessages(options.sessionFile),
+								...readSessionMessages(options.sessionFile),
 								{ role: "user", content: task, timestamp: Date.now() },
 							],
-							tools: [],
+							tools: [...options.tools],
 						},
 						{
 							...(signal === undefined ? {} : { signal }),
@@ -209,8 +209,8 @@ export function createCompletionQueue(
 	};
 }
 
-/** Reads seeded participant context messages from a temporary session file. */
-function readSeedMessages(sessionFile: string): Context["messages"] {
+/** Reads participant-owned session messages from a temporary session file. */
+function readSessionMessages(sessionFile: string): Context["messages"] {
 	return parseSessionEntries(readFileSync(sessionFile, "utf8")).flatMap(
 		(entry) => (entry.type === "message" ? [entry.message] : []),
 	) as Context["messages"];

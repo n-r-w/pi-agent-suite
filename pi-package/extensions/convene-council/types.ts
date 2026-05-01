@@ -4,8 +4,9 @@ import type {
 	AssistantMessage,
 	Message,
 	Model,
+	Tool,
 } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
 import type { ProjectContextFile } from "../../shared/project-context-prompt";
 import type {
 	PARTICIPANT_IDS,
@@ -21,6 +22,7 @@ export type ParticipantStatus = (typeof PARTICIPANT_STATUSES)[number];
 
 export interface ConveneCouncilDependencies {
 	readonly createParticipantRunner?: ParticipantRunnerFactory;
+	readonly generateContextSummary?: ContextSummaryGenerator;
 	readonly resolveStartupPlan?: () =>
 		| ChildStartupPlan
 		| { readonly issue: string };
@@ -39,6 +41,18 @@ export interface ParticipantRunner {
 	dispose(): Promise<void>;
 }
 
+export interface ContextSummaryRequest {
+	readonly contextPackage: string;
+	readonly runtime: ParticipantRuntime;
+	readonly reserveTokens: number;
+	readonly signal: AbortSignal | undefined;
+	readonly ctx: CouncilContext;
+}
+
+export type ContextSummaryGenerator = (
+	request: ContextSummaryRequest,
+) => Promise<string>;
+
 export type ParticipantRunnerFactory = (options: {
 	readonly participantId: ParticipantId;
 	readonly runtime: ParticipantRuntime;
@@ -48,6 +62,7 @@ export type ParticipantRunnerFactory = (options: {
 	readonly config: ConveneCouncilConfig;
 	readonly startupPlan: ChildStartupPlan;
 	readonly toolArgs: readonly string[];
+	readonly tools: readonly Tool[];
 	readonly ctx: CouncilContext;
 	readonly signal: AbortSignal | undefined;
 }) => Promise<ParticipantRunner>;
@@ -65,6 +80,10 @@ export interface ParticipantConfig {
 	readonly model?: ParticipantModelConfig;
 }
 
+export interface ContextSummaryConfig {
+	readonly model?: ParticipantModelConfig;
+}
+
 export interface ConveneCouncilConfig {
 	readonly llm1: ParticipantConfig;
 	readonly llm2: ParticipantConfig;
@@ -72,6 +91,8 @@ export interface ConveneCouncilConfig {
 	readonly finalAnswerParticipant: ParticipantId;
 	readonly responseDefectRetries: number;
 	readonly tools: readonly string[] | undefined;
+	readonly contextWindowUsageLimit: number;
+	readonly contextSummary: ContextSummaryConfig;
 }
 
 export interface ParticipantRuntime {
@@ -90,6 +111,7 @@ export interface CouncilContext extends ExtensionContext {
 
 export interface ExecuteConveneCouncilOptions {
 	readonly createParticipantRunner: ParticipantRunnerFactory;
+	readonly generateContextSummary?: ContextSummaryGenerator;
 	readonly resolveStartupPlan: () =>
 		| ChildStartupPlan
 		| { readonly issue: string };
@@ -100,7 +122,7 @@ export interface ExecuteConveneCouncilOptions {
 	readonly currentThinkingLevel: unknown;
 	readonly loadedSkillRoots: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];
-	readonly availableToolNames: readonly string[];
+	readonly availableTools: readonly ToolInfo[];
 	readonly onUpdate?: (partial: AgentToolResult<unknown>) => void;
 }
 

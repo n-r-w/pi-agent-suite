@@ -2,16 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Message } from "@mariozechner/pi-ai";
+import { escapeUTF8 } from "entities";
 import { appendProjectContext } from "../../shared/project-context-prompt";
 import type { ProjectContextFile } from "./types";
-import { escapeXmlText } from "./xml";
 
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "prompts");
 const PARTICIPANT_SYSTEM_PROMPT = readPromptFile("participant-system.md");
-const INITIAL_PARTICIPANT_SYSTEM_PROMPT = readPromptFile(
-	"initial-participant-system.md",
-);
-const FINAL_ANSWER_SYSTEM_PROMPT = readPromptFile("final-answer-system.md");
 const INITIAL_OPINION_PROMPT = readPromptFile("initial-opinion.md");
 const OPINION_REVIEW_PROMPT = readPromptFile("opinion-review.md");
 const MISSING_INFORMATION_RESPONSE_PROMPT = readPromptFile(
@@ -30,23 +26,12 @@ export function buildParticipantSystemPrompt(
 	return appendProjectContext(PARTICIPANT_SYSTEM_PROMPT, contextFiles);
 }
 
-/** Builds the first-turn participant system prompt without structured output rules. */
-export function buildInitialParticipantSystemPrompt(
-	contextFiles: readonly ProjectContextFile[] = [],
+/** Builds the first-turn task with the original question and parent-session evidence. */
+export function buildInitialOpinionTask(
+	question: string,
+	externalContextPackage: string,
 ): string {
-	return appendProjectContext(INITIAL_PARTICIPANT_SYSTEM_PROMPT, contextFiles);
-}
-
-/** Builds the plain-text system prompt for final-answer generation. */
-export function buildFinalAnswerSystemPrompt(
-	contextFiles: readonly ProjectContextFile[] = [],
-): string {
-	return appendProjectContext(FINAL_ANSWER_SYSTEM_PROMPT, contextFiles);
-}
-
-/** Builds the first-turn task with the original question. */
-export function buildInitialOpinionTask(question: string): string {
-	return renderTemplate(INITIAL_OPINION_PROMPT, { question });
+	return `${renderTemplate(INITIAL_OPINION_PROMPT, { question })}\n\n${externalContextPackage}`;
 }
 
 /** Builds a normal opponent-opinion review task. */
@@ -108,6 +93,6 @@ function renderTemplate(
 ): string {
 	return template.replace(/{{([A-Za-z0-9]+)}}/g, (match, key: string) => {
 		const value = values[key];
-		return value === undefined ? match : escapeXmlText(value);
+		return value === undefined ? match : escapeUTF8(value);
 	});
 }

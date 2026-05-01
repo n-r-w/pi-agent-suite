@@ -46,6 +46,7 @@
 		"typebox": "*"
 	},
 	"dependencies": {
+		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"stream-json": "^2.1.0"
 	}

@@ -40,6 +40,7 @@ export default function conveneCouncil(
 
 	const createParticipantRunner =
 		dependencies.createParticipantRunner ?? createRpcParticipantRunner;
+	const generateContextSummary = dependencies.generateContextSummary;
 	const resolveStartupPlan =
 		dependencies.resolveStartupPlan ?? resolveChildStartupPlan;
 	let loadedSkillRoots: readonly string[] = [];
@@ -68,6 +69,9 @@ export default function conveneCouncil(
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
 			return executeConveneCouncil({
 				createParticipantRunner,
+				...(generateContextSummary === undefined
+					? {}
+					: { generateContextSummary }),
 				resolveStartupPlan,
 				toolCallId,
 				params: params as ConveneCouncilParams,
@@ -76,7 +80,7 @@ export default function conveneCouncil(
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
 				contextFiles,
-				availableToolNames: pi.getAllTools().map((tool) => tool.name),
+				availableTools: pi.getAllTools(),
 				...(onUpdate !== undefined ? { onUpdate } : {}),
 			});
 		},

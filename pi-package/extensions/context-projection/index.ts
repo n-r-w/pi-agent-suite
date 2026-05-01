@@ -16,6 +16,7 @@ import type {
 	ExtensionContext,
 	SessionEntry,
 } from "@mariozechner/pi-coding-agent";
+import { escapeUTF8 } from "entities";
 import {
 	addPendingProjectionSavings,
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
@@ -583,15 +584,7 @@ function collectNewProjectionSummaryCandidates({
 
 /** Marks generated summaries as omitted full tool results in the final projected context. */
 function wrapSummaryReplacement(summary: string, placeholder: string): string {
-	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeXmlText(placeholder)}</notice>\n<summary>\n${escapeXmlText(summary)}\n</summary>\n</tool_result>`;
-}
-
-/** Escapes XML delimiter characters inside untrusted model-visible data. */
-function escapeXmlText(text: string): string {
-	return text
-		.replaceAll("&", "&amp;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;");
+	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeUTF8(placeholder)}</notice>\n<summary>\n${escapeUTF8(summary)}\n</summary>\n</tool_result>`;
 }
 
 /** Selects the model, thinking level, auth, and prompt used for one-tool-result summaries. */
@@ -905,7 +898,7 @@ function buildSummaryContext(
 	candidate: ProjectionSummaryCandidate,
 	runtimeConfig: SummaryRuntimeConfig,
 ): Context {
-	const toolCallContext = escapeXmlText(
+	const toolCallContext = escapeUTF8(
 		candidate.toolCallContext ??
 			JSON.stringify({
 				name: candidate.message.toolName,
@@ -926,7 +919,7 @@ function buildSummaryContext(
 							"</tool_call>",
 							"",
 							"<tool_result>",
-							escapeXmlText(candidate.text),
+							escapeUTF8(candidate.text),
 							"</tool_result>",
 							"",
 							runtimeConfig.userPrompt,

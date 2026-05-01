@@ -14,6 +14,8 @@ const baseConfig: ConveneCouncilConfig = {
 	finalAnswerParticipant: "llm2",
 	responseDefectRetries: 1,
 	tools: undefined,
+	contextWindowUsageLimit: 0.7,
+	contextSummary: {},
 };
 
 /** Creates the participant runtime used by startup resolver tests. */

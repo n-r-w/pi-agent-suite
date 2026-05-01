@@ -139,12 +139,15 @@ function createRunnerOptions() {
 			finalAnswerParticipant: "llm2" as const,
 			responseDefectRetries: 1,
 			tools: undefined,
+			contextWindowUsageLimit: 0.7,
+			contextSummary: {},
 		},
 		startupPlan: {
 			extensionArgs: ["-e", "./pi-package"],
 			env: { PI_CODING_AGENT_DIR: "/tmp/pi-agent" },
 		},
 		toolArgs: ["--tools", "read"],
+		tools: [],
 		ctx: { cwd: "/tmp/project" } as never,
 		signal: undefined,
 	};

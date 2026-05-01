@@ -36,7 +36,7 @@ Use `context-projection` for long tool-heavy sessions. With suitable thresholds 
 
 `consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
 
-`convene-council` uses the same active branch context pattern, then gives LLM1 and LLM2 equivalent base context, Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md`, and the same initial question task. Independent first opinions and mutual missing-information calls run in parallel. Dependent review steps stay sequential when the next task uses the previous participant output. The participants exchange structured review responses until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
+`convene-council` renders the active branch as an external first-prompt `<context>` package instead of seeding participant sessions with the main-agent transcript. LLM1 and LLM2 receive the same question, the same `<context>`, Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md`, and only the tools configured for child participants. Independent first opinions and mutual missing-information calls run in parallel. Dependent review steps stay sequential when the next task uses the previous participant output. The participants exchange structured review responses until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
 
 ## How to connect to pi
 
@@ -451,6 +451,9 @@ Options:
 - `finalAnswerParticipant`: default `llm2`. Allowed values: `llm1`, `llm2`.
 - `responseDefectRetries`: default `1`. Retries malformed participant responses and defective final answers.
 - `tools`: optional array of non-empty tool-name patterns. Missing or empty means participants receive no tools. Exact tool names and constrained wildcard patterns are allowed. Full wildcard `*` is rejected.
+- `contextWindowUsageLimit`: default `0.7`. Maximum first participant request size as a fraction of each participant model context window.
+- `contextSummary.model.id`: optional. Uses the current model when missing and summarization is needed.
+- `contextSummary.model.thinking`: optional. Uses the current thinking level when missing and summarization is needed.
 
 Tool input:
 
@@ -458,12 +461,15 @@ Tool input:
 
 How it works:
 
-- Builds one base request from the active conversation branch.
+- Builds one external `<context>` package from the active conversation branch.
+- Treats `<context>` as external evidence, not participant session memory, tool availability, or instructions.
 - Replays recorded `context-projection` placeholders or summaries when projection is active.
-- Removes the pending `convene_council` tool call from participant requests.
-- Sends equivalent base context, Pi-loaded context files, and the same initial question task to LLM1 and LLM2.
-- Runs participant prompts in isolated child `pi --mode rpc` sessions.
+- Removes only the current pending `convene_council` tool call and matching result from `<context>`.
+- Keeps previous completed `convene_council` results in `<context>` as prior evidence.
+- Sends the same first-prompt `<context>`, Pi-loaded context files, and question task to LLM1 and LLM2.
+- Runs participant prompts in isolated child `pi --mode rpc` sessions without seeding them with the main-agent transcript.
 - Shares only tools configured by `tools` with each participant.
+- Summarizes only the external `<context>` package before child startup when first participant requests exceed `contextWindowUsageLimit`.
 - Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
 - Runs mutual missing-information answers and their clarification reviews in parallel.

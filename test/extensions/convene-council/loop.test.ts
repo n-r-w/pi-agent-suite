@@ -9,6 +9,7 @@ import type {
 	SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 import { parseSessionEntries } from "@mariozechner/pi-coding-agent";
+import { Type } from "typebox";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import type { ParticipantRunnerFactory } from "../../../pi-package/extensions/convene-council/types";
 import {
@@ -145,10 +146,10 @@ function createDeferredCompletion(
 						{
 							systemPrompt: options.systemPrompt,
 							messages: [
-								...readSeedMessages(options.sessionFile),
+								...readSessionMessages(options.sessionFile),
 								{ role: "user", content: task, timestamp: Date.now() },
 							],
-							tools: [],
+							tools: [...options.tools],
 						},
 						{
 							...(signal === undefined ? {} : { signal }),
@@ -181,7 +182,7 @@ function createDeferredCompletion(
 	};
 }
 
-function readSeedMessages(sessionFile: string): Context["messages"] {
+function readSessionMessages(sessionFile: string): Context["messages"] {
 	return parseSessionEntries(readFileSync(sessionFile, "utf8")).flatMap(
 		(entry) => (entry.type === "message" ? [entry.message] : []),
 	) as Context["messages"];
@@ -451,11 +452,11 @@ describe("convene-council loop", () => {
 		});
 	});
 
-	test("cleans seeded sessions and created runners when participant startup fails", async () => {
-		// Purpose: failed child startup must not leak seeded sessions or already-created participant runners.
+	test("cleans participant sessions and created runners when participant startup fails", async () => {
+		// Purpose: failed child startup must not leak participant sessions or already-created participant runners.
 		// Input and expected output: LLM1 runner is created, LLM2 startup fails, LLM1 is disposed, and both temp session dirs are removed.
 		// Edge case: cleanup happens before discussion iterations start.
-		// Dependencies: custom participant runner factory and temp seeded sessions.
+		// Dependencies: custom participant runner factory and temp participant sessions.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const disposed: string[] = [];
@@ -712,6 +713,271 @@ describe("convene-council loop", () => {
 				"medium",
 				"medium",
 			]);
+		});
+	});
+
+	test("summarizes oversized external context before participant startup", async () => {
+		// Purpose: oversized first participant requests must shrink the external context before any child RPC starts.
+		// Input and expected output: a large parent context triggers one summary call, then participants receive the summarized context.
+		// Edge case: summary must complete before runner creation so no child process starts with an oversized prompt.
+		// Dependencies: isolated config, fake summary generator, and fake participant runner.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { contextWindowUsageLimit: 0.1 });
+			const model = {
+				...createModel("openai", "main-model"),
+				contextWindow: 20_000,
+			};
+			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
+				participantResponse("AGREE", "llm1 agrees"),
+				participantResponse("AGREE", "llm2 agrees"),
+				finalAnswer("final"),
+			]);
+			let runnerStarts = 0;
+			const summaryInputs: string[] = [];
+			const largeContext = Array.from(
+				{ length: 1_500 },
+				(_, index) => `context-word-${index}`,
+			).join(" ");
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				async createParticipantRunner(options) {
+					runnerStarts += 1;
+					return completion.createParticipantRunner(options);
+				},
+				async generateContextSummary(request) {
+					expect(runnerStarts).toBe(0);
+					summaryInputs.push(request.contextPackage);
+					return "Summarized parent context";
+				},
+			});
+			const entries = [messageEntry("u1", userMessage(largeContext), null)];
+			const ctx = createContext([model], entries);
+
+			await executeCouncil(pi, ctx, "What should we do?");
+
+			expect(summaryInputs).toHaveLength(1);
+			expect(summaryInputs[0]).toContain("context-word-1499");
+			const firstPrompt = String(
+				completion.calls[0]?.context.messages.at(-1)?.content,
+			);
+			expect(firstPrompt).toContain("<context>");
+			expect(firstPrompt).toContain("Summarized parent context");
+			expect(firstPrompt).not.toContain("context-word-1499");
+		});
+	});
+
+	test("includes configured participant tool schemas in first-request size checks", async () => {
+		// Purpose: tool-enabled participants must budget the schemas sent to the child model.
+		// Input and expected output: context fits without the configured tool schema, but schema tokens exhaust the first-request budget before startup.
+		// Edge case: summarization is skipped when no participant budget remains after system prompt and tool schemas.
+		// Dependencies: fake registered tool, isolated config, and fake summary generator.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				contextWindowUsageLimit: 0.1,
+				tools: ["read"],
+			});
+			const model = {
+				...createModel("openai", "main-model"),
+				contextWindow: 30_000,
+			};
+			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
+				participantResponse("AGREE", "llm1 agrees"),
+				participantResponse("AGREE", "llm2 agrees"),
+				finalAnswer("final"),
+			]);
+			const pi = createExtensionApiFake();
+			const toolDescription = Array.from(
+				{ length: 600 },
+				(_, index) => `schema-word-${index}`,
+			).join(" ");
+			pi.registerTool({
+				name: "read",
+				label: "Read",
+				description: toolDescription,
+				parameters: Type.Object({ path: Type.String() }),
+				async execute() {
+					return {
+						content: [{ type: "text", text: "unused" }],
+						details: undefined,
+					};
+				},
+			});
+			let runnerStarts = 0;
+			let summaryCalls = 0;
+			conveneCouncil(pi, {
+				async createParticipantRunner(options) {
+					runnerStarts += 1;
+					return completion.createParticipantRunner(options);
+				},
+				async generateContextSummary() {
+					summaryCalls += 1;
+					return "Tool-budgeted context summary";
+				},
+			});
+			const largeContext = Array.from(
+				{ length: 900 },
+				(_, index) => `context-word-${index}`,
+			).join(" ");
+			const ctx = createContext(
+				[model],
+				[messageEntry("u1", userMessage(largeContext), null)],
+			);
+
+			await expect(
+				executeCouncil(pi, ctx, "What should we do?"),
+			).rejects.toThrow("context is too large");
+
+			expect(summaryCalls).toBe(0);
+			expect(runnerStarts).toBe(0);
+			expect(completion.calls).toHaveLength(0);
+		});
+	});
+
+	test("fails before participant startup when summary input exceeds the summary model window", async () => {
+		// Purpose: summary preflight must reject requests that cannot fit the summary model.
+		// Input and expected output: large participant context plus tiny summary model fails before summary generation and runner startup.
+		// Edge case: participant models can be large enough while only the summary model is too small.
+		// Dependencies: isolated config and fake model registry.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				contextWindowUsageLimit: 0.1,
+				contextSummary: { model: { id: "summary/small" } },
+				llm1: { model: { id: "participant/large" } },
+				llm2: { model: { id: "participant/large" } },
+			});
+			const participantModel = {
+				...createModel("participant", "large"),
+				contextWindow: 20_000,
+			};
+			const summaryModel = {
+				...createModel("summary", "small"),
+				contextWindow: 1_000,
+			};
+			let runnerStarts = 0;
+			let summaryCalls = 0;
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				async createParticipantRunner() {
+					runnerStarts += 1;
+					throw new Error("runner must not start");
+				},
+				async generateContextSummary() {
+					summaryCalls += 1;
+					throw new Error("summary must not start");
+				},
+			});
+			const largeContext = Array.from(
+				{ length: 1_500 },
+				(_, index) => `context-word-${index}`,
+			).join(" ");
+			const ctx = createContext(
+				[participantModel, summaryModel],
+				[messageEntry("u1", userMessage(largeContext), null)],
+			);
+
+			await expect(
+				executeCouncil(pi, ctx, "What should we do?"),
+			).rejects.toThrow("context is too large");
+			expect(summaryCalls).toBe(0);
+			expect(runnerStarts).toBe(0);
+		});
+	});
+
+	test("budgets the real Pi summary prompt envelope before summary generation", async () => {
+		// Purpose: summary preflight must match the request shape that Pi summary generation sends to the model.
+		// Input and expected output: a summary model that fits the raw context but not the wrapped Pi summary prompt is rejected before summary generation.
+		// Edge case: the summary model window sits between the raw-context estimate and the real wrapped-summary estimate.
+		// Dependencies: isolated config, fake model registry, and fake summary generator.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				contextWindowUsageLimit: 0.1,
+				contextSummary: { model: { id: "summary/medium" } },
+				llm1: { model: { id: "participant/large" } },
+				llm2: { model: { id: "participant/large" } },
+			});
+			const participantModel = {
+				...createModel("participant", "large"),
+				contextWindow: 20_000,
+			};
+			const summaryModel = {
+				...createModel("summary", "medium"),
+				contextWindow: 9_800,
+			};
+			let runnerStarts = 0;
+			let summaryCalls = 0;
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				async createParticipantRunner() {
+					runnerStarts += 1;
+					throw new Error("runner must not start");
+				},
+				async generateContextSummary() {
+					summaryCalls += 1;
+					throw new Error("summary must not start");
+				},
+			});
+			const largeContext = Array.from(
+				{ length: 1_500 },
+				(_, index) => `context-word-${index}`,
+			).join(" ");
+			const ctx = createContext(
+				[participantModel, summaryModel],
+				[messageEntry("u1", userMessage(largeContext), null)],
+			);
+
+			await expect(
+				executeCouncil(pi, ctx, "What should we do?"),
+			).rejects.toThrow("context is too large");
+			expect(summaryCalls).toBe(0);
+			expect(runnerStarts).toBe(0);
+		});
+	});
+
+	test("fails before participant startup when summarized context still exceeds the participant limit", async () => {
+		// Purpose: post-summary size checks must prevent child startup when summary does not shrink enough.
+		// Input and expected output: summary is generated once, then the oversized summarized context fails before runners start.
+		// Edge case: failure happens after summary generation but before session startup.
+		// Dependencies: isolated config and fake summary generator.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { contextWindowUsageLimit: 0.1 });
+			const model = {
+				...createModel("openai", "main-model"),
+				contextWindow: 20_000,
+			};
+			let runnerStarts = 0;
+			let summaryCalls = 0;
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				async createParticipantRunner() {
+					runnerStarts += 1;
+					throw new Error("runner must not start");
+				},
+				async generateContextSummary() {
+					summaryCalls += 1;
+					return Array.from(
+						{ length: 1_500 },
+						(_, index) => `summary-word-${index}`,
+					).join(" ");
+				},
+			});
+			const largeContext = Array.from(
+				{ length: 1_500 },
+				(_, index) => `context-word-${index}`,
+			).join(" ");
+			const ctx = createContext(
+				[model],
+				[messageEntry("u1", userMessage(largeContext), null)],
+			);
+
+			await expect(
+				executeCouncil(pi, ctx, "What should we do?"),
+			).rejects.toThrow("context is too large");
+			expect(summaryCalls).toBe(1);
+			expect(runnerStarts).toBe(0);
 		});
 	});
 

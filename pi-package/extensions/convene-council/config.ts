@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { getSuiteConfigLocation } from "../../shared/agent-suite-storage";
 import {
 	CONVENE_COUNCIL_EXTENSION_DIR,
+	DEFAULT_CONTEXT_WINDOW_USAGE_LIMIT,
 	DEFAULT_FINAL_ANSWER_PARTICIPANT,
 	DEFAULT_PARTICIPANT_ITERATION_LIMIT,
 	DEFAULT_RESPONSE_DEFECT_RETRIES,
@@ -14,6 +15,7 @@ import {
 	formatError,
 	hasOnlyKeys,
 	hasProviderModelShape,
+	isContextWindowUsageLimit,
 	isFileNotFoundError,
 	isNonNegativeInteger,
 	isParticipantId,
@@ -138,6 +140,12 @@ function parseConveneCouncilConfig(
 			DEFAULT_RESPONSE_DEFECT_RETRIES,
 		),
 		tools: parseToolsConfig(raw["tools"]),
+		contextWindowUsageLimit: getNumberConfig(
+			raw,
+			"contextWindowUsageLimit",
+			DEFAULT_CONTEXT_WINDOW_USAGE_LIMIT,
+		),
+		contextSummary: parseContextSummaryConfig(raw["contextSummary"]),
 	};
 }
 
@@ -183,6 +191,24 @@ function validateConveneCouncilConfig(
 		return { issue: "finalAnswerParticipant must be one of llm1, llm2" };
 	}
 
+	const contextWindowUsageLimit = value["contextWindowUsageLimit"];
+	if (
+		contextWindowUsageLimit !== undefined &&
+		!isContextWindowUsageLimit(contextWindowUsageLimit)
+	) {
+		return {
+			issue:
+				"contextWindowUsageLimit must be greater than 0 and less than or equal to 1",
+		};
+	}
+
+	const contextSummaryIssue = validateContextSummaryConfig(
+		value["contextSummary"],
+	);
+	if (contextSummaryIssue !== undefined) {
+		return { issue: contextSummaryIssue };
+	}
+
 	return { config: value };
 }
 
@@ -196,6 +222,8 @@ function getConfigKeys(): readonly string[] {
 		"finalAnswerParticipant",
 		"responseDefectRetries",
 		"tools",
+		"contextWindowUsageLimit",
+		"contextSummary",
 	];
 }
 
@@ -221,25 +249,47 @@ function validateParticipantModelConfig(
 	value: unknown,
 	participantId: ParticipantId,
 ): string | undefined {
+	return validateModelConfig(value, `${participantId}.model`);
+}
+
+/** Validates the optional context summary config object. */
+function validateContextSummaryConfig(value: unknown): string | undefined {
 	if (value === undefined) {
 		return undefined;
 	}
 	if (!isRecord(value)) {
-		return `${participantId}.model must be an object`;
+		return "contextSummary must be an object";
+	}
+	if (!hasOnlyKeys(value, ["model"])) {
+		return "contextSummary contains unsupported keys";
+	}
+	return validateModelConfig(value["model"], "contextSummary.model");
+}
+
+/** Validates one optional model config object with a caller-owned field path. */
+function validateModelConfig(
+	value: unknown,
+	fieldPath: string,
+): string | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!isRecord(value)) {
+		return `${fieldPath} must be an object`;
 	}
 	if (!hasOnlyKeys(value, ["id", "thinking"])) {
-		return `${participantId}.model contains unsupported keys`;
+		return `${fieldPath} contains unsupported keys`;
 	}
 
 	const { id, thinking } = value;
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
-		return `${participantId}.model.id must be a non-empty string`;
+		return `${fieldPath}.id must be a non-empty string`;
 	}
 	if (typeof id === "string" && !hasProviderModelShape(id)) {
-		return `${participantId}.model.id must use provider/model`;
+		return `${fieldPath}.id must use provider/model`;
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
-		return `${participantId}.model.thinking must be one of ${THINKING_VALUES.join(", ")}`;
+		return `${fieldPath}.thinking must be one of ${THINKING_VALUES.join(", ")}`;
 	}
 
 	return undefined;
@@ -308,8 +358,29 @@ function parseToolsConfig(value: unknown): readonly string[] | undefined {
 	return Array.isArray(value) ? [...value] : undefined;
 }
 
+/** Builds typed context-summary config from a validated raw object. */
+function parseContextSummaryConfig(
+	value: unknown,
+): ConveneCouncilConfig["contextSummary"] {
+	if (!isRecord(value)) {
+		return {};
+	}
+	const model = parseParticipantModelConfig(value["model"]);
+	return model === undefined ? {} : { model };
+}
+
 /** Reads one integer config value after validation has accepted it. */
 function getIntegerConfig(
+	config: Record<string, unknown>,
+	key: string,
+	defaultValue: number,
+): number {
+	const value = config[key];
+	return typeof value === "number" ? value : defaultValue;
+}
+
+/** Reads one numeric config value after validation has accepted it. */
+function getNumberConfig(
 	config: Record<string, unknown>,
 	key: string,
 	defaultValue: number,
