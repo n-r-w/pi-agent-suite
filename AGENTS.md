@@ -22,6 +22,7 @@ Custom `pi.dev` extensions: `pi-package/extensions`
 2. Use Bun as the test runner.
 3. Tests must use isolated fixtures and fakes instead of real user files, real auth, real models, real network calls, or real git state.
 4. Add integration checks only where unit tests cannot prove package loading, single registration, or child `pi` behavior.
+5. Tests that check the contents of prompts should MUST check text that is EXPLICITLY used in the logic and NEVER text that can change arbitrarily.
 
 ## Test layout rules
 
