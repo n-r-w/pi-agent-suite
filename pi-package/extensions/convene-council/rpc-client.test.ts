@@ -130,6 +130,83 @@ describe("CouncilRpcClient", () => {
 		await completionProbe;
 	});
 
+	test("emits child session events without exposing command responses", async () => {
+		// Purpose: live council progress needs child session events while command responses remain protocol-only.
+		// Input and expected output: tool and agent events reach the callback, response records do not.
+		// Edge case: prompt completion still waits for agent_end after event emission.
+		// Dependencies: fake JSONL transport and callback capture.
+		const fake = createTransport();
+		const events: unknown[] = [];
+		const client = new CouncilRpcClient(fake.transport, (event) => {
+			events.push(event);
+		});
+		const initialized = client.initialize();
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
+		);
+		await initialized;
+
+		const result = client.prompt("review task");
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: true })}\n`,
+		);
+		fake.stdout(
+			`${JSON.stringify({ type: "agent_start" })}\n${JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "README.md" } })}\n`,
+		);
+		fake.stdout(
+			`${JSON.stringify({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: [{ type: "text", text: "README content" }] }, isError: false })}\n`,
+		);
+		fake.stdout(
+			`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "answer", api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
+		);
+		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
+
+		expect(assistantText(await result)).toBe("answer");
+		expect(events).toEqual([
+			{ type: "agent_start" },
+			{
+				type: "tool_execution_start",
+				toolCallId: "read-1",
+				toolName: "read",
+				args: { path: "README.md" },
+			},
+			{
+				type: "tool_execution_end",
+				toolCallId: "read-1",
+				toolName: "read",
+				result: { content: [{ type: "text", text: "README content" }] },
+				isError: false,
+			},
+			{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: "answer",
+					api: "test",
+					provider: "test",
+					model: "test",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+			},
+			{ type: "agent_end" },
+		]);
+	});
+
 	test("uses get_last_assistant_text when agent_end has no assistant message_end", async () => {
 		// Purpose: participant output extraction must recover final text after agent_end.
 		// Input and expected output: client requests get_last_assistant_text fallback and returns that text.

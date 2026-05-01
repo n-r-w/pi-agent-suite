@@ -47,7 +47,10 @@ export function createParticipantRunnerFactory(
 			cwd: options.ctx.cwd,
 			env: startup.env,
 		});
-		const client = new CouncilRpcClient(createProcessTransport(child));
+		const client = new CouncilRpcClient(
+			createProcessTransport(child),
+			options.onSessionEvent,
+		);
 		try {
 			await client.initialize();
 		} catch (error) {

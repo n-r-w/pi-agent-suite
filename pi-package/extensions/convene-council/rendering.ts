@@ -457,6 +457,12 @@ function formatCouncilEventIconText(
 	if (kind === "success") {
 		return "✓";
 	}
+	if (kind === "tool_call") {
+		return "↳";
+	}
+	if (kind === "tool_result") {
+		return "↵";
+	}
 	return "•";
 }
 
@@ -469,6 +475,9 @@ function formatCouncilEventIconColor(
 	}
 	if (kind === "response" || kind === "success") {
 		return "success";
+	}
+	if (kind === "tool_call" || kind === "tool_result") {
+		return "toolOutput";
 	}
 	if (kind === "retry") {
 		return "warning";

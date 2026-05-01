@@ -247,6 +247,44 @@ describe("ParticipantRunner lifecycle", () => {
 		]);
 	});
 
+	test("forwards child session events through the participant runner", async () => {
+		// Purpose: production runner wiring must preserve child RPC events for live council progress.
+		// Input and expected output: a child tool event reaches the factory-provided session-event callback.
+		// Edge case: command responses are still protocol-only and do not reach the callback.
+		// Dependencies: fake child process and CouncilRpcClient protocol.
+		const fake = createFakeRunnerFactory();
+		const events: unknown[] = [];
+		const runnerPromise = fake.factory({
+			...createRunnerOptions(),
+			onSessionEvent: (event) => events.push(event),
+		});
+		const child = fake.spawned[0]?.process as FakeProcess;
+		respond(child, "1", "set_auto_retry");
+		const runner = await runnerPromise;
+
+		const prompt = runner.prompt("inspect files", undefined);
+		respond(child, "2", "prompt");
+		child.stdout.emit(
+			"data",
+			`${JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "README.md" } })}\n`,
+		);
+		completePrompt(child, "answer");
+
+		expect((await prompt).content).toEqual([{ type: "text", text: "answer" }]);
+		expect(events).toContainEqual({
+			type: "tool_execution_start",
+			toolCallId: "read-1",
+			toolName: "read",
+			args: { path: "README.md" },
+		});
+		expect(events).not.toContainEqual({
+			type: "response",
+			id: "2",
+			command: "prompt",
+			success: true,
+		});
+	});
+
 	test("kills the child process when initialization fails", async () => {
 		// Purpose: failed set_auto_retry must not leak a spawned child process.
 		// Input and expected output: initialization rejection kills the process before propagating the error.

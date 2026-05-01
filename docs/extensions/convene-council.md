@@ -26,6 +26,7 @@ Use it when a high-impact question benefits from two model participants comparin
 - Starts isolated child `pi --mode rpc` sessions for participant prompts.
 - Shares only tools configured by `tools` with each participant.
 - Allows participants to use configured tools only to gather evidence for the council question.
+- Instructs participants to use relevant available tools before concluding on facts not established by `<context>` or prior tool evidence.
 - Sends no tools to participants when `tools` is missing or empty.
 - Sends the council question through the first-turn task prompt.
 - Starts independent first-turn participant calls in parallel.

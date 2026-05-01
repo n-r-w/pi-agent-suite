@@ -40,6 +40,8 @@ export type CouncilProgressEventKind =
 	| "retry"
 	| "success"
 	| "info"
+	| "tool_call"
+	| "tool_result"
 	| "error";
 
 /** Stores one participant runtime row for the tool-call header and expanded details. */
@@ -110,6 +112,7 @@ export interface CouncilProgressReporter {
 		attempt: number,
 		maxAttempts: number,
 	): void;
+	recordSessionEvent(participantId: ParticipantId, event: unknown): void;
 	recordInfo(title: string, phase?: string): void;
 	recordSuccess(title: string, phase?: string): void;
 	recordError(title: string, phase?: string): void;
@@ -177,6 +180,8 @@ function createCouncilProgressReporterApi(
 				attempt,
 				maxAttempts,
 			}),
+		recordSessionEvent: (participantId, event) =>
+			recordParticipantSessionEvent(append, participantId, event),
 		recordInfo: (title, phase) =>
 			recordEvent(state, append, {
 				kind: "info",
@@ -311,6 +316,63 @@ function recordParticipantRetry(
 		"retry",
 		`${formatParticipantLabel(options.participantId)} ${options.retryKind} retry ${options.attempt}/${options.maxAttempts}`,
 	);
+}
+
+/** Records one child session event as participant-labeled live progress. */
+function recordParticipantSessionEvent(
+	append: ProgressAppender,
+	participantId: ParticipantId,
+	event: unknown,
+): void {
+	const progressEvent = toParticipantSessionProgressEvent(participantId, event);
+	if (progressEvent === undefined) {
+		return;
+	}
+	append(progressEvent.kind, progressEvent.title, progressEvent.text);
+}
+
+/** Converts model-visible child RPC events into compact TUI progress rows. */
+function toParticipantSessionProgressEvent(
+	participantId: ParticipantId,
+	event: unknown,
+):
+	| {
+			readonly kind: CouncilProgressEventKind;
+			readonly title: string;
+			readonly text?: string;
+	  }
+	| undefined {
+	if (!isPlainRecord(event)) {
+		return undefined;
+	}
+	const eventType = getStringField(event, "type");
+	const label = formatParticipantLabel(participantId);
+	if (eventType === "agent_start") {
+		return { kind: "info", title: `${label} started` };
+	}
+	if (eventType === "agent_end") {
+		return { kind: "success", title: `${label} finished` };
+	}
+	if (eventType === "tool_execution_start") {
+		const toolName = getStringField(event, "toolName") ?? "tool";
+		const text = formatEventPayload(event["args"] ?? event["input"]);
+		return {
+			kind: "tool_call",
+			title: `${label} ${toolName}`,
+			...(text === undefined ? {} : { text }),
+		};
+	}
+	if (eventType === "tool_execution_end") {
+		const toolName = getStringField(event, "toolName") ?? "tool";
+		const isError = event["isError"] === true;
+		const text = getToolExecutionResultText(event);
+		return {
+			kind: isError ? "error" : "tool_result",
+			title: `${label} ${toolName} result`,
+			...(text === undefined ? {} : { text }),
+		};
+	}
+	return undefined;
 }
 
 /** Records one non-participant event and updates phase when provided. */
@@ -454,6 +516,93 @@ function normalizeProgressText(value: string | undefined): string | undefined {
 	return normalized.length > MAX_COUNCIL_PROGRESS_TEXT_LENGTH
 		? `${normalized.slice(0, MAX_COUNCIL_PROGRESS_TEXT_LENGTH)}…`
 		: normalized;
+}
+
+/** Converts structured tool arguments or inputs into bounded display text. */
+function formatEventPayload(payload: unknown): string | undefined {
+	if (payload === undefined) {
+		return undefined;
+	}
+	if (typeof payload === "string") {
+		return normalizeProgressText(payload);
+	}
+	try {
+		return normalizeProgressText(JSON.stringify(payload));
+	} catch {
+		return normalizeProgressText(String(payload));
+	}
+}
+
+/** Extracts visible text from a completed child tool execution event. */
+function getToolExecutionResultText(
+	event: Record<string, unknown>,
+): string | undefined {
+	const result = getRecordField(event, "result");
+	return (
+		getMessageText(result) ??
+		getStringField(event, "error") ??
+		getStringField(event, "errorMessage")
+	);
+}
+
+/** Extracts bounded text from a message-like value. */
+function getMessageText(message: unknown): string | undefined {
+	return normalizeProgressText(getFullMessageText(message));
+}
+
+/** Extracts text content from a message or content-part list. */
+function getFullMessageText(message: unknown): string | undefined {
+	if (!isPlainRecord(message)) {
+		return undefined;
+	}
+	const { content } = message;
+	if (typeof content === "string") {
+		return normalizeProgressText(content);
+	}
+	if (!Array.isArray(content)) {
+		return undefined;
+	}
+	const textParts = content.flatMap(extractContentPartText);
+	return textParts.length > 0 ? textParts.join("\n") : undefined;
+}
+
+/** Extracts text from one message content part. */
+function extractContentPartText(part: unknown): readonly string[] {
+	if (typeof part === "string") {
+		const text = normalizeProgressText(part);
+		return text === undefined ? [] : [text];
+	}
+	if (!isPlainRecord(part)) {
+		return [];
+	}
+	if (part["type"] !== "text" || typeof part["text"] !== "string") {
+		return [];
+	}
+	const text = normalizeProgressText(part["text"]);
+	return text === undefined ? [] : [text];
+}
+
+/** Returns true when an unknown value can be inspected as a plain object. */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Returns a string field from one parsed child RPC event. */
+function getStringField(
+	value: Record<string, unknown>,
+	fieldName: string,
+): string | undefined {
+	const field = value[fieldName];
+	return typeof field === "string" ? field : undefined;
+}
+
+/** Returns a record field from one parsed child RPC event. */
+function getRecordField(
+	value: Record<string, unknown>,
+	fieldName: string,
+): Record<string, unknown> | undefined {
+	const field = value[fieldName];
+	return isPlainRecord(field) ? field : undefined;
 }
 
 /** Formats compact model-facing partial progress text. */

@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 
 const NO_CONSENSUS_RESULT_PROMPT =
 	"pi-package/extensions/convene-council/prompts/no-consensus-result.md";
-
 test("no-consensus result prompt exposes answer macros", async () => {
 	// Purpose: editable no-consensus result text must keep both runtime substitution points.
 	// Input and expected output: prompt file contains answer1 and answer2 macros.

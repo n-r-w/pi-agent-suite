@@ -65,6 +65,7 @@ export type ParticipantRunnerFactory = (options: {
 	readonly tools: readonly Tool[];
 	readonly ctx: CouncilContext;
 	readonly signal: AbortSignal | undefined;
+	readonly onSessionEvent?: (event: unknown) => void;
 }) => Promise<ParticipantRunner>;
 
 export interface ConveneCouncilParams {

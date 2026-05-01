@@ -171,6 +171,8 @@ async function runCouncilWithOwnedParticipants(options: {
 			tools: options.tools,
 			ctx: options.ctx,
 			signal: options.signal,
+			onSessionEvent: (event) =>
+				options.progress.recordSessionEvent("llm1", event),
 		});
 		runners.push(llm1Runner);
 		const llm2Runner = await options.createParticipantRunner({
@@ -185,6 +187,8 @@ async function runCouncilWithOwnedParticipants(options: {
 			tools: options.tools,
 			ctx: options.ctx,
 			signal: options.signal,
+			onSessionEvent: (event) =>
+				options.progress.recordSessionEvent("llm2", event),
 		});
 		runners.push(llm2Runner);
 		return await runCouncilIterations({

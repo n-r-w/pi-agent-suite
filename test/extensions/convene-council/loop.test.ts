@@ -580,6 +580,78 @@ describe("convene-council loop", () => {
 		});
 	});
 
+	test("emits participant child tool events in live TUI progress", async () => {
+		// Purpose: child RPC tool activity must be visible while council participants are working.
+		// Input and expected output: participant runners emit tool start/end events and progress details include A/B labeled tool rows.
+		// Edge case: full tool output is bounded and does not leak the raw long suffix into live details.
+		// Dependencies: fake participant runner events and the tool onUpdate callback.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "model-a");
+			const longToolSuffix = "TOOL_SUFFIX_MUST_NOT_APPEAR";
+			const responses: AssistantMessage["content"][] = [
+				initialOpinion("A initial answer"),
+				initialOpinion("B initial answer"),
+				participantResponse("AGREE", "A agrees"),
+				participantResponse("AGREE", "B agrees"),
+				finalAnswer("final council answer"),
+			];
+			const createParticipantRunner: ParticipantRunnerFactory = async (
+				options,
+			) => ({
+				async prompt() {
+					options.onSessionEvent?.({
+						type: "tool_execution_start",
+						toolCallId: `${options.participantId}-read`,
+						toolName: "read",
+						args: { path: `${options.participantId}.md` },
+					});
+					options.onSessionEvent?.({
+						type: "tool_execution_end",
+						toolCallId: `${options.participantId}-read`,
+						toolName: "read",
+						result: {
+							content: [
+								{
+									type: "text",
+									text: `${"tool output ".repeat(40)}${longToolSuffix}`,
+								},
+							],
+						},
+						isError: false,
+					});
+					const response = responses.shift();
+					if (response === undefined) {
+						throw new Error("missing participant response");
+					}
+					return createAssistantMessage(options.runtime.model, response);
+				},
+				async dispose() {},
+			});
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, { createParticipantRunner });
+			const updates: AgentToolResult<unknown>[] = [];
+
+			await executeCouncilWithOptions(pi, createContext([model]), {
+				question: "Which files did participants inspect?",
+				onUpdate: (partial) => updates.push(partial),
+			});
+
+			const eventsJson = JSON.stringify(
+				updates.flatMap((update) => {
+					const details = update.details as { events?: unknown } | undefined;
+					return Array.isArray(details?.events) ? details.events : [];
+				}),
+			);
+			expect(eventsJson).toContain("A read");
+			expect(eventsJson).toContain("llm1.md");
+			expect(eventsJson).toContain("A read result");
+			expect(eventsJson).toContain("B read");
+			expect(eventsJson).toContain("llm2.md");
+			expect(eventsJson).toContain("B read result");
+			expect(eventsJson).not.toContain(longToolSuffix);
+		});
+	});
+
 	test("uses configured participant models and configured final answer participant", async () => {
 		// Purpose: participant model config must allow LLM1 and LLM2 to use different models.
 		// Input and expected output: participant model settings are used, and finalAnswerParticipant llm1 produces the final answer.

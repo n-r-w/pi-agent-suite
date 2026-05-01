@@ -38,7 +38,10 @@ export class CouncilRpcClient {
 	private readonly pendingCommands = new Map<string, PendingCommand>();
 	private activePrompt: ActivePrompt | undefined;
 
-	constructor(private readonly transport: CouncilRpcTransport) {
+	constructor(
+		private readonly transport: CouncilRpcTransport,
+		private readonly onSessionEvent?: (event: unknown) => void,
+	) {
 		this.transport.onStdout((chunk) => this.processStdout(chunk));
 		this.transport.onStderr((chunk) => this.processStderr(chunk));
 	}
@@ -143,6 +146,8 @@ export class CouncilRpcClient {
 			this.processResponse(message);
 			return;
 		}
+
+		this.onSessionEvent?.(message);
 		if (message["type"] === "message_end" || message["type"] === "agent_end") {
 			this.processEvent(message);
 			return;
