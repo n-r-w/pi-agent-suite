@@ -15,6 +15,7 @@ import {
 import { parseThinking } from "./guards";
 import {
 	type CouncilProgressReporter,
+	type CouncilRunDetails,
 	createCouncilProgressReporter,
 	formatParticipantLabel,
 } from "./progress";
@@ -422,7 +423,7 @@ async function runCouncilIterations(
 	const iteration = getCurrentIteration(options);
 	const pairResult = await runNextParticipantPair({ ...options, iteration });
 	if ("kind" in pairResult) {
-		return handleCouncilIssue(options.ctx, pairResult, options.progress);
+		return handleCouncilIssue(pairResult, options.progress);
 	}
 
 	if (participantsAgreeAfterReview(pairResult.llm1, pairResult.llm2)) {
@@ -828,53 +829,69 @@ async function finishAgreedCouncil(
 		progress: options.progress,
 	});
 	if ("kind" in finalResult) {
-		return handleCouncilIssue(options.ctx, finalResult, options.progress);
+		return handleCouncilIssue(finalResult, options.progress);
 	}
-	options.progress.recordSuccess("final answer accepted", "agreed");
-	options.progress.finish("succeeded", "agreed");
-	return formatToolOutput(finalResult.answer);
+	options.progress.recordParticipantSuccess(
+		finalParticipant.id,
+		"final answer accepted",
+		"agreed",
+	);
+	const details = options.progress.finish("succeeded", "agreed");
+	return withCouncilProgressDetails(
+		await formatToolOutput(finalResult.answer),
+		details,
+	);
 }
 
 /** Returns the two latest participant opinions when agreement was not reached. */
-function finishWithoutAgreement(
+async function finishWithoutAgreement(
 	options: IterationOptions,
-): Promise<AgentToolResult<unknown>> | AgentToolResult<unknown> {
+): Promise<AgentToolResult<unknown>> {
 	if (options.llm1.latest === undefined || options.llm2.latest === undefined) {
 		options.progress.recordError(
 			"council did not produce participant opinions",
 			"failed",
 		);
-		options.progress.finish("failed", "failed");
-		return errorResult("Council did not produce participant opinions.");
+		const details = options.progress.finish("failed", "failed");
+		return errorResult(
+			"Council did not produce participant opinions.",
+			details,
+		);
 	}
 
 	options.progress.recordInfo(
 		"iteration limit reached",
 		"iteration limit reached",
 	);
-	options.progress.finish("succeeded", "iteration limit reached");
-	return formatToolOutput(
-		buildNoConsensusResult(
-			options.llm1.latest.opinion,
-			options.llm2.latest.opinion,
+	const details = options.progress.finish(
+		"succeeded",
+		"iteration limit reached",
+	);
+	return withCouncilProgressDetails(
+		await formatToolOutput(
+			buildNoConsensusResult(
+				options.llm1.latest.opinion,
+				options.llm2.latest.opinion,
+			),
 		),
+		details,
 	);
 }
 
-/** Routes logical council outcomes to text and infrastructure failures to Pi tool errors. */
+/** Routes council outcomes to model-facing text and persisted TUI details. */
 function handleCouncilIssue(
-	ctx: ExecuteConveneCouncilOptions["ctx"],
 	issue: CouncilIssue,
 	progress: CouncilProgressReporter,
 ): AgentToolResult<unknown> {
 	if (issue.kind === "tool-error") {
-		progress.recordError(issue.message, "failed");
-		progress.finish("failed", "failed");
-		throw reportToolError(ctx, issue.message);
+		const phase = issue.status === "aborted" ? "aborted" : "failed";
+		progress.recordError(issue.message, phase);
+		const details = progress.finish(issue.status, phase);
+		return errorResult(issue.message, details);
 	}
 	progress.recordError(issue.message, "failed");
-	progress.finish("failed", "failed");
-	return errorResult(issue.message);
+	const details = progress.finish("failed", "failed");
+	return errorResult(issue.message, details);
 }
 
 /** Reports a non-logical execution failure and returns the Error to throw. */
@@ -889,8 +906,28 @@ function reportToolError(
 }
 
 /** Creates a standard text result for logical council execution outcomes. */
-function errorResult(message: string): AgentToolResult<unknown> {
-	return { content: [{ type: "text", text: message }], details: undefined };
+function errorResult(
+	message: string,
+	details?: CouncilRunDetails,
+): AgentToolResult<unknown> {
+	return {
+		content: [{ type: "text", text: message }],
+		details,
+	};
+}
+
+/** Attaches persisted UI progress while preserving the model-facing content. */
+function withCouncilProgressDetails(
+	result: AgentToolResult<unknown>,
+	details: CouncilRunDetails,
+): AgentToolResult<unknown> {
+	return {
+		...result,
+		details:
+			result.details === undefined
+				? details
+				: { ...details, outputDetails: result.details },
+	};
 }
 
 interface BaseCouncilOptions {

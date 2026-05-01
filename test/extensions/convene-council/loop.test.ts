@@ -357,7 +357,7 @@ describe("convene-council loop", () => {
 					"grep",
 				]);
 				expect(call.context.systemPrompt).toContain(
-					"Current participant tools: read, grep.",
+					"Your current available tools: read, grep.",
 				);
 				expect(call.context.systemPrompt).not.toContain("{{tools}}");
 			}
@@ -466,9 +466,13 @@ describe("convene-council loop", () => {
 
 			const result = await executeCouncil(pi, ctx, "What should we do?");
 
-			expect(result).toEqual({
-				content: [{ type: "text", text: "final council answer" }],
-				details: undefined,
+			expect(result.content).toEqual([
+				{ type: "text", text: "final council answer" },
+			]);
+			expect(result.details).toMatchObject({
+				type: "convene_council_progress",
+				status: "succeeded",
+				phase: "agreed",
 			});
 			expect(completion.calls).toHaveLength(5);
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
@@ -589,15 +593,21 @@ describe("convene-council loop", () => {
 				onUpdate: (partial) => updates.push(partial),
 			});
 
-			expect(result).toEqual({
-				content: [{ type: "text", text: "final council answer" }],
-				details: undefined,
+			expect(result.content).toEqual([
+				{ type: "text", text: "final council answer" },
+			]);
+			expect(result.details).toMatchObject({
+				type: "convene_council_progress",
+				status: "succeeded",
+				phase: "agreed",
+				iteration: 2,
+				iterationLimit: 3,
 			});
 			expect(updates.length).toBeGreaterThan(0);
-			const details = updates.map((update) => update.details) as Record<
-				string,
-				unknown
-			>[];
+			const details = [
+				...updates.map((update) => update.details),
+				result.details,
+			] as Record<string, unknown>[];
 			expect(
 				details.every(
 					(detail) => detail["type"] === "convene_council_progress",
@@ -607,14 +617,15 @@ describe("convene-council loop", () => {
 			expect(details.at(-1)?.["phase"]).toBe("agreed");
 			expect(details.at(-1)?.["iteration"]).toBe(2);
 			expect(details.at(-1)?.["iterationLimit"]).toBe(3);
-			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain("A");
-			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain(
-				"openai/model-a/high",
+			const finalParticipantsJson = JSON.stringify(
+				details.at(-1)?.["participants"],
 			);
-			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain("B");
-			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain(
-				"anthropic/model-b/medium",
-			);
+			expect(finalParticipantsJson).toContain("displayName");
+			expect(finalParticipantsJson).toContain("openai/model-a/high");
+			expect(finalParticipantsJson).toContain("anthropic/model-b/medium");
+			expect(finalParticipantsJson).toContain("final answer accepted");
+			expect(finalParticipantsJson).not.toContain('"displayName":"A"');
+			expect(finalParticipantsJson).not.toContain('"displayName":"B"');
 			const eventsJson = JSON.stringify(
 				details.flatMap((detail) => detail["events"]),
 			);
@@ -674,6 +685,15 @@ describe("convene-council loop", () => {
 						},
 						isError: false,
 					});
+					options.onSessionEvent?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							usage: {
+								totalTokens: options.participantId === "llm1" ? 12_345 : 67_890,
+							},
+						},
+					});
 					const response = responses.shift();
 					if (response === undefined) {
 						throw new Error("missing participant response");
@@ -686,16 +706,24 @@ describe("convene-council loop", () => {
 			conveneCouncil(pi, { createParticipantRunner });
 			const updates: AgentToolResult<unknown>[] = [];
 
-			await executeCouncilWithOptions(pi, createContext([model]), {
-				question: "Which files did participants inspect?",
-				onUpdate: (partial) => updates.push(partial),
-			});
+			const result = await executeCouncilWithOptions(
+				pi,
+				createContext([model]),
+				{
+					question: "Which files did participants inspect?",
+					onUpdate: (partial) => updates.push(partial),
+				},
+			);
 
 			const eventsJson = JSON.stringify(
 				updates.flatMap((update) => {
 					const details = update.details as { events?: unknown } | undefined;
 					return Array.isArray(details?.events) ? details.events : [];
 				}),
+			);
+			const finalParticipantsJson = JSON.stringify(
+				(result.details as { participants?: unknown } | undefined)
+					?.participants,
 			);
 			expect(eventsJson).toContain("A read");
 			expect(eventsJson).toContain("llm1.md");
@@ -704,6 +732,9 @@ describe("convene-council loop", () => {
 			expect(eventsJson).toContain("llm2.md");
 			expect(eventsJson).toContain("B read result");
 			expect(eventsJson).not.toContain(longToolSuffix);
+			expect(finalParticipantsJson).toContain('"tokens":12345');
+			expect(finalParticipantsJson).toContain('"tokens":67890');
+			expect(finalParticipantsJson).toContain('"contextWindow":100000');
 		});
 	});
 
@@ -786,7 +817,11 @@ describe("convene-council loop", () => {
 
 			const result = await executeCouncil(pi, ctx, "Compare approaches");
 
-			expect(result.details).toBeUndefined();
+			expect(result.details).toMatchObject({
+				type: "convene_council_progress",
+				status: "succeeded",
+				phase: "iteration limit reached",
+			});
 			expect(result.content[0]?.type).toBe("text");
 			if (result.content[0]?.type === "text") {
 				expectNoConsensusResult(

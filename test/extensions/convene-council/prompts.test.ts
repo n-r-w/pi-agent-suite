@@ -22,7 +22,7 @@ test("participant system prompt renders selected tool placeholder", () => {
 	// Dependencies: bundled participant-system prompt template.
 	const prompt = buildParticipantSystemPrompt([], ["read", "grep"]);
 
-	expect(prompt).toContain("Current participant tools: read, grep.");
+	expect(prompt).toContain("Your current available tools: read, grep.");
 	expect(prompt).not.toContain("{{tools}}");
 });
 
@@ -33,6 +33,6 @@ test("participant system prompt renders empty selected tools as none", () => {
 	// Dependencies: bundled participant-system prompt template.
 	const prompt = buildParticipantSystemPrompt([], []);
 
-	expect(prompt).toContain("Current participant tools: none.");
+	expect(prompt).toContain("Your current available tools: none.");
 	expect(prompt).not.toContain("{{tools}}");
 });

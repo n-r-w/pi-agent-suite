@@ -188,7 +188,7 @@ async function callParticipantRunner(
 	signal: AbortSignal | undefined,
 ): Promise<{ readonly message: AssistantMessage } | CouncilIssue> {
 	if (signal?.aborted === true) {
-		return toolErrorIssue("participant request aborted");
+		return toolErrorIssue("participant request aborted", "aborted");
 	}
 	try {
 		return { message: await runner.prompt(task, signal) };
@@ -203,8 +203,14 @@ async function callParticipantRunner(
 			error instanceof Error
 				? `participant request failed: ${error.message}`
 				: "participant request failed",
+			isAbortSignalSet(signal) ? "aborted" : "failed",
 		);
 	}
+}
+
+/** Reads abort state through a helper because the signal may change during await. */
+function isAbortSignalSet(signal: AbortSignal | undefined): boolean {
+	return signal?.aborted === true;
 }
 
 /** Builds one logical issue that should be returned as a normal text result. */
@@ -213,6 +219,9 @@ function logicalIssue(message: string): CouncilIssue {
 }
 
 /** Builds one infrastructure issue that should be surfaced as a Pi tool error. */
-function toolErrorIssue(message: string): CouncilIssue {
-	return { kind: "tool-error", message };
+function toolErrorIssue(
+	message: string,
+	status: "failed" | "aborted" = "failed",
+): CouncilIssue {
+	return { kind: "tool-error", message, status };
 }

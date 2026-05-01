@@ -477,7 +477,10 @@ How it works:
 - Stops when both participants report `AGREE` after reviewing the opponent or when the iteration limit is reached.
 - Requests the final answer from the configured final answer participant after agreement.
 - Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
-- Shows live TUI progress with current phase, iteration, elapsed time, participant runtime mapping, latest council events, and short accepted-answer previews.
-- Colors participant labels while keeping status, retry, and error colors semantic.
+- Shows stable participant rows during and after execution instead of a scrolling event stream.
+- Selects and persists one English philosopher or sage name for each participant row, while internal IDs remain `llm1` and `llm2`.
+- Shows each participant status icon, elapsed time, context usage when child usage is available, and latest operation.
+- Uses the same status icon colors as `run_subagent`: `⏳` accent, `✓` success, `■` error, and `✗` error.
+- Shows a short final-answer or error preview below participant rows after completion.
 - Keeps raw transcripts, provider payloads, token deltas, and unbounded intermediate answers out of progress rows.
 - Saves very large answers to a temporary file and returns a short result with the file path.

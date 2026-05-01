@@ -45,15 +45,15 @@ Use it when a high-impact question benefits from two model participants comparin
 - Requests the final answer from `finalAnswerParticipant` after agreement.
 - Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
 - Applies Pi-style output truncation to large tool results and writes the full result to a system temp file.
-- Stores only truncation details when output is truncated.
+- Nests truncation details under persisted council UI metadata when output is truncated.
 - Emits live TUI progress through partial tool updates while the council is running.
-- Keeps live TUI progress in partial result `details` only; final tool results keep the model-facing output contract.
+- Persists TUI progress in final result `details`; model-facing `content` remains the answer, no-consensus XML, or failure text.
 - Shows a compact tool header with the current phase, iteration, elapsed time, question preview, and participant runtime mapping.
-- Shows collapsed progress as the latest fixed-width council events with a standard Pi expand hint when older events are hidden.
-- Shows short accepted-answer previews in response rows so users can see what each participant answered.
-- Colors only participant labels: `A` uses the theme accent color and `B` uses the theme tool-output color.
-- Keeps status, retry, and error colors semantic instead of coloring whole rows by participant.
-- Shows expanded live progress with question, participant runtime details, and full retained progress history.
+- Shows collapsed progress as stable participant rows, not as a scrolling event stream.
+- Keeps participant rows after success, logical failure, transport failure, and abort when council progress already exists.
+- Shows each participant's persisted philosopher or sage name, status icon, elapsed time, context usage when available, and latest activity.
+- Uses the same status indicator colors as `run_subagent`: `⏳` accent, `✓` success, `■` error, and `✗` error.
+- Shows expanded progress with question, participant runtime details, full retained progress history, and final result text when available.
 - Does not show raw transcripts, provider payloads, token deltas, or unbounded intermediate answers in progress rows.
 - Publishes prompt guidance through `Agent Runtime Composition` only when `convene_council` is active for the current effective agent.
 - Does not call `pi.setActiveTools()` directly.
@@ -150,29 +150,37 @@ latest LLM2 opinion
 </answer2>
 ```
 
-The no-agreement output text is generated from `pi-package/extensions/convene-council/prompts/no-consensus-result.md`. The ordinary tool response does not include iteration count, retry count, participant statuses, or raw discussion history.
+The no-agreement output text is generated from `pi-package/extensions/convene-council/prompts/no-consensus-result.md`. The model-facing tool content contains only the answer, no-consensus XML, or error text. Persisted `details` store UI metadata for rendering participant rows after completion, redraw, collapse, expand, and session resume.
 
-Live TUI progress is renderer metadata. It is emitted in partial tool updates while the tool runs and is not part of the final ordinary tool response.
+Live TUI progress is renderer metadata. It is emitted in partial tool updates while the tool runs and is also persisted in the final tool-result details.
 
-Collapsed live progress example:
+Collapsed progress example while running:
 
 ```text
-convene_council · B reviews A · iter 2/3 · 18.2s
-  Question: Which implementation should we use for TUI progress?
-  A openai-codex/gpt-5.5/high · B anthropic/claude-sonnet-4-5/medium
-→ A initial opinion
-← A opinion: PostgreSQL is the safest default because hotel data is relational...
-→ B initial opinion
-← B opinion: I agree with PostgreSQL, but search requirements may need...
-! B response retry 1/1
-... (7 more lines, 12 total, ctrl+o to expand)
+convene_council · Hypatia reviews Socrates · iter 2/3 · 18.2s
+⏳ Socrates 18.2s · 120k/272k · read {"path":"plan.md"}
+✓ Hypatia 18.2s · 98k/272k · AGREE PostgreSQL is the safest default...
 ```
 
-Expanded live progress sections:
+Collapsed result example after completion:
+
+```text
+convene_council · agreed · iter 2/3 · 82.8s
+✓ Socrates 82.8s · 120k/272k · AGREE PostgreSQL fits core storage...
+✓ Hypatia 82.8s · 98k/272k · final answer accepted
+Council: Use PostgreSQL as the source of truth...
+```
+
+Participant display names are selected once per council run from this finite English name set and persisted in result details.
+
+Participant status indicators use the same indicator color contract as `run_subagent`: `⏳` uses `accent`, `✓` uses `success`, `■` uses `error`, and `✗` uses `error`. Context usage is shown as `used/contextWindow` when child `message_end` usage is available. Context values use warning color from 50% and error color from 80%.
+
+Expanded progress sections:
 
 - `Question`
 - `Participants`
 - `Progress`
+- `Result` when answer or error text is available
 
 Progress event labels:
 
@@ -214,7 +222,7 @@ Tests must verify:
 - prompt contribution through `Agent Runtime Composition`;
 - live progress partial updates through `onUpdate`;
 - participant runtime mapping in the tool-call header;
-- collapsed progress row width with Unicode and mixed-direction text;
-- expanded live progress sections;
+- collapsed participant row width with Unicode and mixed-direction text;
+- expanded progress sections;
 - retry events for response defects;
-- final results without persisted progress metadata.
+- final results with persisted participant row metadata.

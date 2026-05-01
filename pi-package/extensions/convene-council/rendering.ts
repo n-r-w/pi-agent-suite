@@ -21,6 +21,7 @@ import {
 	truncateTextByWidth,
 } from "../../shared/display-width";
 import {
+	type CouncilContextUsage,
 	type CouncilProgressEvent,
 	type CouncilRunDetails,
 	formatCouncilElapsedMs,
@@ -30,8 +31,13 @@ import {
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
 const PARTICIPANT_TITLE_PATTERN = /^(A|B)(?:\s+(.*))?$/;
 const COLLAPSED_COUNCIL_PREVIEW_LINES = 5;
-const COLLAPSED_COUNCIL_PROGRESS_LINES = 5;
+const COLLAPSED_COUNCIL_DETAILS_ANSWER_LINES = 3;
 const EXPANDED_EVENT_PREVIEW_WIDTH = 240;
+const TOKEN_THOUSAND = 1000;
+const TOKEN_FRACTION_DIGITS = 1;
+const CONTEXT_WARNING_USED_PERCENT = 50;
+const CONTEXT_ERROR_USED_PERCENT = 80;
+const PERCENT_FACTOR = 100;
 
 /** Stores progress metadata that belongs in the tool-call header. */
 interface CouncilRenderState {
@@ -123,20 +129,21 @@ export function renderConveneCouncilResult(
 		: undefined;
 	if (details !== undefined) {
 		updateCouncilHeaderDetails(details, context);
+		const answer = getResultText(result);
 		return options.expanded === true
-			? renderExpandedCouncilProgress(details, theme)
-			: renderCollapsedCouncilProgress(details, theme);
+			? renderExpandedCouncilProgress(details, answer, theme)
+			: renderCollapsedCouncilProgress(details, answer, theme, context);
 	}
 
 	const answer = getResultText(result) || "(no answer)";
 	const label = context.isError === true ? "Error" : "Council";
 	if (options.expanded !== true) {
-		return new CollapsedCouncilAnswer(
+		return new CollapsedCouncilAnswer({
 			answer,
 			label,
 			theme,
-			context.isError === true,
-		);
+			isError: context.isError === true,
+		});
 	}
 
 	const container = new Container();
@@ -228,9 +235,9 @@ function formatParticipantRuntimeLine(
 	) {
 		return [
 			{ text: "  " },
-			{ text: "A", color: formatParticipantLabelColor("A") },
+			{ text: first.displayName },
 			{ text: "/" },
-			{ text: "B", color: formatParticipantLabelColor("B") },
+			{ text: second.displayName },
 			{ text: " " },
 			{ text: first.display, color: "dim", truncate: true },
 		];
@@ -243,10 +250,7 @@ function formatParticipantRuntimeLine(
 		}
 		parts.push(
 			{ text: "  " },
-			{
-				text: participant.label,
-				color: formatParticipantLabelColor(participant.label),
-			},
+			{ text: participant.displayName },
 			{ text: " " },
 			{ text: participant.display, color: "dim", truncate: true },
 		);
@@ -257,37 +261,27 @@ function formatParticipantRuntimeLine(
 /** Renders the default compact view for live council progress. */
 function renderCollapsedCouncilProgress(
 	details: CouncilRunDetails,
+	answer: string | undefined,
 	theme: Theme,
+	context: CouncilRenderContext,
 ): Component {
-	const rows = details.events.map((event) =>
-		formatCouncilEventLineParts(event),
+	const displayNameWidth = getParticipantDisplayNameWidth(details);
+	const participantLines = details.participants.map((participant) =>
+		formatCouncilParticipantLine(participant, displayNameWidth),
 	);
-	const displayedRows = rows.slice(-COLLAPSED_COUNCIL_PROGRESS_LINES);
-	const hiddenLineCount =
-		details.omittedEventCount + Math.max(0, rows.length - displayedRows.length);
-	const totalLineCount = hiddenLineCount + displayedRows.length;
-	const lines = [...displayedRows];
-
-	if (lines.length === 0) {
-		lines.push([
-			{
-				text:
-					details.status === "running"
-						? "(starting...)"
-						: "(no progress events)",
-				color: "muted",
-			},
-		]);
-	}
-	if (hiddenLineCount > 0) {
-		lines.push(formatCouncilExpandHintLine(hiddenLineCount, totalLineCount));
-	}
-	return new FixedLines(lines, theme);
+	const answerPreview = createCollapsedCouncilAnswerPreview(
+		details,
+		answer,
+		theme,
+		context,
+	);
+	return new CollapsedCouncilProgress(participantLines, answerPreview, theme);
 }
 
 /** Renders the expanded live progress view with question, participants, and all visible events. */
 function renderExpandedCouncilProgress(
 	details: CouncilRunDetails,
+	answer: string | undefined,
 	theme: Theme,
 ): Component {
 	const container = new Container();
@@ -295,10 +289,15 @@ function renderExpandedCouncilProgress(
 	container.addChild(new Text(theme.fg("dim", details.question), 0, 0));
 	container.addChild(new Spacer(1));
 	container.addChild(new Text(theme.fg("muted", "─── Participants ───"), 0, 0));
+	const displayNameWidth = getParticipantDisplayNameWidth(details);
 	for (const participant of details.participants) {
 		container.addChild(
 			new Text(
-				`${theme.fg("accent", `${participant.label}:`)} ${theme.fg("dim", participant.display)}`,
+				renderFixedLine(
+					formatCouncilParticipantLine(participant, displayNameWidth),
+					Number.MAX_SAFE_INTEGER,
+					theme,
+				),
 				0,
 				0,
 			),
@@ -335,7 +334,160 @@ function renderExpandedCouncilProgress(
 			);
 		}
 	}
+	if (answer !== undefined) {
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("muted", "─── Result ───"), 0, 0));
+		container.addChild(new Markdown(answer, 0, 0, getMarkdownTheme()));
+	}
 	return container;
+}
+
+/** Computes the current name column width from visible terminal width. */
+function getParticipantDisplayNameWidth(details: CouncilRunDetails): number {
+	return details.participants.reduce(
+		(width, participant) =>
+			Math.max(width, visibleWidth(participant.displayName)),
+		0,
+	);
+}
+
+/** Pads a text value with spaces until it reaches the requested visible width. */
+function padTextToVisibleWidth(text: string, width: number): string {
+	const paddingWidth = Math.max(0, width - visibleWidth(text));
+	return `${text}${" ".repeat(paddingWidth)}`;
+}
+
+/** Formats one stable participant status row. */
+function formatCouncilParticipantLine(
+	participant: CouncilRunDetails["participants"][number],
+	displayNameWidth: number,
+): FixedLinePart[] {
+	const parts: FixedLinePart[] = [
+		{
+			text: formatCouncilParticipantStatusIcon(participant.status),
+			color: formatCouncilParticipantStatusColor(participant.status),
+		},
+		{ text: " " },
+		{ text: padTextToVisibleWidth(participant.displayName, displayNameWidth) },
+		{ text: " " },
+		{ text: formatCouncilElapsedMs(participant.elapsedMs), color: "dim" },
+	];
+	const contextUsage = formatCouncilContextUsage(participant.contextUsage);
+	if (contextUsage !== undefined) {
+		const color = formatCouncilContextUsageColor(participant.contextUsage);
+		parts.push(
+			{ text: " · " },
+			color === undefined
+				? { text: contextUsage }
+				: { text: contextUsage, color },
+		);
+	}
+	if (participant.activity !== undefined) {
+		parts.push({ text: " · " }, { text: participant.activity, truncate: true });
+	}
+	return parts;
+}
+
+/** Creates the wrapped answer preview shown below persisted participant rows. */
+function createCollapsedCouncilAnswerPreview(
+	details: CouncilRunDetails,
+	answer: string | undefined,
+	theme: Theme,
+	context: CouncilRenderContext,
+): CollapsedCouncilAnswer | undefined {
+	if (
+		answer === undefined ||
+		answer.length === 0 ||
+		details.status === "running"
+	) {
+		return undefined;
+	}
+	const isError =
+		context.isError === true ||
+		details.status === "failed" ||
+		details.status === "aborted";
+	return new CollapsedCouncilAnswer({
+		answer,
+		label: isError ? "Error" : "Council",
+		theme,
+		isError,
+		previewLineBudget: COLLAPSED_COUNCIL_DETAILS_ANSWER_LINES,
+	});
+}
+
+/** Selects the participant status icon used by council rows. */
+function formatCouncilParticipantStatusIcon(
+	status: CouncilRunDetails["participants"][number]["status"],
+): string {
+	if (status === "running") {
+		return "⏳";
+	}
+	if (status === "succeeded") {
+		return "✓";
+	}
+	if (status === "aborted") {
+		return "■";
+	}
+	return "✗";
+}
+
+/** Selects the same status icon colors used by subagent rows. */
+function formatCouncilParticipantStatusColor(
+	status: CouncilRunDetails["participants"][number]["status"],
+): ThemeColor {
+	if (status === "running") {
+		return "accent";
+	}
+	if (status === "succeeded") {
+		return "success";
+	}
+	return "error";
+}
+
+/** Formats participant context usage like subagent rows. */
+function formatCouncilContextUsage(
+	contextUsage: CouncilContextUsage | undefined,
+): string | undefined {
+	if (contextUsage === undefined) {
+		return undefined;
+	}
+	const tokensText =
+		contextUsage.tokens === null ? "?" : formatTokenCount(contextUsage.tokens);
+	return `${tokensText}/${formatTokenCount(contextUsage.contextWindow)}`;
+}
+
+/** Selects context pressure colors using the subagent threshold contract. */
+function formatCouncilContextUsageColor(
+	contextUsage: CouncilContextUsage | undefined,
+): ThemeColor | undefined {
+	if (contextUsage?.tokens === undefined || contextUsage.tokens === null) {
+		return undefined;
+	}
+	const usedPercent =
+		contextUsage.contextWindow > 0
+			? (contextUsage.tokens / contextUsage.contextWindow) * PERCENT_FACTOR
+			: null;
+	if (usedPercent === null) {
+		return undefined;
+	}
+	if (usedPercent >= CONTEXT_ERROR_USED_PERCENT) {
+		return "error";
+	}
+	if (usedPercent >= CONTEXT_WARNING_USED_PERCENT) {
+		return "warning";
+	}
+	return undefined;
+}
+
+/** Formats token counts using the compact subagent row convention. */
+function formatTokenCount(tokens: number): string {
+	if (tokens < TOKEN_THOUSAND) {
+		return String(Math.round(tokens));
+	}
+	const thousands = tokens / TOKEN_THOUSAND;
+	return Number.isInteger(thousands)
+		? `${thousands}k`
+		: `${thousands.toFixed(TOKEN_FRACTION_DIGITS)}k`;
 }
 
 /** Selects the neutral identity color for a participant label. */
@@ -488,21 +640,6 @@ function formatCouncilEventIconColor(
 	return "toolOutput";
 }
 
-/** Formats the collapsed expansion hint with Pi's current keybinding. */
-function formatCouncilExpandHintLine(
-	hiddenLineCount: number,
-	totalLineCount: number,
-): FixedLinePart[] {
-	return [
-		{
-			text: `... (${hiddenLineCount} more ${formatLineWord(hiddenLineCount)}, ${totalLineCount} total, `,
-			color: "muted",
-		},
-		{ text: formatToolExpandKeybindingText(), color: "dim" },
-		{ text: " to expand)", color: "muted" },
-	];
-}
-
 /** Normalizes multi-line text into one preview line before width clipping. */
 function normalizePreviewText(value: string, maxWidth?: number): string {
 	const normalizedValue = value.replace(/\s+/g, " ").trim();
@@ -516,19 +653,56 @@ function formatToolExpandKeybindingText(): string {
 	return getKeybindings().getKeys(EXPAND_TOOL_RESULT_KEYBINDING).join("/");
 }
 
+/** Renders persisted participant rows plus bounded wrapped answer preview. */
+class CollapsedCouncilProgress implements Component {
+	public constructor(
+		private readonly participantLines: readonly FixedLinePart[][],
+		private readonly answerPreview: CollapsedCouncilAnswer | undefined,
+		private readonly theme: Theme,
+	) {}
+
+	/** Renders all participant rows and the answer preview within the provided width. */
+	public render(width: number): string[] {
+		const lines = this.participantLines.map((line) =>
+			renderFixedLine(line, width, this.theme),
+		);
+		if (this.answerPreview !== undefined) {
+			lines.push(...this.answerPreview.render(width));
+		}
+		return lines;
+	}
+
+	/** Keeps the component compatible with the TUI invalidation contract. */
+	public invalidate(): void {}
+}
+
 /** Renders collapsed council output and the standard expansion hint when content is hidden. */
 class CollapsedCouncilAnswer implements Component {
-	public constructor(
-		private readonly answer: string,
-		private readonly label: "Council" | "Error",
-		private readonly theme: Theme,
-		private readonly isError: boolean,
-	) {}
+	private readonly answer: string;
+	private readonly label: "Council" | "Error";
+	private readonly theme: Theme;
+	private readonly isError: boolean;
+	private readonly previewLineBudget: number;
+
+	public constructor(options: {
+		readonly answer: string;
+		readonly label: "Council" | "Error";
+		readonly theme: Theme;
+		readonly isError: boolean;
+		readonly previewLineBudget?: number;
+	}) {
+		this.answer = options.answer;
+		this.label = options.label;
+		this.theme = options.theme;
+		this.isError = options.isError;
+		this.previewLineBudget =
+			options.previewLineBudget ?? COLLAPSED_COUNCIL_PREVIEW_LINES;
+	}
 
 	/** Returns the first Pi-rendered visual lines plus a hidden-line summary when needed. */
 	public render(width: number): string[] {
 		const wrappedLines = this.renderAnswerVisualLines(width);
-		const previewLines = wrappedLines.slice(0, COLLAPSED_COUNCIL_PREVIEW_LINES);
+		const previewLines = wrappedLines.slice(0, this.previewLineBudget);
 		const hiddenLineCount = wrappedLines.length - previewLines.length;
 		if (hiddenLineCount <= 0) {
 			return previewLines;

@@ -374,9 +374,9 @@ describe("convene-council retries", () => {
 		});
 	});
 
-	test("surfaces participant context-size failures", async () => {
-		// Purpose: oversized child context remains a non-logical tool failure.
-		// Input and expected output: participant runner context-size error is reported as a tool error.
+	test("surfaces participant context-size failures with persisted rows", async () => {
+		// Purpose: oversized child context must give the main agent failure information and keep TUI participant rows.
+		// Input and expected output: participant runner context-size error is returned as failed council text with failed details.
 		// Edge case: failure happens after participant sessions and runners are created.
 		// Dependencies: custom runner fake.
 		await withIsolatedAgentDir(async () => {
@@ -394,15 +394,23 @@ describe("convene-council retries", () => {
 			});
 			const ctx = createContext([model]);
 
-			await expect(executeCouncil(pi, ctx, "Large context")).rejects.toThrow(
-				"context is too large",
-			);
+			const result = await executeCouncil(pi, ctx, "Large context");
+
+			expect(result.content).toEqual([
+				{ type: "text", text: "context is too large" },
+			]);
+			expect(result.details).toMatchObject({
+				type: "convene_council_progress",
+				status: "failed",
+				phase: "failed",
+			});
+			expect(JSON.stringify(result.details)).toContain("displayName");
 		});
 	});
 
 	test("surfaces participant runner failures without transport retries", async () => {
 		// Purpose: participant transport failures must fail the council without hidden retries.
-		// Input and expected output: both independent initial participants fail once.
+		// Input and expected output: both independent initial participants fail once and final details keep participant rows.
 		// Edge case: response-defect retry budget does not apply to transport failures.
 		// Dependencies: custom runner fake.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -423,16 +431,26 @@ describe("convene-council retries", () => {
 			});
 			const ctx = createContext([model]);
 
-			await expect(
-				executeCouncil(pi, ctx, "Participant failure"),
-			).rejects.toThrow("participant request failed: participant failure");
+			const result = await executeCouncil(pi, ctx, "Participant failure");
+
+			expect(result.content).toEqual([
+				{
+					type: "text",
+					text: "participant request failed: participant failure",
+				},
+			]);
+			expect(result.details).toMatchObject({
+				type: "convene_council_progress",
+				status: "failed",
+				phase: "failed",
+			});
 			expect(calls).toHaveLength(2);
 		});
 	});
 
 	test("does not prompt a participant when the signal is already aborted", async () => {
-		// Purpose: cancellation requested before execution must prevent the first participant prompt.
-		// Input and expected output: already-aborted signal throws a participant-abort error and records zero prompts.
+		// Purpose: cancellation requested before execution must prevent the first participant prompt and keep final rows.
+		// Input and expected output: already-aborted signal returns abort information and records zero prompts.
 		// Edge case: model resolution still succeeds before the first participant boundary.
 		// Dependencies: AbortController and custom runner fake.
 		await withIsolatedAgentDir(async () => {
@@ -454,16 +472,28 @@ describe("convene-council retries", () => {
 			});
 			const ctx = createContext([model]);
 
-			await expect(
-				executeCouncil(pi, ctx, "Already aborted", abortController.signal),
-			).rejects.toThrow("participant request aborted");
+			const result = await executeCouncil(
+				pi,
+				ctx,
+				"Already aborted",
+				abortController.signal,
+			);
+
+			expect(result.content).toEqual([
+				{ type: "text", text: "participant request aborted" },
+			]);
+			expect(result.details).toMatchObject({
+				type: "convene_council_progress",
+				status: "aborted",
+				phase: "aborted",
+			});
 			expect(calls).toHaveLength(0);
 		});
 	});
 
 	test("does not retry when participant runner fails after the signal is aborted", async () => {
 		// Purpose: cancellation reported by the active participant call must not start retry attempts.
-		// Input and expected output: the fake runner aborts the signal and throws once.
+		// Input and expected output: the fake runner aborts the signal, throws once, and final rows show aborted state.
 		// Edge case: response-defect retry does not apply to transport failures.
 		// Dependencies: AbortController and custom runner fake.
 		await withIsolatedAgentDir(async () => {
@@ -485,9 +515,24 @@ describe("convene-council retries", () => {
 			});
 			const ctx = createContext([model]);
 
-			await expect(
-				executeCouncil(pi, ctx, "Abort active call", abortController.signal),
-			).rejects.toThrow("participant request failed: aborted participant call");
+			const result = await executeCouncil(
+				pi,
+				ctx,
+				"Abort active call",
+				abortController.signal,
+			);
+
+			expect(result.content).toEqual([
+				{
+					type: "text",
+					text: "participant request failed: aborted participant call",
+				},
+			]);
+			expect(result.details).toMatchObject({
+				type: "convene_council_progress",
+				status: "aborted",
+				phase: "aborted",
+			});
 			expect(calls).toHaveLength(1);
 		});
 	});
@@ -523,7 +568,7 @@ describe("convene-council retries", () => {
 			const text =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("Full output:");
-			const details = expectMinimalTruncationDetails(result.details);
+			const details = expectCouncilTruncationDetails(result.details);
 			expectNoConsensusResult(
 				await readFile(details.fullOutputPath, "utf8"),
 				llm1Opinion,
@@ -561,26 +606,32 @@ describe("convene-council retries", () => {
 			const text =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("Full output:");
-			const details = expectMinimalTruncationDetails(result.details);
+			const details = expectCouncilTruncationDetails(result.details);
 			expect(await readFile(details.fullOutputPath, "utf8")).toBe(largeAnswer);
 		});
 	});
 });
 
-/** Verifies that truncated results expose only shared truncation metadata. */
-function expectMinimalTruncationDetails(details: unknown): {
+/** Verifies that truncation metadata is nested under persisted council UI details. */
+function expectCouncilTruncationDetails(details: unknown): {
 	readonly fullOutputPath: string;
 } {
 	expect(typeof details).toBe("object");
 	expect(details).not.toBeNull();
 	const record = details as Record<string, unknown>;
-	expect(Object.keys(record).sort()).toEqual(["fullOutputPath", "truncation"]);
-	expect(typeof record["fullOutputPath"]).toBe("string");
-	expect(typeof record["truncation"]).toBe("object");
-	expect(record["truncation"]).not.toBeNull();
-	const serialized = JSON.stringify(record);
-	for (const forbiddenField of ["history", "status", "iterations", "retries"]) {
-		expect(serialized).not.toContain(forbiddenField);
-	}
-	return { fullOutputPath: record["fullOutputPath"] as string };
+	expect(record["type"]).toBe("convene_council_progress");
+	expect(Array.isArray(record["participants"])).toBe(true);
+	const outputDetails = record["outputDetails"] as
+		| Record<string, unknown>
+		| undefined;
+	expect(typeof outputDetails).toBe("object");
+	expect(outputDetails).not.toBeNull();
+	expect(Object.keys(outputDetails ?? {}).sort()).toEqual([
+		"fullOutputPath",
+		"truncation",
+	]);
+	expect(typeof outputDetails?.["fullOutputPath"]).toBe("string");
+	expect(typeof outputDetails?.["truncation"]).toBe("object");
+	expect(outputDetails?.["truncation"]).not.toBeNull();
+	return { fullOutputPath: outputDetails?.["fullOutputPath"] as string };
 }

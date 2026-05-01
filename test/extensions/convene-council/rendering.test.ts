@@ -18,6 +18,13 @@ const colorTheme = {
 	bold: (text: string) => text,
 } as never;
 
+/** Returns the visual column where a marker starts in a rendered line. */
+function visualColumnOf(line: string, marker: string): number {
+	const index = line.indexOf(marker);
+	expect(index).toBeGreaterThanOrEqual(0);
+	return visibleWidth(line.slice(0, index));
+}
+
 describe("convene-council rendering", () => {
 	test("keeps call and collapsed result rows within visible width", () => {
 		// Purpose: council tool rendering must keep compact rows inside the width Pi gives the component.
@@ -46,95 +53,173 @@ describe("convene-council rendering", () => {
 		}
 	});
 
-	test("renders collapsed council progress as latest fixed-width rows", () => {
-		// Purpose: live council progress must look like compact tool progress without wrapping one event into multiple rows.
-		// Input and expected output: more progress events than the preview limit render the latest events and a standard expand hint.
-		// Edge case: participant runtime metadata uses two different providers while event text contains mixed Unicode.
-		// Dependencies: public renderer functions and shared renderer state between result and call renderers.
-		const eventCount = 8;
+	test("renders persisted participant rows and answer preview after success", () => {
+		// Purpose: completed council progress must keep stable participant rows instead of reverting to answer-only output.
+		// Input and expected output: final details carry two named participant rows followed by a bounded answer preview.
+		// Edge case: answer text is long enough that the preview must stay within the component width.
+		// Dependencies: public renderer functions and persisted tool-result details.
 		const result: AgentToolResult<unknown> = {
-			content: [{ type: "text", text: "running" }],
+			content: [
+				{
+					type: "text",
+					text: "Use PostgreSQL as the source of truth and add search-specific indexes after measuring filter latency.",
+				},
+			],
 			details: {
 				type: "convene_council_progress",
 				runId: "call-council",
-				question: "Which TUI should convene_council use?",
-				status: "running",
-				phase: "B reviews A",
-				elapsedMs: 18_200,
+				question: "Which storage should we use?",
+				status: "succeeded",
+				phase: "agreed",
+				elapsedMs: 82_800,
 				iteration: 2,
-				iterationLimit: 3,
+				iterationLimit: 10,
 				participants: [
 					{
 						label: "A",
+						displayName: "Socrates",
 						participantId: "llm1",
 						modelId: "openai-codex/gpt-5.5",
 						thinking: "high",
 						display: "openai-codex/gpt-5.5/high",
+						contextWindow: 272_000,
+						status: "succeeded",
+						elapsedMs: 82_800,
+						activity: "AGREE PostgreSQL fits core storage.",
+						contextUsage: {
+							tokens: 120_000,
+							contextWindow: 272_000,
+							percent: 44.1,
+						},
 					},
 					{
 						label: "B",
+						displayName: "Confucius",
 						participantId: "llm2",
 						modelId: "anthropic/claude-sonnet-4-5",
 						thinking: "medium",
 						display: "anthropic/claude-sonnet-4-5/medium",
+						contextWindow: 272_000,
+						status: "succeeded",
+						elapsedMs: 79_100,
+						activity: "final answer accepted",
+						contextUsage: {
+							tokens: 98_000,
+							contextWindow: 272_000,
+							percent: 36.1,
+						},
 					},
 				],
-				events: Array.from({ length: eventCount }, (_, index) => ({
-					kind: index === 6 ? "retry" : "request",
-					title: `event-${index + 1}`,
-					text:
-						index === 7 ? "Unicode ⚠️ 👨‍👩‍👧‍👦 שלום עולם العربية" : undefined,
-					timestampMs: index + 1,
-				})),
+				events: [],
 				omittedEventCount: 0,
 			},
 		};
-		const rendererState = {};
 
-		const progressLines = renderConveneCouncilResult(
+		const rendererState = {};
+		const lines = renderConveneCouncilResult(
 			result,
 			{ expanded: false },
 			theme,
-			{
-				args: { question: "Which TUI should convene_council use?" },
-				state: rendererState,
-				isError: false,
-			},
+			{ isError: false, state: rendererState },
 		).render(96);
 		const callLines = renderConveneCouncilCall(
-			{ question: "Which TUI should convene_council use?" },
+			{ question: "Which storage should we use?" },
 			theme,
 			{ state: rendererState },
 		).render(96);
+		const rendered = lines.join("\n");
+		const callRendered = callLines.join("\n");
 
-		expect(callLines[0]).toBe(
-			"convene_council · B reviews A · iter 2/3 · 18.2s",
+		expect(callRendered).toContain(
+			"convene_council · agreed · iter 2/10 · 82.8s",
 		);
-		expect(callLines.join("\n")).toContain("Question: Which TUI should");
-		expect(callLines.join("\n")).toContain("A openai-codex/gpt-5.5/high");
-		expect(callLines.join("\n")).toContain(
-			"B anthropic/claude-sonnet-4-5/medium",
+		expect(rendered).not.toContain("convene_council");
+		expect(rendered).toContain("✓ Socrates");
+		expect(rendered).toContain(
+			"82.8s · 120k/272k · AGREE PostgreSQL fits core storage.",
 		);
-		expect(progressLines).toHaveLength(6);
-		expect(progressLines.some((line) => line.includes("→ event-1"))).toBe(
-			false,
+		expect(rendered).toContain(
+			"✓ Confucius 79.1s · 98k/272k · final answer accepted",
 		);
-		expect(progressLines.some((line) => line.includes("→ event-4"))).toBe(true);
-		expect(progressLines.some((line) => line.includes("! event-7"))).toBe(true);
-		expect(progressLines.some((line) => line.includes("→ event-8"))).toBe(true);
-		expect(progressLines.at(-1)).toContain("... (");
-		expect(progressLines.at(-1)).toContain("more lines");
-		expect(progressLines.at(-1)).toContain("to expand");
-		for (const line of [...callLines, ...progressLines]) {
+		expect(rendered).toContain(
+			"Council: Use PostgreSQL as the source of truth",
+		);
+		expect(rendered).not.toContain("(no progress events)");
+		for (const line of lines) {
 			expect(line).not.toContain(SGR_RESET);
 			expect(visibleWidth(line)).toBeLessThanOrEqual(96);
 		}
 	});
 
-	test("colors participant labels and statuses without coloring whole progress rows", () => {
-		// Purpose: A/B identity colors must stay separate from semantic status and retry colors.
-		// Input and expected output: A and B labels use different theme colors, while DIFF keeps warning semantics.
-		// Edge case: answer previews stay dim instead of inheriting participant or status colors.
+	test("renders failure rows with subagent status indicator colors", () => {
+		// Purpose: failed and aborted council participants must keep final rows with the same indicator colors as subagents.
+		// Input and expected output: aborted and failed participants use error-colored square and cross icons.
+		// Edge case: missing context usage is omitted instead of being fabricated as zero.
+		// Dependencies: public renderer functions and theme color callbacks.
+		const result: AgentToolResult<unknown> = {
+			content: [{ type: "text", text: "operation was aborted" }],
+			details: {
+				type: "convene_council_progress",
+				runId: "call-council",
+				question: "Question",
+				status: "failed",
+				phase: "failed",
+				elapsedMs: 32_000,
+				iteration: 1,
+				iterationLimit: 10,
+				participants: [
+					{
+						label: "A",
+						displayName: "Socrates",
+						participantId: "llm1",
+						modelId: "openai/model-a",
+						thinking: "medium",
+						display: "openai/model-a/medium",
+						contextWindow: 272_000,
+						status: "aborted",
+						elapsedMs: 32_000,
+						activity: "assistant This operation was aborted",
+					},
+					{
+						label: "B",
+						displayName: "Confucius",
+						participantId: "llm2",
+						modelId: "openai/model-b",
+						thinking: "medium",
+						display: "openai/model-b/medium",
+						contextWindow: 272_000,
+						status: "failed",
+						elapsedMs: 32_000,
+						activity: "assistant provider error",
+					},
+				],
+				events: [],
+				omittedEventCount: 0,
+			},
+		};
+
+		const rendered = renderConveneCouncilResult(
+			result,
+			{ expanded: false },
+			colorTheme,
+			{ isError: true },
+		)
+			.render(120)
+			.join("\n");
+
+		expect(rendered).toContain("<error>■</error> Socrates");
+		expect(rendered).toContain("assistant This operation was aborted");
+		expect(rendered).toContain("<error>✗</error> Confucius");
+		expect(rendered).toContain("assistant provider error");
+		expect(rendered).toContain("<error>Error:</error>");
+		expect(rendered).toContain("operation was aborted");
+		expect(rendered).not.toContain("0/272k");
+	});
+
+	test("colors running and succeeded indicators and context pressure like subagents", () => {
+		// Purpose: council participant rows must use subagent indicator colors and context pressure colors.
+		// Input and expected output: running uses accent, succeeded uses success, warning and error context values are colored.
+		// Edge case: participant names replace A/B labels without coloring the whole row.
 		// Dependencies: public renderer functions and theme color callbacks.
 		const result: AgentToolResult<unknown> = {
 			content: [{ type: "text", text: "running" }],
@@ -143,40 +228,47 @@ describe("convene-council rendering", () => {
 				runId: "call-council",
 				question: "Question",
 				status: "running",
-				phase: "A reviews B",
+				phase: "B reviews Socrates",
 				elapsedMs: 1_000,
 				iteration: 1,
 				iterationLimit: 3,
 				participants: [
 					{
 						label: "A",
+						displayName: "Socrates",
 						participantId: "llm1",
 						modelId: "z-ai/glm-5.1",
 						thinking: "high",
 						display: "z-ai/glm-5.1/high",
+						contextWindow: 272_000,
+						status: "running",
+						elapsedMs: 1_000,
+						activity: 'read {"path":"plan.md"}',
+						contextUsage: {
+							tokens: 140_000,
+							contextWindow: 272_000,
+							percent: 51.5,
+						},
 					},
 					{
 						label: "B",
+						displayName: "Confucius",
 						participantId: "llm2",
 						modelId: "openai-codex/gpt-5.5",
 						thinking: "xhigh",
 						display: "openai-codex/gpt-5.5/xhigh",
+						contextWindow: 272_000,
+						status: "succeeded",
+						elapsedMs: 900,
+						activity: "AGREE PostgreSQL fits core storage.",
+						contextUsage: {
+							tokens: 220_000,
+							contextWindow: 272_000,
+							percent: 80.9,
+						},
 					},
 				],
-				events: [
-					{
-						kind: "response",
-						title: "A DIFF",
-						text: "PostgreSQL fits core storage, but search needs analysis.",
-						timestampMs: 1,
-					},
-					{
-						kind: "retry",
-						title: "B response retry 1/1",
-						text: undefined,
-						timestampMs: 2,
-					},
-				],
+				events: [],
 				omittedEventCount: 0,
 			},
 		};
@@ -190,15 +282,12 @@ describe("convene-council rendering", () => {
 			.render(120)
 			.join("\n");
 
-		expect(rendered).toContain("<accent>A</accent> <warning>DIFF</warning>");
-		expect(rendered).toContain(
-			"<toolOutput>B</toolOutput> <warning>response retry 1/1</warning>",
-		);
-		expect(rendered).toContain("<dim>PostgreSQL fits core storage");
-		expect(rendered).not.toContain("<accent>A DIFF</accent>");
-		expect(rendered).not.toContain(
-			"<toolOutput>B response retry 1/1</toolOutput>",
-		);
+		expect(rendered).toContain("<accent>⏳</accent> Socrates");
+		expect(rendered).toContain("<warning>140k/272k</warning> · read");
+		expect(rendered).toContain("<success>✓</success> Confucius");
+		expect(rendered).toContain("<error>220k/272k</error> · AGREE");
+		expect(rendered).not.toContain("<accent>Socrates");
+		expect(rendered).not.toContain("<success>Confucius");
 	});
 
 	test("renders collapsed council output through the standard Pi tool box", () => {
@@ -225,6 +314,145 @@ describe("convene-council rendering", () => {
 		expect(rendered).toContain("omega");
 		for (const line of renderedLines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(boxWidth);
+		}
+	});
+
+	test("aligns participant row details after the widest current name", () => {
+		// Purpose: participant row details must start in the same visual column when display names have different widths.
+		// Input and expected output: `Plato` and `Marcus Aurelius` rows align their elapsed-time segment.
+		// Edge case: the wider name contains a space and must use visible terminal width.
+		// Dependencies: public renderer function and Pi visible-width utility.
+		const result: AgentToolResult<unknown> = {
+			content: [{ type: "text", text: "running" }],
+			details: {
+				type: "convene_council_progress",
+				runId: "call-council",
+				question: "Question",
+				status: "running",
+				phase: "review",
+				elapsedMs: 32_400,
+				iteration: 2,
+				iterationLimit: 10,
+				participants: [
+					{
+						label: "A",
+						displayName: "Plato",
+						participantId: "llm1",
+						modelId: "openai/model-a",
+						thinking: "medium",
+						display: "openai/model-a/medium",
+						contextWindow: 272_000,
+						status: "succeeded",
+						elapsedMs: 32_400,
+						activity: "AGREE",
+					},
+					{
+						label: "B",
+						displayName: "Marcus Aurelius",
+						participantId: "llm2",
+						modelId: "openai/model-b",
+						thinking: "medium",
+						display: "openai/model-b/medium",
+						contextWindow: 272_000,
+						status: "succeeded",
+						elapsedMs: 32_400,
+						activity: "final answer accepted",
+					},
+				],
+				events: [],
+				omittedEventCount: 0,
+			},
+		};
+
+		const lines = renderConveneCouncilResult(
+			result,
+			{ expanded: false },
+			theme,
+			{ isError: false },
+		).render(96);
+		const platoRow = lines.find((line) => line.includes("Plato"));
+		const marcusRow = lines.find((line) => line.includes("Marcus Aurelius"));
+
+		expect(platoRow).toBeDefined();
+		expect(marcusRow).toBeDefined();
+		expect(visualColumnOf(platoRow ?? "", "32.4s")).toBe(
+			visualColumnOf(marcusRow ?? "", "32.4s"),
+		);
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(96);
+		}
+	});
+
+	test("wraps persisted final answer preview below participant rows", () => {
+		// Purpose: persisted council details must keep participant rows while preserving the wrapped answer preview and expand hint.
+		// Input and expected output: a long final answer wraps below rows instead of being clipped as one fixed line.
+		// Edge case: the collapsed result must remain bounded and each line must fit the component width.
+		// Dependencies: public renderer function and persisted council progress details.
+		const answer = [
+			"First sentence explains the recommended storage direction with enough words to wrap.",
+			"Second sentence adds operational constraints and migration details for the same recommendation.",
+			"Third sentence contains the final caveat that must be available after expanding.",
+		].join(" ");
+		const result: AgentToolResult<unknown> = {
+			content: [{ type: "text", text: answer }],
+			details: {
+				type: "convene_council_progress",
+				runId: "call-council",
+				question: "Question",
+				status: "succeeded",
+				phase: "agreed",
+				elapsedMs: 1_000,
+				iteration: 1,
+				iterationLimit: 3,
+				participants: [
+					{
+						label: "A",
+						displayName: "Socrates",
+						participantId: "llm1",
+						modelId: "openai/model-a",
+						thinking: "medium",
+						display: "openai/model-a/medium",
+						contextWindow: 272_000,
+						status: "succeeded",
+						elapsedMs: 1_000,
+						activity: "AGREE",
+					},
+					{
+						label: "B",
+						displayName: "Confucius",
+						participantId: "llm2",
+						modelId: "openai/model-b",
+						thinking: "medium",
+						display: "openai/model-b/medium",
+						contextWindow: 272_000,
+						status: "succeeded",
+						elapsedMs: 1_000,
+						activity: "final answer accepted",
+					},
+				],
+				events: [],
+				omittedEventCount: 0,
+			},
+		};
+
+		const lines = renderConveneCouncilResult(
+			result,
+			{ expanded: false },
+			theme,
+			{ isError: false },
+		).render(54);
+		const rendered = lines.join("\n");
+
+		expect(rendered).toContain("✓ Socrates");
+		expect(rendered).toContain("✓ Confucius");
+		expect(rendered).toContain("Council:");
+		expect(rendered).toContain("First sentence explains");
+		expect(rendered).toContain("sentence adds operational constraints");
+		expect(rendered).toContain("more lines");
+		expect(rendered).toContain("to expand");
+		expect(lines.length).toBeLessThanOrEqual(6);
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(54);
 		}
 	});
 

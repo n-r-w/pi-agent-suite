@@ -257,8 +257,6 @@ Options:
 - `enabled`: default `true`.
 - `model`: optional. Uses the current model when missing.
 - `reasoning`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
-- `historySummaryReserveRatio`: optional. Defaults to `0.8`. Must be greater than `0` and less than or equal to `1`.
-- `turnPrefixSummaryReserveRatio`: optional. Defaults to `0.5`. Must be greater than `0` and less than or equal to `1`.
 - `systemPromptFile`: optional absolute custom prompt path.
 - `historyPromptFile`: optional absolute custom prompt path.
 - `updatePromptFile`: optional absolute custom prompt path.
@@ -269,7 +267,6 @@ How it works:
 - Replaces pi's default compaction flow.
 - Uses bundled prompts when custom prompt files are not set.
 - Sends the old conversation to the model as one conversation block to create or update the summary.
-- Sets summary `maxTokens` by multiplying pi compaction `reserveTokens` by the configured reserve ratio.
 - Stops startup when a configured custom prompt file path is not absolute.
 - Disables itself for other config or custom prompt file errors.
 
@@ -480,7 +477,10 @@ How it works:
 - Stops when both participants report `AGREE` after reviewing the opponent or when the iteration limit is reached.
 - Requests the final answer from the configured final answer participant after agreement.
 - Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
-- Shows live TUI progress with current phase, iteration, elapsed time, participant runtime mapping, latest council events, and short accepted-answer previews.
-- Colors participant labels while keeping status, retry, and error colors semantic.
+- Shows stable participant rows during and after execution instead of a scrolling event stream.
+- Selects and persists one English philosopher or sage name for each participant row, while internal IDs remain `llm1` and `llm2`.
+- Shows each participant status icon, elapsed time, context usage when child usage is available, and latest operation.
+- Uses the same status icon colors as `run_subagent`: `⏳` accent, `✓` success, `■` error, and `✗` error.
+- Shows a short final-answer or error preview below participant rows after completion.
 - Keeps raw transcripts, provider payloads, token deltas, and unbounded intermediate answers out of progress rows.
 - Saves very large answers to a temporary file and returns a short result with the file path.

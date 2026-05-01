@@ -136,10 +136,16 @@ export interface ParticipantState {
 	readonly latest?: ParticipantOpinion;
 }
 
-export interface CouncilIssue {
-	readonly kind: "logical" | "tool-error";
-	readonly message: string;
-}
+export type CouncilIssue =
+	| {
+			readonly kind: "logical";
+			readonly message: string;
+	  }
+	| {
+			readonly kind: "tool-error";
+			readonly message: string;
+			readonly status: "failed" | "aborted";
+	  };
 
 export interface ParticipantOpinion {
 	readonly opinion: string;

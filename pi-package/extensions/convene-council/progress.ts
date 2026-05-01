@@ -21,16 +21,32 @@ const SECOND_MS = 1000;
 /** Keeps elapsed seconds readable without claiming false precision. */
 const ELAPSED_SECONDS_FRACTION_DIGITS = 1;
 
-/** Maps internal participant IDs to stable TUI labels. */
+/** Converts ratios into percentages for context-window pressure. */
+const FULL_PERCENT = 100;
+
+/** Bounds deterministic display-name hashing without bitwise operators. */
+const DISPLAY_NAME_HASH_MODULUS = 1_000_000_007;
+
+/** Maps internal participant IDs to stable legacy labels used in event history. */
 const PARTICIPANT_LABELS: Record<ParticipantId, CouncilParticipantLabel> = {
 	llm1: "A",
 	llm2: "B",
 };
 
-/** Defines participant labels shown in compact TUI rows. */
+/** Provides deterministic display names for participant rows. */
+const COUNCIL_DISPLAY_NAMES = [
+	"Socrates",
+	"Plato",
+	"Aristotle",
+	"Confucius",
+	"Pifagoras",
+	"Descartes",
+] as const;
+
+/** Defines participant labels retained for compact event-history rows. */
 export type CouncilParticipantLabel = "A" | "B";
 
-/** Defines lifecycle states for one council tool run. */
+/** Defines lifecycle states for one council tool run or participant row. */
 export type CouncilRunStatus = "running" | "succeeded" | "failed" | "aborted";
 
 /** Defines semantic event kinds shown in compact and expanded council progress. */
@@ -44,13 +60,26 @@ export type CouncilProgressEventKind =
 	| "tool_result"
 	| "error";
 
+/** Stores participant context-window usage reported by a child assistant message. */
+export interface CouncilContextUsage {
+	readonly tokens: number | null;
+	readonly contextWindow: number;
+	readonly percent: number | null;
+}
+
 /** Stores one participant runtime row for the tool-call header and expanded details. */
 export interface CouncilParticipantDetails {
 	readonly label: CouncilParticipantLabel;
+	readonly displayName: string;
 	readonly participantId: ParticipantId;
 	readonly modelId: string;
 	readonly thinking: string;
 	readonly display: string;
+	readonly contextWindow: number;
+	readonly status: CouncilRunStatus;
+	readonly elapsedMs: number;
+	readonly activity?: string;
+	readonly contextUsage?: CouncilContextUsage;
 }
 
 /** Stores one visible council event without raw participant opinions. */
@@ -65,7 +94,7 @@ export interface CouncilProgressEvent {
 interface CouncilProgressState {
 	readonly runId: string;
 	readonly question: string;
-	readonly participants: readonly CouncilParticipantDetails[];
+	participants: CouncilParticipantDetails[];
 	readonly iterationLimit: number;
 	readonly startedAtMs: number;
 	iteration: number;
@@ -115,6 +144,11 @@ export interface CouncilProgressReporter {
 	recordSessionEvent(participantId: ParticipantId, event: unknown): void;
 	recordInfo(title: string, phase?: string): void;
 	recordSuccess(title: string, phase?: string): void;
+	recordParticipantSuccess(
+		participantId: ParticipantId,
+		title: string,
+		phase?: string,
+	): void;
 	recordError(title: string, phase?: string): void;
 	finish(status: CouncilRunStatus, phase: string): CouncilRunDetails;
 }
@@ -136,10 +170,7 @@ export function createCouncilProgressReporter({
 	const state: CouncilProgressState = {
 		runId,
 		question,
-		participants: [
-			createParticipantDetails("llm1", runtime.llm1),
-			createParticipantDetails("llm2", runtime.llm2),
-		],
+		participants: createInitialParticipantDetails(runId, runtime),
 		iterationLimit,
 		startedAtMs: Date.now(),
 		iteration: 0,
@@ -168,20 +199,29 @@ function createCouncilProgressReporterApi(
 				...(phase !== undefined ? { phase } : {}),
 			}),
 		recordOpinion: (participantId, opinion) =>
-			recordParticipantOpinion(append, participantId, opinion),
+			recordParticipantOpinion(state, append, participantId, opinion),
 		recordResponse: (participantId, status, opinion) =>
-			recordParticipantResponse(append, participantId, status, opinion),
+			recordParticipantResponse(state, append, {
+				participantId,
+				status,
+				...(opinion === undefined ? {} : { opinion }),
+			}),
 		recordClarification: (participantId, clarification) =>
-			recordParticipantClarification(append, participantId, clarification),
+			recordParticipantClarification(
+				state,
+				append,
+				participantId,
+				clarification,
+			),
 		recordResponseDefectRetry: (participantId, attempt, maxAttempts) =>
-			recordParticipantRetry(append, {
+			recordParticipantRetry(state, append, {
 				participantId,
 				retryKind: "response",
 				attempt,
 				maxAttempts,
 			}),
 		recordSessionEvent: (participantId, event) =>
-			recordParticipantSessionEvent(append, participantId, event),
+			recordParticipantSessionEvent(state, append, participantId, event),
 		recordInfo: (title, phase) =>
 			recordEvent(state, append, {
 				kind: "info",
@@ -191,6 +231,12 @@ function createCouncilProgressReporterApi(
 		recordSuccess: (title, phase) =>
 			recordEvent(state, append, {
 				kind: "success",
+				title,
+				...(phase !== undefined ? { phase } : {}),
+			}),
+		recordParticipantSuccess: (participantId, title, phase) =>
+			recordParticipantSuccess(state, append, {
+				participantId,
 				title,
 				...(phase !== undefined ? { phase } : {}),
 			}),
@@ -210,6 +256,12 @@ type ProgressAppender = (
 	title: string,
 	text?: string,
 ) => void;
+
+interface ParticipantPatch {
+	readonly status?: CouncilRunStatus;
+	readonly activity?: string;
+	readonly contextUsage?: CouncilContextUsage;
+}
 
 type ProgressEmitter = (status: CouncilRunStatus) => CouncilRunDetails;
 
@@ -236,7 +288,7 @@ function recordPhase(
 	phase: string,
 	iteration?: number,
 ): void {
-	state.phase = phase;
+	state.phase = formatDisplayText(state, phase);
 	if (iteration !== undefined) {
 		state.iteration = Math.max(0, Math.floor(iteration));
 	}
@@ -254,8 +306,12 @@ function recordParticipantRequest(
 	},
 ): void {
 	if (options.phase !== undefined) {
-		state.phase = options.phase;
+		state.phase = formatDisplayText(state, options.phase);
 	}
+	updateParticipantProgress(state, options.participantId, {
+		status: "running",
+		activity: formatDisplayText(state, options.title),
+	});
 	append(
 		"request",
 		`${formatParticipantLabel(options.participantId)} ${options.title}`,
@@ -264,10 +320,16 @@ function recordParticipantRequest(
 
 /** Records a free-form first-turn participant opinion preview. */
 function recordParticipantOpinion(
+	state: CouncilProgressState,
 	append: ProgressAppender,
 	participantId: ParticipantId,
 	opinion: string,
 ): void {
+	const preview = normalizeProgressText(opinion);
+	updateParticipantProgress(state, participantId, {
+		status: "succeeded",
+		activity: preview === undefined ? "opinion" : `opinion ${preview}`,
+	});
 	append(
 		"response",
 		`${formatParticipantLabel(participantId)} opinion`,
@@ -277,24 +339,40 @@ function recordParticipantOpinion(
 
 /** Records a structured participant response with its status and bounded opinion preview. */
 function recordParticipantResponse(
+	state: CouncilProgressState,
 	append: ProgressAppender,
-	participantId: ParticipantId,
-	status: ParticipantStatus,
-	opinion?: string,
+	options: {
+		readonly participantId: ParticipantId;
+		readonly status: ParticipantStatus;
+		readonly opinion?: string;
+	},
 ): void {
+	const preview = normalizeProgressText(options.opinion);
+	updateParticipantProgress(state, options.participantId, {
+		status: "succeeded",
+		activity:
+			preview === undefined ? options.status : `${options.status} ${preview}`,
+	});
 	append(
 		"response",
-		`${formatParticipantLabel(participantId)} ${status}`,
-		opinion,
+		`${formatParticipantLabel(options.participantId)} ${options.status}`,
+		options.opinion,
 	);
 }
 
 /** Records a free-form missing-information clarification preview. */
 function recordParticipantClarification(
+	state: CouncilProgressState,
 	append: ProgressAppender,
 	participantId: ParticipantId,
 	clarification: string,
 ): void {
+	const preview = normalizeProgressText(clarification);
+	updateParticipantProgress(state, participantId, {
+		status: "succeeded",
+		activity:
+			preview === undefined ? "clarification" : `clarification ${preview}`,
+	});
 	append(
 		"response",
 		`${formatParticipantLabel(participantId)} clarification`,
@@ -304,6 +382,7 @@ function recordParticipantClarification(
 
 /** Records a bounded retry event for one participant. */
 function recordParticipantRetry(
+	state: CouncilProgressState,
 	append: ProgressAppender,
 	options: {
 		readonly participantId: ParticipantId;
@@ -312,18 +391,32 @@ function recordParticipantRetry(
 		readonly maxAttempts: number;
 	},
 ): void {
+	const activity = `${options.retryKind} retry ${options.attempt}/${options.maxAttempts}`;
+	updateParticipantProgress(state, options.participantId, {
+		status: "running",
+		activity,
+	});
 	append(
 		"retry",
-		`${formatParticipantLabel(options.participantId)} ${options.retryKind} retry ${options.attempt}/${options.maxAttempts}`,
+		`${formatParticipantLabel(options.participantId)} ${activity}`,
 	);
 }
 
 /** Records one child session event as participant-labeled live progress. */
 function recordParticipantSessionEvent(
+	state: CouncilProgressState,
 	append: ProgressAppender,
 	participantId: ParticipantId,
 	event: unknown,
 ): void {
+	const participantUpdate = toParticipantProgressUpdate(
+		state,
+		participantId,
+		event,
+	);
+	if (participantUpdate !== undefined) {
+		updateParticipantProgress(state, participantId, participantUpdate);
+	}
 	const progressEvent = toParticipantSessionProgressEvent(participantId, event);
 	if (progressEvent === undefined) {
 		return;
@@ -375,6 +468,110 @@ function toParticipantSessionProgressEvent(
 	return undefined;
 }
 
+/** Converts child RPC events into structured participant row state. */
+function toParticipantProgressUpdate(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+	event: unknown,
+): ParticipantPatch | undefined {
+	if (!isPlainRecord(event)) {
+		return undefined;
+	}
+	const eventType = getStringField(event, "type");
+	if (eventType === "agent_start") {
+		return { status: "running", activity: "started" };
+	}
+	if (eventType === "agent_end") {
+		return { status: "succeeded", activity: "finished" };
+	}
+	if (eventType === "tool_execution_start") {
+		return toParticipantToolStartProgressUpdate(event);
+	}
+	if (eventType === "tool_execution_end") {
+		return toParticipantToolEndProgressUpdate(event);
+	}
+	if (eventType === "message_end") {
+		return toParticipantMessageEndProgressUpdate(state, participantId, event);
+	}
+	return undefined;
+}
+
+/** Converts a child tool-start event into participant row state. */
+function toParticipantToolStartProgressUpdate(
+	event: Record<string, unknown>,
+): ParticipantPatch {
+	const toolName = getStringField(event, "toolName") ?? "tool";
+	const text = formatEventPayload(event["args"] ?? event["input"]);
+	return {
+		status: "running",
+		activity: text === undefined ? toolName : `${toolName} ${text}`,
+	};
+}
+
+/** Converts a child tool-end event into participant row state. */
+function toParticipantToolEndProgressUpdate(
+	event: Record<string, unknown>,
+): ParticipantPatch {
+	const toolName = getStringField(event, "toolName") ?? "tool";
+	const isError = event["isError"] === true;
+	const text = getToolExecutionResultText(event);
+	return {
+		status: isError ? "failed" : "succeeded",
+		activity:
+			text === undefined ? `${toolName} result` : `${toolName} result ${text}`,
+	};
+}
+
+/** Converts a child assistant message event into participant row state. */
+function toParticipantMessageEndProgressUpdate(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+	event: Record<string, unknown>,
+): ParticipantPatch | undefined {
+	const message = getRecordField(event, "message");
+	if (
+		message === undefined ||
+		getStringField(message, "role") !== "assistant"
+	) {
+		return undefined;
+	}
+	const contextUsage = getMessageContextUsage(
+		message,
+		getParticipantContextWindow(state, participantId),
+	);
+	const assistantText = getMessageText(message);
+	const errorMessage = getStringField(message, "errorMessage");
+	const activity = errorMessage ?? assistantText;
+	return {
+		...(errorMessage === undefined ? {} : { status: "failed" as const }),
+		...(activity === undefined ? {} : { activity: `assistant ${activity}` }),
+		...(contextUsage === undefined ? {} : { contextUsage }),
+	};
+}
+
+/** Records a participant-owned success event and updates the stable row activity. */
+function recordParticipantSuccess(
+	state: CouncilProgressState,
+	append: ProgressAppender,
+	options: {
+		readonly participantId: ParticipantId;
+		readonly title: string;
+		readonly phase?: string;
+	},
+): void {
+	if (options.phase !== undefined) {
+		state.phase = formatDisplayText(state, options.phase);
+	}
+	updateParticipantProgress(state, options.participantId, {
+		status: "succeeded",
+		activity: formatDisplayText(state, options.title),
+	});
+	append(
+		"success",
+		`${formatParticipantLabel(options.participantId)} ${options.title}`,
+	);
+}
+
 /** Records one non-participant event and updates phase when provided. */
 function recordEvent(
 	state: CouncilProgressState,
@@ -386,7 +583,7 @@ function recordEvent(
 	},
 ): void {
 	if (options.phase !== undefined) {
-		state.phase = options.phase;
+		state.phase = formatDisplayText(state, options.phase);
 	}
 	append(options.kind, options.title);
 }
@@ -398,7 +595,12 @@ function finishCouncilProgress(
 	status: CouncilRunStatus,
 	phase: string,
 ): CouncilRunDetails {
-	state.phase = phase;
+	state.phase = formatDisplayText(state, phase);
+	for (const participant of state.participants) {
+		if (participant.status === "running") {
+			updateParticipantProgress(state, participant.participantId, { status });
+		}
+	}
 	return emit(status);
 }
 
@@ -444,14 +646,61 @@ export function isCouncilRunDetails(
 		details.type === COUNCIL_PROGRESS_DETAILS_TYPE &&
 		typeof details.runId === "string" &&
 		typeof details.question === "string" &&
-		typeof details.status === "string" &&
+		isCouncilRunStatus(details.status) &&
 		typeof details.phase === "string" &&
 		typeof details.elapsedMs === "number" &&
 		typeof details.iteration === "number" &&
 		typeof details.iterationLimit === "number" &&
 		Array.isArray(details.participants) &&
+		details.participants.every(isCouncilParticipantDetails) &&
 		Array.isArray(details.events) &&
 		typeof details.omittedEventCount === "number"
+	);
+}
+
+/** Validates one participant row before renderer access. */
+function isCouncilParticipantDetails(
+	value: unknown,
+): value is CouncilParticipantDetails {
+	if (!isPlainRecord(value)) {
+		return false;
+	}
+	return (
+		(value["label"] === "A" || value["label"] === "B") &&
+		typeof value["displayName"] === "string" &&
+		(value["participantId"] === "llm1" || value["participantId"] === "llm2") &&
+		typeof value["modelId"] === "string" &&
+		typeof value["thinking"] === "string" &&
+		typeof value["display"] === "string" &&
+		typeof value["contextWindow"] === "number" &&
+		isCouncilRunStatus(value["status"]) &&
+		typeof value["elapsedMs"] === "number" &&
+		(value["activity"] === undefined ||
+			typeof value["activity"] === "string") &&
+		(value["contextUsage"] === undefined ||
+			isCouncilContextUsage(value["contextUsage"]))
+	);
+}
+
+/** Validates one participant context usage object before renderer access. */
+function isCouncilContextUsage(value: unknown): value is CouncilContextUsage {
+	if (!isPlainRecord(value)) {
+		return false;
+	}
+	return (
+		(typeof value["tokens"] === "number" || value["tokens"] === null) &&
+		typeof value["contextWindow"] === "number" &&
+		(typeof value["percent"] === "number" || value["percent"] === null)
+	);
+}
+
+/** Validates the finite status set shared by council runs and participant rows. */
+function isCouncilRunStatus(value: unknown): value is CouncilRunStatus {
+	return (
+		value === "running" ||
+		value === "succeeded" ||
+		value === "failed" ||
+		value === "aborted"
 	);
 }
 
@@ -470,26 +719,118 @@ function toCouncilRunDetails(
 		elapsedMs: Math.max(0, nowMs - state.startedAtMs),
 		iteration: state.iteration,
 		iterationLimit: state.iterationLimit,
-		participants: state.participants.map((participant) => ({ ...participant })),
+		participants: state.participants.map((participant) => ({
+			...participant,
+			elapsedMs: Math.max(0, nowMs - state.startedAtMs),
+		})),
 		events: state.events.map((event) => ({ ...event })),
 		omittedEventCount: state.omittedEventCount,
 	};
+}
+
+/** Builds initial participant rows with deterministic display names. */
+function createInitialParticipantDetails(
+	runId: string,
+	runtime: CouncilRuntime,
+): CouncilParticipantDetails[] {
+	const [firstName, secondName] = selectParticipantDisplayNames(runId);
+	return [
+		createParticipantDetails("llm1", runtime.llm1, firstName),
+		createParticipantDetails("llm2", runtime.llm2, secondName),
+	];
 }
 
 /** Builds one participant runtime row without exposing credentials or headers. */
 function createParticipantDetails(
 	participantId: ParticipantId,
 	runtime: ParticipantRuntime,
+	displayName: string,
 ): CouncilParticipantDetails {
 	const modelId = `${runtime.model.provider}/${runtime.model.id}`;
 	const thinking = runtime.thinking ?? "off";
 	return {
 		label: formatParticipantLabel(participantId),
+		displayName,
 		participantId,
 		modelId,
 		thinking,
 		display: `${modelId}/${thinking}`,
+		contextWindow: runtime.model.contextWindow,
+		status: "running",
+		elapsedMs: 0,
+		activity: "starting",
 	};
+}
+
+/** Selects a stable pseudo-random pair for one council run. */
+function selectParticipantDisplayNames(
+	runId: string,
+): readonly [string, string] {
+	const firstIndex = hashText(runId) % COUNCIL_DISPLAY_NAMES.length;
+	const secondBase =
+		Math.floor(hashText(`${runId}:second`) / COUNCIL_DISPLAY_NAMES.length) %
+		(COUNCIL_DISPLAY_NAMES.length - 1);
+	const secondIndex = secondBase >= firstIndex ? secondBase + 1 : secondBase;
+	return [
+		COUNCIL_DISPLAY_NAMES[firstIndex] ?? "Socrates",
+		COUNCIL_DISPLAY_NAMES[secondIndex] ?? "Confucius",
+	];
+}
+
+/** Hashes run identity into a deterministic unsigned integer for display selection. */
+function hashText(value: string): number {
+	let hash = 0;
+	for (const [index, char] of [...value].entries()) {
+		hash =
+			(hash + (char.codePointAt(0) ?? 0) * (index + 1)) %
+			DISPLAY_NAME_HASH_MODULUS;
+	}
+	return hash;
+}
+
+/** Replaces legacy A/B row references with the persisted participant display names. */
+function formatDisplayText(state: CouncilProgressState, text: string): string {
+	return state.participants.reduce(
+		(current, participant) =>
+			current.replace(
+				new RegExp(`\\b${participant.label}\\b`, "g"),
+				participant.displayName,
+			),
+		text,
+	);
+}
+
+/** Updates the mutable participant row while preserving stable runtime fields. */
+function updateParticipantProgress(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+	patch: ParticipantPatch,
+): void {
+	const index = state.participants.findIndex(
+		(participant) => participant.participantId === participantId,
+	);
+	const current = state.participants[index];
+	if (current === undefined) {
+		return;
+	}
+	state.participants[index] = {
+		...current,
+		...(patch.status === undefined ? {} : { status: patch.status }),
+		...(patch.activity === undefined ? {} : { activity: patch.activity }),
+		...(patch.contextUsage === undefined
+			? {}
+			: { contextUsage: patch.contextUsage }),
+	};
+}
+
+/** Returns the configured context window for one participant. */
+function getParticipantContextWindow(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+): number | undefined {
+	return state.participants.find(
+		(participant) => participant.participantId === participantId,
+	)?.contextWindow;
 }
 
 /** Appends one progress event and trims older events after the configured limit. */
@@ -543,6 +884,27 @@ function getToolExecutionResultText(
 		getStringField(event, "error") ??
 		getStringField(event, "errorMessage")
 	);
+}
+
+/** Extracts context usage from assistant usage metadata emitted by a child session. */
+function getMessageContextUsage(
+	message: Record<string, unknown>,
+	contextWindow: number | undefined,
+): CouncilContextUsage | undefined {
+	if (contextWindow === undefined) {
+		return undefined;
+	}
+	const usage = getRecordField(message, "usage");
+	const totalTokens = usage?.["totalTokens"];
+	if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens)) {
+		return undefined;
+	}
+	const tokens = Math.max(0, totalTokens);
+	return {
+		tokens,
+		contextWindow,
+		percent: contextWindow > 0 ? (tokens / contextWindow) * FULL_PERCENT : null,
+	};
 }
 
 /** Extracts bounded text from a message-like value. */
