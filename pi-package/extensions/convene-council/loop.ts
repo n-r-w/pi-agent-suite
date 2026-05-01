@@ -503,12 +503,8 @@ function needsMutualMissingInfo(
 
 /** Runs the first participant iteration where no opponent opinion exists yet. */
 async function runInitialPair(options: PairOptions): Promise<PairResult> {
-	options.progress.recordRequest(
-		options.llm1.id,
-		"initial opinion",
-		"A initial opinion",
-	);
-	options.progress.setPhase("A initial opinion", options.iteration);
+	options.progress.setPhase("A and B initial opinions", options.iteration);
+	options.progress.recordRequest(options.llm1.id, "initial opinion");
 	const llm1Promise = requestInitialOpinion({
 		participant: options.llm1,
 		task: buildInitialOpinionTask(
@@ -521,12 +517,7 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		progress: options.progress,
 	});
 
-	options.progress.recordRequest(
-		options.llm2.id,
-		"initial opinion",
-		"B initial opinion",
-	);
-	options.progress.setPhase("B initial opinion", options.iteration);
+	options.progress.recordRequest(options.llm2.id, "initial opinion");
 	const llm2Promise = requestInitialOpinion({
 		participant: options.llm2,
 		task: buildInitialOpinionTask(
@@ -621,6 +612,11 @@ async function runMissingInfoPair(
 		options,
 		options.responder,
 		requireLatestOpinion(options.requester),
+		{
+			requestPhase: `${formatParticipantLabel(
+				options.responder.id,
+			)} answers missing info`,
+		},
 	);
 	if ("kind" in responderResult) {
 		return responderResult;
@@ -630,6 +626,11 @@ async function runMissingInfoPair(
 		options,
 		options.requester,
 		requireLatestOpinion(responderResult.participant),
+		{
+			requestPhase: `${formatParticipantLabel(
+				options.requester.id,
+			)} reviews clarification`,
+		},
 	);
 	if ("kind" in requesterResult) {
 		return requesterResult;
@@ -652,6 +653,7 @@ async function runMissingInfoPair(
 async function runMutualMissingInfoPair(
 	options: PairOptions,
 ): Promise<PairResult> {
+	options.progress.setPhase("A and B answer missing info", options.iteration);
 	const llm2ResponsePromise = answerMissingInformation(
 		options,
 		options.llm2,
@@ -673,6 +675,7 @@ async function runMutualMissingInfoPair(
 		return llm1Response;
 	}
 
+	options.progress.setPhase("A and B review clarifications", options.iteration);
 	const llm1ReviewPromise = reviewClarification(
 		options,
 		llm1Response.participant,
@@ -706,10 +709,13 @@ async function answerMissingInformation(
 	options: PairOptions,
 	participant: ParticipantState,
 	missingInformationRequest: string,
+	requestOptions: { readonly requestPhase?: string } = {},
 ): Promise<ParticipantUpdateResult> {
-	const phase = `${formatParticipantLabel(participant.id)} answers missing info`;
-	options.progress.setPhase(phase, options.iteration);
-	options.progress.recordRequest(participant.id, "answers missing info", phase);
+	options.progress.recordRequest(
+		participant.id,
+		"answers missing info",
+		requestOptions.requestPhase,
+	);
 	const responseResult = await requestMissingInformationResponse({
 		participant,
 		task: buildMissingInformationResponseTask(missingInformationRequest),
@@ -735,13 +741,12 @@ async function reviewClarification(
 	options: PairOptions,
 	participant: ParticipantState,
 	clarification: string,
+	requestOptions: { readonly requestPhase?: string } = {},
 ): Promise<ParticipantUpdateResult> {
-	const phase = `${formatParticipantLabel(participant.id)} reviews clarification`;
-	options.progress.setPhase(phase, options.iteration);
 	options.progress.recordRequest(
 		participant.id,
 		"reviews clarification",
-		phase,
+		requestOptions.requestPhase,
 	);
 	const reviewResult = await requestParticipantDiscussion({
 		participant,

@@ -11,6 +11,10 @@ import type {
 import { parseSessionEntries } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
+import {
+	type CouncilRunDetails,
+	isCouncilRunDetails,
+} from "../../../pi-package/extensions/convene-council/progress";
 import type { ParticipantRunnerFactory } from "../../../pi-package/extensions/convene-council/types";
 import {
 	withIsolatedAgentDir,
@@ -52,6 +56,44 @@ function expectNoConsensusResult(
 	expect(text).toContain("\n</result>");
 	expect(text.match(ANSWER1_BLOCK_PATTERN)?.[1]).toBe(answer1);
 	expect(text.match(ANSWER2_BLOCK_PATTERN)?.[1]).toBe(answer2);
+}
+
+/** Extracts validated live council details from tool updates. */
+function collectCouncilRunDetails(
+	updates: readonly AgentToolResult<unknown>[],
+	finalResult?: AgentToolResult<unknown>,
+): CouncilRunDetails[] {
+	return [
+		...updates.map((update) => update.details),
+		...(finalResult === undefined ? [] : [finalResult.details]),
+	].filter(isCouncilRunDetails);
+}
+
+/** Verifies that a parallel participant stage owns one shared header phase. */
+function expectParallelPhaseIncludesParticipants(
+	details: readonly CouncilRunDetails[],
+	activity: string,
+	phaseFragment: string,
+): void {
+	const parallelDetails = details.filter(
+		(detail) =>
+			detail.status === "running" &&
+			detail.participants.length === 2 &&
+			detail.participants.every(
+				(participant) => participant.activity === activity,
+			),
+	);
+
+	expect(parallelDetails.length).toBeGreaterThan(0);
+	for (const detail of parallelDetails) {
+		const [first, second] = detail.participants;
+		if (first === undefined || second === undefined) {
+			throw new Error("expected two council participants");
+		}
+		expect(detail.phase).toContain(first.displayName);
+		expect(detail.phase).toContain(second.displayName);
+		expect(detail.phase).toContain(phaseFragment);
+	}
 }
 
 interface DeferredCompletionCall extends CompletionCall {
@@ -416,8 +458,12 @@ describe("convene-council loop", () => {
 				createParticipantRunner: completion.createParticipantRunner,
 			});
 			const ctx = createContext([llm1Model, llm2Model]);
+			const updates: AgentToolResult<unknown>[] = [];
 
-			const resultPromise = executeCouncil(pi, ctx, "Mutual parallel calls");
+			const resultPromise = executeCouncilWithOptions(pi, ctx, {
+				question: "Mutual parallel calls",
+				onUpdate: (partial) => updates.push(partial),
+			});
 			await completion.resolveCallsUntil(4);
 			const missingResponsesStartedTogether = await completion.waitForKeys([
 				"missing-response:model-b",
@@ -434,6 +480,17 @@ describe("convene-council loop", () => {
 			expect(result.content).toEqual([
 				{ type: "text", text: "final after both clarifications" },
 			]);
+			const details = collectCouncilRunDetails(updates, result);
+			expectParallelPhaseIncludesParticipants(
+				details,
+				"answers missing info",
+				"missing info",
+			);
+			expectParallelPhaseIncludesParticipants(
+				details,
+				"reviews clarification",
+				"clarification",
+			);
 			expect(missingResponsesStartedTogether).toBe(true);
 			expect(clarificationReviewsStartedTogether).toBe(true);
 		});
@@ -604,21 +661,19 @@ describe("convene-council loop", () => {
 				iterationLimit: 3,
 			});
 			expect(updates.length).toBeGreaterThan(0);
-			const details = [
-				...updates.map((update) => update.details),
-				result.details,
-			] as Record<string, unknown>[];
-			expect(
-				details.every(
-					(detail) => detail["type"] === "convene_council_progress",
-				),
-			).toBe(true);
-			expect(details.at(-1)?.["status"]).toBe("succeeded");
-			expect(details.at(-1)?.["phase"]).toBe("agreed");
-			expect(details.at(-1)?.["iteration"]).toBe(2);
-			expect(details.at(-1)?.["iterationLimit"]).toBe(3);
+			const details = collectCouncilRunDetails(updates, result);
+			expect(details).toHaveLength(updates.length + 1);
+			expect(details.at(-1)?.status).toBe("succeeded");
+			expect(details.at(-1)?.phase).toBe("agreed");
+			expect(details.at(-1)?.iteration).toBe(2);
+			expect(details.at(-1)?.iterationLimit).toBe(3);
+			expectParallelPhaseIncludesParticipants(
+				details,
+				"initial opinion",
+				"initial opinion",
+			);
 			const finalParticipantsJson = JSON.stringify(
-				details.at(-1)?.["participants"],
+				details.at(-1)?.participants,
 			);
 			expect(finalParticipantsJson).toContain("displayName");
 			expect(finalParticipantsJson).toContain("openai/model-a/high");
@@ -627,7 +682,7 @@ describe("convene-council loop", () => {
 			expect(finalParticipantsJson).not.toContain('"displayName":"A"');
 			expect(finalParticipantsJson).not.toContain('"displayName":"B"');
 			const eventsJson = JSON.stringify(
-				details.flatMap((detail) => detail["events"]),
+				details.flatMap((detail) => detail.events),
 			);
 			expect(eventsJson).toContain("A initial opinion");
 			expect(eventsJson).toContain("B initial opinion");
