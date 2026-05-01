@@ -25,6 +25,8 @@ Use it when a high-impact question benefits from two model participants comparin
 - Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to participant system prompts.
 - Starts isolated child `pi --mode rpc` sessions for participant prompts.
 - Shares only tools configured by `tools` with each participant.
+- Adds the selected participant tool names to each participant system prompt.
+- Instructs participants that current runtime tool access overrides historical tool-access claims inside Project Context and `<context>`.
 - Allows participants to use configured tools only to gather evidence for the council question.
 - Instructs participants to use relevant available tools before concluding on facts not established by `<context>` or prior tool evidence.
 - Sends no tools to participants when `tools` is missing or empty.

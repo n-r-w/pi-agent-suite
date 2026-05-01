@@ -21,9 +21,15 @@ const RUNTIME_GUIDANCE_PROMPT = readPromptFile("runtime-guidance.md");
 
 /** Builds the strict system prompt for structured participant discussion turns. */
 export function buildParticipantSystemPrompt(
-	contextFiles: readonly ProjectContextFile[] = [],
+	contextFiles: readonly ProjectContextFile[],
+	toolNames: readonly string[],
 ): string {
-	return appendProjectContext(PARTICIPANT_SYSTEM_PROMPT, contextFiles);
+	return appendProjectContext(
+		renderTemplate(PARTICIPANT_SYSTEM_PROMPT, {
+			tools: renderParticipantToolNames(toolNames),
+		}),
+		contextFiles,
+	);
 }
 
 /** Builds the first-turn task with the original question and parent-session evidence. */
@@ -79,6 +85,11 @@ export function buildRuntimeGuidancePrompt(): string {
 /** Creates a user task message that is always appended after prior context. */
 export function createTaskMessage(task: string): Message {
 	return { role: "user", content: task, timestamp: Date.now() };
+}
+
+/** Renders the selected child runtime tools for participant instructions. */
+function renderParticipantToolNames(toolNames: readonly string[]): string {
+	return toolNames.length === 0 ? "none" : toolNames.join(", ");
 }
 
 /** Reads one bundled prompt file and trims trailing file whitespace. */

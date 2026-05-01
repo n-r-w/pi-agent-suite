@@ -159,12 +159,16 @@ async function runCouncilWithOwnedParticipants(options: {
 	});
 	const runners: ParticipantRunner[] = [];
 	try {
+		const toolNames = options.tools.map((tool) => tool.name);
 		const llm1Runner = await options.createParticipantRunner({
 			participantId: "llm1",
 			runtime: options.runtime.llm1,
 			sessionFile: participantSessions.sessions.llm1.sessionFile,
 			sessionDir: participantSessions.sessions.llm1.sessionDir,
-			systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
+			systemPrompt: buildParticipantSystemPrompt(
+				options.contextFiles,
+				toolNames,
+			),
 			config: options.config,
 			startupPlan: options.startupPlan,
 			toolArgs: options.toolArgs,
@@ -180,7 +184,10 @@ async function runCouncilWithOwnedParticipants(options: {
 			runtime: options.runtime.llm2,
 			sessionFile: participantSessions.sessions.llm2.sessionFile,
 			sessionDir: participantSessions.sessions.llm2.sessionDir,
-			systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
+			systemPrompt: buildParticipantSystemPrompt(
+				options.contextFiles,
+				toolNames,
+			),
 			config: options.config,
 			startupPlan: options.startupPlan,
 			toolArgs: options.toolArgs,
@@ -318,7 +325,10 @@ function estimateFirstParticipantRequestTokens(options: {
 	readonly tools: readonly Tool[];
 }): number {
 	const context: Context = {
-		systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
+		systemPrompt: buildParticipantSystemPrompt(
+			options.contextFiles,
+			options.tools.map((tool) => tool.name),
+		),
 		messages: [
 			{
 				role: "user",

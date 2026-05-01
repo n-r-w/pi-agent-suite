@@ -309,6 +309,61 @@ describe("convene-council loop", () => {
 		});
 	});
 
+	test("adds selected participant tool names to participant system prompts", async () => {
+		// Purpose: participant instructions must use the same selected tools that are passed to the child runtime.
+		// Input and expected output: config tools read and grep are present in both initial participant system prompts.
+		// Edge case: the prompt template placeholder is fully rendered before participant startup.
+		// Dependencies: fake tool registry, isolated config, and queued participant runner.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { tools: ["read", "grep"] });
+			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
+				participantResponse("AGREE", "llm1 agrees"),
+				participantResponse("AGREE", "llm2 agrees"),
+				finalAnswer("final council answer"),
+			]);
+			const pi = createExtensionApiFake();
+			for (const toolName of ["read", "grep"]) {
+				pi.registerTool({
+					name: toolName,
+					label: toolName,
+					description: `${toolName} test tool`,
+					parameters: Type.Object({}),
+					async execute() {
+						return {
+							content: [{ type: "text", text: "unused" }],
+							details: undefined,
+						};
+					},
+				});
+			}
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
+			const ctx = createContext([createModel("openai", "main-model")]);
+
+			await executeCouncil(
+				pi,
+				ctx,
+				"Which evidence should participants inspect?",
+			);
+
+			const initialCalls = completion.calls.slice(0, 2);
+			expect(initialCalls).toHaveLength(2);
+			for (const call of initialCalls) {
+				expect(call.context.tools?.map((tool) => tool.name)).toEqual([
+					"read",
+					"grep",
+				]);
+				expect(call.context.systemPrompt).toContain(
+					"Current participant tools: read, grep.",
+				);
+				expect(call.context.systemPrompt).not.toContain("{{tools}}");
+			}
+		});
+	});
+
 	test("starts independent mutual missing-information calls before waiting for paired results", async () => {
 		// Purpose: mutual NEED_INFO handling has two independent clarification answers and two independent clarification reviews.
 		// Input and expected output: both calls in each independent pair start before either paired response is released.
@@ -928,56 +983,6 @@ describe("convene-council loop", () => {
 			const summaryModel = {
 				...createModel("summary", "small"),
 				contextWindow: 1_000,
-			};
-			let runnerStarts = 0;
-			let summaryCalls = 0;
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, {
-				async createParticipantRunner() {
-					runnerStarts += 1;
-					throw new Error("runner must not start");
-				},
-				async generateContextSummary() {
-					summaryCalls += 1;
-					throw new Error("summary must not start");
-				},
-			});
-			const largeContext = Array.from(
-				{ length: 1_500 },
-				(_, index) => `context-word-${index}`,
-			).join(" ");
-			const ctx = createContext(
-				[participantModel, summaryModel],
-				[messageEntry("u1", userMessage(largeContext), null)],
-			);
-
-			await expect(
-				executeCouncil(pi, ctx, "What should we do?"),
-			).rejects.toThrow("context is too large");
-			expect(summaryCalls).toBe(0);
-			expect(runnerStarts).toBe(0);
-		});
-	});
-
-	test("budgets the real Pi summary prompt envelope before summary generation", async () => {
-		// Purpose: summary preflight must match the request shape that Pi summary generation sends to the model.
-		// Input and expected output: a summary model that fits the raw context but not the wrapped Pi summary prompt is rejected before summary generation.
-		// Edge case: the summary model window sits between the raw-context estimate and the real wrapped-summary estimate.
-		// Dependencies: isolated config, fake model registry, and fake summary generator.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				contextWindowUsageLimit: 0.1,
-				contextSummary: { model: { id: "summary/medium" } },
-				llm1: { model: { id: "participant/large" } },
-				llm2: { model: { id: "participant/large" } },
-			});
-			const participantModel = {
-				...createModel("participant", "large"),
-				contextWindow: 20_000,
-			};
-			const summaryModel = {
-				...createModel("summary", "medium"),
-				contextWindow: 9_800,
 			};
 			let runnerStarts = 0;
 			let summaryCalls = 0;

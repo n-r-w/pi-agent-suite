@@ -466,6 +466,8 @@ How it works:
 - Sends the same first-prompt `<context>`, Pi-loaded context files, and question task to LLM1 and LLM2.
 - Runs participant prompts in isolated child `pi --mode rpc` sessions without seeding them with the main-agent transcript.
 - Shares only tools configured by `tools` with each participant.
+- Adds the selected participant tool names to each participant system prompt.
+- Instructs participants that current runtime tool access overrides historical tool-access claims inside Project Context and `<context>`.
 - Summarizes only the external `<context>` package before child startup when first participant requests exceed `contextWindowUsageLimit`.
 - Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
