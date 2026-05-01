@@ -816,6 +816,61 @@ describe("consult-advisor", () => {
 		});
 	});
 
+	test("includes loaded project context files in advisor system prompt", async () => {
+		// Purpose: consult-advisor must preserve Pi-loaded project rules for the advisor model.
+		// Input and expected output: contextFiles with AGENTS.md and CLAUDE.md are appended to the advisor system prompt.
+		// Edge case: project context comes from before_agent_start state, not from the conversation branch.
+		// Dependencies: fake before_agent_start event, fake model registry, and fake completion function.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "advisor");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext([model]);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+			await emitBeforeAgentStartHandlers(
+				pi,
+				{
+					systemPrompt: "Base",
+					systemPromptOptions: {
+						contextFiles: [
+							{
+								path: "/tmp/project/AGENTS.md",
+								content: "Project rule: use the project validation scripts.",
+							},
+							{
+								path: "/tmp/project/CLAUDE.md",
+								content: "Project rule: keep docs current.",
+							},
+						],
+					},
+				},
+				ctx,
+			);
+
+			const result = await executeConsult(pi, ctx, "Question");
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "advisor answer" }],
+			});
+			expect(completion.calls).toHaveLength(1);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"# Project Context",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"## /tmp/project/AGENTS.md",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"Project rule: use the project validation scripts.",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"## /tmp/project/CLAUDE.md",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"Project rule: keep docs current.",
+			);
+		});
+	});
+
 	test("truncates large advisor output and saves full output to a temp file", async () => {
 		// Purpose: model-facing consult_advisor content must be bounded while complete advisor answers remain available from a temp file.
 		// Input and expected output: an advisor answer over the Pi line limit returns tail-truncated content plus a full-output path.

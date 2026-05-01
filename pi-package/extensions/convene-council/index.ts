@@ -62,7 +62,7 @@ export default function conveneCouncil(
 		parameters: ConveneCouncilParameters,
 		renderCall: renderConveneCouncilCall,
 		renderResult: renderConveneCouncilResult,
-		async execute(...[toolCallId, params, signal, _onUpdate, ctx]) {
+		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
 			return executeConveneCouncil({
 				completeSimple,
 				toolCallId,
@@ -72,6 +72,7 @@ export default function conveneCouncil(
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
 				contextFiles,
+				...(onUpdate !== undefined ? { onUpdate } : {}),
 			});
 		},
 	});

@@ -1,3 +1,4 @@
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
@@ -7,12 +8,15 @@ import type {
 	SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ProjectContextFile } from "../../shared/project-context-prompt";
 import type {
 	PARTICIPANT_IDS,
 	PARTICIPANT_STATUSES,
 	THINKING_VALUES,
 } from "./constants";
+import type { CouncilProgressReporter } from "./progress";
 
+export type { ProjectContextFile };
 export type Thinking = (typeof THINKING_VALUES)[number];
 export type ParticipantId = (typeof PARTICIPANT_IDS)[number];
 export type ParticipantStatus = (typeof PARTICIPANT_STATUSES)[number];
@@ -64,11 +68,6 @@ export interface CouncilContext extends ExtensionContext {
 	readonly model: Model<Api> | undefined;
 }
 
-export interface ProjectContextFile {
-	readonly path: string;
-	readonly content: string;
-}
-
 export interface ExecuteConveneCouncilOptions {
 	readonly completeSimple: NonNullable<
 		ConveneCouncilDependencies["completeSimple"]
@@ -80,6 +79,7 @@ export interface ExecuteConveneCouncilOptions {
 	readonly currentThinkingLevel: unknown;
 	readonly loadedSkillRoots: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];
+	readonly onUpdate?: (partial: AgentToolResult<unknown>) => void;
 }
 
 export interface ParticipantState {
@@ -119,6 +119,7 @@ export interface PlainParticipantRequestOptions {
 	>;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: readonly ProjectContextFile[];
+	readonly progress?: CouncilProgressReporter;
 }
 
 export type InitialOpinionRequestOptions = PlainParticipantRequestOptions;
@@ -136,6 +137,7 @@ export interface ParticipantRequestOptions {
 	>;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: readonly ProjectContextFile[];
+	readonly progress?: CouncilProgressReporter;
 }
 
 export interface FinalAnswerRequestOptions {
@@ -147,4 +149,5 @@ export interface FinalAnswerRequestOptions {
 	>;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: readonly ProjectContextFile[];
+	readonly progress?: CouncilProgressReporter;
 }

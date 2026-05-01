@@ -61,8 +61,15 @@ async function requestPlainParticipantResponse(
 	attempt: number,
 	failureMessage: string,
 ): Promise<AcceptedParticipantResponse | CouncilIssue> {
-	const { participant, task, config, completeSimple, signal, contextFiles } =
-		options;
+	const {
+		participant,
+		task,
+		config,
+		completeSimple,
+		signal,
+		contextFiles,
+		progress,
+	} = options;
 	if (attempt > config.responseDefectRetries) {
 		return logicalIssue(failureMessage);
 	}
@@ -80,9 +87,11 @@ async function requestPlainParticipantResponse(
 	const providerResult = await callProviderWithRetries({
 		completeSimple,
 		runtime: participant.runtime,
+		participantId: participant.id,
 		context,
 		config,
 		signal,
+		progress,
 	});
 	if ("kind" in providerResult) {
 		return providerResult;
@@ -97,6 +106,13 @@ async function requestPlainParticipantResponse(
 		};
 	}
 
+	if (attempt < config.responseDefectRetries) {
+		progress?.recordResponseDefectRetry(
+			participant.id,
+			attempt + 1,
+			config.responseDefectRetries,
+		);
+	}
 	return requestPlainParticipantResponse(options, attempt + 1, failureMessage);
 }
 
@@ -112,8 +128,15 @@ async function requestParticipantDiscussionAttempt(
 	options: ParticipantRequestOptions,
 	attempt: number,
 ): Promise<AcceptedParticipantResponse | CouncilIssue> {
-	const { participant, task, config, completeSimple, signal, contextFiles } =
-		options;
+	const {
+		participant,
+		task,
+		config,
+		completeSimple,
+		signal,
+		contextFiles,
+		progress,
+	} = options;
 	if (attempt > config.responseDefectRetries) {
 		return logicalIssue(
 			`${participant.id} returned unusable participant output.`,
@@ -135,9 +158,11 @@ async function requestParticipantDiscussionAttempt(
 	const providerResult = await callProviderWithRetries({
 		completeSimple,
 		runtime: participant.runtime,
+		participantId: participant.id,
 		context,
 		config,
 		signal,
+		progress,
 	});
 	if ("kind" in providerResult) {
 		return providerResult;
@@ -156,6 +181,13 @@ async function requestParticipantDiscussionAttempt(
 		};
 	}
 
+	if (attempt < config.responseDefectRetries) {
+		progress?.recordResponseDefectRetry(
+			participant.id,
+			attempt + 1,
+			config.responseDefectRetries,
+		);
+	}
 	return requestParticipantDiscussionAttempt(options, attempt + 1);
 }
 
@@ -171,8 +203,15 @@ async function requestFinalAnswerAttempt(
 	options: FinalAnswerRequestOptions,
 	attempt: number,
 ): Promise<{ readonly answer: string } | CouncilIssue> {
-	const { participant, task, config, completeSimple, signal, contextFiles } =
-		options;
+	const {
+		participant,
+		task,
+		config,
+		completeSimple,
+		signal,
+		contextFiles,
+		progress,
+	} = options;
 	if (attempt > config.responseDefectRetries) {
 		return logicalIssue("Council returned an unusable final answer.");
 	}
@@ -190,9 +229,11 @@ async function requestFinalAnswerAttempt(
 	const providerResult = await callProviderWithRetries({
 		completeSimple,
 		runtime: participant.runtime,
+		participantId: participant.id,
 		context,
 		config,
 		signal,
+		progress,
 	});
 	if ("kind" in providerResult) {
 		return providerResult;
@@ -203,6 +244,13 @@ async function requestFinalAnswerAttempt(
 		return { answer };
 	}
 
+	if (attempt < config.responseDefectRetries) {
+		progress?.recordResponseDefectRetry(
+			participant.id,
+			attempt + 1,
+			config.responseDefectRetries,
+		);
+	}
 	return requestFinalAnswerAttempt(options, attempt + 1);
 }
 
@@ -244,6 +292,11 @@ async function callProviderAttempt(
 			return toolErrorIssue(`provider request failed: ${formatError(error)}`);
 		}
 
+		options.progress?.recordProviderRetry(
+			options.participantId,
+			attempt + 1,
+			options.config.providerRequestRetries,
+		);
 		await waitForRetryDelay(
 			options.config.providerRetryDelayMs,
 			options.signal,
@@ -373,7 +426,9 @@ interface ProviderRequestOptions {
 		ConveneCouncilDependencies["completeSimple"]
 	>;
 	readonly runtime: ParticipantRuntime;
+	readonly participantId: ParticipantState["id"];
 	readonly context: Context;
 	readonly config: ConveneCouncilConfig;
 	readonly signal: AbortSignal | undefined;
+	readonly progress: ParticipantRequestOptions["progress"];
 }

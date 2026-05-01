@@ -26,6 +26,7 @@
 - Removes the pending `consult_advisor` tool call from the advisor transcript.
 - Appends the advisor question as a user message.
 - Uses the advisor system prompt instead of the main model system prompt.
+- Appends Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt.
 - Sends the advisor context with `tools: []`.
 - Calls the advisor through `completeSimple` only when a tokenizer-based serialized-input estimate fits the advisor model context window.
 - Returns an explicit context-size error without calling the provider when the advisor input may be too large.
@@ -92,6 +93,7 @@ Tests must verify:
 - `tools: []` in the advisor context;
 - resolved advisor API key and request headers in the model call options;
 - visible-text response instruction in the advisor system prompt;
+- Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` in the advisor system prompt;
 - `consult_advisor: {question preview}` in the tool call renderer;
 - `Advice: {answer preview}` in the collapsed result renderer;
 - collapsed answer preview height through `COLLAPSED_ADVICE_PREVIEW_LINES`;

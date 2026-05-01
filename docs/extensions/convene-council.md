@@ -35,6 +35,15 @@ Use it when a high-impact question benefits from two model participants comparin
 - Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
 - Applies Pi-style output truncation to large tool results and writes the full result to a system temp file.
 - Stores only truncation details when output is truncated.
+- Emits live TUI progress through partial tool updates while the council is running.
+- Keeps live TUI progress in partial result `details` only; final tool results keep the model-facing output contract.
+- Shows a compact tool header with the current phase, iteration, elapsed time, question preview, and participant runtime mapping.
+- Shows collapsed progress as the latest fixed-width council events with a standard Pi expand hint when older events are hidden.
+- Shows short accepted-answer previews in response rows so users can see what each participant answered.
+- Colors only participant labels: `A` uses the theme accent color and `B` uses the theme tool-output color.
+- Keeps status, retry, and error colors semantic instead of coloring whole rows by participant.
+- Shows expanded live progress with question, participant runtime details, and full retained progress history.
+- Does not show raw transcripts, provider payloads, token deltas, or unbounded intermediate answers in progress rows.
 - Publishes prompt guidance through `Agent Runtime Composition` only when `convene_council` is active for the current effective agent.
 - Does not call `pi.setActiveTools()` directly.
 - Does not own main-agent selection, `run_subagent`, or `consult_advisor`.
@@ -121,6 +130,46 @@ latest LLM2 opinion
 
 The no-agreement output text is generated from `pi-package/extensions/convene-council/prompts/no-consensus-result.md`. The ordinary tool response does not include iteration count, retry count, participant statuses, or raw discussion history.
 
+Live TUI progress is renderer metadata. It is emitted in partial tool updates while the tool runs and is not part of the final ordinary tool response.
+
+Collapsed live progress example:
+
+```text
+convene_council · B reviews A · iter 2/3 · 18.2s
+  Question: Which implementation should we use for TUI progress?
+  A openai-codex/gpt-5.5/high · B anthropic/claude-sonnet-4-5/medium
+→ A initial opinion
+← A opinion: PostgreSQL is the safest default because hotel data is relational...
+→ B initial opinion
+← B opinion: I agree with PostgreSQL, but search requirements may need...
+! B provider retry 1/4
+... (7 more lines, 12 total, ctrl+o to expand)
+```
+
+Expanded live progress sections:
+
+- `Question`
+- `Participants`
+- `Progress`
+
+Progress event labels:
+
+- `→ A initial opinion`
+- `← A AGREE: short accepted opinion preview`
+- `← A DIFF: short accepted opinion preview`
+- `← A NEED_INFO: short accepted opinion preview`
+- `→ B reviews A`
+- `→ A answers missing info`
+- `← A clarification: short accepted clarification preview`
+- `→ B reviews clarification`
+- `! A response retry 1/1`
+- `! B provider retry 1/4`
+- `✓ agreement reached`
+- `→ B final answer`
+- `✓ final answer accepted`
+- `• iteration limit reached`
+- `! provider request failed`
+
 ## Verification
 
 Tests must verify:
@@ -138,4 +187,10 @@ Tests must verify:
 - final-answer retry for empty or tagged final answer;
 - provider retry behavior separate from response-defect retry;
 - `convene_council` preservation by `context-projection`;
-- prompt contribution through `Agent Runtime Composition`.
+- prompt contribution through `Agent Runtime Composition`;
+- live progress partial updates through `onUpdate`;
+- participant runtime mapping in the tool-call header;
+- collapsed progress row width with Unicode and mixed-direction text;
+- expanded live progress sections;
+- retry events for response defects and provider failures;
+- final results without persisted progress metadata.

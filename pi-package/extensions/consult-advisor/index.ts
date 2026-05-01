@@ -27,6 +27,10 @@ import {
 	replayContextProjection,
 } from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
+import {
+	appendProjectContext,
+	type ProjectContextFile,
+} from "../../shared/project-context-prompt";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 import {
 	renderConsultAdvisorCall,
@@ -94,6 +98,7 @@ interface AdvisorContextBuildOptions {
 	readonly question: string;
 	readonly toolCallId: string;
 	readonly loadedSkillRoots: readonly string[];
+	readonly contextFiles: readonly ProjectContextFile[];
 }
 
 interface AdvisorContext extends ExtensionContext {
@@ -110,6 +115,7 @@ interface ExecuteConsultAdvisorOptions {
 	readonly ctx: AdvisorContext;
 	readonly currentThinkingLevel: unknown;
 	readonly loadedSkillRoots: readonly string[];
+	readonly contextFiles: readonly ProjectContextFile[];
 }
 
 /** Extension entry point for advisor consultation behavior. */
@@ -126,9 +132,11 @@ export default function consultAdvisor(
 
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	let loadedSkillRoots: readonly string[] = [];
+	let contextFiles: readonly ProjectContextFile[] = [];
 
 	pi.on("before_agent_start", (event) => {
 		loadedSkillRoots = collectLoadedSkillRoots(event);
+		contextFiles = event.systemPromptOptions?.contextFiles ?? [];
 	});
 
 	getAgentRuntimeComposition(pi).setConsultAdvisorContribution({
@@ -153,6 +161,7 @@ export default function consultAdvisor(
 				ctx: ctx as AdvisorContext,
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
+				contextFiles,
 			});
 		},
 	});
@@ -167,6 +176,7 @@ async function executeConsultAdvisor({
 	ctx,
 	currentThinkingLevel,
 	loadedSkillRoots,
+	contextFiles,
 }: ExecuteConsultAdvisorOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readAdvisorConfig();
 	if ("disabled" in configResult) {
@@ -198,6 +208,7 @@ async function executeConsultAdvisor({
 		question: params.question,
 		toolCallId,
 		loadedSkillRoots,
+		contextFiles,
 	});
 	if (!doesAdvisorInputFitContextWindow(context, runtimeResult.runtime.model)) {
 		return errorResult(ADVISOR_CONTEXT_TOO_LARGE_ERROR);
@@ -469,6 +480,7 @@ async function buildAdvisorContext({
 	question,
 	toolCallId,
 	loadedSkillRoots,
+	contextFiles,
 }: AdvisorContextBuildOptions): Promise<Context> {
 	const projectedMessages = await replayContextProjection({
 		branchEntries: ctx.sessionManager.getBranch(),
@@ -481,7 +493,7 @@ async function buildAdvisorContext({
 	);
 	messages.push({ role: "user", content: question, timestamp: Date.now() });
 	return {
-		systemPrompt: formatAdvisorSystemPrompt(advisorPrompt),
+		systemPrompt: formatAdvisorSystemPrompt(advisorPrompt, contextFiles),
 		messages,
 		tools: [],
 	};
@@ -614,9 +626,15 @@ async function writeDebugPayload(
 	await writeFile(path, JSON.stringify(payload, null, 2));
 }
 
-/** Adds a visible-answer rule to avoid provider-specific reasoning-only responses. */
-function formatAdvisorSystemPrompt(advisorPrompt: string): string {
-	return `${advisorPrompt}\n\n${ADVISOR_VISIBLE_RESPONSE_INSTRUCTION}`.trim();
+/** Adds visible-answer guidance and Pi-loaded project context to the advisor prompt. */
+function formatAdvisorSystemPrompt(
+	advisorPrompt: string,
+	contextFiles: readonly ProjectContextFile[],
+): string {
+	return appendProjectContext(
+		`${advisorPrompt}\n\n${ADVISOR_VISIBLE_RESPONSE_INSTRUCTION}`.trim(),
+		contextFiles,
+	);
 }
 
 /** Extracts visible text content from the advisor answer. */

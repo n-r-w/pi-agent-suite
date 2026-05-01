@@ -4,6 +4,11 @@ import { ISSUE_PREFIX } from "./constants";
 import { buildBaseCouncilMessages, createParticipantState } from "./context";
 import { parseThinking } from "./guards";
 import {
+	type CouncilProgressReporter,
+	createCouncilProgressReporter,
+	formatParticipantLabel,
+} from "./progress";
+import {
 	buildClarificationReviewTask,
 	buildFinalAnswerTask,
 	buildInitialOpinionTask,
@@ -38,6 +43,7 @@ export async function executeConveneCouncil({
 	currentThinkingLevel,
 	loadedSkillRoots,
 	contextFiles,
+	onUpdate,
 }: ExecuteConveneCouncilOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readConveneCouncilConfig();
 	if ("disabled" in configResult) {
@@ -55,6 +61,15 @@ export async function executeConveneCouncil({
 	if ("issue" in runtimeResult) {
 		throw reportToolError(ctx, runtimeResult.issue);
 	}
+
+	const progress = createCouncilProgressReporter({
+		runId: toolCallId,
+		question: params.question,
+		runtime: runtimeResult.runtime,
+		iterationLimit: configResult.config.participantIterationLimit,
+		onUpdate,
+	});
+	progress.setPhase("preparing context");
 
 	const baseMessages = await buildBaseCouncilMessages({
 		ctx,
@@ -78,6 +93,7 @@ export async function executeConveneCouncil({
 		signal,
 		ctx,
 		contextFiles,
+		progress,
 		remainingIterations: configResult.config.participantIterationLimit,
 	});
 }
@@ -87,18 +103,19 @@ async function runCouncilIterations(
 	options: IterationOptions,
 ): Promise<AgentToolResult<unknown>> {
 	if (options.remainingIterations === 0) {
-		return finishWithoutAgreement(options.llm1, options.llm2);
+		return finishWithoutAgreement(options);
 	}
 	if (
 		needsMutualMissingInfo(options.llm1, options.llm2) &&
 		options.remainingIterations < 2
 	) {
-		return finishWithoutAgreement(options.llm1, options.llm2);
+		return finishWithoutAgreement(options);
 	}
 
-	const pairResult = await runNextParticipantPair(options);
+	const iteration = getCurrentIteration(options);
+	const pairResult = await runNextParticipantPair({ ...options, iteration });
 	if ("kind" in pairResult) {
-		return handleCouncilIssue(options.ctx, pairResult);
+		return handleCouncilIssue(options.ctx, pairResult, options.progress);
 	}
 
 	if (participantsAgreeAfterReview(pairResult.llm1, pairResult.llm2)) {
@@ -116,6 +133,14 @@ async function runCouncilIterations(
 		remainingIterations:
 			options.remainingIterations - pairResult.iterationsConsumed,
 	});
+}
+
+/** Calculates the visible iteration number from the remaining iteration budget. */
+function getCurrentIteration(options: IterationOptions): number {
+	return Math.max(
+		1,
+		options.config.participantIterationLimit - options.remainingIterations + 1,
+	);
 }
 
 /** Runs the next completed pair of participant discussion responses. */
@@ -170,6 +195,12 @@ function needsMutualMissingInfo(
 
 /** Runs the first participant iteration where no opponent opinion exists yet. */
 async function runInitialPair(options: PairOptions): Promise<PairResult> {
+	options.progress.recordRequest(
+		options.llm1.id,
+		"initial opinion",
+		"A initial opinion",
+	);
+	options.progress.setPhase("A initial opinion", options.iteration);
 	const llm1Result = await requestInitialOpinion({
 		participant: options.llm1,
 		task: buildInitialOpinionTask(options.question),
@@ -177,12 +208,20 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
+		progress: options.progress,
 	});
 	if ("kind" in llm1Result) {
 		return llm1Result;
 	}
+	options.progress.recordOpinion(options.llm1.id, llm1Result.response.opinion);
 	const llm1 = applyParticipantResponse(options.llm1, llm1Result, false);
 
+	options.progress.recordRequest(
+		options.llm2.id,
+		"initial opinion",
+		"B initial opinion",
+	);
+	options.progress.setPhase("B initial opinion", options.iteration);
 	const llm2Result = await requestInitialOpinion({
 		participant: options.llm2,
 		task: buildInitialOpinionTask(options.question),
@@ -190,10 +229,12 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
+		progress: options.progress,
 	});
 	if ("kind" in llm2Result) {
 		return llm2Result;
 	}
+	options.progress.recordOpinion(options.llm2.id, llm2Result.response.opinion);
 
 	return {
 		llm1,
@@ -206,6 +247,8 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 async function runOpinionExchangePair(
 	options: PairOptions,
 ): Promise<PairResult> {
+	options.progress.setPhase("A reviews B", options.iteration);
+	options.progress.recordRequest(options.llm1.id, "reviews B", "A reviews B");
 	const llm1Result = await requestParticipantDiscussion({
 		participant: options.llm1,
 		task: buildOpinionReviewTask(requireLatestOpinion(options.llm2)),
@@ -213,12 +256,22 @@ async function runOpinionExchangePair(
 		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
+		progress: options.progress,
 	});
 	if ("kind" in llm1Result) {
 		return llm1Result;
 	}
+	if (llm1Result.response.status !== undefined) {
+		options.progress.recordResponse(
+			options.llm1.id,
+			llm1Result.response.status,
+			llm1Result.response.opinion,
+		);
+	}
 	const llm1 = applyParticipantResponse(options.llm1, llm1Result, true);
 
+	options.progress.setPhase("B reviews A", options.iteration);
+	options.progress.recordRequest(options.llm2.id, "reviews A", "B reviews A");
 	const llm2Result = await requestParticipantDiscussion({
 		participant: options.llm2,
 		task: buildOpinionReviewTask(requireLatestOpinion(llm1)),
@@ -226,9 +279,17 @@ async function runOpinionExchangePair(
 		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
+		progress: options.progress,
 	});
 	if ("kind" in llm2Result) {
 		return llm2Result;
+	}
+	if (llm2Result.response.status !== undefined) {
+		options.progress.recordResponse(
+			options.llm2.id,
+			llm2Result.response.status,
+			llm2Result.response.opinion,
+		);
 	}
 
 	return {
@@ -326,6 +387,9 @@ async function answerMissingInformation(
 	participant: ParticipantState,
 	missingInformationRequest: string,
 ): Promise<ParticipantUpdateResult> {
+	const phase = `${formatParticipantLabel(participant.id)} answers missing info`;
+	options.progress.setPhase(phase, options.iteration);
+	options.progress.recordRequest(participant.id, "answers missing info", phase);
 	const responseResult = await requestMissingInformationResponse({
 		participant,
 		task: buildMissingInformationResponseTask(missingInformationRequest),
@@ -333,16 +397,18 @@ async function answerMissingInformation(
 		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
+		progress: options.progress,
 	});
-	return "kind" in responseResult
-		? responseResult
-		: {
-				participant: applyParticipantResponse(
-					participant,
-					responseResult,
-					false,
-				),
-			};
+	if ("kind" in responseResult) {
+		return responseResult;
+	}
+	options.progress.recordClarification(
+		participant.id,
+		responseResult.response.opinion,
+	);
+	return {
+		participant: applyParticipantResponse(participant, responseResult, false),
+	};
 }
 
 /** Requests a requester review of an opponent clarification. */
@@ -351,6 +417,13 @@ async function reviewClarification(
 	participant: ParticipantState,
 	clarification: string,
 ): Promise<ParticipantUpdateResult> {
+	const phase = `${formatParticipantLabel(participant.id)} reviews clarification`;
+	options.progress.setPhase(phase, options.iteration);
+	options.progress.recordRequest(
+		participant.id,
+		"reviews clarification",
+		phase,
+	);
 	const reviewResult = await requestParticipantDiscussion({
 		participant,
 		task: buildClarificationReviewTask(clarification),
@@ -358,12 +431,21 @@ async function reviewClarification(
 		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
+		progress: options.progress,
 	});
-	return "kind" in reviewResult
-		? reviewResult
-		: {
-				participant: applyParticipantResponse(participant, reviewResult, true),
-			};
+	if ("kind" in reviewResult) {
+		return reviewResult;
+	}
+	if (reviewResult.response.status !== undefined) {
+		options.progress.recordResponse(
+			participant.id,
+			reviewResult.response.status,
+			reviewResult.response.opinion,
+		);
+	}
+	return {
+		participant: applyParticipantResponse(participant, reviewResult, true),
+	};
 }
 
 /** Applies an accepted participant response to that participant's conversation history. */
@@ -413,6 +495,13 @@ async function finishAgreedCouncil(
 		options.config.finalAnswerParticipant === "llm1"
 			? options.llm1
 			: options.llm2;
+	const finalPhase = `final answer from ${formatParticipantLabel(finalParticipant.id)}`;
+	options.progress.recordSuccess("agreement reached", "agreed");
+	options.progress.recordRequest(
+		finalParticipant.id,
+		"final answer",
+		finalPhase,
+	);
 	const finalResult = await requestFinalAnswer({
 		participant: finalParticipant,
 		task: buildFinalAnswerTask(),
@@ -420,24 +509,39 @@ async function finishAgreedCouncil(
 		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
+		progress: options.progress,
 	});
 	if ("kind" in finalResult) {
-		return handleCouncilIssue(options.ctx, finalResult);
+		return handleCouncilIssue(options.ctx, finalResult, options.progress);
 	}
+	options.progress.recordSuccess("final answer accepted", "agreed");
+	options.progress.finish("succeeded", "agreed");
 	return formatToolOutput(finalResult.answer);
 }
 
 /** Returns the two latest participant opinions when agreement was not reached. */
 function finishWithoutAgreement(
-	llm1: ParticipantState,
-	llm2: ParticipantState,
+	options: IterationOptions,
 ): Promise<AgentToolResult<unknown>> | AgentToolResult<unknown> {
-	if (llm1.latest === undefined || llm2.latest === undefined) {
+	if (options.llm1.latest === undefined || options.llm2.latest === undefined) {
+		options.progress.recordError(
+			"council did not produce participant opinions",
+			"failed",
+		);
+		options.progress.finish("failed", "failed");
 		return errorResult("Council did not produce participant opinions.");
 	}
 
+	options.progress.recordInfo(
+		"iteration limit reached",
+		"iteration limit reached",
+	);
+	options.progress.finish("succeeded", "iteration limit reached");
 	return formatToolOutput(
-		buildNoConsensusResult(llm1.latest.opinion, llm2.latest.opinion),
+		buildNoConsensusResult(
+			options.llm1.latest.opinion,
+			options.llm2.latest.opinion,
+		),
 	);
 }
 
@@ -445,10 +549,15 @@ function finishWithoutAgreement(
 function handleCouncilIssue(
 	ctx: ExecuteConveneCouncilOptions["ctx"],
 	issue: CouncilIssue,
+	progress: CouncilProgressReporter,
 ): AgentToolResult<unknown> {
 	if (issue.kind === "tool-error") {
+		progress.recordError(issue.message, "failed");
+		progress.finish("failed", "failed");
 		throw reportToolError(ctx, issue.message);
 	}
+	progress.recordError(issue.message, "failed");
+	progress.finish("failed", "failed");
 	return errorResult(issue.message);
 }
 
@@ -470,7 +579,7 @@ function errorResult(message: string): AgentToolResult<unknown> {
 
 type CompleteSimple = NonNullable<ConveneCouncilDependencies["completeSimple"]>;
 
-interface PairOptions {
+interface BaseCouncilOptions {
 	readonly llm1: ParticipantState;
 	readonly llm2: ParticipantState;
 	readonly question: string;
@@ -478,6 +587,11 @@ interface PairOptions {
 	readonly completeSimple: CompleteSimple;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
+	readonly progress: CouncilProgressReporter;
+}
+
+interface PairOptions extends BaseCouncilOptions {
+	readonly iteration: number;
 }
 
 type PairResult =
@@ -497,7 +611,7 @@ interface MissingInfoPairOptions extends PairOptions {
 	readonly responder: ParticipantState;
 }
 
-interface FinishAgreedOptions extends PairOptions {
+interface FinishAgreedOptions extends BaseCouncilOptions {
 	readonly ctx: ExecuteConveneCouncilOptions["ctx"];
 }
 

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Message } from "@mariozechner/pi-ai";
+import { appendProjectContext } from "../../shared/project-context-prompt";
 import type { ProjectContextFile } from "./types";
 import { escapeXmlText } from "./xml";
 
@@ -98,21 +99,6 @@ export function createTaskMessage(task: string): Message {
 /** Reads one bundled prompt file and trims trailing file whitespace. */
 function readPromptFile(fileName: string): string {
 	return readFileSync(join(PROMPTS_DIR, fileName), "utf8").trim();
-}
-
-/** Appends Pi-loaded project context files to one council system prompt. */
-function appendProjectContext(
-	systemPrompt: string,
-	contextFiles: readonly ProjectContextFile[],
-): string {
-	if (contextFiles.length === 0) {
-		return systemPrompt;
-	}
-
-	const projectContext = contextFiles
-		.map(({ path, content }) => `## ${path}\n\n${content}`)
-		.join("\n\n");
-	return `${systemPrompt}\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n${projectContext}`;
 }
 
 /** Replaces named prompt variables without adding runtime prompt logic elsewhere. */

@@ -20,11 +20,27 @@ export async function executeCouncil(
 	question: string,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<unknown>> {
+	return executeCouncilWithOptions(pi, ctx, {
+		question,
+		...(signal !== undefined ? { signal } : {}),
+	});
+}
+
+/** Executes convene_council with optional progress observation. */
+export async function executeCouncilWithOptions(
+	pi: ExtensionApiFake,
+	ctx: ContextFake,
+	options: {
+		readonly question: string;
+		readonly signal?: AbortSignal;
+		readonly onUpdate?: (partial: AgentToolResult<unknown>) => void;
+	},
+): Promise<AgentToolResult<unknown>> {
 	return getCouncilTool(pi).execute(
 		"call-council",
-		{ question },
-		signal,
-		undefined,
+		{ question: options.question },
+		options.signal,
+		options.onUpdate,
 		ctx as never,
 	) as Promise<AgentToolResult<unknown>>;
 }

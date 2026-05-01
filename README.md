@@ -34,7 +34,7 @@ Use `convene-council` when one answer benefits from two model participants chall
 
 Use `context-projection` for long tool-heavy sessions. With suitable thresholds and summary mode, it can make the usable context behave like a much larger window, often close to doubling the effective available context, without noticeable LLM quality loss when projected outputs are old or non-critical.
 
-`consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, uses the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
+`consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
 
 `convene-council` uses the same active branch context pattern, then gives LLM1 and LLM2 equivalent base context, Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md`, and the same initial question task. The participants provide free-form first opinions, then exchange structured review responses until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
 
@@ -421,6 +421,7 @@ How it works:
 - Replays recorded `context-projection` placeholders or summaries when projection is active.
 - Removes the pending `consult_advisor` tool call from that request.
 - Appends the advisor question as a user message.
+- Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt.
 - Uses the advisor system prompt and disables tools.
 - Calls the configured advisor model only when the request fits the advisor model context window.
 - Returns a clear error when the advisor request is too large.
@@ -464,4 +465,7 @@ How it works:
 - Stops when both participants report `AGREE` after reviewing the opponent or when the iteration limit is reached.
 - Requests the final answer from the configured final answer participant after agreement.
 - Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
+- Shows live TUI progress with current phase, iteration, elapsed time, participant runtime mapping, latest council events, and short accepted-answer previews.
+- Colors participant labels while keeping status, retry, and error colors semantic.
+- Keeps raw transcripts, provider payloads, token deltas, and unbounded intermediate answers out of progress rows.
 - Saves very large answers to a temporary file and returns a short result with the file path.

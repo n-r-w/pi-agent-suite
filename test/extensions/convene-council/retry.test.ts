@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import { withIsolatedAgentDir, writeConfig } from "./support/env";
 import {
@@ -14,7 +15,7 @@ import {
 	nonTextFinalAnswer,
 	participantResponse,
 } from "./support/responses";
-import { executeCouncil } from "./support/tool";
+import { executeCouncil, executeCouncilWithOptions } from "./support/tool";
 
 const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
 const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
@@ -81,13 +82,20 @@ describe("convene-council retries", () => {
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
 			const ctx = createContext([model]);
+			const updates: AgentToolResult<unknown>[] = [];
 
-			const result = await executeCouncil(pi, ctx, "Retry provider");
+			const result = await executeCouncilWithOptions(pi, ctx, {
+				question: "Retry provider",
+				onUpdate: (partial) => updates.push(partial),
+			});
 
 			expect(result.content).toEqual([
 				{ type: "text", text: "final after provider retry" },
 			]);
 			expect(completion.calls).toHaveLength(6);
+			expect(JSON.stringify(updates.map((update) => update.details))).toContain(
+				"A provider retry 1/4",
+			);
 		});
 	});
 

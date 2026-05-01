@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import {
 	withIsolatedAgentDir,
@@ -25,7 +26,7 @@ import {
 	initialOpinion,
 	participantResponse,
 } from "./support/responses";
-import { executeCouncil } from "./support/tool";
+import { executeCouncil, executeCouncilWithOptions } from "./support/tool";
 
 const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
 const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
@@ -133,6 +134,92 @@ describe("convene-council loop", () => {
 			expect(completion.calls[2]?.context.systemPrompt).toContain("<status>");
 			expect(completion.calls[2]?.context.systemPrompt).toContain("<opinion>");
 			expect(completion.calls[4]?.model).toBe(model);
+		});
+	});
+
+	test("emits council-specific TUI progress updates while participants run", async () => {
+		// Purpose: live TUI output must show the current council phase and participant model mapping during long execution.
+		// Input and expected output: two different participant models produce partial updates with A/B runtime rows and semantic events.
+		// Edge case: final model-facing content remains the plain final answer and does not keep progress metadata.
+		// Dependencies: fake queued model responses and the tool onUpdate callback.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				llm1: { model: { id: "openai/model-a", thinking: "high" } },
+				llm2: { model: { id: "anthropic/model-b", thinking: "medium" } },
+			});
+			const modelA = createModel("openai", "model-a");
+			const modelB = createModel("anthropic", "model-b");
+			const longOpinionSuffix = "A_RAW_SUFFIX_MUST_NOT_APPEAR";
+			const completion = createCompletionQueue([
+				initialOpinion(
+					`${"A recommends PostgreSQL for relational hotel data. ".repeat(8)}${longOpinionSuffix}`,
+				),
+				initialOpinion(
+					"B recommends PostgreSQL but asks about search filters.",
+				),
+				participantResponse(
+					"AGREE",
+					"A agrees after B clarified search needs.",
+				),
+				participantResponse(
+					"AGREE",
+					"B agrees with PostgreSQL as source of truth.",
+				),
+				finalAnswer("final council answer"),
+			]);
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			const ctx = createContext([modelA, modelB]);
+			const updates: AgentToolResult<unknown>[] = [];
+
+			const result = await executeCouncilWithOptions(pi, ctx, {
+				question: "Which TUI should convene_council use?",
+				onUpdate: (partial) => updates.push(partial),
+			});
+
+			expect(result).toEqual({
+				content: [{ type: "text", text: "final council answer" }],
+				details: undefined,
+			});
+			expect(updates.length).toBeGreaterThan(0);
+			const details = updates.map((update) => update.details) as Record<
+				string,
+				unknown
+			>[];
+			expect(
+				details.every(
+					(detail) => detail["type"] === "convene_council_progress",
+				),
+			).toBe(true);
+			expect(details.at(-1)?.["status"]).toBe("succeeded");
+			expect(details.at(-1)?.["phase"]).toBe("agreed");
+			expect(details.at(-1)?.["iteration"]).toBe(2);
+			expect(details.at(-1)?.["iterationLimit"]).toBe(3);
+			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain("A");
+			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain(
+				"openai/model-a/high",
+			);
+			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain("B");
+			expect(JSON.stringify(details.at(-1)?.["participants"])).toContain(
+				"anthropic/model-b/medium",
+			);
+			const eventsJson = JSON.stringify(
+				details.flatMap((detail) => detail["events"]),
+			);
+			expect(eventsJson).toContain("A initial opinion");
+			expect(eventsJson).toContain("B initial opinion");
+			expect(eventsJson).toContain("A opinion");
+			expect(eventsJson).toContain("A recommends PostgreSQL");
+			expect(eventsJson).not.toContain(longOpinionSuffix);
+			expect(eventsJson).toContain("B opinion");
+			expect(eventsJson).toContain("B recommends PostgreSQL");
+			expect(eventsJson).toContain("A AGREE");
+			expect(eventsJson).toContain("A agrees after B clarified search needs");
+			expect(eventsJson).toContain("B AGREE");
+			expect(eventsJson).toContain(
+				"B agrees with PostgreSQL as source of truth",
+			);
+			expect(eventsJson).toContain("B final answer");
 		});
 	});
 
