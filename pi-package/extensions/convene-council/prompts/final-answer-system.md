@@ -21,10 +21,3 @@
   2. User language and conversation language NEVER override the English-only rule.
   3. Do not mirror the user's language unless it is English.
 </language_policy>
-
-<output_rules>
-  1. Return only the final answer text.
-  2. Do not use `<status>`, `<opinion>`, `<answer1>`, or `<answer2>`.
-  3. Do not describe the internal discussion process.
-</output_rules>
-

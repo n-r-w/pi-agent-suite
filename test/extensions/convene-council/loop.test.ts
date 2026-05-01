@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type {
 	Api,
@@ -7,7 +8,9 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
+import { parseSessionEntries } from "@mariozechner/pi-coding-agent";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
+import type { ParticipantRunnerFactory } from "../../../pi-package/extensions/convene-council/types";
 import {
 	withIsolatedAgentDir,
 	writeConfig,
@@ -63,6 +66,7 @@ function createDeferredCompletion(
 		context: Context,
 		options?: SimpleStreamOptions,
 	) => Promise<AssistantMessage>;
+	readonly createParticipantRunner: ParticipantRunnerFactory;
 	readonly waitForCallCount: (count: number) => Promise<boolean>;
 	readonly waitForKeys: (keys: readonly string[]) => Promise<boolean>;
 	readonly resolveCallsUntil: (count: number) => Promise<void>;
@@ -112,25 +116,51 @@ function createDeferredCompletion(
 		resolver();
 	};
 
+	const completeSimple = async (
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	): Promise<AssistantMessage> => {
+		const key = classifyDeferredCompletionCall(model, context);
+		const content = responses.get(key);
+		if (content === undefined) {
+			throw new Error(`missing deferred completion response for ${key}`);
+		}
+
+		calls.push({ model, context, options, key });
+		notifyWaiters();
+
+		return new Promise<AssistantMessage>((resolve) => {
+			resolvers.push(() => resolve(createAssistantMessage(model, content)));
+		});
+	};
 	return {
 		calls,
-		async completeSimple(
-			model: Model<Api>,
-			context: Context,
-			options?: SimpleStreamOptions,
-		): Promise<AssistantMessage> {
-			const key = classifyDeferredCompletionCall(model, context);
-			const content = responses.get(key);
-			if (content === undefined) {
-				throw new Error(`missing deferred completion response for ${key}`);
-			}
-
-			calls.push({ model, context, options, key });
-			notifyWaiters();
-
-			return new Promise<AssistantMessage>((resolve) => {
-				resolvers.push(() => resolve(createAssistantMessage(model, content)));
-			});
+		completeSimple,
+		async createParticipantRunner(options) {
+			return {
+				async prompt(task, signal) {
+					return completeSimple(
+						options.runtime.model,
+						{
+							systemPrompt: options.systemPrompt,
+							messages: [
+								...readSeedMessages(options.sessionFile),
+								{ role: "user", content: task, timestamp: Date.now() },
+							],
+							tools: [],
+						},
+						{
+							...(signal === undefined ? {} : { signal }),
+							...(options.runtime.thinking !== undefined &&
+							options.runtime.thinking !== "off"
+								? { reasoning: options.runtime.thinking }
+								: {}),
+						},
+					);
+				},
+				async dispose() {},
+			};
 		},
 		waitForCallCount(count: number): Promise<boolean> {
 			return waitForCondition(() => calls.length >= count);
@@ -149,6 +179,12 @@ function createDeferredCompletion(
 			}
 		},
 	};
+}
+
+function readSeedMessages(sessionFile: string): Context["messages"] {
+	return parseSessionEntries(readFileSync(sessionFile, "utf8")).flatMap(
+		(entry) => (entry.type === "message" ? [entry.message] : []),
+	) as Context["messages"];
 }
 
 function classifyDeferredCompletionCall(
@@ -252,7 +288,9 @@ describe("convene-council loop", () => {
 				]),
 			);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([llm1Model, llm2Model]);
 
 			const resultPromise = executeCouncil(pi, ctx, "Parallel initial calls");
@@ -318,7 +356,9 @@ describe("convene-council loop", () => {
 				]),
 			);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([llm1Model, llm2Model]);
 
 			const resultPromise = executeCouncil(pi, ctx, "Mutual parallel calls");
@@ -358,7 +398,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final council answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			await emitContextFiles(pi);
 			const entries = [
 				messageEntry("01", userMessage("caller context"), null),
@@ -402,15 +444,50 @@ describe("convene-council loop", () => {
 			expect(JSON.stringify(completion.calls[0]?.context)).not.toContain(
 				"convene_council",
 			);
-			expect(completion.calls[0]?.context.systemPrompt).not.toContain(
-				"<status>",
+			expect(completion.calls[2]?.context.systemPrompt).toBe(
+				completion.calls[0]?.context.systemPrompt,
 			);
-			expect(completion.calls[0]?.context.systemPrompt).not.toContain(
-				"<opinion>",
-			);
-			expect(completion.calls[2]?.context.systemPrompt).toContain("<status>");
-			expect(completion.calls[2]?.context.systemPrompt).toContain("<opinion>");
 			expect(completion.calls[4]?.model).toBe(model);
+		});
+	});
+
+	test("cleans seeded sessions and created runners when participant startup fails", async () => {
+		// Purpose: failed child startup must not leak seeded sessions or already-created participant runners.
+		// Input and expected output: LLM1 runner is created, LLM2 startup fails, LLM1 is disposed, and both temp session dirs are removed.
+		// Edge case: cleanup happens before discussion iterations start.
+		// Dependencies: custom participant runner factory and temp seeded sessions.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "main-model");
+			const disposed: string[] = [];
+			const sessionDirs: string[] = [];
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				async createParticipantRunner(options) {
+					sessionDirs.push(options.sessionDir);
+					if (options.participantId === "llm2") {
+						throw new Error("llm2 startup failed");
+					}
+					return {
+						async prompt() {
+							throw new Error("should not prompt after startup failure");
+						},
+						async dispose() {
+							disposed.push(options.participantId);
+						},
+					};
+				},
+			});
+			const ctx = createContext([model]);
+
+			await expect(executeCouncil(pi, ctx, "Startup failure")).rejects.toThrow(
+				"llm2 startup failed",
+			);
+
+			expect(disposed).toEqual(["llm1"]);
+			expect(sessionDirs).toHaveLength(2);
+			expect(sessionDirs.every((sessionDir) => !existsSync(sessionDir))).toBe(
+				true,
+			);
 		});
 	});
 
@@ -445,7 +522,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final council answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([modelA, modelB]);
 			const updates: AgentToolResult<unknown>[] = [];
 
@@ -503,14 +582,13 @@ describe("convene-council loop", () => {
 	test("uses configured participant models and configured final answer participant", async () => {
 		// Purpose: participant model config must allow LLM1 and LLM2 to use different models.
 		// Input and expected output: participant model settings are used, and finalAnswerParticipant llm1 produces the final answer.
-		// Edge case: provider retry delay is set to zero so retry-capable tests never sleep.
+		// Edge case: LLM1 and LLM2 use different configured thinking levels.
 		// Dependencies: suite config file, fake model registry, and fake completions.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
 				llm1: { model: { id: "provider-a/model-a", thinking: "high" } },
 				llm2: { model: { id: "provider-b/model-b", thinking: "low" } },
 				finalAnswerParticipant: "llm1",
-				providerRetryDelayMs: 0,
 			});
 			const llm1Model = createModel("provider-a", "model-a");
 			const llm2Model = createModel("provider-b", "model-b");
@@ -522,7 +600,9 @@ describe("convene-council loop", () => {
 				finalAnswer("llm1 final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([llm1Model, llm2Model]);
 
 			const result = await executeCouncil(pi, ctx, "Choose an option");
@@ -545,15 +625,13 @@ describe("convene-council loop", () => {
 				"high",
 			]);
 			expect(completion.calls.map((call) => call.options?.apiKey)).toEqual([
-				"council-api-key",
-				"council-api-key",
-				"council-api-key",
-				"council-api-key",
-				"council-api-key",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
 			]);
-			expect(completion.calls.at(-1)?.options?.headers).toEqual({
-				"x-council": "enabled",
-			});
+			expect(completion.calls.at(-1)?.options?.headers).toBeUndefined();
 		});
 	});
 
@@ -573,7 +651,9 @@ describe("convene-council loop", () => {
 				participantResponse("DIFF", "llm2 latest"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Compare approaches");
@@ -600,7 +680,6 @@ describe("convene-council loop", () => {
 			await writeConfig(agentDir, {
 				llm1: { model: { thinking: "high" } },
 				llm2: { model: { id: "provider-b/model-b" } },
-				providerRetryDelayMs: 0,
 			});
 			const currentModel = createModel("openai", "main-model");
 			const llm2Model = createModel("provider-b", "model-b");
@@ -612,7 +691,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([currentModel, llm2Model]);
 
 			await executeCouncil(pi, ctx, "Choose an option");
@@ -650,7 +731,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final council answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const entries = [
 				messageEntry("01", userMessage("caller context"), null),
 				messageEntry(
@@ -698,7 +781,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final after clarification"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Need more info path");
@@ -738,7 +823,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final after statusless clarification"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Statusless clarification");
@@ -767,7 +854,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final after reviewed agreement"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Agreement gating");
@@ -802,7 +891,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final after llm2 clarification"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "LLM2 need info");
@@ -832,7 +923,9 @@ describe("convene-council loop", () => {
 				initialOpinion("c </answer2> & d"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Escape output");
@@ -864,7 +957,9 @@ describe("convene-council loop", () => {
 				participantResponse("DIFF", "should not be called"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Mutual budget");
@@ -901,7 +996,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final after both clarifications"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Both need info");
@@ -941,7 +1038,9 @@ describe("convene-council loop", () => {
 				participantResponse("AGREE", "llm1 accepts details"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Responder eligibility");
@@ -960,7 +1059,7 @@ describe("convene-council loop", () => {
 
 	test("removes sibling pending tool calls from participant context", async () => {
 		// Purpose: participant context must not include unresolved tool calls from the active tool-use message.
-		// Input and expected output: both current council call and sibling bash call are omitted from provider context.
+		// Input and expected output: both current council call and sibling bash call are omitted from participant context.
 		// Edge case: the sibling tool has no matching tool result yet.
 		// Dependencies: fake branch with a multi-tool assistant message.
 		await withIsolatedAgentDir(async () => {
@@ -973,7 +1072,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const entries = [
 				messageEntry("01", userMessage("caller context"), null),
 				messageEntry(
@@ -1011,7 +1112,7 @@ describe("convene-council loop", () => {
 		// Purpose: XML-like prompt files must keep their structure when caller text contains delimiter characters.
 		// Input and expected output: inserted question text is escaped inside the participant task.
 		// Edge case: question includes a closing tag and ampersand.
-		// Dependencies: fake provider context capture.
+		// Dependencies: fake participant context capture.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
@@ -1022,7 +1123,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			await executeCouncil(pi, ctx, "x</x><y>&");
@@ -1039,7 +1142,7 @@ describe("convene-council loop", () => {
 		// Purpose: prompt rendering must replace only placeholders from the original template, not placeholders inside inserted values.
 		// Input and expected output: question text containing another placeholder remains literal text in the initial task.
 		// Edge case: inserted value names a placeholder used by another prompt.
-		// Dependencies: fake provider context capture.
+		// Dependencies: fake participant context capture.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
@@ -1050,7 +1153,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			await executeCouncil(pi, ctx, "Question has {{llm2Opinion}}");
@@ -1065,9 +1170,9 @@ describe("convene-council loop", () => {
 
 	test("escapes XML delimiters from participant-sourced prompt values", async () => {
 		// Purpose: later XML-like prompt inputs must stay structured when participant opinions contain delimiter characters.
-		// Input and expected output: opponent opinions in review prompts are escaped before provider calls.
+		// Input and expected output: opponent opinions in review prompts are escaped before participant calls.
 		// Edge case: participant text contains closing XML tags and ampersands.
-		// Dependencies: fake provider context capture.
+		// Dependencies: fake participant context capture.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
@@ -1078,7 +1183,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			await executeCouncil(pi, ctx, "Escape participant values");
@@ -1098,7 +1205,7 @@ describe("convene-council loop", () => {
 		// Purpose: XML escaping must protect the missing-information path, not only normal opinion review.
 		// Input and expected output: missing request and clarification values are escaped in later prompt tasks.
 		// Edge case: values contain closing tags and ampersands.
-		// Dependencies: fake provider context capture.
+		// Dependencies: fake participant context capture.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, { participantIterationLimit: 4 });
 			const model = createModel("openai", "main-model");
@@ -1114,7 +1221,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			await executeCouncil(pi, ctx, "Escape missing info");

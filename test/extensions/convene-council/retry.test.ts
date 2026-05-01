@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import { withIsolatedAgentDir, writeConfig } from "./support/env";
 import {
@@ -15,7 +14,7 @@ import {
 	nonTextFinalAnswer,
 	participantResponse,
 } from "./support/responses";
-import { executeCouncil, executeCouncilWithOptions } from "./support/tool";
+import { executeCouncil } from "./support/tool";
 
 const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
 const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
@@ -48,7 +47,9 @@ describe("convene-council retries", () => {
 				finalAnswer("final after retry"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Repair output");
@@ -63,117 +64,11 @@ describe("convene-council retries", () => {
 		});
 	});
 
-	test("retries thrown provider errors separately from response defects", async () => {
-		// Purpose: provider retry must repeat a failed provider request without consuming response-defect retry budget.
-		// Input and expected output: one thrown provider error is retried, then the discussion reaches a final answer.
-		// Edge case: zero retry delay keeps the behavior deterministic in tests.
-		// Dependencies: suite config and fake provider failure.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { providerRetryDelayMs: 0 });
-			const model = createModel("openai", "main-model");
-			const completion = createCompletionQueue([
-				new Error("temporary network failure"),
-				initialOpinion("llm1 initial"),
-				initialOpinion("llm2 initial"),
-				participantResponse("AGREE", "llm1 agrees"),
-				participantResponse("AGREE", "llm2 agrees"),
-				finalAnswer("final after provider retry"),
-			]);
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
-			const ctx = createContext([model]);
-			const updates: AgentToolResult<unknown>[] = [];
-
-			const result = await executeCouncilWithOptions(pi, ctx, {
-				question: "Retry provider",
-				onUpdate: (partial) => updates.push(partial),
-			});
-
-			expect(result.content).toEqual([
-				{ type: "text", text: "final after provider retry" },
-			]);
-			expect(completion.calls).toHaveLength(6);
-			expect(JSON.stringify(updates.map((update) => update.details))).toContain(
-				"A provider retry 1/4",
-			);
-		});
-	});
-
-	test("retries provider errors on later participant and final-answer calls", async () => {
-		// Purpose: provider retry must apply to every model call, not only the first participant request.
-		// Input and expected output: one later participant failure and one final-answer failure are retried before success.
-		// Edge case: provider failures must not consume response-defect retry budget.
-		// Dependencies: suite config and fake provider failures.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { providerRetryDelayMs: 0 });
-			const model = createModel("openai", "main-model");
-			const completion = createCompletionQueue([
-				initialOpinion("llm1 initial"),
-				initialOpinion("llm2 initial"),
-				participantResponse("AGREE", "llm1 agrees"),
-				new Error("temporary later participant failure"),
-				participantResponse("AGREE", "llm2 agrees"),
-				new Error("temporary final failure"),
-				finalAnswer("final after later retries"),
-			]);
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
-			const ctx = createContext([model]);
-
-			const result = await executeCouncil(pi, ctx, "Retry later calls");
-
-			expect(result.content).toEqual([
-				{ type: "text", text: "final after later retries" },
-			]);
-			expect(completion.calls).toHaveLength(7);
-		});
-	});
-
-	test("retries unstructured provider throws", async () => {
-		// Purpose: provider retry must handle thrown values that are not Error instances.
-		// Input and expected output: a thrown string is retried once before normal convergence.
-		// Edge case: the thrown value has no message property.
-		// Dependencies: suite config and custom provider fake.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				providerRequestRetries: 1,
-				providerRetryDelayMs: 0,
-			});
-			const model = createModel("openai", "main-model");
-			const completion = createCompletionQueue([
-				initialOpinion("llm1 initial"),
-				initialOpinion("llm2 initial"),
-				participantResponse("AGREE", "llm1 agrees"),
-				participantResponse("AGREE", "llm2 agrees"),
-				finalAnswer("final after string throw"),
-			]);
-			let attempts = 0;
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, {
-				async completeSimple(modelArg, context, options) {
-					attempts += 1;
-					if (attempts === 1) {
-						return Promise.reject("temporary string failure");
-					}
-					return completion.completeSimple(modelArg, context, options);
-				},
-			});
-			const ctx = createContext([model]);
-
-			const result = await executeCouncil(pi, ctx, "Retry string throw");
-
-			expect(result.content).toEqual([
-				{ type: "text", text: "final after string throw" },
-			]);
-			expect(attempts).toBe(6);
-		});
-	});
-
-	test("passes abort signals to participant and final-answer provider calls", async () => {
-		// Purpose: in-flight cancellation can work only when the active signal reaches every provider request.
+	test("passes abort signals to participant and final-answer runner calls", async () => {
+		// Purpose: in-flight cancellation can work only when the active signal reaches every runner prompt.
 		// Input and expected output: all participant and final-answer calls receive the caller signal.
 		// Edge case: the signal is present but not aborted, so normal execution still completes.
-		// Dependencies: fake provider call capture and AbortController.
+		// Dependencies: fake runner call capture and AbortController.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
@@ -184,7 +79,9 @@ describe("convene-council retries", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 			const abortController = new AbortController();
 
@@ -221,7 +118,9 @@ describe("convene-council retries", () => {
 				finalAnswer("final answer"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Return final answer");
@@ -250,7 +149,9 @@ describe("convene-council retries", () => {
 				),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const duplicateResult = await executeCouncil(pi, ctx, "Reject duplicate");
@@ -276,7 +177,9 @@ describe("convene-council retries", () => {
 				finalAnswer(" <status>NEED_INFO</status><opinion>a</opinion>"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const outsideTextResult = await executeCouncil(
@@ -332,7 +235,9 @@ describe("convene-council retries", () => {
 					testCase.response,
 				]);
 				const pi = createExtensionApiFake();
-				conveneCouncil(pi, { completeSimple: completion.completeSimple });
+				conveneCouncil(pi, {
+					createParticipantRunner: completion.createParticipantRunner,
+				});
 				const ctx = createContext([model]);
 
 				const result = await executeCouncil(pi, ctx, testCase.name);
@@ -364,7 +269,9 @@ describe("convene-council retries", () => {
 					testCase.response,
 				]);
 				const pi = createExtensionApiFake();
-				conveneCouncil(pi, { completeSimple: completion.completeSimple });
+				conveneCouncil(pi, {
+					createParticipantRunner: completion.createParticipantRunner,
+				});
 				const ctx = createContext([model]);
 
 				const result = await executeCouncil(pi, ctx, testCase.name);
@@ -397,7 +304,9 @@ describe("convene-council retries", () => {
 				finalAnswer("malformed"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Exhaust participant retry");
@@ -421,7 +330,9 @@ describe("convene-council retries", () => {
 				finalAnswer("<status>bad</status>"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Exhaust final retry");
@@ -450,7 +361,9 @@ describe("convene-council retries", () => {
 				finalAnswer("An internal process handles scheduling."),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Domain wording");
@@ -461,64 +374,67 @@ describe("convene-council retries", () => {
 		});
 	});
 
-	test("throws before provider calls when participant input exceeds the model context window", async () => {
-		// Purpose: oversized council input is a non-logical tool failure and must not call the provider.
-		// Input and expected output: tiny context window rejects the participant request before completeSimple.
-		// Edge case: context-size failure happens after model/auth resolution.
-		// Dependencies: fake model context window and fake completion queue.
+	test("surfaces participant context-size failures", async () => {
+		// Purpose: oversized child context remains a non-logical tool failure.
+		// Input and expected output: participant runner context-size error is reported as a tool error.
+		// Edge case: failure happens after participant sessions and runners are created.
+		// Dependencies: custom runner fake.
 		await withIsolatedAgentDir(async () => {
-			const model = {
-				...createModel("openai", "main-model"),
-				contextWindow: 1,
-			};
-			const completion = createCompletionQueue([
-				participantResponse("NEED_INFO", "should not be used"),
-			]);
+			const model = createModel("openai", "main-model");
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				async createParticipantRunner() {
+					return {
+						async prompt() {
+							throw new Error("context is too large");
+						},
+						async dispose() {},
+					};
+				},
+			});
 			const ctx = createContext([model]);
 
 			await expect(executeCouncil(pi, ctx, "Large context")).rejects.toThrow(
 				"context is too large",
 			);
-			expect(completion.calls).toHaveLength(0);
 		});
 	});
 
-	test("stops provider retries after the configured retry count", async () => {
-		// Purpose: sustained provider failures must stop after providerRequestRetries without using response-defect retries.
-		// Input and expected output: one retry after the first failure yields two provider calls per independent initial participant.
-		// Edge case: retry delay zero avoids timer dependency while both initial participants are already in flight.
-		// Dependencies: suite config and fake thrown provider errors.
+	test("surfaces participant runner failures without transport retries", async () => {
+		// Purpose: participant transport failures must fail the council without hidden retries.
+		// Input and expected output: both independent initial participants fail once.
+		// Edge case: response-defect retry budget does not apply to transport failures.
+		// Dependencies: custom runner fake.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				providerRequestRetries: 1,
-				providerRetryDelayMs: 0,
-				responseDefectRetries: 3,
-			});
+			await writeConfig(agentDir, { responseDefectRetries: 3 });
 			const model = createModel("openai", "main-model");
 			const calls: unknown[] = [];
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, {
-				async completeSimple() {
-					calls.push(undefined);
-					throw new Error("provider failure");
+				async createParticipantRunner() {
+					return {
+						async prompt() {
+							calls.push(undefined);
+							throw new Error("participant failure");
+						},
+						async dispose() {},
+					};
 				},
 			});
 			const ctx = createContext([model]);
 
-			await expect(executeCouncil(pi, ctx, "Provider failure")).rejects.toThrow(
-				"provider request failed: provider failure",
-			);
-			expect(calls).toHaveLength(4);
+			await expect(
+				executeCouncil(pi, ctx, "Participant failure"),
+			).rejects.toThrow("participant request failed: participant failure");
+			expect(calls).toHaveLength(2);
 		});
 	});
 
-	test("does not start a provider call when the signal is already aborted", async () => {
-		// Purpose: cancellation requested before execution must prevent the first external provider request.
-		// Input and expected output: already-aborted signal throws a provider-abort error and records zero provider calls.
-		// Edge case: model and auth resolution still succeed before the first provider boundary.
-		// Dependencies: AbortController and custom provider fake.
+	test("does not prompt a participant when the signal is already aborted", async () => {
+		// Purpose: cancellation requested before execution must prevent the first participant prompt.
+		// Input and expected output: already-aborted signal throws a participant-abort error and records zero prompts.
+		// Edge case: model resolution still succeeds before the first participant boundary.
+		// Dependencies: AbortController and custom runner fake.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const calls: unknown[] = [];
@@ -526,74 +442,52 @@ describe("convene-council retries", () => {
 			abortController.abort();
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, {
-				async completeSimple() {
-					calls.push(undefined);
-					throw new Error("should not be called");
+				async createParticipantRunner() {
+					return {
+						async prompt() {
+							calls.push(undefined);
+							throw new Error("should not be called");
+						},
+						async dispose() {},
+					};
 				},
 			});
 			const ctx = createContext([model]);
 
 			await expect(
 				executeCouncil(pi, ctx, "Already aborted", abortController.signal),
-			).rejects.toThrow("provider request aborted");
+			).rejects.toThrow("participant request aborted");
 			expect(calls).toHaveLength(0);
 		});
 	});
 
-	test("does not start retry calls when aborted during retry delay", async () => {
-		// Purpose: cancellation during provider backoff must not start retry requests.
-		// Input and expected output: aborting the signal during retry delay returns an error after both independent initial calls fail.
-		// Edge case: delay is non-zero so the abort happens inside waitForRetryDelay.
-		// Dependencies: AbortController and fake thrown provider errors.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				providerRequestRetries: 2,
-				providerRetryDelayMs: 20,
-			});
-			const model = createModel("openai", "main-model");
-			const completion = createCompletionQueue([
-				new Error("first failure"),
-				new Error("second failure"),
-			]);
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
-			const ctx = createContext([model]);
-			const abortController = new AbortController();
-			setTimeout(() => abortController.abort(), 1);
-
-			await expect(
-				executeCouncil(pi, ctx, "Abort retry", abortController.signal),
-			).rejects.toThrow("provider request failed");
-			expect(completion.calls).toHaveLength(2);
-		});
-	});
-
-	test("does not retry when provider throws after the signal is aborted", async () => {
-		// Purpose: cancellation reported by the active provider call must not start retry attempts.
-		// Input and expected output: the fake provider aborts the signal and throws once, then execution throws a provider error.
-		// Edge case: retry count is available but cancellation takes precedence.
-		// Dependencies: AbortController and custom fake completeSimple.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				providerRequestRetries: 3,
-				providerRetryDelayMs: 0,
-			});
+	test("does not retry when participant runner fails after the signal is aborted", async () => {
+		// Purpose: cancellation reported by the active participant call must not start retry attempts.
+		// Input and expected output: the fake runner aborts the signal and throws once.
+		// Edge case: response-defect retry does not apply to transport failures.
+		// Dependencies: AbortController and custom runner fake.
+		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const abortController = new AbortController();
 			const calls: unknown[] = [];
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, {
-				async completeSimple() {
-					calls.push(undefined);
-					abortController.abort();
-					throw new Error("aborted provider call");
+				async createParticipantRunner() {
+					return {
+						async prompt() {
+							calls.push(undefined);
+							abortController.abort();
+							throw new Error("aborted participant call");
+						},
+						async dispose() {},
+					};
 				},
 			});
 			const ctx = createContext([model]);
 
 			await expect(
 				executeCouncil(pi, ctx, "Abort active call", abortController.signal),
-			).rejects.toThrow("provider request failed: aborted provider call");
+			).rejects.toThrow("participant request failed: aborted participant call");
 			expect(calls).toHaveLength(1);
 		});
 	});
@@ -619,7 +513,9 @@ describe("convene-council retries", () => {
 				initialOpinion(llm2Opinion),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Large no agreement");
@@ -655,7 +551,9 @@ describe("convene-council retries", () => {
 				finalAnswer(largeAnswer),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			const result = await executeCouncil(pi, ctx, "Large answer");

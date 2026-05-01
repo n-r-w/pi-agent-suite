@@ -36,10 +36,10 @@ describe("convene-council config", () => {
 		});
 	});
 
-	test("throws tool errors for invalid config without provider calls", async () => {
+	test("throws tool errors for invalid config without participant calls", async () => {
 		// Purpose: invalid config is a non-logical tool failure and must not call any participant model.
 		// Input and expected output: representative invalid config values throw safe errors and notify the UI.
-		// Edge case: each validation branch should fail before model resolution and provider calls.
+		// Edge case: each validation branch should fail before model resolution and participant calls.
 		// Dependencies: suite config file and fake completion queue.
 		const cases: ReadonlyArray<{
 			readonly config: unknown;
@@ -86,12 +86,32 @@ describe("convene-council config", () => {
 				error: "responseDefectRetries must be a non-negative integer",
 			},
 			{
-				config: { providerRequestRetries: 1.5 },
-				error: "providerRequestRetries must be a non-negative integer",
+				config: { tools: "read" },
+				error: "tools must be an array of strings",
 			},
 			{
-				config: { providerRetryDelayMs: -1 },
-				error: "providerRetryDelayMs must be a non-negative integer",
+				config: { tools: [""] },
+				error: "tools must be an array of non-empty strings",
+			},
+			{
+				config: { tools: ["read", 1] },
+				error: "tools must be an array of non-empty strings",
+			},
+			{
+				config: { providerRequestRetries: 1 },
+				error: "config contains unsupported keys",
+			},
+			{
+				config: { providerRetryDelayMs: 100 },
+				error: "config contains unsupported keys",
+			},
+			{
+				config: { llm1: { tools: ["read"] } },
+				error: "llm1 contains unsupported keys",
+			},
+			{
+				config: { llm2: { tools: ["read"] } },
+				error: "llm2 contains unsupported keys",
 			},
 			{
 				config: { finalAnswerParticipant: "llm3" },
@@ -107,7 +127,9 @@ describe("convene-council config", () => {
 					participantResponse("NEED_INFO", "should not be used"),
 				]);
 				const pi = createExtensionApiFake();
-				conveneCouncil(pi, { completeSimple: completion.completeSimple });
+				conveneCouncil(pi, {
+					createParticipantRunner: completion.createParticipantRunner,
+				});
 				const ctx = createContext([model]);
 
 				await expect(executeCouncil(pi, ctx, "Invalid config")).rejects.toThrow(
@@ -124,7 +146,7 @@ describe("convene-council config", () => {
 		}
 	});
 
-	test("throws a tool error for malformed config JSON without provider calls", async () => {
+	test("throws a tool error for malformed config JSON without participant calls", async () => {
 		// Purpose: corrupted config files must fail as configuration errors before any model call.
 		// Input and expected output: malformed JSON throws a safe parse error and notifies the UI.
 		// Edge case: the file exists, so missing-config defaults must not apply.
@@ -136,7 +158,9 @@ describe("convene-council config", () => {
 				participantResponse("NEED_INFO", "should not be used"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([model]);
 
 			await expect(executeCouncil(pi, ctx, "Malformed config")).rejects.toThrow(
@@ -150,15 +174,14 @@ describe("convene-council config", () => {
 		});
 	});
 
-	test("throws tool errors for runtime model and auth failures", async () => {
-		// Purpose: runtime resolution failures are non-logical tool failures and must not call providers.
-		// Input and expected output: missing current model, missing configured model, and auth failure throw safe errors.
+	test("throws tool errors for runtime model failures", async () => {
+		// Purpose: runtime resolution failures are non-logical tool failures and must not call participants.
+		// Input and expected output: missing current model and missing configured model throw safe errors.
 		// Edge case: config validation succeeds before each runtime failure.
-		// Dependencies: fake model registry and fake completion queue.
+		// Dependencies: fake model registry and fake runner queue.
 		const cases: ReadonlyArray<{
 			readonly config?: unknown;
 			readonly models: ReturnType<typeof createModel>[];
-			readonly authResult?: { readonly ok: false; readonly error: string };
 			readonly error: string;
 		}> = [
 			{
@@ -169,11 +192,6 @@ describe("convene-council config", () => {
 				config: { llm1: { model: { id: "missing/model" } } },
 				models: [createModel("openai", "main-model")],
 				error: "llm1 model missing/model was not found",
-			},
-			{
-				models: [createModel("openai", "main-model")],
-				authResult: { ok: false, error: "missing token" },
-				error: "llm1 model auth unavailable: missing token",
 			},
 		];
 
@@ -186,14 +204,10 @@ describe("convene-council config", () => {
 					participantResponse("NEED_INFO", "should not be used"),
 				]);
 				const pi = createExtensionApiFake();
-				conveneCouncil(pi, { completeSimple: completion.completeSimple });
-				const ctx = createContext(
-					testCase.models,
-					[],
-					testCase.authResult === undefined
-						? {}
-						: { authResult: testCase.authResult },
-				);
+				conveneCouncil(pi, {
+					createParticipantRunner: completion.createParticipantRunner,
+				});
+				const ctx = createContext(testCase.models);
 
 				await expect(
 					executeCouncil(pi, ctx, "Runtime failure"),
@@ -211,7 +225,7 @@ describe("convene-council config", () => {
 
 	test("uses llm2 as the default final answer participant", async () => {
 		// Purpose: missing finalAnswerParticipant must use LLM2, not the last caller by accident.
-		// Input and expected output: the final provider call uses the LLM2 configured model.
+		// Input and expected output: the final participant call uses the LLM2 configured model.
 		// Edge case: LLM1 and LLM2 use different configured models.
 		// Dependencies: suite config and fake model registry.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -229,7 +243,9 @@ describe("convene-council config", () => {
 				finalAnswer("llm2 final"),
 			]);
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
 			const ctx = createContext([llm1Model, llm2Model]);
 
 			await executeCouncil(pi, ctx, "Default final participant");

@@ -10,7 +10,7 @@ import type {
 	Thinking,
 } from "./types";
 
-/** Resolves both participant models and auth through the pi model registry. */
+/** Resolves both participant models through the pi model registry. */
 export async function resolveCouncilRuntime(
 	ctx: CouncilContext,
 	config: ConveneCouncilConfig,
@@ -39,7 +39,7 @@ export async function resolveCouncilRuntime(
 	return { runtime: { llm1: llm1.runtime, llm2: llm2.runtime } };
 }
 
-/** Resolves one participant model, auth, and thinking level. */
+/** Resolves one participant model and thinking level. */
 async function resolveParticipantRuntime(
 	ctx: CouncilContext,
 	participantId: ParticipantId,
@@ -61,16 +61,9 @@ async function resolveParticipantRuntime(
 		};
 	}
 
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		return { issue: `${participantId} model auth unavailable: ${auth.error}` };
-	}
-
 	return {
 		runtime: {
 			model,
-			...(auth.apiKey !== undefined ? { apiKey: auth.apiKey } : {}),
-			...(auth.headers !== undefined ? { headers: auth.headers } : {}),
 			...resolveThinking(config.model?.thinking, currentThinking),
 		},
 	};

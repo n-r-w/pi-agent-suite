@@ -5,8 +5,6 @@ import {
 	CONVENE_COUNCIL_EXTENSION_DIR,
 	DEFAULT_FINAL_ANSWER_PARTICIPANT,
 	DEFAULT_PARTICIPANT_ITERATION_LIMIT,
-	DEFAULT_PROVIDER_REQUEST_RETRIES,
-	DEFAULT_PROVIDER_RETRY_DELAY_MS,
 	DEFAULT_RESPONSE_DEFECT_RETRIES,
 	ENABLED_CONFIG_KEY,
 	PARTICIPANT_IDS,
@@ -139,16 +137,7 @@ function parseConveneCouncilConfig(
 			"responseDefectRetries",
 			DEFAULT_RESPONSE_DEFECT_RETRIES,
 		),
-		providerRequestRetries: getIntegerConfig(
-			raw,
-			"providerRequestRetries",
-			DEFAULT_PROVIDER_REQUEST_RETRIES,
-		),
-		providerRetryDelayMs: getIntegerConfig(
-			raw,
-			"providerRetryDelayMs",
-			DEFAULT_PROVIDER_RETRY_DELAY_MS,
-		),
+		tools: parseToolsConfig(raw["tools"]),
 	};
 }
 
@@ -206,8 +195,7 @@ function getConfigKeys(): readonly string[] {
 		"participantIterationLimit",
 		"finalAnswerParticipant",
 		"responseDefectRetries",
-		"providerRequestRetries",
-		"providerRetryDelayMs",
+		"tools",
 	];
 }
 
@@ -275,16 +263,22 @@ function validateIntegerConfig(
 		}
 	}
 
+	const tools = config["tools"];
+	if (tools !== undefined) {
+		if (!Array.isArray(tools)) {
+			return "tools must be an array of strings";
+		}
+		if (tools.some((tool) => typeof tool !== "string" || tool.length === 0)) {
+			return "tools must be an array of non-empty strings";
+		}
+	}
+
 	return undefined;
 }
 
 /** Returns config keys that accept non-negative integers. */
 function getNonNegativeIntegerKeys(): readonly string[] {
-	return [
-		"responseDefectRetries",
-		"providerRequestRetries",
-		"providerRetryDelayMs",
-	];
+	return ["responseDefectRetries"];
 }
 
 /** Builds one typed participant config from a validated raw object. */
@@ -307,6 +301,11 @@ function parseParticipantModelConfig(
 		...(typeof value["id"] === "string" ? { id: value["id"] } : {}),
 		...(isThinking(value["thinking"]) ? { thinking: value["thinking"] } : {}),
 	};
+}
+
+/** Reads the shared participant tool policy after validation has accepted it. */
+function parseToolsConfig(value: unknown): readonly string[] | undefined {
+	return Array.isArray(value) ? [...value] : undefined;
 }
 
 /** Reads one integer config value after validation has accepted it. */

@@ -2,10 +2,8 @@ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
-	Context,
 	Message,
 	Model,
-	SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { ProjectContextFile } from "../../shared/project-context-prompt";
@@ -22,12 +20,37 @@ export type ParticipantId = (typeof PARTICIPANT_IDS)[number];
 export type ParticipantStatus = (typeof PARTICIPANT_STATUSES)[number];
 
 export interface ConveneCouncilDependencies {
-	readonly completeSimple?: (
-		model: Model<Api>,
-		context: Context,
-		options?: SimpleStreamOptions,
-	) => Promise<AssistantMessage>;
+	readonly createParticipantRunner?: ParticipantRunnerFactory;
+	readonly resolveStartupPlan?: () =>
+		| ChildStartupPlan
+		| { readonly issue: string };
 }
+
+export interface ChildStartupPlan {
+	readonly extensionArgs: readonly string[];
+	readonly env: Record<string, string>;
+}
+
+export interface ParticipantRunner {
+	prompt(
+		task: string,
+		signal: AbortSignal | undefined,
+	): Promise<AssistantMessage>;
+	dispose(): Promise<void>;
+}
+
+export type ParticipantRunnerFactory = (options: {
+	readonly participantId: ParticipantId;
+	readonly runtime: ParticipantRuntime;
+	readonly sessionFile: string;
+	readonly sessionDir: string;
+	readonly systemPrompt: string;
+	readonly config: ConveneCouncilConfig;
+	readonly startupPlan: ChildStartupPlan;
+	readonly toolArgs: readonly string[];
+	readonly ctx: CouncilContext;
+	readonly signal: AbortSignal | undefined;
+}) => Promise<ParticipantRunner>;
 
 export interface ConveneCouncilParams {
 	readonly question: string;
@@ -48,14 +71,11 @@ export interface ConveneCouncilConfig {
 	readonly participantIterationLimit: number;
 	readonly finalAnswerParticipant: ParticipantId;
 	readonly responseDefectRetries: number;
-	readonly providerRequestRetries: number;
-	readonly providerRetryDelayMs: number;
+	readonly tools: readonly string[] | undefined;
 }
 
 export interface ParticipantRuntime {
 	readonly model: Model<Api>;
-	readonly apiKey?: string;
-	readonly headers?: Record<string, string>;
 	readonly thinking?: Thinking;
 }
 
@@ -69,9 +89,10 @@ export interface CouncilContext extends ExtensionContext {
 }
 
 export interface ExecuteConveneCouncilOptions {
-	readonly completeSimple: NonNullable<
-		ConveneCouncilDependencies["completeSimple"]
-	>;
+	readonly createParticipantRunner: ParticipantRunnerFactory;
+	readonly resolveStartupPlan: () =>
+		| ChildStartupPlan
+		| { readonly issue: string };
 	readonly toolCallId: string;
 	readonly params: ConveneCouncilParams;
 	readonly signal: AbortSignal | undefined;
@@ -79,6 +100,7 @@ export interface ExecuteConveneCouncilOptions {
 	readonly currentThinkingLevel: unknown;
 	readonly loadedSkillRoots: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];
+	readonly availableToolNames: readonly string[];
 	readonly onUpdate?: (partial: AgentToolResult<unknown>) => void;
 }
 
@@ -86,6 +108,7 @@ export interface ParticipantState {
 	readonly id: ParticipantId;
 	readonly history: readonly Message[];
 	readonly runtime: ParticipantRuntime;
+	readonly runner: ParticipantRunner;
 	readonly reviewedOpponent: boolean;
 	readonly latest?: ParticipantOpinion;
 }
@@ -114,9 +137,6 @@ export interface PlainParticipantRequestOptions {
 	readonly participant: ParticipantState;
 	readonly task: string;
 	readonly config: ConveneCouncilConfig;
-	readonly completeSimple: NonNullable<
-		ConveneCouncilDependencies["completeSimple"]
-	>;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: readonly ProjectContextFile[];
 	readonly progress?: CouncilProgressReporter;
@@ -132,9 +152,6 @@ export interface ParticipantRequestOptions {
 	readonly task: string;
 	readonly requiredStatus?: ParticipantStatus;
 	readonly config: ConveneCouncilConfig;
-	readonly completeSimple: NonNullable<
-		ConveneCouncilDependencies["completeSimple"]
-	>;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: readonly ProjectContextFile[];
 	readonly progress?: CouncilProgressReporter;
@@ -144,9 +161,6 @@ export interface FinalAnswerRequestOptions {
 	readonly participant: ParticipantState;
 	readonly task: string;
 	readonly config: ConveneCouncilConfig;
-	readonly completeSimple: NonNullable<
-		ConveneCouncilDependencies["completeSimple"]
-	>;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: readonly ProjectContextFile[];
 	readonly progress?: CouncilProgressReporter;

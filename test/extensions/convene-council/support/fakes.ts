@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type {
 	Api,
 	AssistantMessage,
@@ -5,11 +6,13 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
-import type {
-	ExtensionAPI,
-	SessionEntry,
-	ToolDefinition,
+import {
+	type ExtensionAPI,
+	parseSessionEntries,
+	type SessionEntry,
+	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
+import type { ParticipantRunnerFactory } from "../../../../pi-package/extensions/convene-council/types";
 
 export interface RegisteredHandler {
 	readonly eventName: string;
@@ -157,26 +160,60 @@ export function createCompletionQueue(
 		context: Context,
 		options?: SimpleStreamOptions,
 	) => Promise<AssistantMessage>;
+	readonly createParticipantRunner: ParticipantRunnerFactory;
 } {
 	const calls: CompletionCall[] = [];
+	const completeSimple = async (
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	): Promise<AssistantMessage> => {
+		calls.push({ model, context, options });
+		const next = responses.shift();
+		if (next === undefined) {
+			throw new Error("missing queued completion response");
+		}
+		if (next instanceof Error) {
+			throw next;
+		}
+		return createAssistantMessage(model, next);
+	};
 	return {
 		calls,
-		async completeSimple(
-			model: Model<Api>,
-			context: Context,
-			options?: SimpleStreamOptions,
-		): Promise<AssistantMessage> {
-			calls.push({ model, context, options });
-			const next = responses.shift();
-			if (next === undefined) {
-				throw new Error("missing queued completion response");
-			}
-			if (next instanceof Error) {
-				throw next;
-			}
-			return createAssistantMessage(model, next);
+		completeSimple,
+		async createParticipantRunner(options) {
+			return {
+				async prompt(task, signal) {
+					return completeSimple(
+						options.runtime.model,
+						{
+							systemPrompt: options.systemPrompt,
+							messages: [
+								...readSeedMessages(options.sessionFile),
+								{ role: "user", content: task, timestamp: Date.now() },
+							],
+							tools: [],
+						},
+						{
+							...(signal === undefined ? {} : { signal }),
+							...(options.runtime.thinking !== undefined &&
+							options.runtime.thinking !== "off"
+								? { reasoning: options.runtime.thinking }
+								: {}),
+						},
+					);
+				},
+				async dispose() {},
+			};
 		},
 	};
+}
+
+/** Reads seeded participant context messages from a temporary session file. */
+function readSeedMessages(sessionFile: string): Context["messages"] {
+	return parseSessionEntries(readFileSync(sessionFile, "utf8")).flatMap(
+		(entry) => (entry.type === "message" ? [entry.message] : []),
+	) as Context["messages"];
 }
 
 /** Creates a fake model registry for participant model resolution. */

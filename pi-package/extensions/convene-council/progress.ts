@@ -105,11 +105,6 @@ export interface CouncilProgressReporter {
 		participantId: ParticipantId,
 		clarification: string,
 	): void;
-	recordProviderRetry(
-		participantId: ParticipantId,
-		attempt: number,
-		maxAttempts: number,
-	): void;
 	recordResponseDefectRetry(
 		participantId: ParticipantId,
 		attempt: number,
@@ -175,13 +170,6 @@ function createCouncilProgressReporterApi(
 			recordParticipantResponse(append, participantId, status, opinion),
 		recordClarification: (participantId, clarification) =>
 			recordParticipantClarification(append, participantId, clarification),
-		recordProviderRetry: (participantId, attempt, maxAttempts) =>
-			recordParticipantRetry(append, {
-				participantId,
-				retryKind: "provider",
-				attempt,
-				maxAttempts,
-			}),
 		recordResponseDefectRetry: (participantId, attempt, maxAttempts) =>
 			recordParticipantRetry(append, {
 				participantId,
@@ -314,7 +302,7 @@ function recordParticipantRetry(
 	append: ProgressAppender,
 	options: {
 		readonly participantId: ParticipantId;
-		readonly retryKind: "provider" | "response";
+		readonly retryKind: "response";
 		readonly attempt: number;
 		readonly maxAttempts: number;
 	},

@@ -20,9 +20,11 @@ Use it when a high-impact question benefits from two model participants comparin
 - Removes the pending `convene_council` tool call from participant transcripts.
 - Gives LLM1 and LLM2 equivalent base context.
 - Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to participant system prompts.
+- Starts isolated child `pi --mode rpc` sessions for participant prompts.
+- Shares only tools configured by `tools` with each participant.
+- Sends no tools to participants when `tools` is missing or empty.
 - Sends the council question through the first-turn task prompt.
 - Uses a first-turn participant system prompt without structured output rules.
-- Sends participant contexts with `tools: []`.
 - Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
 - Runs mutual missing-information answers and their clarification reviews in parallel.
@@ -30,7 +32,7 @@ Use it when a high-impact question benefits from two model participants comparin
 - Requires later participant discussion responses as `<status>{AGREE|DIFF|NEED_INFO}</status><opinion>{text}</opinion>`.
 - Retries malformed participant responses using `responseDefectRetries`.
 - Retries defective final answers using `responseDefectRetries`.
-- Retries provider request failures using `providerRequestRetries` and `providerRetryDelayMs`.
+- Does not retry participant transport failures in the parent process.
 - Counts one participant iteration only after both LLM1 and LLM2 return accepted discussion responses.
 - Stops when both participants report `AGREE` after reviewing an opponent opinion.
 - Stops when `participantIterationLimit` is reached.
@@ -73,8 +75,7 @@ File: `~/.pi/agent/agent-suite/convene-council/config.json`.
   "participantIterationLimit": 3,
   "finalAnswerParticipant": "llm2",
   "responseDefectRetries": 1,
-  "providerRequestRetries": 4,
-  "providerRetryDelayMs": 1000
+  "tools": ["read", "grep"]
 }
 ```
 
@@ -90,8 +91,7 @@ Options:
 - `participantIterationLimit`: default `3`. Must be a positive integer.
 - `finalAnswerParticipant`: default `llm2`. Allowed values: `llm1`, `llm2`.
 - `responseDefectRetries`: default `1`. Must be a non-negative integer.
-- `providerRequestRetries`: default `4`. Must be a non-negative integer.
-- `providerRetryDelayMs`: default `1000`. Must be a non-negative integer.
+- `tools`: optional array of non-empty tool-name patterns. Missing or empty means participants receive no tools. Exact tool names and constrained wildcard patterns are allowed. Full wildcard `*` is rejected.
 
 Allowed thinking values:
 
@@ -145,7 +145,7 @@ convene_council · B reviews A · iter 2/3 · 18.2s
 ← A opinion: PostgreSQL is the safest default because hotel data is relational...
 → B initial opinion
 ← B opinion: I agree with PostgreSQL, but search requirements may need...
-! B provider retry 1/4
+! B response retry 1/1
 ... (7 more lines, 12 total, ctrl+o to expand)
 ```
 
@@ -166,12 +166,11 @@ Progress event labels:
 - `← A clarification: short accepted clarification preview`
 - `→ B reviews clarification`
 - `! A response retry 1/1`
-- `! B provider retry 1/4`
 - `✓ agreement reached`
 - `→ B final answer`
 - `✓ final answer accepted`
 - `• iteration limit reached`
-- `! provider request failed`
+- `! participant request failed`
 
 ## Verification
 
@@ -188,12 +187,12 @@ Tests must verify:
 - iteration-limit output shape;
 - response-defect retry for malformed participant output;
 - final-answer retry for empty or tagged final answer;
-- provider retry behavior separate from response-defect retry;
+- participant transport failures separate from response-defect retry;
 - `convene_council` preservation by `context-projection`;
 - prompt contribution through `Agent Runtime Composition`;
 - live progress partial updates through `onUpdate`;
 - participant runtime mapping in the tool-call header;
 - collapsed progress row width with Unicode and mixed-direction text;
 - expanded live progress sections;
-- retry events for response defects and provider failures;
+- retry events for response defects;
 - final results without persisted progress metadata.

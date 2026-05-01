@@ -447,8 +447,7 @@ Options:
 - `participantIterationLimit`: default `3`. Maximum completed LLM1 and LLM2 discussion pairs.
 - `finalAnswerParticipant`: default `llm2`. Allowed values: `llm1`, `llm2`.
 - `responseDefectRetries`: default `1`. Retries malformed participant responses and defective final answers.
-- `providerRequestRetries`: default `4`. Retries provider request failures after the first failed attempt.
-- `providerRetryDelayMs`: default `1000`. Delay between provider retry attempts.
+- `tools`: optional array of non-empty tool-name patterns. Missing or empty means participants receive no tools. Exact tool names and constrained wildcard patterns are allowed. Full wildcard `*` is rejected.
 
 Tool input:
 
@@ -460,6 +459,8 @@ How it works:
 - Replays recorded `context-projection` placeholders or summaries when projection is active.
 - Removes the pending `convene_council` tool call from participant requests.
 - Sends equivalent base context, Pi-loaded context files, and the same initial question task to LLM1 and LLM2.
+- Runs participant prompts in isolated child `pi --mode rpc` sessions.
+- Shares only tools configured by `tools` with each participant.
 - Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
 - Runs mutual missing-information answers and their clarification reviews in parallel.

@@ -172,7 +172,7 @@ describe("convene-council rendering", () => {
 					},
 					{
 						kind: "retry",
-						title: "B provider retry 1/4",
+						title: "B response retry 1/1",
 						text: undefined,
 						timestampMs: 2,
 					},
@@ -192,12 +192,12 @@ describe("convene-council rendering", () => {
 
 		expect(rendered).toContain("<accent>A</accent> <warning>DIFF</warning>");
 		expect(rendered).toContain(
-			"<toolOutput>B</toolOutput> <warning>provider retry 1/4</warning>",
+			"<toolOutput>B</toolOutput> <warning>response retry 1/1</warning>",
 		);
 		expect(rendered).toContain("<dim>PostgreSQL fits core storage");
 		expect(rendered).not.toContain("<accent>A DIFF</accent>");
 		expect(rendered).not.toContain(
-			"<toolOutput>B provider retry 1/4</toolOutput>",
+			"<toolOutput>B response retry 1/1</toolOutput>",
 		);
 	});
 

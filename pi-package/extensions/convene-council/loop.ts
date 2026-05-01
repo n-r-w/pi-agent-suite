@@ -1,4 +1,5 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { Message } from "@mariozechner/pi-ai";
 import { readConveneCouncilConfig } from "./config";
 import { ISSUE_PREFIX } from "./constants";
 import { buildBaseCouncilMessages, createParticipantState } from "./context";
@@ -15,6 +16,7 @@ import {
 	buildMissingInformationResponseTask,
 	buildNoConsensusResult,
 	buildOpinionReviewTask,
+	buildParticipantSystemPrompt,
 } from "./prompts";
 import {
 	requestFinalAnswer,
@@ -23,19 +25,25 @@ import {
 	requestParticipantDiscussion,
 } from "./provider";
 import { resolveCouncilRuntime } from "./runtime";
+import { seedParticipantSessions } from "./session";
+import { resolveCouncilToolArgsForNames } from "./startup";
 import { formatToolOutput } from "./tool-output";
 import type {
 	AcceptedParticipantResponse,
+	ChildStartupPlan,
 	ConveneCouncilConfig,
-	ConveneCouncilDependencies,
 	CouncilIssue,
+	CouncilRuntime,
 	ExecuteConveneCouncilOptions,
+	ParticipantRunner,
+	ParticipantRunnerFactory,
 	ParticipantState,
 } from "./types";
 
 /** Executes the bounded two-participant council loop. */
 export async function executeConveneCouncil({
-	completeSimple,
+	createParticipantRunner,
+	resolveStartupPlan,
 	toolCallId,
 	params,
 	signal,
@@ -43,6 +51,7 @@ export async function executeConveneCouncil({
 	currentThinkingLevel,
 	loadedSkillRoots,
 	contextFiles,
+	availableToolNames,
 	onUpdate,
 }: ExecuteConveneCouncilOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readConveneCouncilConfig();
@@ -62,6 +71,19 @@ export async function executeConveneCouncil({
 		throw reportToolError(ctx, runtimeResult.issue);
 	}
 
+	const startupPlan = resolveStartupPlan();
+	if ("issue" in startupPlan) {
+		throw reportToolError(ctx, startupPlan.issue);
+	}
+
+	const toolArgs = resolveCouncilToolArgsForNames(
+		configResult.config,
+		availableToolNames,
+	);
+	if ("issue" in toolArgs) {
+		throw reportToolError(ctx, toolArgs.issue);
+	}
+
 	const progress = createCouncilProgressReporter({
 		runId: toolCallId,
 		question: params.question,
@@ -76,26 +98,92 @@ export async function executeConveneCouncil({
 		toolCallId,
 		loadedSkillRoots,
 	});
-	return runCouncilIterations({
-		llm1: createParticipantState(
-			"llm1",
-			runtimeResult.runtime.llm1,
-			baseMessages,
-		),
-		llm2: createParticipantState(
-			"llm2",
-			runtimeResult.runtime.llm2,
-			baseMessages,
-		),
-		question: params.question,
+	return runCouncilWithSeededParticipants({
+		baseMessages,
 		config: configResult.config,
-		completeSimple,
-		signal,
-		ctx,
 		contextFiles,
+		createParticipantRunner,
+		ctx,
 		progress,
-		remainingIterations: configResult.config.participantIterationLimit,
+		question: params.question,
+		runtime: runtimeResult.runtime,
+		signal,
+		startupPlan,
+		toolArgs: toolArgs.args,
 	});
+}
+
+/** Creates temporary participant sessions, runs the council, and cleans every owned resource. */
+async function runCouncilWithSeededParticipants(options: {
+	readonly baseMessages: readonly Message[];
+	readonly config: ConveneCouncilConfig;
+	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
+	readonly createParticipantRunner: ParticipantRunnerFactory;
+	readonly ctx: ExecuteConveneCouncilOptions["ctx"];
+	readonly progress: CouncilProgressReporter;
+	readonly question: string;
+	readonly runtime: CouncilRuntime;
+	readonly signal: AbortSignal | undefined;
+	readonly startupPlan: ChildStartupPlan;
+	readonly toolArgs: readonly string[];
+}): Promise<AgentToolResult<unknown>> {
+	const seededSessions = await seedParticipantSessions({
+		cwd: options.ctx.cwd,
+		messages: options.baseMessages,
+	});
+	const runners: ParticipantRunner[] = [];
+	try {
+		const llm1Runner = await options.createParticipantRunner({
+			participantId: "llm1",
+			runtime: options.runtime.llm1,
+			sessionFile: seededSessions.sessions.llm1.sessionFile,
+			sessionDir: seededSessions.sessions.llm1.sessionDir,
+			systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
+			config: options.config,
+			startupPlan: options.startupPlan,
+			toolArgs: options.toolArgs,
+			ctx: options.ctx,
+			signal: options.signal,
+		});
+		runners.push(llm1Runner);
+		const llm2Runner = await options.createParticipantRunner({
+			participantId: "llm2",
+			runtime: options.runtime.llm2,
+			sessionFile: seededSessions.sessions.llm2.sessionFile,
+			sessionDir: seededSessions.sessions.llm2.sessionDir,
+			systemPrompt: buildParticipantSystemPrompt(options.contextFiles),
+			config: options.config,
+			startupPlan: options.startupPlan,
+			toolArgs: options.toolArgs,
+			ctx: options.ctx,
+			signal: options.signal,
+		});
+		runners.push(llm2Runner);
+		return await runCouncilIterations({
+			llm1: createParticipantState(
+				"llm1",
+				options.runtime.llm1,
+				llm1Runner,
+				options.baseMessages,
+			),
+			llm2: createParticipantState(
+				"llm2",
+				options.runtime.llm2,
+				llm2Runner,
+				options.baseMessages,
+			),
+			question: options.question,
+			config: options.config,
+			signal: options.signal,
+			ctx: options.ctx,
+			contextFiles: options.contextFiles,
+			progress: options.progress,
+			remainingIterations: options.config.participantIterationLimit,
+		});
+	} finally {
+		await Promise.allSettled(runners.map((runner) => runner.dispose()));
+		await seededSessions.cleanup();
+	}
 }
 
 /** Runs council iterations sequentially because every pair depends on prior opinions. */
@@ -205,7 +293,6 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		participant: options.llm1,
 		task: buildInitialOpinionTask(options.question),
 		config: options.config,
-		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
 		progress: options.progress,
@@ -221,7 +308,6 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		participant: options.llm2,
 		task: buildInitialOpinionTask(options.question),
 		config: options.config,
-		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
 		progress: options.progress,
@@ -257,7 +343,6 @@ async function runOpinionExchangePair(
 		participant: options.llm1,
 		task: buildOpinionReviewTask(requireLatestOpinion(options.llm2)),
 		config: options.config,
-		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
 		progress: options.progress,
@@ -280,7 +365,6 @@ async function runOpinionExchangePair(
 		participant: options.llm2,
 		task: buildOpinionReviewTask(requireLatestOpinion(llm1)),
 		config: options.config,
-		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
 		progress: options.progress,
@@ -404,7 +488,6 @@ async function answerMissingInformation(
 		participant,
 		task: buildMissingInformationResponseTask(missingInformationRequest),
 		config: options.config,
-		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
 		progress: options.progress,
@@ -438,7 +521,6 @@ async function reviewClarification(
 		participant,
 		task: buildClarificationReviewTask(clarification),
 		config: options.config,
-		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
 		progress: options.progress,
@@ -516,7 +598,6 @@ async function finishAgreedCouncil(
 		participant: finalParticipant,
 		task: buildFinalAnswerTask(),
 		config: options.config,
-		completeSimple: options.completeSimple,
 		signal: options.signal,
 		contextFiles: options.contextFiles,
 		progress: options.progress,
@@ -587,14 +668,11 @@ function errorResult(message: string): AgentToolResult<unknown> {
 	return { content: [{ type: "text", text: message }], details: undefined };
 }
 
-type CompleteSimple = NonNullable<ConveneCouncilDependencies["completeSimple"]>;
-
 interface BaseCouncilOptions {
 	readonly llm1: ParticipantState;
 	readonly llm2: ParticipantState;
 	readonly question: string;
 	readonly config: ConveneCouncilConfig;
-	readonly completeSimple: CompleteSimple;
 	readonly signal: AbortSignal | undefined;
 	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
 	readonly progress: CouncilProgressReporter;

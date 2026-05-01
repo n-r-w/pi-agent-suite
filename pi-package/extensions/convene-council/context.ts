@@ -4,6 +4,7 @@ import { replayContextProjection } from "../../shared/context-projection";
 import type {
 	CouncilContext,
 	ParticipantId,
+	ParticipantRunner,
 	ParticipantRuntime,
 	ParticipantState,
 } from "./types";
@@ -29,11 +30,13 @@ export async function buildBaseCouncilMessages(options: {
 export function createParticipantState(
 	id: ParticipantId,
 	runtime: ParticipantRuntime,
+	runner: ParticipantRunner,
 	baseMessages: readonly Message[],
 ): ParticipantState {
 	return {
 		id,
 		runtime,
+		runner,
 		history: [...baseMessages],
 		reviewedOpponent: false,
 	};

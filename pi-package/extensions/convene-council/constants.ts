@@ -6,8 +6,6 @@ export const ENABLED_CONFIG_KEY = "enabled";
 export const DEFAULT_PARTICIPANT_ITERATION_LIMIT = 3;
 export const DEFAULT_FINAL_ANSWER_PARTICIPANT = "llm2";
 export const DEFAULT_RESPONSE_DEFECT_RETRIES = 1;
-export const DEFAULT_PROVIDER_REQUEST_RETRIES = 4;
-export const DEFAULT_PROVIDER_RETRY_DELAY_MS = 1_000;
 
 export const COUNCIL_CONTEXT_TOO_LARGE_ERROR = "context is too large";
 

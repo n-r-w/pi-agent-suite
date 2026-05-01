@@ -1,4 +1,3 @@
-import { completeSimple as defaultCompleteSimple } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
@@ -11,6 +10,8 @@ import {
 	renderConveneCouncilCall,
 	renderConveneCouncilResult,
 } from "./rendering";
+import { createRpcParticipantRunner } from "./runner";
+import { resolveChildStartupPlan } from "./startup";
 import type {
 	ConveneCouncilDependencies,
 	ConveneCouncilParams,
@@ -30,16 +31,17 @@ const ConveneCouncilParameters = Type.Object(
 /** Extension entry point for council consultation behavior. */
 export default function conveneCouncil(
 	pi: ExtensionAPI,
-	dependencies: ConveneCouncilDependencies = {
-		completeSimple: defaultCompleteSimple,
-	},
+	dependencies: ConveneCouncilDependencies = {},
 ): void {
 	const registrationState = readConveneCouncilRegistrationState();
 	if (registrationState.kind === "disabled") {
 		return;
 	}
 
-	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
+	const createParticipantRunner =
+		dependencies.createParticipantRunner ?? createRpcParticipantRunner;
+	const resolveStartupPlan =
+		dependencies.resolveStartupPlan ?? resolveChildStartupPlan;
 	let loadedSkillRoots: readonly string[] = [];
 	let contextFiles: readonly ProjectContextFile[] = [];
 
@@ -59,13 +61,14 @@ export default function conveneCouncil(
 		name: TOOL_NAME,
 		label: "Convene council",
 		description:
-			"Convene a council of experts to solve a very complex problem. The Council knows everything you know. It can't call tools, only answer questions",
+			"Convene a council of experts to solve a very complex problem. The Council knows everything you know",
 		parameters: ConveneCouncilParameters,
 		renderCall: renderConveneCouncilCall,
 		renderResult: renderConveneCouncilResult,
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
 			return executeConveneCouncil({
-				completeSimple,
+				createParticipantRunner,
+				resolveStartupPlan,
 				toolCallId,
 				params: params as ConveneCouncilParams,
 				signal,
@@ -73,6 +76,7 @@ export default function conveneCouncil(
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
 				contextFiles,
+				availableToolNames: pi.getAllTools().map((tool) => tool.name),
 				...(onUpdate !== undefined ? { onUpdate } : {}),
 			});
 		},
