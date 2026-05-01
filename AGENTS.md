@@ -52,3 +52,8 @@ Custom `pi.dev` extensions: `pi-package/extensions`
   3) Use `--offline` only for checks that do not require an LLM provider response. Prompt passing is PROHIBITED in offline mode.
   4) Use `pi --no-session -p -e .` to validate whole-package loading.
 5. For live checks of tool, agent, prompt, or active-tool availability, run the real `pi` CLI with the target package, a temporary cwd/state when needed, and a temporary debug extension that dumps `before_agent_start.systemPrompt` and `pi.getActiveTools()`. Inspect the dumped runtime data, not only unit-test fakes, and remove temporary state after the check.
+
+## Documentation
+- /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/README.md
+- /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/docs/
+- /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/examples/README.md
