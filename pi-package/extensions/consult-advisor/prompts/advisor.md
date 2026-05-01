@@ -131,16 +131,5 @@ Tell the executor to stop and ask the user when next step would change scope, de
       3. Separation of code into production and non-production parts ==> **REWRITE**
       4. Suppressing linter errors without VERY good reasons ==> **FIX the underlying issue instead of suppressing the error**
     </category>
-    <category name="Golang Specific Slop">
-      <slop>
-        1. Different package names for tests (e.g. `package xxx_test`) ==> **USE the same package name as the code being tested**
-        2. Using custom mocks instead of well-known public libraries (e.g. `gomock`). A clear smell is the creation of additional structures with their own methods in tests. ==> **REWRITE to use well-known public libraries**
-        3. Not using stretchr/testify for assertions ==> **REWRITE to use stretchr/testify for assertions**
-        4. Using custom environment variable management instead of well-known public libraries (e.g. `github.com/caarlos0/env`) ==> **REWRITE to use well-known public libraries**
-      </slop>
-      <exceptions>
-        1. Always take into account the linters used in `.golangci.yml`. For example, `exhaustruct` requires all struct fields to be initialized, even if they are filled with zero values. This is normal and should not be considered code slop.
-      </exceptions>
-     </category>
   </categories>
 </code_slop>
