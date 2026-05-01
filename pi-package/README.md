@@ -392,6 +392,8 @@ Supported variables:
 - `{{contextFiles}}`
 - `{{skills}}`
 
+`{{contextFiles}}` renders loaded context files as `<project_specific_instruction path="...">` blocks inside `<project_specific_instructions>`.
+
 How it works:
 
 - Loads the template during startup and reload.

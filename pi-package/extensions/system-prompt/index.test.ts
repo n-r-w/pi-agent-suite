@@ -289,8 +289,15 @@ describe("system-prompt", () => {
 				"- Use bash only when command output is needed.",
 			);
 			expect(prompt).toContain("Append text");
-			expect(prompt).toContain("## AGENTS.md\n\nProject rules");
-			expect(prompt).toContain("## CLAUDE.md\n\nExtra rules");
+			expect(prompt).toContain("<project_specific_instructions>");
+			expect(prompt).toContain(
+				'<project_specific_instruction path="AGENTS.md">\nProject rules\n  </project_specific_instruction>',
+			);
+			expect(prompt).toContain(
+				'<project_specific_instruction path="CLAUDE.md">\nExtra rules\n  </project_specific_instruction>',
+			);
+			expect(prompt).toContain("</project_specific_instructions>");
+			expect(prompt).not.toContain("## AGENTS.md");
 			expect(prompt).toContain("typescript");
 			expect(prompt).not.toContain("{{typo}}");
 			expect(prompt).toContain("Unknown: ");

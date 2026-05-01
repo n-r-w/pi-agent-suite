@@ -250,11 +250,21 @@ function formatToolGuidelines(options: BuildSystemPromptOptions): string {
 		.join("\n");
 }
 
-/** Formats loaded project context files without adding section prose outside the template. */
+/** Formats loaded project context files as XML-like structure for LLM readability. */
 function formatContextFiles(options: BuildSystemPromptOptions): string {
-	return (options.contextFiles ?? [])
-		.map(({ path, content }) => `## ${path}\n\n${content}`)
-		.join("\n\n");
+	const contextFiles = options.contextFiles ?? [];
+	if (contextFiles.length === 0) {
+		return "";
+	}
+
+	return [
+		"<project_specific_instructions>",
+		...contextFiles.map(
+			({ path, content }) =>
+				`  <project_specific_instruction path="${path}">\n${content}\n  </project_specific_instruction>`,
+		),
+		"</project_specific_instructions>",
+	].join("\n");
 }
 
 /** Formats loaded skills only when the read tool is active, matching pi's skill visibility rule. */

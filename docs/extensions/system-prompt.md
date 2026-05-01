@@ -46,10 +46,22 @@ Supported variables:
 - `{{tools}}`: active tools that have prompt snippets, formatted as `- name: snippet`.
 - `{{toolGuidelines}}`: dynamic `promptGuidelines` supplied by active tools or extensions.
 - `{{appendSystemPrompt}}`: text from pi append-system-prompt inputs.
-- `{{contextFiles}}`: loaded context files formatted as `## path` plus file content.
+- `{{contextFiles}}`: loaded context files formatted as `<project_specific_instruction path="...">` blocks inside `<project_specific_instructions>`.
 - `{{skills}}`: loaded skills formatted by pi when the `read` tool is active.
 
 Unsupported variables are removed from rendered output.
+
+`{{contextFiles}}` example output:
+
+```xml
+<project_specific_instructions>
+  <project_specific_instruction path="/repo/AGENTS.md">
+# AGENTS.md
+
+Project rules.
+  </project_specific_instruction>
+</project_specific_instructions>
+```
 
 ## Example template
 
