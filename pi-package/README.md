@@ -36,7 +36,7 @@ Use `context-projection` for long tool-heavy sessions. With suitable thresholds 
 
 `consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
 
-`convene-council` uses the same active branch context pattern, then gives LLM1 and LLM2 equivalent base context, Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md`, and the same initial question task. The participants provide free-form first opinions, then exchange structured review responses until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
+`convene-council` uses the same active branch context pattern, then gives LLM1 and LLM2 equivalent base context, Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md`, and the same initial question task. Independent first opinions and mutual missing-information calls run in parallel. Dependent review steps stay sequential when the next task uses the previous participant output. The participants exchange structured review responses until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
 
 ## How to connect to pi
 
@@ -463,7 +463,10 @@ How it works:
 - Replays recorded `context-projection` placeholders or summaries when projection is active.
 - Removes the pending `convene_council` tool call from participant requests.
 - Sends equivalent base context, Pi-loaded context files, and the same initial question task to LLM1 and LLM2.
+- Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
+- Runs mutual missing-information answers and their clarification reviews in parallel.
+- Keeps dependent review steps sequential when the next task uses the previous participant output.
 - Requires later participant discussion responses in `<status>...</status><opinion>...</opinion>` format.
 - Stops when both participants report `AGREE` after reviewing the opponent or when the iteration limit is reached.
 - Requests the final answer from the configured final answer participant after agreement.

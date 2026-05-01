@@ -19,24 +19,18 @@ Guidance for coding agents working in this repository.
 
 ## Project scope
 
-Extensions `pi-package/extensions`:
-- `main-agent-selection`
-- `run-subagent`
-- `consult-advisor`
+Extensions under `pi-package/extensions`:
+- `enable-tools`
+- `footer`
 - `codex-verbosity`
 - `codex-quota`
 - `custom-compaction`
-- `footer`
-
-1. Keep extension ownership clear:
-  1) `main-agent-selection` owns main-agent selection.
-  2) `run-subagent` owns subagent execution.
-  3) `consult-advisor` owns advisor behavior.
-2. Keep shared modules narrow:
-  1) Agent registry.
-  2) Tool policy.
-  3) Runtime prompt and active-tool composition.
-3. Do not add compatibility wrappers, fallback reads, duplicate config reads, or temporary adapters unless the user explicitly approves that behavior.
+- `context-projection`
+- `context-overflow`
+- `main-agent-selection`
+- `run-subagent`
+- `consult-advisor`
+- `convene-council`
 
 ## Architecture rules
 
@@ -45,11 +39,6 @@ Extensions `pi-package/extensions`:
 3. Extension load order must not change final agent prompt behavior or final active-tool behavior.
 4. State ownership must stay explicit. Do not write unrelated runtime data into selected-agent state.
 5. Configuration ownership must stay isolated. A configuration error in one extension must not break another extension.
-
-## Configuration and state rules
-
-1. Extension configuration lives under `~/.pi/agent/config`.
-2. Selected-agent state stays under `~/.pi/agent/agent-selection/state/`.
 
 ## Package rules
 

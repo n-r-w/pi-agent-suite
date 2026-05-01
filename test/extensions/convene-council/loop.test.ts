@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Model,
+	SimpleStreamOptions,
+} from "@mariozechner/pi-ai";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import {
 	withIsolatedAgentDir,
@@ -7,6 +14,7 @@ import {
 	writeProjectionConfig,
 } from "./support/env";
 import {
+	type CompletionCall,
 	createCompletionQueue,
 	createContext,
 	createExtensionApiFake,
@@ -42,6 +50,156 @@ function expectNoConsensusResult(
 	expect(text.match(ANSWER2_BLOCK_PATTERN)?.[1]).toBe(answer2);
 }
 
+interface DeferredCompletionCall extends CompletionCall {
+	readonly key: string;
+}
+
+function createDeferredCompletion(
+	responses: ReadonlyMap<string, AssistantMessage["content"]>,
+): {
+	readonly calls: readonly DeferredCompletionCall[];
+	readonly completeSimple: (
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	) => Promise<AssistantMessage>;
+	readonly waitForCallCount: (count: number) => Promise<boolean>;
+	readonly waitForKeys: (keys: readonly string[]) => Promise<boolean>;
+	readonly resolveCallsUntil: (count: number) => Promise<void>;
+} {
+	const calls: DeferredCompletionCall[] = [];
+	const resolvers: Array<() => void> = [];
+	const resolvedIndexes = new Set<number>();
+	const waiters = new Set<() => void>();
+
+	const notifyWaiters = (): void => {
+		for (const waiter of waiters) {
+			waiter();
+		}
+	};
+
+	const waitForCondition = (predicate: () => boolean): Promise<boolean> => {
+		if (predicate()) {
+			return Promise.resolve(true);
+		}
+
+		return new Promise<boolean>((resolve) => {
+			const timeout = setTimeout(() => {
+				waiters.delete(check);
+				resolve(false);
+			}, 50);
+			const check = (): void => {
+				if (!predicate()) {
+					return;
+				}
+				clearTimeout(timeout);
+				waiters.delete(check);
+				resolve(true);
+			};
+			waiters.add(check);
+		});
+	};
+
+	const resolveCall = (index: number): void => {
+		if (resolvedIndexes.has(index)) {
+			return;
+		}
+		const resolver = resolvers[index];
+		if (resolver === undefined) {
+			throw new Error(`completion call ${index} has not started`);
+		}
+		resolvedIndexes.add(index);
+		resolver();
+	};
+
+	return {
+		calls,
+		async completeSimple(
+			model: Model<Api>,
+			context: Context,
+			options?: SimpleStreamOptions,
+		): Promise<AssistantMessage> {
+			const key = classifyDeferredCompletionCall(model, context);
+			const content = responses.get(key);
+			if (content === undefined) {
+				throw new Error(`missing deferred completion response for ${key}`);
+			}
+
+			calls.push({ model, context, options, key });
+			notifyWaiters();
+
+			return new Promise<AssistantMessage>((resolve) => {
+				resolvers.push(() => resolve(createAssistantMessage(model, content)));
+			});
+		},
+		waitForCallCount(count: number): Promise<boolean> {
+			return waitForCondition(() => calls.length >= count);
+		},
+		waitForKeys(keys: readonly string[]): Promise<boolean> {
+			return waitForCondition(() =>
+				keys.every((key) => calls.some((call) => call.key === key)),
+			);
+		},
+		async resolveCallsUntil(count: number): Promise<void> {
+			for (let index = 0; index < count; index += 1) {
+				expect(await waitForCondition(() => calls.length >= index + 1)).toBe(
+					true,
+				);
+				resolveCall(index);
+			}
+		},
+	};
+}
+
+function classifyDeferredCompletionCall(
+	model: Model<Api>,
+	context: Context,
+): string {
+	const task = JSON.stringify(context.messages.at(-1)?.content ?? "");
+	const stage = (() => {
+		if (task.includes("Analyze the question")) {
+			return "initial";
+		}
+		if (task.includes("Review the opponent opinion")) {
+			return "opinion-review";
+		}
+		if (task.includes("Provide the missing information")) {
+			return "missing-response";
+		}
+		if (task.includes("Review the opponent clarification")) {
+			return "clarification-review";
+		}
+		if (task.includes("Produce the final answer")) {
+			return "final-answer";
+		}
+		return "unknown";
+	})();
+	return `${stage}:${model.id}`;
+}
+
+function createAssistantMessage(
+	model: Model<Api>,
+	content: AssistantMessage["content"],
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 1,
+	};
+}
+
 async function emitContextFiles(
 	pi: ReturnType<typeof createExtensionApiFake>,
 ): Promise<void> {
@@ -66,6 +224,125 @@ async function emitContextFiles(
 }
 
 describe("convene-council loop", () => {
+	test("starts initial participant opinions before waiting for either result", async () => {
+		// Purpose: independent first-turn participant calls should run in parallel to avoid unnecessary latency.
+		// Input and expected output: LLM1 and LLM2 initial calls both start before either deferred response is released.
+		// Edge case: later dependent review calls still complete in the configured participant order.
+		// Dependencies: deferred completion fake and two configured participant models.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				llm1: { model: { id: "provider-a/model-a" } },
+				llm2: { model: { id: "provider-b/model-b" } },
+			});
+			const llm1Model = createModel("provider-a", "model-a");
+			const llm2Model = createModel("provider-b", "model-b");
+			const completion = createDeferredCompletion(
+				new Map([
+					["initial:model-a", initialOpinion("llm1 initial")],
+					["initial:model-b", initialOpinion("llm2 initial")],
+					[
+						"opinion-review:model-a",
+						participantResponse("AGREE", "llm1 agrees"),
+					],
+					[
+						"opinion-review:model-b",
+						participantResponse("AGREE", "llm2 agrees"),
+					],
+					["final-answer:model-b", finalAnswer("final council answer")],
+				]),
+			);
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			const ctx = createContext([llm1Model, llm2Model]);
+
+			const resultPromise = executeCouncil(pi, ctx, "Parallel initial calls");
+			const initialCallsStartedTogether = await completion.waitForKeys([
+				"initial:model-a",
+				"initial:model-b",
+			]);
+			await completion.resolveCallsUntil(5);
+			const result = await resultPromise;
+
+			expect(result.content).toEqual([
+				{ type: "text", text: "final council answer" },
+			]);
+			expect(initialCallsStartedTogether).toBe(true);
+		});
+	});
+
+	test("starts independent mutual missing-information calls before waiting for paired results", async () => {
+		// Purpose: mutual NEED_INFO handling has two independent clarification answers and two independent clarification reviews.
+		// Input and expected output: both calls in each independent pair start before either paired response is released.
+		// Edge case: the normal opinion-review pair remains sequential before mutual NEED_INFO is reached.
+		// Dependencies: deferred completion fake and participantIterationLimit large enough for mutual clarification.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				llm1: { model: { id: "provider-a/model-a" } },
+				llm2: { model: { id: "provider-b/model-b" } },
+				participantIterationLimit: 4,
+			});
+			const llm1Model = createModel("provider-a", "model-a");
+			const llm2Model = createModel("provider-b", "model-b");
+			const completion = createDeferredCompletion(
+				new Map([
+					["initial:model-a", initialOpinion("llm1 initial")],
+					["initial:model-b", initialOpinion("llm2 initial")],
+					[
+						"opinion-review:model-a",
+						participantResponse("NEED_INFO", "need details from llm2"),
+					],
+					[
+						"opinion-review:model-b",
+						participantResponse("NEED_INFO", "need details from llm1"),
+					],
+					[
+						"missing-response:model-b",
+						initialOpinion("llm2 clarifies for llm1"),
+					],
+					[
+						"missing-response:model-a",
+						initialOpinion("llm1 clarifies for llm2"),
+					],
+					[
+						"clarification-review:model-a",
+						participantResponse("AGREE", "llm1 accepts clarification"),
+					],
+					[
+						"clarification-review:model-b",
+						participantResponse("AGREE", "llm2 accepts clarification"),
+					],
+					[
+						"final-answer:model-b",
+						finalAnswer("final after both clarifications"),
+					],
+				]),
+			);
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			const ctx = createContext([llm1Model, llm2Model]);
+
+			const resultPromise = executeCouncil(pi, ctx, "Mutual parallel calls");
+			await completion.resolveCallsUntil(4);
+			const missingResponsesStartedTogether = await completion.waitForKeys([
+				"missing-response:model-b",
+				"missing-response:model-a",
+			]);
+			await completion.resolveCallsUntil(6);
+			const clarificationReviewsStartedTogether = await completion.waitForKeys([
+				"clarification-review:model-a",
+				"clarification-review:model-b",
+			]);
+			await completion.resolveCallsUntil(9);
+			const result = await resultPromise;
+
+			expect(result.content).toEqual([
+				{ type: "text", text: "final after both clarifications" },
+			]);
+			expect(missingResponsesStartedTogether).toBe(true);
+			expect(clarificationReviewsStartedTogether).toBe(true);
+		});
+	});
+
 	test("uses equivalent initial context and returns final answer from llm2 by default", async () => {
 		// Purpose: both participants must start from the same caller context and receive the same initial question task.
 		// Input and expected output: two initial participant answers, two AGREE reviews, then a plain final answer from LLM2.

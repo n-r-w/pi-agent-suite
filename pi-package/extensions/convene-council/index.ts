@@ -21,7 +21,7 @@ import type {
 const ConveneCouncilParameters = Type.Object(
 	{
 		question: Type.String({
-			description: "Question to discuss with the council",
+			description: "Question to discuss with the council. ENGLISH ONLY",
 		}),
 	},
 	{ additionalProperties: false },
@@ -58,7 +58,8 @@ export default function conveneCouncil(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Convene council",
-		description: "Convene a council of experts to solve a very complex problem",
+		description:
+			"Convene a council of experts to solve a very complex problem. The Council knows everything you know. It can't call tools, only answer questions",
 		parameters: ConveneCouncilParameters,
 		renderCall: renderConveneCouncilCall,
 		renderResult: renderConveneCouncilResult,

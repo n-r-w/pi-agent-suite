@@ -201,7 +201,7 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		"A initial opinion",
 	);
 	options.progress.setPhase("A initial opinion", options.iteration);
-	const llm1Result = await requestInitialOpinion({
+	const llm1Promise = requestInitialOpinion({
 		participant: options.llm1,
 		task: buildInitialOpinionTask(options.question),
 		config: options.config,
@@ -210,11 +210,6 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		contextFiles: options.contextFiles,
 		progress: options.progress,
 	});
-	if ("kind" in llm1Result) {
-		return llm1Result;
-	}
-	options.progress.recordOpinion(options.llm1.id, llm1Result.response.opinion);
-	const llm1 = applyParticipantResponse(options.llm1, llm1Result, false);
 
 	options.progress.recordRequest(
 		options.llm2.id,
@@ -222,7 +217,7 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		"B initial opinion",
 	);
 	options.progress.setPhase("B initial opinion", options.iteration);
-	const llm2Result = await requestInitialOpinion({
+	const llm2Promise = requestInitialOpinion({
 		participant: options.llm2,
 		task: buildInitialOpinionTask(options.question),
 		config: options.config,
@@ -231,13 +226,22 @@ async function runInitialPair(options: PairOptions): Promise<PairResult> {
 		contextFiles: options.contextFiles,
 		progress: options.progress,
 	});
+
+	const [llm1Result, llm2Result] = await Promise.all([
+		llm1Promise,
+		llm2Promise,
+	]);
+	if ("kind" in llm1Result) {
+		return llm1Result;
+	}
 	if ("kind" in llm2Result) {
 		return llm2Result;
 	}
+	options.progress.recordOpinion(options.llm1.id, llm1Result.response.opinion);
 	options.progress.recordOpinion(options.llm2.id, llm2Result.response.opinion);
 
 	return {
-		llm1,
+		llm1: applyParticipantResponse(options.llm1, llm1Result, false),
 		llm2: applyParticipantResponse(options.llm2, llm2Result, false),
 		iterationsConsumed: 1,
 	};
@@ -338,38 +342,44 @@ async function runMissingInfoPair(
 async function runMutualMissingInfoPair(
 	options: PairOptions,
 ): Promise<PairResult> {
-	const llm2Response = await answerMissingInformation(
+	const llm2ResponsePromise = answerMissingInformation(
 		options,
 		options.llm2,
 		requireLatestOpinion(options.llm1),
 	);
-	if ("kind" in llm2Response) {
-		return llm2Response;
-	}
-
-	const llm1Response = await answerMissingInformation(
+	const llm1ResponsePromise = answerMissingInformation(
 		options,
 		options.llm1,
 		requireLatestOpinion(options.llm2),
 	);
+	const [llm2Response, llm1Response] = await Promise.all([
+		llm2ResponsePromise,
+		llm1ResponsePromise,
+	]);
+	if ("kind" in llm2Response) {
+		return llm2Response;
+	}
 	if ("kind" in llm1Response) {
 		return llm1Response;
 	}
 
-	const llm1Review = await reviewClarification(
+	const llm1ReviewPromise = reviewClarification(
 		options,
 		llm1Response.participant,
 		requireLatestOpinion(llm2Response.participant),
 	);
-	if ("kind" in llm1Review) {
-		return llm1Review;
-	}
-
-	const llm2Review = await reviewClarification(
+	const llm2ReviewPromise = reviewClarification(
 		options,
 		llm2Response.participant,
 		requireLatestOpinion(llm1Response.participant),
 	);
+	const [llm1Review, llm2Review] = await Promise.all([
+		llm1ReviewPromise,
+		llm2ReviewPromise,
+	]);
+	if ("kind" in llm1Review) {
+		return llm1Review;
+	}
 	if ("kind" in llm2Review) {
 		return llm2Review;
 	}

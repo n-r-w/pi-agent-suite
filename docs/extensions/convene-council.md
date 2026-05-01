@@ -23,7 +23,10 @@ Use it when a high-impact question benefits from two model participants comparin
 - Sends the council question through the first-turn task prompt.
 - Uses a first-turn participant system prompt without structured output rules.
 - Sends participant contexts with `tools: []`.
+- Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
+- Runs mutual missing-information answers and their clarification reviews in parallel.
+- Keeps dependent review steps sequential when the next task uses the previous participant output.
 - Requires later participant discussion responses as `<status>{AGREE|DIFF|NEED_INFO}</status><opinion>{text}</opinion>`.
 - Retries malformed participant responses using `responseDefectRetries`.
 - Retries defective final answers using `responseDefectRetries`.

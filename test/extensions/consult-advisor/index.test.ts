@@ -810,9 +810,6 @@ describe("consult-advisor", () => {
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
 				"You are an advisor: a highly skilled",
 			);
-			expect(completion.calls[0]?.context.systemPrompt).toContain(
-				"Return the advice as visible text.",
-			);
 		});
 	});
 
@@ -1017,9 +1014,7 @@ describe("consult-advisor", () => {
 				apiKey: "advisor-api-key",
 				headers: { "x-advisor": "enabled" },
 			});
-			expect(completion.calls[0]?.context.systemPrompt).toBe(
-				"Advisor prompt\n\nReturn the advice as visible text. If you cannot answer a request, explain the limit in visible text.",
-			);
+			expect(completion.calls[0]?.context.systemPrompt).toBe("Advisor prompt");
 			expect(completion.calls[0]?.context.tools).toEqual([]);
 			const advisorMessages = JSON.stringify(
 				completion.calls[0]?.context.messages,

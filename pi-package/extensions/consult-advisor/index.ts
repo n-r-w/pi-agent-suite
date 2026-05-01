@@ -42,8 +42,6 @@ const ISSUE_PREFIX = "[consult-advisor]";
 const CONSULT_ADVISOR_EXTENSION_DIR = "consult-advisor";
 const CONSULT_ADVISOR_LEGACY_CONFIG_FILE = "consult-advisor.json";
 const ENABLED_CONFIG_KEY = "enabled";
-const ADVISOR_VISIBLE_RESPONSE_INSTRUCTION =
-	"Return the advice as visible text. If you cannot answer a request, explain the limit in visible text.";
 const ADVISOR_CONTEXT_TOO_LARGE_ERROR = "context is too large";
 
 /** Extension-local prompt used when config does not provide a custom advisor prompt file. */
@@ -63,7 +61,9 @@ const THINKING_VALUES = [
 ] as const;
 
 const ConsultAdvisorParameters = Type.Object({
-	question: Type.String({ description: "Question to ask the advisor" }),
+	question: Type.String({
+		description: "Question to ask the advisor. ENGLISH ONLY",
+	}),
 });
 
 type Thinking = (typeof THINKING_VALUES)[number];
@@ -148,7 +148,7 @@ export default function consultAdvisor(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Consult advisor",
-		description: "Ask an independent advisor model a focused question",
+		description: "Ask an independent advisor a focused question. The advisor knows everything you know. It can't call tools, only answer questions",
 		parameters: ConsultAdvisorParameters,
 		renderCall: renderConsultAdvisorCall,
 		renderResult: renderConsultAdvisorResult,
@@ -631,10 +631,7 @@ function formatAdvisorSystemPrompt(
 	advisorPrompt: string,
 	contextFiles: readonly ProjectContextFile[],
 ): string {
-	return appendProjectContext(
-		`${advisorPrompt}\n\n${ADVISOR_VISIBLE_RESPONSE_INSTRUCTION}`.trim(),
-		contextFiles,
-	);
+	return appendProjectContext(advisorPrompt, contextFiles);
 }
 
 /** Extracts visible text content from the advisor answer. */

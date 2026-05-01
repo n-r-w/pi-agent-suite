@@ -487,8 +487,8 @@ describe("convene-council retries", () => {
 
 	test("stops provider retries after the configured retry count", async () => {
 		// Purpose: sustained provider failures must stop after providerRequestRetries without using response-defect retries.
-		// Input and expected output: one retry after the first failure yields two provider calls and a safe error.
-		// Edge case: retry delay zero avoids timer dependency.
+		// Input and expected output: one retry after the first failure yields two provider calls per independent initial participant.
+		// Edge case: retry delay zero avoids timer dependency while both initial participants are already in flight.
 		// Dependencies: suite config and fake thrown provider errors.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
@@ -497,18 +497,20 @@ describe("convene-council retries", () => {
 				responseDefectRetries: 3,
 			});
 			const model = createModel("openai", "main-model");
-			const completion = createCompletionQueue([
-				new Error("first failure"),
-				new Error("second failure"),
-			]);
+			const calls: unknown[] = [];
 			const pi = createExtensionApiFake();
-			conveneCouncil(pi, { completeSimple: completion.completeSimple });
+			conveneCouncil(pi, {
+				async completeSimple() {
+					calls.push(undefined);
+					throw new Error("provider failure");
+				},
+			});
 			const ctx = createContext([model]);
 
 			await expect(executeCouncil(pi, ctx, "Provider failure")).rejects.toThrow(
-				"provider request failed: second failure",
+				"provider request failed: provider failure",
 			);
-			expect(completion.calls).toHaveLength(2);
+			expect(calls).toHaveLength(4);
 		});
 	});
 
@@ -538,11 +540,11 @@ describe("convene-council retries", () => {
 		});
 	});
 
-	test("does not start another provider call when aborted during retry delay", async () => {
-		// Purpose: cancellation during provider backoff must not start another provider request.
-		// Input and expected output: aborting the signal during retry delay returns an error after one provider call.
+	test("does not start retry calls when aborted during retry delay", async () => {
+		// Purpose: cancellation during provider backoff must not start retry requests.
+		// Input and expected output: aborting the signal during retry delay returns an error after both independent initial calls fail.
 		// Edge case: delay is non-zero so the abort happens inside waitForRetryDelay.
-		// Dependencies: AbortController and fake thrown provider error.
+		// Dependencies: AbortController and fake thrown provider errors.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
 				providerRequestRetries: 2,
@@ -551,7 +553,7 @@ describe("convene-council retries", () => {
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				new Error("first failure"),
-				participantResponse("NEED_INFO", "should not be used"),
+				new Error("second failure"),
 			]);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, { completeSimple: completion.completeSimple });
@@ -562,7 +564,7 @@ describe("convene-council retries", () => {
 			await expect(
 				executeCouncil(pi, ctx, "Abort retry", abortController.signal),
 			).rejects.toThrow("provider request failed");
-			expect(completion.calls).toHaveLength(1);
+			expect(completion.calls).toHaveLength(2);
 		});
 	});
 
