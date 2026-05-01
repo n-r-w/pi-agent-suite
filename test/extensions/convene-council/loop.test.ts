@@ -732,6 +732,19 @@ describe("convene-council loop", () => {
 			expect(eventsJson).toContain("llm2.md");
 			expect(eventsJson).toContain("B read result");
 			expect(eventsJson).not.toContain(longToolSuffix);
+			const runningParticipantsJson = JSON.stringify(
+				updates.flatMap((update) => {
+					const details = update.details as
+						| { status?: unknown; participants?: unknown }
+						| undefined;
+					return details?.status === "running" &&
+						Array.isArray(details.participants)
+						? details.participants
+						: [];
+				}),
+			);
+			expect(runningParticipantsJson).toContain("read result");
+			expect(runningParticipantsJson).not.toContain('"status":"succeeded"');
 			expect(finalParticipantsJson).toContain('"tokens":12345');
 			expect(finalParticipantsJson).toContain('"tokens":67890');
 			expect(finalParticipantsJson).toContain('"contextWindow":100000');

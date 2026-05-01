@@ -258,7 +258,7 @@ describe("convene-council rendering", () => {
 						thinking: "xhigh",
 						display: "openai-codex/gpt-5.5/xhigh",
 						contextWindow: 272_000,
-						status: "succeeded",
+						status: "running",
 						elapsedMs: 900,
 						activity: "AGREE PostgreSQL fits core storage.",
 						contextUsage: {
@@ -284,7 +284,7 @@ describe("convene-council rendering", () => {
 
 		expect(rendered).toContain("<accent>⏳</accent> Socrates");
 		expect(rendered).toContain("<warning>140k/272k</warning> · read");
-		expect(rendered).toContain("<success>✓</success> Confucius");
+		expect(rendered).toContain("<accent>⏳</accent> Confucius");
 		expect(rendered).toContain("<error>220k/272k</error> · AGREE");
 		expect(rendered).not.toContain("<accent>Socrates");
 		expect(rendered).not.toContain("<success>Confucius");

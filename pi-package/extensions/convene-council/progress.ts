@@ -327,7 +327,6 @@ function recordParticipantOpinion(
 ): void {
 	const preview = normalizeProgressText(opinion);
 	updateParticipantProgress(state, participantId, {
-		status: "succeeded",
 		activity: preview === undefined ? "opinion" : `opinion ${preview}`,
 	});
 	append(
@@ -349,7 +348,6 @@ function recordParticipantResponse(
 ): void {
 	const preview = normalizeProgressText(options.opinion);
 	updateParticipantProgress(state, options.participantId, {
-		status: "succeeded",
 		activity:
 			preview === undefined ? options.status : `${options.status} ${preview}`,
 	});
@@ -369,7 +367,6 @@ function recordParticipantClarification(
 ): void {
 	const preview = normalizeProgressText(clarification);
 	updateParticipantProgress(state, participantId, {
-		status: "succeeded",
 		activity:
 			preview === undefined ? "clarification" : `clarification ${preview}`,
 	});
@@ -513,10 +510,8 @@ function toParticipantToolEndProgressUpdate(
 	event: Record<string, unknown>,
 ): ParticipantPatch {
 	const toolName = getStringField(event, "toolName") ?? "tool";
-	const isError = event["isError"] === true;
 	const text = getToolExecutionResultText(event);
 	return {
-		status: isError ? "failed" : "succeeded",
 		activity:
 			text === undefined ? `${toolName} result` : `${toolName} result ${text}`,
 	};
@@ -543,7 +538,6 @@ function toParticipantMessageEndProgressUpdate(
 	const errorMessage = getStringField(message, "errorMessage");
 	const activity = errorMessage ?? assistantText;
 	return {
-		...(errorMessage === undefined ? {} : { status: "failed" as const }),
 		...(activity === undefined ? {} : { activity: `assistant ${activity}` }),
 		...(contextUsage === undefined ? {} : { contextUsage }),
 	};
@@ -563,7 +557,6 @@ function recordParticipantSuccess(
 		state.phase = formatDisplayText(state, options.phase);
 	}
 	updateParticipantProgress(state, options.participantId, {
-		status: "succeeded",
 		activity: formatDisplayText(state, options.title),
 	});
 	append(
@@ -597,9 +590,7 @@ function finishCouncilProgress(
 ): CouncilRunDetails {
 	state.phase = formatDisplayText(state, phase);
 	for (const participant of state.participants) {
-		if (participant.status === "running") {
-			updateParticipantProgress(state, participant.participantId, { status });
-		}
+		updateParticipantProgress(state, participant.participantId, { status });
 	}
 	return emit(status);
 }
