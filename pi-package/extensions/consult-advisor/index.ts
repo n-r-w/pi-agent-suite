@@ -148,7 +148,8 @@ export default function consultAdvisor(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Consult advisor",
-		description: "Ask an independent advisor a focused question. The advisor knows everything you know. It can't call tools, only answer questions",
+		description:
+			"Ask an independent advisor a focused question. The advisor knows everything you know. It can't call tools, only answer questions",
 		parameters: ConsultAdvisorParameters,
 		renderCall: renderConsultAdvisorCall,
 		renderResult: renderConsultAdvisorResult,
