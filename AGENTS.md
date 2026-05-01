@@ -57,3 +57,6 @@ Custom `pi.dev` extensions: `pi-package/extensions`
 - /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/README.md
 - /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/docs/
 - /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/examples/README.md
+
+## Pi Source Code
+/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/dist
