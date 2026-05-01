@@ -33,6 +33,7 @@
 			"./extensions/context-projection/index.ts",
 			"./extensions/context-overflow/index.ts",
 			"./extensions/completion-sound/index.ts",
+			"./extensions/system-prompt/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
 			"./extensions/consult-advisor/index.ts",

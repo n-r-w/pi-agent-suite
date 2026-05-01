@@ -201,6 +201,70 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 	}
 });
 
+test("runtime package loading applies system-prompt before agent runtime contributions", () => {
+	// Purpose: real package load order must let system-prompt replace only the base prompt and keep selected-agent prompt additions after it.
+	// Input and expected output: suite config points system-prompt to a temp Markdown template, and selected TestAgent still appears later.
+	// Edge case: the extension must be registered before the shared runtime composition handler is created by agent-related extensions.
+	// Dependencies: local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
+	const cwd = process.cwd();
+	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-system-prompt-"));
+	const agentDir = createIsolatedAgentDir(cwd);
+	const promptDumpFile = join(scratchDir, "system-prompt.txt");
+	const debugExtensionPath = writePromptDumpExtension(scratchDir);
+	const customTemplateFile = join(scratchDir, "system.md");
+	mkdirSync(join(agentDir, "agent-suite", "system-prompt"), {
+		recursive: true,
+	});
+	writeFileSync(
+		customTemplateFile,
+		"Suite system prompt\n\nTools:\n{{tools}}\n\n{{unknown-from-test}}",
+	);
+	writeFileSync(
+		join(agentDir, "agent-suite", "system-prompt", "config.json"),
+		JSON.stringify({ templateFile: customTemplateFile }),
+	);
+	const childEnv: Record<string, string | undefined> = {
+		...process.env,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+		PI_PROMPT_DUMP_FILE: promptDumpFile,
+	};
+	delete childEnv[SUBAGENT_AGENT_ID_ENV];
+	delete childEnv[SUBAGENT_DEPTH_ENV];
+	delete childEnv[SUBAGENT_TOOLS_ENV];
+
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"-p",
+				"-e",
+				join(cwd, "pi-package"),
+				"-e",
+				debugExtensionPath,
+				"debug system prompt package order",
+			],
+			{
+				cwd,
+				encoding: "utf8",
+				env: childEnv,
+				timeout: 30_000,
+			},
+		);
+
+		expect(result.status).toBe(23);
+		const prompt = readFileSync(promptDumpFile, "utf8");
+		expect(prompt).toStartWith("Suite system prompt");
+		expect(prompt).toContain("Test agent prompt");
+		expect(prompt).not.toContain("{{unknown-from-test}}");
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+	}
+});
+
 test("runtime package loading exposes convene_council", () => {
 	// Purpose: real pi package loading must register convene_council.
 	// Input and expected output: package load exposes the tool when all tools are active.

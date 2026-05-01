@@ -18,6 +18,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `context-projection` | No | Helps long sessions continue when old large tool outputs would otherwise fill the model context. |
 | `context-overflow` | Yes | Runs compaction before the next provider request fails because the context is already too large. |
 | `completion-sound` | Yes | Plays a completion sound only when the top-level agent finishes. |
+| `system-prompt` | Yes | Replaces pi's base system prompt from a Markdown template with explicit runtime variables. |
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
@@ -365,6 +366,41 @@ How it works:
 - Uses `paplay /usr/share/sounds/freedesktop/stereo/complete.oga` on Linux when config is missing.
 - Uses `powershell.exe` with `[console]::beep(880,180)` on Windows when config is missing.
 - Ignores playback process failures so sound issues do not interrupt the agent.
+
+### `system-prompt`
+
+Why you need it:
+
+- Lets you own the base system prompt as a Markdown file.
+- Keeps all static prompt text in the template.
+- Inserts dynamic pi data only where the template has a variable.
+
+Config file: `~/.pi/agent/agent-suite/system-prompt/config.json`
+
+Options:
+
+- `enabled`: default `true`. Set to `false` to leave pi's original system prompt unchanged.
+- `templateFile`: optional absolute path to a Markdown template file. Missing value uses the bundled template.
+
+Supported variables:
+
+- `{{date}}`
+- `{{cwd}}`
+- `{{tools}}`
+- `{{toolGuidelines}}`
+- `{{appendSystemPrompt}}`
+- `{{contextFiles}}`
+- `{{skills}}`
+
+How it works:
+
+- Loads the template during startup and reload.
+- Replaces only pi's base prompt layer.
+- Appends package-owned agent prompt additions after the rendered template.
+- Removes unsupported `{{...}}` variables and warns with their names.
+- Leaves pi's original prompt unchanged when config or template loading fails.
+
+More details: [docs/extensions/system-prompt.md](docs/extensions/system-prompt.md)
 
 ### `main-agent-selection`
 
