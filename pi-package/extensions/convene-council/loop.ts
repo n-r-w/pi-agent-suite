@@ -247,6 +247,7 @@ async function prepareExternalContextForFirstPrompt(options: {
 	readonly config: ConveneCouncilConfig;
 	readonly contextFiles: ExecuteConveneCouncilOptions["contextFiles"];
 	readonly ctx: ExecuteConveneCouncilOptions["ctx"];
+	readonly progress: CouncilProgressReporter;
 	readonly question: string;
 	readonly runtime: CouncilRuntime;
 	readonly signal: AbortSignal | undefined;
@@ -281,6 +282,7 @@ async function prepareExternalContextForFirstPrompt(options: {
 
 	const summaryGenerator =
 		options.generateContextSummary ?? defaultContextSummary;
+	options.progress.setPhase("summarizing context");
 	const summary = await summaryGenerator({
 		contextPackage: options.externalContextPackage,
 		runtime: summaryRuntime.runtime,

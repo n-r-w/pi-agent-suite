@@ -5,3 +5,7 @@ Analyze the question in `<question>` and provide your opinion.
 <question>
 {{question}}
 </question>
+
+<constraints>
+ENGLISH only. NO OTHER LANGUAGE IS ALLOWED.
+</constraints>

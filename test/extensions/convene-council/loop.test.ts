@@ -948,9 +948,9 @@ describe("convene-council loop", () => {
 
 	test("summarizes oversized external context before participant startup", async () => {
 		// Purpose: oversized first participant requests must shrink the external context before any child RPC starts.
-		// Input and expected output: a large parent context triggers one summary call, then participants receive the summarized context.
+		// Input and expected output: a large parent context triggers one summary call, the current TUI phase shows summarization, then participants receive the summarized context.
 		// Edge case: summary must complete before runner creation so no child process starts with an oversized prompt.
-		// Dependencies: isolated config, fake summary generator, and fake participant runner.
+		// Dependencies: isolated config, fake summary generator, fake participant runner, and the tool onUpdate callback.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, { contextWindowUsageLimit: 0.1 });
 			const model = {
@@ -965,7 +965,9 @@ describe("convene-council loop", () => {
 				finalAnswer("final"),
 			]);
 			let runnerStarts = 0;
+			let phaseAtSummaryStart: string | undefined;
 			const summaryInputs: string[] = [];
+			const updates: AgentToolResult<unknown>[] = [];
 			const largeContext = Array.from(
 				{ length: 1_500 },
 				(_, index) => `context-word-${index}`,
@@ -978,6 +980,7 @@ describe("convene-council loop", () => {
 				},
 				async generateContextSummary(request) {
 					expect(runnerStarts).toBe(0);
+					phaseAtSummaryStart = collectCouncilRunDetails(updates).at(-1)?.phase;
 					summaryInputs.push(request.contextPackage);
 					return "Summarized parent context";
 				},
@@ -985,8 +988,12 @@ describe("convene-council loop", () => {
 			const entries = [messageEntry("u1", userMessage(largeContext), null)];
 			const ctx = createContext([model], entries);
 
-			await executeCouncil(pi, ctx, "What should we do?");
+			await executeCouncilWithOptions(pi, ctx, {
+				question: "What should we do?",
+				onUpdate: (partial) => updates.push(partial),
+			});
 
+			expect(phaseAtSummaryStart).toBe("summarizing context");
 			expect(summaryInputs).toHaveLength(1);
 			expect(summaryInputs[0]).toContain("context-word-1499");
 			const firstPrompt = String(
