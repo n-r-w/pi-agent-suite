@@ -1,19 +1,18 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-
-const BYTES_PER_KIB = 1024;
-const STDOUT_SUFFIX_MAX_KIB = 256;
-const TRAILING_CR = /\r$/;
+import {
+	CHILD_RPC_STDERR_TEXT_LIMIT,
+	CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT,
+	ChildRpcStreamParser,
+} from "../../shared/child-rpc-stream";
 
 export const COUNCIL_RPC_STDOUT_SUFFIX_MAX_BYTES =
-	STDOUT_SUFFIX_MAX_KIB * BYTES_PER_KIB;
-export const COUNCIL_RPC_STDERR_MAX_CHARS = 64_000;
-
-const TEXT_ENCODER = new TextEncoder();
+	CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT;
+export const COUNCIL_RPC_STDERR_MAX_CHARS = CHILD_RPC_STDERR_TEXT_LIMIT;
 
 export interface CouncilRpcTransport {
 	write(line: string): void;
-	onStdout(handler: (chunk: string) => void): void;
-	onStderr(handler: (chunk: string) => void): void;
+	onStdout(handler: (chunk: unknown) => void): void;
+	onStderr(handler: (chunk: unknown) => void): void;
 }
 
 interface PendingCommand {
@@ -30,11 +29,13 @@ interface ActivePrompt {
 
 /** Handles the JSONL RPC protocol for one persistent council participant. */
 export class CouncilRpcClient {
-	readonly diagnostics = { stdoutSuffix: "", stderr: "" };
+	private readonly parser = new ChildRpcStreamParser();
+	readonly diagnostics = this.parser.diagnostics;
 
 	private initialized = false;
 	private nextId = 1;
-	private stdoutBuffer = "";
+	private stdoutProcessing: Promise<void> = Promise.resolve();
+	private stdoutProcessingPending = false;
 	private readonly pendingCommands = new Map<string, PendingCommand>();
 	private activePrompt: ActivePrompt | undefined;
 
@@ -99,46 +100,50 @@ export class CouncilRpcClient {
 		this.transport.write(`${JSON.stringify(command)}\n`);
 	}
 
-	private processStdout(chunk: string): void {
-		this.diagnostics.stdoutSuffix = retainUtf8Suffix(
-			this.diagnostics.stdoutSuffix + chunk,
-			COUNCIL_RPC_STDOUT_SUFFIX_MAX_BYTES,
-		);
-		this.stdoutBuffer += chunk;
-		let newlineIndex = this.stdoutBuffer.indexOf("\n");
-		while (newlineIndex !== -1) {
-			const rawLine = this.stdoutBuffer
-				.slice(0, newlineIndex)
-				.replace(TRAILING_CR, "");
-			this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
-			if (rawLine.length > 0) {
-				this.processLine(rawLine);
+	private processStdout(chunk: unknown): void {
+		const processChunk = () =>
+			this.parser.processStdoutChunk(chunk, (message) => {
+				this.processMessage(message);
+			});
+		const handleError = (error: string | undefined): void => {
+			if (error !== undefined) {
+				this.rejectTransportError(new Error(error));
 			}
-			newlineIndex = this.stdoutBuffer.indexOf("\n");
-		}
-		this.stdoutBuffer = retainUtf8Suffix(
-			this.stdoutBuffer,
-			COUNCIL_RPC_STDOUT_SUFFIX_MAX_BYTES,
-		);
-	}
-
-	private processStderr(chunk: string): void {
-		this.diagnostics.stderr = (this.diagnostics.stderr + chunk).slice(
-			-COUNCIL_RPC_STDERR_MAX_CHARS,
-		);
-	}
-
-	private processLine(line: string): void {
-		let message: unknown;
-		try {
-			message = JSON.parse(line);
-		} catch (error) {
-			this.rejectActivePrompt(
-				error instanceof Error ? error : new Error("failed to parse child RPC"),
-			);
+		};
+		if (!this.stdoutProcessingPending) {
+			const error = processChunk();
+			if (!isPromiseLike(error)) {
+				handleError(error);
+				return;
+			}
+			this.stdoutProcessingPending = true;
+			const processing = error.then(handleError);
+			const trackedProcessing = processing.finally(() => {
+				if (this.stdoutProcessing === trackedProcessing) {
+					this.stdoutProcessingPending = false;
+				}
+			});
+			this.stdoutProcessing = trackedProcessing;
 			return;
 		}
 
+		const processing = this.stdoutProcessing.then(async () => {
+			const error = await processChunk();
+			handleError(error);
+		});
+		const trackedProcessing = processing.finally(() => {
+			if (this.stdoutProcessing === trackedProcessing) {
+				this.stdoutProcessingPending = false;
+			}
+		});
+		this.stdoutProcessing = trackedProcessing;
+	}
+
+	private processStderr(chunk: unknown): void {
+		this.parser.processStderrChunk(chunk);
+	}
+
+	private processMessage(message: unknown): void {
 		if (!isRecord(message)) {
 			return;
 		}
@@ -236,6 +241,14 @@ export class CouncilRpcClient {
 		this.activePrompt = undefined;
 		prompt.reject(error);
 	}
+
+	private rejectTransportError(error: Error): void {
+		this.rejectActivePrompt(error);
+		for (const [id, pending] of this.pendingCommands) {
+			this.pendingCommands.delete(id);
+			pending.reject(error);
+		}
+	}
 }
 
 function readRpcError(message: Record<string, unknown>): string {
@@ -276,10 +289,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function retainUtf8Suffix(value: string, maxBytes: number): string {
-	let result = value;
-	while (TEXT_ENCODER.encode(result).byteLength > maxBytes) {
-		result = result.slice(Math.max(1, Math.floor(result.length / 10)));
-	}
-	return result;
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+	return isRecord(value) && typeof value["then"] === "function";
 }

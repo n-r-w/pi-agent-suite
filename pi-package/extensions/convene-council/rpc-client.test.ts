@@ -9,25 +9,25 @@ import {
 /** Creates a fake RPC transport for client protocol tests. */
 function createTransport() {
 	const writes: string[] = [];
-	let onStdout: ((chunk: string) => void) | undefined;
-	let onStderr: ((chunk: string) => void) | undefined;
+	let onStdout: ((chunk: unknown) => void) | undefined;
+	let onStderr: ((chunk: unknown) => void) | undefined;
 	return {
 		transport: {
 			write(line: string): void {
 				writes.push(line);
 			},
-			onStdout(handler: (chunk: string) => void): void {
+			onStdout(handler: (chunk: unknown) => void): void {
 				onStdout = handler;
 			},
-			onStderr(handler: (chunk: string) => void): void {
+			onStderr(handler: (chunk: unknown) => void): void {
 				onStderr = handler;
 			},
 		},
 		writes,
-		stdout(chunk: string): void {
+		stdout(chunk: unknown): void {
 			onStdout?.(chunk);
 		},
-		stderr(chunk: string): void {
+		stderr(chunk: unknown): void {
 			onStderr?.(chunk);
 		},
 	};
@@ -176,6 +176,91 @@ describe("CouncilRpcClient", () => {
 				toolName: "read",
 				result: { content: [{ type: "text", text: "README content" }] },
 				isError: false,
+			},
+			{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: "answer",
+					api: "test",
+					provider: "test",
+					model: "test",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+			},
+			{ type: "agent_end" },
+		]);
+	});
+
+	test("projects oversized child session events before later prompt completion events", async () => {
+		// Purpose: oversized valid child RPC events must not reject the participant prompt as malformed stdout.
+		// Input and expected output: a large tool_execution_end image result is projected, then the prompt resolves from later message_end and agent_end.
+		// Edge case: the oversized JSONL line is split across chunks before the final LF delimiter.
+		// Dependencies: fake JSONL transport and callback capture.
+		const fake = createTransport();
+		const events: unknown[] = [];
+		const client = new CouncilRpcClient(fake.transport, (event) => {
+			events.push(event);
+		});
+		const initialized = client.initialize();
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
+		);
+		await initialized;
+
+		const result = client.prompt("review task");
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: true })}\n`,
+		);
+		const oversizedToolEvent = JSON.stringify({
+			type: "tool_execution_end",
+			toolCallId: "read-1",
+			toolName: "read",
+			result: {
+				content: [
+					{ type: "text", text: "image inspected" },
+					{
+						type: "image",
+						data: "a".repeat(300_000),
+						mimeType: "image/png",
+					},
+				],
+			},
+			isError: false,
+		});
+		const firstSplitIndex = Math.floor(oversizedToolEvent.length / 2);
+		const secondSplitIndex = oversizedToolEvent.length - 1;
+		fake.stdout(oversizedToolEvent.slice(0, firstSplitIndex));
+		fake.stdout(oversizedToolEvent.slice(firstSplitIndex, secondSplitIndex));
+		fake.stdout(`${oversizedToolEvent.slice(secondSplitIndex)}\n`);
+		fake.stdout(
+			`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "answer", api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
+		);
+		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
+
+		expect(assistantText(await result)).toBe("answer");
+		expect(events).toEqual([
+			{
+				type: "tool_execution_end",
+				toolCallId: "read-1",
+				toolName: "read",
+				isError: false,
+				result: { content: [{ type: "text", text: "image inspected" }] },
 			},
 			{
 				type: "message_end",

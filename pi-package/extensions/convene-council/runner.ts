@@ -11,10 +11,10 @@ export const COUNCIL_RPC_TERM_GRACE_MS = 5_000;
 export interface SpawnedParticipantProcess {
 	readonly stdin: { write(chunk: string): boolean };
 	readonly stdout: {
-		on(event: "data", handler: (chunk: string) => void): unknown;
+		on(event: "data", handler: (chunk: unknown) => void): unknown;
 	};
 	readonly stderr: {
-		on(event: "data", handler: (chunk: string) => void): unknown;
+		on(event: "data", handler: (chunk: unknown) => void): unknown;
 	};
 	on(event: "exit", handler: () => void): unknown;
 	kill(signal?: string): boolean;
@@ -167,11 +167,11 @@ function createProcessTransport(
 		write(line: string): void {
 			child.stdin.write(line);
 		},
-		onStdout(handler: (chunk: string) => void): void {
-			child.stdout.on("data", (chunk) => handler(String(chunk)));
+		onStdout(handler: (chunk: unknown) => void): void {
+			child.stdout.on("data", handler);
 		},
-		onStderr(handler: (chunk: string) => void): void {
-			child.stderr.on("data", (chunk) => handler(String(chunk)));
+		onStderr(handler: (chunk: unknown) => void): void {
+			child.stderr.on("data", handler);
 		},
 	};
 }
