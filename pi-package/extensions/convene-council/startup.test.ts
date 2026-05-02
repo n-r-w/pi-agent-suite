@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { ToolInfo } from "@mariozechner/pi-coding-agent";
 import { createModel } from "../../../test/extensions/convene-council/support/models";
 import {
+	CHILD_AGENT_PROCESS_ENV,
+	CHILD_AGENT_PROCESS_ENV_VALUE,
+} from "../../shared/child-agent-environment";
+import {
 	buildChildParticipantStartup,
 	resolveChildStartupPlan,
 } from "./startup";
@@ -81,7 +85,10 @@ describe("convene-council child startup", () => {
 		// Edge case: child uses --session and --session-dir together for explicit session ownership.
 		// Dependencies: shared tool-policy resolver and pure argument builder.
 		const startup = buildChildParticipantStartup({
-			plan: { extensionArgs: ["-e", "./pi-package"], env: {} },
+			plan: {
+				extensionArgs: ["-e", "./pi-package"],
+				env: { PI_CODING_AGENT_DIR: "/tmp/pi-agent" },
+			},
 			config: { ...baseConfig, tools: ["rea*"] },
 			pi: createPi(["read", "write"]),
 			runtime: createRuntime(),
@@ -91,7 +98,10 @@ describe("convene-council child startup", () => {
 		});
 
 		expect(startup).toEqual({
-			env: {},
+			env: {
+				[CHILD_AGENT_PROCESS_ENV]: CHILD_AGENT_PROCESS_ENV_VALUE,
+				PI_CODING_AGENT_DIR: "/tmp/pi-agent",
+			},
 			args: [
 				"--mode",
 				"rpc",

@@ -49,47 +49,50 @@ function assistantText(message: AssistantMessage): string {
 }
 
 describe("CouncilRpcClient", () => {
-	test("disables child auto-retry before accepting participant prompts", async () => {
-		// Purpose: child retry semantics must be deterministic before the first participant prompt.
-		// Input and expected output: initialize writes set_auto_retry(false) and waits for success.
-		// Edge case: a prompt before successful initialization is rejected.
+	test("starts participant prompts without a startup RPC command", async () => {
+		// Purpose: constructing the client must not write child settings through RPC.
+		// Input and expected output: the first write is the real participant prompt.
+		// Edge case: prompt execution must work without a setup command.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
 		const client = new CouncilRpcClient(fake.transport);
 
-		await expect(client.prompt("too early")).rejects.toThrow(
-			"child auto-retry is not disabled",
-		);
-		const initialized = client.initialize();
+		expect(fake.writes).toHaveLength(0);
+		const result = client.prompt("first task");
 		expect(writtenCommand(fake.writes[0] ?? "{}")).toMatchObject({
-			type: "set_auto_retry",
-			enabled: false,
+			type: "prompt",
+			message: "first task",
 		});
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
 		);
+		fake.stdout(
+			`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "answer", api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
+		);
+		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
 
-		await initialized;
+		expect(assistantText(await result)).toBe("answer");
 	});
 
 	test("writes newline-delimited JSONL commands", async () => {
 		// Purpose: child Pi reads stdin as JSONL and needs LF command delimiters.
-		// Input and expected output: initialize command is valid JSON followed by LF.
+		// Input and expected output: prompt command is valid JSON followed by LF.
 		// Edge case: tests parse the trimmed command separately from framing.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
 		const client = new CouncilRpcClient(fake.transport);
 
-		const initialized = client.initialize();
+		const result = client.prompt("framed task");
 
 		expect(fake.writes[0]?.endsWith("\n")).toBe(true);
 		expect(writtenCommand(fake.writes[0]?.trimEnd() ?? "{}")).toMatchObject({
-			type: "set_auto_retry",
+			type: "prompt",
+			message: "framed task",
 		});
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: false, error: "busy" })}\n`,
 		);
-		await initialized;
+		await expect(result).rejects.toThrow("busy");
 	});
 
 	test("does not complete a prompt on prompt response success before agent_end", async () => {
@@ -99,20 +102,15 @@ describe("CouncilRpcClient", () => {
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
 		const client = new CouncilRpcClient(fake.transport);
-		const initialized = client.initialize();
-		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
-		);
-		await initialized;
 
 		const result = client.prompt("review task");
 		const handledResult = result.catch(() => undefined);
-		expect(writtenCommand(fake.writes[1] ?? "{}")).toMatchObject({
+		expect(writtenCommand(fake.writes[0] ?? "{}")).toMatchObject({
 			type: "prompt",
 			message: "review task",
 		});
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: true })}\n`,
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
 		);
 		let completed = false;
 		const completionProbe = result.then(() => {
@@ -140,15 +138,10 @@ describe("CouncilRpcClient", () => {
 		const client = new CouncilRpcClient(fake.transport, (event) => {
 			events.push(event);
 		});
-		const initialized = client.initialize();
-		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
-		);
-		await initialized;
 
 		const result = client.prompt("review task");
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: true })}\n`,
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
 		);
 		fake.stdout(
 			`${JSON.stringify({ type: "agent_start" })}\n${JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "README.md" } })}\n`,
@@ -217,15 +210,10 @@ describe("CouncilRpcClient", () => {
 		const client = new CouncilRpcClient(fake.transport, (event) => {
 			events.push(event);
 		});
-		const initialized = client.initialize();
-		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
-		);
-		await initialized;
 
 		const result = client.prompt("review task");
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: true })}\n`,
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
 		);
 		const oversizedToolEvent = JSON.stringify({
 			type: "tool_execution_end",
@@ -299,45 +287,22 @@ describe("CouncilRpcClient", () => {
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
 		const client = new CouncilRpcClient(fake.transport);
-		const initialized = client.initialize();
-		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
-		);
-		await initialized;
 
 		const result = client.prompt("final task");
 		const handledResult = result.catch(() => undefined);
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: true })}\n`,
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
 		);
 		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
-		expect(writtenCommand(fake.writes[2] ?? "{}")).toMatchObject({
+		expect(writtenCommand(fake.writes[1] ?? "{}")).toMatchObject({
 			type: "get_last_assistant_text",
 		});
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "3", command: "get_last_assistant_text", success: true, data: { text: "fallback answer" } })}\n`,
+			`${JSON.stringify({ type: "response", id: "2", command: "get_last_assistant_text", success: true, data: { text: "fallback answer" } })}\n`,
 		);
 
 		expect(assistantText(await result)).toBe("fallback answer");
 		await handledResult;
-	});
-
-	test("keeps prompts disabled when auto-retry disabling fails", async () => {
-		// Purpose: failed child setup must not allow participant prompts with ambiguous retry semantics.
-		// Input and expected output: failed set_auto_retry rejects initialization and later prompt stays blocked.
-		// Edge case: failure response is correlated by request id.
-		// Dependencies: fake JSONL transport.
-		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
-		const initialized = client.initialize();
-		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: false, error: "denied" })}\n`,
-		);
-
-		await expect(initialized).rejects.toThrow("denied");
-		await expect(client.prompt("after failed init")).rejects.toThrow(
-			"child auto-retry is not disabled",
-		);
 	});
 
 	test("clears the active prompt when prompt acceptance fails", async () => {
@@ -347,25 +312,20 @@ describe("CouncilRpcClient", () => {
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
 		const client = new CouncilRpcClient(fake.transport);
-		const initialized = client.initialize();
-		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
-		);
-		await initialized;
 
 		const first = client.prompt("first");
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: false, error: "busy" })}\n`,
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: false, error: "busy" })}\n`,
 		);
 		await expect(first).rejects.toThrow("busy");
 		const second = client.prompt("second");
 
-		expect(writtenCommand(fake.writes[2]?.trimEnd() ?? "{}")).toMatchObject({
+		expect(writtenCommand(fake.writes[1]?.trimEnd() ?? "{}")).toMatchObject({
 			type: "prompt",
 			message: "second",
 		});
 		fake.stdout(
-			`${JSON.stringify({ type: "response", id: "3", command: "prompt", success: false, error: "still busy" })}\n`,
+			`${JSON.stringify({ type: "response", id: "2", command: "prompt", success: false, error: "still busy" })}\n`,
 		);
 		await expect(second).rejects.toThrow("still busy");
 	});
@@ -419,15 +379,15 @@ describe("CouncilRpcClient", () => {
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
 		const client = new CouncilRpcClient(fake.transport);
+		const result = client.prompt("diagnostic task");
 		const record = JSON.stringify({
 			type: "response",
 			id: "1",
-			command: "set_auto_retry",
+			command: "prompt",
 			success: false,
 			error: "line separator   inside JSON",
 		});
 
-		const initialized = client.initialize();
 		fake.stdout(`${record.slice(0, 20)}`);
 		fake.stdout(`${record.slice(20)}\n`);
 		fake.stderr("x".repeat(COUNCIL_RPC_STDERR_MAX_CHARS + 10));
@@ -437,6 +397,6 @@ describe("CouncilRpcClient", () => {
 		expect(client.diagnostics.stdoutSuffix.length).toBeLessThanOrEqual(
 			COUNCIL_RPC_STDOUT_SUFFIX_MAX_BYTES,
 		);
-		return expect(initialized).rejects.toThrow("line separator   inside JSON");
+		return expect(result).rejects.toThrow("line separator   inside JSON");
 	});
 });

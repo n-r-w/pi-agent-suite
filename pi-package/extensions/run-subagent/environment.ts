@@ -1,3 +1,4 @@
+import { withChildAgentProcessMarker } from "../../shared/child-agent-environment";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -26,7 +27,7 @@ export function createChildEnvironment(
 		env[key] = value;
 	}
 
-	return { ...env, ...explicitEnv };
+	return withChildAgentProcessMarker({ ...env, ...explicitEnv });
 }
 
 /** Returns true for environment keys fully owned by run-subagent. */

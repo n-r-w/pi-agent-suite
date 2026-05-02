@@ -5,9 +5,9 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import completionSound from "../../../pi-package/extensions/completion-sound/index";
 import {
-	SUBAGENT_AGENT_ID_ENV,
-	SUBAGENT_DEPTH_ENV,
-} from "../../../pi-package/shared/subagent-environment";
+	CHILD_AGENT_PROCESS_ENV,
+	CHILD_AGENT_PROCESS_ENV_VALUE,
+} from "../../../pi-package/shared/child-agent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -36,6 +36,26 @@ interface SessionContextFake {
 	readonly notifications: Notification[];
 	readonly ui: {
 		notify(message: string, type: string | undefined): void;
+	};
+}
+
+interface AssistantMessageFake {
+	readonly role: "assistant";
+	readonly stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
+}
+
+interface AgentEndEventFake {
+	readonly type: "agent_end";
+	readonly messages: readonly AssistantMessageFake[];
+}
+
+/** Creates the minimal agent_end event needed to exercise completion semantics. */
+function createAgentEndEvent(
+	stopReason: AssistantMessageFake["stopReason"] = "stop",
+): AgentEndEventFake {
+	return {
+		type: "agent_end",
+		messages: [{ role: "assistant", stopReason }],
 	};
 }
 
@@ -140,7 +160,7 @@ function registerExtension(options: {
 describe("completion-sound", () => {
 	test("plays the default completion sound when the top-level agent ends", async () => {
 		// Purpose: top-level agent completion must produce one audible notification.
-		// Input and expected output: agent_end without subagent env plays the default macOS system sound.
+		// Input and expected output: successful agent_end without subagent env plays the default macOS system sound.
 		// Edge case: missing config still enables the extension with the platform default playback command.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake, fake playback sink, and temp agent directory.
 		await withIsolatedAgentDir(async () => {
@@ -148,7 +168,7 @@ describe("completion-sound", () => {
 			const pi = registerExtension({ env: {}, playbackCalls });
 
 			await getRegisteredHandler(pi, "agent_end")(
-				{},
+				createAgentEndEvent(),
 				createSessionContextFake(),
 			);
 
@@ -161,20 +181,20 @@ describe("completion-sound", () => {
 		});
 	});
 
-	test("does not play when the current process has a subagent id", async () => {
-		// Purpose: child subagent completion must not duplicate the top-level completion sound.
-		// Input and expected output: PI_SUBAGENT_AGENT_ID suppresses playback.
-		// Edge case: the env variable is present even if no depth value is present.
+	test("does not play when the current process is a child agent process", async () => {
+		// Purpose: child agent completion must not duplicate the top-level completion sound.
+		// Input and expected output: PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1 suppresses playback.
+		// Edge case: the marker is shared by every child pi process, not only run-subagent children.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake, fake playback sink, and temp agent directory.
 		await withIsolatedAgentDir(async () => {
 			const playbackCalls: PlaybackCall[] = [];
 			const pi = registerExtension({
-				env: { [SUBAGENT_AGENT_ID_ENV]: "Reviewer" },
+				env: { [CHILD_AGENT_PROCESS_ENV]: CHILD_AGENT_PROCESS_ENV_VALUE },
 				playbackCalls,
 			});
 
 			await getRegisteredHandler(pi, "agent_end")(
-				{},
+				createAgentEndEvent(),
 				createSessionContextFake(),
 			);
 
@@ -182,24 +202,65 @@ describe("completion-sound", () => {
 		});
 	});
 
-	test("does not play when the current process has a subagent depth", async () => {
-		// Purpose: child subagent completion must be suppressed even when only depth propagation is visible.
-		// Input and expected output: PI_SUBAGENT_DEPTH suppresses playback.
-		// Edge case: depth value zero is still a child-process marker when the variable exists.
+	test("does not play when the agent ends with a provider error", async () => {
+		// Purpose: retryable provider failures must not produce completion sounds before work is done.
+		// Input and expected output: agent_end with stopReason error suppresses playback.
+		// Edge case: Pi emits agent_end before auto-retry starts, so this event is not final work completion.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake, fake playback sink, and temp agent directory.
 		await withIsolatedAgentDir(async () => {
 			const playbackCalls: PlaybackCall[] = [];
-			const pi = registerExtension({
-				env: { [SUBAGENT_DEPTH_ENV]: "0" },
-				playbackCalls,
-			});
+			const pi = registerExtension({ env: {}, playbackCalls });
 
 			await getRegisteredHandler(pi, "agent_end")(
-				{},
+				createAgentEndEvent("error"),
 				createSessionContextFake(),
 			);
 
 			expect(playbackCalls).toEqual([]);
+		});
+	});
+
+	test("does not play when the agent run is aborted", async () => {
+		// Purpose: cancelled work must not be reported as completed by a sound.
+		// Input and expected output: agent_end with stopReason aborted suppresses playback.
+		// Edge case: aborts are terminal agent_end events but are not successful work completion.
+		// Dependencies: this test uses only an in-memory ExtensionAPI fake, fake playback sink, and temp agent directory.
+		await withIsolatedAgentDir(async () => {
+			const playbackCalls: PlaybackCall[] = [];
+			const pi = registerExtension({ env: {}, playbackCalls });
+
+			await getRegisteredHandler(pi, "agent_end")(
+				createAgentEndEvent("aborted"),
+				createSessionContextFake(),
+			);
+
+			expect(playbackCalls).toEqual([]);
+		});
+	});
+
+	test("plays when the child agent marker has a non-enabled value", async () => {
+		// Purpose: malformed child agent markers must not mute top-level completion sounds.
+		// Input and expected output: PI_AGENT_SUITE_CHILD_AGENT_PROCESS=0 still plays the default macOS system sound.
+		// Edge case: suppression requires the exact shared enabled value.
+		// Dependencies: this test uses only an in-memory ExtensionAPI fake, fake playback sink, and temp agent directory.
+		await withIsolatedAgentDir(async () => {
+			const playbackCalls: PlaybackCall[] = [];
+			const pi = registerExtension({
+				env: { [CHILD_AGENT_PROCESS_ENV]: "0" },
+				playbackCalls,
+			});
+
+			await getRegisteredHandler(pi, "agent_end")(
+				createAgentEndEvent(),
+				createSessionContextFake(),
+			);
+
+			expect(playbackCalls).toEqual([
+				{
+					command: "afplay",
+					args: ["/System/Library/Sounds/Glass.aiff"],
+				},
+			]);
 		});
 	});
 
@@ -218,7 +279,7 @@ describe("completion-sound", () => {
 			const pi = registerExtension({ env: {}, playbackCalls });
 
 			await getRegisteredHandler(pi, "agent_end")(
-				{},
+				createAgentEndEvent(),
 				createSessionContextFake(),
 			);
 
@@ -246,7 +307,7 @@ describe("completion-sound", () => {
 			const pi = registerExtension({ env: {}, playbackCalls });
 
 			await getRegisteredHandler(pi, "agent_end")(
-				{},
+				createAgentEndEvent(),
 				createSessionContextFake(),
 			);
 
@@ -270,7 +331,10 @@ describe("completion-sound", () => {
 			});
 
 			await expect(
-				getRegisteredHandler(pi, "agent_end")({}, createSessionContextFake()),
+				getRegisteredHandler(pi, "agent_end")(
+					createAgentEndEvent(),
+					createSessionContextFake(),
+				),
 			).resolves.toBeUndefined();
 		});
 	});
@@ -287,7 +351,7 @@ describe("completion-sound", () => {
 			const pi = registerExtension({ env: {}, playbackCalls });
 
 			await getRegisteredHandler(pi, "session_start")({}, ctx);
-			await getRegisteredHandler(pi, "agent_end")({}, ctx);
+			await getRegisteredHandler(pi, "agent_end")(createAgentEndEvent(), ctx);
 
 			expect(playbackCalls).toEqual([]);
 			expect(ctx.notifications).toEqual([

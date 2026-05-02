@@ -22,6 +22,10 @@ import {
 	recordSubagentWidgetRun,
 } from "../../../pi-package/extensions/run-subagent/widget";
 import {
+	CHILD_AGENT_PROCESS_ENV,
+	CHILD_AGENT_PROCESS_ENV_VALUE,
+} from "../../../pi-package/shared/child-agent-environment";
+import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_TOOLS_ENV,
@@ -636,14 +640,15 @@ describe("run-subagent", () => {
 				],
 				options: {
 					cwd: "/tmp/project",
-					env: {
-						PI_SUBAGENT_AGENT_ID: "helper",
-						PI_SUBAGENT_DEPTH: "1",
-						PI_SUBAGENT_TOOLS: "read,grep",
-					},
 					signal: undefined,
 				},
 			});
+			expect(spawn.calls[0]?.options.env[CHILD_AGENT_PROCESS_ENV]).toBe(
+				CHILD_AGENT_PROCESS_ENV_VALUE,
+			);
+			expect(spawn.calls[0]?.options.env[SUBAGENT_AGENT_ID_ENV]).toBe("helper");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_DEPTH_ENV]).toBe("1");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_TOOLS_ENV]).toBe("read,grep");
 			expect(spawn.calls[0]?.process.stdin.writes).toEqual([
 				`${JSON.stringify({
 					id: "run-subagent-prompt",

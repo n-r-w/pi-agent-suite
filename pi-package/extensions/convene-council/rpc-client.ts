@@ -32,7 +32,6 @@ export class CouncilRpcClient {
 	private readonly parser = new ChildRpcStreamParser();
 	readonly diagnostics = this.parser.diagnostics;
 
-	private initialized = false;
 	private nextId = 1;
 	private stdoutProcessing: Promise<void> = Promise.resolve();
 	private stdoutProcessingPending = false;
@@ -47,12 +46,6 @@ export class CouncilRpcClient {
 		this.transport.onStderr((chunk) => this.processStderr(chunk));
 	}
 
-	/** Disables child auto-retry before any participant prompt can run. */
-	async initialize(): Promise<void> {
-		await this.request("set_auto_retry", { enabled: false });
-		this.initialized = true;
-	}
-
 	/** Sends an RPC abort command without closing the persistent child session. */
 	abort(): void {
 		const id = String(this.nextId);
@@ -62,9 +55,6 @@ export class CouncilRpcClient {
 
 	/** Sends one participant prompt and resolves only after the child turn ends. */
 	async prompt(task: string): Promise<AssistantMessage> {
-		if (!this.initialized) {
-			throw new Error("child auto-retry is not disabled");
-		}
 		if (this.activePrompt !== undefined) {
 			throw new Error("participant prompt is already running");
 		}

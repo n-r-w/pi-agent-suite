@@ -24,6 +24,7 @@ Use it when a high-impact question benefits from two model participants comparin
 - Does not seed participant sessions with main-agent conversation messages.
 - Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to participant system prompts.
 - Starts isolated child `pi --mode rpc` sessions for participant prompts.
+- Passes `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1` to each participant child process.
 - Shares only tools configured by `tools` with each participant.
 - Adds the selected participant tool names to each participant system prompt.
 - Instructs participants that current runtime tool access overrides historical tool-access claims inside Project Context and `<context>`.

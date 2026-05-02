@@ -26,8 +26,20 @@ const CHATGPT_ACCOUNT_ID_CLAIM_KEY = "chatgpt_account_id";
 /** Default refresh interval in seconds when config is missing or invalid. */
 const DEFAULT_REFRESH_INTERVAL_SECONDS = 60;
 
+/** Default maximum number of quota request attempts per refresh. */
+const DEFAULT_RETRY_ATTEMPTS = 5;
+
+/** Default delay between quota request attempts in seconds. */
+const DEFAULT_RETRY_INTERVAL_SECONDS = 2;
+
 /** Minimum supported refresh interval in seconds to avoid aggressive polling. */
 const MIN_REFRESH_INTERVAL_SECONDS = 10;
+
+/** Minimum retry attempt count because each refresh needs at least one request. */
+const MIN_RETRY_ATTEMPTS = 1;
+
+/** Minimum retry interval in seconds. */
+const MIN_RETRY_INTERVAL_SECONDS = 1;
 
 /** Milliseconds in one second for timer conversion. */
 const SECOND_MS = 1000;
@@ -59,10 +71,18 @@ const REFRESH_INTERVAL_CONFIG_KEY = "refreshInterval";
 /** Config key that disables or enables quota polling. */
 const ENABLED_CONFIG_KEY = "enabled";
 
+/** Config key that controls maximum quota request attempts per refresh. */
+const RETRY_ATTEMPTS_CONFIG_KEY = "retryAttempts";
+
+/** Config key that controls delay between quota request attempts. */
+const RETRY_INTERVAL_CONFIG_KEY = "retryInterval";
+
 /** Config keys accepted by this extension. */
 const CODEX_QUOTA_CONFIG_KEYS = [
 	ENABLED_CONFIG_KEY,
 	REFRESH_INTERVAL_CONFIG_KEY,
+	RETRY_ATTEMPTS_CONFIG_KEY,
+	RETRY_INTERVAL_CONFIG_KEY,
 ] as const;
 
 /** Number of dot-separated segments expected in a JWT. */
@@ -73,8 +93,20 @@ const JWT_PAYLOAD_SEGMENT_INDEX = 1;
 
 type QuotaConfigResult =
 	| { readonly kind: "disabled" }
-	| { readonly kind: "valid"; readonly refreshIntervalSeconds: number }
+	| { readonly kind: "valid"; readonly value: QuotaConfig }
 	| { readonly kind: "invalid"; readonly issue: string };
+
+interface QuotaConfig {
+	readonly refreshIntervalSeconds: number;
+	readonly retryAttempts: number;
+	readonly retryIntervalSeconds: number;
+}
+
+interface QuotaRetryContext {
+	readonly auth: Extract<CodexAuthResult, { readonly kind: "available" }>;
+	readonly signal: AbortSignal;
+	readonly config: QuotaConfig;
+}
 
 type CodexAuthResult =
 	| {
@@ -122,6 +154,10 @@ interface UsageWindowRecord extends Record<string, unknown> {
 	readonly reset_after_seconds?: unknown;
 }
 
+type NumericConfigResult =
+	| { readonly kind: "valid"; readonly value: number }
+	| { readonly kind: "invalid"; readonly issue: string };
+
 /** Extension entry point for Codex quota status handling. */
 export default function codexQuota(pi: ExtensionAPI): void {
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -132,6 +168,7 @@ export default function codexQuota(pi: ExtensionAPI): void {
 	const startRefresh = (
 		session: QuotaSession,
 		generation: number,
+		config: QuotaConfig,
 	): Promise<void> => {
 		if (activeRefresh !== undefined) {
 			return activeRefresh;
@@ -143,6 +180,7 @@ export default function codexQuota(pi: ExtensionAPI): void {
 			session,
 			() => generation === activeGeneration,
 			abortController.signal,
+			config,
 		).finally(() => {
 			if (activeRefresh === refresh) {
 				activeRefresh = undefined;
@@ -176,10 +214,8 @@ export default function codexQuota(pi: ExtensionAPI): void {
 			return;
 		}
 
-		const refreshIntervalSeconds =
-			config.kind === "valid"
-				? config.refreshIntervalSeconds
-				: DEFAULT_REFRESH_INTERVAL_SECONDS;
+		const quotaConfig =
+			config.kind === "valid" ? config.value : createDefaultQuotaConfig();
 
 		if (config.kind === "invalid") {
 			reportConfigIssue(session, config.issue);
@@ -190,14 +226,14 @@ export default function codexQuota(pi: ExtensionAPI): void {
 		}
 
 		session.ui.setStatus(STATUS_KEY, renderLoadingStatus());
-		await startRefresh(session, generation);
+		await startRefresh(session, generation, quotaConfig);
 		if (generation !== activeGeneration) {
 			return;
 		}
 
 		refreshTimer = setInterval(() => {
-			startRefresh(session, generation).catch(() => {});
-		}, refreshIntervalSeconds * SECOND_MS);
+			startRefresh(session, generation, quotaConfig).catch(() => {});
+		}, quotaConfig.refreshIntervalSeconds * SECOND_MS);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -279,26 +315,103 @@ function parseQuotaConfig(
 		return { kind: "disabled" };
 	}
 
-	const refreshInterval = config[REFRESH_INTERVAL_CONFIG_KEY];
-	if (refreshInterval === undefined) {
-		return {
-			kind: "valid",
-			refreshIntervalSeconds: DEFAULT_REFRESH_INTERVAL_SECONDS,
-		};
+	const refreshInterval = parseOptionalFiniteNumberConfig(
+		config,
+		REFRESH_INTERVAL_CONFIG_KEY,
+		DEFAULT_REFRESH_INTERVAL_SECONDS,
+		MIN_REFRESH_INTERVAL_SECONDS,
+	);
+	if (refreshInterval.kind === "invalid") {
+		return refreshInterval;
 	}
 
+	const retryAttempts = parseOptionalIntegerConfig(
+		config,
+		RETRY_ATTEMPTS_CONFIG_KEY,
+		DEFAULT_RETRY_ATTEMPTS,
+		MIN_RETRY_ATTEMPTS,
+	);
+	if (retryAttempts.kind === "invalid") {
+		return retryAttempts;
+	}
+
+	const retryInterval = parseOptionalFiniteNumberConfig(
+		config,
+		RETRY_INTERVAL_CONFIG_KEY,
+		DEFAULT_RETRY_INTERVAL_SECONDS,
+		MIN_RETRY_INTERVAL_SECONDS,
+	);
+	if (retryInterval.kind === "invalid") {
+		return retryInterval;
+	}
+
+	return {
+		kind: "valid",
+		value: {
+			refreshIntervalSeconds: refreshInterval.value,
+			retryAttempts: retryAttempts.value,
+			retryIntervalSeconds: retryInterval.value,
+		},
+	};
+}
+
+/** Parses an optional finite numeric config field with a default value. */
+function parseOptionalFiniteNumberConfig(
+	config: Record<string, unknown>,
+	key: string,
+	defaultValue: number,
+	minimumValue: number,
+): NumericConfigResult {
+	const value = config[key];
+	if (value === undefined) {
+		return { kind: "valid", value: defaultValue };
+	}
 	if (
-		typeof refreshInterval !== "number" ||
-		!Number.isFinite(refreshInterval) ||
-		refreshInterval < MIN_REFRESH_INTERVAL_SECONDS
+		typeof value !== "number" ||
+		!Number.isFinite(value) ||
+		value < minimumValue
 	) {
 		return {
 			kind: "invalid",
-			issue: `${REFRESH_INTERVAL_CONFIG_KEY} must be a finite number greater than or equal to ${MIN_REFRESH_INTERVAL_SECONDS}`,
+			issue: `${key} must be a finite number greater than or equal to ${minimumValue}`,
 		};
 	}
 
-	return { kind: "valid", refreshIntervalSeconds: refreshInterval };
+	return { kind: "valid", value };
+}
+
+/** Parses an optional integer config field with a default value. */
+function parseOptionalIntegerConfig(
+	config: Record<string, unknown>,
+	key: string,
+	defaultValue: number,
+	minimumValue: number,
+): NumericConfigResult {
+	const value = config[key];
+	if (value === undefined) {
+		return { kind: "valid", value: defaultValue };
+	}
+	if (
+		typeof value !== "number" ||
+		!Number.isInteger(value) ||
+		value < minimumValue
+	) {
+		return {
+			kind: "invalid",
+			issue: `${key} must be an integer greater than or equal to ${minimumValue}`,
+		};
+	}
+
+	return { kind: "valid", value };
+}
+
+/** Creates the safe runtime config used when optional config fields are omitted or invalid. */
+function createDefaultQuotaConfig(): QuotaConfig {
+	return {
+		refreshIntervalSeconds: DEFAULT_REFRESH_INTERVAL_SECONDS,
+		retryAttempts: DEFAULT_RETRY_ATTEMPTS,
+		retryIntervalSeconds: DEFAULT_RETRY_INTERVAL_SECONDS,
+	};
 }
 
 /** Refreshes the footer status once without throwing into the pi event loop. */
@@ -306,6 +419,7 @@ async function refreshQuotaStatus(
 	session: QuotaSession,
 	isCurrent: () => boolean,
 	signal: AbortSignal,
+	config: QuotaConfig,
 ): Promise<void> {
 	const auth = await readCodexAuth(session.modelRegistry);
 	if (!isCurrent()) {
@@ -318,16 +432,7 @@ async function refreshQuotaStatus(
 	}
 
 	try {
-		const response = await fetch(CODEX_QUOTA_URL, {
-			method: "GET",
-			signal,
-			headers: {
-				Authorization: `Bearer ${auth.accessToken}`,
-				"chatgpt-account-id": auth.accountId,
-				"User-Agent": "codex-cli",
-				"Content-Type": "application/json",
-			},
-		});
+		const response = await fetchQuotaUsageWithRetry(auth, signal, config);
 		if (!isCurrent()) {
 			return;
 		}
@@ -359,6 +464,92 @@ async function refreshQuotaStatus(
 			session.ui.setStatus(STATUS_KEY, renderErrorStatus(session.ui.theme));
 		}
 	}
+}
+
+/** Fetches Codex usage with bounded retries for transient endpoint and network failures. */
+async function fetchQuotaUsageWithRetry(
+	auth: Extract<CodexAuthResult, { readonly kind: "available" }>,
+	signal: AbortSignal,
+	config: QuotaConfig,
+): Promise<Response> {
+	return fetchQuotaUsageAttempt({ auth, signal, config }, 1);
+}
+
+/** Performs one quota request attempt and schedules the next retry when needed. */
+async function fetchQuotaUsageAttempt(
+	context: QuotaRetryContext,
+	attempt: number,
+): Promise<Response> {
+	const { auth, signal } = context;
+	try {
+		const response = await fetch(CODEX_QUOTA_URL, {
+			method: "GET",
+			signal,
+			headers: {
+				Authorization: `Bearer ${auth.accessToken}`,
+				"chatgpt-account-id": auth.accountId,
+				"User-Agent": "codex-cli",
+				"Content-Type": "application/json",
+			},
+		});
+
+		if (response.ok || response.status === UNAUTHORIZED_STATUS) {
+			return response;
+		}
+
+		return retryQuotaUsageAttempt(
+			context,
+			attempt,
+			new Error(`quota request failed with status ${response.status}`),
+		);
+	} catch (error) {
+		if (signal.aborted || isAbortError(error)) {
+			throw error;
+		}
+
+		return retryQuotaUsageAttempt(context, attempt, error);
+	}
+}
+
+/** Waits for the retry interval or throws after the configured attempts are exhausted. */
+async function retryQuotaUsageAttempt(
+	context: QuotaRetryContext,
+	attempt: number,
+	lastError: unknown,
+): Promise<Response> {
+	const { signal, config } = context;
+	if (attempt >= config.retryAttempts) {
+		throw lastError instanceof Error
+			? lastError
+			: new Error("quota request failed");
+	}
+
+	await waitForRetry(config.retryIntervalSeconds * SECOND_MS, signal);
+	return fetchQuotaUsageAttempt(context, attempt + 1);
+}
+
+/** Waits before the next retry and wakes early when the session is aborted. */
+async function waitForRetry(
+	delayMs: number,
+	signal: AbortSignal,
+): Promise<void> {
+	if (signal.aborted) {
+		throw new DOMException("quota refresh aborted", "AbortError");
+	}
+
+	await new Promise<void>((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			signal.removeEventListener("abort", handleAbort);
+			resolve();
+		}, delayMs);
+
+		function handleAbort(): void {
+			clearTimeout(timeout);
+			reject(new DOMException("quota refresh aborted", "AbortError"));
+		}
+
+		signal.addEventListener("abort", handleAbort, { once: true });
+	});
 }
 
 /** Reads pi-managed Codex OAuth and returns the headers required by the usage endpoint. */

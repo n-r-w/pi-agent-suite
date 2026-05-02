@@ -236,11 +236,14 @@ Options:
 
 - `enabled`: default `false`. Must be `true` to show quota.
 - `refreshInterval`: default `60`. Minimum `10`. Unit: seconds.
+- `retryAttempts`: default `5`. Minimum `1`. Unit: requests per refresh.
+- `retryInterval`: default `2`. Minimum `1`. Unit: seconds.
 
 How it works:
 
 - Uses pi's OpenAI Codex login data.
 - Requests quota from the Codex usage endpoint.
+- Retries failed quota requests before showing `CX err`.
 - Shows quota in the footer, for example `91%/4h 100%/6d`.
 - Colors only the quota percentage; reset windows and compact non-data text stay plain.
 - Shows `CX auth`, `CX err`, or `CX ?` when quota cannot be shown.
@@ -347,8 +350,9 @@ How it works:
 
 Why you need it:
 
-- Plays a sound when the top-level pi agent finishes a prompt.
-- Suppresses completion sounds in child subagent processes so delegated work does not create duplicate sounds.
+- Plays a sound when the top-level pi agent successfully finishes a prompt.
+- Suppresses completion sounds in child agent processes so delegated work does not create duplicate sounds.
+- Suppresses sounds for provider errors, retries, and aborted runs.
 
 Config file: `~/.pi/agent/agent-suite/completion-sound/config.json`
 
@@ -361,7 +365,8 @@ Options:
 How it works:
 
 - Runs on `agent_end`.
-- Skips playback when `PI_SUBAGENT_AGENT_ID` or `PI_SUBAGENT_DEPTH` exists.
+- Skips playback when `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1`.
+- Skips playback when the latest assistant message ends with `error` or `aborted`.
 - Uses `afplay /System/Library/Sounds/Glass.aiff` on macOS when config is missing.
 - Uses `paplay /usr/share/sounds/freedesktop/stereo/complete.oga` on Linux when config is missing.
 - Uses `powershell.exe` with `[console]::beep(880,180)` on Windows when config is missing.

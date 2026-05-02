@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { createModel } from "../../../test/extensions/convene-council/support/models";
 import {
+	CHILD_AGENT_PROCESS_ENV,
+	CHILD_AGENT_PROCESS_ENV_VALUE,
+} from "../../shared/child-agent-environment";
+import {
 	COUNCIL_RPC_ABORT_GRACE_MS,
 	COUNCIL_RPC_TERM_GRACE_MS,
 	createParticipantRunnerFactory,
@@ -170,12 +174,26 @@ function completePrompt(process: FakeProcess, content: string): void {
 	process.stdout.emit("data", `${JSON.stringify({ type: "agent_end" })}\n`);
 }
 
+/** Creates a ready runner and verifies that startup does not write RPC commands. */
+async function createReadyRunner(
+	fake: ReturnType<typeof createFakeRunnerFactory>,
+	options: Parameters<ParticipantRunnerFactory>[0] = createRunnerOptions(),
+): Promise<{
+	readonly runner: Awaited<ReturnType<ParticipantRunnerFactory>>;
+	readonly child: FakeProcess;
+}> {
+	const runnerPromise = fake.factory(options);
+	const child = fake.spawned[0]?.process as FakeProcess;
+	expect(child.stdin.writes).toEqual([]);
+	return { runner: await runnerPromise, child };
+}
+
 describe("ParticipantRunner lifecycle", () => {
-	test("spawns child pi with persistent session args and disables auto-retry before returning", async () => {
-		// Purpose: participant runner startup must configure one persistent child RPC session.
-		// Input and expected output: spawn receives session/model/tool args and waits for set_auto_retry success.
+	test("spawns child pi with persistent session args and no startup RPC command", async () => {
+		// Purpose: participant runner startup must not mutate child or global settings before work starts.
+		// Input and expected output: spawn receives session/model/tool args and writes no startup RPC command.
 		// Edge case: child resource-disabling and extension args are both propagated.
-		// Dependencies: fake child process and CouncilRpcClient protocol.
+		// Dependencies: fake child process.
 		const fake = createFakeRunnerFactory();
 		const runnerPromise = fake.factory(createRunnerOptions());
 		const child = fake.spawned[0]?.process;
@@ -206,16 +224,16 @@ describe("ParticipantRunner lifecycle", () => {
 			],
 			options: {
 				cwd: "/tmp/project",
-				env: { PI_CODING_AGENT_DIR: "/tmp/pi-agent" },
+				env: {
+					[CHILD_AGENT_PROCESS_ENV]: CHILD_AGENT_PROCESS_ENV_VALUE,
+					PI_CODING_AGENT_DIR: "/tmp/pi-agent",
+				},
 			},
 		});
-		expect(JSON.parse(child?.stdin.writes[0] ?? "{}")).toMatchObject({
-			type: "set_auto_retry",
-			enabled: false,
-		});
+		expect(child?.stdin.writes).toEqual([]);
 
-		respond(child as FakeProcess, "1", "set_auto_retry");
-		await runnerPromise;
+		const runner = await runnerPromise;
+		await runner.dispose();
 	});
 
 	test("reuses the same child process for multiple participant prompts", async () => {
@@ -224,16 +242,13 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: prompt command success does not complete without agent_end.
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
-		const runnerPromise = fake.factory(createRunnerOptions());
-		const child = fake.spawned[0]?.process as FakeProcess;
-		respond(child, "1", "set_auto_retry");
-		const runner = await runnerPromise;
+		const { runner, child } = await createReadyRunner(fake);
 
 		const first = runner.prompt("first task", undefined);
-		respond(child, "2", "prompt");
+		respond(child, "1", "prompt");
 		completePrompt(child, "first answer");
 		const second = runner.prompt("second task", undefined);
-		respond(child, "3", "prompt");
+		respond(child, "2", "prompt");
 		completePrompt(child, "second answer");
 
 		expect(fake.spawned).toHaveLength(1);
@@ -254,16 +269,13 @@ describe("ParticipantRunner lifecycle", () => {
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
 		const events: unknown[] = [];
-		const runnerPromise = fake.factory({
+		const { runner, child } = await createReadyRunner(fake, {
 			...createRunnerOptions(),
 			onSessionEvent: (event) => events.push(event),
 		});
-		const child = fake.spawned[0]?.process as FakeProcess;
-		respond(child, "1", "set_auto_retry");
-		const runner = await runnerPromise;
 
 		const prompt = runner.prompt("inspect files", undefined);
-		respond(child, "2", "prompt");
+		respond(child, "1", "prompt");
 		child.stdout.emit(
 			"data",
 			`${JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "README.md" } })}\n`,
@@ -279,45 +291,32 @@ describe("ParticipantRunner lifecycle", () => {
 		});
 		expect(events).not.toContainEqual({
 			type: "response",
-			id: "2",
+			id: "1",
 			command: "prompt",
 			success: true,
 		});
 	});
 
-	test("kills the child process when initialization fails", async () => {
-		// Purpose: failed set_auto_retry must not leak a spawned child process.
-		// Input and expected output: initialization rejection kills the process before propagating the error.
-		// Edge case: failure happens after spawn but before the runner is returned.
-		// Dependencies: fake child process and CouncilRpcClient protocol.
-		const fake = createFakeRunnerFactory();
-		const runnerPromise = fake.factory(createRunnerOptions());
-		const child = fake.spawned[0]?.process as FakeProcess;
-		child.stdout.emit(
-			"data",
-			`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: false, error: "denied" })}\n`,
-		);
-
-		await expect(runnerPromise).rejects.toThrow("denied");
-		expect(child.killedSignals).toEqual(["SIGTERM"]);
-	});
-
 	test("accepts Buffer stdout chunks from child processes", async () => {
 		// Purpose: real child stdout emits Buffer chunks, not only strings.
-		// Input and expected output: Buffer response initializes the runner.
+		// Input and expected output: Buffer response accepts the active prompt.
 		// Edge case: transport stringifies the chunk before JSONL parsing.
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
-		const runnerPromise = fake.factory(createRunnerOptions());
-		const child = fake.spawned[0]?.process as FakeProcess;
+		const { runner, child } = await createReadyRunner(fake);
+
+		const prompt = runner.prompt("buffer task", undefined);
 		child.stdout.emit(
 			"data",
 			Buffer.from(
-				`${JSON.stringify({ type: "response", id: "1", command: "set_auto_retry", success: true })}\n`,
+				`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
 			),
 		);
+		completePrompt(child, "buffer answer");
 
-		await runnerPromise;
+		expect((await prompt).content).toEqual([
+			{ type: "text", text: "buffer answer" },
+		]);
 	});
 
 	test("escalates parent abort from RPC abort to SIGTERM and SIGKILL", async () => {
@@ -328,16 +327,13 @@ describe("ParticipantRunner lifecycle", () => {
 		const scheduler = createFakeScheduler();
 		const fake = createFakeRunnerFactory(scheduler);
 		const abortController = new AbortController();
-		const runnerPromise = fake.factory({
+		const { runner, child } = await createReadyRunner(fake, {
 			...createRunnerOptions(),
 			signal: abortController.signal,
 		});
-		const child = fake.spawned[0]?.process as FakeProcess;
-		respond(child, "1", "set_auto_retry");
-		const runner = await runnerPromise;
 		const prompt = runner.prompt("long task", abortController.signal);
 		prompt.catch(() => undefined);
-		respond(child, "2", "prompt");
+		respond(child, "1", "prompt");
 
 		abortController.abort();
 
@@ -363,16 +359,13 @@ describe("ParticipantRunner lifecycle", () => {
 		const scheduler = createFakeScheduler();
 		const fake = createFakeRunnerFactory(scheduler);
 		const abortController = new AbortController();
-		const runnerPromise = fake.factory({
+		const { runner, child } = await createReadyRunner(fake, {
 			...createRunnerOptions(),
 			signal: abortController.signal,
 		});
-		const child = fake.spawned[0]?.process as FakeProcess;
-		respond(child, "1", "set_auto_retry");
-		const runner = await runnerPromise;
 		const prompt = runner.prompt("long task", abortController.signal);
 		prompt.catch(() => undefined);
-		respond(child, "2", "prompt");
+		respond(child, "1", "prompt");
 
 		abortController.abort();
 		scheduler.runNext();
@@ -388,10 +381,7 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: dispose is idempotent for repeated cleanup paths.
 		// Dependencies: fake child process.
 		const fake = createFakeRunnerFactory();
-		const runnerPromise = fake.factory(createRunnerOptions());
-		const child = fake.spawned[0]?.process as FakeProcess;
-		respond(child, "1", "set_auto_retry");
-		const runner = await runnerPromise;
+		const { runner, child } = await createReadyRunner(fake);
 
 		await runner.dispose();
 		await runner.dispose();

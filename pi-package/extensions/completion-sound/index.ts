@@ -2,15 +2,15 @@ import { type SpawnOptions, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { platform as getPlatform } from "node:os";
 import { env as processEnv } from "node:process";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type {
+	AgentEndEvent,
+	ExtensionAPI,
+} from "@mariozechner/pi-coding-agent";
 import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
-import {
-	SUBAGENT_AGENT_ID_ENV,
-	SUBAGENT_DEPTH_ENV,
-} from "../../shared/subagent-environment";
+import { isChildAgentProcess } from "../../shared/child-agent-environment";
 
 /** Suite directory owned only by this extension. */
 const COMPLETION_SOUND_EXTENSION_DIR = "completion-sound";
@@ -56,6 +56,11 @@ interface CompletionSoundSessionContext {
 	};
 }
 
+type AssistantAgentMessage = Extract<
+	AgentEndEvent["messages"][number],
+	{ readonly role: "assistant" }
+>;
+
 /** Optional dependencies that isolate environment and playback side effects. */
 export interface CompletionSoundDependencies {
 	readonly env?: NodeJS.ProcessEnv;
@@ -79,8 +84,8 @@ export default function completionSound(
 		}
 	});
 
-	pi.on("agent_end", async () => {
-		if (isSubagentProcess(runtimeEnv)) {
+	pi.on("agent_end", async (event) => {
+		if (isChildAgentProcess(runtimeEnv) || !isCompletedWorkEvent(event)) {
 			return;
 		}
 
@@ -101,12 +106,28 @@ export default function completionSound(
 	});
 }
 
-/** Returns true when this pi process is a child subagent process. */
-function isSubagentProcess(env: NodeJS.ProcessEnv): boolean {
+/** Returns true only for agent endings that represent completed assistant work. */
+function isCompletedWorkEvent(event: AgentEndEvent): boolean {
+	const lastAssistantMessage = findLastAssistantMessage(event.messages);
 	return (
-		env[SUBAGENT_AGENT_ID_ENV] !== undefined ||
-		env[SUBAGENT_DEPTH_ENV] !== undefined
+		lastAssistantMessage !== undefined &&
+		lastAssistantMessage.stopReason !== "error" &&
+		lastAssistantMessage.stopReason !== "aborted"
 	);
+}
+
+/** Finds the latest assistant message because tool results can follow assistant turns. */
+function findLastAssistantMessage(
+	messages: AgentEndEvent["messages"],
+): AssistantAgentMessage | undefined {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role === "assistant") {
+			return message;
+		}
+	}
+
+	return undefined;
 }
 
 /** Reads and validates config while missing config keeps platform-default playback enabled. */

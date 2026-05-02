@@ -51,12 +51,6 @@ export function createParticipantRunnerFactory(
 			createProcessTransport(child),
 			options.onSessionEvent,
 		);
-		try {
-			await client.initialize();
-		} catch (error) {
-			child.kill("SIGTERM");
-			throw error;
-		}
 		return new RpcParticipantRunner(child, client, {
 			setTimeout: dependencies.setTimeout ?? globalThis.setTimeout,
 			clearTimeout:

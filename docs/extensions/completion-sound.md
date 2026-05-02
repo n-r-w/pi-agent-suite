@@ -2,15 +2,14 @@
 
 ## Purpose
 
-`completion-sound` plays a completion sound only for top-level pi agent runs.
+`completion-sound` plays a completion sound only after successful top-level pi agent runs.
 
 ## Behavior
 
 - Is enabled by default when `config.json` is missing.
 - Runs on `agent_end`.
-- Plays sound only when the current process is not a subagent process.
-- Treats `PI_SUBAGENT_AGENT_ID` as a subagent process marker when the variable exists.
-- Treats `PI_SUBAGENT_DEPTH` as a subagent process marker when the variable exists.
+- Plays sound only when the current process is not a child agent process and the latest assistant message did not end with `error` or `aborted`.
+- Treats `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1` as the shared child agent process marker.
 - Uses a platform default playback command when `command` is omitted.
 - Uses configured `command` and `args` when both are provided.
 - Allows an empty `args` array.
@@ -51,9 +50,9 @@ Defaults:
 
 Tests must verify:
 
-- default sound playback on `agent_end` in a top-level process;
-- no sound playback when `PI_SUBAGENT_AGENT_ID` exists;
-- no sound playback when `PI_SUBAGENT_DEPTH` exists;
+- default sound playback on successful `agent_end` in a top-level process;
+- no sound playback when `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1`;
+- no sound playback when the latest assistant message ends with `error` or `aborted`;
 - configured playback command and arguments are used;
 - disabled config prevents playback;
 - playback failures do not throw from the `agent_end` handler;

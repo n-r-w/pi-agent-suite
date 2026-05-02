@@ -53,6 +53,12 @@ interface IntervalRegistration {
 	readonly id: ReturnType<typeof setInterval>;
 }
 
+interface TimeoutRegistration {
+	readonly callback: () => void;
+	readonly timeoutMs: number;
+	readonly id: ReturnType<typeof setTimeout>;
+}
+
 type SessionHandler = (event: unknown, ctx: unknown) => Promise<void> | void;
 
 type FetchFake = (
@@ -205,6 +211,38 @@ async function withFakeIntervals<T>(
 	} finally {
 		globalThis.setInterval = originalSetInterval;
 		globalThis.clearInterval = originalClearInterval;
+	}
+}
+
+/** Runs a test with fake timeout functions so retry delays are observable without waiting. */
+async function withFakeTimeouts<T>(
+	action: (
+		timeouts: TimeoutRegistration[],
+		cleared: ReturnType<typeof setTimeout>[],
+	) => Promise<T>,
+): Promise<T> {
+	const originalSetTimeout = globalThis.setTimeout;
+	const originalClearTimeout = globalThis.clearTimeout;
+	const timeouts: TimeoutRegistration[] = [];
+	const cleared: ReturnType<typeof setTimeout>[] = [];
+
+	globalThis.setTimeout = ((callback: () => void, timeoutMs?: number) => {
+		const id = { id: timeouts.length + 1 } as unknown as ReturnType<
+			typeof setTimeout
+		>;
+		timeouts.push({ callback, timeoutMs: timeoutMs ?? 0, id });
+		queueMicrotask(callback);
+		return id;
+	}) as typeof setTimeout;
+	globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+		cleared.push(id);
+	}) as typeof clearTimeout;
+
+	try {
+		return await action(timeouts, cleared);
+	} finally {
+		globalThis.setTimeout = originalSetTimeout;
+		globalThis.clearTimeout = originalClearTimeout;
 	}
 }
 
@@ -450,6 +488,114 @@ describe("codex-quota", () => {
 						);
 					},
 				);
+			});
+		});
+	});
+
+	test("retries failed quota requests before showing quota", async () => {
+		// Purpose: transient quota request failures must be retried before the footer is marked as failed.
+		// Input and expected output: retryAttempts 3 with retryInterval 7 retries two failures and then shows the successful quota response.
+		// Edge case: both HTTP failures and thrown fetch failures are retried with the same configured delay.
+		// Dependencies: this test uses temp config, fake model registry, fake fetch, fake intervals, and fake timeouts.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeQuotaConfig(
+				agentDir,
+				JSON.stringify({ enabled: true, retryAttempts: 3, retryInterval: 7 }),
+			);
+
+			await withFakeIntervals(async () => {
+				await withFakeTimeouts(async (timeouts) => {
+					const fetchResults = [
+						new Response("server error", { status: 503 }),
+						new Error("temporary network failure"),
+						new Response(
+							JSON.stringify({
+								rate_limit: { primary_window: { used_percent: 12 } },
+							}),
+							{ status: 200 },
+						),
+					];
+					let fetchCallCount = 0;
+
+					await withFakeFetch(
+						async () => {
+							fetchCallCount += 1;
+							const result = fetchResults.shift();
+							if (result === undefined) {
+								throw new Error("unexpected fetch call");
+							}
+							if (result instanceof Error) {
+								throw result;
+							}
+
+							return result;
+						},
+						async () => {
+							const pi = createExtensionApiFake();
+							const session = createSessionContextFake();
+							codexQuota(pi);
+
+							await startQuotaSession(pi, session.ctx);
+
+							expect(fetchCallCount).toBe(3);
+							expect(timeouts.map((timeout) => timeout.timeoutMs)).toEqual([
+								7_000, 7_000,
+							]);
+							expect(session.statuses.at(-1)).toEqual({
+								key: "codex-quota",
+								text: "88%",
+							});
+						},
+					);
+				});
+			});
+		});
+	});
+
+	test("uses default retry settings for quota request failures", async () => {
+		// Purpose: omitted retry config must use the documented default attempt count and retry interval.
+		// Input and expected output: enabled config with no retry fields retries four failures, waits 2 seconds between attempts, and succeeds on the fifth request.
+		// Edge case: the final allowed attempt succeeds, proving retryAttempts counts total request attempts.
+		// Dependencies: this test uses temp config, fake model registry, fake fetch, fake intervals, and fake timeouts.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeQuotaConfig(agentDir, JSON.stringify({ enabled: true }));
+
+			await withFakeIntervals(async () => {
+				await withFakeTimeouts(async (timeouts) => {
+					let fetchCallCount = 0;
+
+					await withFakeFetch(
+						async () => {
+							fetchCallCount += 1;
+							if (fetchCallCount < 5) {
+								return new Response("server error", { status: 503 });
+							}
+
+							return new Response(
+								JSON.stringify({
+									rate_limit: { primary_window: { used_percent: 20 } },
+								}),
+								{ status: 200 },
+							);
+						},
+						async () => {
+							const pi = createExtensionApiFake();
+							const session = createSessionContextFake();
+							codexQuota(pi);
+
+							await startQuotaSession(pi, session.ctx);
+
+							expect(fetchCallCount).toBe(5);
+							expect(timeouts.map((timeout) => timeout.timeoutMs)).toEqual([
+								2_000, 2_000, 2_000, 2_000,
+							]);
+							expect(session.statuses.at(-1)).toEqual({
+								key: "codex-quota",
+								text: "80%",
+							});
+						},
+					);
+				});
 			});
 		});
 	});
@@ -723,7 +869,7 @@ describe("codex-quota", () => {
 
 	test("uses default interval and reports only codex-quota issues when config is invalid", async () => {
 		// Purpose: malformed config must not block quota polling and must isolate diagnostics to codex-quota.
-		// Input and expected output: unsupported key, invalid JSON, non-number, low number, and non-finite values produce warnings and 60-second intervals.
+		// Input and expected output: unsupported key, invalid JSON, invalid refreshInterval, invalid retryAttempts, and invalid retryInterval produce warnings and 60-second intervals.
 		// Edge cases: all invalid configuration cases listed in the extension README are covered.
 		// Dependencies: this test uses temp config, fake model registry, fake fetch, and fake intervals.
 		const invalidConfigs = [
@@ -732,6 +878,10 @@ describe("codex-quota", () => {
 			JSON.stringify({ enabled: true, refreshInterval: "10" }),
 			JSON.stringify({ enabled: true, refreshInterval: 9 }),
 			'{"enabled":true,"refreshInterval":1e999}',
+			JSON.stringify({ enabled: true, retryAttempts: 0 }),
+			JSON.stringify({ enabled: true, retryAttempts: 1.5 }),
+			JSON.stringify({ enabled: true, retryInterval: 0 }),
+			'{"enabled":true,"retryInterval":1e999}',
 		];
 
 		for (const configContent of invalidConfigs) {
@@ -1030,10 +1180,14 @@ describe("codex-quota", () => {
 
 	test("renders compact unknown and error quota statuses", async () => {
 		// Purpose: fallback status text must stay short when payload has no usable quota windows and when fetch fails.
-		// Input and expected output: empty usage response produces CX ?, then interval fetch 503 produces CX err.
+		// Input and expected output: empty usage response produces CX ?, then interval fetch 503 with one allowed attempt produces CX err.
 		// Edge case: a successful response with unknown shape is displayed as unknown quota data.
-		// Dependencies: this test uses fake model registry, fake fetch, and fake intervals.
-		await withIsolatedAgentDir(async () => {
+		// Dependencies: this test uses temp config, fake model registry, fake fetch, and fake intervals.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeQuotaConfig(
+				agentDir,
+				JSON.stringify({ enabled: true, retryAttempts: 1 }),
+			);
 			await withFakeIntervals(async (intervals) => {
 				const responses = [
 					new Response(JSON.stringify({}), { status: 200 }),
