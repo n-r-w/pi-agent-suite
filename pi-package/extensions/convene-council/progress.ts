@@ -95,12 +95,21 @@ interface CouncilProgressState {
 	readonly runId: string;
 	readonly question: string;
 	participants: CouncilParticipantDetails[];
+	readonly participantTurnTimers: CouncilParticipantTurnTimer[];
 	readonly iterationLimit: number;
 	readonly startedAtMs: number;
 	iteration: number;
 	phase: string;
 	readonly events: CouncilProgressEvent[];
 	omittedEventCount: number;
+}
+
+/** Tracks the active or last completed turn duration for one participant row. */
+interface CouncilParticipantTurnTimer {
+	readonly participantId: ParticipantId;
+	startedAtMs: number | undefined;
+	elapsedMs: number;
+	active: boolean;
 }
 
 /** Stores serializable progress details used only by live TUI rendering. */
@@ -167,10 +176,12 @@ export function createCouncilProgressReporter({
 	readonly iterationLimit: number;
 	readonly onUpdate: ((partial: AgentToolResult<unknown>) => void) | undefined;
 }): CouncilProgressReporter {
+	const participants = createInitialParticipantDetails(runId, runtime);
 	const state: CouncilProgressState = {
 		runId,
 		question,
-		participants: createInitialParticipantDetails(runId, runtime),
+		participants,
+		participantTurnTimers: createInitialParticipantTurnTimers(participants),
 		iterationLimit,
 		startedAtMs: Date.now(),
 		iteration: 0,
@@ -308,6 +319,7 @@ function recordParticipantRequest(
 	if (options.phase !== undefined) {
 		state.phase = formatDisplayText(state, options.phase);
 	}
+	startParticipantTurn(state, options.participantId, Date.now());
 	updateParticipantProgress(state, options.participantId, {
 		status: "running",
 		activity: formatDisplayText(state, options.title),
@@ -326,6 +338,7 @@ function recordParticipantOpinion(
 	opinion: string,
 ): void {
 	const preview = normalizeProgressText(opinion);
+	finishParticipantTurn(state, participantId, Date.now());
 	updateParticipantProgress(state, participantId, {
 		activity: preview === undefined ? "opinion" : `opinion ${preview}`,
 	});
@@ -347,6 +360,7 @@ function recordParticipantResponse(
 	},
 ): void {
 	const preview = normalizeProgressText(options.opinion);
+	finishParticipantTurn(state, options.participantId, Date.now());
 	updateParticipantProgress(state, options.participantId, {
 		activity:
 			preview === undefined ? options.status : `${options.status} ${preview}`,
@@ -366,6 +380,7 @@ function recordParticipantClarification(
 	clarification: string,
 ): void {
 	const preview = normalizeProgressText(clarification);
+	finishParticipantTurn(state, participantId, Date.now());
 	updateParticipantProgress(state, participantId, {
 		activity:
 			preview === undefined ? "clarification" : `clarification ${preview}`,
@@ -412,6 +427,12 @@ function recordParticipantSessionEvent(
 		event,
 	);
 	if (participantUpdate !== undefined) {
+		const eventType = isPlainRecord(event)
+			? getStringField(event, "type")
+			: undefined;
+		if (eventType === "agent_end") {
+			finishParticipantTurn(state, participantId, Date.now());
+		}
 		updateParticipantProgress(state, participantId, participantUpdate);
 	}
 	const progressEvent = toParticipantSessionProgressEvent(participantId, event);
@@ -556,6 +577,7 @@ function recordParticipantSuccess(
 	if (options.phase !== undefined) {
 		state.phase = formatDisplayText(state, options.phase);
 	}
+	finishParticipantTurn(state, options.participantId, Date.now());
 	updateParticipantProgress(state, options.participantId, {
 		activity: formatDisplayText(state, options.title),
 	});
@@ -589,6 +611,7 @@ function finishCouncilProgress(
 	phase: string,
 ): CouncilRunDetails {
 	state.phase = formatDisplayText(state, phase);
+	finishActiveParticipantTurns(state, Date.now());
 	for (const participant of state.participants) {
 		updateParticipantProgress(state, participant.participantId, { status });
 	}
@@ -712,7 +735,11 @@ function toCouncilRunDetails(
 		iterationLimit: state.iterationLimit,
 		participants: state.participants.map((participant) => ({
 			...participant,
-			elapsedMs: Math.max(0, nowMs - state.startedAtMs),
+			elapsedMs: getParticipantTurnElapsedMs(
+				state,
+				participant.participantId,
+				nowMs,
+			),
 		})),
 		events: state.events.map((event) => ({ ...event })),
 		omittedEventCount: state.omittedEventCount,
@@ -788,6 +815,83 @@ function formatDisplayText(state: CouncilProgressState, text: string): string {
 				participant.displayName,
 			),
 		text,
+	);
+}
+
+/** Builds timers that keep participant row durations scoped to their latest council turn. */
+function createInitialParticipantTurnTimers(
+	participants: readonly CouncilParticipantDetails[],
+): CouncilParticipantTurnTimer[] {
+	return participants.map((participant) => ({
+		participantId: participant.participantId,
+		startedAtMs: undefined,
+		elapsedMs: 0,
+		active: false,
+	}));
+}
+
+/** Starts a fresh visible work timer for one participant turn. */
+function startParticipantTurn(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+	nowMs: number,
+): void {
+	const timer = getParticipantTurnTimer(state, participantId);
+	if (timer === undefined) {
+		return;
+	}
+	timer.startedAtMs = nowMs;
+	timer.elapsedMs = 0;
+	timer.active = true;
+}
+
+/** Freezes one participant turn timer when the child finishes its current prompt. */
+function finishParticipantTurn(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+	nowMs: number,
+): void {
+	const timer = getParticipantTurnTimer(state, participantId);
+	if (timer === undefined || !timer.active || timer.startedAtMs === undefined) {
+		return;
+	}
+	timer.elapsedMs = Math.max(0, nowMs - timer.startedAtMs);
+	timer.active = false;
+}
+
+/** Freezes all active turn timers before a terminal council status is emitted. */
+function finishActiveParticipantTurns(
+	state: CouncilProgressState,
+	nowMs: number,
+): void {
+	for (const timer of state.participantTurnTimers) {
+		finishParticipantTurn(state, timer.participantId, nowMs);
+	}
+}
+
+/** Returns the elapsed duration for the active or last completed participant turn. */
+function getParticipantTurnElapsedMs(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+	nowMs: number,
+): number {
+	const timer = getParticipantTurnTimer(state, participantId);
+	if (timer === undefined) {
+		return 0;
+	}
+	if (timer.active && timer.startedAtMs !== undefined) {
+		return Math.max(0, nowMs - timer.startedAtMs);
+	}
+	return timer.elapsedMs;
+}
+
+/** Finds the mutable turn timer for one participant row. */
+function getParticipantTurnTimer(
+	state: CouncilProgressState,
+	participantId: ParticipantId,
+): CouncilParticipantTurnTimer | undefined {
+	return state.participantTurnTimers.find(
+		(timer) => timer.participantId === participantId,
 	);
 }
 
