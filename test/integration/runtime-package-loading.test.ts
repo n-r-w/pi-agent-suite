@@ -17,6 +17,11 @@ const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_TOOLS_ENV = "PI_SUBAGENT_TOOLS";
 
+interface RuntimeDump {
+	readonly tools: readonly string[];
+	readonly systemPrompt: string;
+}
+
 /** Writes one markdown agent definition into the isolated suite agent directory. */
 function writeAgent(agentDir: string, fileName: string, content: string): void {
 	writeFileSync(
@@ -106,6 +111,30 @@ function writePromptDumpExtension(directory: string): string {
 	return extensionPath;
 }
 
+/** Writes a debug extension that exits after dumping loaded tools and final system prompt. */
+function writeRuntimeDumpExtension(directory: string): string {
+	const extensionPath = join(directory, "dump-runtime.ts");
+	writeFileSync(
+		extensionPath,
+		[
+			'import { writeFileSync } from "node:fs";',
+			"",
+			"export default function dumpRuntime(pi) {",
+			'\tpi.on("before_agent_start", (event) => {',
+			"\t\tconst dumpFile = process.env.PI_RUNTIME_DUMP_FILE;",
+			'\t\tif (dumpFile === undefined) throw new Error("PI_RUNTIME_DUMP_FILE is required");',
+			"\t\twriteFileSync(dumpFile, JSON.stringify({",
+			"\t\t\ttools: pi.getAllTools().map((tool) => tool.name),",
+			"\t\t\tsystemPrompt: event.systemPrompt,",
+			"\t\t}, null, 2));",
+			"\t\tprocess.exit(23);",
+			"\t});",
+			"}",
+		].join("\n"),
+	);
+	return extensionPath;
+}
+
 test("runtime package loading keeps selected-agent allowlist across split entries", () => {
 	// Purpose: real pi package loading must keep main-agent-selection and run-subagent in one runtime composition.
 	// Input and expected output: selected TestAgent allows only SubAgentExtractor, so the final prompt lists only SubAgentExtractor.
@@ -136,7 +165,6 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 			"pi",
 			[
 				"--no-session",
-				"--offline",
 				"--no-extensions",
 				"-p",
 				"-e",
@@ -169,6 +197,117 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 		}
 		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(poisonedSuiteDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+	}
+});
+
+test("runtime package loading applies system-prompt before agent runtime contributions", () => {
+	// Purpose: real package load order must let system-prompt replace only the base prompt and keep selected-agent prompt additions after it.
+	// Input and expected output: suite config points system-prompt to a temp Markdown template, and selected TestAgent still appears later.
+	// Edge case: the extension must be registered before the shared runtime composition handler is created by agent-related extensions.
+	// Dependencies: local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
+	const cwd = process.cwd();
+	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-system-prompt-"));
+	const agentDir = createIsolatedAgentDir(cwd);
+	const promptDumpFile = join(scratchDir, "system-prompt.txt");
+	const debugExtensionPath = writePromptDumpExtension(scratchDir);
+	const customTemplateFile = join(scratchDir, "system.md");
+	mkdirSync(join(agentDir, "agent-suite", "system-prompt"), {
+		recursive: true,
+	});
+	writeFileSync(
+		customTemplateFile,
+		"Suite system prompt\n\nTools:\n{{tools}}\n\n{{unknown-from-test}}",
+	);
+	writeFileSync(
+		join(agentDir, "agent-suite", "system-prompt", "config.json"),
+		JSON.stringify({ templateFile: customTemplateFile }),
+	);
+	const childEnv: Record<string, string | undefined> = {
+		...process.env,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+		PI_PROMPT_DUMP_FILE: promptDumpFile,
+	};
+	delete childEnv[SUBAGENT_AGENT_ID_ENV];
+	delete childEnv[SUBAGENT_DEPTH_ENV];
+	delete childEnv[SUBAGENT_TOOLS_ENV];
+
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"-p",
+				"-e",
+				join(cwd, "pi-package"),
+				"-e",
+				debugExtensionPath,
+				"debug system prompt package order",
+			],
+			{
+				cwd,
+				encoding: "utf8",
+				env: childEnv,
+				timeout: 30_000,
+			},
+		);
+
+		expect(result.status).toBe(23);
+		const prompt = readFileSync(promptDumpFile, "utf8");
+		expect(prompt).toStartWith("Suite system prompt");
+		expect(prompt).toContain("Test agent prompt");
+		expect(prompt).not.toContain("{{unknown-from-test}}");
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+	}
+});
+
+test("runtime package loading exposes convene_council", () => {
+	// Purpose: real pi package loading must register convene_council.
+	// Input and expected output: package load exposes the tool when all tools are active.
+	// Edge case: this test uses no selected main-agent allowlist that could hide the tool.
+	// Dependencies: local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
+	const cwd = process.cwd();
+	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-council-debug-"));
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-runtime-council-agent-"));
+	const runtimeDumpFile = join(scratchDir, "runtime.json");
+	const debugExtensionPath = writeRuntimeDumpExtension(scratchDir);
+	const childEnv: Record<string, string | undefined> = {
+		...process.env,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+		PI_RUNTIME_DUMP_FILE: runtimeDumpFile,
+	};
+	delete childEnv[SUBAGENT_AGENT_ID_ENV];
+	delete childEnv[SUBAGENT_DEPTH_ENV];
+	delete childEnv[SUBAGENT_TOOLS_ENV];
+
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"-p",
+				"-e",
+				join(cwd, "pi-package"),
+				"-e",
+				debugExtensionPath,
+				"debug runtime dump",
+			],
+			{ cwd, encoding: "utf8", env: childEnv, timeout: 30_000 },
+		);
+
+		expect(result.status).toBe(23);
+		const runtime = JSON.parse(
+			readFileSync(runtimeDumpFile, "utf8"),
+		) as RuntimeDump;
+		expect(runtime.tools).toContain("convene_council");
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });
 	}
 });

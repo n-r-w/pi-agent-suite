@@ -26,8 +26,13 @@
 - Removes the pending `consult_advisor` tool call from the advisor transcript.
 - Appends the advisor question as a user message.
 - Uses the advisor system prompt instead of the main model system prompt.
+- Appends Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt.
 - Sends the advisor context with `tools: []`.
 - Calls the advisor through `completeSimple` only when a tokenizer-based serialized-input estimate fits the advisor model context window.
+- Retries transient advisor provider failures with `p-retry`.
+- Uses advisor retry defaults `retry.enabled: true`, `retry.maxRetries: 3`, and `retry.baseDelayMs: 2000`.
+- Applies exponential retry backoff with factor `2` and no random jitter.
+- Does not retry aborted advisor requests.
 - Returns an explicit context-size error without calling the provider when the advisor input may be too large.
 - Adds a visible-text response instruction to prevent reasoning-only advisor output.
 - Returns an explicit empty-response error when the provider returns no visible text.
@@ -57,6 +62,11 @@ File: `~/.pi/agent/agent-suite/consult-advisor/config.json`.
     "id": "provider/model",
     "thinking": "high"
   },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000
+  },
   "debugPayloadFile": "./debug/consult-advisor-payload.json"
 }
 ```
@@ -70,6 +80,10 @@ Optional fields:
 - `model.thinking`
 - `promptFile`
 - `debugPayloadFile`
+- `retry`
+- `retry.enabled`
+- `retry.maxRetries`
+- `retry.baseDelayMs`
 
 Allowed `model.thinking` values:
 
@@ -92,6 +106,7 @@ Tests must verify:
 - `tools: []` in the advisor context;
 - resolved advisor API key and request headers in the model call options;
 - visible-text response instruction in the advisor system prompt;
+- Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` in the advisor system prompt;
 - `consult_advisor: {question preview}` in the tool call renderer;
 - `Advice: {answer preview}` in the collapsed result renderer;
 - collapsed answer preview height through `COLLAPSED_ADVICE_PREVIEW_LINES`;
@@ -106,6 +121,9 @@ Tests must verify:
 - projection replay from recorded `context-projection` state;
 - full-context behavior when projection config is missing, disabled, invalid, or state is empty;
 - provider call prevention when advisor input exceeds the advisor model context window;
+- retry for transient thrown provider failures and retryable advisor error responses;
+- no retry for aborted advisor requests;
+- advisor retry config validation;
 - issue creation only for `consult-advisor` on configuration error;
 - contribution publication to `Agent Runtime Composition` without direct `pi.setActiveTools()` calls;
 - advisor guidance omission when the current effective agent does not enable `consult_advisor`.

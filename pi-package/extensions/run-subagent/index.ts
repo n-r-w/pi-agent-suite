@@ -1,6 +1,4 @@
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
-import { StringDecoder } from "node:string_decoder";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type {
@@ -16,7 +14,21 @@ import {
 	getAgentRuntimeComposition,
 	type MainAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
+import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
+import {
+	type ChildRpcPromptCompletion,
+	type ChildRpcRuntimeFacts,
+	createChildRpcPromptCompletion,
+} from "../../shared/child-rpc-completion";
+import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
+import {
+	CHILD_RPC_STREAMED_TEXT_BYTES_LIMIT as CHILD_STREAMED_TEXT_BYTES_LIMIT,
+	CHILD_RPC_STREAMED_TEXT_MIB_LIMIT as CHILD_STREAMED_TEXT_MIB_LIMIT,
+	ChildRpcStreamParser,
+	CHILD_RPC_OVERSIZED_JSON_EVENT_ERROR as OVERSIZED_CHILD_JSON_EVENT_ERROR,
+	CHILD_RPC_SKIPPED_TEXT_PART_TYPE as SKIPPED_TEXT_PART_TYPE,
+} from "../../shared/child-rpc-stream";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -46,13 +58,6 @@ import {
 	SUBAGENT_WIDGET_KEY,
 } from "./widget";
 
-/** CommonJS loader used for the stream-json parser package exported as CommonJS. */
-const requireStreamJson = createRequire(import.meta.url);
-/** Streaming JSON parser factory used only for oversized child RPC JSONL projection. */
-const streamJsonParser = requireStreamJson("stream-json/parser.js") as {
-	readonly parser: StreamJsonParserFactory;
-};
-
 const TOOL_NAME = "run_subagent";
 const ISSUE_PREFIX = "[run-subagent]";
 const RUN_SUBAGENT_EXTENSION_DIR = "run-subagent";
@@ -72,38 +77,8 @@ const ELAPSED_SECONDS_FRACTION_DIGITS = 1;
 const CHILD_ABORT_FALLBACK_TIMEOUT_MS = 10_000;
 /** Grace period after SIGTERM before escalating child termination to SIGKILL. */
 const CHILD_ABORT_KILL_TIMEOUT_MS = 5_000;
-/** Maximum stored child stderr diagnostics. */
-const CHILD_STDERR_TEXT_LIMIT = 64_000;
-/** Bytes in one kibibyte for child stream limits. */
-const BYTES_PER_KIB = 1024;
-/** Kibibytes in one mebibyte for child stream limits. */
-const KIB_PER_MIB = 1024;
-/** Bytes in one mebibyte for child stream limits. */
-const BYTES_PER_MIB = BYTES_PER_KIB * KIB_PER_MIB;
-/** Bounded JSONL suffix size kept for normal child stdout event parsing. */
-const CHILD_STDOUT_LINE_BUFFER_KIB = 256;
-/** Bounded JSONL suffix size in bytes kept for normal child stdout event parsing. */
-const CHILD_STDOUT_LINE_BUFFER_LIMIT =
-	CHILD_STDOUT_LINE_BUFFER_KIB * BYTES_PER_KIB;
-/** Maximum streamed final-answer text stored before failing closed. */
-const CHILD_STREAMED_TEXT_MIB_LIMIT = 100;
-/** Maximum streamed final-answer text in bytes stored before failing closed. */
-const CHILD_STREAMED_TEXT_BYTES_LIMIT =
-	CHILD_STREAMED_TEXT_MIB_LIMIT * BYTES_PER_MIB;
-/** Error returned when a large child RPC event cannot be projected safely. */
-const OVERSIZED_CHILD_JSON_EVENT_ERROR =
-	"child pi output exceeded supported JSON event size before final response could be parsed";
 /** Error returned when streamed final-answer accumulation exceeds its memory bound. */
 const OVERSIZED_CHILD_FINAL_RESPONSE_ERROR = `child pi final response exceeded ${CHILD_STREAMED_TEXT_MIB_LIMIT} MiB memory limit`;
-/** Error returned for invalid child RPC JSONL records. */
-const MALFORMED_CHILD_RPC_OUTPUT_ERROR =
-	"child pi emitted malformed RPC output";
-/** Synthetic content part marking text skipped from an oversized assistant message. */
-const SKIPPED_TEXT_PART_TYPE = "run_subagent_text_skipped";
-/** Maximum JSON object key text collected while projecting oversized RPC events. */
-const CHILD_RPC_PROJECTED_KEY_TEXT_LIMIT = 128;
-/** Maximum scalar control-field text collected while projecting oversized RPC events. */
-const CHILD_RPC_PROJECTED_SCALAR_TEXT_LIMIT = 4096;
 /** Error returned when child exits before the prompt completion event. */
 const INCOMPLETE_CHILD_RPC_RUN_ERROR =
 	"subagent exited before completing the task";
@@ -193,13 +168,7 @@ interface ChildRunResult {
 	readonly streamedTextExceededLimit: boolean;
 }
 
-interface ChildStreamState {
-	stdoutBuffer: string;
-	stdoutProjection: ChildRpcLineProjection | undefined;
-	stdoutBufferTruncated: boolean;
-	stdoutLineExceededLimit: boolean;
-	stderrText: string;
-	stderrTextTruncated: boolean;
+interface ChildFinalOutputState {
 	streamedText: string;
 	streamedTextBytes: number;
 	streamedTextExceededLimit: boolean;
@@ -234,76 +203,6 @@ interface BuildRunSubagentPromptOptions {
 	readonly isDepthAvailable: boolean;
 }
 
-interface StreamJsonToken {
-	readonly name: string;
-	readonly value?: unknown;
-}
-
-interface StreamJsonParserStream {
-	write(chunk: string): boolean;
-	end(): void;
-	on(event: "data", handler: (token: StreamJsonToken) => void): this;
-	on(event: "error", handler: (error: Error) => void): this;
-	on(event: "end", handler: () => void): this;
-}
-
-interface StreamJsonParserFactory {
-	asStream(options: {
-		readonly packKeys: boolean;
-		readonly streamKeys: boolean;
-		readonly packStrings: boolean;
-		readonly streamStrings: boolean;
-		readonly packNumbers: boolean;
-		readonly streamNumbers: boolean;
-	}): StreamJsonParserStream;
-}
-
-interface ChildRpcLineProjection {
-	readonly stream: StreamJsonParserStream;
-	readonly state: ChildRpcLineProjectionState;
-	readonly done: Promise<void>;
-	error: string | undefined;
-}
-
-interface ChildRpcLineProjectionState {
-	readonly stack: JsonProjectionContainer[];
-	currentString: JsonProjectionString | undefined;
-	eventType: string | undefined;
-	role: string | undefined;
-	stopReason: string | undefined;
-	assistantMessageEventType: string | undefined;
-	assistantMessageEventDelta: string | undefined;
-	assistantMessageEventDeltaBytes: number;
-	assistantMessageEventDeltaExceededLimit: boolean;
-	hasSkippedText: boolean;
-	hasToolCall: boolean;
-	toolCallId: string | undefined;
-	toolName: string | undefined;
-	toolIsError: boolean | undefined;
-	toolResultText: string | undefined;
-}
-
-interface JsonProjectionContainer {
-	readonly kind: "object" | "array";
-	readonly path: readonly string[];
-	pendingKey: string | undefined;
-	readonly contentPart: JsonProjectionContentPart | undefined;
-}
-
-interface JsonProjectionContentPart {
-	readonly owner: "message" | "toolResult";
-	type: string | undefined;
-	hasText: boolean;
-	text: string | undefined;
-}
-
-interface JsonProjectionString {
-	readonly kind: "key" | "value";
-	readonly path: readonly string[];
-	text: string;
-	truncated: boolean;
-}
-
 /** Extension entry point for subagent execution behavior. */
 export default async function runSubagent(
 	pi: ExtensionAPI,
@@ -321,7 +220,8 @@ export default async function runSubagent(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Run subagent",
-		description: "Run one configured callable agent in a child pi process.",
+		description:
+			"Run independent subagent. Running a subagent blocks your work until it finishes`",
 		parameters: RunSubagentParameters,
 		executionMode: "parallel",
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
@@ -347,6 +247,9 @@ async function publishRunSubagentPromptContribution(
 ): Promise<void> {
 	const composition = getAgentRuntimeComposition(pi);
 	const callableAgents = await loadCallableAgents();
+	writeRuntimeDiagnostic("run-subagent.prompt-contribution.published", {
+		callableAgentIds: callableAgents.map((agent) => agent.id),
+	});
 	composition.setRunSubagentContribution({
 		buildPrompt: async () =>
 			buildRunSubagentPrompt({
@@ -398,6 +301,13 @@ function buildRunSubagentPrompt({
 		mainAgent,
 		childAgentId,
 	);
+	writeRuntimeDiagnostic("run-subagent.prompt.build.started", {
+		mainAgentId: mainAgent?.id ?? null,
+		mainAgentTools: mainAgent?.tools ?? null,
+		mainAgentSubagents: mainAgent?.agents ?? null,
+		childAgentId: childAgentId ?? null,
+		isDepthAvailable,
+	});
 	const prompts: string[] = [];
 	if (childAgentId !== undefined) {
 		const childAgent = callableAgents.find(
@@ -408,19 +318,30 @@ function buildRunSubagentPrompt({
 		}
 	}
 
-	if (
-		!isDepthAvailable ||
-		!isRunSubagentAllowedForEffectiveAgent(pi, effectiveAgent)
-	) {
-		return prompts.length > 0 ? prompts.join("\n\n") : undefined;
+	const isAllowedForEffectiveAgent = isRunSubagentAllowedForEffectiveAgent(
+		pi,
+		effectiveAgent,
+	);
+	if (!isDepthAvailable || !isAllowedForEffectiveAgent) {
+		const prompt = prompts.length > 0 ? prompts.join("\n\n") : undefined;
+		writeRuntimeDiagnostic("run-subagent.prompt.build.skipped", {
+			mainAgentId: mainAgent?.id ?? null,
+			isDepthAvailable,
+			isAllowedForEffectiveAgent,
+			promptLength: prompt?.length ?? 0,
+		});
+		return prompt;
 	}
 
-	prompts.push(
-		formatCallableAgentsPrompt(
-			filterCallableAgents(callableAgents, effectiveAgent),
-		),
-	);
-	return prompts.join("\n\n");
+	const filteredAgents = filterCallableAgents(callableAgents, effectiveAgent);
+	prompts.push(formatCallableAgentsPrompt(filteredAgents));
+	const prompt = prompts.join("\n\n");
+	writeRuntimeDiagnostic("run-subagent.prompt.build.applied", {
+		mainAgentId: mainAgent?.id ?? null,
+		callableAgentIds: filteredAgents.map((agent) => agent.id),
+		promptLength: prompt.length,
+	});
+	return prompt;
 }
 
 /** Resolves the agent whose subagent policy controls the current process. */
@@ -701,6 +622,11 @@ async function runResolvedChildPi(
 	plan: ResolvedRunSubagentExecution,
 	progress: ReturnType<typeof createRunSubagentProgress>,
 ): Promise<ChildRunResult> {
+	const env = createChildEnvironment({
+		[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
+		[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
+		...plan.childTools.env,
+	});
 	return runChildPi(options.spawnPi, {
 		args: buildChildArgs({
 			modelId: plan.modelId,
@@ -708,10 +634,12 @@ async function runResolvedChildPi(
 			toolPolicy: plan.childTools,
 		}),
 		cwd: options.ctx.cwd,
-		env: createChildEnvironment({
-			[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
-			[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
-			...plan.childTools.env,
+		env,
+		runtimeFacts: resolveChildRpcRuntimeFacts({
+			modelId: plan.modelId,
+			modelRegistry: options.ctx.modelRegistry,
+			cwd: options.ctx.cwd,
+			env,
 		}),
 		signal: options.signal,
 		prompt: options.params.prompt,
@@ -979,6 +907,7 @@ async function runChildPi(
 		readonly args: string[];
 		readonly cwd: string;
 		readonly env: Record<string, string>;
+		readonly runtimeFacts: ChildRpcRuntimeFacts;
 		readonly signal: AbortSignal | undefined;
 		readonly prompt: string;
 		readonly onSessionEvent: (event: unknown) => void;
@@ -990,7 +919,7 @@ async function runChildPi(
 			env: options.env,
 			signal: undefined,
 		});
-		const rpcState = createChildRpcState();
+		const rpcState = createChildRpcState(options.runtimeFacts);
 		const closeStdin = () => closeChildStdin(child, rpcState);
 		const writeRpcCommand = (command: Record<string, unknown>) =>
 			writeChildRpcCommand(child, rpcState, command, closeStdin);
@@ -1019,9 +948,9 @@ async function runChildPi(
 }
 
 interface ChildRpcState {
-	readonly streamState: ChildStreamState;
-	readonly stdoutDecoder: StringDecoder;
-	readonly stderrDecoder: StringDecoder;
+	readonly parser: ChildRpcStreamParser;
+	readonly promptCompletion: ChildRpcPromptCompletion;
+	readonly outputState: ChildFinalOutputState;
 	stdoutProcessing: Promise<void>;
 	stdoutProcessingPending: boolean;
 	agentCompleted: boolean;
@@ -1035,22 +964,18 @@ interface ChildRpcState {
 }
 
 /** Creates mutable state for one child RPC process. */
-function createChildRpcState(): ChildRpcState {
+function createChildRpcState(
+	runtimeFacts: ChildRpcRuntimeFacts,
+): ChildRpcState {
 	return {
-		streamState: {
-			stdoutBuffer: "",
-			stdoutProjection: undefined,
-			stdoutBufferTruncated: false,
-			stdoutLineExceededLimit: false,
-			stderrText: "",
-			stderrTextTruncated: false,
+		parser: new ChildRpcStreamParser(),
+		promptCompletion: createChildRpcPromptCompletion(runtimeFacts),
+		outputState: {
 			streamedText: "",
 			streamedTextBytes: 0,
 			streamedTextExceededLimit: false,
 			finalText: "",
 		},
-		stdoutDecoder: new StringDecoder("utf8"),
-		stderrDecoder: new StringDecoder("utf8"),
 		stdoutProcessing: Promise.resolve(),
 		stdoutProcessingPending: false,
 		agentCompleted: false,
@@ -1117,6 +1042,7 @@ function abortChildRpcRun(
 		return;
 	}
 	state.aborted = true;
+	state.promptCompletion.recordParentAbort();
 	writeRpcCommand({ id: ABORT_COMMAND_ID, type: "abort" });
 	scheduleChildTerminationFallback(child, state);
 }
@@ -1166,11 +1092,7 @@ function attachChildRpcProcessHandlers(
 	});
 	child.stdout.on("data", (data) => {
 		const processData = () =>
-			handleChildStdoutData(
-				state.streamState,
-				state.stdoutDecoder.write(toBuffer(data)),
-				handleRpcMessage,
-			);
+			state.parser.processStdoutChunk(data, handleRpcMessage);
 		const handleLineError = (lineError: string | undefined) => {
 			if (lineError !== undefined) {
 				state.fatalError ??= lineError;
@@ -1206,10 +1128,7 @@ function attachChildRpcProcessHandlers(
 		state.stdoutProcessing = trackedProcessing;
 	});
 	child.stderr.on("data", (data) => {
-		handleChildStderrData(
-			state.streamState,
-			state.stderrDecoder.write(toBuffer(data)),
-		);
+		state.parser.processStderrChunk(data);
 	});
 	child.on("close", finish);
 	child.on("error", (error) => {
@@ -1256,7 +1175,7 @@ async function finishChildRpcRunAfterStdout(
 	options.signal?.removeEventListener("abort", options.abort);
 	try {
 		await stdoutProcessing;
-		handleChildStderrData(rpcState.streamState, rpcState.stderrDecoder.end());
+		rpcState.parser.flushStderr();
 		rpcState.fatalError ??= await flushRemainingChildStdout(
 			rpcState,
 			options.handleRpcMessage,
@@ -1282,17 +1201,7 @@ async function flushRemainingChildStdout(
 	state: ChildRpcState,
 	handleRpcMessage: (message: unknown) => void,
 ): Promise<string | undefined> {
-	const remainingText = state.stdoutDecoder.end();
-	if (remainingText.length > 0) {
-		const appendError = appendChildStdoutLineSegment(
-			state.streamState,
-			remainingText,
-		);
-		if (appendError !== undefined) {
-			return appendError;
-		}
-	}
-	return processChildStdoutLine(state.streamState, handleRpcMessage);
+	return await state.parser.flushStdout(handleRpcMessage);
 }
 
 /** Builds the child process result while preserving exact optional property semantics. */
@@ -1305,19 +1214,19 @@ function buildChildRunResult(
 		aborted: state.aborted,
 		agentCompleted: state.agentCompleted,
 		fatalError: state.fatalError,
-		hasFinalAnswer: state.streamState.finalText.length > 0,
+		hasFinalAnswer: state.outputState.finalText.length > 0,
 	});
 	const result = {
 		exitCode,
 		status,
-		stdoutText: state.streamState.finalText,
+		stdoutText: state.outputState.finalText,
 		stderrText: formatBoundedChildText(
-			state.streamState.stderrText,
-			state.streamState.stderrTextTruncated,
+			state.parser.diagnostics.stderr,
+			state.parser.diagnostics.stderrTruncated,
 			"child stderr",
 		),
-		stdoutLineExceededLimit: state.streamState.stdoutLineExceededLimit,
-		streamedTextExceededLimit: state.streamState.streamedTextExceededLimit,
+		stdoutLineExceededLimit: state.parser.diagnostics.stdoutLineExceededLimit,
+		streamedTextExceededLimit: state.outputState.streamedTextExceededLimit,
 	};
 	const errorMessage = resolveChildRunErrorMessage(exitCode, status, state);
 	return errorMessage === undefined ? result : { ...result, errorMessage };
@@ -1395,22 +1304,31 @@ function handleChildRpcSessionEvent(
 	if (options.rpcState.agentCompleted) {
 		return;
 	}
-	resetChildAssistantDeltaOnStart(options.rpcState.streamState, message);
-	recordChildAssistantDelta(options.rpcState.streamState, message);
+	resetChildAssistantDeltaOnStart(options.rpcState.outputState, message);
+	recordChildAssistantDelta(options.rpcState.outputState, message);
 	const assistantText = recordChildAssistantText(
-		options.rpcState.streamState,
+		options.rpcState.outputState,
 		message,
 	);
 	options.onSessionEvent(projectChildProgressEvent(message, assistantText));
-	if (message["type"] === "agent_end") {
-		options.rpcState.agentCompleted = true;
-		options.closeStdin();
+	const decision =
+		options.rpcState.promptCompletion.handleSessionEvent(message);
+	if (decision.kind === "wait") {
+		return;
 	}
+	options.rpcState.agentCompleted = true;
+	if (decision.kind === "failure") {
+		options.rpcState.fatalError ??= decision.reason;
+	}
+	if (decision.kind === "abort") {
+		options.rpcState.aborted = true;
+	}
+	options.closeStdin();
 }
 
 /** Appends streamed assistant deltas from RPC session events. */
 function recordChildAssistantDelta(
-	state: ChildStreamState,
+	state: ChildFinalOutputState,
 	message: unknown,
 ): void {
 	if (isProjectedTextDeltaExceeded(message)) {
@@ -1426,7 +1344,7 @@ function recordChildAssistantDelta(
 
 /** Stores the latest completed assistant text observed before completion. */
 function recordChildAssistantText(
-	state: ChildStreamState,
+	state: ChildFinalOutputState,
 	message: unknown,
 ): string | undefined {
 	const text = extractAssistantText(state, message);
@@ -1466,7 +1384,7 @@ function projectChildProgressEvent(
 
 /** Starts a new provisional streamed-text buffer for each assistant message. */
 function resetChildAssistantDeltaOnStart(
-	state: ChildStreamState,
+	state: ChildFinalOutputState,
 	message: unknown,
 ): void {
 	if (!isAssistantMessageStart(message)) {
@@ -1474,144 +1392,6 @@ function resetChildAssistantDeltaOnStart(
 	}
 	state.streamedText = "";
 	state.streamedTextBytes = 0;
-}
-
-/** Converts child process chunks into bytes for UTF-8 safe decoding. */
-function toBuffer(data: unknown): Buffer {
-	if (Buffer.isBuffer(data)) {
-		return data;
-	}
-	if (data instanceof Uint8Array) {
-		return Buffer.from(data);
-	}
-	return Buffer.from(String(data));
-}
-
-/** Processes one stdout chunk from the child RPC stream. */
-function handleChildStdoutData(
-	state: ChildStreamState,
-	data: unknown,
-	onRpcMessage: (message: unknown) => void,
-): string | Promise<string | undefined> | undefined {
-	return processChildStdoutSegments(
-		state,
-		String(data).split("\n"),
-		0,
-		onRpcMessage,
-	);
-}
-
-/** Processes stdout line segments and switches to async only for oversized JSON projection finalization. */
-function processChildStdoutSegments(
-	state: ChildStreamState,
-	segments: readonly string[],
-	startIndex: number,
-	onRpcMessage: (message: unknown) => void,
-): string | Promise<string | undefined> | undefined {
-	for (let index = startIndex; index < segments.length; index += 1) {
-		const appendError = appendChildStdoutLineSegment(
-			state,
-			segments[index] ?? "",
-		);
-		if (appendError !== undefined) {
-			return appendError;
-		}
-		if (index === segments.length - 1) {
-			break;
-		}
-		const lineError = processChildStdoutLine(state, onRpcMessage);
-		resetChildStdoutLine(state);
-		if (isPromiseLike(lineError)) {
-			return lineError.then(
-				(error) =>
-					error ??
-					processChildStdoutSegments(state, segments, index + 1, onRpcMessage),
-			);
-		}
-		if (lineError !== undefined) {
-			return lineError;
-		}
-	}
-	return undefined;
-}
-
-/** Appends one stdout segment while preserving a bounded suffix and streaming oversized lines through JSON projection. */
-function appendChildStdoutLineSegment(
-	state: ChildStreamState,
-	segment: string,
-): string | undefined {
-	if (!state.stdoutBufferTruncated) {
-		const nextLine = state.stdoutBuffer + segment;
-		if (nextLine.length <= CHILD_STDOUT_LINE_BUFFER_LIMIT) {
-			state.stdoutBuffer = nextLine;
-			return undefined;
-		}
-
-		state.stdoutBufferTruncated = true;
-		state.stdoutLineExceededLimit = true;
-		state.stdoutProjection = createChildRpcLineProjection();
-		state.stdoutBuffer = nextLine.slice(-CHILD_STDOUT_LINE_BUFFER_LIMIT);
-		return writeChildRpcLineProjectionSegment(state.stdoutProjection, nextLine);
-	}
-
-	state.stdoutBuffer = (state.stdoutBuffer + segment).slice(
-		-CHILD_STDOUT_LINE_BUFFER_LIMIT,
-	);
-	if (state.stdoutProjection === undefined) {
-		return MALFORMED_CHILD_RPC_OUTPUT_ERROR;
-	}
-	return writeChildRpcLineProjectionSegment(state.stdoutProjection, segment);
-}
-
-/** Resets per-line stdout buffers after one JSONL record has been processed. */
-function resetChildStdoutLine(state: ChildStreamState): void {
-	state.stdoutBuffer = "";
-	state.stdoutProjection = undefined;
-	state.stdoutBufferTruncated = false;
-}
-
-/** Processes one stderr chunk from the child process diagnostics stream. */
-function handleChildStderrData(state: ChildStreamState, data: unknown): void {
-	const boundedStderr = appendBoundedText(
-		state.stderrText,
-		String(data),
-		CHILD_STDERR_TEXT_LIMIT,
-	);
-	state.stderrText = boundedStderr.text;
-	state.stderrTextTruncated =
-		state.stderrTextTruncated || boundedStderr.truncated;
-}
-
-/** Parses one child stdout JSONL record and routes the decoded RPC message. */
-function processChildStdoutLine(
-	state: ChildStreamState,
-	onRpcMessage: (message: unknown) => void,
-): string | Promise<string | undefined> | undefined {
-	const line = state.stdoutBuffer.endsWith("\r")
-		? state.stdoutBuffer.slice(0, -1)
-		: state.stdoutBuffer;
-	if (line.trim().length === 0 && !state.stdoutBufferTruncated) {
-		return undefined;
-	}
-
-	if (state.stdoutBufferTruncated) {
-		return projectOversizedChildRpcLine(state.stdoutProjection).then(
-			(event) => {
-				if (event === undefined) {
-					return MALFORMED_CHILD_RPC_OUTPUT_ERROR;
-				}
-				onRpcMessage(event);
-				return undefined;
-			},
-		);
-	}
-
-	const event = parseJsonLine(line);
-	if (event === undefined) {
-		return MALFORMED_CHILD_RPC_OUTPUT_ERROR;
-	}
-	onRpcMessage(event);
-	return undefined;
 }
 
 /** Resolves final child run status from RPC and process lifecycle state. */
@@ -1655,7 +1435,10 @@ function handleExtensionUiRequest(
 }
 
 /** Appends one assistant text delta while enforcing the streamed-answer memory limit. */
-function appendStreamedTextDelta(state: ChildStreamState, delta: string): void {
+function appendStreamedTextDelta(
+	state: ChildFinalOutputState,
+	delta: string,
+): void {
 	if (state.streamedTextExceededLimit) {
 		return;
 	}
@@ -1671,20 +1454,6 @@ function appendStreamedTextDelta(state: ChildStreamState, delta: string): void {
 	state.streamedTextBytes = nextBytes;
 }
 
-/** Appends a text chunk while preserving only the latest text inside the configured limit. */
-function appendBoundedText(
-	currentText: string,
-	chunkText: string,
-	limit: number,
-): { readonly text: string; readonly truncated: boolean } {
-	const combinedText = currentText + chunkText;
-	if (combinedText.length <= limit) {
-		return { text: combinedText, truncated: false };
-	}
-
-	return { text: combinedText.slice(-limit), truncated: true };
-}
-
 /** Adds a visible truncation marker when child-process text exceeded its streaming limit. */
 function formatBoundedChildText(
 	text: string,
@@ -1696,570 +1465,6 @@ function formatBoundedChildText(
 	}
 
 	return `[${label} truncated to last ${text.length} characters]\n${text}`;
-}
-
-/** Creates streaming projection state for one oversized child RPC JSONL record. */
-function createChildRpcLineProjection(): ChildRpcLineProjection {
-	const state: ChildRpcLineProjectionState = {
-		stack: [],
-		currentString: undefined,
-		eventType: undefined,
-		role: undefined,
-		stopReason: undefined,
-		assistantMessageEventType: undefined,
-		assistantMessageEventDelta: undefined,
-		assistantMessageEventDeltaBytes: 0,
-		assistantMessageEventDeltaExceededLimit: false,
-		hasSkippedText: false,
-		hasToolCall: false,
-		toolCallId: undefined,
-		toolName: undefined,
-		toolIsError: undefined,
-		toolResultText: undefined,
-	};
-	const stream = streamJsonParser.parser.asStream({
-		packKeys: false,
-		streamKeys: true,
-		packStrings: false,
-		streamStrings: true,
-		packNumbers: false,
-		streamNumbers: false,
-	});
-	let resolveDone: () => void = () => {};
-	const done = new Promise<void>((resolve) => {
-		resolveDone = resolve;
-	});
-	const projection: ChildRpcLineProjection = {
-		stream,
-		state,
-		done,
-		error: undefined,
-	};
-	stream.on("data", (token) => recordChildRpcProjectionToken(state, token));
-	stream.on("error", (error) => {
-		projection.error = error.message;
-		resolveDone();
-	});
-	stream.on("end", resolveDone);
-	return projection;
-}
-
-/** Streams one segment into the oversized RPC projection parser. */
-function writeChildRpcLineProjectionSegment(
-	projection: ChildRpcLineProjection,
-	segment: string,
-): string | undefined {
-	try {
-		projection.stream.write(segment);
-		return undefined;
-	} catch (error) {
-		return formatError(error);
-	}
-}
-
-/** Finalizes an oversized RPC JSONL projection without materializing unneeded payloads. */
-async function projectOversizedChildRpcLine(
-	projection: ChildRpcLineProjection | undefined,
-): Promise<unknown | undefined> {
-	if (projection === undefined) {
-		return undefined;
-	}
-	projection.stream.end();
-	await projection.done;
-	if (projection.error !== undefined) {
-		return undefined;
-	}
-	return buildProjectedChildRpcEvent(projection.state);
-}
-
-/** Records one streaming JSON token into the bounded RPC event projection. */
-function recordChildRpcProjectionToken(
-	state: ChildRpcLineProjectionState,
-	token: StreamJsonToken,
-): void {
-	switch (token.name) {
-		case "startObject":
-			pushJsonProjectionContainer(state, "object");
-			return;
-		case "endObject":
-			popJsonProjectionContainer(state, "object");
-			return;
-		case "startArray":
-			pushJsonProjectionContainer(state, "array");
-			return;
-		case "endArray":
-			popJsonProjectionContainer(state, "array");
-			return;
-		case "startKey":
-			state.currentString = createJsonProjectionString("key", []);
-			return;
-		case "endKey":
-			finishJsonProjectionKey(state);
-			return;
-		case "startString":
-			startJsonProjectionStringValue(state);
-			return;
-		case "endString":
-			finishJsonProjectionStringValue(state);
-			return;
-		case "stringChunk":
-			recordJsonProjectionStringChunk(state, token.value);
-			return;
-		case "numberValue":
-		case "nullValue":
-			consumeJsonProjectionValuePath(state);
-			return;
-		case "trueValue":
-			recordJsonProjectionBooleanValue(state, true);
-			return;
-		case "falseValue":
-			recordJsonProjectionBooleanValue(state, false);
-			return;
-		default:
-			return;
-	}
-}
-
-/** Pushes a JSON container and marks payload areas that need bounded metadata. */
-function pushJsonProjectionContainer(
-	state: ChildRpcLineProjectionState,
-	kind: "object" | "array",
-): void {
-	const path = consumeJsonProjectionValuePath(state);
-	state.stack.push({
-		kind,
-		path,
-		pendingKey: undefined,
-		contentPart: createJsonProjectionContentPart(kind, path),
-	});
-}
-
-/**
- * Creates content-part metadata for payloads that affect parent progress.
- * Message content is tracked only as final-answer metadata; tool-result content is tracked only for bounded text.
- */
-function createJsonProjectionContentPart(
-	kind: "object" | "array",
-	path: readonly string[],
-): JsonProjectionContentPart | undefined {
-	if (kind !== "object") {
-		return undefined;
-	}
-	if (isJsonProjectionPath(path, "message", "content", "*")) {
-		return {
-			owner: "message",
-			type: undefined,
-			hasText: false,
-			text: undefined,
-		};
-	}
-	if (isJsonProjectionPath(path, "result", "content", "*")) {
-		return {
-			owner: "toolResult",
-			type: undefined,
-			hasText: false,
-			text: undefined,
-		};
-	}
-	return undefined;
-}
-
-/**
- * Pops a JSON container and commits bounded content metadata.
- * Image and binary parts are ignored here because they can exceed the child stdout line limit and are not useful in parent progress.
- */
-function popJsonProjectionContainer(
-	state: ChildRpcLineProjectionState,
-	kind: "object" | "array",
-): void {
-	const container = state.stack.pop();
-	if (container?.kind !== kind) {
-		return;
-	}
-	const { contentPart } = container;
-	if (contentPart === undefined) {
-		return;
-	}
-	if (contentPart.owner === "message") {
-		if (contentPart.type === "text" && contentPart.hasText) {
-			state.hasSkippedText = true;
-		}
-		if (contentPart.type === "toolCall") {
-			state.hasToolCall = true;
-		}
-		return;
-	}
-	if (contentPart.type === "text" && contentPart.text !== undefined) {
-		state.toolResultText = appendProjectedToolResultText(
-			state.toolResultText,
-			contentPart.text,
-		);
-	}
-}
-
-/**
- * Appends one text tool-result part while preserving the projection memory bound.
- * Oversized text is dropped instead of being partially trusted because progress text is diagnostic, not required for run completion.
- */
-function appendProjectedToolResultText(
-	currentText: string | undefined,
-	partText: string,
-): string | undefined {
-	const nextText =
-		currentText === undefined ? partText : `${currentText}\n${partText}`;
-	return nextText.length > CHILD_RPC_PROJECTED_SCALAR_TEXT_LIMIT
-		? undefined
-		: nextText;
-}
-
-/** Starts collecting a string value only when its path can affect control flow or safe progress text. */
-function startJsonProjectionStringValue(
-	state: ChildRpcLineProjectionState,
-): void {
-	const path = consumeJsonProjectionValuePath(state);
-	const contentPart = getCurrentJsonProjectionContentPart(state);
-	if (contentPart !== undefined) {
-		if (isJsonProjectionPath(path, "message", "content", "*", "text")) {
-			contentPart.hasText = true;
-		}
-		if (isJsonProjectionPath(path, "result", "content", "*", "text")) {
-			contentPart.hasText = true;
-		}
-	}
-	state.currentString = createJsonProjectionString("value", path);
-}
-
-/** Creates bounded string collection state for a key or scalar value. */
-function createJsonProjectionString(
-	kind: "key" | "value",
-	path: readonly string[],
-): JsonProjectionString {
-	return { kind, path, text: "", truncated: false };
-}
-
-/**
- * Records one string chunk without collecting large payloads.
- * Assistant message text is skipped because the streamed delta path owns final-answer recovery.
- */
-function recordJsonProjectionStringChunk(
-	state: ChildRpcLineProjectionState,
-	value: unknown,
-): void {
-	if (typeof value !== "string" || state.currentString === undefined) {
-		return;
-	}
-	if (state.currentString.kind === "value") {
-		if (
-			isJsonProjectionPath(
-				state.currentString.path,
-				"message",
-				"content",
-				"*",
-				"text",
-			)
-		) {
-			return;
-		}
-		if (
-			isJsonProjectionPath(
-				state.currentString.path,
-				"assistantMessageEvent",
-				"delta",
-			)
-		) {
-			appendProjectedAssistantDelta(state, value);
-			return;
-		}
-	}
-	appendJsonProjectionStringChunk(state.currentString, value);
-}
-
-/** Appends projected text_delta chunks with the same memory limit as normal streamed text. */
-function appendProjectedAssistantDelta(
-	state: ChildRpcLineProjectionState,
-	chunk: string,
-): void {
-	if (state.assistantMessageEventDeltaExceededLimit) {
-		return;
-	}
-	const nextBytes =
-		state.assistantMessageEventDeltaBytes + Buffer.byteLength(chunk, "utf8");
-	if (nextBytes > CHILD_STREAMED_TEXT_BYTES_LIMIT) {
-		state.assistantMessageEventDelta = undefined;
-		state.assistantMessageEventDeltaBytes = 0;
-		state.assistantMessageEventDeltaExceededLimit = true;
-		return;
-	}
-	state.assistantMessageEventDelta =
-		(state.assistantMessageEventDelta ?? "") + chunk;
-	state.assistantMessageEventDeltaBytes = nextBytes;
-}
-
-/** Appends bounded key or scalar text and marks overlarge values as unusable. */
-function appendJsonProjectionStringChunk(
-	state: JsonProjectionString,
-	chunk: string,
-): void {
-	if (state.truncated) {
-		return;
-	}
-	const limit =
-		state.kind === "key"
-			? CHILD_RPC_PROJECTED_KEY_TEXT_LIMIT
-			: CHILD_RPC_PROJECTED_SCALAR_TEXT_LIMIT;
-	const nextText = state.text + chunk;
-	if (nextText.length > limit) {
-		state.text = "";
-		state.truncated = true;
-		return;
-	}
-	state.text = nextText;
-}
-
-/** Stores a completed object key on the current object container. */
-function finishJsonProjectionKey(state: ChildRpcLineProjectionState): void {
-	const currentString = state.currentString;
-	state.currentString = undefined;
-	const container = state.stack.at(-1);
-	if (
-		currentString?.kind !== "key" ||
-		currentString.truncated ||
-		container?.kind !== "object"
-	) {
-		return;
-	}
-	container.pendingKey = currentString.text;
-}
-
-/** Stores a completed scalar value when it is part of the RPC control projection. */
-function finishJsonProjectionStringValue(
-	state: ChildRpcLineProjectionState,
-): void {
-	const currentString = state.currentString;
-	state.currentString = undefined;
-	if (currentString?.kind !== "value" || currentString.truncated) {
-		return;
-	}
-	recordJsonProjectionStringValue(
-		state,
-		currentString.path,
-		currentString.text,
-	);
-}
-
-/** Applies one completed bounded string value to projected RPC event metadata. */
-function recordJsonProjectionStringValue(
-	state: ChildRpcLineProjectionState,
-	path: readonly string[],
-	value: string,
-): void {
-	if (isJsonProjectionPath(path, "type")) {
-		state.eventType = value;
-		return;
-	}
-	if (isJsonProjectionPath(path, "message", "role")) {
-		state.role = value;
-		return;
-	}
-	if (isJsonProjectionPath(path, "message", "stopReason")) {
-		state.stopReason = value;
-		return;
-	}
-	if (isJsonProjectionPath(path, "assistantMessageEvent", "type")) {
-		state.assistantMessageEventType = value;
-		return;
-	}
-	if (isJsonProjectionPath(path, "toolCallId")) {
-		state.toolCallId = value;
-		return;
-	}
-	if (isJsonProjectionPath(path, "toolName")) {
-		state.toolName = value;
-		return;
-	}
-	if (isJsonProjectionPath(path, "message", "content", "*", "type")) {
-		const contentPart = getCurrentJsonProjectionContentPart(state);
-		if (contentPart !== undefined) {
-			contentPart.type = value;
-		}
-		return;
-	}
-	if (isJsonProjectionPath(path, "result", "content", "*", "type")) {
-		const contentPart = getCurrentJsonProjectionContentPart(state);
-		if (contentPart !== undefined) {
-			contentPart.type = value;
-		}
-		return;
-	}
-	if (isJsonProjectionPath(path, "result", "content", "*", "text")) {
-		const contentPart = getCurrentJsonProjectionContentPart(state);
-		if (contentPart !== undefined) {
-			contentPart.text = value;
-		}
-	}
-}
-
-/** Applies one completed boolean value to the projected RPC event metadata. */
-function recordJsonProjectionBooleanValue(
-	state: ChildRpcLineProjectionState,
-	value: boolean,
-): void {
-	const path = consumeJsonProjectionValuePath(state);
-	if (isJsonProjectionPath(path, "isError")) {
-		state.toolIsError = value;
-	}
-}
-
-/** Resolves the current value path and clears consumed object keys. */
-function consumeJsonProjectionValuePath(
-	state: ChildRpcLineProjectionState,
-): readonly string[] {
-	const parent = state.stack.at(-1);
-	if (parent === undefined) {
-		return [];
-	}
-	if (parent.kind === "array") {
-		return [...parent.path, "*"];
-	}
-	const key = parent.pendingKey;
-	parent.pendingKey = undefined;
-	return key === undefined ? parent.path : [...parent.path, key];
-}
-
-/** Returns metadata for the innermost message content part currently being parsed. */
-function getCurrentJsonProjectionContentPart(
-	state: ChildRpcLineProjectionState,
-): JsonProjectionContentPart | undefined {
-	for (let index = state.stack.length - 1; index >= 0; index -= 1) {
-		const contentPart = state.stack[index]?.contentPart;
-		if (contentPart !== undefined) {
-			return contentPart;
-		}
-	}
-	return undefined;
-}
-
-/** Builds the projected RPC event shape consumed by existing run-subagent logic. */
-function buildProjectedChildRpcEvent(
-	state: ChildRpcLineProjectionState,
-): unknown | undefined {
-	switch (state.eventType) {
-		case "agent_end":
-			return { type: "agent_end", messages: [] };
-		case "message_start":
-			return buildProjectedMessageStartEvent(state);
-		case "message_update":
-			return buildProjectedMessageUpdateEvent(state);
-		case "message_end":
-			return buildProjectedMessageEndEvent(state);
-		case "tool_execution_end":
-			return buildProjectedToolExecutionEndEvent(state);
-		case "turn_end":
-			return buildProjectedTurnEndEvent();
-		default:
-			return undefined;
-	}
-}
-
-/** Builds a minimal message_start event that preserves assistant-turn reset behavior. */
-function buildProjectedMessageStartEvent(
-	state: ChildRpcLineProjectionState,
-): Record<string, unknown> {
-	return {
-		type: "message_start",
-		...(state.role === undefined ? {} : { message: { role: state.role } }),
-	};
-}
-
-/** Builds a minimal message_update event that preserves usable streamed text deltas. */
-function buildProjectedMessageUpdateEvent(
-	state: ChildRpcLineProjectionState,
-): Record<string, unknown> {
-	if (state.assistantMessageEventType !== "text_delta") {
-		return { type: "message_update" };
-	}
-	return {
-		type: "message_update",
-		assistantMessageEvent: {
-			type: "text_delta",
-			delta: state.assistantMessageEventDelta ?? "",
-			...(state.assistantMessageEventDeltaExceededLimit
-				? { deltaExceededLimit: true }
-				: {}),
-		},
-	};
-}
-
-/** Builds a minimal message_end event that preserves final-answer validation metadata. */
-function buildProjectedMessageEndEvent(
-	state: ChildRpcLineProjectionState,
-): Record<string, unknown> {
-	const content = [
-		...(state.role === "assistant" && state.hasSkippedText
-			? [{ type: SKIPPED_TEXT_PART_TYPE }]
-			: []),
-		...(state.hasToolCall ? [{ type: "toolCall" }] : []),
-	];
-	return {
-		type: "message_end",
-		message: {
-			...(state.role === undefined ? {} : { role: state.role }),
-			content,
-			...(state.stopReason === undefined
-				? {}
-				: { stopReason: state.stopReason }),
-		},
-	};
-}
-
-/**
- * Builds a minimal tool_execution_end event without large result payloads.
- * The parent needs tool identity and short text progress only; image/base64 data must stay out of run details and UI updates.
- */
-function buildProjectedToolExecutionEndEvent(
-	state: ChildRpcLineProjectionState,
-): Record<string, unknown> {
-	return {
-		type: "tool_execution_end",
-		...(state.toolCallId === undefined ? {} : { toolCallId: state.toolCallId }),
-		...(state.toolName === undefined ? {} : { toolName: state.toolName }),
-		...(state.toolIsError === undefined ? {} : { isError: state.toolIsError }),
-		...(state.toolResultText === undefined
-			? {}
-			: {
-					result: {
-						content: [{ type: "text", text: state.toolResultText }],
-					},
-				}),
-	};
-}
-
-/**
- * Builds a minimal turn_end event without replaying toolResults.
- * Pi turn_end repeats completed tool results, so keeping it as a lifecycle marker prevents image results from being parsed twice.
- */
-function buildProjectedTurnEndEvent(): Record<string, unknown> {
-	return { type: "turn_end" };
-}
-
-/** Compares a JSON projection path with a finite path pattern. */
-function isJsonProjectionPath(
-	path: readonly string[],
-	...expectedPath: readonly string[]
-): boolean {
-	return (
-		path.length === expectedPath.length &&
-		path.every((part, index) => part === expectedPath[index])
-	);
-}
-
-/** Parses one RPC JSONL output record. */
-function parseJsonLine(line: string): unknown | undefined {
-	try {
-		return JSON.parse(line);
-	} catch {
-		return undefined;
-	}
 }
 
 /** Returns true when a projected text_delta exceeded the streamed-answer memory limit. */
@@ -2293,7 +1498,7 @@ function extractAssistantTextDelta(event: unknown): string | undefined {
 
 /** Extracts assistant text from a child message_end event. */
 function extractAssistantText(
-	state: ChildStreamState,
+	state: ChildFinalOutputState,
 	event: unknown,
 ): string | undefined {
 	if (!isRecord(event)) {

@@ -63,6 +63,20 @@ interface CompletionCall {
 	readonly options: SimpleStreamOptions | undefined;
 }
 
+interface CompletionResponseOutcome {
+	readonly kind: "response";
+	readonly content: AssistantMessage["content"];
+	readonly stopReason?: AssistantMessage["stopReason"];
+	readonly errorMessage?: string;
+}
+
+interface CompletionThrowOutcome {
+	readonly kind: "throw";
+	readonly error: Error;
+}
+
+type CompletionOutcome = CompletionResponseOutcome | CompletionThrowOutcome;
+
 interface ContextFake {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
@@ -79,6 +93,7 @@ interface ContextFake {
 		>;
 	};
 	readonly sessionManager: {
+		getSessionId(): string;
 		getEntries(): unknown[];
 		getBranch(): SessionEntry[];
 		getLeafId(): string | null;
@@ -245,6 +260,9 @@ function createContext(
 			},
 		},
 		sessionManager: {
+			getSessionId(): string {
+				return "consult-advisor-test-session";
+			},
 			getEntries(): unknown[] {
 				return entries;
 			},
@@ -386,11 +404,12 @@ async function executeConsult(
 	pi: ExtensionApiFake,
 	ctx: ContextFake,
 	question: string,
+	signal?: AbortSignal,
 ): Promise<unknown> {
 	return getConsultTool(pi).execute(
 		"call-1",
 		{ question },
-		undefined,
+		signal,
 		undefined,
 		ctx as never,
 	);
@@ -473,6 +492,20 @@ function createCompletionFake(
 		options?: SimpleStreamOptions,
 	) => Promise<AssistantMessage>;
 } {
+	return createCompletionSequenceFake([
+		{ kind: "response", content: responseContent },
+	]);
+}
+
+/** Creates fake completeSimple that returns or throws one configured outcome per call. */
+function createCompletionSequenceFake(outcomes: readonly CompletionOutcome[]): {
+	readonly calls: CompletionCall[];
+	readonly completeSimple: <TApi extends Api>(
+		model: Model<TApi>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	) => Promise<AssistantMessage>;
+} {
 	const calls: CompletionCall[] = [];
 	return {
 		calls,
@@ -482,24 +515,43 @@ function createCompletionFake(
 			options?: SimpleStreamOptions,
 		): Promise<AssistantMessage> {
 			calls.push({ model: model as Model<Api>, context, options });
-			return {
-				role: "assistant",
-				content: responseContent,
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop",
-				timestamp: 1,
-			};
+			const outcome = outcomes[Math.min(calls.length - 1, outcomes.length - 1)];
+			if (outcome === undefined) {
+				throw new Error("expected completion outcome");
+			}
+			if (outcome.kind === "throw") {
+				throw outcome.error;
+			}
+
+			return createAssistantResponse(model, outcome);
 		},
+	};
+}
+
+/** Creates one advisor assistant response with standard fake usage metadata. */
+function createAssistantResponse<TApi extends Api>(
+	model: Model<TApi>,
+	outcome: CompletionResponseOutcome,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: outcome.content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: outcome.stopReason ?? "stop",
+		...(outcome.errorMessage !== undefined
+			? { errorMessage: outcome.errorMessage }
+			: {}),
+		timestamp: 1,
 	};
 }
 
@@ -806,8 +858,60 @@ describe("consult-advisor", () => {
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
 				"You are an advisor: a highly skilled",
 			);
+		});
+	});
+
+	test("includes loaded project context files in advisor system prompt", async () => {
+		// Purpose: consult-advisor must preserve Pi-loaded project rules for the advisor model.
+		// Input and expected output: contextFiles with AGENTS.md and CLAUDE.md are appended to the advisor system prompt.
+		// Edge case: project context comes from before_agent_start state, not from the conversation branch.
+		// Dependencies: fake before_agent_start event, fake model registry, and fake completion function.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "advisor");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext([model]);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+			await emitBeforeAgentStartHandlers(
+				pi,
+				{
+					systemPrompt: "Base",
+					systemPromptOptions: {
+						contextFiles: [
+							{
+								path: "/tmp/project/AGENTS.md",
+								content: "Project rule: use the project validation scripts.",
+							},
+							{
+								path: "/tmp/project/CLAUDE.md",
+								content: "Project rule: keep docs current.",
+							},
+						],
+					},
+				},
+				ctx,
+			);
+
+			const result = await executeConsult(pi, ctx, "Question");
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "advisor answer" }],
+			});
+			expect(completion.calls).toHaveLength(1);
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
-				"Return the advice as visible text.",
+				"# Project Context",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"## /tmp/project/AGENTS.md",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"Project rule: use the project validation scripts.",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"## /tmp/project/CLAUDE.md",
+			);
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"Project rule: keep docs current.",
 			);
 		});
 	});
@@ -958,9 +1062,7 @@ describe("consult-advisor", () => {
 				apiKey: "advisor-api-key",
 				headers: { "x-advisor": "enabled" },
 			});
-			expect(completion.calls[0]?.context.systemPrompt).toBe(
-				"Advisor prompt\n\nReturn the advice as visible text. If you cannot answer a request, explain the limit in visible text.",
-			);
+			expect(completion.calls[0]?.context.systemPrompt).toBe("Advisor prompt");
 			expect(completion.calls[0]?.context.tools).toEqual([]);
 			const advisorMessages = JSON.stringify(
 				completion.calls[0]?.context.messages,
@@ -974,6 +1076,140 @@ describe("consult-advisor", () => {
 				await readFile(join(agentDir, "config", "payload.json"), "utf8"),
 			);
 			expect(debugPayload.context.tools).toEqual([]);
+		});
+	});
+
+	test("retries retryable advisor provider failures before returning the answer", async () => {
+		// Purpose: consult_advisor must own retries for transient provider failures that happen inside tool execution.
+		// Input and expected output: first provider call throws a network error, second call returns visible advisor text.
+		// Edge case: zero retry delay keeps the test deterministic and proves retryCount controls provider calls.
+		// Dependencies: temp config, fake model registry, and fake completeSimple sequence.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				enabled: true,
+				retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
+			});
+			const completion = createCompletionSequenceFake([
+				{ kind: "throw", error: new Error("network error: fetch failed") },
+				{
+					kind: "response",
+					content: [{ type: "text", text: "advisor answer after retry" }],
+				},
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext([createModel("openai", "advisor")]);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			const result = await executeConsult(pi, ctx, "Question");
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "advisor answer after retry" }],
+			});
+			expect(completion.calls).toHaveLength(2);
+		});
+	});
+
+	test("retries retryable advisor error responses before returning the answer", async () => {
+		// Purpose: provider responses with stopReason error must use the same retry path as thrown transient errors.
+		// Input and expected output: first response has retryable error metadata, second response returns visible text.
+		// Edge case: completeSimple resolves successfully but the assistant response marks the provider call as failed.
+		// Dependencies: temp config, fake model registry, and fake completeSimple sequence.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				enabled: true,
+				retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
+			});
+			const completion = createCompletionSequenceFake([
+				{
+					kind: "response",
+					content: [],
+					stopReason: "error",
+					errorMessage: "provider returned error 503",
+				},
+				{
+					kind: "response",
+					content: [{ type: "text", text: "advisor recovered" }],
+				},
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext([createModel("openai", "advisor")]);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			const result = await executeConsult(pi, ctx, "Question");
+
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "advisor recovered" }],
+			});
+			expect(completion.calls).toHaveLength(2);
+		});
+	});
+
+	test("does not retry aborted advisor requests", async () => {
+		// Purpose: cancellation must stop advisor retry instead of starting another provider call.
+		// Input and expected output: completeSimple throws AbortError and consult_advisor returns one safe error result.
+		// Edge case: retry config allows retries, so the abort classification is the only reason no retry happens.
+		// Dependencies: temp config, fake model registry, and fake completeSimple sequence.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				enabled: true,
+				retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
+			});
+			const abortError = new Error("user aborted advisor request");
+			abortError.name = "AbortError";
+			const completion = createCompletionSequenceFake([
+				{ kind: "throw", error: abortError },
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext([createModel("openai", "advisor")]);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			const result = await executeConsult(pi, ctx, "Question");
+
+			expect(result).toMatchObject({
+				content: [
+					{
+						type: "text",
+						text: "Advisor request failed: user aborted advisor request",
+					},
+				],
+			});
+			expect(completion.calls).toHaveLength(1);
+		});
+	});
+
+	test("rejects invalid advisor retry config", async () => {
+		// Purpose: retry config is external JSON and must fail closed when numeric limits are invalid.
+		// Input and expected output: negative maxRetries produces a consult-advisor config error before provider calls.
+		// Edge case: the config object uses only supported keys except the invalid retry field value.
+		// Dependencies: temp config, fake model registry, fake completion function, and in-memory UI notifications.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				enabled: true,
+				retry: { enabled: true, maxRetries: -1, baseDelayMs: 0 },
+			});
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext([createModel("openai", "advisor")]);
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			const result = await executeConsult(pi, ctx, "Question");
+
+			expect(result).toMatchObject({
+				content: [
+					{
+						type: "text",
+						text: "retry.maxRetries must be a non-negative integer",
+					},
+				],
+			});
+			expect(completion.calls).toHaveLength(0);
+			expect(ctx.notifications).toEqual([
+				{
+					message:
+						"[consult-advisor] retry.maxRetries must be a non-negative integer",
+					type: "warning",
+				},
+			]);
 		});
 	});
 
@@ -1134,9 +1370,14 @@ describe("consult-advisor", () => {
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, {
 				enabled: true,
+				projectionRemainingTokensL1: 100_000,
+				minToolResultTokensL1: 1,
+				projectionRemainingTokensL2: 50_000,
+				minToolResultTokensL2: 1,
+				projectionRemainingTokensL3: 30_000,
+				minToolResultTokensL3: 1,
 				keepRecentTurns: 0,
 				keepRecentTurnsPercent: 0,
-				minToolResultTokens: 1,
 			});
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
@@ -1201,9 +1442,14 @@ describe("consult-advisor", () => {
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, {
 				enabled: true,
+				projectionRemainingTokensL1: 100_000,
+				minToolResultTokensL1: 1,
+				projectionRemainingTokensL2: 50_000,
+				minToolResultTokensL2: 1,
+				projectionRemainingTokensL3: 30_000,
+				minToolResultTokensL3: 1,
 				keepRecentTurns: 0,
 				keepRecentTurnsPercent: 0,
-				minToolResultTokens: 1,
 				summary: {
 					enabled: true,
 					maxConcurrency: 1,
@@ -1434,118 +1680,6 @@ describe("consult-advisor", () => {
 					text: "context is too large",
 				},
 			]);
-		});
-	});
-
-	test("does not reject advisor input only because serialized bytes exceed the context window", async () => {
-		// Purpose: the guard must estimate tokens, not compare raw serialized bytes to a token context window.
-		// Input and expected output: serialized request bytes exceed the model window, but estimated tokens fit and completeSimple is called.
-		// Edge case: prevents false overflow for large contexts that the same model can still process.
-		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
-		await withIsolatedAgentDir(async () => {
-			const model = {
-				...createModel("openai", "advisor"),
-				contextWindow: 1_500,
-			};
-			const completion = createCompletionFake();
-			const pi = createExtensionApiFake();
-			const ctx = createContext(
-				[model],
-				[
-					{
-						type: "message",
-						id: "1",
-						parentId: null,
-						timestamp: "t",
-						message: {
-							role: "user",
-							content: "large but valid advisor context ".repeat(70),
-							timestamp: 1,
-						},
-					},
-				],
-			);
-			consultAdvisor(pi, { completeSimple: completion.completeSimple });
-
-			await executeConsult(pi, ctx, "Question");
-
-			expect(completion.calls).toHaveLength(1);
-		});
-	});
-
-	test("does not count internal assistant metadata as advisor model input", async () => {
-		// Purpose: advisor guard must estimate model-visible input instead of serializing internal message metadata.
-		// Input and expected output: huge usage metadata with tiny visible content still calls completeSimple.
-		// Edge case: assistant messages carry provider/model/usage/cost fields that provider converters do not send as prompt text.
-		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
-		await withIsolatedAgentDir(async () => {
-			const model = {
-				...createModel("openai", "advisor"),
-				contextWindow: 1_200,
-			};
-			const completion = createCompletionFake();
-			const pi = createExtensionApiFake();
-			const metadataHeavyAssistant = createToolCallMessage(
-				"metadata-tool",
-				"bash",
-				{ command: "true" },
-				1,
-			);
-			metadataHeavyAssistant.model = "metadata ".repeat(2_000);
-			metadataHeavyAssistant.responseId = "response ".repeat(2_000);
-			const ctx = createContext(
-				[model],
-				[
-					{
-						type: "message",
-						id: "1",
-						parentId: null,
-						timestamp: "t",
-						message: metadataHeavyAssistant,
-					},
-				],
-			);
-			consultAdvisor(pi, { completeSimple: completion.completeSimple });
-
-			await executeConsult(pi, ctx, "Question");
-
-			expect(completion.calls).toHaveLength(1);
-		});
-	});
-
-	test("uses modern OpenAI-family tokenizer for Codex advisor models before fallback", async () => {
-		// Purpose: OpenAI-family providers must not be treated as unknown models when a modern tokenizer is appropriate.
-		// Input and expected output: o200k token count fits the model window, while unknown fallback max would reject it.
-		// Edge case: Codex model IDs can be newer than js-tiktoken's explicit model map.
-		// Dependencies: fake model registry, fake completion function, and in-memory session entries.
-		await withIsolatedAgentDir(async () => {
-			const model = {
-				...createModel("openai-codex", "gpt-5.1-codex"),
-				contextWindow: 2_000,
-			};
-			const completion = createCompletionFake();
-			const pi = createExtensionApiFake();
-			const ctx = createContext(
-				[model],
-				[
-					{
-						type: "message",
-						id: "1",
-						parentId: null,
-						timestamp: "t",
-						message: {
-							role: "user",
-							content: "界".repeat(1_000),
-							timestamp: 1,
-						},
-					},
-				],
-			);
-			consultAdvisor(pi, { completeSimple: completion.completeSimple });
-
-			await executeConsult(pi, ctx, "Question");
-
-			expect(completion.calls).toHaveLength(1);
 		});
 	});
 

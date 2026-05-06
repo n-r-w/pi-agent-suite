@@ -16,7 +16,11 @@ import {
 	type AgentDefinition,
 	loadAgentDefinitions,
 } from "../../shared/agent-registry";
-import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import {
+	getAgentRuntimeComposition,
+	markAgentRuntimeCompositionStale,
+} from "../../shared/agent-runtime-composition";
+import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import {
 	getSuiteExtensionDir,
 	readExtensionConfigFileSync,
@@ -297,9 +301,11 @@ class SearchableAgentSelector implements Component, Focusable {
 /** Extension entry point for main-agent selection behavior. */
 export default function mainAgentSelection(pi: ExtensionAPI): void {
 	if (isMainAgentSelectionDisabled()) {
+		writeRuntimeDiagnostic("main-agent-selection.disabled");
 		return;
 	}
 
+	writeRuntimeDiagnostic("main-agent-selection.loaded");
 	getAgentRuntimeComposition(pi);
 
 	pi.registerCommand(COMMAND_NAME, {
@@ -327,34 +333,75 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
-		if (isChildSubagentProcess()) {
-			return;
-		}
-
-		if (
-			await restoreSessionReplacementMainAgent(
-				pi,
-				event,
-				ctx as MainAgentContext,
-			)
-		) {
-			return;
-		}
-
-		if (!shouldRestoreSelectedMainAgent(event)) {
-			return;
-		}
-
-		await restoreSelectedMainAgent(pi, ctx as MainAgentContext);
+		await handleSessionStart(pi, event, ctx as MainAgentContext);
 	});
 
 	pi.on("session_shutdown", (event, ctx) => {
-		if (isChildSubagentProcess()) {
-			return;
-		}
-
-		captureSessionReplacementMainAgent(pi, event, ctx as MainAgentContext);
+		handleSessionShutdown(pi, event, ctx as MainAgentContext);
 	});
+}
+
+/** Handles selected main-agent restoration for one pi session-start event. */
+async function handleSessionStart(
+	pi: ExtensionAPI,
+	event: unknown,
+	mainContext: MainAgentContext,
+): Promise<void> {
+	writeRuntimeDiagnostic("main-agent-selection.session-start.started", {
+		reason: (event as SessionStartEventLike).reason ?? null,
+		isChildSubagentProcess: isChildSubagentProcess(),
+		cwd: mainContext.cwd,
+	});
+	if (isChildSubagentProcess()) {
+		return;
+	}
+
+	if (await restoreSessionReplacementMainAgent(pi, event, mainContext)) {
+		writeRuntimeDiagnostic(
+			"main-agent-selection.session-start.handoff-restored",
+			{
+				reason: (event as SessionStartEventLike).reason ?? null,
+				activeAgentId:
+					getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+						?.id ?? null,
+			},
+		);
+		return;
+	}
+
+	if (!shouldRestoreSelectedMainAgent(event)) {
+		writeRuntimeDiagnostic("main-agent-selection.session-start.skipped", {
+			reason: (event as SessionStartEventLike).reason ?? null,
+		});
+		return;
+	}
+
+	await restoreSelectedMainAgent(pi, mainContext);
+	writeRuntimeDiagnostic("main-agent-selection.session-start.completed", {
+		reason: (event as SessionStartEventLike).reason ?? null,
+		activeAgentId:
+			getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
+			null,
+		activeTools: pi.getActiveTools(),
+	});
+}
+
+/** Handles selected main-agent handoff capture for one pi session-shutdown event. */
+function handleSessionShutdown(
+	pi: ExtensionAPI,
+	event: unknown,
+	mainContext: MainAgentContext,
+): void {
+	writeRuntimeDiagnostic("main-agent-selection.session-shutdown.started", {
+		reason: (event as SessionShutdownEventLike).reason ?? null,
+		isChildSubagentProcess: isChildSubagentProcess(),
+	});
+	if (isChildSubagentProcess()) {
+		return;
+	}
+
+	captureSessionReplacementMainAgent(pi, event, mainContext);
+	markAgentRuntimeCompositionStale(pi);
 }
 
 /** Returns whether this session-start reason must refresh selected-agent state from disk. */
@@ -380,6 +427,10 @@ function captureSessionReplacementMainAgent(
 	const activeAgentId =
 		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
 		null;
+	writeRuntimeDiagnostic("main-agent-selection.handoff.captured", {
+		handoffKey,
+		activeAgentId,
+	});
 	getSessionReplacementHandoffStore().set(handoffKey, activeAgentId);
 }
 
@@ -395,6 +446,11 @@ async function restoreSessionReplacementMainAgent(
 	}
 
 	const handoff = consumeSessionReplacementHandoff(handoffKey);
+	writeRuntimeDiagnostic("main-agent-selection.handoff.consumed", {
+		handoffKey,
+		found: handoff.found,
+		activeAgentId: handoff.found ? handoff.activeAgentId : null,
+	});
 	if (!handoff.found) {
 		return false;
 	}
@@ -520,6 +576,12 @@ async function restoreSelectedMainAgent(
 	const normalizedCwd = normalizeCwd(mainContext.cwd);
 	const agents = await loadSelectableAgents();
 	const state = await readSelectedAgentState(normalizedCwd);
+	writeRuntimeDiagnostic("main-agent-selection.restore.state-read", {
+		cwd: normalizedCwd,
+		stateKind: state.kind,
+		activeAgentId: state.kind === "valid" ? state.state.activeAgentId : null,
+		issue: state.kind === "invalid" ? state.issue : null,
+	});
 	if (state.kind === "missing") {
 		composition.clearMainAgentContribution();
 		return;
@@ -547,6 +609,10 @@ async function restoreSelectedMainAgent(
 	}
 
 	await applyAgentSelection(pi, mainContext, agent);
+	writeRuntimeDiagnostic("main-agent-selection.restore.applied", {
+		activeAgentId: agent.id,
+		activeTools: pi.getActiveTools(),
+	});
 }
 
 /** Selects a main agent by explicit ID or interactive UI choice. */
@@ -675,6 +741,13 @@ async function applyAgentSelection(
 	ctx: MainAgentContext,
 	agent: AgentDefinition,
 ): Promise<boolean> {
+	writeRuntimeDiagnostic("main-agent-selection.apply.started", {
+		agentId: agent.id,
+		promptLength: agent.prompt.length,
+		configuredTools: agent.tools ?? null,
+		configuredSubagents: agent.agents ?? null,
+		availableTools: pi.getAllTools().map((tool) => tool.name),
+	});
 	const resolvedTools = resolveMainAgentTools(pi, agent);
 	if ("issue" in resolvedTools) {
 		clearMainAgentSelection(pi);
@@ -702,6 +775,11 @@ async function applyAgentSelection(
 		pi.setThinkingLevel(agent.model.thinking);
 	}
 
+	writeRuntimeDiagnostic("main-agent-selection.apply.resolved", {
+		agentId: agent.id,
+		resolvedTools: resolvedTools.tools ?? null,
+		configuredSubagents: agent.agents ?? null,
+	});
 	getAgentRuntimeComposition(pi).setMainAgentContribution({
 		prompt: agent.prompt,
 		agent: {

@@ -22,8 +22,14 @@ export const CONTEXT_PROJECTION_CUSTOM_TYPE = "context-projection";
 /** Config key that disables or enables provider-context projection. */
 const ENABLED_CONFIG_KEY = "enabled";
 
-/** Config key for the remaining-token threshold that enables projection. */
-const PROJECTION_REMAINING_TOKENS_CONFIG_KEY = "projectionRemainingTokens";
+/** Config key for the first remaining-token threshold that enables projection. */
+const PROJECTION_REMAINING_TOKENS_L1_CONFIG_KEY = "projectionRemainingTokensL1";
+
+/** Config key for the second remaining-token threshold that enables projection. */
+const PROJECTION_REMAINING_TOKENS_L2_CONFIG_KEY = "projectionRemainingTokensL2";
+
+/** Config key for the third remaining-token threshold that enables projection. */
+const PROJECTION_REMAINING_TOKENS_L3_CONFIG_KEY = "projectionRemainingTokensL3";
 
 /** Config key for the minimum number of newest tool-use turns kept unprojected. */
 const KEEP_RECENT_TURNS_CONFIG_KEY = "keepRecentTurns";
@@ -31,8 +37,14 @@ const KEEP_RECENT_TURNS_CONFIG_KEY = "keepRecentTurns";
 /** Config key for the newest tool-use turn ratio kept unprojected in long sessions. */
 const KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY = "keepRecentTurnsPercent";
 
-/** Config key for the minimum combined token count eligible for projection. */
-const MIN_TOOL_RESULT_TOKENS_CONFIG_KEY = "minToolResultTokens";
+/** Config key for the first-level minimum combined token count eligible for projection. */
+const MIN_TOOL_RESULT_TOKENS_L1_CONFIG_KEY = "minToolResultTokensL1";
+
+/** Config key for the second-level minimum combined token count eligible for projection. */
+const MIN_TOOL_RESULT_TOKENS_L2_CONFIG_KEY = "minToolResultTokensL2";
+
+/** Config key for the third-level minimum combined token count eligible for projection. */
+const MIN_TOOL_RESULT_TOKENS_L3_CONFIG_KEY = "minToolResultTokensL3";
 
 /** Config key for tool names whose successful text results must stay visible. */
 const PROJECTION_IGNORED_TOOLS_CONFIG_KEY = "projectionIgnoredTools";
@@ -67,14 +79,24 @@ const SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY = "systemPromptFile";
 /** Config key for the custom summary user prompt path. */
 const SUMMARY_USER_PROMPT_FILE_CONFIG_KEY = "userPromptFile";
 
-/** Advisor tool output must stay visible because it carries decision-critical guidance. */
+/** Advisor and council outputs must stay visible because they carry decision-critical guidance. */
 const CONSULT_ADVISOR_TOOL_NAME = "consult_advisor";
+const CONVENE_COUNCIL_TOOL_NAME = "convene_council";
 
 /** Built-in tool names whose results are excluded from projection. */
-const BUILT_IN_PROJECTION_IGNORED_TOOLS = [CONSULT_ADVISOR_TOOL_NAME] as const;
+const BUILT_IN_PROJECTION_IGNORED_TOOLS = [
+	CONSULT_ADVISOR_TOOL_NAME,
+	CONVENE_COUNCIL_TOOL_NAME,
+] as const;
 
-/** Default remaining-token threshold for explicit projection enablement. */
-const DEFAULT_PROJECTION_REMAINING_TOKENS = 49_152;
+/** Default first remaining-token threshold for explicit projection enablement. */
+const DEFAULT_PROJECTION_REMAINING_TOKENS_L1 = 70_000;
+
+/** Default second remaining-token threshold for explicit projection enablement. */
+const DEFAULT_PROJECTION_REMAINING_TOKENS_L2 = 50_000;
+
+/** Default third remaining-token threshold for explicit projection enablement. */
+const DEFAULT_PROJECTION_REMAINING_TOKENS_L3 = 30_000;
 
 /** Default newest tool-use turns kept visible before projection. */
 const DEFAULT_KEEP_RECENT_TURNS = 10;
@@ -82,8 +104,14 @@ const DEFAULT_KEEP_RECENT_TURNS = 10;
 /** Default newest tool-use turn ratio kept visible in long sessions. */
 const DEFAULT_KEEP_RECENT_TURNS_PERCENT = 0.2;
 
-/** Default minimum token count for projecting a tool result. */
-const DEFAULT_MIN_TOOL_RESULT_TOKENS = 2_000;
+/** Default first-level minimum token count for projecting a tool result. */
+const DEFAULT_MIN_TOOL_RESULT_TOKENS_L1 = 4_000;
+
+/** Default second-level minimum token count for projecting a tool result. */
+const DEFAULT_MIN_TOOL_RESULT_TOKENS_L2 = 2_000;
+
+/** Default third-level minimum token count for projecting a tool result. */
+const DEFAULT_MIN_TOOL_RESULT_TOKENS_L3 = 1_000;
 
 /** Default replacement text for projected old tool results. */
 const DEFAULT_PLACEHOLDER =
@@ -97,6 +125,13 @@ const DEFAULT_SUMMARY_RETRY_COUNT = 1;
 
 /** Default pause between summary retry attempts. */
 const DEFAULT_SUMMARY_RETRY_DELAY_MS = 5_000;
+
+/** Factor used to render token usage as a percentage of the context window. */
+const PERCENT_FACTOR = 100;
+
+/** Fatal issue reported when projection level remaining-token thresholds are not descending. */
+const PROJECTION_LEVEL_ORDER_ERROR =
+	"projectionRemainingTokensL1 must be greater than or equal to projectionRemainingTokensL2, and projectionRemainingTokensL2 must be greater than or equal to projectionRemainingTokensL3";
 
 /** Thinking values accepted by context projection summary configuration. */
 const SUMMARY_THINKING_VALUES = [
@@ -123,10 +158,14 @@ const CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS = [
 /** Config keys accepted by the context projection config object. */
 const CONTEXT_PROJECTION_CONFIG_KEYS = [
 	ENABLED_CONFIG_KEY,
-	PROJECTION_REMAINING_TOKENS_CONFIG_KEY,
+	PROJECTION_REMAINING_TOKENS_L1_CONFIG_KEY,
+	MIN_TOOL_RESULT_TOKENS_L1_CONFIG_KEY,
+	PROJECTION_REMAINING_TOKENS_L2_CONFIG_KEY,
+	MIN_TOOL_RESULT_TOKENS_L2_CONFIG_KEY,
+	PROJECTION_REMAINING_TOKENS_L3_CONFIG_KEY,
+	MIN_TOOL_RESULT_TOKENS_L3_CONFIG_KEY,
 	KEEP_RECENT_TURNS_CONFIG_KEY,
 	KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY,
-	MIN_TOOL_RESULT_TOKENS_CONFIG_KEY,
 	PROJECTION_IGNORED_TOOLS_CONFIG_KEY,
 	PLACEHOLDER_CONFIG_KEY,
 	SUMMARY_CONFIG_KEY,
@@ -146,6 +185,18 @@ export type ContextProjectionConfigResult =
 
 type ContextProjectionSummaryThinking =
 	(typeof SUMMARY_THINKING_VALUES)[number];
+
+export interface ProjectionLevel {
+	readonly label: "L1" | "L2" | "L3";
+	readonly remainingTokens: number;
+	readonly minToolResultTokens: number;
+}
+
+type ProjectionLevelTuple = readonly [
+	ProjectionLevel,
+	ProjectionLevel,
+	ProjectionLevel,
+];
 
 interface EnabledSummaryConfigValues {
 	readonly maxConcurrency: number;
@@ -170,10 +221,9 @@ export interface ContextProjectionSummaryConfig {
 
 export interface ContextProjectionConfig {
 	readonly enabled: true;
-	readonly projectionRemainingTokens: number;
+	readonly projectionLevels: ProjectionLevelTuple;
 	readonly keepRecentTurns: number;
 	readonly keepRecentTurnsPercent: number;
-	readonly minToolResultTokens: number;
 	readonly projectionIgnoredTools: readonly string[];
 	readonly placeholder: string;
 	readonly summary: ContextProjectionSummaryConfig;
@@ -208,13 +258,20 @@ interface ProjectContextMessagesOptions {
 	readonly config: ContextProjectionConfig;
 	readonly loadedSkillRoots: readonly string[];
 	readonly cwd: string;
-	readonly discoverNewEntries: boolean;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 }
 
 interface ProjectionSavingsEstimateOptions {
 	readonly branchEntries: readonly SessionEntry[];
 	readonly cwd: string;
 	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
+	readonly config: ContextProjectionConfig;
+	readonly loadedSkillRoots?: readonly string[];
+}
+
+interface PendingProjectionSavingsEstimateOptions {
+	readonly branchEntries: readonly SessionEntry[];
+	readonly cwd: string;
 	readonly config: ContextProjectionConfig;
 	readonly loadedSkillRoots?: readonly string[];
 }
@@ -229,7 +286,7 @@ interface ProjectMappedContextEntryOptions {
 	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
 	readonly replacementTextByEntryId: ReadonlyMap<string, string> | undefined;
 	readonly config: ContextProjectionConfig;
-	readonly discoverNewEntries: boolean;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 }
 
 type ProjectMappedContextEntryResult =
@@ -253,6 +310,179 @@ const runtimeProjectedPlaceholdersByScope = new Map<
 	Map<string, string>
 >();
 
+interface PendingProjectionSavingsBatch {
+	readonly branchLeafId: string;
+	readonly entryIds: readonly [string, ...string[]];
+	readonly savedTokens: number;
+}
+
+interface PendingProjectionSavingsState {
+	readonly branchSavedTokens: number;
+	readonly liveBatches: readonly PendingProjectionSavingsBatch[];
+}
+
+export interface PendingProjectionSavingsEstimate {
+	readonly savedTokens: number;
+	readonly entryIds: readonly string[];
+}
+
+export interface LivePendingProjectionSavings {
+	readonly branchLeafId: string;
+	readonly entryIds: readonly [string, ...string[]];
+}
+
+const pendingProjectionSavingsByScope = new Map<
+	string,
+	PendingProjectionSavingsState
+>();
+
+export interface ContextProjectionUsage {
+	readonly tokens: number | null;
+	readonly contextWindow: number;
+	readonly percent: number | null;
+}
+
+/** Records token savings that have not been confirmed by a later successful provider usage. */
+export function addPendingProjectionSavings(
+	sessionId: string,
+	savedTokens: number,
+	liveSavings: LivePendingProjectionSavings,
+): void {
+	if (savedTokens <= 0) {
+		return;
+	}
+
+	const scope = getRuntimePendingProjectionScope(sessionId);
+	const state = getPendingProjectionSavingsState(scope);
+	pendingProjectionSavingsByScope.set(scope, {
+		branchSavedTokens: state.branchSavedTokens,
+		liveBatches: [
+			...state.liveBatches,
+			{
+				branchLeafId: liveSavings.branchLeafId,
+				entryIds: [...new Set(liveSavings.entryIds)] as [string, ...string[]],
+				savedTokens,
+			},
+		],
+	});
+}
+
+/** Replaces branch-backed pending savings while preserving live projections that are not branch-visible yet. */
+export function setPendingProjectionSavings(
+	sessionId: string,
+	savedTokens: number,
+	entryIds: readonly string[],
+	activeBranchEntryIds: ReadonlySet<string>,
+): void {
+	const scope = getRuntimePendingProjectionScope(sessionId);
+	const state = getPendingProjectionSavingsState(scope);
+	const branchEntryIds = new Set(entryIds);
+	const liveBatches = state.liveBatches.filter((batch) => {
+		if (!activeBranchEntryIds.has(batch.branchLeafId)) {
+			return false;
+		}
+
+		return !batch.entryIds.every((entryId) => branchEntryIds.has(entryId));
+	});
+	const nextState = {
+		branchSavedTokens: Math.max(0, savedTokens),
+		liveBatches,
+	};
+	if (getPendingProjectionSavingsTotal(nextState) <= 0) {
+		pendingProjectionSavingsByScope.delete(scope);
+		return;
+	}
+
+	pendingProjectionSavingsByScope.set(scope, nextState);
+}
+
+/** Clears pending token savings after provider usage catches up with the projected context. */
+export function resetPendingProjectionSavings(sessionId: string): void {
+	pendingProjectionSavingsByScope.delete(
+		getRuntimePendingProjectionScope(sessionId),
+	);
+}
+
+/** Returns context usage adjusted by projection savings not yet reflected by provider usage. */
+export function getProjectionAwareContextUsage(
+	sessionId: string,
+	usage: ContextProjectionUsage | undefined,
+): ContextProjectionUsage | undefined {
+	if (usage === undefined || usage.tokens === null) {
+		return usage;
+	}
+
+	const pendingSavings = getPendingProjectionSavingsTotal(
+		pendingProjectionSavingsByScope.get(
+			getRuntimePendingProjectionScope(sessionId),
+		),
+	);
+	if (pendingSavings <= 0) {
+		return usage;
+	}
+
+	const tokens = Math.max(0, usage.tokens - pendingSavings);
+	return {
+		...usage,
+		tokens,
+		percent:
+			usage.contextWindow > 0
+				? (tokens / usage.contextWindow) * PERCENT_FACTOR
+				: null,
+	};
+}
+
+/** Returns existing pending savings state or the empty state for one runtime scope. */
+function getPendingProjectionSavingsState(
+	scope: string,
+): PendingProjectionSavingsState {
+	return (
+		pendingProjectionSavingsByScope.get(scope) ?? {
+			branchSavedTokens: 0,
+			liveBatches: [],
+		}
+	);
+}
+
+/** Sums branch-backed and live savings that provider usage has not confirmed yet. */
+function getPendingProjectionSavingsTotal(
+	state: PendingProjectionSavingsState | undefined,
+): number {
+	if (state === undefined) {
+		return 0;
+	}
+
+	return (
+		state.branchSavedTokens +
+		state.liveBatches.reduce((total, batch) => total + batch.savedTokens, 0)
+	);
+}
+
+/** Estimates projected savings that are newer than the latest successful provider usage. */
+export function estimatePendingProjectionSavings({
+	branchEntries,
+	cwd,
+	config,
+	loadedSkillRoots = [],
+}: PendingProjectionSavingsEstimateOptions): PendingProjectionSavingsEstimate {
+	const pendingPlaceholders =
+		collectPendingProjectedPlaceholders(branchEntries);
+	if (pendingPlaceholders.size === 0) {
+		return { savedTokens: 0, entryIds: [] };
+	}
+
+	return {
+		savedTokens: estimateProjectedSavedTokens({
+			branchEntries,
+			cwd,
+			projectedPlaceholdersByEntryId: pendingPlaceholders,
+			config,
+			loadedSkillRoots,
+		}),
+		entryIds: [...pendingPlaceholders.keys()],
+	};
+}
+
 /** Reads and validates context-projection config while absent config keeps projection disabled. */
 export async function readContextProjectionConfig(): Promise<ContextProjectionConfigResult> {
 	const configFile = await readExtensionConfigFile({
@@ -271,7 +501,11 @@ export async function readContextProjectionConfig(): Promise<ContextProjectionCo
 
 		return parseContextProjectionConfig(config);
 	} catch (error) {
-		if (error instanceof Error && error.message.startsWith("summary.")) {
+		if (
+			error instanceof Error &&
+			(error.message.startsWith("summary.") ||
+				error.message === PROJECTION_LEVEL_ORDER_ERROR)
+		) {
 			return { kind: "invalid", issue: error.message, fatal: true };
 		}
 		return { kind: "invalid" };
@@ -300,20 +534,20 @@ function parseContextProjectionConfig(
 	if (enabled !== undefined && typeof enabled !== "boolean") {
 		return { kind: "invalid" };
 	}
+
+	const projectionLevels = parseProjectionLevels(config);
+	if (projectionLevels === undefined) {
+		return { kind: "invalid" };
+	}
 	if (enabled !== true) {
 		return { kind: "disabled" };
 	}
 
-	const projectionRemainingTokens =
-		config[PROJECTION_REMAINING_TOKENS_CONFIG_KEY] ??
-		DEFAULT_PROJECTION_REMAINING_TOKENS;
 	const keepRecentTurns =
 		config[KEEP_RECENT_TURNS_CONFIG_KEY] ?? DEFAULT_KEEP_RECENT_TURNS;
 	const keepRecentTurnsPercent =
 		config[KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY] ??
 		DEFAULT_KEEP_RECENT_TURNS_PERCENT;
-	const minToolResultTokens =
-		config[MIN_TOOL_RESULT_TOKENS_CONFIG_KEY] ?? DEFAULT_MIN_TOOL_RESULT_TOKENS;
 	const projectionIgnoredTools =
 		config[PROJECTION_IGNORED_TOOLS_CONFIG_KEY] ?? [];
 	const placeholder = config[PLACEHOLDER_CONFIG_KEY] ?? DEFAULT_PLACEHOLDER;
@@ -321,10 +555,8 @@ function parseContextProjectionConfig(
 		config[SUMMARY_CONFIG_KEY],
 	);
 	if (
-		!isNonNegativeInteger(projectionRemainingTokens) ||
 		!isNonNegativeInteger(keepRecentTurns) ||
 		!isPercentNumber(keepRecentTurnsPercent) ||
-		!isNonNegativeInteger(minToolResultTokens) ||
 		!isUniqueNonEmptyStringArray(projectionIgnoredTools) ||
 		!isNonEmptyString(placeholder) ||
 		summary === undefined
@@ -336,15 +568,116 @@ function parseContextProjectionConfig(
 		kind: "valid",
 		config: {
 			enabled: true,
-			projectionRemainingTokens,
+			projectionLevels,
 			keepRecentTurns,
 			keepRecentTurnsPercent,
-			minToolResultTokens,
 			projectionIgnoredTools,
 			placeholder,
 			summary,
 		},
 	};
+}
+
+/** Parses and normalizes the three projection trigger levels. */
+function parseProjectionLevels(
+	config: Record<string, unknown>,
+): ProjectionLevelTuple | undefined {
+	const remainingTokensL1 = parseNonNegativeIntegerConfigValue(
+		config[PROJECTION_REMAINING_TOKENS_L1_CONFIG_KEY],
+		DEFAULT_PROJECTION_REMAINING_TOKENS_L1,
+	);
+	const minToolResultTokensL1 = parseNonNegativeIntegerConfigValue(
+		config[MIN_TOOL_RESULT_TOKENS_L1_CONFIG_KEY],
+		DEFAULT_MIN_TOOL_RESULT_TOKENS_L1,
+	);
+	const remainingTokensL2 = parseNonNegativeIntegerConfigValue(
+		config[PROJECTION_REMAINING_TOKENS_L2_CONFIG_KEY],
+		DEFAULT_PROJECTION_REMAINING_TOKENS_L2,
+	);
+	const minToolResultTokensL2 = parseNonNegativeIntegerConfigValue(
+		config[MIN_TOOL_RESULT_TOKENS_L2_CONFIG_KEY],
+		DEFAULT_MIN_TOOL_RESULT_TOKENS_L2,
+	);
+	const remainingTokensL3 = parseNonNegativeIntegerConfigValue(
+		config[PROJECTION_REMAINING_TOKENS_L3_CONFIG_KEY],
+		DEFAULT_PROJECTION_REMAINING_TOKENS_L3,
+	);
+	const minToolResultTokensL3 = parseNonNegativeIntegerConfigValue(
+		config[MIN_TOOL_RESULT_TOKENS_L3_CONFIG_KEY],
+		DEFAULT_MIN_TOOL_RESULT_TOKENS_L3,
+	);
+	if (
+		remainingTokensL1 === undefined ||
+		minToolResultTokensL1 === undefined ||
+		remainingTokensL2 === undefined ||
+		minToolResultTokensL2 === undefined ||
+		remainingTokensL3 === undefined ||
+		minToolResultTokensL3 === undefined
+	) {
+		return undefined;
+	}
+	if (
+		remainingTokensL1 < remainingTokensL2 ||
+		remainingTokensL2 < remainingTokensL3
+	) {
+		throw new Error(PROJECTION_LEVEL_ORDER_ERROR);
+	}
+
+	return normalizeEqualProjectionLevelThresholds([
+		{
+			label: "L1",
+			remainingTokens: remainingTokensL1,
+			minToolResultTokens: minToolResultTokensL1,
+		},
+		{
+			label: "L2",
+			remainingTokens: remainingTokensL2,
+			minToolResultTokens: minToolResultTokensL2,
+		},
+		{
+			label: "L3",
+			remainingTokens: remainingTokensL3,
+			minToolResultTokens: minToolResultTokensL3,
+		},
+	]);
+}
+
+/** Parses an optional non-negative integer config value after applying its default. */
+function parseNonNegativeIntegerConfigValue(
+	value: unknown,
+	defaultValue: number,
+): number | undefined {
+	const resolvedValue = value ?? defaultValue;
+	return isNonNegativeInteger(resolvedValue) ? resolvedValue : undefined;
+}
+
+/** Applies the lowest tool-result threshold to every level with the same remaining-token threshold. */
+function normalizeEqualProjectionLevelThresholds(
+	projectionLevels: ProjectionLevelTuple,
+): ProjectionLevelTuple {
+	const [level1, level2, level3] = projectionLevels;
+
+	return [
+		normalizeProjectionLevelThreshold(level1, projectionLevels),
+		normalizeProjectionLevelThreshold(level2, projectionLevels),
+		normalizeProjectionLevelThreshold(level3, projectionLevels),
+	];
+}
+
+/** Applies the lowest matching tool-result threshold to one projection level. */
+function normalizeProjectionLevelThreshold(
+	level: ProjectionLevel,
+	projectionLevels: ProjectionLevelTuple,
+): ProjectionLevel {
+	const minToolResultTokens = Math.min(
+		...projectionLevels
+			.filter(
+				(candidate) => candidate.remainingTokens === level.remainingTokens,
+			)
+			.map((candidate) => candidate.minToolResultTokens),
+	);
+
+	return { ...level, minToolResultTokens };
 }
 
 /** Parses optional summary config while keeping summary disabled by default. */
@@ -490,7 +823,7 @@ export async function replayContextProjection({
 		config: config.config,
 		loadedSkillRoots,
 		cwd,
-		discoverNewEntries: false,
+		activeProjectionLevel: undefined,
 	});
 	return decision.changed ? decision.messages : originalMessages;
 }
@@ -499,8 +832,30 @@ export async function replayContextProjection({
 export function collectProjectedPlaceholders(
 	branchEntries: readonly SessionEntry[],
 ): Map<string, string> {
+	return collectProjectedPlaceholdersFromEntries(branchEntries);
+}
+
+/** Collects projection state appended after the latest valid provider usage. */
+function collectPendingProjectedPlaceholders(
+	branchEntries: readonly SessionEntry[],
+): Map<string, string> {
+	const latestValidUsageIndex = findLastEntryIndex(
+		branchEntries,
+		(entry) =>
+			entry.type === "message" && hasValidAssistantContextUsage(entry.message),
+	);
+
+	return collectProjectedPlaceholdersFromEntries(
+		branchEntries.slice(latestValidUsageIndex + 1),
+	);
+}
+
+/** Collects projection placeholders from extension-owned custom state entries. */
+function collectProjectedPlaceholdersFromEntries(
+	entries: readonly SessionEntry[],
+): Map<string, string> {
 	const projectedPlaceholdersByEntryId = new Map<string, string>();
-	for (const entry of branchEntries) {
+	for (const entry of entries) {
 		if (
 			entry.type !== "custom" ||
 			entry.customType !== CONTEXT_PROJECTION_CUSTOM_TYPE ||
@@ -518,6 +873,29 @@ export function collectProjectedPlaceholders(
 	}
 
 	return projectedPlaceholdersByEntryId;
+}
+
+/** Returns true when an assistant message contains provider usage that reflects its request. */
+export function hasValidAssistantContextUsage(message: AgentMessage): boolean {
+	if (message.role !== "assistant") {
+		return false;
+	}
+
+	return (
+		message.stopReason !== "aborted" &&
+		message.stopReason !== "error" &&
+		estimateAssistantUsageTokens(message.usage) > 0
+	);
+}
+
+/** Returns the provider-reported context size for assistant usage objects. */
+function estimateAssistantUsageTokens(
+	usage: Extract<AgentMessage, { role: "assistant" }>["usage"],
+): number {
+	return (
+		usage.totalTokens ||
+		usage.input + usage.output + usage.cacheRead + usage.cacheWrite
+	);
 }
 
 /** Publishes active in-memory projection state for other extension entry points in the same process. */
@@ -549,7 +927,7 @@ export function estimateProjectedSavedTokens({
 		config,
 		loadedSkillRoots,
 		cwd,
-		discoverNewEntries: false,
+		activeProjectionLevel: undefined,
 	});
 	return estimateSavedTokens(decision.savedTokens);
 }
@@ -654,7 +1032,7 @@ export function projectContextMessages({
 	config,
 	loadedSkillRoots,
 	cwd,
-	discoverNewEntries,
+	activeProjectionLevel,
 }: ProjectContextMessagesOptions): ProjectionDecision {
 	const protectedEntryIds = collectProtectedEntryIds(mappedContext, config);
 	const readPathsByToolCallId = collectReadPathsByToolCallId(
@@ -677,7 +1055,7 @@ export function projectContextMessages({
 			projectedPlaceholdersByEntryId,
 			replacementTextByEntryId,
 			config,
-			discoverNewEntries,
+			activeProjectionLevel,
 		});
 		if (result.kind === "unchanged") {
 			return result.message;
@@ -713,7 +1091,7 @@ function projectMappedContextEntry({
 	projectedPlaceholdersByEntryId,
 	replacementTextByEntryId,
 	config,
-	discoverNewEntries,
+	activeProjectionLevel,
 }: ProjectMappedContextEntryOptions): ProjectMappedContextEntryResult {
 	if (entry.type !== "message" || !isSuccessfulTextToolResult(message)) {
 		return { kind: "unchanged", message };
@@ -731,10 +1109,10 @@ function projectMappedContextEntry({
 
 	const alreadyProjected = projectedPlaceholdersByEntryId.has(entry.id);
 	const newlyEligible =
-		discoverNewEntries &&
+		activeProjectionLevel !== undefined &&
 		!protectedEntryIds.has(entry.id) &&
 		countProjectionTextTokens(getTextToolResultText(message)) >=
-			config.minToolResultTokens;
+			activeProjectionLevel.minToolResultTokens;
 	if (!alreadyProjected && !newlyEligible) {
 		return { kind: "unchanged", message };
 	}
@@ -1166,6 +1544,10 @@ function getRuntimeProjectedPlaceholders(
 
 function getRuntimeProjectionScope(cwd: string): string {
 	return `${getAgentDir()}\0${cwd}`;
+}
+
+function getRuntimePendingProjectionScope(sessionId: string): string {
+	return `${getAgentDir()}\0${sessionId}`;
 }
 
 function mergeProjectedPlaceholders(

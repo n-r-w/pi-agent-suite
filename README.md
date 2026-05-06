@@ -17,21 +17,29 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `custom-compaction` | Yes | Keeps long conversations useful after compaction by using better summary prompts. |
 | `context-projection` | No | Helps long sessions continue when old large tool outputs would otherwise fill the model context. |
 | `context-overflow` | Yes | Runs compaction before the next provider request fails because the context is already too large. |
+| `completion-sound` | Yes | Plays a completion sound only when the top-level agent finishes. |
+| `cmux` | Yes | Sends a cmux notification only when the top-level agent finishes. |
+| `system-prompt` | Yes | Replaces pi's base system prompt from a Markdown template with explicit runtime variables. |
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
+| `convene-council` | Yes | Lets two model participants discuss one question and return one bounded answer. |
 
 ## Best practices
 
-The most effective setup combines `main-agent-selection`, `run-subagent`, and `consult-advisor`.
+The most effective setup combines `main-agent-selection`, `run-subagent`, `consult-advisor`, and `convene-council`.
 
 Use `main-agent-selection` to choose a focused main agent for the current work. Use `run-subagent` to delegate narrow tasks to subagents. This keeps the main model focused and reduces context growth in large codebases, because investigation, extraction, review, and implementation tasks can run in separate subagent contexts.
 
 Use `consult-advisor` when a cheaper model needs an audit from a stronger model. The main model can ask the advisor to check assumptions, risks, or decisions without paying for the stronger model on every turn.
 
+Use `convene-council` when one answer benefits from two model participants challenging each other before the main model decides. It costs more and takes longer than `consult-advisor`, so reserve it for high-impact trade-offs, architecture choices, or risky interpretation questions.
+
 Use `context-projection` for long tool-heavy sessions. With suitable thresholds and summary mode, it can make the usable context behave like a much larger window, often close to doubling the effective available context, without noticeable LLM quality loss when projected outputs are old or non-critical.
 
-`consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, uses the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider.
+`consult-advisor` sends the advisor the active branch conversation messages, with recorded `context-projection` placeholders or summaries replayed instead of hidden full tool outputs. It removes the pending `consult_advisor` tool call, appends the advisor question, adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt, and disables tools. If the advisor request is still too large for the advisor model context window, the tool returns a clear error instead of calling the provider. Transient advisor provider failures are retried with `p-retry`.
+
+`convene-council` renders the active branch as an external first-prompt `<context>` package instead of seeding participant sessions with the main-agent transcript. LLM1 and LLM2 receive the same question, the same `<context>`, Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md`, and only the tools configured for child participants. Independent first opinions and mutual missing-information calls run in parallel. Dependent review steps stay sequential when the next task uses the previous participant output. The participants exchange structured review responses until both report agreement after reviewing the opponent or until the iteration limit is reached. `context-projection` keeps council results visible because they carry decision-critical guidance.
 
 ## How to connect to pi
 
@@ -160,7 +168,7 @@ How it works:
 Why you need it:
 
 - Shows the current session state in one compact line.
-- Makes it easier to notice the selected agent, model, quota, context usage, and MCP errors while working.
+- Makes it easier to notice the selected agent, model, quota, API cost, context usage, and MCP errors while working.
 
 Config file: `~/.pi/agent/agent-suite/footer/config.json`
 
@@ -170,11 +178,12 @@ Options:
 - `showProvider`: default `true`. Shows the provider name.
 - `showModel`: default `true`. Shows the model name.
 - `showThinkingLevel`: default `true`. Shows the thinking level.
+- `showApiCost`: default `true`. Shows cumulative API cost from the current session.
 
 How it works:
 
 - Installs a custom footer when a pi session starts.
-- Shows these footer parts: project, Codex quota, active main agent, model, context projection, MCP errors, context usage.
+- Shows these footer parts: project, Codex quota, API cost, active main agent, model, context projection, MCP errors, context usage.
 - Shows `No agent` when no main agent is active.
 - Reads the agent label from the same runtime state that builds the system prompt.
 - Shortens long text so the footer fits the terminal width.
@@ -182,13 +191,14 @@ How it works:
 Example:
 
 ```text
-workspace · 100%/5h 65%/5d · Coder · openai-codex/gpt-5.5/high · ~80k · 70k/262k/272k
+workspace · 100%/5h 65%/5d · $0.123 · Coder · openai-codex/gpt-5.5/high · ~80k · 70k/262k/272k
 ```
 
 | Segment | Example | Meaning |
 | --- | --- | --- |
 | Project | `workspace` | Current repository or directory. |
 | Codex quota | `100%/5h 65%/5d` | Remaining quota and reset windows. |
+| API cost | `$0.123` | Cumulative API cost from assistant usage in the current session. |
 | Agent | `Coder` or `No agent` | Active main agent, or `No agent` when no main agent is active. |
 | Model | `openai-codex/gpt-5.5/high` | Provider, model, and reasoning level. |
 | Projection | `~80k` | Tokens saved by context projection. |
@@ -229,11 +239,14 @@ Options:
 
 - `enabled`: default `false`. Must be `true` to show quota.
 - `refreshInterval`: default `60`. Minimum `10`. Unit: seconds.
+- `retryAttempts`: default `5`. Minimum `1`. Unit: requests per refresh.
+- `retryInterval`: default `2`. Minimum `1`. Unit: seconds.
 
 How it works:
 
 - Uses pi's OpenAI Codex login data.
-- Requests quota from the Codex usage endpoint.
+- Requests quota from the Codex usage endpoint in the background during startup.
+- Retries failed quota requests before showing `CX err`.
 - Shows quota in the footer, for example `91%/4h 100%/6d`.
 - Colors only the quota percentage; reset windows and compact non-data text stay plain.
 - Shows `CX auth`, `CX err`, or `CX ?` when quota cannot be shown.
@@ -256,12 +269,17 @@ Options:
 - `historyPromptFile`: optional absolute custom prompt path.
 - `updatePromptFile`: optional absolute custom prompt path.
 - `turnPrefixPromptFile`: optional absolute custom prompt path.
+- `retry.enabled`: default `true`. Enables retry for transient compaction provider failures.
+- `retry.maxRetries`: default `3`. Retries after the first failed compaction model call.
+- `retry.baseDelayMs`: default `2000`. First retry delay in milliseconds. Later retries use exponential backoff with factor `2`.
 
 How it works:
 
 - Replaces pi's default compaction flow.
 - Uses bundled prompts when custom prompt files are not set.
 - Sends the old conversation to the model as one conversation block to create or update the summary.
+- Retries transient compaction provider failures with `p-retry`.
+- Does not retry aborted compaction requests.
 - Stops startup when a configured custom prompt file path is not absolute.
 - Disables itself for other config or custom prompt file errors.
 
@@ -279,11 +297,15 @@ Config file: `~/.pi/agent/agent-suite/context-projection/config.json`
 Options:
 
 - `enabled`: default `false`.
-- `projectionRemainingTokens`: default `49152`. Projection starts at or below this remaining-token count.
+- `projectionRemainingTokensL1`: default `70000`. Projection starts at or below this remaining-token count.
+- `minToolResultTokensL1`: default `4000`. Only larger tool results can be hidden at L1.
+- `projectionRemainingTokensL2`: default `50000`. L2 applies when remaining tokens reach this lower threshold.
+- `minToolResultTokensL2`: default `2000`. Only larger tool results can be hidden at L2.
+- `projectionRemainingTokensL3`: default `30000`. L3 applies when remaining tokens reach this lowest threshold.
+- `minToolResultTokensL3`: default `1000`. Only larger tool results can be hidden at L3.
 - `keepRecentTurns`: default `10`. Keeps this many recent tool-use turns unchanged.
 - `keepRecentTurnsPercent`: default `0.2`. Keeps this share of recent tool-use turns unchanged.
-- `minToolResultTokens`: default `2000`. Only larger tool results can be hidden.
-- `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` is always ignored.
+- `projectionIgnoredTools`: default `[]`. Tool names whose results stay visible. `consult_advisor` and `convene_council` are always ignored.
 - `placeholder`: default `[Result omitted. Run tool again if you want to see it]`.
 - `summary.enabled`: default `false`. Generates a short replacement summary before projection.
 - `summary.model`: optional. Uses the current model when missing or `null`.
@@ -306,7 +328,7 @@ How it works:
 - Replaces old large successful text-only tool results with the placeholder or an XML-wrapped generated summary that marks the full result as omitted. Summary is used only when it fits the summary model context window and reduces token count.
 - Stops startup when a configured summary prompt path is not absolute.
 - Keeps recent tool results visible.
-- Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, and configured ignored tool results visible.
+- Keeps failed results, non-text results, loaded skill files, `consult_advisor` results, `convene_council` results, and configured ignored tool results visible.
 - Changes only what is sent to the model for the next request. It does not edit saved conversation history.
 - Shows UI-only chat progress while a new projection operation processes tool results.
 - Completion chat status shows only the additional savings from the latest projection operation.
@@ -336,6 +358,100 @@ How it works:
 - Sends `System message: Context summarization complete, continue` after successful compaction.
 - Prevents repeated or parallel compactions while usage stays below the limit.
 
+### `completion-sound`
+
+Why you need it:
+
+- Plays a sound when the top-level pi agent successfully finishes a prompt.
+- Suppresses completion sounds in child agent processes so delegated work does not create duplicate sounds.
+- Suppresses sounds for provider errors, retries, and aborted runs.
+
+Config file: `~/.pi/agent/agent-suite/completion-sound/config.json`
+
+Options:
+
+- `enabled`: default `true`. Enables or disables all behavior owned by this extension.
+- `command`: optional non-empty string. Overrides the platform default playback executable.
+- `args`: optional array of strings. Arguments passed to `command`. `command` is required when `args` is set.
+- `volume`: optional number from `0` to `150`. Controls only built-in macOS and Linux playback.
+
+How it works:
+
+- Runs on `agent_end`.
+- Skips playback when `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1`.
+- Skips playback when the latest assistant message ends with `error` or `aborted`.
+- Uses `afplay /System/Library/Sounds/Glass.aiff` on macOS when config is missing.
+- Uses `afplay -v <volume / 100> /System/Library/Sounds/Glass.aiff` on macOS when `volume` is configured and `command` is omitted.
+- Uses `paplay /usr/share/sounds/freedesktop/stereo/complete.oga` on Linux when config is missing.
+- Uses `paplay --volume=<round(65536 * volume / 100)> /usr/share/sounds/freedesktop/stereo/complete.oga` on Linux when `volume` is configured and `command` is omitted.
+- Uses `powershell.exe` with `[console]::beep(880,180)` on Windows when config is missing. The default Windows beep ignores `volume`.
+- Keeps custom `command` and `args` unchanged when `volume` is configured.
+- Ignores playback process failures so sound issues do not interrupt the agent.
+
+### `cmux`
+
+Why you need it:
+
+- Sends a cmux notification when the top-level pi agent successfully finishes a prompt.
+- Suppresses cmux notifications in child agent processes so delegated work does not create duplicate notifications.
+- Suppresses notifications for provider errors, aborted runs, and runs without a completed assistant message.
+- Keeps pi working in normal terminals by ignoring `cmux notify` failures and timeouts.
+
+Config file: `~/.pi/agent/agent-suite/cmux/config.json`
+
+Options:
+
+- `enabled`: default `true`. Enables or disables all behavior owned by this extension.
+
+How it works:
+
+- Runs on `agent_end`.
+- Skips notification when `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1`.
+- Skips notification when the latest assistant message ends with `error` or `aborted`.
+- Sends `cmux notify --title Pi --subtitle "Task Complete" --body <summary>`.
+- Builds the body from changed files, read files, search activity, shell activity, or elapsed duration.
+- Appends elapsed duration to non-fallback bodies when the run takes at least 15 seconds.
+- Uses a 5 second timeout for `cmux notify`.
+- Ignores cmux command failures so cmux issues do not interrupt the agent.
+- Does not register commands, tools, prompts, skills, split commands, zoxide commands, review commands, continue commands, or open commands.
+
+### `system-prompt`
+
+Why you need it:
+
+- Lets you own the base system prompt as a Markdown file.
+- Keeps all static prompt text in the template.
+- Inserts dynamic pi data only where the template has a variable.
+
+Config file: `~/.pi/agent/agent-suite/system-prompt/config.json`
+
+Options:
+
+- `enabled`: default `true`. Set to `false` to leave pi's original system prompt unchanged.
+- `templateFile`: optional absolute path to a Markdown template file. Missing value uses the bundled template.
+
+Supported variables:
+
+- `{{date}}`
+- `{{cwd}}`
+- `{{tools}}`
+- `{{toolGuidelines}}`
+- `{{appendSystemPrompt}}`
+- `{{contextFiles}}`
+- `{{skills}}`
+
+`{{contextFiles}}` renders loaded context files as `<project_specific_instruction path="...">` blocks inside `<project_specific_instructions>`.
+
+How it works:
+
+- Loads the template during startup and reload.
+- Replaces only pi's base prompt layer.
+- Appends package-owned agent prompt additions after the rendered template.
+- Removes unsupported `{{...}}` variables and warns with their names.
+- Leaves pi's original prompt unchanged when config or template loading fails.
+
+More details: [docs/extensions/system-prompt.md](docs/extensions/system-prompt.md)
+
 ### `main-agent-selection`
 
 Why you need it:
@@ -348,6 +464,7 @@ Config file: `~/.pi/agent/agent-suite/agent-selection/config.json`
 Options:
 
 - `enabled`: default `true`. Enables `/agent` and `Ctrl+Shift+A`.
+- `diagnosticsEnabled`: default `false`. Writes runtime diagnostics to `~/.pi/agent/agent-suite/agent-selection/runtime-diagnostics.jsonl`.
 
 Agent files are described in [Agent files](#agent-files).
 
@@ -405,6 +522,9 @@ Options:
 - `model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `promptFile`: optional absolute custom advisor prompt path.
 - `debugPayloadFile`: optional file path for saving the advisor request.
+- `retry.enabled`: default `true`. Enables retry for transient advisor provider failures.
+- `retry.maxRetries`: default `3`. Retries after the first failed provider call.
+- `retry.baseDelayMs`: default `2000`. First retry delay in milliseconds. Later retries use exponential backoff with factor `2`.
 
 Tool input:
 
@@ -416,8 +536,67 @@ How it works:
 - Replays recorded `context-projection` placeholders or summaries when projection is active.
 - Removes the pending `consult_advisor` tool call from that request.
 - Appends the advisor question as a user message.
+- Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the advisor system prompt.
 - Uses the advisor system prompt and disables tools.
 - Calls the configured advisor model only when the request fits the advisor model context window.
+- Retries transient advisor provider failures with `p-retry`.
+- Does not retry aborted advisor requests.
 - Returns a clear error when the advisor request is too large.
 - Returns the advisor's visible answer.
+- Saves very large answers to a temporary file and returns a short result with the file path.
+
+### `convene-council`
+
+Why you need it:
+
+- Lets two model participants challenge each other before returning one answer.
+- Helps expose disagreement, missing information, and weak alternatives on high-impact questions.
+
+Config file: `~/.pi/agent/agent-suite/convene-council/config.json`
+
+Options:
+
+- `enabled`: default `true`. Enables the `convene_council` tool.
+- `llm1.model.id`: optional. Uses the current model when missing.
+- `llm1.model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `llm2.model.id`: optional. Uses the current model when missing.
+- `llm2.model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `participantIterationLimit`: default `3`. Maximum completed LLM1 and LLM2 discussion pairs.
+- `finalAnswerParticipant`: default `llm2`. Allowed values: `llm1`, `llm2`.
+- `responseDefectRetries`: default `1`. Retries malformed participant responses and defective final answers.
+- `tools`: optional array of non-empty tool-name patterns for additional participant tools. Participants always receive `read`. Missing or empty means participants receive only `read`. Exact tool names and constrained wildcard patterns are allowed. Full wildcard `*` is rejected.
+
+Tool input:
+
+- `question`: question for both council participants.
+
+How it works:
+
+- Builds one temporary context file from decision-relevant raw active-branch entries returned by `ctx.sessionManager.getBranch()`.
+- Treats the context file as external evidence, not participant session memory, tool availability, or instructions.
+- Does not replay recorded `context-projection` placeholders, compaction summaries, or branch summaries for council participant context.
+- Removes only the current pending `convene_council` tool call and matching result from the context file.
+- Keeps previous completed `convene_council` results in the context file as prior evidence.
+- Sends the same first-prompt context file path, Pi-loaded context files, and question task to LLM1 and LLM2.
+- Requires participants to read the context file with `read` before giving an opinion and to continue with `offset` when needed.
+- Deletes the temporary context file after success, failure, abort, participant startup failure, or participant prompt failure.
+- Runs participant prompts in isolated child `pi --mode rpc` sessions without seeding them with the main-agent transcript.
+- Always shares `read` with each participant and shares configured `tools` as additional tools.
+- Adds the selected participant tool names to each participant system prompt.
+- Instructs participants that current runtime tool access overrides historical tool-access claims inside Project Context and the context file.
+- Does not summarize or budget inline council context before child startup.
+- Starts independent first-turn participant calls in parallel.
+- Accepts first-turn participant opinions as non-empty text.
+- Runs mutual missing-information answers and their clarification reviews in parallel.
+- Keeps dependent review steps sequential when the next task uses the previous participant output.
+- Requires later participant discussion responses in `<status>...</status><opinion>...</opinion>` format.
+- Stops when both participants report `AGREE` after reviewing the opponent or when the iteration limit is reached.
+- Requests the final answer from the configured final answer participant after agreement.
+- Returns a no-consensus result with `<result>`, `<answer1>`, and `<answer2>` blocks when the iteration limit is reached without agreement.
+- Shows stable participant rows during and after execution instead of a scrolling event stream.
+- Selects and persists one English philosopher or sage name for each participant row, while internal IDs remain `llm1` and `llm2`.
+- Shows each participant status icon, elapsed time, context usage when child usage is available, and latest operation.
+- Uses the same status icon colors as `run_subagent`: `⏳` accent, `✓` success, `■` error, and `✗` error.
+- Shows a short final-answer or error preview below participant rows after completion.
+- Keeps raw transcripts, provider payloads, token deltas, and unbounded intermediate answers out of progress rows.
 - Saves very large answers to a temporary file and returns a short result with the file path.

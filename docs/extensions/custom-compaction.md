@@ -20,6 +20,9 @@
 - Disables custom compaction and creates an issue only for `custom-compaction` for other configuration errors.
 - Uses the current session model when `model` is missing.
 - Uses the current thinking level when `reasoning` is missing.
+- Retries transient compaction provider failures with `p-retry`.
+- Uses compaction retry defaults `retry.enabled: true`, `retry.maxRetries: 3`, and `retry.baseDelayMs: 2000`.
+- Does not retry aborted compaction requests.
 - Does not read configuration for other extensions.
 
 ## Configuration
@@ -30,7 +33,12 @@ File: `~/.pi/agent/agent-suite/custom-compaction/config.json`.
 {
   "enabled": true,
   "model": "provider/model",
-  "reasoning": "medium"
+  "reasoning": "medium",
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000
+  }
 }
 ```
 
@@ -44,6 +52,10 @@ Optional fields:
 - `turnPrefixPromptFile`
 - `model`
 - `reasoning`
+- `retry`
+- `retry.enabled`
+- `retry.maxRetries`
+- `retry.baseDelayMs`
 
 Allowed `reasoning` values:
 
@@ -65,4 +77,6 @@ Tests must verify:
 - startup failure for non-absolute custom prompt paths;
 - issue creation only for `custom-compaction` on non-path configuration error;
 - model calls through a fake model layer without real models;
-- serialized `<conversation>` requests instead of direct chat-message continuation.
+- serialized `<conversation>` requests instead of direct chat-message continuation;
+- retry for transient compaction model failures;
+- custom-compaction retry config validation.

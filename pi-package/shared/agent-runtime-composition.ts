@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { writeRuntimeDiagnostic } from "./agent-runtime-diagnostics";
 
 export interface MainAgentRuntimeInfo {
 	readonly id: string;
@@ -41,15 +42,23 @@ export interface AgentRuntimeComposition {
 	setConsultAdvisorContribution(
 		contribution: PromptContribution | undefined,
 	): void;
+	setConveneCouncilContribution(
+		contribution: PromptContribution | undefined,
+	): void;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV3";
+const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV5";
 
 export const MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT =
 	"pi-harness:main-agent-contribution-change";
 
+interface RuntimeCompositionHolder {
+	runtime: AgentRuntimeComposition;
+	stale: boolean;
+}
+
 interface RuntimeCompositionCarrier {
-	[RUNTIME_PROPERTY]?: AgentRuntimeComposition;
+	[RUNTIME_PROPERTY]?: RuntimeCompositionHolder;
 }
 
 interface AgentRuntimeEventBus {
@@ -65,18 +74,40 @@ export function getAgentRuntimeComposition(
 ): AgentRuntimeComposition {
 	const carrier = pi.events as RuntimeCompositionCarrier;
 	const existing = carrier[RUNTIME_PROPERTY];
-	if (existing !== undefined) {
-		return existing;
+	if (existing !== undefined && !existing.stale) {
+		return existing.runtime;
 	}
 
-	const runtime = new AgentRuntimeCompositionImpl(pi);
+	writeRuntimeDiagnostic("runtime-composition.created", {
+		replacedStaleRuntime: existing !== undefined,
+	});
+	const holder: RuntimeCompositionHolder = {
+		runtime: new AgentRuntimeCompositionImpl(pi),
+		stale: false,
+	};
+	if (existing !== undefined) {
+		carrier[RUNTIME_PROPERTY] = holder;
+		return holder.runtime;
+	}
+
 	Object.defineProperty(carrier, RUNTIME_PROPERTY, {
 		configurable: false,
 		enumerable: false,
-		value: runtime,
-		writable: false,
+		value: holder,
+		writable: true,
 	});
-	return runtime;
+	return holder.runtime;
+}
+
+/** Marks the current runtime composition stale after pi starts replacing the extension runtime. */
+export function markAgentRuntimeCompositionStale(pi: ExtensionAPI): void {
+	const holder = (pi.events as RuntimeCompositionCarrier)[RUNTIME_PROPERTY];
+	if (holder === undefined) {
+		return;
+	}
+
+	holder.stale = true;
+	writeRuntimeDiagnostic("runtime-composition.stale-marked");
 }
 
 /** Owns final prompt and active-tool application for agent-related extensions. */
@@ -85,34 +116,64 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private runSubagentContribution: PromptContribution | undefined;
 	private runSubagentActiveToolFilter: ActiveToolFilter | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
+	private conveneCouncilContribution: PromptContribution | undefined;
 	private baselineActiveTools: string[] | undefined;
 
 	public constructor(private readonly pi: ExtensionAPI) {
+		writeRuntimeDiagnostic("runtime-composition.before-agent-start.registered");
 		this.pi.on("before_agent_start", async (event, ctx) => {
+			writeRuntimeDiagnostic("runtime-composition.before-agent-start.started", {
+				mainAgentId: this.mainAgentContribution?.agent?.id ?? null,
+				mainPromptLength: this.mainAgentContribution?.prompt.length ?? 0,
+				activeToolsBeforeFilter: this.pi.getActiveTools(),
+			});
 			const activeToolNames = await this.resolveActiveToolNames(ctx);
-			const contributionPrompts = (
-				await Promise.all([
-					this.mainAgentContribution?.prompt,
-					resolvePromptContribution(
-						this.runSubagentContribution,
-						activeToolNames,
-					),
-					resolvePromptContribution(
-						this.consultAdvisorContribution,
-						activeToolNames,
-					),
-				])
-			).filter((prompt) => prompt !== undefined && prompt.length > 0);
+			const mainAgentPrompt = this.mainAgentContribution?.prompt;
+			const runSubagentPrompt = await resolvePromptContribution(
+				this.runSubagentContribution,
+				activeToolNames,
+			);
+			const consultAdvisorPrompt = await resolvePromptContribution(
+				this.consultAdvisorContribution,
+				activeToolNames,
+			);
+			const conveneCouncilPrompt = await resolvePromptContribution(
+				this.conveneCouncilContribution,
+				activeToolNames,
+			);
+			const contributionPrompts = [
+				mainAgentPrompt,
+				runSubagentPrompt,
+				consultAdvisorPrompt,
+				conveneCouncilPrompt,
+			].filter((prompt) => prompt !== undefined && prompt.length > 0);
+			writeRuntimeDiagnostic(
+				"runtime-composition.before-agent-start.resolved",
+				{
+					mainAgentId: this.mainAgentContribution?.agent?.id ?? null,
+					activeTools: activeToolNames,
+					basePromptLength:
+						(event as BeforeAgentStartEventLike).systemPrompt?.length ?? 0,
+					mainAgentPromptLength: mainAgentPrompt?.length ?? 0,
+					runSubagentPromptLength: runSubagentPrompt?.length ?? 0,
+					consultAdvisorPromptLength: consultAdvisorPrompt?.length ?? 0,
+					conveneCouncilPromptLength: conveneCouncilPrompt?.length ?? 0,
+					contributionCount: contributionPrompts.length,
+				},
+			);
 			if (contributionPrompts.length === 0) {
 				return undefined;
 			}
 
 			const basePrompt = (event as BeforeAgentStartEventLike).systemPrompt;
-			return {
-				systemPrompt: [basePrompt, ...contributionPrompts]
-					.filter(Boolean)
-					.join("\n\n"),
-			};
+			const systemPrompt = [basePrompt, ...contributionPrompts]
+				.filter(Boolean)
+				.join("\n\n");
+			writeRuntimeDiagnostic("runtime-composition.before-agent-start.applied", {
+				mainAgentId: this.mainAgentContribution?.agent?.id ?? null,
+				finalPromptLength: systemPrompt.length,
+			});
+			return { systemPrompt };
 		});
 	}
 
@@ -123,12 +184,23 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			this.baselineActiveTools = this.pi.getActiveTools();
 		}
 
+		writeRuntimeDiagnostic("runtime-composition.main-agent.set", {
+			mainAgentId: contribution?.agent?.id ?? null,
+			mainPromptLength: contribution?.prompt.length ?? 0,
+			mainAgentTools: contribution?.agent?.tools ?? null,
+			mainAgentSubagents: contribution?.agent?.agents ?? null,
+			activeToolsBeforeSet: this.pi.getActiveTools(),
+		});
 		this.mainAgentContribution = contribution;
 		this.pi.setActiveTools(
 			contribution?.tools !== undefined
 				? [...contribution.tools]
 				: this.baselineActiveTools,
 		);
+		writeRuntimeDiagnostic("runtime-composition.main-agent.tools-applied", {
+			mainAgentId: contribution?.agent?.id ?? null,
+			activeToolsAfterSet: this.pi.getActiveTools(),
+		});
 		(this.pi.events as unknown as AgentRuntimeEventBus).emit(
 			MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 			undefined,
@@ -163,6 +235,12 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		contribution: PromptContribution | undefined,
 	): void {
 		this.consultAdvisorContribution = contribution;
+	}
+
+	public setConveneCouncilContribution(
+		contribution: PromptContribution | undefined,
+	): void {
+		this.conveneCouncilContribution = contribution;
 	}
 
 	/** Applies dynamic tool filters after selected-agent restoration and before prompt composition. */

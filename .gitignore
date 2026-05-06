@@ -31,3 +31,4 @@ temp
 
 # Runtime debug payloads
 debug
+.vscode/settings.json

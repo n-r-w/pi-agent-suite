@@ -32,9 +32,13 @@
 			"./extensions/custom-compaction/index.ts",
 			"./extensions/context-projection/index.ts",
 			"./extensions/context-overflow/index.ts",
+			"./extensions/completion-sound/index.ts",
+			"./extensions/cmux/index.ts",
+			"./extensions/system-prompt/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
-			"./extensions/consult-advisor/index.ts"
+			"./extensions/consult-advisor/index.ts",
+			"./extensions/convene-council/index.ts"
 		]
 	},
 	"peerDependencies": {
@@ -45,7 +49,9 @@
 		"typebox": "*"
 	},
 	"dependencies": {
+		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
+		"p-retry": "^7.1.0",
 		"stream-json": "^2.1.0"
 	}
 }

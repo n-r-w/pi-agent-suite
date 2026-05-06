@@ -4,29 +4,68 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { SessionEntry } from "@mariozechner/pi-coding-agent";
-import { replayContextProjection } from "../../pi-package/shared/context-projection";
+import {
+	addPendingProjectionSavings,
+	type ContextProjectionConfig,
+	estimatePendingProjectionSavings,
+	getProjectionAwareContextUsage,
+	type MappedContextEntry,
+	projectContextMessages,
+	readContextProjectionConfig,
+	replayContextProjection,
+	resetPendingProjectionSavings,
+	setPendingProjectionSavings,
+} from "../../pi-package/shared/context-projection";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const CUSTOM_TYPE = "context-projection";
 const PLACEHOLDER = "[projected]";
+const PROJECTION_LEVEL = {
+	label: "L1",
+	remainingTokens: 100_000,
+	minToolResultTokens: 0,
+} as const;
+const PROJECTION_CONFIG: ContextProjectionConfig = {
+	enabled: true,
+	projectionLevels: [PROJECTION_LEVEL, PROJECTION_LEVEL, PROJECTION_LEVEL],
+	keepRecentTurns: 0,
+	keepRecentTurnsPercent: 0,
+	projectionIgnoredTools: [],
+	placeholder: PLACEHOLDER,
+	summary: {
+		enabled: false,
+		maxConcurrency: 1,
+		retryCount: 1,
+		retryDelayMs: 0,
+	},
+};
 
 /** Runs a test with an isolated pi agent directory. */
 async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-projection-replay-"));
 	process.env[AGENT_DIR_ENV] = agentDir;
+	delete process.env[AGENT_SUITE_DIR_ENV];
 	try {
 		return await action(agentDir);
 	} finally {
-		if (previousAgentDir === undefined) {
-			delete process.env[AGENT_DIR_ENV];
-		} else {
-			process.env[AGENT_DIR_ENV] = previousAgentDir;
-		}
+		restoreEnv(AGENT_DIR_ENV, previousAgentDir);
+		restoreEnv(AGENT_SUITE_DIR_ENV, previousAgentSuiteDir);
 		await rm(agentDir, { recursive: true, force: true });
 	}
+}
+
+/** Restores an environment variable to its previous value. */
+function restoreEnv(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+		return;
+	}
+	process.env[key] = value;
 }
 
 /** Writes context-projection config into the isolated agent directory. */
@@ -79,7 +118,10 @@ function userMessage(text = "hello"): AgentMessage {
 }
 
 /** Creates an assistant tool-call message. */
-function assistantMessage(toolCallId: string, toolName = "bash"): AgentMessage {
+function assistantMessage(
+	toolCallId: string,
+	toolName = "bash",
+): Extract<AgentMessage, { role: "assistant" }> {
 	return {
 		role: "assistant",
 		content: [
@@ -107,16 +149,341 @@ function assistantMessage(toolCallId: string, toolName = "bash"): AgentMessage {
 }
 
 /** Creates a successful text tool result. */
-function toolResultMessage(toolCallId: string, text: string): AgentMessage {
+function toolResultMessage(
+	toolCallId: string,
+	text: string,
+	toolName = "bash",
+): AgentMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
-		toolName: "bash",
+		toolName,
 		content: [{ type: "text", text }],
 		isError: false,
 		timestamp: 3,
 	};
 }
+
+describe("context projection config", () => {
+	test("uses defaults for all three projection levels", async () => {
+		// Purpose: enabled config may omit level fields and still use the documented default projection thresholds.
+		// Input and expected output: enabled-only config produces the complete normalized internal level tuple.
+		// Edge case: missing config still disables projection, so this test writes an explicit enabled config.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+
+			const config = await readContextProjectionConfig();
+
+			expect(config).toEqual({
+				kind: "valid",
+				config: {
+					enabled: true,
+					projectionLevels: [
+						{
+							label: "L1",
+							remainingTokens: 70_000,
+							minToolResultTokens: 4_000,
+						},
+						{
+							label: "L2",
+							remainingTokens: 50_000,
+							minToolResultTokens: 2_000,
+						},
+						{
+							label: "L3",
+							remainingTokens: 30_000,
+							minToolResultTokens: 1_000,
+						},
+					],
+					keepRecentTurns: 10,
+					keepRecentTurnsPercent: 0.2,
+					projectionIgnoredTools: [],
+					placeholder: "[Result omitted. Run tool again if you want to see it]",
+					summary: {
+						enabled: false,
+						maxConcurrency: 1,
+						retryCount: 1,
+						retryDelayMs: 5_000,
+					},
+				},
+			});
+		});
+	});
+
+	test("rejects old single-level projection config keys", async () => {
+		// Purpose: the new config contract must not silently accept removed single-level keys.
+		// Input and expected output: each old key makes the config invalid.
+		// Edge case: the config also contains enabled true, so invalidity is caused by unsupported keys only.
+		// Dependencies: isolated config file and shared config reader.
+		for (const oldKey of ["projectionRemainingTokens", "minToolResultTokens"]) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, {
+					enabled: true,
+					[oldKey]: 1,
+				});
+
+				expect(await readContextProjectionConfig()).toEqual({
+					kind: "invalid",
+				});
+			});
+		}
+	});
+
+	test("keeps disabled config disabled when unrelated fields are invalid", async () => {
+		// Purpose: disabled projection must not fail startup because of invalid fields that are ignored while disabled.
+		// Input and expected output: invalid summary, placeholder, and recent-turn values still return disabled when projection levels are ordered.
+		// Edge case: projection level order is still validated before returning disabled.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: false,
+				keepRecentTurns: "invalid",
+				placeholder: "",
+				summary: {
+					enabled: true,
+					systemPromptFile: "relative.md",
+				},
+			});
+
+			expect(await readContextProjectionConfig()).toEqual({ kind: "disabled" });
+		});
+	});
+
+	test("normalizes equal projection thresholds to the lowest matching tool-result threshold", async () => {
+		// Purpose: levels with the same remaining-token threshold must use the least restrictive tool-result minimum for that threshold.
+		// Input and expected output: L2=L3 and L1=L2=L3 groups copy the minimum token threshold to every level in the group.
+		// Edge case: the levels remain ordered because equality is allowed.
+		// Dependencies: isolated config file and shared config reader.
+		const cases = [
+			{
+				config: {
+					enabled: true,
+					projectionRemainingTokensL1: 100,
+					minToolResultTokensL1: 30,
+					projectionRemainingTokensL2: 50,
+					minToolResultTokensL2: 20,
+					projectionRemainingTokensL3: 50,
+					minToolResultTokensL3: 10,
+				},
+				expectedLevels: [
+					{ label: "L1", remainingTokens: 100, minToolResultTokens: 30 },
+					{ label: "L2", remainingTokens: 50, minToolResultTokens: 10 },
+					{ label: "L3", remainingTokens: 50, minToolResultTokens: 10 },
+				],
+			},
+			{
+				config: {
+					enabled: true,
+					projectionRemainingTokensL1: 100,
+					minToolResultTokensL1: 30,
+					projectionRemainingTokensL2: 100,
+					minToolResultTokensL2: 20,
+					projectionRemainingTokensL3: 100,
+					minToolResultTokensL3: 10,
+				},
+				expectedLevels: [
+					{ label: "L1", remainingTokens: 100, minToolResultTokens: 10 },
+					{ label: "L2", remainingTokens: 100, minToolResultTokens: 10 },
+					{ label: "L3", remainingTokens: 100, minToolResultTokens: 10 },
+				],
+			},
+		] as const;
+
+		for (const testCase of cases) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, testCase.config);
+
+				const config = await readContextProjectionConfig();
+
+				expect(config.kind).toBe("valid");
+				if (config.kind !== "valid") {
+					throw new Error("expected valid projection config");
+				}
+				expect(config.config.projectionLevels).toEqual(testCase.expectedLevels);
+			});
+		}
+	});
+});
+
+describe("projection-aware context usage", () => {
+	test("subtracts only pending projection savings from known context usage", () => {
+		// Purpose: UI and overflow checks must show provider-context size while provider usage is stale after projection.
+		// Input and expected output: 48k pending savings turns raw 130k usage into 82k and recomputes percent.
+		// Edge case: pending savings larger than raw tokens clamps usage to zero.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-usage";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-1"],
+		});
+
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: 47.79,
+			}),
+		).toEqual({
+			tokens: 82_000,
+			contextWindow: 272_000,
+			percent: (82_000 / 272_000) * 100,
+		});
+
+		addPendingProjectionSavings(sessionId, 100_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-2"],
+		});
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 90_000,
+				contextWindow: 272_000,
+				percent: (90_000 / 272_000) * 100,
+			}),
+		).toEqual({ tokens: 0, contextWindow: 272_000, percent: 0 });
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("preserves live pending savings during branch sync and deduplicates them after persistence", () => {
+		// Purpose: context sync must not lose a live projection before its custom entry is visible in the branch.
+		// Input and expected output: a live 48k saving remains after empty branch sync, then branch-backed sync for the same entry still subtracts 48k only once.
+		// Edge case: branch synchronization runs between provider context projection and custom entry visibility.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-live-sync";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-1"],
+		});
+
+		setPendingProjectionSavings(sessionId, 0, [], new Set(["leaf-1"]));
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: (130_000 / 272_000) * 100,
+			}),
+		).toEqual({
+			tokens: 82_000,
+			contextWindow: 272_000,
+			percent: (82_000 / 272_000) * 100,
+		});
+
+		setPendingProjectionSavings(
+			sessionId,
+			48_000,
+			["entry-1"],
+			new Set(["leaf-1"]),
+		);
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: (130_000 / 272_000) * 100,
+			}),
+		).toEqual({
+			tokens: 82_000,
+			contextWindow: 272_000,
+			percent: (82_000 / 272_000) * 100,
+		});
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("clears live pending savings when branch sync moves to another branch", () => {
+		// Purpose: live pending savings from one branch must not undercount context usage after tree navigation.
+		// Input and expected output: a live 48k saving anchored to branch A is removed when branch sync observes branch B.
+		// Edge case: branch B has no persisted pending projection state yet uses the same session id.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-branch-sync";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-a",
+			entryIds: ["entry-a"],
+		});
+
+		setPendingProjectionSavings(sessionId, 0, [], new Set(["leaf-b"]));
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+				percent: (130_000 / 272_000) * 100,
+			}),
+		).toEqual({
+			tokens: 130_000,
+			contextWindow: 272_000,
+			percent: (130_000 / 272_000) * 100,
+		});
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("keeps unknown context usage unknown while projection savings are pending", () => {
+		// Purpose: pending projection savings must not invent a token count when pi reports unknown usage.
+		// Input and expected output: null tokens stay null after pending savings are recorded.
+		// Edge case: post-compaction unknown usage uses the same null shape.
+		// Dependencies: in-memory runtime projection state only.
+		const sessionId = "projection-aware-null-usage";
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, 48_000, {
+			branchLeafId: "leaf-1",
+			entryIds: ["entry-1"],
+		});
+
+		expect(
+			getProjectionAwareContextUsage(sessionId, {
+				tokens: null,
+				contextWindow: 272_000,
+				percent: null,
+			}),
+		).toEqual({ tokens: null, contextWindow: 272_000, percent: null });
+		resetPendingProjectionSavings(sessionId);
+	});
+
+	test("estimates pending savings only for projection state after the latest valid assistant usage", () => {
+		// Purpose: session reload must preserve the stale-usage correction only when provider usage has not caught up.
+		// Input and expected output: projection state after latest successful usage is pending; a later successful assistant clears it.
+		// Edge case: error assistant messages after projection do not clear pending savings.
+		// Dependencies: in-memory branch entries and shared token estimation.
+		const projectedBranch = [
+			messageEntry("01", assistantMessage("call-old"), null),
+			messageEntry(
+				"02",
+				toolResultMessage("call-old", "old output ".repeat(20)),
+				"01",
+			),
+			projectionStateEntry("03", "02", PLACEHOLDER, "02"),
+			messageEntry(
+				"04",
+				{ ...assistantMessage("call-error"), stopReason: "error" },
+				"03",
+			),
+			messageEntry(
+				"05",
+				{ ...assistantMessage("call-aborted"), stopReason: "aborted" },
+				"04",
+			),
+		];
+
+		expect(
+			estimatePendingProjectionSavings({
+				branchEntries: projectedBranch,
+				cwd: "/tmp/project",
+				config: PROJECTION_CONFIG,
+			}).savedTokens,
+		).toBeGreaterThan(0);
+
+		expect(
+			estimatePendingProjectionSavings({
+				branchEntries: [
+					...projectedBranch,
+					messageEntry("06", assistantMessage("call-new"), "05"),
+				],
+				cwd: "/tmp/project",
+				config: PROJECTION_CONFIG,
+			}).savedTokens,
+		).toBe(0);
+	});
+});
 
 describe("context projection replay", () => {
 	test("replays persisted placeholders when projection config is valid", async () => {
@@ -141,6 +508,108 @@ describe("context projection replay", () => {
 			expect(JSON.stringify(messages)).not.toContain("old output");
 			expect(JSON.stringify(messages)).toContain(PLACEHOLDER);
 		});
+	});
+
+	test("keeps protected council results visible during projection replay", async () => {
+		// Purpose: replay must not hide built-in protected tool results even when stale projection state contains their entry IDs.
+		// Input and expected output: convene_council output stays visible, while ordinary bash output replays its persisted placeholder.
+		// Edge case: both entries have persisted placeholders, but built-in protection takes precedence for the council result.
+		// Dependencies: isolated agent config and in-memory session entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry(
+					"02",
+					assistantMessage("call-council", "convene_council"),
+					"01",
+				),
+				messageEntry(
+					"03",
+					toolResultMessage(
+						"call-council",
+						"council output",
+						"convene_council",
+					),
+					"02",
+				),
+				messageEntry("04", assistantMessage("call-bash"), "03"),
+				messageEntry("05", toolResultMessage("call-bash", "bash output"), "04"),
+				projectionStateEntry("06", "03", "[hidden council]", "05"),
+				projectionStateEntry("07", "05", PLACEHOLDER, "06"),
+			];
+
+			const replayed = JSON.stringify(
+				await replayContextProjection({ branchEntries, cwd: "/tmp/project" }),
+			);
+
+			expect(replayed).toContain("council output");
+			expect(replayed).not.toContain("[hidden council]");
+			expect(replayed).not.toContain("bash output");
+			expect(replayed).toContain(PLACEHOLDER);
+		});
+	});
+
+	test("keeps protected council results visible during first-time projection discovery", () => {
+		// Purpose: projection discovery must never persist convene_council results as newly projected entries.
+		// Input and expected output: bash is projected, while convene_council remains visible and absent from newProjectedEntries.
+		// Edge case: discovery is enabled with zero recent-turn and token protections.
+		// Dependencies: direct shared projection decision helper and in-memory mapped context.
+		const mappedContext: readonly MappedContextEntry[] = [
+			{
+				entry: messageEntry(
+					"01",
+					assistantMessage("call-council", "convene_council"),
+					null,
+				),
+				message: assistantMessage("call-council", "convene_council"),
+			},
+			{
+				entry: messageEntry(
+					"02",
+					toolResultMessage(
+						"call-council",
+						"council output",
+						"convene_council",
+					),
+					"01",
+				),
+				message: toolResultMessage(
+					"call-council",
+					"council output",
+					"convene_council",
+				),
+			},
+			{
+				entry: messageEntry("03", assistantMessage("call-bash"), "02"),
+				message: assistantMessage("call-bash"),
+			},
+			{
+				entry: messageEntry(
+					"04",
+					toolResultMessage("call-bash", "bash output"),
+					"03",
+				),
+				message: toolResultMessage("call-bash", "bash output"),
+			},
+		];
+
+		const decision = projectContextMessages({
+			mappedContext,
+			projectedPlaceholdersByEntryId: new Map(),
+			config: PROJECTION_CONFIG,
+			loadedSkillRoots: [],
+			cwd: "/tmp/project",
+			activeProjectionLevel: PROJECTION_LEVEL,
+		});
+		const projected = JSON.stringify(decision.messages);
+
+		expect(projected).toContain("council output");
+		expect(projected).not.toContain("bash output");
+		expect(projected).toContain(PLACEHOLDER);
+		expect(decision.newProjectedEntries).toEqual([
+			{ entryId: "04", placeholder: PLACEHOLDER },
+		]);
 	});
 
 	test("returns full context when projection config is disabled or invalid", async () => {

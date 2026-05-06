@@ -16,27 +16,41 @@ import type {
 	ExtensionContext,
 	SessionEntry,
 } from "@mariozechner/pi-coding-agent";
+import { escapeUTF8 } from "entities";
 import {
+	addPendingProjectionSavings,
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
 	type ContextProjectionConfig,
 	type ContextProjectionConfigResult,
 	type ContextProjectionSummaryConfig,
 	collectLoadedSkillRoots,
 	collectProjectedPlaceholders,
+	estimatePendingProjectionSavings,
 	estimateProjectedSavedTokens,
 	estimateSavedTokens,
+	getProjectionAwareContextUsage,
+	hasValidAssistantContextUsage,
 	type MappedContextEntry,
 	mapEventMessagesToBranchEntries,
 	type ProjectedEntryState,
 	type ProjectionDecision,
+	type ProjectionLevel,
 	projectContextMessages,
 	publishRuntimeProjectedPlaceholders,
 	readContextProjectionConfig,
+	resetPendingProjectionSavings,
+	setPendingProjectionSavings,
 } from "../../shared/context-projection";
 import {
 	countProjectionTextTokens,
 	estimateSerializedInputTokens,
 } from "../../shared/context-size";
+import {
+	buildRetryConfig,
+	createRetryableExternalError,
+	isAbortError,
+	withRetry,
+} from "../../shared/retry";
 
 /** Directory that stores the bundled context projection prompts. */
 const DEFAULT_PROMPT_DIR = join(
@@ -89,6 +103,7 @@ interface ContextProjectionChangeResultOptions {
 	readonly config: Extract<ContextProjectionConfigResult, { kind: "valid" }>;
 	readonly projectedPlaceholdersByEntryId: Map<string, string>;
 	readonly publishedStatusText: string | undefined;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	readonly decision: ProjectionDecision;
 }
 
@@ -125,12 +140,13 @@ interface ProjectionDecisionOptions {
 	readonly mappedContext: readonly MappedContextEntry[];
 	readonly projectedPlaceholdersByEntryId: Map<string, string>;
 	readonly loadedSkillRoots: readonly string[];
-	readonly discoverNewEntries: boolean;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	readonly completeSimple: CompleteSimple;
 }
 
 interface ProjectionProgressReporter {
 	readonly total: number;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	processed: number;
 	advance(): void;
 	notifyCurrent(): void;
@@ -147,6 +163,16 @@ interface SummaryReplacementOptions {
 	readonly newProjectedEntries: readonly ProjectedEntryState[];
 	readonly completeSimple: CompleteSimple;
 	readonly progress: ProjectionProgressReporter;
+}
+
+interface RecordNewProjectedEntriesOptions {
+	readonly pi: Pick<ExtensionAPI, "appendEntry">;
+	readonly cwd: string;
+	readonly sessionId: string;
+	readonly branchLeafId: string | null;
+	readonly projectedPlaceholdersByEntryId: Map<string, string>;
+	readonly newProjectedEntries: readonly ProjectedEntryState[];
+	readonly newSavedTokens: number;
 }
 
 /** Extension entry point for provider-context projection of old tool results. */
@@ -174,6 +200,7 @@ export default function contextProjection(
 
 	const publishCurrentStatus = async (ctx: ExtensionContext): Promise<void> => {
 		const config = await readContextProjectionConfig();
+		syncPendingProjectionSavings(ctx, config, loadedSkillRoots);
 		assertNoFatalConfigIssue(config);
 		publishedStatusText = publishProjectionStatus(
 			ctx,
@@ -215,6 +242,12 @@ export default function contextProjection(
 		publishedStatusText = result.statusText;
 		return result.contextResult;
 	});
+
+	pi.on("message_end", (event, ctx) => {
+		if (hasValidAssistantContextUsage(event.message)) {
+			resetPendingProjectionSavings(ctx.sessionManager.getSessionId());
+		}
+	});
 }
 
 /** Handles one context event by projecting eligible tool results when the active config and usage permit it. */
@@ -228,6 +261,7 @@ async function handleContextProjection({
 	completeSimple,
 }: HandleContextProjectionOptions): Promise<HandleContextProjectionResult> {
 	const config = await readContextProjectionConfig();
+	syncPendingProjectionSavings(ctx, config, loadedSkillRoots);
 	assertNoFatalConfigIssue(config);
 	if (config.kind !== "valid") {
 		return createContextProjectionNoChangeResult(
@@ -243,17 +277,21 @@ async function handleContextProjection({
 		projectedPlaceholdersByEntryId,
 		loadedSkillRoots,
 	);
-	const shouldDiscoverNewEntries = isProjectionThresholdExceeded(
-		ctx,
-		config.config,
-	);
-	if (!shouldDiscoverNewEntries && projectedPlaceholdersByEntryId.size === 0) {
-		return createContextProjectionNoChangeResult(
+	const createNoChangeResult = (): HandleContextProjectionResult =>
+		createContextProjectionNoChangeResult(
 			ctx,
 			config,
 			publishedStatusText,
 			currentProjectedSavedTokens,
 		);
+	const activeProjectionLevel = resolveActiveProjectionLevel(
+		ctx,
+		config.config,
+	);
+	if (
+		!hasProjectionWork(activeProjectionLevel, projectedPlaceholdersByEntryId)
+	) {
+		return createNoChangeResult();
 	}
 
 	const mappedContext = mapEventMessagesToBranchEntries(
@@ -261,12 +299,7 @@ async function handleContextProjection({
 		ctx.sessionManager.getBranch(),
 	);
 	if (mappedContext === undefined) {
-		return createContextProjectionNoChangeResult(
-			ctx,
-			config,
-			publishedStatusText,
-			currentProjectedSavedTokens,
-		);
+		return createNoChangeResult();
 	}
 
 	const decision = await createProjectionDecision({
@@ -276,16 +309,11 @@ async function handleContextProjection({
 		mappedContext,
 		projectedPlaceholdersByEntryId,
 		loadedSkillRoots,
-		discoverNewEntries: shouldDiscoverNewEntries,
+		activeProjectionLevel,
 		completeSimple,
 	});
 	if (!decision.changed) {
-		return createContextProjectionNoChangeResult(
-			ctx,
-			config,
-			publishedStatusText,
-			currentProjectedSavedTokens,
-		);
+		return createNoChangeResult();
 	}
 
 	return createContextProjectionChangeResult({
@@ -294,8 +322,20 @@ async function handleContextProjection({
 		config,
 		projectedPlaceholdersByEntryId,
 		publishedStatusText,
+		activeProjectionLevel,
 		decision,
 	});
+}
+
+/** Returns true when a context event can apply stored projections or discover new projected entries. */
+function hasProjectionWork(
+	activeProjectionLevel: ProjectionLevel | undefined,
+	projectedPlaceholdersByEntryId: ReadonlyMap<string, string>,
+): boolean {
+	return (
+		activeProjectionLevel !== undefined ||
+		projectedPlaceholdersByEntryId.size > 0
+	);
 }
 
 /** Creates the final projection decision, enriching new projected entries with summaries when available. */
@@ -306,7 +346,7 @@ async function createProjectionDecision({
 	mappedContext,
 	projectedPlaceholdersByEntryId,
 	loadedSkillRoots,
-	discoverNewEntries,
+	activeProjectionLevel,
 	completeSimple,
 }: ProjectionDecisionOptions): Promise<ProjectionDecision> {
 	let decision = projectContextMessages({
@@ -315,7 +355,7 @@ async function createProjectionDecision({
 		config,
 		loadedSkillRoots,
 		cwd: ctx.cwd,
-		discoverNewEntries,
+		activeProjectionLevel,
 	});
 	if (!decision.changed) {
 		return decision;
@@ -323,6 +363,7 @@ async function createProjectionDecision({
 	const progress = createProjectionProgressReporter(
 		ctx,
 		decision.newProjectedEntries.length,
+		activeProjectionLevel,
 	);
 
 	const summaryReplacementsByEntryId = await createSummaryReplacementsByEntryId(
@@ -347,7 +388,7 @@ async function createProjectionDecision({
 		config,
 		loadedSkillRoots,
 		cwd: ctx.cwd,
-		discoverNewEntries,
+		activeProjectionLevel,
 	});
 	return decision;
 }
@@ -356,9 +397,11 @@ async function createProjectionDecision({
 function createProjectionProgressReporter(
 	ctx: ExtensionContext,
 	total: number,
+	activeProjectionLevel: ProjectionLevel | undefined,
 ): ProjectionProgressReporter {
 	const progress: ProjectionProgressReporter = {
 		total,
+		activeProjectionLevel,
 		processed: 0,
 		advance(): void {
 			progress.processed += 1;
@@ -386,12 +429,16 @@ function notifyProjectionProgress(
 	ctx: ExtensionContext,
 	progress: ProjectionProgressReporter,
 ): void {
-	if (!ctx.hasUI || progress.total === 0) {
+	if (
+		!ctx.hasUI ||
+		progress.total === 0 ||
+		progress.activeProjectionLevel === undefined
+	) {
 		return;
 	}
 
 	ctx.ui.notify(
-		`Projecting context: ${progress.processed}/${progress.total} tool results processed`,
+		`Projecting context: ${progress.activeProjectionLevel.label}, ${progress.processed}/${progress.total} tool results processed`,
 		"info",
 	);
 }
@@ -399,6 +446,7 @@ function notifyProjectionProgress(
 /** Shows the additional savings produced by the latest projection operation. */
 function notifyProjectionCompleted(
 	ctx: ExtensionContext,
+	activeProjectionLevel: ProjectionLevel,
 	savedTokens: number,
 ): void {
 	if (!ctx.hasUI) {
@@ -406,7 +454,7 @@ function notifyProjectionCompleted(
 	}
 
 	ctx.ui.notify(
-		`Context projected: ~${formatSavedTokens(savedTokens)} saved`,
+		`Context projected: ${activeProjectionLevel.label}, ~${formatSavedTokens(savedTokens)} saved`,
 		"info",
 	);
 }
@@ -559,15 +607,7 @@ function collectNewProjectionSummaryCandidates({
 
 /** Marks generated summaries as omitted full tool results in the final projected context. */
 function wrapSummaryReplacement(summary: string, placeholder: string): string {
-	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeXmlText(placeholder)}</notice>\n<summary>\n${escapeXmlText(summary)}\n</summary>\n</tool_result>`;
-}
-
-/** Escapes XML delimiter characters inside untrusted model-visible data. */
-function escapeXmlText(text: string): string {
-	return text
-		.replaceAll("&", "&amp;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;");
+	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeUTF8(placeholder)}</notice>\n<summary>\n${escapeUTF8(summary)}\n</summary>\n</tool_result>`;
 }
 
 /** Selects the model, thinking level, auth, and prompt used for one-tool-result summaries. */
@@ -734,64 +774,51 @@ async function summarizeProjectionCandidateWithRetries({
 	readonly config: ContextProjectionSummaryConfig;
 	readonly progress: ProjectionProgressReporter;
 }): Promise<string | undefined> {
-	return summarizeProjectionCandidateAttempt({
-		candidate,
-		runtimeConfig,
-		completeSimple,
-		config,
-		progress,
-		attempt: 0,
-	});
-}
+	let attempt = 0;
+	try {
+		return await withRetry(
+			async () => {
+				attempt += 1;
+				if (attempt > 1) {
+					progress.notifyCurrent();
+				}
 
-/** Runs one summary attempt and recurses only when retry budget remains. */
-async function summarizeProjectionCandidateAttempt({
-	candidate,
-	runtimeConfig,
-	completeSimple,
-	config,
-	progress,
-	attempt,
-}: {
-	readonly candidate: ProjectionSummaryCandidate;
-	readonly runtimeConfig: SummaryRuntimeConfig;
-	readonly completeSimple: CompleteSimple;
-	readonly config: ContextProjectionSummaryConfig;
-	readonly progress: ProjectionProgressReporter;
-	readonly attempt: number;
-}): Promise<string | undefined> {
-	const result = await summarizeProjectionCandidate(
-		candidate,
-		runtimeConfig,
-		completeSimple,
-	);
-	if (result.kind === "success") {
-		return result.summary;
-	}
-	if (result.kind === "fatal" || attempt >= config.retryCount) {
+				const result = await summarizeProjectionCandidate(
+					candidate,
+					runtimeConfig,
+					completeSimple,
+				);
+				if (result.kind === "success") {
+					return result.summary;
+				}
+				if (result.kind === "fatal") {
+					throw new DOMException("summary request aborted", "AbortError");
+				}
+
+				throw createRetryableExternalError(
+					"summary provider returned an error",
+				);
+			},
+			{
+				retry: buildRetryConfig(
+					{
+						maxRetries: config.retryCount,
+						baseDelayMs: config.retryDelayMs,
+					},
+					{ maxRetries: config.retryCount, baseDelayMs: config.retryDelayMs },
+				),
+				signal: runtimeConfig.options.signal,
+				factor: 1,
+				onFailedAttempt: ({ attemptNumber, retriesLeft }) => {
+					if (retriesLeft > 0) {
+						progress.notifyRetry(attemptNumber + 1, config.retryCount + 1);
+					}
+				},
+			},
+		);
+	} catch {
 		return undefined;
 	}
-
-	const nextAttempt = attempt + 2;
-	const totalAttempts = config.retryCount + 1;
-	progress.notifyRetry(nextAttempt, totalAttempts);
-	const shouldContinue = await delay(
-		config.retryDelayMs,
-		runtimeConfig.options.signal,
-	);
-	if (!shouldContinue) {
-		return undefined;
-	}
-	progress.notifyCurrent();
-
-	return summarizeProjectionCandidateAttempt({
-		candidate,
-		runtimeConfig,
-		completeSimple,
-		config,
-		progress,
-		attempt: attempt + 1,
-	});
 }
 
 /** Summarizes one projected tool result and classifies failures for retry handling. */
@@ -843,45 +870,12 @@ function doesSummaryInputFitContextWindow(
 	);
 }
 
-/** Returns true when a thrown provider error means the current operation was aborted. */
-function isAbortError(error: unknown): boolean {
-	return (
-		(error instanceof DOMException && error.name === "AbortError") ||
-		(error instanceof Error && error.name === "AbortError")
-	);
-}
-
-/** Waits before retrying a failed summary request unless the operation is aborted. */
-async function delay(
-	delayMs: number,
-	signal: AbortSignal | undefined,
-): Promise<boolean> {
-	if (signal?.aborted === true) {
-		return false;
-	}
-	if (delayMs === 0) {
-		return true;
-	}
-
-	return new Promise((resolve) => {
-		const timeout = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve(true);
-		}, delayMs);
-		const onAbort = (): void => {
-			clearTimeout(timeout);
-			resolve(false);
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-}
-
 /** Builds the isolated summary request context for one tool result. */
 function buildSummaryContext(
 	candidate: ProjectionSummaryCandidate,
 	runtimeConfig: SummaryRuntimeConfig,
 ): Context {
-	const toolCallContext = escapeXmlText(
+	const toolCallContext = escapeUTF8(
 		candidate.toolCallContext ??
 			JSON.stringify({
 				name: candidate.message.toolName,
@@ -902,7 +896,7 @@ function buildSummaryContext(
 							"</tool_call>",
 							"",
 							"<tool_result>",
-							escapeXmlText(candidate.text),
+							escapeUTF8(candidate.text),
 							"</tool_result>",
 							"",
 							runtimeConfig.userPrompt,
@@ -994,23 +988,31 @@ function createContextProjectionChangeResult({
 	config,
 	projectedPlaceholdersByEntryId,
 	publishedStatusText,
+	activeProjectionLevel,
 	decision,
 }: ContextProjectionChangeResultOptions): HandleContextProjectionResult {
-	recordNewProjectedEntries(
+	recordNewProjectedEntries({
 		pi,
-		ctx.cwd,
+		cwd: ctx.cwd,
+		sessionId: ctx.sessionManager.getSessionId(),
+		branchLeafId: ctx.sessionManager.getLeafId(),
 		projectedPlaceholdersByEntryId,
-		decision.newProjectedEntries,
-	);
+		newProjectedEntries: decision.newProjectedEntries,
+		newSavedTokens: decision.newSavedTokens,
+	});
 	const statusText = publishProjectionStatus(
 		ctx,
 		config,
 		estimateSavedTokens(decision.savedTokens),
 		publishedStatusText,
 	);
-	if (decision.newProjectedEntries.length > 0) {
+	if (
+		decision.newProjectedEntries.length > 0 &&
+		activeProjectionLevel !== undefined
+	) {
 		notifyProjectionCompleted(
 			ctx,
+			activeProjectionLevel,
 			estimateSavedTokens(decision.newSavedTokens),
 		);
 	}
@@ -1038,6 +1040,32 @@ function createContextProjectionNoChangeResult(
 	};
 }
 
+/** Rebuilds pending projection savings from branch state when the active session changes. */
+function syncPendingProjectionSavings(
+	ctx: ExtensionContext,
+	config: ContextProjectionConfigResult,
+	loadedSkillRoots: readonly string[],
+): void {
+	if (config.kind !== "valid") {
+		resetPendingProjectionSavings(ctx.sessionManager.getSessionId());
+		return;
+	}
+
+	const branchEntries = ctx.sessionManager.getBranch();
+	const pendingSavings = estimatePendingProjectionSavings({
+		branchEntries,
+		cwd: ctx.cwd,
+		config: config.config,
+		loadedSkillRoots,
+	});
+	setPendingProjectionSavings(
+		ctx.sessionManager.getSessionId(),
+		pendingSavings.savedTokens,
+		pendingSavings.entryIds,
+		new Set(branchEntries.map((entry) => entry.id)),
+	);
+}
+
 function estimateCurrentProjectedSavedTokens(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfigResult,
@@ -1057,18 +1085,28 @@ function estimateCurrentProjectedSavedTokens(
 	});
 }
 
-/** Returns true when current context usage is known and has crossed the projection threshold. */
-function isProjectionThresholdExceeded(
+/** Returns the deepest active projection level when current context usage crosses a configured threshold. */
+function resolveActiveProjectionLevel(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfig,
-): boolean {
-	const usage = ctx.getContextUsage();
+): ProjectionLevel | undefined {
+	const usage = getProjectionAwareContextUsage(
+		ctx.sessionManager.getSessionId(),
+		ctx.getContextUsage(),
+	);
 	if (usage === undefined || usage.tokens === null) {
-		return false;
+		return undefined;
 	}
 
 	const remainingTokens = usage.contextWindow - usage.tokens;
-	return remainingTokens <= config.projectionRemainingTokens;
+	for (let index = config.projectionLevels.length - 1; index >= 0; index -= 1) {
+		const level = config.projectionLevels[index];
+		if (level !== undefined && remainingTokens <= level.remainingTokens) {
+			return level;
+		}
+	}
+
+	return undefined;
 }
 
 /** Throws config errors that must stop startup or context handling instead of being shown as footer state. */
@@ -1113,16 +1151,34 @@ function formatProjectionStatus(
 }
 
 /** Persists newly projected entries as one branch-local extension-owned custom entry. */
-function recordNewProjectedEntries(
-	pi: Pick<ExtensionAPI, "appendEntry">,
-	cwd: string,
-	projectedPlaceholdersByEntryId: Map<string, string>,
-	newProjectedEntries: readonly ProjectedEntryState[],
-): void {
+function recordNewProjectedEntries({
+	pi,
+	cwd,
+	sessionId,
+	branchLeafId,
+	projectedPlaceholdersByEntryId,
+	newProjectedEntries,
+	newSavedTokens,
+}: RecordNewProjectedEntriesOptions): void {
 	if (newProjectedEntries.length === 0) {
 		return;
 	}
 
+	if (branchLeafId === null) {
+		throw new Error(
+			"cannot record pending projection savings without an active branch leaf",
+		);
+	}
+
+	const projectionState = { projectedEntries: newProjectedEntries };
+	try {
+		pi.appendEntry(CONTEXT_PROJECTION_CUSTOM_TYPE, projectionState);
+	} catch (error) {
+		// Pi keeps this data object in the in-memory branch before persistence can fail.
+		// Clearing it prevents failed projection state from being replayed in this process.
+		projectionState.projectedEntries = [];
+		throw error;
+	}
 	for (const projectedEntry of newProjectedEntries) {
 		projectedPlaceholdersByEntryId.set(
 			projectedEntry.entryId,
@@ -1130,8 +1186,11 @@ function recordNewProjectedEntries(
 		);
 	}
 	publishRuntimeProjectedPlaceholders(cwd, projectedPlaceholdersByEntryId);
-	pi.appendEntry(CONTEXT_PROJECTION_CUSTOM_TYPE, {
-		projectedEntries: newProjectedEntries,
+	addPendingProjectionSavings(sessionId, estimateSavedTokens(newSavedTokens), {
+		branchLeafId,
+		entryIds: newProjectedEntries.map(
+			(projectedEntry) => projectedEntry.entryId,
+		) as [string, ...string[]],
 	});
 }
 

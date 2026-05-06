@@ -751,4 +751,71 @@ describe("custom-compaction", () => {
 			expect(options).toMatchObject({ reasoning: "medium" });
 		});
 	});
+
+	test("retries transient compaction model failures through extension retry config", async () => {
+		// Purpose: custom-compaction must retry transient provider failures without relying on a custom retry loop.
+		// Input and expected output: one WebSocket failure followed by a valid response returns a custom compaction.
+		// Edge case: baseDelayMs is zero so retry behavior is deterministic and fast.
+		// Dependencies: this test uses temp config/prompt files, fake model registry auth, and mocked completeSimple.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const promptFiles = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, {
+				enabled: true,
+				...promptFiles,
+				retry: { maxRetries: 1, baseDelayMs: 0 },
+			});
+			completeSimpleMock
+				.mockImplementationOnce(async () => {
+					throw new Error("WebSocket closed");
+				})
+				.mockResolvedValueOnce(createAssistantResponse("retried summary"));
+			const pi = createExtensionApiFake();
+			const session = createSessionContextFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createHistoryCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "retried summary" },
+			});
+			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+			expect(session.notifications).toEqual([]);
+		});
+	});
+
+	test("rejects invalid custom-compaction retry config", async () => {
+		// Purpose: custom-compaction owns its retry config validation before provider calls can start.
+		// Input and expected output: invalid retry.maxRetries reports a custom-compaction warning and returns no compaction.
+		// Edge case: prompt files are otherwise valid, so retry validation is the only failing boundary.
+		// Dependencies: this test uses temp config/prompt files and an in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const promptFiles = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, {
+				enabled: true,
+				...promptFiles,
+				retry: { maxRetries: -1 },
+			});
+			const pi = createExtensionApiFake();
+			const session = createSessionContextFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createHistoryCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toBeUndefined();
+			expect(completeSimpleMock).not.toHaveBeenCalled();
+			expect(session.notifications).toEqual([
+				{
+					message:
+						"[custom-compaction] retry.maxRetries must be a non-negative integer",
+					type: "warning",
+				},
+			]);
+		});
+	});
 });

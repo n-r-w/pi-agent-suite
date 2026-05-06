@@ -27,6 +27,17 @@ import {
 	replayContextProjection,
 } from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
+import {
+	appendProjectContext,
+	type ProjectContextFile,
+} from "../../shared/project-context-prompt";
+import {
+	buildRetryConfig,
+	createRetryableExternalError,
+	type RetryConfig,
+	validateRetryConfig,
+	withRetry,
+} from "../../shared/retry";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 import {
 	renderConsultAdvisorCall,
@@ -38,8 +49,7 @@ const ISSUE_PREFIX = "[consult-advisor]";
 const CONSULT_ADVISOR_EXTENSION_DIR = "consult-advisor";
 const CONSULT_ADVISOR_LEGACY_CONFIG_FILE = "consult-advisor.json";
 const ENABLED_CONFIG_KEY = "enabled";
-const ADVISOR_VISIBLE_RESPONSE_INSTRUCTION =
-	"Return the advice as visible text. If you cannot answer a request, explain the limit in visible text.";
+const RETRY_CONFIG_KEY = "retry";
 const ADVISOR_CONTEXT_TOO_LARGE_ERROR = "context is too large";
 
 /** Extension-local prompt used when config does not provide a custom advisor prompt file. */
@@ -59,7 +69,9 @@ const THINKING_VALUES = [
 ] as const;
 
 const ConsultAdvisorParameters = Type.Object({
-	question: Type.String({ description: "Question to ask the advisor" }),
+	question: Type.String({
+		description: "Question to ask the advisor. ENGLISH ONLY",
+	}),
 });
 
 type Thinking = (typeof THINKING_VALUES)[number];
@@ -80,6 +92,7 @@ interface ConsultAdvisorConfig {
 	readonly model?: { readonly id?: string; readonly thinking?: Thinking };
 	readonly promptFile: string;
 	readonly debugPayloadFile?: string;
+	readonly retry: RetryConfig;
 }
 
 interface AdvisorRuntime {
@@ -94,6 +107,7 @@ interface AdvisorContextBuildOptions {
 	readonly question: string;
 	readonly toolCallId: string;
 	readonly loadedSkillRoots: readonly string[];
+	readonly contextFiles: readonly ProjectContextFile[];
 }
 
 interface AdvisorContext extends ExtensionContext {
@@ -110,6 +124,7 @@ interface ExecuteConsultAdvisorOptions {
 	readonly ctx: AdvisorContext;
 	readonly currentThinkingLevel: unknown;
 	readonly loadedSkillRoots: readonly string[];
+	readonly contextFiles: readonly ProjectContextFile[];
 }
 
 /** Extension entry point for advisor consultation behavior. */
@@ -126,9 +141,11 @@ export default function consultAdvisor(
 
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	let loadedSkillRoots: readonly string[] = [];
+	let contextFiles: readonly ProjectContextFile[] = [];
 
 	pi.on("before_agent_start", (event) => {
 		loadedSkillRoots = collectLoadedSkillRoots(event);
+		contextFiles = event.systemPromptOptions?.contextFiles ?? [];
 	});
 
 	getAgentRuntimeComposition(pi).setConsultAdvisorContribution({
@@ -140,7 +157,8 @@ export default function consultAdvisor(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Consult advisor",
-		description: "Ask an independent advisor model a focused question.",
+		description:
+			"Ask an independent advisor a focused question. The advisor knows everything you know. It can't call tools, only answer questions",
 		parameters: ConsultAdvisorParameters,
 		renderCall: renderConsultAdvisorCall,
 		renderResult: renderConsultAdvisorResult,
@@ -153,6 +171,7 @@ export default function consultAdvisor(
 				ctx: ctx as AdvisorContext,
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
+				contextFiles,
 			});
 		},
 	});
@@ -167,6 +186,7 @@ async function executeConsultAdvisor({
 	ctx,
 	currentThinkingLevel,
 	loadedSkillRoots,
+	contextFiles,
 }: ExecuteConsultAdvisorOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readAdvisorConfig();
 	if ("disabled" in configResult) {
@@ -198,6 +218,7 @@ async function executeConsultAdvisor({
 		question: params.question,
 		toolCallId,
 		loadedSkillRoots,
+		contextFiles,
 	});
 	if (!doesAdvisorInputFitContextWindow(context, runtimeResult.runtime.model)) {
 		return errorResult(ADVISOR_CONTEXT_TOO_LARGE_ERROR);
@@ -215,11 +236,16 @@ async function executeConsultAdvisor({
 		});
 	}
 
-	const answer = await completeSimple(
-		runtimeResult.runtime.model,
+	const answer = await executeAdvisorModelWithRetry({
+		completeSimple,
+		runtime: runtimeResult.runtime,
 		context,
 		options,
-	);
+		retry: configResult.config.retry,
+	});
+	if ("issue" in answer) {
+		return errorResult(answer.issue);
+	}
 	const responseText = getAdvisorResponseText(answer);
 	if (responseText.length === 0) {
 		return errorResult("Advisor returned an empty response.");
@@ -343,6 +369,7 @@ function validateAdvisorConfig(
 			"model",
 			"promptFile",
 			"debugPayloadFile",
+			RETRY_CONFIG_KEY,
 		])
 	) {
 		return { issue: "config contains unsupported keys" };
@@ -356,6 +383,10 @@ function validateAdvisorConfig(
 		const modelResult = validateAdvisorModelConfig(value["model"]);
 		if ("issue" in modelResult) {
 			return modelResult;
+		}
+		const retryIssue = validateRetryConfig(value[RETRY_CONFIG_KEY], "retry");
+		if (retryIssue !== undefined) {
+			return { issue: retryIssue };
 		}
 	}
 
@@ -439,7 +470,13 @@ function buildAdvisorConfig(
 		...(typeof debugPayloadFile === "string"
 			? { debugPayloadFile: resolveConfigPath(configDir, debugPayloadFile) }
 			: {}),
+		retry: buildAdvisorRetryConfig(config[RETRY_CONFIG_KEY]),
 	};
+}
+
+/** Builds advisor retry defaults after retry config validation succeeds. */
+function buildAdvisorRetryConfig(retry: unknown): RetryConfig {
+	return buildRetryConfig(retry);
 }
 
 /** Resolves debug payload paths using the active config directory as the relative base. */
@@ -469,6 +506,7 @@ async function buildAdvisorContext({
 	question,
 	toolCallId,
 	loadedSkillRoots,
+	contextFiles,
 }: AdvisorContextBuildOptions): Promise<Context> {
 	const projectedMessages = await replayContextProjection({
 		branchEntries: ctx.sessionManager.getBranch(),
@@ -481,7 +519,7 @@ async function buildAdvisorContext({
 	);
 	messages.push({ role: "user", content: question, timestamp: Date.now() });
 	return {
-		systemPrompt: formatAdvisorSystemPrompt(advisorPrompt),
+		systemPrompt: formatAdvisorSystemPrompt(advisorPrompt, contextFiles),
 		messages,
 		tools: [],
 	};
@@ -614,9 +652,47 @@ async function writeDebugPayload(
 	await writeFile(path, JSON.stringify(payload, null, 2));
 }
 
-/** Adds a visible-answer rule to avoid provider-specific reasoning-only responses. */
-function formatAdvisorSystemPrompt(advisorPrompt: string): string {
-	return `${advisorPrompt}\n\n${ADVISOR_VISIBLE_RESPONSE_INSTRUCTION}`.trim();
+/** Adds visible-answer guidance and Pi-loaded project context to the advisor prompt. */
+function formatAdvisorSystemPrompt(
+	advisorPrompt: string,
+	contextFiles: readonly ProjectContextFile[],
+): string {
+	return appendProjectContext(advisorPrompt, contextFiles);
+}
+
+/** Calls the advisor model through p-retry and returns a safe issue when attempts fail. */
+async function executeAdvisorModelWithRetry({
+	completeSimple,
+	runtime,
+	context,
+	options,
+	retry,
+}: {
+	readonly completeSimple: NonNullable<
+		ConsultAdvisorDependencies["completeSimple"]
+	>;
+	readonly runtime: AdvisorRuntime;
+	readonly context: Context;
+	readonly options: SimpleStreamOptions;
+	readonly retry: RetryConfig;
+}): Promise<AssistantMessage | { readonly issue: string }> {
+	try {
+		return await withRetry(
+			async () => {
+				const answer = await completeSimple(runtime.model, context, options);
+				if (answer.stopReason === "error") {
+					throw createRetryableExternalError(
+						answer.errorMessage ?? "advisor provider returned an error",
+					);
+				}
+
+				return answer;
+			},
+			{ retry, signal: options.signal },
+		);
+	} catch (error) {
+		return { issue: `Advisor request failed: ${formatError(error)}` };
+	}
 }
 
 /** Extracts visible text content from the advisor answer. */

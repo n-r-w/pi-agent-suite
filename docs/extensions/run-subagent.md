@@ -49,7 +49,7 @@
 - `COLLAPSED_SUBAGENT_RESULT_LINES` is exported from `pi-package/extensions/run-subagent/rendering.ts`.
 - Does not duplicate the child final answer in collapsed tool results because the answer is already shown as assistant output.
 - Shows `... (xx more lines, yy total, {key} to expand)` when collapsed output hides earlier progress events.
-- Passes `PI_SUBAGENT_AGENT_ID` and `PI_SUBAGENT_DEPTH` to the child process environment.
+- Passes `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1`, `PI_SUBAGENT_AGENT_ID`, and `PI_SUBAGENT_DEPTH` to the child process environment.
 - Owns the child process tool policy through child `pi` CLI tool flags.
 - Passes `PI_SUBAGENT_TOOLS` when child tools are explicitly resolved.
 - Uses `--tools` for a non-empty child tools list.
@@ -92,6 +92,7 @@ Rules:
 
 ## Environment contract
 
+- `PI_AGENT_SUITE_CHILD_AGENT_PROCESS`
 - `PI_SUBAGENT_AGENT_ID`
 - `PI_SUBAGENT_DEPTH`
 - `PI_SUBAGENT_TOOLS`

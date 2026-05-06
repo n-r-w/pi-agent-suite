@@ -12,6 +12,12 @@ import type {
 } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
+import {
+	addPendingProjectionSavings,
+	getProjectionAwareContextUsage,
+	replayContextProjection,
+	resetPendingProjectionSavings,
+} from "../../../pi-package/shared/context-projection";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -77,6 +83,7 @@ interface ContextFake {
 			}>;
 		};
 		readonly sessionManager: {
+			getSessionId(): string;
 			getBranch(): SessionEntry[];
 			getEntries(): SessionEntry[];
 			getLeafId(): string | null;
@@ -158,10 +165,14 @@ async function writeLegacyCustomConfig(
 function createValidConfig(overrides?: Record<string, unknown>): unknown {
 	return {
 		enabled: true,
-		projectionRemainingTokens: 100,
+		projectionRemainingTokensL1: 100,
+		minToolResultTokensL1: 5,
+		projectionRemainingTokensL2: 50,
+		minToolResultTokensL2: 5,
+		projectionRemainingTokensL3: 25,
+		minToolResultTokensL3: 5,
 		keepRecentTurns: 1,
 		keepRecentTurnsPercent: 0,
-		minToolResultTokens: 5,
 		placeholder: PLACEHOLDER,
 		projectionIgnoredTools: [],
 		...overrides,
@@ -174,11 +185,13 @@ function installContextProjectionTestHarness(dependencies?: {
 }): {
 	readonly pi: ExtensionApiFake;
 	readonly sessionStartHandler: (event: unknown, ctx: unknown) => unknown;
+	readonly sessionTreeHandler: (event: unknown, ctx: unknown) => unknown;
 	readonly beforeAgentStartHandler: (event: unknown, ctx: unknown) => unknown;
 	readonly contextHandler: (
 		event: unknown,
 		ctx: unknown,
 	) => Promise<unknown> | unknown;
+	readonly messageEndHandler: (event: unknown, ctx: unknown) => unknown;
 } {
 	const pi = createExtensionApiFake();
 	contextProjection(pi, dependencies);
@@ -188,6 +201,13 @@ function installContextProjectionTestHarness(dependencies?: {
 	)?.handler;
 	if (typeof sessionStartHandler !== "function") {
 		throw new Error("expected session_start handler to be registered");
+	}
+
+	const sessionTreeHandler = pi.handlers.find(
+		(registeredHandler) => registeredHandler.eventName === "session_tree",
+	)?.handler;
+	if (typeof sessionTreeHandler !== "function") {
+		throw new Error("expected session_tree handler to be registered");
 	}
 
 	const beforeAgentStartHandler = pi.handlers.find(
@@ -201,9 +221,20 @@ function installContextProjectionTestHarness(dependencies?: {
 		throw new Error("expected context handler to be registered");
 	}
 
+	const messageEndHandler = pi.handlers.find(
+		(registeredHandler) => registeredHandler.eventName === "message_end",
+	)?.handler;
+	if (typeof messageEndHandler !== "function") {
+		throw new Error("expected message_end handler to be registered");
+	}
+
 	return {
 		pi,
 		sessionStartHandler: sessionStartHandler as (
+			event: unknown,
+			ctx: unknown,
+		) => unknown,
+		sessionTreeHandler: sessionTreeHandler as (
 			event: unknown,
 			ctx: unknown,
 		) => unknown,
@@ -215,6 +246,10 @@ function installContextProjectionTestHarness(dependencies?: {
 			event: unknown,
 			ctx: unknown,
 		) => Promise<unknown> | unknown,
+		messageEndHandler: messageEndHandler as (
+			event: unknown,
+			ctx: unknown,
+		) => unknown,
 	};
 }
 
@@ -270,6 +305,9 @@ function createContextFake(
 				custom: recordUiCall("custom"),
 			},
 			sessionManager: {
+				getSessionId(): string {
+					return "context-projection-test-session";
+				},
 				getBranch(): SessionEntry[] {
 					return branchEntries;
 				},
@@ -285,6 +323,25 @@ function createContextFake(
 				return usage;
 			},
 		},
+	};
+}
+
+/** Creates the real context-usage shape returned by pi for direct projection-aware usage assertions. */
+function contextUsage(
+	tokens: number | null,
+	contextWindow: number,
+): {
+	readonly tokens: number | null;
+	readonly contextWindow: number;
+	readonly percent: number | null;
+} {
+	return {
+		tokens,
+		contextWindow,
+		percent:
+			tokens === null || contextWindow <= 0
+				? null
+				: (tokens / contextWindow) * 100,
 	};
 }
 
@@ -529,7 +586,7 @@ describe("context-projection", () => {
 
 			await writeCustomConfig(agentDir, {
 				enabled: true,
-				projectionRemainingTokens: "invalid",
+				projectionRemainingTokensL1: "invalid",
 			});
 			let result = await contextHandler(
 				{ type: "context", messages: messagesFromBranch(branchEntries) },
@@ -579,7 +636,7 @@ describe("context-projection", () => {
 			});
 			expect(context.uiCalls.at(-1)).toEqual({
 				method: "notify",
-				args: ["Context projected: ~5 saved", "info"],
+				args: ["Context projected: L1, ~5 saved", "info"],
 			});
 			expect(pi.appendEntryCalls).toEqual([
 				{
@@ -605,9 +662,9 @@ describe("context-projection", () => {
 
 	test("fails startup when a summary prompt file path is not absolute", async () => {
 		// Purpose: configured context-projection summary prompt files must use absolute paths so startup cannot depend on config-relative or home expansion.
-		// Input and expected output: each non-absolute summary prompt path rejects session_start.
+		// Input and expected output: each non-absolute summary prompt path rejects session_start and context handling while clearing stale pending savings.
 		// Edge case: summary is enabled and all numeric fields are valid, so the prompt path is the only invalid field.
-		// Dependencies: isolated config file and session_start handler.
+		// Dependencies: isolated config file, session_start handler, context handler, and shared projection-aware usage state.
 		const fields = ["systemPromptFile", "userPromptFile"] as const;
 		for (const field of fields) {
 			for (const invalidPath of [`${field}.md`, `~/${field}.md`]) {
@@ -622,7 +679,14 @@ describe("context-projection", () => {
 							},
 						}),
 					);
-					const { sessionStartHandler } = installContextProjectionTestHarness();
+					const sessionId = "context-projection-test-session";
+					resetPendingProjectionSavings(sessionId);
+					addPendingProjectionSavings(sessionId, 48_000, {
+						branchLeafId: "leaf-1",
+						entryIds: ["entry-1"],
+					});
+					const { sessionStartHandler, contextHandler } =
+						installContextProjectionTestHarness();
 					const context = createContextFake([]);
 
 					await expect(
@@ -631,6 +695,26 @@ describe("context-projection", () => {
 							context.ctx,
 						),
 					).rejects.toThrow(`summary.${field} must be an absolute path`);
+					expect(
+						getProjectionAwareContextUsage(
+							sessionId,
+							contextUsage(130_000, 272_000),
+						),
+					).toEqual(contextUsage(130_000, 272_000));
+
+					addPendingProjectionSavings(sessionId, 48_000, {
+						branchLeafId: "leaf-1",
+						entryIds: ["entry-1"],
+					});
+					await expect(
+						contextHandler({ type: "context", messages: [] }, context.ctx),
+					).rejects.toThrow(`summary.${field} must be an absolute path`);
+					expect(
+						getProjectionAwareContextUsage(
+							sessionId,
+							contextUsage(130_000, 272_000),
+						),
+					).toEqual(contextUsage(130_000, 272_000));
 				});
 			}
 		}
@@ -668,6 +752,185 @@ describe("context-projection", () => {
 			expect(context.uiCalls.at(-1)).toEqual({
 				method: "setStatus",
 				args: ["context-projection", "<warning>~94</warning>"],
+			});
+		});
+	});
+
+	test("fails startup when projection levels are not ordered", async () => {
+		// Purpose: projection levels must fail fast when their remaining-token thresholds are not descending.
+		// Input and expected output: L1 below L2 or L2 below L3 rejects startup, even when projection is disabled.
+		// Edge case: disabled config is still validated because malformed thresholds would make later enablement ambiguous.
+		// Dependencies: isolated config and session_start handler.
+		const configs = [
+			createValidConfig({
+				projectionRemainingTokensL1: 40,
+				projectionRemainingTokensL2: 50,
+			}),
+			createValidConfig({
+				enabled: false,
+				projectionRemainingTokensL2: 20,
+				projectionRemainingTokensL3: 30,
+			}),
+		] as const;
+		for (const config of configs) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeCustomConfig(agentDir, config);
+				const { sessionStartHandler } = installContextProjectionTestHarness();
+				const context = createContextFake([]);
+
+				await expect(
+					sessionStartHandler({ type: "session_start" }, context.ctx),
+				).rejects.toThrow(
+					"projectionRemainingTokensL1 must be greater than or equal to projectionRemainingTokensL2, and projectionRemainingTokensL2 must be greater than or equal to projectionRemainingTokensL3",
+				);
+			});
+		}
+	});
+
+	test("uses the active projection level when discovering new entries", async () => {
+		// Purpose: the deepest crossed remaining-token level must choose the token-size threshold for new projection candidates.
+		// Input and expected output: the same tool result is too small for L1, projected at L2, and tiny output is projected only at L3.
+		// Edge case: usage exactly on a threshold activates that level.
+		// Dependencies: isolated config, context hook, and in-memory branch fixtures.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					projectionRemainingTokensL1: 100,
+					minToolResultTokensL1: 1_000,
+					projectionRemainingTokensL2: 50,
+					minToolResultTokensL2: 5,
+					projectionRemainingTokensL3: 25,
+					minToolResultTokensL3: 0,
+				}),
+			);
+			const user = userMessage();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage("call-old", "old output ".repeat(5));
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", assistant, "01"),
+				messageEntry("03", toolResult, "02"),
+			];
+
+			let harness = installContextProjectionTestHarness();
+			let context = createContextFake(branchEntries, {
+				tokens: 900,
+				contextWindow: 1_000,
+			});
+			let result = await harness.contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			expect(result).toBeUndefined();
+			expect(harness.pi.appendEntryCalls).toEqual([]);
+
+			harness = installContextProjectionTestHarness();
+			context = createContextFake(branchEntries, {
+				tokens: 950,
+				contextWindow: 1_000,
+			});
+			result = await harness.contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			expect(result).toEqual({
+				messages: [
+					user,
+					assistant,
+					{
+						...toolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
+			expect(harness.pi.appendEntryCalls).toHaveLength(1);
+			expect(context.uiCalls).toContainEqual({
+				method: "notify",
+				args: ["Context projected: L2, ~5 saved", "info"],
+			});
+
+			const tinyUser = userMessage();
+			const tinyAssistant = assistantMessage("call-tiny");
+			const tinyToolResult = toolResultMessage("call-tiny", "tiny");
+			const tinyBranchEntries = [
+				messageEntry("11", tinyUser, null),
+				messageEntry("12", tinyAssistant, "11"),
+				messageEntry("13", tinyToolResult, "12"),
+			];
+			harness = installContextProjectionTestHarness();
+			context = createContextFake(tinyBranchEntries, {
+				tokens: 975,
+				contextWindow: 1_000,
+			});
+			result = await harness.contextHandler(
+				{ type: "context", messages: messagesFromBranch(tinyBranchEntries) },
+				context.ctx,
+			);
+			expect(result).toEqual({
+				messages: [
+					tinyUser,
+					tinyAssistant,
+					{
+						...tinyToolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
+		});
+	});
+
+	test("uses the lowest min tool result threshold when projection levels share a remaining-token threshold", async () => {
+		// Purpose: equal remaining-token thresholds must share the minimum tool-result threshold across that threshold group.
+		// Input and expected output: L1 and L2 have the same remaining-token threshold, and L2's lower minimum makes a tiny result eligible.
+		// Edge case: usage lands exactly on the shared threshold.
+		// Dependencies: isolated config and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					projectionRemainingTokensL1: 100,
+					minToolResultTokensL1: 1_000,
+					projectionRemainingTokensL2: 100,
+					minToolResultTokensL2: 0,
+					projectionRemainingTokensL3: 50,
+					minToolResultTokensL3: 10,
+				}),
+			);
+			const { contextHandler } = installContextProjectionTestHarness();
+			const user = userMessage();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage("call-old", "tiny");
+			const branchEntries = [
+				messageEntry("01", user, null),
+				messageEntry("02", assistant, "01"),
+				messageEntry("03", toolResult, "02"),
+			];
+			const context = createContextFake(branchEntries, {
+				tokens: 900,
+				contextWindow: 1_000,
+			});
+
+			const result = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(result).toEqual({
+				messages: [
+					user,
+					assistant,
+					{
+						...toolResult,
+						content: [{ type: "text", text: PLACEHOLDER }],
+					},
+				],
+			});
+			expect(context.uiCalls).toContainEqual({
+				method: "notify",
+				args: ["Context projected: L2, ~0 saved", "info"],
 			});
 		});
 	});
@@ -766,11 +1029,11 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "notify",
-					args: ["Projecting context: 0/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 1/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 1/1 tool results processed", "info"],
 				},
 				{
 					method: "setStatus",
@@ -778,7 +1041,7 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Context projected: ~5 saved", "info"],
+					args: ["Context projected: L1, ~5 saved", "info"],
 				},
 			]);
 		});
@@ -857,11 +1120,11 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 0/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 1/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 1/1 tool results processed", "info"],
 				},
 				{
 					method: "setStatus",
@@ -869,9 +1132,345 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Context projected: ~5 saved", "info"],
+					args: ["Context projected: L1, ~5 saved", "info"],
 				},
 			]);
+		});
+	});
+
+	test("keeps pending projection savings after provider errors and clears them after valid usage", async () => {
+		// Purpose: context usage consumers must show projected provider payload size until a successful provider response reports fresh usage.
+		// Input and expected output: a new projection reduces effective usage, an error assistant keeps the reduction, and a valid assistant clears it.
+		// Edge case: provider error appears after projection but must not make stale raw usage look current again.
+		// Dependencies: isolated config, context hook, message_end hook, and shared projection-aware usage state.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const sessionId = "context-projection-test-session";
+			resetPendingProjectionSavings(sessionId);
+			const { contextHandler, messageEndHandler } =
+				installContextProjectionTestHarness();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage(
+				"call-old",
+				"old output ".repeat(20),
+			);
+			const branchEntries = [
+				messageEntry("01", assistant, null),
+				messageEntry("02", toolResult, "01"),
+			];
+			const context = createContextFake(branchEntries, {
+				tokens: 271_950,
+				contextWindow: 272_000,
+			});
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			const projectedUsage = getProjectionAwareContextUsage(
+				sessionId,
+				contextUsage(130_000, 272_000),
+			);
+			expect(projectedUsage?.tokens).toBeLessThan(130_000);
+
+			messageEndHandler(
+				{
+					type: "message_end",
+					message: {
+						...assistantTextMessage("server error"),
+						stopReason: "error",
+					},
+				},
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(130_000, 272_000),
+				)?.tokens,
+			).toBe(projectedUsage?.tokens);
+
+			messageEndHandler(
+				{
+					type: "message_end",
+					message: {
+						...assistantTextMessage("aborted response"),
+						stopReason: "aborted",
+					},
+				},
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(130_000, 272_000),
+				)?.tokens,
+			).toBe(projectedUsage?.tokens);
+
+			messageEndHandler(
+				{ type: "message_end", message: assistantTextMessage("ok") },
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(130_000, 272_000),
+				),
+			).toEqual(contextUsage(130_000, 272_000));
+		});
+	});
+
+	test("uses projection-aware usage when deciding whether to discover new projections", async () => {
+		// Purpose: stale raw usage must not trigger redundant projection when pending savings make effective usage safe.
+		// Input and expected output: raw usage crosses the threshold, pending savings moves it above the threshold, and no new projection entry is appended.
+		// Edge case: existing pending savings can come from a previous projection whose provider usage has not caught up.
+		// Dependencies: isolated config, shared pending-savings state, context hook, and append-entry observations.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const sessionId = "context-projection-test-session";
+			resetPendingProjectionSavings(sessionId);
+			try {
+				const { pi, contextHandler } = installContextProjectionTestHarness();
+				const assistant = assistantMessage("call-old");
+				const toolResult = toolResultMessage(
+					"call-old",
+					"old output ".repeat(20),
+				);
+				const branchEntries = [
+					messageEntry("01", assistant, null),
+					messageEntry("02", toolResult, "01"),
+				];
+				addPendingProjectionSavings(sessionId, 2_000, {
+					branchLeafId: "02",
+					entryIds: ["02"],
+				});
+				const context = createContextFake(branchEntries, {
+					tokens: 950,
+					contextWindow: 1_000,
+				});
+
+				const result = await contextHandler(
+					{ type: "context", messages: messagesFromBranch(branchEntries) },
+					context.ctx,
+				);
+
+				expect(result).toBeUndefined();
+				expect(pi.appendEntryCalls).toEqual([]);
+			} finally {
+				resetPendingProjectionSavings(sessionId);
+			}
+		});
+	});
+
+	test("does not publish runtime placeholders or pending savings when projection state persistence fails", async () => {
+		// Purpose: failed projection persistence must not leave branch-backed or runtime-only projection state that hides tool output or undercounts usage.
+		// Input and expected output: appendEntry mutates branch state before throwing, context handling rejects, replay keeps the original tool output, and projection-aware usage stays raw.
+		// Edge case: the fake matches pi's mutation-before-persistence-failure order.
+		// Dependencies: isolated config, context hook, appendEntry fake, replay helper, and shared projection-aware usage state.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const sessionId = "context-projection-test-session";
+			resetPendingProjectionSavings(sessionId);
+			const { pi, contextHandler } = installContextProjectionTestHarness();
+			const toolOutput = "old output ".repeat(20);
+			const branchEntries = [
+				messageEntry("01", assistantMessage("call-old"), null),
+				messageEntry("02", toolResultMessage("call-old", toolOutput), "01"),
+			];
+			pi.appendEntry = (customType: string, data: unknown): void => {
+				branchEntries.push({
+					type: "custom",
+					id: "03",
+					parentId: "02",
+					timestamp: "t",
+					customType,
+					data,
+				} as SessionEntry);
+				throw new Error("append failed");
+			};
+			const context = createContextFake(branchEntries, {
+				tokens: 271_950,
+				contextWindow: 272_000,
+			});
+
+			await expect(
+				contextHandler(
+					{ type: "context", messages: messagesFromBranch(branchEntries) },
+					context.ctx,
+				),
+			).rejects.toThrow("append failed");
+
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(271_950, 272_000),
+				),
+			).toEqual(contextUsage(271_950, 272_000));
+			expect(
+				JSON.stringify(
+					await replayContextProjection({
+						branchEntries,
+						cwd: context.ctx.cwd,
+					}),
+				),
+			).toContain(toolOutput);
+		});
+	});
+
+	test("clears live pending savings when session tree switches to another branch", async () => {
+		// Purpose: tree navigation must not let live pending savings from the previous branch undercount the active branch usage.
+		// Input and expected output: branch A records live pending savings, branch B becomes active through session_tree, and projection-aware usage returns raw usage.
+		// Edge case: the projection custom entry from branch A is not visible in branch state before the tree switch.
+		// Dependencies: isolated config, context hook, session_tree hook, and shared projection-aware usage state.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const sessionId = "context-projection-test-session";
+			resetPendingProjectionSavings(sessionId);
+			const { contextHandler, sessionTreeHandler } =
+				installContextProjectionTestHarness();
+			const branchEntries = [
+				messageEntry("01", assistantMessage("call-old"), null),
+				messageEntry(
+					"02",
+					toolResultMessage("call-old", "old output ".repeat(20)),
+					"01",
+				),
+			];
+			const rawUsage = contextUsage(271_950, 272_000);
+			const context = createContextFake(branchEntries, {
+				tokens: rawUsage.tokens,
+				contextWindow: rawUsage.contextWindow,
+			});
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(sessionId, rawUsage)?.tokens,
+			).toBeLessThan(271_950);
+
+			branchEntries.splice(
+				0,
+				branchEntries.length,
+				messageEntry("11", userMessage("branch b"), null),
+			);
+			await sessionTreeHandler({ type: "session_tree" }, context.ctx);
+
+			expect(getProjectionAwareContextUsage(sessionId, rawUsage)).toEqual(
+				rawUsage,
+			);
+		});
+	});
+
+	test("clears stale pending savings when active config disables or invalidates projection and rebuilds them when re-enabled", async () => {
+		// Purpose: active config changes must not leave footer and overflow consumers subtracting savings while projection is disabled or invalid.
+		// Input and expected output: persisted projection state creates pending savings, inactive config clears them, and valid config rebuilds them before usage catches up.
+		// Edge case: no successful provider usage occurs between invalidation, disablement, and re-enable.
+		// Dependencies: isolated config files, session_start sync, context hook, and shared projection-aware usage state.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const sessionId = "context-projection-test-session";
+			resetPendingProjectionSavings(sessionId);
+			const { sessionStartHandler, contextHandler } =
+				installContextProjectionTestHarness();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage(
+				"call-old",
+				"old output ".repeat(20),
+			);
+			const branchEntries = [
+				messageEntry("01", assistant, null),
+				messageEntry("02", toolResult, "01"),
+				projectionStateEntry(
+					"03",
+					[{ entryId: "02", placeholder: PLACEHOLDER }],
+					"02",
+				),
+			];
+			const context = createContextFake(branchEntries, {
+				tokens: 130_000,
+				contextWindow: 272_000,
+			});
+
+			await sessionStartHandler({ type: "session_start" }, context.ctx);
+			const projectedUsage = getProjectionAwareContextUsage(
+				sessionId,
+				contextUsage(130_000, 272_000),
+			);
+			expect(projectedUsage?.tokens).toBeLessThan(130_000);
+
+			await writeCustomConfig(agentDir, {
+				enabled: true,
+				projectionRemainingTokensL1: "invalid",
+			});
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(130_000, 272_000),
+				),
+			).toEqual(contextUsage(130_000, 272_000));
+
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(130_000, 272_000),
+				)?.tokens,
+			).toBe(projectedUsage?.tokens);
+
+			await writeCustomConfig(agentDir, { enabled: false });
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(130_000, 272_000),
+				),
+			).toEqual(contextUsage(130_000, 272_000));
+
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+			expect(
+				getProjectionAwareContextUsage(
+					sessionId,
+					contextUsage(130_000, 272_000),
+				)?.tokens,
+			).toBe(projectedUsage?.tokens);
 		});
 	});
 
@@ -1222,7 +1821,7 @@ describe("context-projection", () => {
 			).toEqual([
 				{
 					method: "notify",
-					args: ["Projecting context: 0/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
 				},
 				{
 					method: "notify",
@@ -1230,15 +1829,15 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 0/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 1/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 1/1 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Context projected: ~565 saved", "info"],
+					args: ["Context projected: L1, ~565 saved", "info"],
 				},
 			]);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
@@ -1301,7 +1900,7 @@ describe("context-projection", () => {
 			).toEqual([
 				{
 					method: "notify",
-					args: ["Projecting context: 0/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
 				},
 				{
 					method: "notify",
@@ -1312,11 +1911,11 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 1/1 tool results processed", "info"],
+					args: ["Projecting context: L1, 1/1 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Context projected: ~595 saved", "info"],
+					args: ["Context projected: L1, ~595 saved", "info"],
 				},
 			]);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
@@ -1366,7 +1965,7 @@ describe("context-projection", () => {
 				context.uiCalls.filter((call) => call.method === "notify"),
 			).toContainEqual({
 				method: "notify",
-				args: ["Projecting context: 1/1 tool results processed", "info"],
+				args: ["Projecting context: L1, 1/1 tool results processed", "info"],
 			});
 		});
 	});
@@ -1534,23 +2133,23 @@ describe("context-projection", () => {
 			).toEqual([
 				{
 					method: "notify",
-					args: ["Projecting context: 0/3 tool results processed", "info"],
+					args: ["Projecting context: L1, 0/3 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 1/3 tool results processed", "info"],
+					args: ["Projecting context: L1, 1/3 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 2/3 tool results processed", "info"],
+					args: ["Projecting context: L1, 2/3 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Projecting context: 3/3 tool results processed", "info"],
+					args: ["Projecting context: L1, 3/3 tool results processed", "info"],
 				},
 				{
 					method: "notify",
-					args: ["Context projected: ~492 saved", "info"],
+					args: ["Context projected: L1, ~492 saved", "info"],
 				},
 			]);
 		});
@@ -1862,7 +2461,7 @@ describe("context-projection", () => {
 	test("applies reconstructed projected entries even when usage is below the projection threshold", async () => {
 		// Purpose: stored projection state must keep provider context monotonic after a previous projection lowered usage.
 		// Input and expected output: threshold is not exceeded, but the reconstructed entry is still replaced with its placeholder.
-		// Edge case: the stored tool result is smaller than minToolResultTokens, so only branch-local projection state can make it projected.
+		// Edge case: the stored tool result is smaller than the active level threshold, so only branch-local projection state can make it projected.
 		// Dependencies: this test drives session_start and context handlers with an isolated config and in-memory branch fixtures.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeCustomConfig(agentDir, createValidConfig());
@@ -2164,8 +2763,15 @@ describe("context-projection", () => {
 				),
 			];
 			const context = createContextFake(branchEntries);
+			const rawUsage = contextUsage(900, 1_000);
 
 			await sessionStartHandler({ type: "session_start" }, context.ctx);
+			expect(
+				getProjectionAwareContextUsage(
+					"context-projection-test-session",
+					rawUsage,
+				)?.tokens,
+			).toBeLessThan(900);
 			await beforeAgentStartHandler(
 				{
 					type: "before_agent_start",
@@ -2199,6 +2805,12 @@ describe("context-projection", () => {
 
 			expect(result).toBeUndefined();
 			expect(pi.appendEntryCalls).toEqual([]);
+			expect(
+				getProjectionAwareContextUsage(
+					"context-projection-test-session",
+					rawUsage,
+				),
+			).toEqual(rawUsage);
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
@@ -2634,7 +3246,7 @@ describe("context-projection", () => {
 			},
 			{
 				config: createValidConfig({
-					projectionRemainingTokens: "100",
+					projectionRemainingTokensL1: "100",
 					keepRecentTurns: 0,
 				}),
 				expectedUiCalls: [

@@ -1,11 +1,13 @@
 import { basename } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@mariozechner/pi-ai";
+import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
 import { visibleWidth } from "@mariozechner/pi-tui";
 import {
 	getAgentRuntimeComposition,
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
+import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import {
 	sliceTextByWidth,
 	sliceTextSuffixByWidth,
@@ -43,12 +45,16 @@ const SHOW_MODEL_CONFIG_KEY = "showModel";
 /** Config key that controls thinking-level visibility in the model display segment. */
 const SHOW_THINKING_LEVEL_CONFIG_KEY = "showThinkingLevel";
 
+/** Config key that controls API cost visibility in the footer. */
+const SHOW_API_COST_CONFIG_KEY = "showApiCost";
+
 /** Config keys accepted by the footer config object. */
 const FOOTER_CONFIG_KEYS = [
 	ENABLED_CONFIG_KEY,
 	SHOW_PROVIDER_CONFIG_KEY,
 	SHOW_MODEL_CONFIG_KEY,
 	SHOW_THINKING_LEVEL_CONFIG_KEY,
+	SHOW_API_COST_CONFIG_KEY,
 ] as const;
 
 /** Separator between footer segments in the current minimal renderer. */
@@ -68,6 +74,9 @@ const PERCENT_FACTOR = 100;
 
 /** Token count where the footer switches from raw numbers to a compact thousands label. */
 const TOKEN_COMPACT_THRESHOLD = 1000;
+
+/** Number of decimal places used by pi's standard footer for API cost. */
+const API_COST_DECIMAL_PLACES = 3;
 
 /** Matches MCP status keys that pi exposes for MCP server state. */
 const MCP_STATUS_KEY_PATTERN = /^mcp(?:-|$)/i;
@@ -108,8 +117,9 @@ interface FooterTheme {
 
 /** Context usage fields that the footer displays without owning context calculation. */
 interface FooterContextUsageState {
-	readonly tokens?: number | null;
-	readonly contextWindow?: number;
+	readonly tokens: number | null;
+	readonly contextWindow: number;
+	readonly percent: number | null;
 }
 
 /** Mutable session state updated by pi events and read by the footer renderer. */
@@ -119,15 +129,13 @@ interface FooterSessionState {
 	requestRender: (() => void) | undefined;
 }
 
-interface FooterModelState {
-	readonly provider: string;
-	readonly id: string;
-}
+type FooterModelState = Model<Api>;
 
 interface FooterConfig {
 	readonly showProvider: boolean;
 	readonly showModel: boolean;
 	readonly showThinkingLevel: boolean;
+	readonly showApiCost: boolean;
 }
 
 type FooterConfigResult =
@@ -147,6 +155,7 @@ interface FooterRenderOptions {
 	readonly config: FooterConfig;
 	readonly contextOverflowConfig: ContextOverflowConfig | undefined;
 	readonly footerData: FooterData;
+	readonly ctx: FooterSessionContext;
 	readonly renderState: FooterRenderState;
 	readonly sessionState: FooterSessionState;
 	readonly theme: FooterTheme;
@@ -158,6 +167,13 @@ interface FooterSessionContext {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
 	readonly model: FooterModelState | undefined;
+	readonly sessionManager: {
+		getSessionId(): string;
+		getEntries(): SessionEntry[];
+	};
+	readonly modelRegistry: {
+		isUsingOAuth(model: FooterModelState): boolean;
+	};
 	getContextUsage(): FooterContextUsageState | undefined;
 	readonly ui: {
 		setFooter(
@@ -375,7 +391,10 @@ function readFooterRenderState(
 			getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
 			NO_AGENT_LABEL,
 		thinkingLevel: pi.getThinkingLevel(),
-		contextUsage: ctx.getContextUsage(),
+		contextUsage: getProjectionAwareContextUsage(
+			ctx.sessionManager.getSessionId(),
+			ctx.getContextUsage(),
+		),
 	};
 }
 
@@ -391,6 +410,33 @@ function buildStatusSegmentByKey(
 
 	const sanitizedValue = sanitizeStatusText(value);
 	return sanitizedValue || undefined;
+}
+
+/** Builds the cumulative API cost segment from assistant usage entries stored in the pi session. */
+function buildApiCostSegment(
+	config: FooterConfig,
+	ctx: FooterSessionContext,
+	sessionState: FooterSessionState,
+): string | undefined {
+	if (!config.showApiCost) {
+		return undefined;
+	}
+
+	let totalCost = 0;
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			totalCost += entry.message.usage.cost.total;
+		}
+	}
+
+	const usingSubscription = sessionState.model
+		? ctx.modelRegistry.isUsingOAuth(sessionState.model)
+		: false;
+	if (!totalCost && !usingSubscription) {
+		return undefined;
+	}
+
+	return `$${totalCost.toFixed(API_COST_DECIMAL_PLACES)}${usingSubscription ? " (sub)" : ""}`;
 }
 
 /** Builds the agent segment from the runtime contribution used for prompt composition. */
@@ -437,6 +483,7 @@ function renderFooterLines({
 	config,
 	contextOverflowConfig,
 	footerData,
+	ctx,
 	renderState,
 	sessionState,
 	theme,
@@ -444,6 +491,7 @@ function renderFooterLines({
 }: FooterRenderOptions): string[] {
 	const fixedPrioritySegments = [
 		buildStatusSegmentByKey(footerData, CODEX_QUOTA_STATUS_KEY),
+		buildApiCostSegment(config, ctx, sessionState),
 		buildAgentSegment(renderState),
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
@@ -470,6 +518,7 @@ function renderFooterLines({
 		: undefined;
 	const prioritySegments = [
 		buildStatusSegmentByKey(footerData, CODEX_QUOTA_STATUS_KEY),
+		buildApiCostSegment(config, ctx, sessionState),
 		buildAgentSegment(renderState),
 		modelDisplaySegment,
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
@@ -531,6 +580,7 @@ function createFooterComponent({
 				config,
 				contextOverflowConfig,
 				footerData,
+				ctx,
 				renderState: readFooterRenderState(pi, ctx),
 				sessionState: state,
 				theme,
@@ -645,6 +695,11 @@ function parseFooterConfig(config: unknown): FooterConfigResult {
 		return { kind: "invalid" };
 	}
 
+	const showApiCost = config[SHOW_API_COST_CONFIG_KEY];
+	if (showApiCost !== undefined && typeof showApiCost !== "boolean") {
+		return { kind: "invalid" };
+	}
+
 	return { kind: "enabled", config: buildFooterConfig(config) };
 }
 
@@ -654,6 +709,7 @@ function buildFooterConfig(config: Record<string, unknown>): FooterConfig {
 		showProvider: config[SHOW_PROVIDER_CONFIG_KEY] !== false,
 		showModel: config[SHOW_MODEL_CONFIG_KEY] !== false,
 		showThinkingLevel: config[SHOW_THINKING_LEVEL_CONFIG_KEY] !== false,
+		showApiCost: config[SHOW_API_COST_CONFIG_KEY] !== false,
 	};
 }
 
