@@ -96,7 +96,7 @@ All fields are optional.
 
 Options:
 
-- `enabled`: default `true`. Enables the `convene_council` tool.
+- `enabled`: default `false`. Set to `true` to enable the `convene_council` tool.
 - `llm1.model.id`: optional `provider/model` string. Uses the current model when missing.
 - `llm1.model.thinking`: optional thinking level. Uses the current thinking level when missing.
 - `llm2.model.id`: optional `provider/model` string. Uses the current model when missing.

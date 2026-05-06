@@ -32,6 +32,14 @@ export async function writeConfig(
 	await writeSuiteConfig(agentDir, "convene-council", JSON.stringify(config));
 }
 
+/** Writes enabled convene-council config for tests that exercise active tool behavior. */
+export async function writeEnabledConfig(
+	agentDir: string,
+	config: Record<string, unknown> = {},
+): Promise<void> {
+	await writeConfig(agentDir, { enabled: true, ...config });
+}
+
 /** Writes raw convene-council config bytes under the suite-owned config path. */
 export async function writeRawConfig(
 	agentDir: string,

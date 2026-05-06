@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
-import { withIsolatedAgentDir, writeConfig } from "./support/env";
+import { withIsolatedAgentDir, writeEnabledConfig } from "./support/env";
 import {
 	createCompletionQueue,
 	createContext,
@@ -36,7 +36,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: first malformed LLM1 output is retried once before normal convergence.
 		// Edge case: the defective text must not be added to the next participant context.
 		// Dependencies: fake queued model responses.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -69,7 +70,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: all participant and final-answer calls receive the caller signal.
 		// Edge case: the signal is present but not aborted, so normal execution still completes.
 		// Dependencies: fake runner call capture and AbortController.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -107,7 +109,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: tagged final answer is retried once and then final answer text is returned.
 		// Edge case: final-answer retry uses the same response-defect retry budget as participant defects.
 		// Dependencies: fake convergence and final-answer responses.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -136,7 +139,7 @@ describe("convene-council retries", () => {
 		// Edge case: responseDefectRetries zero exposes the immediate parser decision.
 		// Dependencies: suite config and fake queued model responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				participantIterationLimit: 2,
 				responseDefectRetries: 0,
 			});
@@ -166,7 +169,7 @@ describe("convene-council retries", () => {
 		});
 
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				participantIterationLimit: 2,
 				responseDefectRetries: 0,
 			});
@@ -224,7 +227,7 @@ describe("convene-council retries", () => {
 
 		for (const testCase of participantCases) {
 			await withIsolatedAgentDir(async (agentDir) => {
-				await writeConfig(agentDir, {
+				await writeEnabledConfig(agentDir, {
 					participantIterationLimit: 2,
 					responseDefectRetries: 0,
 				});
@@ -259,7 +262,9 @@ describe("convene-council retries", () => {
 
 		for (const testCase of finalCases) {
 			await withIsolatedAgentDir(async (agentDir) => {
-				await writeConfig(agentDir, { responseDefectRetries: 0 });
+				await writeEnabledConfig(agentDir, {
+					responseDefectRetries: 0,
+				});
 				const model = createModel("openai", "main-model");
 				const completion = createCompletionQueue([
 					initialOpinion("llm1 initial"),
@@ -293,7 +298,7 @@ describe("convene-council retries", () => {
 		// Edge case: responseDefectRetries zero allows only the first defective response.
 		// Dependencies: suite config and fake queued responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				participantIterationLimit: 2,
 				responseDefectRetries: 0,
 			});
@@ -320,7 +325,7 @@ describe("convene-council retries", () => {
 		});
 
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { responseDefectRetries: 0 });
+			await writeEnabledConfig(agentDir, { responseDefectRetries: 0 });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -351,7 +356,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: a plain final answer containing internal process is returned unchanged.
 		// Edge case: the phrase is part of the answer domain, not a council-process comment.
 		// Dependencies: fake convergence and final-answer response.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -379,7 +385,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: participant runner context-size error is returned as failed council text with failed details.
 		// Edge case: failure happens after participant sessions and runners are created.
 		// Dependencies: custom runner fake.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, {
@@ -414,7 +421,7 @@ describe("convene-council retries", () => {
 		// Edge case: response-defect retry budget does not apply to transport failures.
 		// Dependencies: custom runner fake.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { responseDefectRetries: 3 });
+			await writeEnabledConfig(agentDir, { responseDefectRetries: 3 });
 			const model = createModel("openai", "main-model");
 			const calls: unknown[] = [];
 			const pi = createExtensionApiFake();
@@ -453,7 +460,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: already-aborted signal returns abort information and records zero prompts.
 		// Edge case: model resolution still succeeds before the first participant boundary.
 		// Dependencies: AbortController and custom runner fake.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const calls: unknown[] = [];
 			const abortController = new AbortController();
@@ -496,7 +504,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: the fake runner aborts the signal, throws once, and final rows show aborted state.
 		// Edge case: response-defect retry does not apply to transport failures.
 		// Dependencies: AbortController and custom runner fake.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const abortController = new AbortController();
 			const calls: unknown[] = [];
@@ -543,7 +552,9 @@ describe("convene-council retries", () => {
 		// Edge case: the full output file must contain escaped answer tags.
 		// Dependencies: shared truncation helper and system temp directory.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 1 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 1,
+			});
 			const model = createModel("openai", "main-model");
 			const llm1Opinion = Array.from(
 				{ length: 1100 },
@@ -582,7 +593,8 @@ describe("convene-council retries", () => {
 		// Input and expected output: large final answer produces a full-output notice and temp file details.
 		// Edge case: the full output file must contain the untruncated answer.
 		// Dependencies: shared truncation helper and system temp directory.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const largeAnswer = Array.from(
 				{ length: 2100 },

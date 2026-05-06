@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import {
 	withIsolatedAgentDir,
-	writeConfig,
+	writeEnabledConfig,
 	writeRawConfig,
 } from "./support/env";
 import { createExtensionApiFake, type ExtensionApiFake } from "./support/fakes";
@@ -33,7 +33,8 @@ describe("convene-council runtime composition", () => {
 		// Input and expected output: active convene_council appends guidance, inactive tool omits it.
 		// Edge case: the extension registers its own before_agent_start handler before runtime composition resolves prompts.
 		// Dependencies: in-memory ExtensionAPI fake and isolated prompt-file loading.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi);
 
@@ -63,7 +64,7 @@ describe("convene-council runtime composition", () => {
 		}> = [
 			{
 				name: "invalid parsed config",
-				write: (agentDir) => writeConfig(agentDir, { enabled: "yes" }),
+				write: (agentDir) => writeEnabledConfig(agentDir, { enabled: "yes" }),
 			},
 			{
 				name: "malformed JSON",
@@ -94,7 +95,7 @@ describe("convene-council runtime composition", () => {
 		// Edge case: active-tool state can be stale or externally forced in tests.
 		// Dependencies: isolated suite config and in-memory ExtensionAPI fake.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { enabled: false });
+			await writeEnabledConfig(agentDir, { enabled: false });
 			const pi = createExtensionApiFake();
 
 			conveneCouncil(pi);

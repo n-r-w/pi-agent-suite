@@ -265,9 +265,9 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 	}
 });
 
-test("runtime package loading exposes convene_council", () => {
-	// Purpose: real pi package loading must register convene_council.
-	// Input and expected output: package load exposes the tool when all tools are active.
+test("runtime package loading exposes convene_council when enabled", () => {
+	// Purpose: real pi package loading must register convene_council when the config opts in.
+	// Input and expected output: enabled config exposes the tool when all tools are active.
 	// Edge case: this test uses no selected main-agent allowlist that could hide the tool.
 	// Dependencies: local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
 	const cwd = process.cwd();
@@ -286,6 +286,13 @@ test("runtime package loading exposes convene_council", () => {
 	delete childEnv[SUBAGENT_TOOLS_ENV];
 
 	try {
+		const configDir = join(agentDir, "agent-suite", "convene-council");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "config.json"),
+			JSON.stringify({ enabled: true }),
+		);
+
 		const result = spawnSync(
 			"pi",
 			[

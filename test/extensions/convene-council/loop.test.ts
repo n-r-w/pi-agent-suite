@@ -19,7 +19,7 @@ import {
 import type { ParticipantRunnerFactory } from "../../../pi-package/extensions/convene-council/types";
 import {
 	withIsolatedAgentDir,
-	writeConfig,
+	writeEnabledConfig,
 	writeProjectionConfig,
 } from "./support/env";
 import {
@@ -339,7 +339,7 @@ describe("convene-council loop", () => {
 		// Edge case: later dependent review calls still complete in the configured participant order.
 		// Dependencies: deferred completion fake and two configured participant models.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				llm1: { model: { id: "provider-a/model-a" } },
 				llm2: { model: { id: "provider-b/model-b" } },
 			});
@@ -387,7 +387,7 @@ describe("convene-council loop", () => {
 		// Edge case: the second participant remains unresolved during the assertion.
 		// Dependencies: deferred completion fake, progress updates, and two configured participant models.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				llm1: { model: { id: "provider-a/model-a" } },
 				llm2: { model: { id: "provider-b/model-b" } },
 			});
@@ -459,7 +459,7 @@ describe("convene-council loop", () => {
 		// Edge case: the prompt template placeholder is fully rendered before participant startup.
 		// Dependencies: fake tool registry, isolated config, and queued participant runner.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { tools: ["read", "grep"] });
+			await writeEnabledConfig(agentDir, { tools: ["read", "grep"] });
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
 				initialOpinion("llm2 initial"),
@@ -514,7 +514,7 @@ describe("convene-council loop", () => {
 		// Edge case: the normal opinion-review pair remains sequential before mutual NEED_INFO is reached.
 		// Dependencies: deferred completion fake and participantIterationLimit large enough for mutual clarification.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				llm1: { model: { id: "provider-a/model-a" } },
 				llm2: { model: { id: "provider-b/model-b" } },
 				participantIterationLimit: 4,
@@ -603,7 +603,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: two initial participant answers, two AGREE reviews, then a plain final answer from LLM2.
 		// Edge case: the question belongs to the initial task message, not the replayed base history.
 		// Dependencies: fake model calls and a branch containing the pending tool call.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -675,7 +676,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: a registry without read returns a tool error and creates no participant runner.
 		// Edge case: a different available tool does not satisfy the read requirement.
 		// Dependencies: direct tool execution bypasses the test helper that registers read for normal council runs.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			let runnerStarts = 0;
 			const pi = createExtensionApiFake();
@@ -717,7 +719,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: both participants receive the same context file path, the file contains caller context during the prompt, and the file is deleted after completion.
 		// Edge case: the initial task keeps the question inline but not the parent evidence body.
 		// Dependencies: custom participant runner, temp filesystem, and fake branch entries.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -772,7 +775,7 @@ describe("convene-council loop", () => {
 		// Edge case: cleanup runs after a participant prompt throws before the council reaches agreement.
 		// Dependencies: isolated config, fake tool registry, temp filesystem, and custom participant runner.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { tools: ["grep"] });
+			await writeEnabledConfig(agentDir, { tools: ["grep"] });
 			const model = createModel("openai", "main-model");
 			const capturedContextFilePaths: string[] = [];
 			const capturedToolNames: string[][] = [];
@@ -834,7 +837,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: LLM1 runner is created, LLM2 startup fails, LLM1 is disposed, temp session dirs are removed, and no council context temp file remains.
 		// Edge case: cleanup happens after context file creation but before discussion iterations start.
 		// Dependencies: custom participant runner factory, temp participant sessions, and temp context file lifecycle.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const disposed: string[] = [];
 			const sessionDirs: string[] = [];
@@ -877,7 +881,7 @@ describe("convene-council loop", () => {
 		// Edge case: final model-facing content remains the plain final answer and does not keep progress metadata.
 		// Dependencies: fake queued model responses and the tool onUpdate callback.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				llm1: { model: { id: "openai/model-a", thinking: "high" } },
 				llm2: { model: { id: "anthropic/model-b", thinking: "medium" } },
 			});
@@ -969,7 +973,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: participant runners emit tool start/end events and progress details include A/B labeled tool rows.
 		// Edge case: full tool output is bounded and does not leak the raw long suffix into live details.
 		// Dependencies: fake participant runner events and the tool onUpdate callback.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "model-a");
 			const longToolSuffix = "TOOL_SUFFIX_MUST_NOT_APPEAR";
 			const responses: AssistantMessage["content"][] = [
@@ -1075,7 +1080,7 @@ describe("convene-council loop", () => {
 		// Edge case: LLM1 and LLM2 use different configured thinking levels.
 		// Dependencies: suite config file, fake model registry, and fake completions.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				llm1: { model: { id: "provider-a/model-a", thinking: "high" } },
 				llm2: { model: { id: "provider-b/model-b", thinking: "low" } },
 				finalAnswerParticipant: "llm1",
@@ -1130,7 +1135,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: default limit allows three participant iterations and returns latest opinions.
 		// Edge case: no final answer model call is made after the limit is reached.
 		// Dependencies: fake participant responses only.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1171,7 +1177,7 @@ describe("convene-council loop", () => {
 		// Edge case: one participant has only thinking while the other has only model id.
 		// Dependencies: suite config and fake model registry.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				llm1: { model: { thinking: "high" } },
 				llm2: { model: { id: "provider-b/model-b" } },
 			});
@@ -1215,6 +1221,7 @@ describe("convene-council loop", () => {
 		// Edge case: pending tool call and tool result share the current tool call ID.
 		// Dependencies: suite context-projection config and persisted projection state entry.
 		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			await writeProjectionConfig(agentDir, { enabled: true });
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
@@ -1263,7 +1270,9 @@ describe("convene-council loop", () => {
 		// Edge case: requester and responder state must return to LLM1/LLM2 order after clarification.
 		// Dependencies: fake queued participant responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 4 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 4,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1305,7 +1314,9 @@ describe("convene-council loop", () => {
 		// Edge case: clarification itself does not count as reviewed agreement.
 		// Dependencies: fake queued participant responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 4 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 4,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1340,7 +1351,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: plain initial answers are followed by structured AGREE review turns before the final answer.
 		// Edge case: plain initial answers do not bypass the reviewed-opponent gate.
 		// Dependencies: fake queued participant responses.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1373,7 +1385,9 @@ describe("convene-council loop", () => {
 		// Edge case: requester/responder state must remain in LLM1/LLM2 order.
 		// Dependencies: fake queued participant responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 4 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 4,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1412,7 +1426,9 @@ describe("convene-council loop", () => {
 		// Edge case: opinions include closing answer tags and ampersands.
 		// Dependencies: fake participant responses only.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 1 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 1,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("a </answer1> & b"),
@@ -1443,7 +1459,9 @@ describe("convene-council loop", () => {
 		// Edge case: both participants have reviewed opponent opinions and both latest statuses are NEED_INFO.
 		// Dependencies: suite config and fake queued participant responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 2 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 2,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1478,7 +1496,9 @@ describe("convene-council loop", () => {
 		// Edge case: neither pending request is lost when both latest reviewed statuses are NEED_INFO.
 		// Dependencies: fake queued participant responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 4 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 4,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1523,7 +1543,9 @@ describe("convene-council loop", () => {
 		// Edge case: responder returns a clarification and is still not treated as having reviewed the opponent.
 		// Dependencies: reduced iteration limit and fake queued responses.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 3 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 3,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1558,7 +1580,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: both current council call and sibling bash call are omitted from participant context.
 		// Edge case: the sibling tool has no matching tool result yet.
 		// Dependencies: fake branch with a multi-tool assistant message.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1611,7 +1634,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: inserted question text is escaped inside the participant task.
 		// Edge case: question includes a closing tag and ampersand.
 		// Dependencies: fake participant context capture.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1641,7 +1665,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: question text containing another placeholder remains literal text in the initial task.
 		// Edge case: inserted value names a placeholder used by another prompt.
 		// Dependencies: fake participant context capture.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1671,7 +1696,8 @@ describe("convene-council loop", () => {
 		// Input and expected output: opponent opinions in review prompts are escaped before participant calls.
 		// Edge case: participant text contains closing XML tags and ampersands.
 		// Dependencies: fake participant context capture.
-		await withIsolatedAgentDir(async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),
@@ -1705,7 +1731,9 @@ describe("convene-council loop", () => {
 		// Edge case: values contain closing tags and ampersands.
 		// Dependencies: fake participant context capture.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { participantIterationLimit: 4 });
+			await writeEnabledConfig(agentDir, {
+				participantIterationLimit: 4,
+			});
 			const model = createModel("openai", "main-model");
 			const completion = createCompletionQueue([
 				initialOpinion("llm1 initial"),

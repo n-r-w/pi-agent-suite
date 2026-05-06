@@ -116,7 +116,7 @@ function parseConveneCouncilConfig(
 	if ("issue" in validationResult) {
 		return validationResult;
 	}
-	if (validationResult.config[ENABLED_CONFIG_KEY] === false) {
+	if (validationResult.config[ENABLED_CONFIG_KEY] !== true) {
 		return { disabled: true };
 	}
 

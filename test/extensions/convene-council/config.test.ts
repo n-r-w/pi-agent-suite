@@ -3,6 +3,7 @@ import conveneCouncil from "../../../pi-package/extensions/convene-council/index
 import {
 	withIsolatedAgentDir,
 	writeConfig,
+	writeEnabledConfig,
 	writeRawConfig,
 } from "./support/env";
 import {
@@ -19,6 +20,39 @@ import {
 import { executeCouncil } from "./support/tool";
 
 describe("convene-council config", () => {
+	test("does not register convene_council when config is missing", async () => {
+		// Purpose: missing config must keep the high-cost council tool disabled by default.
+		// Input and expected output: no config file registers no convene_council tool.
+		// Edge case: isolated agent directory contains no suite-owned config file.
+		// Dependencies: isolated agent directory and in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async () => {
+			const pi = createExtensionApiFake();
+
+			conveneCouncil(pi);
+
+			expect(pi.tools.map((tool) => tool.name)).not.toContain(
+				"convene_council",
+			);
+		});
+	});
+
+	test("does not register convene_council when config is empty", async () => {
+		// Purpose: existing empty config must keep the high-cost council tool disabled by default.
+		// Input and expected output: empty JSON config registers no convene_council tool.
+		// Edge case: config file exists, so missing-file defaults are not involved.
+		// Dependencies: isolated agent directory and in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeRawConfig(agentDir, "{}");
+			const pi = createExtensionApiFake();
+
+			conveneCouncil(pi);
+
+			expect(pi.tools.map((tool) => tool.name)).not.toContain(
+				"convene_council",
+			);
+		});
+	});
+
 	test("does not register convene_council when explicitly disabled", async () => {
 		// Purpose: disabled config must remove the council tool and prompt contribution.
 		// Input and expected output: enabled false registers no convene_council tool.
@@ -188,11 +222,12 @@ describe("convene-council config", () => {
 		// Edge case: config validation succeeds before each runtime failure.
 		// Dependencies: fake model registry and fake runner queue.
 		const cases: ReadonlyArray<{
-			readonly config?: unknown;
+			readonly config: Record<string, unknown>;
 			readonly models: ReturnType<typeof createModel>[];
 			readonly error: string;
 		}> = [
 			{
+				config: {},
 				models: [],
 				error: "current model is unavailable",
 			},
@@ -205,9 +240,7 @@ describe("convene-council config", () => {
 
 		for (const testCase of cases) {
 			await withIsolatedAgentDir(async (agentDir) => {
-				if (testCase.config !== undefined) {
-					await writeConfig(agentDir, testCase.config);
-				}
+				await writeEnabledConfig(agentDir, testCase.config);
 				const completion = createCompletionQueue([
 					participantResponse("NEED_INFO", "should not be used"),
 				]);
@@ -237,7 +270,7 @@ describe("convene-council config", () => {
 		// Edge case: LLM1 and LLM2 use different configured models.
 		// Dependencies: suite config and fake model registry.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
+			await writeEnabledConfig(agentDir, {
 				llm1: { model: { id: "provider-a/model-a" } },
 				llm2: { model: { id: "provider-b/model-b" } },
 			});

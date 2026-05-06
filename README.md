@@ -23,7 +23,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
-| `convene-council` | Yes | Lets two model participants discuss one question and return one bounded answer. |
+| `convene-council` | No | Lets two model participants discuss one question and return one bounded answer. |
 
 ## Best practices
 
@@ -556,7 +556,7 @@ Config file: `~/.pi/agent/agent-suite/convene-council/config.json`
 
 Options:
 
-- `enabled`: default `true`. Enables the `convene_council` tool.
+- `enabled`: default `false`. Set to `true` to enable the `convene_council` tool.
 - `llm1.model.id`: optional. Uses the current model when missing.
 - `llm1.model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `llm2.model.id`: optional. Uses the current model when missing.
