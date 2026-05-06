@@ -18,13 +18,18 @@ interface FakeProcess {
 	readonly stderr: EventEmitter;
 	readonly killedSignals: string[];
 	kill(signal?: string): boolean;
-	on(event: "exit", handler: () => void): unknown;
+	on(
+		event: "error" | "exit",
+		handler: ((error: Error) => void) | (() => void),
+	): unknown;
+	error(error: Error): void;
 	exit(): void;
 }
 
 /** Creates one fake child process with writable stdin and evented stdout/stderr. */
 function createFakeProcess(): FakeProcess {
 	const stdout = new EventEmitter();
+	stdout.on("error", () => {});
 	const stderr = new EventEmitter();
 	const killedSignals: string[] = [];
 	return {
@@ -42,8 +47,14 @@ function createFakeProcess(): FakeProcess {
 			killedSignals.push(signal);
 			return true;
 		},
-		on(event: "exit", handler: () => void): unknown {
+		on(
+			event: "error" | "exit",
+			handler: ((error: Error) => void) | (() => void),
+		): unknown {
 			return stdout.on(event, handler);
+		},
+		error(error: Error): void {
+			stdout.emit("error", error);
 		},
 		exit(): void {
 			stdout.emit("exit");
@@ -143,8 +154,6 @@ function createRunnerOptions() {
 			finalAnswerParticipant: "llm2" as const,
 			responseDefectRetries: 1,
 			tools: undefined,
-			contextWindowUsageLimit: 0.7,
-			contextSummary: {},
 		},
 		startupPlan: {
 			extensionArgs: ["-e", "./pi-package"],
@@ -152,7 +161,16 @@ function createRunnerOptions() {
 		},
 		toolArgs: ["--tools", "read"],
 		tools: [],
-		ctx: { cwd: "/tmp/project" } as never,
+		ctx: {
+			cwd: "/tmp/project",
+			modelRegistry: {
+				find(provider: string, modelId: string) {
+					return provider === "openai" && modelId === "model-a"
+						? createModel("openai", "model-a")
+						: undefined;
+				},
+			},
+		} as never,
 		signal: undefined,
 	};
 }
@@ -166,6 +184,14 @@ function respond(process: FakeProcess, id: string, command: string): void {
 }
 
 /** Emits one assistant answer and agent_end for the active prompt. */
+function retryablePromptFailure(process: FakeProcess): void {
+	process.stdout.emit(
+		"data",
+		`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "temporary failure" }], api: "test", provider: "openai", model: "model-a", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "error", errorMessage: "server error 500", timestamp: 1 } })}\n`,
+	);
+	process.stdout.emit("data", `${JSON.stringify({ type: "agent_end" })}\n`);
+}
+
 function completePrompt(process: FakeProcess, content: string): void {
 	process.stdout.emit(
 		"data",
@@ -373,6 +399,37 @@ describe("ParticipantRunner lifecycle", () => {
 
 		expect(scheduler.scheduled).toHaveLength(0);
 		expect(child.killedSignals).toEqual(["SIGTERM"]);
+	});
+
+	test("rejects active prompt when child exits during recovery wait", async () => {
+		// Purpose: a persistent child process exit must clear active participant prompt ownership.
+		// Input and expected output: prompt waiting for child retry rejects after child exit.
+		// Edge case: exit happens after non-final retryable agent_end and before auto_retry_end.
+		// Dependencies: fake child process and participant runner lifecycle.
+		const fake = createFakeRunnerFactory();
+		const { runner, child } = await createReadyRunner(fake);
+		const result = runner.prompt("task", undefined);
+		respond(child, "1", "prompt");
+		retryablePromptFailure(child);
+		child.exit();
+
+		await expect(result).rejects.toThrow("child process exited");
+	});
+
+	test("rejects active prompt when child errors during recovery wait", async () => {
+		// Purpose: child process error must clear active participant prompt ownership.
+		// Input and expected output: prompt waiting for child retry rejects after child process error.
+		// Edge case: process error happens before child exit.
+		// Dependencies: fake child process and participant runner lifecycle.
+		const fake = createFakeRunnerFactory();
+		const { runner, child } = await createReadyRunner(fake);
+		const result = runner.prompt("task", undefined);
+		respond(child, "1", "prompt");
+		retryablePromptFailure(child);
+
+		child.error(new Error("spawn failure"));
+
+		await expect(result).rejects.toThrow("spawn failure");
 	});
 
 	test("kills the child process during disposal", async () => {

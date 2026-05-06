@@ -39,36 +39,6 @@ export async function resolveCouncilRuntime(
 	return { runtime: { llm1: llm1.runtime, llm2: llm2.runtime } };
 }
 
-/** Resolves the optional context-summary model and thinking level only when summarization is needed. */
-export function resolveContextSummaryRuntime(
-	ctx: CouncilContext,
-	config: ConveneCouncilConfig,
-	currentThinking: Thinking | undefined,
-): { readonly runtime: ParticipantRuntime } | { readonly issue: string } {
-	const model =
-		config.contextSummary.model?.id === undefined
-			? ctx.model
-			: resolveConfiguredModel(ctx, config.contextSummary.model.id);
-	if (model === undefined) {
-		return {
-			issue:
-				config.contextSummary.model?.id === undefined
-					? "current model is unavailable"
-					: `context summary model ${config.contextSummary.model.id} was not found`,
-		};
-	}
-
-	return {
-		runtime: {
-			model,
-			...resolveThinking(
-				config.contextSummary.model?.thinking,
-				currentThinking,
-			),
-		},
-	};
-}
-
 /** Resolves one participant model and thinking level. */
 async function resolveParticipantRuntime(
 	ctx: CouncilContext,

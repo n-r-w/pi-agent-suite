@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type {
 	Api,
@@ -42,10 +43,18 @@ import {
 	initialOpinion,
 	participantResponse,
 } from "./support/responses";
-import { executeCouncil, executeCouncilWithOptions } from "./support/tool";
+import {
+	executeCouncil,
+	executeCouncilWithOptions,
+	getCouncilTool,
+} from "./support/tool";
 
 const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
 const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
+const COUNCIL_CONTEXT_FILE_PREFIX = "pi-convene-council-context-";
+const CONTEXT_FILE_PATH_PATTERN = new RegExp(
+	`${escapeRegExp(tmpdir())}[\\\\/]${escapeRegExp(COUNCIL_CONTEXT_FILE_PREFIX)}[0-9a-f-]+\\.xml`,
+);
 
 function expectNoConsensusResult(
 	text: string,
@@ -56,6 +65,27 @@ function expectNoConsensusResult(
 	expect(text).toContain("\n</result>");
 	expect(text.match(ANSWER1_BLOCK_PATTERN)?.[1]).toBe(answer1);
 	expect(text.match(ANSWER2_BLOCK_PATTERN)?.[1]).toBe(answer2);
+}
+
+/** Extracts the generated context file path from the initial participant task. */
+function extractContextFilePath(task: string): string {
+	const match = task.match(CONTEXT_FILE_PATH_PATTERN);
+	if (match?.[0] === undefined) {
+		throw new Error("initial task did not include a council context file path");
+	}
+	return match[0];
+}
+
+/** Escapes literal text before inserting it into a regular expression. */
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Lists council context temp files that exist outside the repository. */
+function listCouncilContextTempFiles(): readonly string[] {
+	return readdirSync(tmpdir()).filter((name) =>
+		name.startsWith(COUNCIL_CONTEXT_FILE_PREFIX),
+	);
 }
 
 /** Extracts validated live council details from tool updates. */
@@ -351,6 +381,78 @@ describe("convene-council loop", () => {
 		});
 	});
 
+	test("emits each initial opinion when that participant finishes", async () => {
+		// Purpose: compact TUI must show the completed participant opinion while the other initial participant is still running.
+		// Input and expected output: resolving only the first initial call emits that participant's opinion preview.
+		// Edge case: the second participant remains unresolved during the assertion.
+		// Dependencies: deferred completion fake, progress updates, and two configured participant models.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				llm1: { model: { id: "provider-a/model-a" } },
+				llm2: { model: { id: "provider-b/model-b" } },
+			});
+			const llm1Model = createModel("provider-a", "model-a");
+			const llm2Model = createModel("provider-b", "model-b");
+			const completion = createDeferredCompletion(
+				new Map([
+					["initial:model-a", initialOpinion("llm1 initial")],
+					["initial:model-b", initialOpinion("llm2 initial")],
+					[
+						"opinion-review:model-a",
+						participantResponse("AGREE", "llm1 agrees"),
+					],
+					[
+						"opinion-review:model-b",
+						participantResponse("AGREE", "llm2 agrees"),
+					],
+					["final-answer:model-b", finalAnswer("final council answer")],
+				]),
+			);
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				createParticipantRunner: completion.createParticipantRunner,
+			});
+			const ctx = createContext([llm1Model, llm2Model]);
+			const updates: AgentToolResult<unknown>[] = [];
+			let resolveOpinionUpdate: (() => void) | undefined;
+			const opinionUpdate = new Promise<void>((resolve) => {
+				resolveOpinionUpdate = resolve;
+			});
+
+			const resultPromise = executeCouncilWithOptions(pi, ctx, {
+				question: "Show initial opinion when one participant finishes",
+				onUpdate: (partial) => {
+					updates.push(partial);
+					if (
+						isCouncilRunDetails(partial.details) &&
+						partial.details.participants.some(
+							(participant) => participant.activity === "opinion llm1 initial",
+						)
+					) {
+						resolveOpinionUpdate?.();
+					}
+				},
+			});
+			expect(
+				await completion.waitForKeys(["initial:model-a", "initial:model-b"]),
+			).toBe(true);
+			await completion.resolveCallsUntil(1);
+			await opinionUpdate;
+
+			const details = collectCouncilRunDetails(updates);
+			expect(
+				details.some((detail) =>
+					detail.participants.some(
+						(participant) => participant.activity === "opinion llm1 initial",
+					),
+				),
+			).toBe(true);
+
+			await completion.resolveCallsUntil(5);
+			await resultPromise;
+		});
+	});
+
 	test("adds selected participant tool names to participant system prompts", async () => {
 		// Purpose: participant instructions must use the same selected tools that are passed to the child runtime.
 		// Input and expected output: config tools read and grep are present in both initial participant system prompts.
@@ -568,15 +670,175 @@ describe("convene-council loop", () => {
 		});
 	});
 
-	test("cleans participant sessions and created runners when participant startup fails", async () => {
-		// Purpose: failed child startup must not leak participant sessions or already-created participant runners.
-		// Input and expected output: LLM1 runner is created, LLM2 startup fails, LLM1 is disposed, and both temp session dirs are removed.
-		// Edge case: cleanup happens before discussion iterations start.
-		// Dependencies: custom participant runner factory and temp participant sessions.
+	test("fails before participant startup when read is unavailable", async () => {
+		// Purpose: the initial prompt requires read, so council execution must stop before child startup when read is absent.
+		// Input and expected output: a registry without read returns a tool error and creates no participant runner.
+		// Edge case: a different available tool does not satisfy the read requirement.
+		// Dependencies: direct tool execution bypasses the test helper that registers read for normal council runs.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "main-model");
+			let runnerStarts = 0;
+			const pi = createExtensionApiFake();
+			pi.registerTool({
+				name: "grep",
+				label: "grep",
+				description: "grep test tool",
+				parameters: Type.Object({}),
+				async execute() {
+					return {
+						content: [{ type: "text", text: "unused" }],
+						details: undefined,
+					};
+				},
+			});
+			conveneCouncil(pi, {
+				async createParticipantRunner() {
+					runnerStarts += 1;
+					throw new Error("runner must not start");
+				},
+			});
+			const ctx = createContext([model]);
+
+			await expect(
+				getCouncilTool(pi).execute(
+					"call-council",
+					{ question: "Needs read" },
+					undefined,
+					undefined,
+					ctx as never,
+				),
+			).rejects.toThrow("required tool read is unavailable");
+			expect(runnerStarts).toBe(0);
+		});
+	});
+
+	test("passes parent context through a temporary file and removes it after success", async () => {
+		// Purpose: initial participant prompts must carry a context file path instead of inline parent context.
+		// Input and expected output: both participants receive the same context file path, the file contains caller context during the prompt, and the file is deleted after completion.
+		// Edge case: the initial task keeps the question inline but not the parent evidence body.
+		// Dependencies: custom participant runner, temp filesystem, and fake branch entries.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "main-model");
+			const completion = createCompletionQueue([
+				initialOpinion("llm1 initial"),
+				initialOpinion("llm2 initial"),
+				participantResponse("AGREE", "llm1 agrees"),
+				participantResponse("AGREE", "llm2 agrees"),
+				finalAnswer("final council answer"),
+			]);
+			const contextFilePaths: string[] = [];
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				async createParticipantRunner(options) {
+					const runner = await completion.createParticipantRunner(options);
+					return {
+						async prompt(task, signal) {
+							if (task.includes("Analyze the question")) {
+								const contextFilePath = extractContextFilePath(task);
+								contextFilePaths.push(contextFilePath);
+								expect(existsSync(contextFilePath)).toBe(true);
+								expect(readFileSync(contextFilePath, "utf8")).toContain(
+									"caller context from file",
+								);
+								expect(task).toContain("What should we do?");
+								expect(task).not.toContain("caller context from file");
+								expect(task).toContain("read");
+								expect(task).toContain("offset");
+							}
+							return runner.prompt(task, signal);
+						},
+						async dispose() {
+							await runner.dispose();
+						},
+					};
+				},
+			});
+			const ctx = createContext(
+				[model],
+				[messageEntry("01", userMessage("caller context from file"), null)],
+			);
+
+			await executeCouncil(pi, ctx, "What should we do?");
+
+			expect(contextFilePaths).toHaveLength(2);
+			expect(new Set(contextFilePaths).size).toBe(1);
+			expect(existsSync(contextFilePaths[0] ?? "")).toBe(false);
+		});
+	});
+
+	test("always adds read and cleans the context file after participant prompt failure", async () => {
+		// Purpose: participants must receive read for the context file even when config requests only another tool.
+		// Input and expected output: read and grep are both available, the context file exists during the initial prompt, and the file is deleted after prompt failure.
+		// Edge case: cleanup runs after a participant prompt throws before the council reaches agreement.
+		// Dependencies: isolated config, fake tool registry, temp filesystem, and custom participant runner.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { tools: ["grep"] });
+			const model = createModel("openai", "main-model");
+			const capturedContextFilePaths: string[] = [];
+			const capturedToolNames: string[][] = [];
+			const pi = createExtensionApiFake();
+			for (const toolName of ["read", "grep"]) {
+				pi.registerTool({
+					name: toolName,
+					label: toolName,
+					description: `${toolName} test tool`,
+					parameters: Type.Object({}),
+					async execute() {
+						return {
+							content: [{ type: "text", text: "unused" }],
+							details: undefined,
+						};
+					},
+				});
+			}
+			conveneCouncil(pi, {
+				async createParticipantRunner(options) {
+					capturedToolNames.push(options.tools.map((tool) => tool.name));
+					expect(options.systemPrompt).toContain(
+						"Your current available tools: read, grep.",
+					);
+					return {
+						async prompt(task) {
+							const contextFilePath = extractContextFilePath(task);
+							capturedContextFilePaths.push(contextFilePath);
+							expect(existsSync(contextFilePath)).toBe(true);
+							throw new Error("participant prompt failed");
+						},
+						async dispose() {},
+					};
+				},
+			});
+			const ctx = createContext(
+				[model],
+				[messageEntry("01", userMessage("cleanup context"), null)],
+			);
+
+			const result = await executeCouncil(pi, ctx, "Failure cleanup");
+
+			expect(JSON.stringify(result.content)).toContain(
+				"participant prompt failed",
+			);
+			expect(capturedToolNames).toEqual([
+				["read", "grep"],
+				["read", "grep"],
+			]);
+			expect(capturedContextFilePaths.length).toBeGreaterThan(0);
+			for (const contextFilePath of capturedContextFilePaths) {
+				expect(existsSync(contextFilePath)).toBe(false);
+			}
+		});
+	});
+
+	test("cleans participant sessions, runners, and context file when participant startup fails", async () => {
+		// Purpose: failed child startup must not leak participant sessions, already-created participant runners, or the parent context file.
+		// Input and expected output: LLM1 runner is created, LLM2 startup fails, LLM1 is disposed, temp session dirs are removed, and no council context temp file remains.
+		// Edge case: cleanup happens after context file creation but before discussion iterations start.
+		// Dependencies: custom participant runner factory, temp participant sessions, and temp context file lifecycle.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "main-model");
 			const disposed: string[] = [];
 			const sessionDirs: string[] = [];
+			const beforeContextFiles = listCouncilContextTempFiles();
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, {
 				async createParticipantRunner(options) {
@@ -605,6 +867,7 @@ describe("convene-council loop", () => {
 			expect(sessionDirs.every((sessionDir) => !existsSync(sessionDir))).toBe(
 				true,
 			);
+			expect(listCouncilContextTempFiles()).toEqual(beforeContextFiles);
 		});
 	});
 
@@ -946,231 +1209,9 @@ describe("convene-council loop", () => {
 		});
 	});
 
-	test("summarizes oversized external context before participant startup", async () => {
-		// Purpose: oversized first participant requests must shrink the external context before any child RPC starts.
-		// Input and expected output: a large parent context triggers one summary call, the current TUI phase shows summarization, then participants receive the summarized context.
-		// Edge case: summary must complete before runner creation so no child process starts with an oversized prompt.
-		// Dependencies: isolated config, fake summary generator, fake participant runner, and the tool onUpdate callback.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { contextWindowUsageLimit: 0.1 });
-			const model = {
-				...createModel("openai", "main-model"),
-				contextWindow: 20_000,
-			};
-			const completion = createCompletionQueue([
-				initialOpinion("llm1 initial"),
-				initialOpinion("llm2 initial"),
-				participantResponse("AGREE", "llm1 agrees"),
-				participantResponse("AGREE", "llm2 agrees"),
-				finalAnswer("final"),
-			]);
-			let runnerStarts = 0;
-			let phaseAtSummaryStart: string | undefined;
-			const summaryInputs: string[] = [];
-			const updates: AgentToolResult<unknown>[] = [];
-			const largeContext = Array.from(
-				{ length: 1_500 },
-				(_, index) => `context-word-${index}`,
-			).join(" ");
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, {
-				async createParticipantRunner(options) {
-					runnerStarts += 1;
-					return completion.createParticipantRunner(options);
-				},
-				async generateContextSummary(request) {
-					expect(runnerStarts).toBe(0);
-					phaseAtSummaryStart = collectCouncilRunDetails(updates).at(-1)?.phase;
-					summaryInputs.push(request.contextPackage);
-					return "Summarized parent context";
-				},
-			});
-			const entries = [messageEntry("u1", userMessage(largeContext), null)];
-			const ctx = createContext([model], entries);
-
-			await executeCouncilWithOptions(pi, ctx, {
-				question: "What should we do?",
-				onUpdate: (partial) => updates.push(partial),
-			});
-
-			expect(phaseAtSummaryStart).toBe("summarizing context");
-			expect(summaryInputs).toHaveLength(1);
-			expect(summaryInputs[0]).toContain("context-word-1499");
-			const firstPrompt = String(
-				completion.calls[0]?.context.messages.at(-1)?.content,
-			);
-			expect(firstPrompt).toContain("<context>");
-			expect(firstPrompt).toContain("Summarized parent context");
-			expect(firstPrompt).not.toContain("context-word-1499");
-		});
-	});
-
-	test("includes configured participant tool schemas in first-request size checks", async () => {
-		// Purpose: tool-enabled participants must budget the schemas sent to the child model.
-		// Input and expected output: context fits without the configured tool schema, but schema tokens exhaust the first-request budget before startup.
-		// Edge case: summarization is skipped when no participant budget remains after system prompt and tool schemas.
-		// Dependencies: fake registered tool, isolated config, and fake summary generator.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				contextWindowUsageLimit: 0.1,
-				tools: ["read"],
-			});
-			const model = {
-				...createModel("openai", "main-model"),
-				contextWindow: 30_000,
-			};
-			const completion = createCompletionQueue([
-				initialOpinion("llm1 initial"),
-				initialOpinion("llm2 initial"),
-				participantResponse("AGREE", "llm1 agrees"),
-				participantResponse("AGREE", "llm2 agrees"),
-				finalAnswer("final"),
-			]);
-			const pi = createExtensionApiFake();
-			const toolDescription = Array.from(
-				{ length: 600 },
-				(_, index) => `schema-word-${index}`,
-			).join(" ");
-			pi.registerTool({
-				name: "read",
-				label: "Read",
-				description: toolDescription,
-				parameters: Type.Object({ path: Type.String() }),
-				async execute() {
-					return {
-						content: [{ type: "text", text: "unused" }],
-						details: undefined,
-					};
-				},
-			});
-			let runnerStarts = 0;
-			let summaryCalls = 0;
-			conveneCouncil(pi, {
-				async createParticipantRunner(options) {
-					runnerStarts += 1;
-					return completion.createParticipantRunner(options);
-				},
-				async generateContextSummary() {
-					summaryCalls += 1;
-					return "Tool-budgeted context summary";
-				},
-			});
-			const largeContext = Array.from(
-				{ length: 900 },
-				(_, index) => `context-word-${index}`,
-			).join(" ");
-			const ctx = createContext(
-				[model],
-				[messageEntry("u1", userMessage(largeContext), null)],
-			);
-
-			await expect(
-				executeCouncil(pi, ctx, "What should we do?"),
-			).rejects.toThrow("context is too large");
-
-			expect(summaryCalls).toBe(0);
-			expect(runnerStarts).toBe(0);
-			expect(completion.calls).toHaveLength(0);
-		});
-	});
-
-	test("fails before participant startup when summary input exceeds the summary model window", async () => {
-		// Purpose: summary preflight must reject requests that cannot fit the summary model.
-		// Input and expected output: large participant context plus tiny summary model fails before summary generation and runner startup.
-		// Edge case: participant models can be large enough while only the summary model is too small.
-		// Dependencies: isolated config and fake model registry.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, {
-				contextWindowUsageLimit: 0.1,
-				contextSummary: { model: { id: "summary/small" } },
-				llm1: { model: { id: "participant/large" } },
-				llm2: { model: { id: "participant/large" } },
-			});
-			const participantModel = {
-				...createModel("participant", "large"),
-				contextWindow: 20_000,
-			};
-			const summaryModel = {
-				...createModel("summary", "small"),
-				contextWindow: 1_000,
-			};
-			let runnerStarts = 0;
-			let summaryCalls = 0;
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, {
-				async createParticipantRunner() {
-					runnerStarts += 1;
-					throw new Error("runner must not start");
-				},
-				async generateContextSummary() {
-					summaryCalls += 1;
-					throw new Error("summary must not start");
-				},
-			});
-			const largeContext = Array.from(
-				{ length: 1_500 },
-				(_, index) => `context-word-${index}`,
-			).join(" ");
-			const ctx = createContext(
-				[participantModel, summaryModel],
-				[messageEntry("u1", userMessage(largeContext), null)],
-			);
-
-			await expect(
-				executeCouncil(pi, ctx, "What should we do?"),
-			).rejects.toThrow("context is too large");
-			expect(summaryCalls).toBe(0);
-			expect(runnerStarts).toBe(0);
-		});
-	});
-
-	test("fails before participant startup when summarized context still exceeds the participant limit", async () => {
-		// Purpose: post-summary size checks must prevent child startup when summary does not shrink enough.
-		// Input and expected output: summary is generated once, then the oversized summarized context fails before runners start.
-		// Edge case: failure happens after summary generation but before session startup.
-		// Dependencies: isolated config and fake summary generator.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeConfig(agentDir, { contextWindowUsageLimit: 0.1 });
-			const model = {
-				...createModel("openai", "main-model"),
-				contextWindow: 20_000,
-			};
-			let runnerStarts = 0;
-			let summaryCalls = 0;
-			const pi = createExtensionApiFake();
-			conveneCouncil(pi, {
-				async createParticipantRunner() {
-					runnerStarts += 1;
-					throw new Error("runner must not start");
-				},
-				async generateContextSummary() {
-					summaryCalls += 1;
-					return Array.from(
-						{ length: 1_500 },
-						(_, index) => `summary-word-${index}`,
-					).join(" ");
-				},
-			});
-			const largeContext = Array.from(
-				{ length: 1_500 },
-				(_, index) => `context-word-${index}`,
-			).join(" ");
-			const ctx = createContext(
-				[model],
-				[messageEntry("u1", userMessage(largeContext), null)],
-			);
-
-			await expect(
-				executeCouncil(pi, ctx, "What should we do?"),
-			).rejects.toThrow("context is too large");
-			expect(summaryCalls).toBe(1);
-			expect(runnerStarts).toBe(0);
-		});
-	});
-
-	test("removes pending council tool result and replays projected placeholders", async () => {
-		// Purpose: council participant context must not include its own pending result and must respect context-projection replay.
-		// Input and expected output: projected old output is replaced by the persisted placeholder, and pending council result is absent.
+	test("removes pending council tool result and ignores projected placeholders", async () => {
+		// Purpose: council participant context must use raw active-branch evidence and must not include its own pending result.
+		// Input and expected output: old raw output remains visible, projection state is ignored, and pending council result is absent.
 		// Edge case: pending tool call and tool result share the current tool call ID.
 		// Dependencies: suite context-projection config and persisted projection state entry.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1206,11 +1247,13 @@ describe("convene-council loop", () => {
 
 			await executeCouncil(pi, ctx, "What should we do?");
 
-			const initialContext = JSON.stringify(completion.calls[0]?.context);
-			expect(initialContext).toContain("[projected old output]");
-			expect(initialContext).not.toContain("old verbose output");
-			expect(initialContext).not.toContain("pending result");
-			expect(initialContext).not.toContain("convene_council");
+			const initialTask = String(
+				completion.calls[0]?.context.messages.at(-1)?.content,
+			);
+			expect(extractContextFilePath(initialTask)).toStartWith("/");
+			expect(initialTask).not.toContain("[projected old output]");
+			expect(initialTask).not.toContain("pending result");
+			expect(initialTask).not.toContain("convene_council");
 		});
 	});
 
@@ -1553,11 +1596,13 @@ describe("convene-council loop", () => {
 
 			await executeCouncil(pi, ctx, "Clean sibling calls");
 
-			const initialContext = JSON.stringify(completion.calls[0]?.context);
-			expect(initialContext).toContain("caller context");
-			expect(initialContext).not.toContain("convene_council");
-			expect(initialContext).not.toContain("bash");
-			expect(initialContext).not.toContain("call-bash");
+			const initialTask = String(
+				completion.calls[0]?.context.messages.at(-1)?.content,
+			);
+			expect(extractContextFilePath(initialTask)).toStartWith("/");
+			expect(initialTask).not.toContain("convene_council");
+			expect(initialTask).not.toContain("bash");
+			expect(initialTask).not.toContain("call-bash");
 		});
 	});
 

@@ -494,6 +494,52 @@ function rpcOutputLines(
 	];
 }
 
+/** Creates one complete assistant message for child RPC fixtures. */
+function childAssistantMessage(
+	text: string,
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "test",
+		provider: "openai",
+		model: "model-a",
+		usage: {
+			input: 10,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 11,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 1,
+		...overrides,
+	};
+}
+
+/** Emits one JSONL RPC stdout message from a fake child process. */
+function emitChildRpc(
+	process: SpawnedProcessFake,
+	message: Record<string, unknown>,
+): void {
+	process.stdout.emit("data", `${JSON.stringify(message)}\n`);
+}
+
+/** Extracts the first text block from a tool result fixture. */
+function toolText(result: AgentToolResult<unknown>): string {
+	return result.content[0]?.type === "text" ? result.content[0].text : "";
+}
+
+/** Writes Pi settings into the isolated agent directory used by child processes. */
+async function writePiSettings(
+	agentDir: string,
+	settings: Record<string, unknown>,
+): Promise<void> {
+	await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings));
+}
+
 /** Creates a fake child process that can emit RPC output and close. */
 function createSpawnFake(outputLines: readonly string[] = rpcOutputLines()): {
 	readonly calls: SpawnCall[];
@@ -1639,6 +1685,231 @@ describe("run-subagent", () => {
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "second answer" }],
 			});
+		});
+	});
+
+	test("keeps child retry active after first retryable agent_end", async () => {
+		// Purpose: child auto-retry emits a non-final agent_end before retry progress and final output.
+		// Input and expected output: first retryable agent_end does not close stdin; final text comes from retry output.
+		// Edge case: auto_retry_end(success=true) still waits for the later final agent_end.
+		// Dependencies: isolated Pi settings and controlled child RPC stdout.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writePiSettings(agentDir, {
+				retry: { enabled: true },
+				compaction: { enabled: true },
+			});
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/model-a" },
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project", undefined, [
+				createModel("openai", "model-a"),
+			]);
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						emitChildRpc(process, {
+							id: "run-subagent-prompt",
+							type: "response",
+							command: "prompt",
+							success: true,
+						});
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			}) as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			emitChildRpc(process, {
+				type: "message_end",
+				message: childAssistantMessage("temporary failure", {
+					stopReason: "error",
+					errorMessage: "server error 500",
+				}),
+			});
+			emitChildRpc(process, { type: "agent_end" });
+			await new Promise((resolve) => queueMicrotask(resolve));
+			expect(process.stdin.ended).toBe(false);
+
+			emitChildRpc(process, { type: "auto_retry_start", attempt: 1 });
+			emitChildRpc(process, {
+				type: "message_end",
+				message: childAssistantMessage("retry success"),
+			});
+			emitChildRpc(process, { type: "auto_retry_end", success: true });
+			expect(process.stdin.ended).toBe(false);
+			emitChildRpc(process, { type: "agent_end" });
+			process.emit("close", 0);
+
+			const result = await resultPromise;
+			expect(toolText(result)).toBe("retry success");
+			expect(process.stdin.ended).toBe(true);
+		});
+	});
+
+	test("fails child retry after auto_retry_end false", async () => {
+		// Purpose: exhausted child auto-retry is a terminal child failure.
+		// Input and expected output: retry failure closes stdin and returns the final retry error.
+		// Edge case: the failing agent_end arrived before auto_retry_end(success=false).
+		// Dependencies: isolated Pi settings and controlled child RPC stdout.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writePiSettings(agentDir, { retry: { enabled: true } });
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/model-a" },
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project", undefined, [
+				createModel("openai", "model-a"),
+			]);
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						emitChildRpc(process, {
+							id: "run-subagent-prompt",
+							type: "response",
+							command: "prompt",
+							success: true,
+						});
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			}) as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			emitChildRpc(process, {
+				type: "message_end",
+				message: childAssistantMessage("temporary failure", {
+					stopReason: "error",
+					errorMessage: "server error 500",
+				}),
+			});
+			emitChildRpc(process, { type: "agent_end" });
+			emitChildRpc(process, {
+				type: "auto_retry_end",
+				success: false,
+				finalError: "retry exhausted",
+			});
+			process.emit("close", 0);
+
+			const result = await resultPromise;
+			expect(toolText(result)).toContain("retry exhausted");
+			expect(process.stdin.ended).toBe(true);
+		});
+	});
+
+	test("keeps child overflow compaction active after first overflow agent_end", async () => {
+		// Purpose: overflow compaction emits a non-final agent_end before recovery continuation.
+		// Input and expected output: overflow agent_end does not close stdin; final text comes after compaction.
+		// Edge case: silent stop overflow is classified from usage and contextWindow.
+		// Dependencies: isolated Pi settings, model registry, and controlled child RPC stdout.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writePiSettings(agentDir, { compaction: { enabled: true } });
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/model-a" },
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project", undefined, [
+				{ ...createModel("openai", "model-a"), contextWindow: 1_000 },
+			]);
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					queueMicrotask(() => {
+						emitChildRpc(process, {
+							id: "run-subagent-prompt",
+							type: "response",
+							command: "prompt",
+							success: true,
+						});
+					});
+					return process;
+				},
+			});
+
+			const resultPromise = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			}) as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			await new Promise((resolve) => queueMicrotask(resolve));
+			emitChildRpc(process, {
+				type: "message_end",
+				message: childAssistantMessage("overflow", {
+					usage: {
+						input: 1_001,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 1_002,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+				}),
+			});
+			emitChildRpc(process, { type: "agent_end" });
+			await new Promise((resolve) => queueMicrotask(resolve));
+			expect(process.stdin.ended).toBe(false);
+
+			emitChildRpc(process, {
+				type: "compaction_end",
+				reason: "overflow",
+				willRetry: true,
+				aborted: false,
+			});
+			emitChildRpc(process, {
+				type: "message_end",
+				message: childAssistantMessage("after compaction"),
+			});
+			emitChildRpc(process, { type: "agent_end" });
+			process.emit("close", 0);
+
+			const result = await resultPromise;
+			expect(toolText(result)).toBe("after compaction");
+			expect(process.stdin.ended).toBe(true);
 		});
 	});
 

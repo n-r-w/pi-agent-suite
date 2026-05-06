@@ -14,7 +14,14 @@ import {
 	getAgentRuntimeComposition,
 	type MainAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
+import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
+import {
+	type ChildRpcPromptCompletion,
+	type ChildRpcRuntimeFacts,
+	createChildRpcPromptCompletion,
+} from "../../shared/child-rpc-completion";
+import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
 import {
 	CHILD_RPC_STREAMED_TEXT_BYTES_LIMIT as CHILD_STREAMED_TEXT_BYTES_LIMIT,
 	CHILD_RPC_STREAMED_TEXT_MIB_LIMIT as CHILD_STREAMED_TEXT_MIB_LIMIT,
@@ -213,7 +220,8 @@ export default async function runSubagent(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Run subagent",
-		description: "Run one configured callable agent in a child pi process.",
+		description:
+			"Run independent subagent. Running a subagent blocks your work until it finishes`",
 		parameters: RunSubagentParameters,
 		executionMode: "parallel",
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
@@ -239,6 +247,9 @@ async function publishRunSubagentPromptContribution(
 ): Promise<void> {
 	const composition = getAgentRuntimeComposition(pi);
 	const callableAgents = await loadCallableAgents();
+	writeRuntimeDiagnostic("run-subagent.prompt-contribution.published", {
+		callableAgentIds: callableAgents.map((agent) => agent.id),
+	});
 	composition.setRunSubagentContribution({
 		buildPrompt: async () =>
 			buildRunSubagentPrompt({
@@ -290,6 +301,13 @@ function buildRunSubagentPrompt({
 		mainAgent,
 		childAgentId,
 	);
+	writeRuntimeDiagnostic("run-subagent.prompt.build.started", {
+		mainAgentId: mainAgent?.id ?? null,
+		mainAgentTools: mainAgent?.tools ?? null,
+		mainAgentSubagents: mainAgent?.agents ?? null,
+		childAgentId: childAgentId ?? null,
+		isDepthAvailable,
+	});
 	const prompts: string[] = [];
 	if (childAgentId !== undefined) {
 		const childAgent = callableAgents.find(
@@ -300,19 +318,30 @@ function buildRunSubagentPrompt({
 		}
 	}
 
-	if (
-		!isDepthAvailable ||
-		!isRunSubagentAllowedForEffectiveAgent(pi, effectiveAgent)
-	) {
-		return prompts.length > 0 ? prompts.join("\n\n") : undefined;
+	const isAllowedForEffectiveAgent = isRunSubagentAllowedForEffectiveAgent(
+		pi,
+		effectiveAgent,
+	);
+	if (!isDepthAvailable || !isAllowedForEffectiveAgent) {
+		const prompt = prompts.length > 0 ? prompts.join("\n\n") : undefined;
+		writeRuntimeDiagnostic("run-subagent.prompt.build.skipped", {
+			mainAgentId: mainAgent?.id ?? null,
+			isDepthAvailable,
+			isAllowedForEffectiveAgent,
+			promptLength: prompt?.length ?? 0,
+		});
+		return prompt;
 	}
 
-	prompts.push(
-		formatCallableAgentsPrompt(
-			filterCallableAgents(callableAgents, effectiveAgent),
-		),
-	);
-	return prompts.join("\n\n");
+	const filteredAgents = filterCallableAgents(callableAgents, effectiveAgent);
+	prompts.push(formatCallableAgentsPrompt(filteredAgents));
+	const prompt = prompts.join("\n\n");
+	writeRuntimeDiagnostic("run-subagent.prompt.build.applied", {
+		mainAgentId: mainAgent?.id ?? null,
+		callableAgentIds: filteredAgents.map((agent) => agent.id),
+		promptLength: prompt.length,
+	});
+	return prompt;
 }
 
 /** Resolves the agent whose subagent policy controls the current process. */
@@ -593,6 +622,11 @@ async function runResolvedChildPi(
 	plan: ResolvedRunSubagentExecution,
 	progress: ReturnType<typeof createRunSubagentProgress>,
 ): Promise<ChildRunResult> {
+	const env = createChildEnvironment({
+		[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
+		[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
+		...plan.childTools.env,
+	});
 	return runChildPi(options.spawnPi, {
 		args: buildChildArgs({
 			modelId: plan.modelId,
@@ -600,10 +634,12 @@ async function runResolvedChildPi(
 			toolPolicy: plan.childTools,
 		}),
 		cwd: options.ctx.cwd,
-		env: createChildEnvironment({
-			[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
-			[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
-			...plan.childTools.env,
+		env,
+		runtimeFacts: resolveChildRpcRuntimeFacts({
+			modelId: plan.modelId,
+			modelRegistry: options.ctx.modelRegistry,
+			cwd: options.ctx.cwd,
+			env,
 		}),
 		signal: options.signal,
 		prompt: options.params.prompt,
@@ -871,6 +907,7 @@ async function runChildPi(
 		readonly args: string[];
 		readonly cwd: string;
 		readonly env: Record<string, string>;
+		readonly runtimeFacts: ChildRpcRuntimeFacts;
 		readonly signal: AbortSignal | undefined;
 		readonly prompt: string;
 		readonly onSessionEvent: (event: unknown) => void;
@@ -882,7 +919,7 @@ async function runChildPi(
 			env: options.env,
 			signal: undefined,
 		});
-		const rpcState = createChildRpcState();
+		const rpcState = createChildRpcState(options.runtimeFacts);
 		const closeStdin = () => closeChildStdin(child, rpcState);
 		const writeRpcCommand = (command: Record<string, unknown>) =>
 			writeChildRpcCommand(child, rpcState, command, closeStdin);
@@ -912,6 +949,7 @@ async function runChildPi(
 
 interface ChildRpcState {
 	readonly parser: ChildRpcStreamParser;
+	readonly promptCompletion: ChildRpcPromptCompletion;
 	readonly outputState: ChildFinalOutputState;
 	stdoutProcessing: Promise<void>;
 	stdoutProcessingPending: boolean;
@@ -926,9 +964,12 @@ interface ChildRpcState {
 }
 
 /** Creates mutable state for one child RPC process. */
-function createChildRpcState(): ChildRpcState {
+function createChildRpcState(
+	runtimeFacts: ChildRpcRuntimeFacts,
+): ChildRpcState {
 	return {
 		parser: new ChildRpcStreamParser(),
+		promptCompletion: createChildRpcPromptCompletion(runtimeFacts),
 		outputState: {
 			streamedText: "",
 			streamedTextBytes: 0,
@@ -1001,6 +1042,7 @@ function abortChildRpcRun(
 		return;
 	}
 	state.aborted = true;
+	state.promptCompletion.recordParentAbort();
 	writeRpcCommand({ id: ABORT_COMMAND_ID, type: "abort" });
 	scheduleChildTerminationFallback(child, state);
 }
@@ -1269,10 +1311,19 @@ function handleChildRpcSessionEvent(
 		message,
 	);
 	options.onSessionEvent(projectChildProgressEvent(message, assistantText));
-	if (message["type"] === "agent_end") {
-		options.rpcState.agentCompleted = true;
-		options.closeStdin();
+	const decision =
+		options.rpcState.promptCompletion.handleSessionEvent(message);
+	if (decision.kind === "wait") {
+		return;
 	}
+	options.rpcState.agentCompleted = true;
+	if (decision.kind === "failure") {
+		options.rpcState.fatalError ??= decision.reason;
+	}
+	if (decision.kind === "abort") {
+		options.rpcState.aborted = true;
+	}
+	options.closeStdin();
 }
 
 /** Appends streamed assistant deltas from RPC session events. */

@@ -19,6 +19,13 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import {
+	buildRetryConfig,
+	createRetryableExternalError,
+	type RetryConfig,
+	validateRetryConfig,
+	withRetry,
+} from "../../shared/retry";
 
 /** Suite directory owned only by this extension. */
 const CUSTOM_COMPACTION_EXTENSION_DIR = "custom-compaction";
@@ -60,12 +67,16 @@ const ENABLED_CONFIG_KEY = "enabled";
 /** Optional config field that selects reasoning effort for the compaction call. */
 const REASONING_CONFIG_KEY = "reasoning";
 
+/** Config key that controls retry behavior for compaction model calls. */
+const RETRY_CONFIG_KEY = "retry";
+
 /** Config keys accepted by this extension. */
 const CUSTOM_COMPACTION_CONFIG_KEYS = [
 	...PROMPT_FILE_KEYS,
 	ENABLED_CONFIG_KEY,
 	MODEL_CONFIG_KEY,
 	REASONING_CONFIG_KEY,
+	RETRY_CONFIG_KEY,
 ] as const;
 
 /** Reasoning values accepted by pi configuration for custom compaction. */
@@ -122,6 +133,7 @@ interface CustomCompactionConfig {
 	readonly turnPrefixPromptFile: string;
 	readonly model?: string;
 	readonly reasoning?: Reasoning;
+	readonly retry: RetryConfig;
 }
 
 interface CustomCompactionRuntimeConfig {
@@ -199,12 +211,17 @@ export default function customCompaction(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
-		const summary = await generateCompactionSummary(
+		const summary = await generateCompactionSummary({
 			event,
-			prompts.prompts,
-			runtimeConfig.config.model,
-			buildCompletionOptions(runtimeConfig.config, auth, event.signal),
-		);
+			prompts: prompts.prompts,
+			model: runtimeConfig.config.model,
+			baseOptions: buildCompletionOptions(
+				runtimeConfig.config,
+				auth,
+				event.signal,
+			),
+			retry: config.config.retry,
+		});
 		if (summary === undefined) {
 			reportIssue(session, "model response did not contain text summary");
 			return undefined;
@@ -344,6 +361,11 @@ function validateCustomCompactionConfig(
 		};
 	}
 
+	const retryIssue = validateRetryConfig(config[RETRY_CONFIG_KEY], "retry");
+	if (retryIssue !== undefined) {
+		return { issue: retryIssue };
+	}
+
 	return { config };
 }
 
@@ -397,6 +419,7 @@ function buildCustomCompactionConfig(
 				: DEFAULT_PROMPT_FILES.turnPrefixPromptFile,
 		...(typeof model === "string" ? { model } : {}),
 		...(isReasoning(reasoning) ? { reasoning } : {}),
+		retry: buildRetryConfig(config[RETRY_CONFIG_KEY]),
 	};
 }
 
@@ -529,12 +552,19 @@ function selectConfiguredOrCurrentReasoning(
 }
 
 /** Generates the history summary and optional split-turn prefix summary. */
-async function generateCompactionSummary(
-	event: SessionBeforeCompactEvent,
-	prompts: CustomCompactionPrompts,
-	model: Model<Api>,
-	baseOptions: SimpleStreamOptions,
-): Promise<string | undefined> {
+async function generateCompactionSummary({
+	event,
+	prompts,
+	model,
+	baseOptions,
+	retry,
+}: {
+	readonly event: SessionBeforeCompactEvent;
+	readonly prompts: CustomCompactionPrompts;
+	readonly model: Model<Api>;
+	readonly baseOptions: SimpleStreamOptions;
+	readonly retry: RetryConfig;
+}): Promise<string | undefined> {
 	if (
 		event.preparation.isSplitTurn &&
 		event.preparation.turnPrefixMessages.length > 0
@@ -549,6 +579,7 @@ async function generateCompactionSummary(
 							event,
 							HISTORY_SUMMARY_RESERVE_RATIO,
 						),
+						retry,
 					)
 				: Promise.resolve("No prior history."),
 			executeSummaryRequest(
@@ -559,6 +590,7 @@ async function generateCompactionSummary(
 					event,
 					TURN_PREFIX_SUMMARY_RESERVE_RATIO,
 				),
+				retry,
 			),
 		]);
 		if (historySummary === undefined || turnPrefixSummary === undefined) {
@@ -576,6 +608,7 @@ async function generateCompactionSummary(
 			event,
 			HISTORY_SUMMARY_RESERVE_RATIO,
 		),
+		retry,
 	);
 }
 
@@ -645,13 +678,27 @@ async function executeSummaryRequest(
 	model: Model<Api>,
 	context: Context,
 	options: SimpleStreamOptions,
+	retry: RetryConfig,
 ): Promise<string | undefined> {
-	const response = await completeSimple(model, context, options);
-	if (response.stopReason === "error") {
+	try {
+		const response = await withRetry(
+			async () => {
+				const answer = await completeSimple(model, context, options);
+				if (answer.stopReason === "error") {
+					throw createRetryableExternalError(
+						answer.errorMessage ?? "compaction provider returned an error",
+					);
+				}
+
+				return answer;
+			},
+			{ retry, signal: options.signal },
+		);
+
+		return extractTextSummary(response.content);
+	} catch {
 		return undefined;
 	}
-
-	return extractTextSummary(response.content);
 }
 
 /** Applies the output budget for one compaction model call. */

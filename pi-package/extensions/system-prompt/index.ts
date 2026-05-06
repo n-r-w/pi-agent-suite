@@ -6,6 +6,7 @@ import {
 	type ExtensionAPI,
 	formatSkillsForPrompt,
 } from "@mariozechner/pi-coding-agent";
+import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
@@ -68,20 +69,44 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		templateState = await loadTemplateState(ctx as SessionContextLike);
+		writeRuntimeDiagnostic("system-prompt.session-start.loaded", {
+			templateState: templateState.kind,
+		});
 	});
 
 	pi.on("before_agent_start", (event) => {
+		const incomingPrompt = (event as BeforeAgentStartEventLike).systemPrompt;
+		writeRuntimeDiagnostic("system-prompt.before-agent-start.started", {
+			templateState: templateState.kind,
+			incomingPromptLength: incomingPrompt.length,
+			hasMainAgentRules: incomingPrompt.includes("<rules>"),
+			hasCallableAgents: incomingPrompt.includes(
+				"Callable agents available through run_subagent",
+			),
+		});
 		if (templateState.kind !== "ready") {
 			return undefined;
 		}
 
 		const typedEvent = event as BeforeAgentStartEventLike;
-		return {
-			systemPrompt: renderTemplate(
-				templateState.template,
-				typedEvent.systemPromptOptions,
-			),
-		};
+		const systemPrompt = renderTemplate(
+			templateState.template,
+			typedEvent.systemPromptOptions,
+		);
+		writeRuntimeDiagnostic("system-prompt.before-agent-start.applied", {
+			incomingPromptLength: incomingPrompt.length,
+			finalPromptLength: systemPrompt.length,
+			droppedMainAgentRules:
+				incomingPrompt.includes("<rules>") && !systemPrompt.includes("<rules>"),
+			droppedCallableAgents:
+				incomingPrompt.includes(
+					"Callable agents available through run_subagent",
+				) &&
+				!systemPrompt.includes(
+					"Callable agents available through run_subagent",
+				),
+		});
+		return { systemPrompt };
 	});
 }
 

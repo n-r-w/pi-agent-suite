@@ -34,11 +34,14 @@ File: `~/.pi/agent/agent-suite/agent-selection/config.json`.
 
 ```json
 {
-  "enabled": true
+  "enabled": true,
+  "diagnosticsEnabled": false
 }
 ```
 
 `enabled` is optional and defaults to `true`. Missing config enables main-agent selection. `enabled: false` prevents command and shortcut registration.
+
+`diagnosticsEnabled` is optional and defaults to `false`. `diagnosticsEnabled: true` writes runtime diagnostics to `~/.pi/agent/agent-suite/agent-selection/runtime-diagnostics.jsonl`.
 
 ## Agent definition contract
 

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { env as processEnv } from "node:process";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
+import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
 import { CouncilRpcClient, type CouncilRpcTransport } from "./rpc-client";
 import { buildChildParticipantStartupFromToolArgs } from "./startup";
 import type { ParticipantRunner, ParticipantRunnerFactory } from "./types";
@@ -16,6 +17,7 @@ export interface SpawnedParticipantProcess {
 	readonly stderr: {
 		on(event: "data", handler: (chunk: unknown) => void): unknown;
 	};
+	on(event: "error", handler: (error: Error) => void): unknown;
 	on(event: "exit", handler: () => void): unknown;
 	kill(signal?: string): boolean;
 }
@@ -49,6 +51,12 @@ export function createParticipantRunnerFactory(
 		});
 		const client = new CouncilRpcClient(
 			createProcessTransport(child),
+			resolveChildRpcRuntimeFacts({
+				modelId: `${options.runtime.model.provider}/${options.runtime.model.id}`,
+				modelRegistry: options.ctx.modelRegistry,
+				cwd: options.ctx.cwd,
+				env: startup.env,
+			}),
 			options.onSessionEvent,
 		);
 		return new RpcParticipantRunner(child, client, {
@@ -87,6 +95,7 @@ class RpcParticipantRunner implements ParticipantRunner {
 			readonly clearTimeout: (handle: unknown) => void;
 		},
 	) {
+		this.child.on("error", (error) => this.markProcessError(error));
 		this.child.on("exit", () => this.markExited());
 	}
 
@@ -139,6 +148,11 @@ class RpcParticipantRunner implements ParticipantRunner {
 	private markExited(): void {
 		this.exited = true;
 		this.clearEscalationTimers();
+		this.client.handleTransportFailure(new Error("child process exited"));
+	}
+
+	private markProcessError(error: Error): void {
+		this.client.handleTransportFailure(error);
 	}
 
 	private clearEscalationTimers(): void {

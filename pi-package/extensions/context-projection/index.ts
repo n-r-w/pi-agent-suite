@@ -34,6 +34,7 @@ import {
 	mapEventMessagesToBranchEntries,
 	type ProjectedEntryState,
 	type ProjectionDecision,
+	type ProjectionLevel,
 	projectContextMessages,
 	publishRuntimeProjectedPlaceholders,
 	readContextProjectionConfig,
@@ -44,6 +45,12 @@ import {
 	countProjectionTextTokens,
 	estimateSerializedInputTokens,
 } from "../../shared/context-size";
+import {
+	buildRetryConfig,
+	createRetryableExternalError,
+	isAbortError,
+	withRetry,
+} from "../../shared/retry";
 
 /** Directory that stores the bundled context projection prompts. */
 const DEFAULT_PROMPT_DIR = join(
@@ -96,6 +103,7 @@ interface ContextProjectionChangeResultOptions {
 	readonly config: Extract<ContextProjectionConfigResult, { kind: "valid" }>;
 	readonly projectedPlaceholdersByEntryId: Map<string, string>;
 	readonly publishedStatusText: string | undefined;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	readonly decision: ProjectionDecision;
 }
 
@@ -132,12 +140,13 @@ interface ProjectionDecisionOptions {
 	readonly mappedContext: readonly MappedContextEntry[];
 	readonly projectedPlaceholdersByEntryId: Map<string, string>;
 	readonly loadedSkillRoots: readonly string[];
-	readonly discoverNewEntries: boolean;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	readonly completeSimple: CompleteSimple;
 }
 
 interface ProjectionProgressReporter {
 	readonly total: number;
+	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	processed: number;
 	advance(): void;
 	notifyCurrent(): void;
@@ -268,17 +277,21 @@ async function handleContextProjection({
 		projectedPlaceholdersByEntryId,
 		loadedSkillRoots,
 	);
-	const shouldDiscoverNewEntries = isProjectionThresholdExceeded(
-		ctx,
-		config.config,
-	);
-	if (!shouldDiscoverNewEntries && projectedPlaceholdersByEntryId.size === 0) {
-		return createContextProjectionNoChangeResult(
+	const createNoChangeResult = (): HandleContextProjectionResult =>
+		createContextProjectionNoChangeResult(
 			ctx,
 			config,
 			publishedStatusText,
 			currentProjectedSavedTokens,
 		);
+	const activeProjectionLevel = resolveActiveProjectionLevel(
+		ctx,
+		config.config,
+	);
+	if (
+		!hasProjectionWork(activeProjectionLevel, projectedPlaceholdersByEntryId)
+	) {
+		return createNoChangeResult();
 	}
 
 	const mappedContext = mapEventMessagesToBranchEntries(
@@ -286,12 +299,7 @@ async function handleContextProjection({
 		ctx.sessionManager.getBranch(),
 	);
 	if (mappedContext === undefined) {
-		return createContextProjectionNoChangeResult(
-			ctx,
-			config,
-			publishedStatusText,
-			currentProjectedSavedTokens,
-		);
+		return createNoChangeResult();
 	}
 
 	const decision = await createProjectionDecision({
@@ -301,16 +309,11 @@ async function handleContextProjection({
 		mappedContext,
 		projectedPlaceholdersByEntryId,
 		loadedSkillRoots,
-		discoverNewEntries: shouldDiscoverNewEntries,
+		activeProjectionLevel,
 		completeSimple,
 	});
 	if (!decision.changed) {
-		return createContextProjectionNoChangeResult(
-			ctx,
-			config,
-			publishedStatusText,
-			currentProjectedSavedTokens,
-		);
+		return createNoChangeResult();
 	}
 
 	return createContextProjectionChangeResult({
@@ -319,8 +322,20 @@ async function handleContextProjection({
 		config,
 		projectedPlaceholdersByEntryId,
 		publishedStatusText,
+		activeProjectionLevel,
 		decision,
 	});
+}
+
+/** Returns true when a context event can apply stored projections or discover new projected entries. */
+function hasProjectionWork(
+	activeProjectionLevel: ProjectionLevel | undefined,
+	projectedPlaceholdersByEntryId: ReadonlyMap<string, string>,
+): boolean {
+	return (
+		activeProjectionLevel !== undefined ||
+		projectedPlaceholdersByEntryId.size > 0
+	);
 }
 
 /** Creates the final projection decision, enriching new projected entries with summaries when available. */
@@ -331,7 +346,7 @@ async function createProjectionDecision({
 	mappedContext,
 	projectedPlaceholdersByEntryId,
 	loadedSkillRoots,
-	discoverNewEntries,
+	activeProjectionLevel,
 	completeSimple,
 }: ProjectionDecisionOptions): Promise<ProjectionDecision> {
 	let decision = projectContextMessages({
@@ -340,7 +355,7 @@ async function createProjectionDecision({
 		config,
 		loadedSkillRoots,
 		cwd: ctx.cwd,
-		discoverNewEntries,
+		activeProjectionLevel,
 	});
 	if (!decision.changed) {
 		return decision;
@@ -348,6 +363,7 @@ async function createProjectionDecision({
 	const progress = createProjectionProgressReporter(
 		ctx,
 		decision.newProjectedEntries.length,
+		activeProjectionLevel,
 	);
 
 	const summaryReplacementsByEntryId = await createSummaryReplacementsByEntryId(
@@ -372,7 +388,7 @@ async function createProjectionDecision({
 		config,
 		loadedSkillRoots,
 		cwd: ctx.cwd,
-		discoverNewEntries,
+		activeProjectionLevel,
 	});
 	return decision;
 }
@@ -381,9 +397,11 @@ async function createProjectionDecision({
 function createProjectionProgressReporter(
 	ctx: ExtensionContext,
 	total: number,
+	activeProjectionLevel: ProjectionLevel | undefined,
 ): ProjectionProgressReporter {
 	const progress: ProjectionProgressReporter = {
 		total,
+		activeProjectionLevel,
 		processed: 0,
 		advance(): void {
 			progress.processed += 1;
@@ -411,12 +429,16 @@ function notifyProjectionProgress(
 	ctx: ExtensionContext,
 	progress: ProjectionProgressReporter,
 ): void {
-	if (!ctx.hasUI || progress.total === 0) {
+	if (
+		!ctx.hasUI ||
+		progress.total === 0 ||
+		progress.activeProjectionLevel === undefined
+	) {
 		return;
 	}
 
 	ctx.ui.notify(
-		`Projecting context: ${progress.processed}/${progress.total} tool results processed`,
+		`Projecting context: ${progress.activeProjectionLevel.label}, ${progress.processed}/${progress.total} tool results processed`,
 		"info",
 	);
 }
@@ -424,6 +446,7 @@ function notifyProjectionProgress(
 /** Shows the additional savings produced by the latest projection operation. */
 function notifyProjectionCompleted(
 	ctx: ExtensionContext,
+	activeProjectionLevel: ProjectionLevel,
 	savedTokens: number,
 ): void {
 	if (!ctx.hasUI) {
@@ -431,7 +454,7 @@ function notifyProjectionCompleted(
 	}
 
 	ctx.ui.notify(
-		`Context projected: ~${formatSavedTokens(savedTokens)} saved`,
+		`Context projected: ${activeProjectionLevel.label}, ~${formatSavedTokens(savedTokens)} saved`,
 		"info",
 	);
 }
@@ -751,64 +774,51 @@ async function summarizeProjectionCandidateWithRetries({
 	readonly config: ContextProjectionSummaryConfig;
 	readonly progress: ProjectionProgressReporter;
 }): Promise<string | undefined> {
-	return summarizeProjectionCandidateAttempt({
-		candidate,
-		runtimeConfig,
-		completeSimple,
-		config,
-		progress,
-		attempt: 0,
-	});
-}
+	let attempt = 0;
+	try {
+		return await withRetry(
+			async () => {
+				attempt += 1;
+				if (attempt > 1) {
+					progress.notifyCurrent();
+				}
 
-/** Runs one summary attempt and recurses only when retry budget remains. */
-async function summarizeProjectionCandidateAttempt({
-	candidate,
-	runtimeConfig,
-	completeSimple,
-	config,
-	progress,
-	attempt,
-}: {
-	readonly candidate: ProjectionSummaryCandidate;
-	readonly runtimeConfig: SummaryRuntimeConfig;
-	readonly completeSimple: CompleteSimple;
-	readonly config: ContextProjectionSummaryConfig;
-	readonly progress: ProjectionProgressReporter;
-	readonly attempt: number;
-}): Promise<string | undefined> {
-	const result = await summarizeProjectionCandidate(
-		candidate,
-		runtimeConfig,
-		completeSimple,
-	);
-	if (result.kind === "success") {
-		return result.summary;
-	}
-	if (result.kind === "fatal" || attempt >= config.retryCount) {
+				const result = await summarizeProjectionCandidate(
+					candidate,
+					runtimeConfig,
+					completeSimple,
+				);
+				if (result.kind === "success") {
+					return result.summary;
+				}
+				if (result.kind === "fatal") {
+					throw new DOMException("summary request aborted", "AbortError");
+				}
+
+				throw createRetryableExternalError(
+					"summary provider returned an error",
+				);
+			},
+			{
+				retry: buildRetryConfig(
+					{
+						maxRetries: config.retryCount,
+						baseDelayMs: config.retryDelayMs,
+					},
+					{ maxRetries: config.retryCount, baseDelayMs: config.retryDelayMs },
+				),
+				signal: runtimeConfig.options.signal,
+				factor: 1,
+				onFailedAttempt: ({ attemptNumber, retriesLeft }) => {
+					if (retriesLeft > 0) {
+						progress.notifyRetry(attemptNumber + 1, config.retryCount + 1);
+					}
+				},
+			},
+		);
+	} catch {
 		return undefined;
 	}
-
-	const nextAttempt = attempt + 2;
-	const totalAttempts = config.retryCount + 1;
-	progress.notifyRetry(nextAttempt, totalAttempts);
-	const shouldContinue = await delay(
-		config.retryDelayMs,
-		runtimeConfig.options.signal,
-	);
-	if (!shouldContinue) {
-		return undefined;
-	}
-	progress.notifyCurrent();
-
-	return summarizeProjectionCandidateAttempt({
-		candidate,
-		runtimeConfig,
-		completeSimple,
-		config,
-		progress,
-		attempt: attempt + 1,
-	});
 }
 
 /** Summarizes one projected tool result and classifies failures for retry handling. */
@@ -858,39 +868,6 @@ function doesSummaryInputFitContextWindow(
 			runtimeConfig.model.provider,
 		) <= runtimeConfig.model.contextWindow
 	);
-}
-
-/** Returns true when a thrown provider error means the current operation was aborted. */
-function isAbortError(error: unknown): boolean {
-	return (
-		(error instanceof DOMException && error.name === "AbortError") ||
-		(error instanceof Error && error.name === "AbortError")
-	);
-}
-
-/** Waits before retrying a failed summary request unless the operation is aborted. */
-async function delay(
-	delayMs: number,
-	signal: AbortSignal | undefined,
-): Promise<boolean> {
-	if (signal?.aborted === true) {
-		return false;
-	}
-	if (delayMs === 0) {
-		return true;
-	}
-
-	return new Promise((resolve) => {
-		const timeout = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve(true);
-		}, delayMs);
-		const onAbort = (): void => {
-			clearTimeout(timeout);
-			resolve(false);
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
 }
 
 /** Builds the isolated summary request context for one tool result. */
@@ -1011,6 +988,7 @@ function createContextProjectionChangeResult({
 	config,
 	projectedPlaceholdersByEntryId,
 	publishedStatusText,
+	activeProjectionLevel,
 	decision,
 }: ContextProjectionChangeResultOptions): HandleContextProjectionResult {
 	recordNewProjectedEntries({
@@ -1028,9 +1006,13 @@ function createContextProjectionChangeResult({
 		estimateSavedTokens(decision.savedTokens),
 		publishedStatusText,
 	);
-	if (decision.newProjectedEntries.length > 0) {
+	if (
+		decision.newProjectedEntries.length > 0 &&
+		activeProjectionLevel !== undefined
+	) {
 		notifyProjectionCompleted(
 			ctx,
+			activeProjectionLevel,
 			estimateSavedTokens(decision.newSavedTokens),
 		);
 	}
@@ -1103,21 +1085,28 @@ function estimateCurrentProjectedSavedTokens(
 	});
 }
 
-/** Returns true when current context usage is known and has crossed the projection threshold. */
-function isProjectionThresholdExceeded(
+/** Returns the deepest active projection level when current context usage crosses a configured threshold. */
+function resolveActiveProjectionLevel(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfig,
-): boolean {
+): ProjectionLevel | undefined {
 	const usage = getProjectionAwareContextUsage(
 		ctx.sessionManager.getSessionId(),
 		ctx.getContextUsage(),
 	);
 	if (usage === undefined || usage.tokens === null) {
-		return false;
+		return undefined;
 	}
 
 	const remainingTokens = usage.contextWindow - usage.tokens;
-	return remainingTokens <= config.projectionRemainingTokens;
+	for (let index = config.projectionLevels.length - 1; index >= 0; index -= 1) {
+		const level = config.projectionLevels[index];
+		if (level !== undefined && remainingTokens <= level.remainingTokens) {
+			return level;
+		}
+	}
+
+	return undefined;
 }
 
 /** Throws config errors that must stop startup or context handling instead of being shown as footer state. */

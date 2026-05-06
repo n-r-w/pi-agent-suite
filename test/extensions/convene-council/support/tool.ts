@@ -1,5 +1,6 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { Type } from "typebox";
 import type { ContextFake, ExtensionApiFake } from "./fakes";
 
 /** Returns the registered convene_council tool. */
@@ -36,6 +37,7 @@ export async function executeCouncilWithOptions(
 		readonly onUpdate?: (partial: AgentToolResult<unknown>) => void;
 	},
 ): Promise<AgentToolResult<unknown>> {
+	ensureReadTool(pi);
 	return getCouncilTool(pi).execute(
 		"call-council",
 		{ question: options.question },
@@ -43,4 +45,23 @@ export async function executeCouncilWithOptions(
 		options.onUpdate,
 		ctx as never,
 	) as Promise<AgentToolResult<unknown>>;
+}
+
+/** Registers the mandatory read tool in tests that do not customize the registry. */
+function ensureReadTool(pi: ExtensionApiFake): void {
+	if (pi.tools.some((tool) => tool.name === "read")) {
+		return;
+	}
+	pi.registerTool({
+		name: "read",
+		label: "Read",
+		description: "test read tool",
+		parameters: Type.Object({ path: Type.String() }),
+		async execute() {
+			return {
+				content: [{ type: "text", text: "unused" }],
+				details: undefined,
+			};
+		},
+	});
 }

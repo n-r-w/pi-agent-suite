@@ -118,53 +118,12 @@ describe("convene-council config", () => {
 				error: "finalAnswerParticipant must be one of llm1, llm2",
 			},
 			{
-				config: { contextWindowUsageLimit: 0 },
-				error:
-					"contextWindowUsageLimit must be greater than 0 and less than or equal to 1",
+				config: { contextWindowUsageLimit: 0.7 },
+				error: "config contains unsupported keys",
 			},
 			{
-				config: { contextWindowUsageLimit: -0.1 },
-				error:
-					"contextWindowUsageLimit must be greater than 0 and less than or equal to 1",
-			},
-			{
-				config: { contextWindowUsageLimit: 1.1 },
-				error:
-					"contextWindowUsageLimit must be greater than 0 and less than or equal to 1",
-			},
-			{
-				config: { contextWindowUsageLimit: "0.7" },
-				error:
-					"contextWindowUsageLimit must be greater than 0 and less than or equal to 1",
-			},
-			{
-				config: { contextSummary: "enabled" },
-				error: "contextSummary must be an object",
-			},
-			{
-				config: { contextSummary: { extra: true } },
-				error: "contextSummary contains unsupported keys",
-			},
-			{
-				config: { contextSummary: { model: "main" } },
-				error: "contextSummary.model must be an object",
-			},
-			{
-				config: { contextSummary: { model: { extra: true } } },
-				error: "contextSummary.model contains unsupported keys",
-			},
-			{
-				config: { contextSummary: { model: { id: "" } } },
-				error: "contextSummary.model.id must be a non-empty string",
-			},
-			{
-				config: { contextSummary: { model: { id: "missing-separator" } } },
-				error: "contextSummary.model.id must use provider/model",
-			},
-			{
-				config: { contextSummary: { model: { thinking: "huge" } } },
-				error:
-					"contextSummary.model.thinking must be one of off, minimal, low, medium, high, xhigh",
+				config: { contextSummary: { retry: { maxRetries: 1 } } },
+				error: "config contains unsupported keys",
 			},
 		];
 
@@ -279,10 +238,6 @@ describe("convene-council config", () => {
 		// Dependencies: suite config and fake model registry.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
-				contextWindowUsageLimit: 0.7,
-				contextSummary: {
-					model: { id: "provider-a/model-a", thinking: "low" },
-				},
 				llm1: { model: { id: "provider-a/model-a" } },
 				llm2: { model: { id: "provider-b/model-b" } },
 			});

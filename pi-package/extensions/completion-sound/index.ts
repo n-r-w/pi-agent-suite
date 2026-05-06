@@ -24,17 +24,38 @@ const COMMAND_CONFIG_KEY = "command";
 /** Config key that passes arguments to the configured playback executable. */
 const ARGS_CONFIG_KEY = "args";
 
+/** Config key that controls built-in playback volume as a percentage. */
+const VOLUME_CONFIG_KEY = "volume";
+
 /** Config keys accepted by the completion-sound config object. */
 const COMPLETION_SOUND_CONFIG_KEYS = [
 	ENABLED_CONFIG_KEY,
 	COMMAND_CONFIG_KEY,
 	ARGS_CONFIG_KEY,
+	VOLUME_CONFIG_KEY,
 ] as const;
+
+/** Full-volume percentage used by platform playback commands. */
+const FULL_VOLUME_PERCENT = 100;
+
+/** Maximum accepted built-in playback volume percentage. */
+const MAX_VOLUME_PERCENT = 150;
+
+/** PulseAudio volume unit that represents 100 percent playback volume. */
+const PULSEAUDIO_FULL_VOLUME = 65_536;
 
 /** Command and arguments used to play one completion sound. */
 interface PlaybackCommand {
 	readonly command: string;
 	readonly args: readonly string[];
+}
+
+/** Raw config values accepted after strict JSON validation. */
+interface CompletionSoundRawConfig {
+	readonly enabled?: boolean;
+	readonly command?: string;
+	readonly args?: readonly string[];
+	readonly volume?: number;
 }
 
 /** Effective config used by lifecycle handlers after defaults are applied. */
@@ -178,6 +199,24 @@ function parseCompletionSoundConfig(
 		return invalidConfig("config contains unsupported keys");
 	}
 
+	const rawConfig = parseCompletionSoundFields(config);
+	if (rawConfig.kind === "invalid") {
+		return rawConfig;
+	}
+
+	return {
+		kind: "valid",
+		config: buildCompletionSoundConfig(rawConfig.config, currentPlatform),
+	};
+}
+
+/** Parses known config fields after object shape and key ownership are proven. */
+function parseCompletionSoundFields(config: Record<string, unknown>):
+	| { readonly kind: "valid"; readonly config: CompletionSoundRawConfig }
+	| {
+			readonly kind: "invalid";
+			readonly issue: string;
+	  } {
 	const enabled = config[ENABLED_CONFIG_KEY];
 	if (enabled !== undefined && typeof enabled !== "boolean") {
 		return invalidConfig("enabled must be a boolean");
@@ -196,30 +235,31 @@ function parseCompletionSoundConfig(
 		return invalidConfig("args must be an array of strings");
 	}
 
+	const volume = config[VOLUME_CONFIG_KEY];
+	if (volume !== undefined && !isValidVolume(volume)) {
+		return invalidConfig(
+			`volume must be a number from 0 to ${MAX_VOLUME_PERCENT}`,
+		);
+	}
+
 	if (command === undefined && args !== undefined) {
 		return invalidConfig("command is required when args is set");
 	}
 
 	return {
 		kind: "valid",
-		config: buildCompletionSoundConfig(
-			{
-				...(enabled !== undefined ? { enabled } : {}),
-				...(command !== undefined ? { command } : {}),
-				...(args !== undefined ? { args } : {}),
-			},
-			currentPlatform,
-		),
+		config: {
+			...(enabled !== undefined ? { enabled } : {}),
+			...(command !== undefined ? { command } : {}),
+			...(args !== undefined ? { args } : {}),
+			...(volume !== undefined ? { volume } : {}),
+		},
 	};
 }
 
 /** Builds effective config by applying platform defaults to omitted fields. */
 function buildCompletionSoundConfig(
-	config: {
-		readonly enabled?: boolean;
-		readonly command?: string;
-		readonly args?: readonly string[];
-	},
+	config: CompletionSoundRawConfig,
 	currentPlatform: NodeJS.Platform,
 ): CompletionSoundConfig {
 	return {
@@ -227,24 +267,38 @@ function buildCompletionSoundConfig(
 		playback:
 			config.command !== undefined
 				? { command: config.command, args: config.args ?? [] }
-				: getDefaultPlaybackCommand(currentPlatform),
+				: getDefaultPlaybackCommand(currentPlatform, config.volume),
 	};
 }
 
 /** Returns the platform default playback command when the platform has a safe built-in option. */
 function getDefaultPlaybackCommand(
 	currentPlatform: NodeJS.Platform,
+	volume: number | undefined,
 ): PlaybackCommand | undefined {
 	switch (currentPlatform) {
 		case "darwin":
 			return {
 				command: "afplay",
-				args: ["/System/Library/Sounds/Glass.aiff"],
+				args:
+					volume === undefined
+						? ["/System/Library/Sounds/Glass.aiff"]
+						: [
+								"-v",
+								String(volume / FULL_VOLUME_PERCENT),
+								"/System/Library/Sounds/Glass.aiff",
+							],
 			};
 		case "linux":
 			return {
 				command: "paplay",
-				args: ["/usr/share/sounds/freedesktop/stereo/complete.oga"],
+				args:
+					volume === undefined
+						? ["/usr/share/sounds/freedesktop/stereo/complete.oga"]
+						: [
+								`--volume=${Math.round(PULSEAUDIO_FULL_VOLUME * (volume / FULL_VOLUME_PERCENT))}`,
+								"/usr/share/sounds/freedesktop/stereo/complete.oga",
+							],
 			};
 		case "win32":
 			return {
@@ -309,6 +363,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isStringArray(value: unknown): value is readonly string[] {
 	return (
 		Array.isArray(value) && value.every((item) => typeof item === "string")
+	);
+}
+
+/** Returns true when a config value is a valid built-in playback volume percentage. */
+function isValidVolume(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isFinite(value) &&
+		value >= 0 &&
+		value <= MAX_VOLUME_PERCENT
 	);
 }
 

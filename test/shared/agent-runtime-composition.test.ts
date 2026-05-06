@@ -13,18 +13,15 @@ interface HandlerRecord {
 }
 
 /** Creates the ExtensionAPI subset needed by runtime composition tests. */
-function createCompositionApiFake(): {
+function createCompositionApiFake(
+	events: ExtensionAPI["events"] = createEventBusFake(),
+): {
 	readonly pi: ExtensionAPI;
 	readonly handlers: HandlerRecord[];
 } {
 	const handlers: HandlerRecord[] = [];
 	const pi = {
-		events: {
-			emit() {},
-			on() {
-				return () => {};
-			},
-		},
+		events,
 		on(event: "before_agent_start", handler: HandlerRecord["handler"]) {
 			handlers.push({ event, handler });
 		},
@@ -35,6 +32,16 @@ function createCompositionApiFake(): {
 	} as unknown as ExtensionAPI;
 
 	return { pi, handlers };
+}
+
+/** Creates the shared event bus surface used by isolated ExtensionAPI fakes. */
+function createEventBusFake(): ExtensionAPI["events"] {
+	return {
+		emit() {},
+		on() {
+			return () => {};
+		},
+	} as ExtensionAPI["events"];
 }
 
 /** Imports a fresh module instance to reproduce pi package entry-point isolation. */
@@ -55,7 +62,7 @@ test("does not reuse stale runtime composition objects from previous reloads", a
 	// Edge case: the stale property may be non-configurable because previous versions stored it as a permanent event-bus property.
 	// Dependencies: this test uses the real shared module and an ExtensionAPI fake.
 	const { pi, handlers } = createCompositionApiFake();
-	Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV3", {
+	Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV4", {
 		configurable: false,
 		enumerable: false,
 		value: {
@@ -69,7 +76,47 @@ test("does not reuse stale runtime composition objects from previous reloads", a
 
 	expect(typeof composition.setRunSubagentActiveToolFilter).toBe("function");
 	expect(typeof composition.setConveneCouncilContribution).toBe("function");
-	expect(handlers).toHaveLength(1);
+	expect(
+		handlers.filter((handler) => handler.event === "before_agent_start"),
+	).toHaveLength(1);
+});
+
+test("creates a fresh runtime composition after shutdown marks the previous runtime stale", async () => {
+	// Purpose: /reload must not reuse a composition whose before_agent_start handler belongs to the previous ExtensionAPI.
+	// Input and expected output: after session_shutdown, a second ExtensionAPI fake sharing the same event bus receives a new handler and composes its own prompt.
+	// Edge case: the first and second runtime objects use the same shared event bus object, matching the observed stale-storage failure.
+	// Dependencies: this test uses only the shared runtime-composition module and in-memory ExtensionAPI fakes.
+	const module = await importIsolatedRuntimeCompositionModule("reload");
+	const events = createEventBusFake();
+	const first = createCompositionApiFake(events);
+	const second = createCompositionApiFake(events);
+
+	const firstComposition = module.getAgentRuntimeComposition(first.pi);
+	firstComposition.setMainAgentContribution({
+		prompt: "Old main prompt",
+		agent: { id: "old" },
+	});
+	module.markAgentRuntimeCompositionStale(first.pi);
+
+	const secondComposition = module.getAgentRuntimeComposition(second.pi);
+	secondComposition.setMainAgentContribution({
+		prompt: "New main prompt",
+		agent: { id: "new" },
+	});
+
+	expect(
+		first.handlers.filter((handler) => handler.event === "before_agent_start"),
+	).toHaveLength(1);
+	expect(
+		second.handlers.filter((handler) => handler.event === "before_agent_start"),
+	).toHaveLength(1);
+	expect(secondComposition.getMainAgentContribution()?.agent?.id).toBe("new");
+	const secondPromptHandler = second.handlers.find(
+		(handler) => handler.event === "before_agent_start",
+	)?.handler;
+	expect(await secondPromptHandler?.({ systemPrompt: "Base" }, {})).toEqual({
+		systemPrompt: "Base\n\nNew main prompt",
+	});
 });
 
 test("shares one runtime composition across isolated module instances", async () => {
@@ -96,8 +143,13 @@ test("shares one runtime composition across isolated module instances", async ()
 	expect(compositionB.getMainAgentContribution()?.agent?.agents).toEqual([
 		"helper",
 	]);
-	expect(handlers).toHaveLength(1);
-	expect(await handlers[0]?.handler({ systemPrompt: "Base" }, {})).toEqual({
+	expect(
+		handlers.filter((handler) => handler.event === "before_agent_start"),
+	).toHaveLength(1);
+	const promptHandler = handlers.find(
+		(handler) => handler.event === "before_agent_start",
+	)?.handler;
+	expect(await promptHandler?.({ systemPrompt: "Base" }, {})).toEqual({
 		systemPrompt: "Base\n\nMain prompt\n\nhelper\n\nCouncil prompt",
 	});
 });

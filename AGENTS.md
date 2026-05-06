@@ -2,13 +2,13 @@
 
 ## Project purpose
 
-Custom `pi.dev` extensions: `pi-package/extensions`
+Custom `pi.dev` extensions: `pi-package/extensions/*`
 
 ## General Rules
 1. ALL documentation and code comments must be in English.
 2. Follow best practices for pi extension development, don't reinvent the wheel.
 3. If open questions arise during coding that do not have a clear answer, stop immediately and ask the user for clarification.
-4. Keep documentation in `docs/extensions` up to date.
+4. Keep documentation in `docs/extensions/*` up to date.
 5. Keep `README.md` and `pi-package/README.md` up to date.
 6. Keep files small and readable. Avoid giant dump files.
 7. Suppressing linter warnings is prohibited without user approval.
@@ -22,7 +22,7 @@ Custom `pi.dev` extensions: `pi-package/extensions`
 2. Use Bun as the test runner.
 3. Tests must use isolated fixtures and fakes instead of real user files, real auth, real models, real network calls, or real git state.
 4. Add integration checks only where unit tests cannot prove package loading, single registration, or child `pi` behavior.
-5. Tests that check the contents of prompts should MUST check text that is EXPLICITLY used in the logic and NEVER text that can change arbitrarily.
+5. MANDATORY RULE: Tests that check the contents of prompts should MUST check text that is EXPLICITLY used in the logic and NEVER text that can change arbitrarily.
 
 ## Test layout rules
 

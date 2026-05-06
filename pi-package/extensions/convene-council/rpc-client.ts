@@ -1,5 +1,11 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import {
+	type ChildRpcPromptCompletion,
+	type ChildRpcPromptDecision,
+	type ChildRpcRuntimeFacts,
+	createChildRpcPromptCompletion,
+} from "../../shared/child-rpc-completion";
+import {
 	CHILD_RPC_STDERR_TEXT_LIMIT,
 	CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT,
 	ChildRpcStreamParser,
@@ -22,9 +28,9 @@ interface PendingCommand {
 }
 
 interface ActivePrompt {
+	readonly completion: ChildRpcPromptCompletion;
 	readonly resolve: (message: AssistantMessage) => void;
 	readonly reject: (error: Error) => void;
-	lastAssistantMessage: AssistantMessage | undefined;
 }
 
 /** Handles the JSONL RPC protocol for one persistent council participant. */
@@ -40,6 +46,7 @@ export class CouncilRpcClient {
 
 	constructor(
 		private readonly transport: CouncilRpcTransport,
+		private readonly runtimeFacts: ChildRpcRuntimeFacts,
 		private readonly onSessionEvent?: (event: unknown) => void,
 	) {
 		this.transport.onStdout((chunk) => this.processStdout(chunk));
@@ -48,9 +55,23 @@ export class CouncilRpcClient {
 
 	/** Sends an RPC abort command without closing the persistent child session. */
 	abort(): void {
+		this.activePrompt?.completion.recordParentAbort();
 		const id = String(this.nextId);
 		this.nextId += 1;
 		this.writeCommand({ id, type: "abort" });
+	}
+
+	/** Rejects active prompt and pending commands after child transport termination. */
+	handleTransportFailure(error: Error): void {
+		const prompt = this.activePrompt;
+		if (prompt !== undefined) {
+			const decision = prompt.completion.recordTransportFailure(error.message);
+			this.applyPromptDecision(decision);
+		}
+		for (const [id, pending] of this.pendingCommands) {
+			this.pendingCommands.delete(id);
+			pending.reject(error);
+		}
 	}
 
 	/** Sends one participant prompt and resolves only after the child turn ends. */
@@ -61,9 +82,9 @@ export class CouncilRpcClient {
 
 		return new Promise<AssistantMessage>((resolve, reject) => {
 			this.activePrompt = {
+				completion: createChildRpcPromptCompletion(this.runtimeFacts),
 				resolve,
 				reject,
-				lastAssistantMessage: undefined,
 			};
 			this.request("prompt", { message: task }).catch((error) => {
 				if (this.activePrompt !== undefined) {
@@ -143,7 +164,7 @@ export class CouncilRpcClient {
 		}
 
 		this.onSessionEvent?.(message);
-		if (message["type"] === "message_end" || message["type"] === "agent_end") {
+		if (isPromptCompletionEvent(message)) {
 			this.processEvent(message);
 			return;
 		}
@@ -170,19 +191,24 @@ export class CouncilRpcClient {
 	}
 
 	private processEvent(message: Record<string, unknown>): void {
-		if (message["type"] === "message_end") {
-			const rpcMessage = message["message"];
-			if (isAssistantMessage(rpcMessage)) {
-				const prompt = this.activePrompt;
-				if (prompt !== undefined) {
-					prompt.lastAssistantMessage = rpcMessage;
-				}
-			}
+		const prompt = this.activePrompt;
+		if (prompt === undefined) {
 			return;
 		}
-		if (message["type"] === "agent_end") {
-			this.finishActivePrompt();
+		const completionEvent = normalizePromptCompletionEvent(message);
+		const decision = prompt.completion.handleSessionEvent(completionEvent);
+		this.applyPromptDecision(decision);
+	}
+
+	private applyPromptDecision(decision: ChildRpcPromptDecision): void {
+		if (decision.kind === "wait") {
+			return;
 		}
+		if (decision.kind === "success") {
+			this.finishActivePrompt(decision.message);
+			return;
+		}
+		this.rejectActivePrompt(new Error(decision.reason));
 	}
 
 	private processUiRequest(message: Record<string, unknown>): void {
@@ -202,14 +228,16 @@ export class CouncilRpcClient {
 		this.writeCommand({ type: "extension_ui_response", id, cancelled: true });
 	}
 
-	private async finishActivePrompt(): Promise<void> {
+	private async finishActivePrompt(
+		assistantMessage: AssistantMessage | undefined,
+	): Promise<void> {
 		const prompt = this.activePrompt;
 		if (prompt === undefined) {
 			return;
 		}
 		this.activePrompt = undefined;
-		if (prompt.lastAssistantMessage !== undefined) {
-			prompt.resolve(prompt.lastAssistantMessage);
+		if (assistantMessage !== undefined) {
+			prompt.resolve(assistantMessage);
 			return;
 		}
 
@@ -233,11 +261,7 @@ export class CouncilRpcClient {
 	}
 
 	private rejectTransportError(error: Error): void {
-		this.rejectActivePrompt(error);
-		for (const [id, pending] of this.pendingCommands) {
-			this.pendingCommands.delete(id);
-			pending.reject(error);
-		}
+		this.handleTransportFailure(error);
 	}
 }
 
@@ -271,8 +295,52 @@ function createAssistantMessage(content: string): AssistantMessage {
 	};
 }
 
+function normalizePromptCompletionEvent(
+	message: Record<string, unknown>,
+): Record<string, unknown> {
+	if (message["type"] !== "message_end") {
+		return message;
+	}
+	const rpcMessage = normalizeAssistantMessage(message["message"]);
+	return rpcMessage === undefined
+		? message
+		: { ...message, message: rpcMessage };
+}
+
+function normalizeAssistantMessage(
+	value: unknown,
+): AssistantMessage | undefined {
+	if (!isAssistantMessage(value)) {
+		return undefined;
+	}
+	const record = value as AssistantMessage & { readonly content: unknown };
+	return typeof record.content === "string"
+		? { ...value, content: [{ type: "text", text: record.content }] }
+		: value;
+}
+
+function isPromptCompletionEvent(message: Record<string, unknown>): boolean {
+	return (
+		message["type"] === "message_end" ||
+		message["type"] === "agent_end" ||
+		message["type"] === "auto_retry_start" ||
+		message["type"] === "auto_retry_end" ||
+		message["type"] === "compaction_end"
+	);
+}
+
 function isAssistantMessage(value: unknown): value is AssistantMessage {
-	return isRecord(value) && value["role"] === "assistant";
+	return (
+		isRecord(value) &&
+		value["role"] === "assistant" &&
+		(typeof value["content"] === "string" || Array.isArray(value["content"])) &&
+		typeof value["api"] === "string" &&
+		typeof value["provider"] === "string" &&
+		typeof value["model"] === "string" &&
+		isRecord(value["usage"]) &&
+		typeof value["stopReason"] === "string" &&
+		typeof value["timestamp"] === "number"
+	);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

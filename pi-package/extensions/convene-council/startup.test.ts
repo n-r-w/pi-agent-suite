@@ -18,8 +18,6 @@ const baseConfig: ConveneCouncilConfig = {
 	finalAnswerParticipant: "llm2",
 	responseDefectRetries: 1,
 	tools: undefined,
-	contextWindowUsageLimit: 0.7,
-	contextSummary: {},
 };
 
 /** Creates the participant runtime used by startup resolver tests. */
@@ -127,10 +125,10 @@ describe("convene-council child startup", () => {
 		});
 	});
 
-	test("maps missing and empty tools to no-tools", () => {
-		// Purpose: missing or empty tools config means participants cannot call tools.
-		// Input and expected output: both missing and empty tools produce --no-tools.
-		// Edge case: empty list is explicit and still shared by both participants.
+	test("always enables read for missing and empty tools", () => {
+		// Purpose: participants must be able to read the temporary context file even without configured tools.
+		// Input and expected output: both missing and empty tools produce --tools read.
+		// Edge case: empty list disables additional tools only, not the mandatory read tool.
 		// Dependencies: pure child argument builder.
 		for (const tools of [undefined, []] as const) {
 			const startup = buildChildParticipantStartup({
@@ -143,17 +141,30 @@ describe("convene-council child startup", () => {
 				systemPrompt: "participant prompt",
 			});
 
-			expect("args" in startup ? startup.args.slice(-1) : startup).toEqual([
-				"--no-tools",
+			expect("args" in startup ? startup.args.slice(-2) : startup).toEqual([
+				"--tools",
+				"read",
 			]);
 		}
 	});
 
-	test("rejects unrestricted and unmatched tool patterns", () => {
-		// Purpose: council tool policy must reuse shared wildcard validation without tool-name exceptions.
-		// Input and expected output: invalid wildcard and missing matches return resolver issues.
-		// Edge case: no tool name receives special handling.
+	test("rejects missing read, unrestricted patterns, and unmatched tool patterns", () => {
+		// Purpose: council tool policy must require read and reuse shared wildcard validation without unrelated tool-name exceptions.
+		// Input and expected output: missing read, invalid wildcard, and missing matches return resolver issues.
+		// Edge case: read is mandatory even when the configured pattern is otherwise valid.
 		// Dependencies: shared tool-policy resolver.
+		expect(
+			buildChildParticipantStartup({
+				plan: { extensionArgs: [], env: {} },
+				config: baseConfig,
+				pi: createPi(["grep"]),
+				runtime: createRuntime(),
+				sessionFile: "/tmp/session/llm1.jsonl",
+				sessionDir: "/tmp/session",
+				systemPrompt: "participant prompt",
+			}),
+		).toEqual({ issue: "required tool read is unavailable" });
+
 		const cases: ReadonlyArray<{
 			readonly tools: readonly string[];
 			readonly issue: string;

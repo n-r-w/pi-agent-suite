@@ -500,7 +500,7 @@ function toParticipantProgressUpdate(
 		return { status: "running", activity: "started" };
 	}
 	if (eventType === "agent_end") {
-		return { status: "succeeded", activity: "finished" };
+		return { status: "succeeded" };
 	}
 	if (eventType === "tool_execution_start") {
 		return toParticipantToolStartProgressUpdate(event);

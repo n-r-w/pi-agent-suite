@@ -31,6 +31,13 @@ import {
 	appendProjectContext,
 	type ProjectContextFile,
 } from "../../shared/project-context-prompt";
+import {
+	buildRetryConfig,
+	createRetryableExternalError,
+	type RetryConfig,
+	validateRetryConfig,
+	withRetry,
+} from "../../shared/retry";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 import {
 	renderConsultAdvisorCall,
@@ -42,6 +49,7 @@ const ISSUE_PREFIX = "[consult-advisor]";
 const CONSULT_ADVISOR_EXTENSION_DIR = "consult-advisor";
 const CONSULT_ADVISOR_LEGACY_CONFIG_FILE = "consult-advisor.json";
 const ENABLED_CONFIG_KEY = "enabled";
+const RETRY_CONFIG_KEY = "retry";
 const ADVISOR_CONTEXT_TOO_LARGE_ERROR = "context is too large";
 
 /** Extension-local prompt used when config does not provide a custom advisor prompt file. */
@@ -84,6 +92,7 @@ interface ConsultAdvisorConfig {
 	readonly model?: { readonly id?: string; readonly thinking?: Thinking };
 	readonly promptFile: string;
 	readonly debugPayloadFile?: string;
+	readonly retry: RetryConfig;
 }
 
 interface AdvisorRuntime {
@@ -227,11 +236,16 @@ async function executeConsultAdvisor({
 		});
 	}
 
-	const answer = await completeSimple(
-		runtimeResult.runtime.model,
+	const answer = await executeAdvisorModelWithRetry({
+		completeSimple,
+		runtime: runtimeResult.runtime,
 		context,
 		options,
-	);
+		retry: configResult.config.retry,
+	});
+	if ("issue" in answer) {
+		return errorResult(answer.issue);
+	}
 	const responseText = getAdvisorResponseText(answer);
 	if (responseText.length === 0) {
 		return errorResult("Advisor returned an empty response.");
@@ -355,6 +369,7 @@ function validateAdvisorConfig(
 			"model",
 			"promptFile",
 			"debugPayloadFile",
+			RETRY_CONFIG_KEY,
 		])
 	) {
 		return { issue: "config contains unsupported keys" };
@@ -368,6 +383,10 @@ function validateAdvisorConfig(
 		const modelResult = validateAdvisorModelConfig(value["model"]);
 		if ("issue" in modelResult) {
 			return modelResult;
+		}
+		const retryIssue = validateRetryConfig(value[RETRY_CONFIG_KEY], "retry");
+		if (retryIssue !== undefined) {
+			return { issue: retryIssue };
 		}
 	}
 
@@ -451,7 +470,13 @@ function buildAdvisorConfig(
 		...(typeof debugPayloadFile === "string"
 			? { debugPayloadFile: resolveConfigPath(configDir, debugPayloadFile) }
 			: {}),
+		retry: buildAdvisorRetryConfig(config[RETRY_CONFIG_KEY]),
 	};
+}
+
+/** Builds advisor retry defaults after retry config validation succeeds. */
+function buildAdvisorRetryConfig(retry: unknown): RetryConfig {
+	return buildRetryConfig(retry);
 }
 
 /** Resolves debug payload paths using the active config directory as the relative base. */
@@ -633,6 +658,41 @@ function formatAdvisorSystemPrompt(
 	contextFiles: readonly ProjectContextFile[],
 ): string {
 	return appendProjectContext(advisorPrompt, contextFiles);
+}
+
+/** Calls the advisor model through p-retry and returns a safe issue when attempts fail. */
+async function executeAdvisorModelWithRetry({
+	completeSimple,
+	runtime,
+	context,
+	options,
+	retry,
+}: {
+	readonly completeSimple: NonNullable<
+		ConsultAdvisorDependencies["completeSimple"]
+	>;
+	readonly runtime: AdvisorRuntime;
+	readonly context: Context;
+	readonly options: SimpleStreamOptions;
+	readonly retry: RetryConfig;
+}): Promise<AssistantMessage | { readonly issue: string }> {
+	try {
+		return await withRetry(
+			async () => {
+				const answer = await completeSimple(runtime.model, context, options);
+				if (answer.stopReason === "error") {
+					throw createRetryableExternalError(
+						answer.errorMessage ?? "advisor provider returned an error",
+					);
+				}
+
+				return answer;
+			},
+			{ retry, signal: options.signal },
+		);
+	} catch (error) {
+		return { issue: `Advisor request failed: ${formatError(error)}` };
+	}
 }
 
 /** Extracts visible text content from the advisor answer. */

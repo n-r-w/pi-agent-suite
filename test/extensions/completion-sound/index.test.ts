@@ -181,6 +181,65 @@ describe("completion-sound", () => {
 		});
 	});
 
+	test("uses configured volume for default macOS playback", async () => {
+		// Purpose: configured volume must affect the built-in macOS playback command.
+		// Input and expected output: volume 50 adds afplay -v 0.5 before the default sound path.
+		// Edge case: volume is expressed as a percentage but afplay expects a multiplier.
+		// Dependencies: this test uses only an in-memory ExtensionAPI fake, temp config file, fake playback sink, and temp agent directory.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { volume: 50 });
+			const playbackCalls: PlaybackCall[] = [];
+			const pi = registerExtension({
+				env: {},
+				playbackCalls,
+				platform: "darwin",
+			});
+
+			await getRegisteredHandler(pi, "agent_end")(
+				createAgentEndEvent(),
+				createSessionContextFake(),
+			);
+
+			expect(playbackCalls).toEqual([
+				{
+					command: "afplay",
+					args: ["-v", "0.5", "/System/Library/Sounds/Glass.aiff"],
+				},
+			]);
+		});
+	});
+
+	test("uses configured volume for default Linux playback", async () => {
+		// Purpose: configured volume must affect the built-in Linux playback command.
+		// Input and expected output: volume 50 adds paplay --volume=32768 before the default sound path.
+		// Edge case: PulseAudio volume uses 65536 as 100 percent.
+		// Dependencies: this test uses only an in-memory ExtensionAPI fake, temp config file, fake playback sink, and temp agent directory.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { volume: 50 });
+			const playbackCalls: PlaybackCall[] = [];
+			const pi = registerExtension({
+				env: {},
+				playbackCalls,
+				platform: "linux",
+			});
+
+			await getRegisteredHandler(pi, "agent_end")(
+				createAgentEndEvent(),
+				createSessionContextFake(),
+			);
+
+			expect(playbackCalls).toEqual([
+				{
+					command: "paplay",
+					args: [
+						"--volume=32768",
+						"/usr/share/sounds/freedesktop/stereo/complete.oga",
+					],
+				},
+			]);
+		});
+	});
+
 	test("does not play when the current process is a child agent process", async () => {
 		// Purpose: child agent completion must not duplicate the top-level completion sound.
 		// Input and expected output: PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1 suppresses playback.
@@ -267,13 +326,14 @@ describe("completion-sound", () => {
 	test("uses configured playback command and arguments", async () => {
 		// Purpose: users must be able to choose the sound player and sound file without changing code.
 		// Input and expected output: configured command and args are passed to the playback dependency.
-		// Edge case: custom config replaces the platform default command and default args.
+		// Edge case: volume does not alter custom command arguments because custom players have no shared volume option.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake, temp config file, fake playback sink, and temp agent directory.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				command: "custom-player",
 				args: ["--volume", "25", "/tmp/done.wav"],
+				volume: 50,
 			});
 			const playbackCalls: PlaybackCall[] = [];
 			const pi = registerExtension({ env: {}, playbackCalls });
@@ -312,6 +372,30 @@ describe("completion-sound", () => {
 			);
 
 			expect(playbackCalls).toEqual([]);
+		});
+	});
+
+	test("does not play and reports invalid config when volume is invalid", async () => {
+		// Purpose: invalid volume must not reach playback with unpredictable player arguments.
+		// Input and expected output: volume above 150 suppresses playback and reports a field-specific warning.
+		// Edge case: volume is an optional field, but when present it must be inside the accepted range.
+		// Dependencies: this test uses only an in-memory ExtensionAPI fake, temp config file, fake playback sink, and fake UI notification sink.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { volume: 151 });
+			const playbackCalls: PlaybackCall[] = [];
+			const ctx = createSessionContextFake();
+			const pi = registerExtension({ env: {}, playbackCalls });
+
+			await getRegisteredHandler(pi, "session_start")({}, ctx);
+			await getRegisteredHandler(pi, "agent_end")(createAgentEndEvent(), ctx);
+
+			expect(playbackCalls).toEqual([]);
+			expect(ctx.notifications).toEqual([
+				{
+					message: "[completion-sound] volume must be a number from 0 to 150",
+					type: "warning",
+				},
+			]);
 		});
 	});
 

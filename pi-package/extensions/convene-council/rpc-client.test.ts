@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { ChildRpcRuntimeFacts } from "../../shared/child-rpc-completion";
 import {
 	COUNCIL_RPC_STDERR_MAX_CHARS,
 	COUNCIL_RPC_STDOUT_SUFFIX_MAX_BYTES,
@@ -48,6 +49,47 @@ function assistantText(message: AssistantMessage): string {
 				.join("");
 }
 
+const BASE_FACTS: ChildRpcRuntimeFacts = {
+	modelProvider: "openai",
+	modelId: "model-a",
+	contextWindow: 1_000,
+	retryEnabled: true,
+	compactionEnabled: true,
+};
+
+/** Creates one complete assistant message for child RPC protocol tests. */
+function assistantMessage(
+	text: string,
+	overrides: Record<string, unknown> = {},
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "test",
+		provider: "openai",
+		model: "model-a",
+		usage: {
+			input: 10,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 11,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 1,
+		...overrides,
+	} as AssistantMessage;
+}
+
+/** Emits one JSONL RPC stdout message through the fake transport. */
+function emitRpc(
+	fake: ReturnType<typeof createTransport>,
+	message: Record<string, unknown>,
+): void {
+	fake.stdout(`${JSON.stringify(message)}\n`);
+}
+
 describe("CouncilRpcClient", () => {
 	test("starts participant prompts without a startup RPC command", async () => {
 		// Purpose: constructing the client must not write child settings through RPC.
@@ -55,7 +97,7 @@ describe("CouncilRpcClient", () => {
 		// Edge case: prompt execution must work without a setup command.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
 
 		expect(fake.writes).toHaveLength(0);
 		const result = client.prompt("first task");
@@ -80,7 +122,7 @@ describe("CouncilRpcClient", () => {
 		// Edge case: tests parse the trimmed command separately from framing.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
 
 		const result = client.prompt("framed task");
 
@@ -101,7 +143,7 @@ describe("CouncilRpcClient", () => {
 		// Edge case: stdout chunks can split valid LF-delimited JSON.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
 
 		const result = client.prompt("review task");
 		const handledResult = result.catch(() => undefined);
@@ -128,6 +170,150 @@ describe("CouncilRpcClient", () => {
 		await completionProbe;
 	});
 
+	test("waits for final agent_end during successful child retry", async () => {
+		// Purpose: participant prompt ownership must survive the non-final agent_end before child auto-retry.
+		// Input and expected output: first retryable agent_end does not resolve; final retry output resolves.
+		// Edge case: auto_retry_end(success=true) is not the prompt boundary.
+		// Dependencies: fake JSONL transport and shared runtime facts.
+		const fake = createTransport();
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
+
+		const result = client.prompt("review task");
+		emitRpc(fake, {
+			type: "response",
+			id: "1",
+			command: "prompt",
+			success: true,
+		});
+		emitRpc(fake, {
+			type: "message_end",
+			message: assistantMessage("temporary failure", {
+				stopReason: "error",
+				errorMessage: "server error 500",
+			}),
+		});
+		emitRpc(fake, { type: "agent_end" });
+		let completed = false;
+		const completionProbe = result.then(() => {
+			completed = true;
+		});
+		await Promise.resolve();
+		expect(completed).toBe(false);
+
+		emitRpc(fake, { type: "auto_retry_start", attempt: 1 });
+		emitRpc(fake, {
+			type: "message_end",
+			message: assistantMessage("retry answer"),
+		});
+		emitRpc(fake, { type: "auto_retry_end", success: true });
+		await Promise.resolve();
+		expect(completed).toBe(false);
+		emitRpc(fake, { type: "agent_end" });
+
+		expect(assistantText(await result)).toBe("retry answer");
+		await completionProbe;
+	});
+
+	test("rejects participant prompt after child retry failure", async () => {
+		// Purpose: exhausted child auto-retry is a terminal participant failure.
+		// Input and expected output: auto_retry_end(success=false) rejects and clears the active prompt.
+		// Edge case: a later prompt can be started after the failed prompt is cleared.
+		// Dependencies: fake JSONL transport and shared runtime facts.
+		const fake = createTransport();
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
+
+		const result = client.prompt("review task");
+		emitRpc(fake, {
+			type: "response",
+			id: "1",
+			command: "prompt",
+			success: true,
+		});
+		emitRpc(fake, {
+			type: "message_end",
+			message: assistantMessage("temporary failure", {
+				stopReason: "error",
+				errorMessage: "server error 500",
+			}),
+		});
+		emitRpc(fake, { type: "agent_end" });
+		emitRpc(fake, {
+			type: "auto_retry_end",
+			success: false,
+			finalError: "retry exhausted",
+		});
+
+		await expect(result).rejects.toThrow("retry exhausted");
+		const next = client.prompt("next task");
+		emitRpc(fake, {
+			type: "response",
+			id: "2",
+			command: "prompt",
+			success: false,
+			error: "next rejected",
+		});
+		await expect(next).rejects.toThrow("next rejected");
+	});
+
+	test("keeps participant prompt active during overflow compaction", async () => {
+		// Purpose: overflow compaction has a non-final agent_end before continuation.
+		// Input and expected output: overflow agent_end does not resolve; final post-compaction output resolves.
+		// Edge case: silent stop overflow is classified through usage and contextWindow.
+		// Dependencies: fake JSONL transport and shared runtime facts.
+		const fake = createTransport();
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
+
+		const result = client.prompt("review task");
+		emitRpc(fake, {
+			type: "response",
+			id: "1",
+			command: "prompt",
+			success: true,
+		});
+		emitRpc(fake, {
+			type: "message_end",
+			message: assistantMessage("overflow", {
+				usage: {
+					input: 1_001,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 1_002,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			}),
+		});
+		emitRpc(fake, { type: "agent_end" });
+		let completed = false;
+		const completionProbe = result.then(() => {
+			completed = true;
+		});
+		await Promise.resolve();
+		expect(completed).toBe(false);
+		const overlapping = client.prompt("overlapping task");
+		let overlappingRejected = false;
+		overlapping.catch(() => {
+			overlappingRejected = true;
+		});
+		await Promise.resolve();
+		expect(overlappingRejected).toBe(true);
+
+		emitRpc(fake, {
+			type: "compaction_end",
+			reason: "overflow",
+			willRetry: true,
+			aborted: false,
+		});
+		emitRpc(fake, {
+			type: "message_end",
+			message: assistantMessage("after compaction"),
+		});
+		emitRpc(fake, { type: "agent_end" });
+
+		expect(assistantText(await result)).toBe("after compaction");
+		await completionProbe;
+	});
+
 	test("emits child session events without exposing command responses", async () => {
 		// Purpose: live council progress needs child session events while command responses remain protocol-only.
 		// Input and expected output: tool and agent events reach the callback, response records do not.
@@ -135,7 +321,7 @@ describe("CouncilRpcClient", () => {
 		// Dependencies: fake JSONL transport and callback capture.
 		const fake = createTransport();
 		const events: unknown[] = [];
-		const client = new CouncilRpcClient(fake.transport, (event) => {
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS, (event) => {
 			events.push(event);
 		});
 
@@ -207,7 +393,7 @@ describe("CouncilRpcClient", () => {
 		// Dependencies: fake JSONL transport and callback capture.
 		const fake = createTransport();
 		const events: unknown[] = [];
-		const client = new CouncilRpcClient(fake.transport, (event) => {
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS, (event) => {
 			events.push(event);
 		});
 
@@ -286,7 +472,7 @@ describe("CouncilRpcClient", () => {
 		// Edge case: fallback command response is correlated by id.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
 
 		const result = client.prompt("final task");
 		const handledResult = result.catch(() => undefined);
@@ -305,13 +491,66 @@ describe("CouncilRpcClient", () => {
 		await handledResult;
 	});
 
+	test("uses fallback text after malformed assistant message_end", async () => {
+		// Purpose: malformed assistant payloads must not become trusted participant output.
+		// Input and expected output: role-only message_end is ignored and fallback text is returned.
+		// Edge case: malformed payload arrives before final agent_end.
+		// Dependencies: fake JSONL transport.
+		const fake = createTransport();
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
+
+		const result = client.prompt("final task");
+		const handledResult = result.catch(() => undefined);
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
+		);
+		emitRpc(fake, { type: "message_end", message: { role: "assistant" } });
+		emitRpc(fake, { type: "agent_end" });
+		expect(writtenCommand(fake.writes[1] ?? "{}")).toMatchObject({
+			type: "get_last_assistant_text",
+		});
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "2", command: "get_last_assistant_text", success: true, data: { text: "fallback after malformed" } })}\n`,
+		);
+
+		expect(assistantText(await result)).toBe("fallback after malformed");
+		await handledResult;
+	});
+
+	test("uses fallback text after assistant message_end without api", async () => {
+		// Purpose: assistant payloads must include api before becoming trusted participant output.
+		// Input and expected output: message without api is ignored and fallback text is returned.
+		// Edge case: all other assistant fields are present.
+		// Dependencies: fake JSONL transport.
+		const fake = createTransport();
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
+		const { api: _api, ...messageWithoutApi } = assistantMessage("missing api");
+
+		const result = client.prompt("final task");
+		const handledResult = result.catch(() => undefined);
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
+		);
+		emitRpc(fake, { type: "message_end", message: messageWithoutApi });
+		emitRpc(fake, { type: "agent_end" });
+		expect(writtenCommand(fake.writes[1] ?? "{}")).toMatchObject({
+			type: "get_last_assistant_text",
+		});
+		fake.stdout(
+			`${JSON.stringify({ type: "response", id: "2", command: "get_last_assistant_text", success: true, data: { text: "fallback without api" } })}\n`,
+		);
+
+		expect(assistantText(await result)).toBe("fallback without api");
+		await handledResult;
+	});
+
 	test("clears the active prompt when prompt acceptance fails", async () => {
 		// Purpose: one failed prompt command must not permanently block later prompts.
 		// Input and expected output: first prompt rejects; second prompt writes a new prompt command.
 		// Edge case: active prompt is cleared from the prompt response failure path.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
 
 		const first = client.prompt("first");
 		fake.stdout(
@@ -336,7 +575,7 @@ describe("CouncilRpcClient", () => {
 		// Edge case: abort is fire-and-forget and has no pending response.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
 
 		client.abort();
 
@@ -351,7 +590,7 @@ describe("CouncilRpcClient", () => {
 		// Edge case: each request id receives a matching response.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		new CouncilRpcClient(fake.transport);
+		new CouncilRpcClient(fake.transport, BASE_FACTS);
 
 		fake.stdout(
 			`${JSON.stringify({ type: "extension_ui_request", id: "confirm-id", method: "confirm" })}\n`,
@@ -378,7 +617,7 @@ describe("CouncilRpcClient", () => {
 		// Edge case: records can arrive split across chunks.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
-		const client = new CouncilRpcClient(fake.transport);
+		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
 		const result = client.prompt("diagnostic task");
 		const record = JSON.stringify({
 			type: "response",

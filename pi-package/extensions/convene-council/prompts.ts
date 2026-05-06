@@ -35,9 +35,9 @@ export function buildParticipantSystemPrompt(
 /** Builds the first-turn task with the original question and parent-session evidence. */
 export function buildInitialOpinionTask(
 	question: string,
-	externalContextPackage: string,
+	contextFilePath: string,
 ): string {
-	return `${renderTemplate(INITIAL_OPINION_PROMPT, { question })}\n\n${externalContextPackage}`;
+	return renderTemplate(INITIAL_OPINION_PROMPT, { question, contextFilePath });
 }
 
 /** Builds a normal opponent-opinion review task. */

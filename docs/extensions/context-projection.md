@@ -15,9 +15,9 @@ Projection changes only the provider context for the current request. It does no
 - Is disabled by default.
 - Leaves provider context unchanged when the config file is missing.
 - Treats missing `~/.pi/agent/agent-suite/context-projection/config.json` as a normal disabled state, not as an error.
-- Leaves provider context unchanged when configuration is invalid, except non-absolute summary prompt paths stop startup.
+- Leaves provider context unchanged when configuration is invalid, except non-absolute summary prompt paths and invalid projection level ordering stop startup.
 - Computes `remainingTokens = contextWindow - tokens` from projection-aware context usage.
-- Runs projection only when projection-aware `remainingTokens <= projectionRemainingTokens`.
+- Runs projection only when projection-aware `remainingTokens` is at or below an active projection level threshold.
 - Maps provider-context messages back to active branch entries before changing messages.
 - Skips projection when provider-context messages do not exactly match active branch entries.
 - Projects only messages with `role: "toolResult"`.
@@ -25,7 +25,7 @@ Projection changes only the provider context for the current request. It does no
 - Projects only text-only tool result content.
 - Projects only non-critical tool results.
 - Treats `read` tool results for loaded skill-owned files as critical.
-- Projects only tool results whose combined token count is at least `minToolResultTokens`.
+- Projects only tool results whose combined token count is at least the active projection level's `minToolResultTokensL1`, `minToolResultTokensL2`, or `minToolResultTokensL3` value.
 - Keeps recent tool-use turns unprojected by using `keepRecentTurns` and `keepRecentTurnsPercent`.
 - Replaces only the `content` field of an eligible `toolResult`.
 - Preserves `role`, `toolCallId`, `toolName`, `isError`, `timestamp`, and `details`.
@@ -168,7 +168,7 @@ Critical skill-owned paths include:
 - files under `scripts/`;
 - any other file under the loaded skill root.
 
-Critical skill-owned `read` tool results are not projected, even when they are old, successful, text-only, and at or above `minToolResultTokens`.
+Critical skill-owned `read` tool results are not projected, even when they are old, successful, text-only, and at or above the active projection level's minimum tool-result token count.
 
 A previously stored projection state entry does not override critical protection. If a tool result is now classified as critical, it remains unprojected for the current provider request.
 
@@ -189,7 +189,7 @@ Footer `N` is calculated across all currently projected entries in the active br
 
 Footer context usage, context-overflow checks, and projection threshold checks use projection-aware context usage while provider usage is stale after projection. This prevents provider errors from temporarily showing or acting on the larger pre-projection context size.
 
-When a new projection operation starts, the UI-only chat status shows progress as `Projecting context: X/Y tool results processed`. After completion, it shows `Context projected: ~N saved`, where `N` is the additional token count saved by the latest operation only. This completion value does not include entries projected earlier in the session.
+When a new projection operation starts, the UI-only chat status shows progress as `Projecting context: L2, X/Y tool results processed`. After completion, it shows `Context projected: L2, ~N saved`, where `L2` is the active projection level and `N` is the additional token count saved by the latest operation only. This completion value does not include entries projected earlier in the session.
 
 ## Configuration
 
@@ -198,10 +198,14 @@ File: `~/.pi/agent/agent-suite/context-projection/config.json`.
 ```json
 {
   "enabled": true,
-  "projectionRemainingTokens": 49152,
+  "projectionRemainingTokensL1": 70000,
+  "minToolResultTokensL1": 4000,
+  "projectionRemainingTokensL2": 50000,
+  "minToolResultTokensL2": 2000,
+  "projectionRemainingTokensL3": 30000,
+  "minToolResultTokensL3": 1000,
   "keepRecentTurns": 10,
   "keepRecentTurnsPercent": 0.2,
-  "minToolResultTokens": 2000,
   "projectionIgnoredTools": [],
   "placeholder": "[Result omitted. Run tool again if you want to see it]",
   "summary": {
@@ -222,10 +226,12 @@ All fields are optional.
 Rules:
 
 - `enabled` must be a boolean value when present.
-- `projectionRemainingTokens` must be a non-negative integer when present.
+- `projectionRemainingTokensL1`, `projectionRemainingTokensL2`, and `projectionRemainingTokensL3` must be non-negative integers when present.
+- `projectionRemainingTokensL1 >= projectionRemainingTokensL2 >= projectionRemainingTokensL3`; violating this order stops startup.
+- Equal remaining-token level values use the minimum tool-result token value from the equal-threshold group.
+- `minToolResultTokensL1`, `minToolResultTokensL2`, and `minToolResultTokensL3` must be non-negative integers when present.
 - `keepRecentTurns` must be a non-negative integer when present.
 - `keepRecentTurnsPercent` must be a number from `0` to `1` when present.
-- `minToolResultTokens` must be a non-negative integer when present.
 - `projectionIgnoredTools` must be a duplicate-free array of non-empty strings when present.
 - `consult_advisor` and `convene_council` results always stay visible even when `projectionIgnoredTools` does not list them.
 - `placeholder` must be a non-empty string after whitespace is ignored.
@@ -240,7 +246,7 @@ Rules:
 - `summary.userPromptFile` must be `null` or an absolute path when present.
 - Unsupported keys make the configuration invalid.
 - Missing config file disables projection and is not an error.
-- Invalid configuration disables projection, except non-absolute summary prompt paths stop startup.
+- Invalid configuration disables projection, except non-absolute summary prompt paths and invalid projection level ordering stop startup.
 
 ## Tuning
 
@@ -248,9 +254,9 @@ Use larger `keepRecentTurns` when recent tool output remains important for sever
 
 Use larger `keepRecentTurnsPercent` when long sessions need a wider recent context window.
 
-Use larger `minToolResultTokens` when projection removes too many medium-size outputs.
+Use larger `minToolResultTokensL1`, `minToolResultTokensL2`, or `minToolResultTokensL3` when projection removes too many medium-size outputs at that level.
 
-Use smaller `projectionRemainingTokens` when projection starts too early.
+Use smaller `projectionRemainingTokensL1`, `projectionRemainingTokensL2`, or `projectionRemainingTokensL3` when projection starts too early at that level.
 
 Use a short placeholder. Do not say that the model can read omitted content from session history. The model only sees the current provider context.
 
@@ -274,11 +280,11 @@ Projection may not happen when:
 - configuration is invalid;
 - context usage is unavailable;
 - `tokens` is `null`;
-- `remainingTokens > projectionRemainingTokens`;
+- `remainingTokens` is above `projectionRemainingTokensL1`;
 - the tool result is failed;
 - the tool result has non-text content;
 - the tool result is a critical skill-owned `read` result;
-- the tool result is shorter than `minToolResultTokens`;
+- the tool result is shorter than the active level's minimum tool-result token count;
 - the tool result belongs to a protected recent tool-use turn;
 - provider-context messages cannot be exactly mapped to active branch entries.
 
@@ -305,7 +311,12 @@ Tests must verify:
 
 - no projection when the config file is missing;
 - fail-closed behavior for invalid configuration;
-- no projection when remaining tokens are above `projectionRemainingTokens`;
+- defaults for all projection level fields;
+- rejection of old single-level projection keys;
+- startup failure when projection level ordering is invalid;
+- active projection level selection for L1, L2, and L3;
+- equal-threshold projection levels using the lowest matching minimum tool-result threshold;
+- no projection when remaining tokens are above `projectionRemainingTokensL1`;
 - projection of eligible old successful text-only non-critical tool results;
 - no projection for loaded skill-owned `read` results;
 - no projection from previously stored projection state when the result is now classified as critical;
@@ -336,6 +347,7 @@ Tests must verify:
 - pending projection savings clearing after disabled, invalid, and fatal invalid configuration;
 - pending projection savings rebuild when valid configuration returns before provider usage catches up;
 - projection-aware threshold decisions while provider usage is stale;
+- summary replacement pass using the same active projection level as the initial projection pass;
 - loaded skill root changes recomputing pending projection savings;
 - `session_tree` branch switch clearing live pending savings from the previous branch;
 - failed projection state append invalidating projection payloads before replay or projection-aware usage can use them.

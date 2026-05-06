@@ -1,6 +1,11 @@
 import { Buffer } from "node:buffer";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
+import {
+	buildRetryConfig,
+	createRetryableExternalError,
+	withRetry,
+} from "../../shared/retry";
 
 /** Footer status key owned by the Codex quota extension. */
 const STATUS_KEY = "codex-quota";
@@ -100,12 +105,6 @@ interface QuotaConfig {
 	readonly refreshIntervalSeconds: number;
 	readonly retryAttempts: number;
 	readonly retryIntervalSeconds: number;
-}
-
-interface QuotaRetryContext {
-	readonly auth: Extract<CodexAuthResult, { readonly kind: "available" }>;
-	readonly signal: AbortSignal;
-	readonly config: QuotaConfig;
 }
 
 type CodexAuthResult =
@@ -226,10 +225,7 @@ export default function codexQuota(pi: ExtensionAPI): void {
 		}
 
 		session.ui.setStatus(STATUS_KEY, renderLoadingStatus());
-		await startRefresh(session, generation, quotaConfig);
-		if (generation !== activeGeneration) {
-			return;
-		}
+		startRefresh(session, generation, quotaConfig).catch(() => {});
 
 		refreshTimer = setInterval(() => {
 			startRefresh(session, generation, quotaConfig).catch(() => {});
@@ -472,15 +468,24 @@ async function fetchQuotaUsageWithRetry(
 	signal: AbortSignal,
 	config: QuotaConfig,
 ): Promise<Response> {
-	return fetchQuotaUsageAttempt({ auth, signal, config }, 1);
+	return withRetry(() => fetchQuotaUsageAttempt(auth, signal), {
+		retry: buildRetryConfig(
+			{
+				maxRetries: config.retryAttempts - 1,
+				baseDelayMs: config.retryIntervalSeconds * SECOND_MS,
+			},
+			{ maxRetries: DEFAULT_RETRY_ATTEMPTS - 1 },
+		),
+		signal,
+		factor: 1,
+	});
 }
 
-/** Performs one quota request attempt and schedules the next retry when needed. */
+/** Performs one quota request attempt and marks retryable failures for shared retry handling. */
 async function fetchQuotaUsageAttempt(
-	context: QuotaRetryContext,
-	attempt: number,
+	auth: Extract<CodexAuthResult, { readonly kind: "available" }>,
+	signal: AbortSignal,
 ): Promise<Response> {
-	const { auth, signal } = context;
 	try {
 		const response = await fetch(CODEX_QUOTA_URL, {
 			method: "GET",
@@ -497,59 +502,16 @@ async function fetchQuotaUsageAttempt(
 			return response;
 		}
 
-		return retryQuotaUsageAttempt(
-			context,
-			attempt,
-			new Error(`quota request failed with status ${response.status}`),
+		throw createRetryableExternalError(
+			`quota request failed with status ${response.status}`,
 		);
 	} catch (error) {
 		if (signal.aborted || isAbortError(error)) {
 			throw error;
 		}
 
-		return retryQuotaUsageAttempt(context, attempt, error);
+		throw createRetryableExternalError("quota request failed", error);
 	}
-}
-
-/** Waits for the retry interval or throws after the configured attempts are exhausted. */
-async function retryQuotaUsageAttempt(
-	context: QuotaRetryContext,
-	attempt: number,
-	lastError: unknown,
-): Promise<Response> {
-	const { signal, config } = context;
-	if (attempt >= config.retryAttempts) {
-		throw lastError instanceof Error
-			? lastError
-			: new Error("quota request failed");
-	}
-
-	await waitForRetry(config.retryIntervalSeconds * SECOND_MS, signal);
-	return fetchQuotaUsageAttempt(context, attempt + 1);
-}
-
-/** Waits before the next retry and wakes early when the session is aborted. */
-async function waitForRetry(
-	delayMs: number,
-	signal: AbortSignal,
-): Promise<void> {
-	if (signal.aborted) {
-		throw new DOMException("quota refresh aborted", "AbortError");
-	}
-
-	await new Promise<void>((resolve, reject) => {
-		const timeout = setTimeout(() => {
-			signal.removeEventListener("abort", handleAbort);
-			resolve();
-		}, delayMs);
-
-		function handleAbort(): void {
-			clearTimeout(timeout);
-			reject(new DOMException("quota refresh aborted", "AbortError"));
-		}
-
-		signal.addEventListener("abort", handleAbort, { once: true });
-	});
 }
 
 /** Reads pi-managed Codex OAuth and returns the headers required by the usage endpoint. */
@@ -705,9 +667,16 @@ function formatDuration(totalSeconds: number): string {
 	const safeSeconds = Math.max(0, Math.floor(totalSeconds));
 	const days = Math.floor(safeSeconds / DAY_SECONDS);
 	const hours = Math.floor((safeSeconds % DAY_SECONDS) / HOUR_SECONDS);
-	const minutes = Math.floor((safeSeconds % HOUR_SECONDS) / MINUTE_SECONDS);
 
 	if (days > 0) {
+		const hasRemainingSeconds = safeSeconds % HOUR_SECONDS > 0;
+		if (hours > 0) {
+			return `${days}d${hours}h`;
+		}
+		if (hasRemainingSeconds) {
+			return `${days}d1h`;
+		}
+
 		return `${days}d`;
 	}
 
@@ -715,7 +684,7 @@ function formatDuration(totalSeconds: number): string {
 		return `${hours}h`;
 	}
 
-	return `${minutes}m`;
+	return `${Math.ceil(safeSeconds / MINUTE_SECONDS)}m`;
 }
 
 /** Reports invalid config without interrupting other extensions or the footer. */

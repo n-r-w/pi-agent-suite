@@ -16,6 +16,7 @@ const DISABLED_CHILD_RESOURCE_ARGS = [
 	"--no-prompt-templates",
 	"--no-themes",
 ] as const;
+const REQUIRED_READ_TOOL_NAME = "read";
 
 /** Contains child startup inputs that must be resolved before sessions are created. */
 export interface ChildStartupPlan {
@@ -106,10 +107,6 @@ export function resolveCouncilToolArgs(
 	config: ConveneCouncilConfig,
 	pi: Pick<ExtensionAPI, "getAllTools">,
 ): { readonly args: readonly string[] } | { readonly issue: string } {
-	if (config.tools === undefined || config.tools.length === 0) {
-		return { args: ["--no-tools"] };
-	}
-
 	return resolveCouncilToolArgsForNames(
 		config,
 		pi.getAllTools().map((tool) => tool.name),
@@ -121,15 +118,27 @@ export function resolveCouncilToolArgsForNames(
 	config: ConveneCouncilConfig,
 	availableToolNames: readonly string[],
 ): { readonly args: readonly string[] } | { readonly issue: string } {
+	if (!availableToolNames.includes(REQUIRED_READ_TOOL_NAME)) {
+		return { issue: "required tool read is unavailable" };
+	}
+
 	if (config.tools === undefined || config.tools.length === 0) {
-		return { args: ["--no-tools"] };
+		return { args: ["--tools", REQUIRED_READ_TOOL_NAME] };
 	}
 
 	const resolved = resolveToolPolicy(config.tools, availableToolNames);
 	if ("issue" in resolved) {
 		return resolved;
 	}
-	return { args: ["--tools", resolved.tools.join(",")] };
+	return {
+		args: [
+			"--tools",
+			[
+				REQUIRED_READ_TOOL_NAME,
+				...resolved.tools.filter((tool) => tool !== REQUIRED_READ_TOOL_NAME),
+			].join(","),
+		],
+	};
 }
 
 /** Collects parent extension flags that can be passed directly to child pi. */

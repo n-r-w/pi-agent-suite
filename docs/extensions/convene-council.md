@@ -15,22 +15,26 @@ Use it when a high-impact question benefits from two model participants comparin
 - Uses the current session model for each participant when that participant has no configured model ID.
 - Uses the current thinking level for each participant when that participant has no configured thinking level.
 - Allows LLM1 and LLM2 to use the same model or different configured models.
-- Builds one external `<context>` package from active branch conversation messages.
-- Treats `<context>` as external evidence, not participant session memory, tool availability, or instructions.
-- Replays recorded `context-projection` placeholders or summaries before rendering `<context>`.
-- Removes only the current pending `convene_council` tool call and matching result from `<context>`.
-- Keeps previous completed `convene_council` results in `<context>` as prior evidence.
-- Sends the same `<context>` package to LLM1 and LLM2 in the first participant prompt only.
+- Builds one context file from decision-relevant raw active-branch entries returned by `ctx.sessionManager.getBranch()`.
+- Treats the context file as external evidence, not participant session memory, tool availability, or instructions.
+- Does not replay recorded `context-projection` placeholders, compaction summaries, or branch summaries for council participant context.
+- Removes only the current pending `convene_council` tool call and matching result from the context file.
+- Keeps previous completed `convene_council` results in the context file as prior evidence.
+- Sends the same temporary context file path to LLM1 and LLM2 in the first participant prompt only.
+- Requires participants to read the temporary context file with `read` before giving an opinion.
+- Instructs participants to continue reading with `offset` when the `read` result is truncated or more content remains.
+- Deletes the temporary context file after success, failure, abort, participant startup failure, or participant prompt failure.
 - Does not seed participant sessions with main-agent conversation messages.
 - Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to participant system prompts.
 - Starts isolated child `pi --mode rpc` sessions for participant prompts.
 - Passes `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1` to each participant child process.
-- Shares only tools configured by `tools` with each participant.
+- Always shares the `read` tool with each participant.
+- Shares tools configured by `tools` as additional participant tools.
 - Adds the selected participant tool names to each participant system prompt.
-- Instructs participants that current runtime tool access overrides historical tool-access claims inside Project Context and `<context>`.
+- Instructs participants that current runtime tool access overrides historical tool-access claims inside Project Context and the context file.
 - Allows participants to use configured tools only to gather evidence for the council question.
-- Instructs participants to use relevant available tools before concluding on facts not established by `<context>` or prior tool evidence.
-- Sends no tools to participants when `tools` is missing or empty.
+- Instructs participants to use relevant available tools before concluding on facts not established by the context file or prior tool evidence.
+- Sends only `read` to participants when `tools` is missing or empty.
 - Sends the council question through the first-turn task prompt.
 - Starts independent first-turn participant calls in parallel.
 - Accepts first-turn participant opinions as non-empty text.
@@ -58,9 +62,8 @@ Use it when a high-impact question benefits from two model participants comparin
 - Does not show raw transcripts, provider payloads, token deltas, or unbounded intermediate answers in progress rows.
 - Publishes prompt guidance through `Agent Runtime Composition` only when `convene_council` is active for the current effective agent.
 - Does not call `pi.setActiveTools()` directly.
-- Estimates first participant requests before child startup. The estimate includes the participant system prompt, first task prompt, external `<context>`, and configured tool schemas.
-- Summarizes only the external `<context>` package with Pi `generateSummary(...)` when the first request exceeds `contextWindowUsageLimit`.
-- Fails before child startup when summary input cannot fit the summary model or when the summarized first request still exceeds the participant limit.
+- Returns a tool error before participant startup when the runtime does not expose `read`.
+- Does not summarize or budget inline council context before child startup.
 - Does not own main-agent selection, `run_subagent`, or `consult_advisor`.
 
 ## Configuration
@@ -85,14 +88,7 @@ File: `~/.pi/agent/agent-suite/convene-council/config.json`.
   "participantIterationLimit": 3,
   "finalAnswerParticipant": "llm2",
   "responseDefectRetries": 1,
-  "tools": ["read", "grep"],
-  "contextWindowUsageLimit": 0.7,
-  "contextSummary": {
-    "model": {
-      "id": "provider/summary-model",
-      "thinking": "medium"
-    }
-  }
+  "tools": ["grep"]
 }
 ```
 
@@ -108,10 +104,7 @@ Options:
 - `participantIterationLimit`: default `3`. Must be a positive integer.
 - `finalAnswerParticipant`: default `llm2`. Allowed values: `llm1`, `llm2`.
 - `responseDefectRetries`: default `1`. Must be a non-negative integer.
-- `tools`: optional array of non-empty tool-name patterns. Missing or empty means participants receive no tools. Exact tool names and constrained wildcard patterns are allowed. Full wildcard `*` is rejected.
-- `contextWindowUsageLimit`: default `0.7`. Must be greater than `0` and less than or equal to `1`. The limit is applied to each participant model context window before child startup.
-- `contextSummary.model.id`: optional `provider/model` string. Uses the current model when missing and summarization is needed.
-- `contextSummary.model.thinking`: optional thinking level. Uses the current thinking level when missing and summarization is needed.
+- `tools`: optional array of non-empty tool-name patterns for additional participant tools. Participants always receive `read`. Missing or empty means participants receive only `read`. Exact tool names and constrained wildcard patterns are allowed. Full wildcard `*` is rejected.
 
 Allowed thinking values:
 

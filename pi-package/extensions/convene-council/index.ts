@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
-import { collectLoadedSkillRoots } from "../../shared/context-projection";
 import { readConveneCouncilRegistrationState } from "./config";
 import { TOOL_NAME } from "./constants";
 import { executeConveneCouncil } from "./loop";
@@ -40,14 +39,11 @@ export default function conveneCouncil(
 
 	const createParticipantRunner =
 		dependencies.createParticipantRunner ?? createRpcParticipantRunner;
-	const generateContextSummary = dependencies.generateContextSummary;
 	const resolveStartupPlan =
 		dependencies.resolveStartupPlan ?? resolveChildStartupPlan;
-	let loadedSkillRoots: readonly string[] = [];
 	let contextFiles: readonly ProjectContextFile[] = [];
 
 	pi.on("before_agent_start", (event) => {
-		loadedSkillRoots = collectLoadedSkillRoots(event);
 		contextFiles = event.systemPromptOptions?.contextFiles ?? [];
 	});
 
@@ -69,16 +65,12 @@ export default function conveneCouncil(
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
 			return executeConveneCouncil({
 				createParticipantRunner,
-				...(generateContextSummary === undefined
-					? {}
-					: { generateContextSummary }),
 				resolveStartupPlan,
 				toolCallId,
 				params: params as ConveneCouncilParams,
 				signal,
 				ctx: ctx as CouncilContext,
 				currentThinkingLevel: pi.getThinkingLevel(),
-				loadedSkillRoots,
 				contextFiles,
 				availableTools: pi.getAllTools(),
 				...(onUpdate !== undefined ? { onUpdate } : {}),

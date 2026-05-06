@@ -11,6 +11,7 @@ import {
 	getProjectionAwareContextUsage,
 	type MappedContextEntry,
 	projectContextMessages,
+	readContextProjectionConfig,
 	replayContextProjection,
 	resetPendingProjectionSavings,
 	setPendingProjectionSavings,
@@ -20,12 +21,16 @@ const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const CUSTOM_TYPE = "context-projection";
 const PLACEHOLDER = "[projected]";
+const PROJECTION_LEVEL = {
+	label: "L1",
+	remainingTokens: 100_000,
+	minToolResultTokens: 0,
+} as const;
 const PROJECTION_CONFIG: ContextProjectionConfig = {
 	enabled: true,
-	projectionRemainingTokens: 100_000,
+	projectionLevels: [PROJECTION_LEVEL, PROJECTION_LEVEL, PROJECTION_LEVEL],
 	keepRecentTurns: 0,
 	keepRecentTurnsPercent: 0,
-	minToolResultTokens: 0,
 	projectionIgnoredTools: [],
 	placeholder: PLACEHOLDER,
 	summary: {
@@ -158,6 +163,148 @@ function toolResultMessage(
 		timestamp: 3,
 	};
 }
+
+describe("context projection config", () => {
+	test("uses defaults for all three projection levels", async () => {
+		// Purpose: enabled config may omit level fields and still use the documented default projection thresholds.
+		// Input and expected output: enabled-only config produces the complete normalized internal level tuple.
+		// Edge case: missing config still disables projection, so this test writes an explicit enabled config.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+
+			const config = await readContextProjectionConfig();
+
+			expect(config).toEqual({
+				kind: "valid",
+				config: {
+					enabled: true,
+					projectionLevels: [
+						{
+							label: "L1",
+							remainingTokens: 70_000,
+							minToolResultTokens: 4_000,
+						},
+						{
+							label: "L2",
+							remainingTokens: 50_000,
+							minToolResultTokens: 2_000,
+						},
+						{
+							label: "L3",
+							remainingTokens: 30_000,
+							minToolResultTokens: 1_000,
+						},
+					],
+					keepRecentTurns: 10,
+					keepRecentTurnsPercent: 0.2,
+					projectionIgnoredTools: [],
+					placeholder: "[Result omitted. Run tool again if you want to see it]",
+					summary: {
+						enabled: false,
+						maxConcurrency: 1,
+						retryCount: 1,
+						retryDelayMs: 5_000,
+					},
+				},
+			});
+		});
+	});
+
+	test("rejects old single-level projection config keys", async () => {
+		// Purpose: the new config contract must not silently accept removed single-level keys.
+		// Input and expected output: each old key makes the config invalid.
+		// Edge case: the config also contains enabled true, so invalidity is caused by unsupported keys only.
+		// Dependencies: isolated config file and shared config reader.
+		for (const oldKey of ["projectionRemainingTokens", "minToolResultTokens"]) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, {
+					enabled: true,
+					[oldKey]: 1,
+				});
+
+				expect(await readContextProjectionConfig()).toEqual({
+					kind: "invalid",
+				});
+			});
+		}
+	});
+
+	test("keeps disabled config disabled when unrelated fields are invalid", async () => {
+		// Purpose: disabled projection must not fail startup because of invalid fields that are ignored while disabled.
+		// Input and expected output: invalid summary, placeholder, and recent-turn values still return disabled when projection levels are ordered.
+		// Edge case: projection level order is still validated before returning disabled.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: false,
+				keepRecentTurns: "invalid",
+				placeholder: "",
+				summary: {
+					enabled: true,
+					systemPromptFile: "relative.md",
+				},
+			});
+
+			expect(await readContextProjectionConfig()).toEqual({ kind: "disabled" });
+		});
+	});
+
+	test("normalizes equal projection thresholds to the lowest matching tool-result threshold", async () => {
+		// Purpose: levels with the same remaining-token threshold must use the least restrictive tool-result minimum for that threshold.
+		// Input and expected output: L2=L3 and L1=L2=L3 groups copy the minimum token threshold to every level in the group.
+		// Edge case: the levels remain ordered because equality is allowed.
+		// Dependencies: isolated config file and shared config reader.
+		const cases = [
+			{
+				config: {
+					enabled: true,
+					projectionRemainingTokensL1: 100,
+					minToolResultTokensL1: 30,
+					projectionRemainingTokensL2: 50,
+					minToolResultTokensL2: 20,
+					projectionRemainingTokensL3: 50,
+					minToolResultTokensL3: 10,
+				},
+				expectedLevels: [
+					{ label: "L1", remainingTokens: 100, minToolResultTokens: 30 },
+					{ label: "L2", remainingTokens: 50, minToolResultTokens: 10 },
+					{ label: "L3", remainingTokens: 50, minToolResultTokens: 10 },
+				],
+			},
+			{
+				config: {
+					enabled: true,
+					projectionRemainingTokensL1: 100,
+					minToolResultTokensL1: 30,
+					projectionRemainingTokensL2: 100,
+					minToolResultTokensL2: 20,
+					projectionRemainingTokensL3: 100,
+					minToolResultTokensL3: 10,
+				},
+				expectedLevels: [
+					{ label: "L1", remainingTokens: 100, minToolResultTokens: 10 },
+					{ label: "L2", remainingTokens: 100, minToolResultTokens: 10 },
+					{ label: "L3", remainingTokens: 100, minToolResultTokens: 10 },
+				],
+			},
+		] as const;
+
+		for (const testCase of cases) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, testCase.config);
+
+				const config = await readContextProjectionConfig();
+
+				expect(config.kind).toBe("valid");
+				if (config.kind !== "valid") {
+					throw new Error("expected valid projection config");
+				}
+				expect(config.config.projectionLevels).toEqual(testCase.expectedLevels);
+			});
+		}
+	});
+});
 
 describe("projection-aware context usage", () => {
 	test("subtracts only pending projection savings from known context usage", () => {
@@ -453,7 +600,7 @@ describe("context projection replay", () => {
 			config: PROJECTION_CONFIG,
 			loadedSkillRoots: [],
 			cwd: "/tmp/project",
-			discoverNewEntries: true,
+			activeProjectionLevel: PROJECTION_LEVEL,
 		});
 		const projected = JSON.stringify(decision.messages);
 

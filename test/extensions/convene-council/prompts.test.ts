@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
-import { buildParticipantSystemPrompt } from "../../../pi-package/extensions/convene-council/prompts";
+import {
+	buildInitialOpinionTask,
+	buildParticipantSystemPrompt,
+} from "../../../pi-package/extensions/convene-council/prompts";
 
 const NO_CONSENSUS_RESULT_PROMPT =
 	"pi-package/extensions/convene-council/prompts/no-consensus-result.md";
@@ -13,6 +16,21 @@ test("no-consensus result prompt exposes answer macros", async () => {
 
 	expect(prompt).toContain("{{answer1}}");
 	expect(prompt).toContain("{{answer2}}");
+});
+
+test("initial opinion prompt requires reading the context file", () => {
+	// Purpose: participant startup must receive a file path instruction instead of inline parent context.
+	// Input and expected output: question and context file path render, while no context body is appended.
+	// Edge case: the prompt must not append the previous inline context block.
+	// Dependencies: bundled initial-opinion prompt template.
+	const prompt = buildInitialOpinionTask(
+		"What should we do?",
+		"/tmp/convene-council-context.txt",
+	);
+
+	expect(prompt).toContain("What should we do?");
+	expect(prompt).toContain("/tmp/convene-council-context.txt");
+	expect(prompt).not.toContain("<context>\n");
 });
 
 test("participant system prompt renders selected tool placeholder", () => {

@@ -16,6 +16,7 @@
 - Requires `retryAttempts` to be an integer greater than or equal to `1`.
 - Uses `2` seconds as the default `retryInterval` value.
 - Requires `retryInterval` to be a finite number greater than or equal to `1`.
+- Starts quota refresh in the background so pi startup does not wait for the Codex usage endpoint.
 - Retries failed quota requests before showing `CX err`.
 - Does not retry `401` responses because they mean Codex auth is missing or expired.
 - Uses `60` seconds and creates an issue only for `codex-quota` when enabled configuration has invalid field values.
@@ -71,5 +72,6 @@ Tests must verify:
 - issue creation only for `codex-quota` on configuration error;
 - behavior with fake pi-managed `openai-codex` OAuth;
 - behavior with fake fetch;
+- non-blocking session startup while the first quota fetch is pending;
 - compact quota, auth, error, and unknown-data statuses;
 - timer shutdown on session shutdown.

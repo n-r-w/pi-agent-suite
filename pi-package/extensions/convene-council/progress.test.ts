@@ -64,4 +64,41 @@ describe("convene-council progress", () => {
 			Date.now = originalDateNow;
 		}
 	});
+
+	test("keeps assistant activity after participant agent_end", () => {
+		// Purpose: the stable participant row must keep the answer preview after the child agent finishes.
+		// Input and expected output: assistant message_end sets activity, agent_end only changes status.
+		// Edge case: compact TUI renders the latest participant activity after the terminal child event.
+		// Dependencies: isolated reporter state and child RPC session event shapes.
+		const updates: AgentToolResult<unknown>[] = [];
+		const reporter = createCouncilProgressReporter({
+			runId: "run-1",
+			question: "question",
+			runtime: createRuntime(),
+			iterationLimit: 3,
+			onUpdate: (partial) => updates.push(partial),
+		});
+
+		reporter.recordSessionEvent("llm2", {
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "initial opinion text" }],
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+				},
+			},
+		});
+		reporter.recordSessionEvent("llm2", { type: "agent_end" });
+
+		const latestDetails = requireLatestDetails(updates);
+		expect(latestDetails.participants[1]).toMatchObject({
+			status: "succeeded",
+			activity: "assistant initial opinion text",
+		});
+	});
 });

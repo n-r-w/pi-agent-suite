@@ -8,7 +8,7 @@
 
 - Is enabled by default when `config.json` is missing.
 - Installs one custom footer for the active pi session.
-- Shows footer segments in this order: project, Codex quota, selected agent, model display, context projection, MCP errors, and context usage.
+- Shows footer segments in this order: project, Codex quota, API cost, selected agent, model display, context projection, MCP errors, and context usage.
 - Shows the model display as `provider/model/thinking-level` by default.
 - Does not show the git branch.
 - Shows context usage as `current/context-overflow-limit/full-window` when `context-overflow` is enabled.
@@ -19,9 +19,11 @@
 - Shows the selected agent status from status key `agent`.
 - Shows the context projection status from status key `context-projection`.
 - Shows the Codex quota status from status key `codex-quota`.
+- Shows cumulative API cost from assistant usage stored in the pi session.
+- Shows API cost as `$0.123` and adds ` (sub)` for OAuth subscription models.
 - Shows MCP errors only for status keys `mcp` and `mcp-*` when the status text means an error.
 - Keeps footer lines within the terminal width.
-- Reserves width for quota, agent, model display, projection, MCP error, and context segments before rendering the project segment.
+- Reserves width for quota, API cost, agent, model display, projection, MCP error, and context segments before rendering the project segment.
 - Shortens long project labels from the middle when footer space is limited.
 - Does not own agent selection, context projection calculation, Codex quota calculation, model selection, context-overflow compaction behavior, or context calculation.
 
@@ -34,11 +36,12 @@ File: `~/.pi/agent/agent-suite/footer/config.json`.
   "enabled": true,
   "showProvider": true,
   "showModel": true,
-  "showThinkingLevel": true
+  "showThinkingLevel": true,
+  "showApiCost": true
 }
 ```
 
-All fields are optional. Missing config enables the custom footer and shows provider, model, and thinking level.
+All fields are optional. Missing config enables the custom footer and shows provider, model, thinking level, and API cost.
 
 Defaults:
 
@@ -46,6 +49,7 @@ Defaults:
 - `showProvider`: `true`
 - `showModel`: `true`
 - `showThinkingLevel`: `true`
+- `showApiCost`: `true`
 
 `enabled: false` leaves pi without this package's custom footer while other extensions may still publish status values through `ctx.ui.setStatus`.
 
@@ -64,8 +68,8 @@ Tests must verify:
 - context usage when context-overflow config is invalid;
 - context usage coloring at `50%` and `80%` boundaries;
 - reasoning coloring for `xhigh`, `high`, `medium`, `low`, `minimal`, and `off`;
-- rendering order for `codex-quota`, `agent`, `context-projection`, and context usage;
+- rendering order for `codex-quota`, API cost, `agent`, `context-projection`, and context usage;
 - MCP status filtering;
 - footer width staying within terminal width;
 - compact context projection statuses staying within terminal width;
-- long project labels not hiding quota, agent, reasoning, projection, MCP error, or context segments.
+- long project labels not hiding quota, API cost, agent, reasoning, projection, MCP error, or context segments.

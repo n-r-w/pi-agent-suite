@@ -22,7 +22,6 @@ export type ParticipantStatus = (typeof PARTICIPANT_STATUSES)[number];
 
 export interface ConveneCouncilDependencies {
 	readonly createParticipantRunner?: ParticipantRunnerFactory;
-	readonly generateContextSummary?: ContextSummaryGenerator;
 	readonly resolveStartupPlan?: () =>
 		| ChildStartupPlan
 		| { readonly issue: string };
@@ -40,18 +39,6 @@ export interface ParticipantRunner {
 	): Promise<AssistantMessage>;
 	dispose(): Promise<void>;
 }
-
-export interface ContextSummaryRequest {
-	readonly contextPackage: string;
-	readonly runtime: ParticipantRuntime;
-	readonly reserveTokens: number;
-	readonly signal: AbortSignal | undefined;
-	readonly ctx: CouncilContext;
-}
-
-export type ContextSummaryGenerator = (
-	request: ContextSummaryRequest,
-) => Promise<string>;
 
 export type ParticipantRunnerFactory = (options: {
 	readonly participantId: ParticipantId;
@@ -81,10 +68,6 @@ export interface ParticipantConfig {
 	readonly model?: ParticipantModelConfig;
 }
 
-export interface ContextSummaryConfig {
-	readonly model?: ParticipantModelConfig;
-}
-
 export interface ConveneCouncilConfig {
 	readonly llm1: ParticipantConfig;
 	readonly llm2: ParticipantConfig;
@@ -92,8 +75,6 @@ export interface ConveneCouncilConfig {
 	readonly finalAnswerParticipant: ParticipantId;
 	readonly responseDefectRetries: number;
 	readonly tools: readonly string[] | undefined;
-	readonly contextWindowUsageLimit: number;
-	readonly contextSummary: ContextSummaryConfig;
 }
 
 export interface ParticipantRuntime {
@@ -112,7 +93,6 @@ export interface CouncilContext extends ExtensionContext {
 
 export interface ExecuteConveneCouncilOptions {
 	readonly createParticipantRunner: ParticipantRunnerFactory;
-	readonly generateContextSummary?: ContextSummaryGenerator;
 	readonly resolveStartupPlan: () =>
 		| ChildStartupPlan
 		| { readonly issue: string };
@@ -121,7 +101,6 @@ export interface ExecuteConveneCouncilOptions {
 	readonly signal: AbortSignal | undefined;
 	readonly ctx: CouncilContext;
 	readonly currentThinkingLevel: unknown;
-	readonly loadedSkillRoots: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];
 	readonly availableTools: readonly ToolInfo[];
 	readonly onUpdate?: (partial: AgentToolResult<unknown>) => void;
