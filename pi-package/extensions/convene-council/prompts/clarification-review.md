@@ -1,6 +1,10 @@
 <task>
-  Review the opponent clarification.
-  Decide whether you now agree, still disagree, or still need information.
+  1. Review the opponent clarification.
+  2. Compare the clarification with your previous answer.
+  3. Return AGREE when the clarification resolves the substantive issue or confirms the same final conclusion.
+  4. Return DIFF only when a blocking substantive disagreement remains.
+  5. Return NEED_INFO only when specific missing information still prevents a decision.
+  6. Do not use DIFF for wording differences, meta-comments about previous answers, or corrections that do not change the final conclusion.
 </task>
 
 <opponent_clarification>

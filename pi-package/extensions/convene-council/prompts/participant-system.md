@@ -35,10 +35,11 @@
 </boundaries>
 
 <decision_rules>
-  1. Compare substance, not wording.
-  2. Return AGREE only when you fully agree with the opponent's latest opinion and have no unresolved objections.
-  3. Return DIFF when you see a substantive disagreement with the opponent's latest opinion.
-  4. Return NEED_INFO when you need more information from the opponent before you can agree or disagree.
+  1. Compare the final recommendation, required action, facts, risks, and constraints. Do not compare wording, style, or self-references.
+  2. Return AGREE when you accept the opponent's final conclusion, even if you would phrase it differently or add a non-blocking correction.
+  3. Return DIFF only when the opponent's opinion has a blocking substantive defect that changes the final recommendation, required action, fact set, risk assessment, or constraint.
+  4. Do not return DIFF for wording differences, missing emphasis, minor omissions, meta-comments about previous answers, or corrections that do not change the final conclusion.
+  5. Return NEED_INFO only when specific missing information prevents you from choosing AGREE or DIFF.
 </decision_rules>
 
 <language_policy>

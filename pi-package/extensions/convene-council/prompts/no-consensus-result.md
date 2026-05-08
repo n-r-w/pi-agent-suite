@@ -1,5 +1,5 @@
 <result>
-Consensus was not reached. `<answer1>` and `<answer2>` contain two different opinions.
+Consensus was not reached before the iteration limit. The latest participant opinions are shown below.
 </result>
 
 <answer1>

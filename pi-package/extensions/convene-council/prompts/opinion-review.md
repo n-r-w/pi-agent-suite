@@ -1,8 +1,9 @@
 <task>
   1. Review the opponent opinion.
-  2. Compare it with your previous answer.
-  3. Choose the best or improved solution.
-  4. Report defects in the opponent opinion when defects exist.
+  2. Compare the opponent's final conclusion with your previous answer.
+  3. If the final conclusion is the same, return AGREE and include any non-blocking correction inside <opinion>.
+  4. Return DIFF only for a blocking substantive defect that changes the final conclusion.
+  5. Do not use DIFF for wording differences, meta-comments about previous answers, or corrections that do not change the final conclusion.
 </task>
 
 <opponent_opinion>
