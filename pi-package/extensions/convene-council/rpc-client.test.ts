@@ -23,6 +23,7 @@ function createTransport() {
 			onStderr(handler: (chunk: unknown) => void): void {
 				onStderr = handler;
 			},
+			onError(): void {},
 		},
 		writes,
 		stdout(chunk: unknown): void {

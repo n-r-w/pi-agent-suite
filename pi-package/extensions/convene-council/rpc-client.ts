@@ -19,6 +19,7 @@ export interface CouncilRpcTransport {
 	write(line: string): void;
 	onStdout(handler: (chunk: unknown) => void): void;
 	onStderr(handler: (chunk: unknown) => void): void;
+	onError(handler: (error: Error) => void): void;
 }
 
 interface PendingCommand {
@@ -43,6 +44,7 @@ export class CouncilRpcClient {
 	private stdoutProcessingPending = false;
 	private readonly pendingCommands = new Map<string, PendingCommand>();
 	private activePrompt: ActivePrompt | undefined;
+	private transportClosed = false;
 
 	constructor(
 		private readonly transport: CouncilRpcTransport,
@@ -51,6 +53,12 @@ export class CouncilRpcClient {
 	) {
 		this.transport.onStdout((chunk) => this.processStdout(chunk));
 		this.transport.onStderr((chunk) => this.processStderr(chunk));
+		this.transport.onError((error) => this.handleTransportFailure(error));
+	}
+
+	/** Stops future RPC writes and rejects work that still depends on the child transport. */
+	close(): void {
+		this.handleTransportFailure(new Error("child RPC transport closed"));
 	}
 
 	/** Sends an RPC abort command without closing the persistent child session. */
@@ -63,6 +71,10 @@ export class CouncilRpcClient {
 
 	/** Rejects active prompt and pending commands after child transport termination. */
 	handleTransportFailure(error: Error): void {
+		if (this.transportClosed) {
+			return;
+		}
+		this.transportClosed = true;
 		const prompt = this.activePrompt;
 		if (prompt !== undefined) {
 			const decision = prompt.completion.recordTransportFailure(error.message);
@@ -76,6 +88,9 @@ export class CouncilRpcClient {
 
 	/** Sends one participant prompt and resolves only after the child turn ends. */
 	async prompt(task: string): Promise<AssistantMessage> {
+		if (this.transportClosed) {
+			throw new Error("child RPC transport closed");
+		}
 		if (this.activePrompt !== undefined) {
 			throw new Error("participant prompt is already running");
 		}
@@ -99,19 +114,36 @@ export class CouncilRpcClient {
 		command: string,
 		data: Record<string, unknown>,
 	): Promise<unknown> {
+		if (this.transportClosed) {
+			return Promise.reject(new Error("child RPC transport closed"));
+		}
 		const id = String(this.nextId);
 		this.nextId += 1;
-		this.writeCommand({ id, type: command, ...data });
 		return new Promise((resolve, reject) => {
 			this.pendingCommands.set(id, { command, resolve, reject });
+			this.writeCommand({ id, type: command, ...data });
 		});
 	}
 
 	private writeCommand(command: Record<string, unknown>): void {
-		this.transport.write(`${JSON.stringify(command)}\n`);
+		if (this.transportClosed) {
+			return;
+		}
+		try {
+			this.transport.write(`${JSON.stringify(command)}\n`);
+		} catch (error) {
+			this.handleTransportFailure(
+				error instanceof Error
+					? error
+					: new Error("child RPC transport write failed"),
+			);
+		}
 	}
 
 	private processStdout(chunk: unknown): void {
+		if (this.transportClosed) {
+			return;
+		}
 		const processChunk = () =>
 			this.parser.processStdoutChunk(chunk, (message) => {
 				this.processMessage(message);

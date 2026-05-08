@@ -12,8 +12,13 @@ import {
 } from "./runner";
 import type { ParticipantRunnerFactory } from "./types";
 
+interface FakeStdin extends EventEmitter {
+	readonly writes: string[];
+	write(chunk: string): boolean;
+}
+
 interface FakeProcess {
-	readonly stdin: { readonly writes: string[]; write(chunk: string): boolean };
+	readonly stdin: FakeStdin;
 	readonly stdout: EventEmitter;
 	readonly stderr: EventEmitter;
 	readonly killedSignals: string[];
@@ -28,18 +33,18 @@ interface FakeProcess {
 
 /** Creates one fake child process with writable stdin and evented stdout/stderr. */
 function createFakeProcess(): FakeProcess {
+	const stdin = new EventEmitter() as FakeStdin;
+	Object.defineProperty(stdin, "writes", { value: [] });
+	stdin.write = function write(chunk: string): boolean {
+		this.writes.push(chunk);
+		return true;
+	};
 	const stdout = new EventEmitter();
 	stdout.on("error", () => {});
 	const stderr = new EventEmitter();
 	const killedSignals: string[] = [];
 	return {
-		stdin: {
-			writes: [],
-			write(chunk: string): boolean {
-				this.writes.push(chunk);
-				return true;
-			},
-		},
+		stdin,
 		stdout,
 		stderr,
 		killedSignals,
@@ -430,6 +435,52 @@ describe("ParticipantRunner lifecycle", () => {
 		child.error(new Error("spawn failure"));
 
 		await expect(result).rejects.toThrow("spawn failure");
+	});
+
+	test("rejects active prompt when child stdin errors during recovery wait", async () => {
+		// Purpose: child stdin stream errors must not crash the parent process or leave active prompts hanging.
+		// Input and expected output: stdin emits EPIPE and the active prompt rejects with that error.
+		// Edge case: stream error happens while the child is between retryable agent turns.
+		// Dependencies: fake child process and CouncilRpcClient protocol.
+		const fake = createFakeRunnerFactory();
+		const { runner, child } = await createReadyRunner(fake);
+		const result = runner.prompt("task", undefined);
+		respond(child, "1", "prompt");
+		retryablePromptFailure(child);
+
+		expect(() => {
+			child.stdin.emit("error", new Error("EPIPE"));
+		}).not.toThrow();
+
+		await expect(result).rejects.toThrow("EPIPE");
+	});
+
+	test("does not write UI responses after disposal", async () => {
+		// Purpose: cleanup may receive buffered child UI requests after SIGTERM and must not write into a closed stdin pipe.
+		// Input and expected output: after a completed prompt and disposal, a late UI request leaves stdin writes unchanged.
+		// Edge case: blocking child UI request arrives after the runner is logically closed.
+		// Dependencies: fake child process and CouncilRpcClient protocol.
+		const fake = createFakeRunnerFactory();
+		const { runner, child } = await createReadyRunner(fake);
+
+		const prompt = runner.prompt("task", undefined);
+		respond(child, "1", "prompt");
+		completePrompt(child, "answer");
+		await prompt;
+
+		await runner.dispose();
+		const writesAfterDispose = [...child.stdin.writes];
+
+		child.stdout.emit(
+			"data",
+			`${JSON.stringify({
+				type: "extension_ui_request",
+				id: "late-ui",
+				method: "input",
+			})}\n`,
+		);
+
+		expect(child.stdin.writes).toEqual(writesAfterDispose);
 	});
 
 	test("kills the child process during disposal", async () => {

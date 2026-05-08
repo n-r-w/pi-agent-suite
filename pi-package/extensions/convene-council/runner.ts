@@ -10,7 +10,10 @@ export const COUNCIL_RPC_ABORT_GRACE_MS = 10_000;
 export const COUNCIL_RPC_TERM_GRACE_MS = 5_000;
 
 export interface SpawnedParticipantProcess {
-	readonly stdin: { write(chunk: string): boolean };
+	readonly stdin: {
+		write(chunk: string): boolean;
+		on(event: "error", handler: (error: Error) => void): unknown;
+	};
 	readonly stdout: {
 		on(event: "data", handler: (chunk: unknown) => void): unknown;
 	};
@@ -120,6 +123,7 @@ class RpcParticipantRunner implements ParticipantRunner {
 		}
 		this.disposed = true;
 		this.clearEscalationTimers();
+		this.client.close();
 		if (!this.exited) {
 			this.child.kill("SIGTERM");
 		}
@@ -171,15 +175,30 @@ class RpcParticipantRunner implements ParticipantRunner {
 function createProcessTransport(
 	child: SpawnedParticipantProcess,
 ): CouncilRpcTransport {
+	let failed = false;
 	return {
 		write(line: string): void {
-			child.stdin.write(line);
+			if (failed) {
+				return;
+			}
+			try {
+				child.stdin.write(line);
+			} catch (error) {
+				failed = true;
+				throw error;
+			}
 		},
 		onStdout(handler: (chunk: unknown) => void): void {
 			child.stdout.on("data", handler);
 		},
 		onStderr(handler: (chunk: unknown) => void): void {
 			child.stderr.on("data", handler);
+		},
+		onError(handler: (error: Error) => void): void {
+			child.stdin.on("error", (error) => {
+				failed = true;
+				handler(error);
+			});
 		},
 	};
 }
