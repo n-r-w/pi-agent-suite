@@ -5,7 +5,7 @@ import {
 	type BuildSystemPromptOptions,
 	type ExtensionAPI,
 	formatSkillsForPrompt,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import {
 	getSuiteConfigLocation,

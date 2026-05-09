@@ -2,15 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	Context,
 	AssistantMessage as LlmAssistantMessage,
 	Model,
 	SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
-import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-ai";
+import type {
+	ExtensionAPI,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import {
 	addPendingProjectionSavings,

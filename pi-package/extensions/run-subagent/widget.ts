@@ -5,9 +5,9 @@
  * return lines wider than the `render(width)` argument.
  */
 
-import type { ThemeColor } from "@mariozechner/pi-coding-agent";
-import type { Component } from "@mariozechner/pi-tui";
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import type { ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { truncateTextByWidth } from "../../shared/display-width";
 import {
 	formatSubagentContextUsage,

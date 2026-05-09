@@ -1,12 +1,12 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type BeforeAgentStartEvent,
 	getAgentDir,
 	type SessionEntry,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
 

@@ -1,5 +1,5 @@
-import type { Api, Model } from "@mariozechner/pi-ai";
-import { getAgentDir, SettingsManager } from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
 	ChildRpcRuntimeFacts,
 	RecoveryEnablement,

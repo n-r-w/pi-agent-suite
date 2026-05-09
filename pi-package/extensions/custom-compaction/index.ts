@@ -7,14 +7,14 @@ import {
 	completeSimple,
 	type Model,
 	type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import {
 	type CompactionResult,
 	convertToLlm,
 	type ExtensionAPI,
 	type SessionBeforeCompactEvent,
 	serializeConversation,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,

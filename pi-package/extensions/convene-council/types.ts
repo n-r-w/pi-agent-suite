@@ -1,12 +1,15 @@
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
 	Message,
 	Model,
 	Tool,
-} from "@mariozechner/pi-ai";
-import type { ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-ai";
+import type {
+	ExtensionContext,
+	ToolInfo,
+} from "@earendil-works/pi-coding-agent";
 import type { ProjectContextFile } from "../../shared/project-context-prompt";
 import type {
 	PARTICIPANT_IDS,

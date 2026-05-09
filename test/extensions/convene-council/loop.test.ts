@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
 	Context,
 	Model,
 	SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
-import { parseSessionEntries } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-ai";
+import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import {

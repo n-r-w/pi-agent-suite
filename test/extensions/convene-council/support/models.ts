@@ -1,4 +1,4 @@
-import type { Api, Model } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 
 /** Creates a model fixture for participant model resolution. */
 export function createModel(provider: string, id: string): Model<Api> {

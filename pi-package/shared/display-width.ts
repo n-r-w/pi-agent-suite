@@ -1,4 +1,4 @@
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 /** Splits terminal text into user-perceived characters before width clipping. */
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, {

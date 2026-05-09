@@ -5,13 +5,13 @@ import type {
 	Context,
 	Model,
 	SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	parseSessionEntries,
 	type SessionEntry,
 	type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { ParticipantRunnerFactory } from "../../../../pi-package/extensions/convene-council/types";
 
 export interface RegisteredHandler {

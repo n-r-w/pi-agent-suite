@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { parseSessionEntries } from "@mariozechner/pi-coding-agent";
+import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import { createParticipantSessions } from "./session";
 
 describe("participant session ownership", () => {

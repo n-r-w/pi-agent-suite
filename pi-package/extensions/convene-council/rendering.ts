@@ -1,11 +1,11 @@
 /** Width-aware rendering for the convene_council tool. */
 
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	getMarkdownTheme,
 	type Theme,
 	type ThemeColor,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Container,
@@ -15,7 +15,7 @@ import {
 	Text,
 	truncateToWidth,
 	visibleWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import {
 	sliceTextByWidth,
 	truncateTextByWidth,

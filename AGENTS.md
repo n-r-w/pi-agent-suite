@@ -55,9 +55,9 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 5. For live checks of tool, agent, prompt, or active-tool availability, run the real `pi` CLI with the target package, a temporary cwd/state when needed, and a temporary debug extension that dumps `before_agent_start.systemPrompt` and `pi.getActiveTools()`. Inspect the dumped runtime data, not only unit-test fakes, and remove temporary state after the check.
 
 ## Pi Documentation
-- /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/README.md
-- /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/docs/
-- /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/examples/README.md
+- /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/README.md
+- /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/
+- /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/examples/README.md
 
 ## Pi Source Code
-/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/dist
+/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist

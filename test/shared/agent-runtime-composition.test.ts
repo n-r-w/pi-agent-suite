@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type * as RuntimeCompositionModule from "../../pi-package/shared/agent-runtime-composition";
 
 interface HandlerRecord {

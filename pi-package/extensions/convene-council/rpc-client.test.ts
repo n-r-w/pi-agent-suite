@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ChildRpcRuntimeFacts } from "../../shared/child-rpc-completion";
 import {
 	COUNCIL_RPC_STDERR_MAX_CHARS,

@@ -1,4 +1,7 @@
-import { type AssistantMessage, isContextOverflow } from "@mariozechner/pi-ai";
+import {
+	type AssistantMessage,
+	isContextOverflow,
+} from "@earendil-works/pi-ai";
 
 export type RecoveryEnablement = boolean | "unverified";
 
@@ -32,9 +35,9 @@ type PromptState =
 
 type OverflowClassification = "none" | "same-model" | "cross-model";
 
-/** Provider and transport failures that Pi 0.72.1 treats as retryable at session level. */
+/** Provider and transport failures that Pi 0.74.0 treats as retryable at session level. */
 const RETRYABLE_CHILD_ERROR_PATTERN =
-	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
+	/overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 
 const PARENT_ABORT_REASON = "parent abort";
 const RETRY_UNVERIFIED_REASON = "child retry state is not verified";

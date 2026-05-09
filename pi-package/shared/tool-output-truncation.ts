@@ -7,7 +7,7 @@ import {
 	formatSize,
 	type TruncationResult,
 	truncateTail,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 /** Byte count used to create random temp file name suffixes. */
 const TEMP_FILE_ID_BYTES = 8;

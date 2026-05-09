@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ToolInfo } from "@mariozechner/pi-coding-agent";
+import type { ToolInfo } from "@earendil-works/pi-coding-agent";
 import { createModel } from "../../../test/extensions/convene-council/support/models";
 import {
 	CHILD_AGENT_PROCESS_ENV,

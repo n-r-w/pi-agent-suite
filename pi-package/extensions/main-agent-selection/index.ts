@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { Api, Model } from "@mariozechner/pi-ai";
-import { type ExtensionAPI, getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import {
+	type ExtensionAPI,
+	getAgentDir,
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	type Focusable,
@@ -11,7 +14,7 @@ import {
 	type SelectItem,
 	SelectList,
 	truncateToWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import {
 	type AgentDefinition,
 	loadAgentDefinitions,

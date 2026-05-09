@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 import {
 	buildRetryConfig,

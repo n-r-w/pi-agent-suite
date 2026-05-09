@@ -2,7 +2,7 @@ import type {
 	CompactOptions,
 	ExtensionAPI,
 	ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import { readContextOverflowConfig } from "./config";
 

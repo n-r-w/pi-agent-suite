@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { Box, visibleWidth } from "@mariozechner/pi-tui";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	renderConveneCouncilCall,
 	renderConveneCouncilResult,

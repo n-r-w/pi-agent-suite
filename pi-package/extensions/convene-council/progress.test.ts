@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createModel } from "../../../test/extensions/convene-council/support/models";
 import {
 	type CouncilRunDetails,

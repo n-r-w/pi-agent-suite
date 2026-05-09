@@ -1,7 +1,10 @@
 import { basename } from "node:path";
-import type { Api, Model } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type {
+	ExtensionAPI,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	getAgentRuntimeComposition,
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,

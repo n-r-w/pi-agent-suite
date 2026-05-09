@@ -1,4 +1,4 @@
-import type { Context, Message } from "@mariozechner/pi-ai";
+import type { Context, Message } from "@earendil-works/pi-ai";
 import {
 	getEncodingNameForModel,
 	Tiktoken,

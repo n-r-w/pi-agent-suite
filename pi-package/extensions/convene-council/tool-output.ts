@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 
 /** Formats model-facing tool output using the same truncation policy as consult_advisor. */

@@ -10,8 +10,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
 import { SUBAGENT_AGENT_ID_ENV } from "../../../pi-package/shared/subagent-environment";

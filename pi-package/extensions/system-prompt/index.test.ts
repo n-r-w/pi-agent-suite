@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import type {
 	BuildSystemPromptOptions,
 	ExtensionAPI,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import systemPrompt from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";

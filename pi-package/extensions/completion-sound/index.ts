@@ -5,7 +5,7 @@ import { env as processEnv } from "node:process";
 import type {
 	AgentEndEvent,
 	ExtensionAPI,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,

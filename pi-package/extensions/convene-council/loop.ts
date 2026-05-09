@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { Tool } from "@mariozechner/pi-ai";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Tool } from "@earendil-works/pi-ai";
 import { readConveneCouncilConfig } from "./config";
 import { ISSUE_PREFIX } from "./constants";
 import {

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { env } from "node:process";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /** Environment variable that overrides the pi-agent-suite storage root. */
 export const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";

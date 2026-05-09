@@ -2,21 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
 	Context,
 	Model,
 	SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import {
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
 	type SessionEntry,
 	type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
-import { Box, Text, visibleWidth } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { Box, Text, visibleWidth } from "@earendil-works/pi-tui";
 import consultAdvisor from "../../../pi-package/extensions/consult-advisor/index";
 import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/consult-advisor/rendering";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";

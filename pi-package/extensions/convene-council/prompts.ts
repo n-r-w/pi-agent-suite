@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import { escapeUTF8 } from "entities";
 import { appendProjectContext } from "../../shared/project-context-prompt";
 import type { ProjectContextFile } from "./types";

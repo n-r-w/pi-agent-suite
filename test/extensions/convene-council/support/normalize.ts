@@ -1,4 +1,4 @@
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 
 /** Removes volatile timestamps from context messages before equality checks. */
 export function stripMessageTimestamps(

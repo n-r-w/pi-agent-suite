@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 /** Formats a plain first-turn participant opinion. */
 export function initialOpinion(opinion: string): AssistantMessage["content"] {

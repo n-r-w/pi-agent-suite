@@ -1,7 +1,7 @@
 /** Width-aware rendering for the consult_advisor tool. */
 
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { getMarkdownTheme, type Theme } from "@mariozechner/pi-coding-agent";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Container,
@@ -10,7 +10,7 @@ import {
 	Text,
 	truncateToWidth,
 	visibleWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { truncateTextByWidth } from "../../shared/display-width";
 
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";

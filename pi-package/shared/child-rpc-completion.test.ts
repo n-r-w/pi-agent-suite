@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	type ChildRpcRuntimeFacts,
 	createChildRpcPromptCompletion,
@@ -77,6 +77,19 @@ describe("child RPC prompt completion", () => {
 		});
 		unverified.handleSessionEvent(messageEnd(retryable));
 		expect(unverified.handleSessionEvent(agentEnd()).kind).toBe("failure");
+
+		const websocketClosed = createChildRpcPromptCompletion(BASE_FACTS);
+		websocketClosed.handleSessionEvent(
+			messageEnd(
+				assistantMessage({
+					stopReason: "error",
+					errorMessage: "websocket closed before response",
+				}),
+			),
+		);
+		expect(websocketClosed.handleSessionEvent(agentEnd())).toEqual({
+			kind: "wait",
+		});
 	});
 
 	test("does not resolve retry success until final agent_end", () => {

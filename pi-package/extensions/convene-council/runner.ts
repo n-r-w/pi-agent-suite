@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { env as processEnv } from "node:process";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
 import { CouncilRpcClient, type CouncilRpcTransport } from "./rpc-client";
 import { buildChildParticipantStartupFromToolArgs } from "./startup";

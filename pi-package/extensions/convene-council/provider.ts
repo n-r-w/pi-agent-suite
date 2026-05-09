@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { COUNCIL_CONTEXT_TOO_LARGE_ERROR } from "./constants";
 import {
 	getAssistantText,

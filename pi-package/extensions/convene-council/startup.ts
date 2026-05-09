@@ -1,5 +1,5 @@
 import { argv as processArgv, env as processEnv } from "node:process";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withChildAgentProcessMarker } from "../../shared/child-agent-environment";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import type { ConveneCouncilConfig, ParticipantRuntime } from "./types";

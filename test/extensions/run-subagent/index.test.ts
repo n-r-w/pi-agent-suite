@@ -4,14 +4,14 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { Api, Model } from "@mariozechner/pi-ai";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
 	type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
-import { visibleWidth } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
 import { COLLAPSED_SUBAGENT_RESULT_LINES } from "../../../pi-package/extensions/run-subagent/rendering";
