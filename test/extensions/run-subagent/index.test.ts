@@ -3779,9 +3779,9 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("renders collapsed result rows with one shared row-count limit", async () => {
-		// Purpose: collapsed run_subagent output must apply one shared row-count limit to progress events without duplicating the final answer.
-		// Input and expected output: more events than the row-count limit render the latest events and one hidden-line expansion summary.
+	test("renders projection-aware header and collapsed result rows", async () => {
+		// Purpose: the run_subagent header must show child projection savings before child context usage while collapsed output stays limited to progress rows.
+		// Input and expected output: contextProjectionStatus ~159.7k plus context usage renders ~159.7k/35.7k/272k in the header, and extra events render latest rows plus one hidden-line summary.
 		// Edge case: final output is already rendered as an assistant message and must not consume collapsed progress rows.
 		// Dependencies: this test uses the registered run_subagent renderer and its exported preview-count constant.
 		await withIsolatedEnvironment(async () => {
@@ -3805,6 +3805,7 @@ describe("run-subagent", () => {
 						contextWindow: 272000,
 						percent: 13.125,
 					},
+					contextProjectionStatus: "~159.7k",
 					status: "succeeded",
 					elapsedMs: 43900,
 					exitCode: 0,
@@ -3849,9 +3850,12 @@ describe("run-subagent", () => {
 				.render(120);
 
 			expect(renderedCall?.[0]).toBe(
-				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium · 35.7k/272k · 43.9s",
+				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium · ~159.7k/35.7k/272k · 43.9s",
 			);
 			expect(renderedCall?.[0]).not.toContain("✓");
+			expect(renderedCall?.every((line) => visibleWidth(line) <= 120)).toBe(
+				true,
+			);
 			expect(rendered).toHaveLength(COLLAPSED_SUBAGENT_RESULT_LINES + 1);
 			const renderedLines = rendered ?? [];
 			expect(renderedLines.some((line) => line.includes("• event-1 "))).toBe(

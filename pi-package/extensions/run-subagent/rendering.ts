@@ -49,6 +49,7 @@ interface RunSubagentHeaderDetails {
 	readonly agentId: string;
 	readonly runtime: SubagentRunDetails["runtime"];
 	readonly contextUsage: SubagentRunDetails["contextUsage"];
+	readonly contextProjectionStatus: SubagentRunDetails["contextProjectionStatus"];
 	readonly elapsedMs: number;
 }
 
@@ -235,6 +236,7 @@ function updateRunSubagentHeaderDetails(
 		agentId: details.agentId,
 		runtime: details.runtime,
 		contextUsage: details.contextUsage,
+		contextProjectionStatus: details.contextProjectionStatus,
 		elapsedMs: details.elapsedMs,
 	};
 	const headerFingerprint = formatRunSubagentHeaderFingerprint(headerDetails);
@@ -257,6 +259,7 @@ function formatRunSubagentHeaderFingerprint(
 		details.agentId,
 		details.runtime?.modelId ?? "",
 		details.runtime?.thinking ?? "",
+		details.contextProjectionStatus ?? "",
 		formatSubagentContextUsage(details.contextUsage) ?? "",
 		String(details.elapsedMs),
 	].join("\u001F");
@@ -289,6 +292,10 @@ function formatSubagentRuntimeHeaderParts(
 	}
 
 	const contextUsage = formatSubagentContextUsage(details.contextUsage);
+	const projectedContextUsage =
+		contextUsage !== undefined && details.contextProjectionStatus !== undefined
+			? `${details.contextProjectionStatus}/${contextUsage}`
+			: contextUsage;
 	return [
 		{ text: " · " },
 		{
@@ -296,10 +303,10 @@ function formatSubagentRuntimeHeaderParts(
 			color: "muted",
 			truncate: true,
 		},
-		...(contextUsage !== undefined
+		...(projectedContextUsage !== undefined
 			? ([
 					{ text: " · " },
-					{ text: contextUsage, color: "muted" },
+					{ text: projectedContextUsage, color: "muted" },
 				] satisfies FixedLinePart[])
 			: []),
 	];

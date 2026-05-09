@@ -43,7 +43,7 @@
 - Colors child context usage in widget rows with the same context pressure thresholds as the footer: plain below 50%, `warning` from 50%, and `error` from 80%.
 - Does not copy parent footer statuses or context-overflow limits into subagent widget rows.
 - Renders collapsed and expanded tool results through width-aware components.
-- Renders child agent, model, thinking level, context usage, and elapsed time in the `run_subagent` tool-call header.
+- Renders child agent, model, thinking level, child-owned context-projection savings, context usage, and elapsed time in the `run_subagent` tool-call header.
 - Does not repeat child runtime metadata as a separate row in collapsed or expanded result body.
 - Shows the latest `COLLAPSED_SUBAGENT_RESULT_LINES` progress events in collapsed tool results.
 - `COLLAPSED_SUBAGENT_RESULT_LINES` is exported from `pi-package/extensions/run-subagent/rendering.ts`.
@@ -125,7 +125,7 @@ Tests must verify:
 - deterministic cancellation of blocking RPC UI requests;
 - stdin close after normal completion and bounded stdin error diagnostics;
 - abort behavior that sends RPC `abort`, waits for completion, closes stdin, and terminates only after timeout;
-- runtime metadata placement in the `run_subagent` tool-call header;
+- runtime metadata placement in the `run_subagent` tool-call header, including child-owned context-projection savings before child context usage;
 - absence of a standalone status/runtime row in the result body;
 - collapsed result preview height through `COLLAPSED_SUBAGENT_RESULT_LINES`;
 - collapsed result rendering that shows latest progress events, not earliest progress events;
