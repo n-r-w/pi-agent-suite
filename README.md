@@ -22,6 +22,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `system-prompt` | Yes | Replaces pi's base system prompt from a Markdown template with explicit runtime variables. |
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
+| `ask-llm` | Yes | Lets you ask a one-off model question without writing it to the current session. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
 | `convene-council` | No | Lets two model participants discuss one question and return one bounded answer. |
 
@@ -505,6 +506,47 @@ How it works:
 - Applies the subagent's model, thinking level, and tools.
 - Reads oversized child RPC progress.
 - Shows live progress and returns the subagent's final answer.
+
+### `ask-llm`
+
+Why you need it:
+
+- Lets you ask a model a one-off question from the pi interface.
+- Keeps the question and answer out of the current session.
+- Uses the projected active branch and Pi-loaded context files when available.
+- Uses a dedicated system prompt to mark the `/ask` question as the current task.
+
+Config file: `~/.pi/agent/agent-suite/ask-llm/config.json`
+
+Options:
+
+- `enabled`: default `true`. Enables or disables `/ask`.
+- `model.id`: optional. Uses the current model when missing.
+- `model.thinking`: optional. Uses the current thinking level when missing. Allowed values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `systemPromptFile`: optional absolute custom system prompt path.
+- `retry.enabled`: optional. Defaults to `true`.
+- `retry.maxRetries`: optional non-negative integer. Defaults to `3`.
+- `retry.baseDelayMs`: optional non-negative integer. Defaults to `2000`.
+
+Command input:
+
+- `/ask {question}` asks the configured model a one-off question.
+- `/ask` opens an editor for the question.
+
+How it works:
+
+- Reads the bundled system prompt from `pi-package/extensions/ask-llm/prompts/system.md` unless `systemPromptFile` is configured.
+- Rejects the request before the provider call when the exact provider input exceeds the selected model context window.
+- Sends the active branch conversation to the selected model with `tools: []`.
+- Replays recorded `context-projection` placeholders or summaries before calling the model.
+- Adds Pi-loaded context files such as `AGENTS.md` and `CLAUDE.md` to the system prompt.
+- Retries retryable provider failures through bounded shared retry config.
+- Does not write the `/ask` question or answer to the current session.
+- Appends the `/ask` question as the final provider-only user message.
+- Wraps the question in `<user_question>...</user_question>`.
+- Shows a cancellable loading UI while the model request runs.
+- Shows the answer as Markdown in a focused UI.
+- Copies the answer to the clipboard from the focused UI with `Ctrl+Y`.
 
 ### `consult-advisor`
 
