@@ -29,6 +29,7 @@ import {
 	CHILD_RPC_OVERSIZED_JSON_EVENT_ERROR as OVERSIZED_CHILD_JSON_EVENT_ERROR,
 	CHILD_RPC_SKIPPED_TEXT_PART_TYPE as SKIPPED_TEXT_PART_TYPE,
 } from "../../shared/child-rpc-stream";
+import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -648,6 +649,9 @@ async function runResolvedChildPi(
 				progress.emit("running");
 			}
 		},
+		recordCost(message) {
+			recordHelperApiCost(options.pi, "run-subagent", message);
+		},
 	});
 }
 
@@ -911,6 +915,7 @@ async function runChildPi(
 		readonly signal: AbortSignal | undefined;
 		readonly prompt: string;
 		readonly onSessionEvent: (event: unknown) => void;
+		readonly recordCost: (message: { readonly usage?: unknown }) => void;
 	},
 ): Promise<ChildRunResult> {
 	return new Promise((resolve) => {
@@ -929,6 +934,7 @@ async function runChildPi(
 				message,
 				rpcState,
 				onSessionEvent: options.onSessionEvent,
+				recordCost: options.recordCost,
 				writeRpcCommand,
 				closeStdin,
 			});
@@ -1257,6 +1263,7 @@ function handleChildRpcMessage(options: {
 	readonly message: unknown;
 	readonly rpcState: ChildRpcState;
 	readonly onSessionEvent: (event: unknown) => void;
+	readonly recordCost: (message: { readonly usage?: unknown }) => void;
 	readonly writeRpcCommand: (command: Record<string, unknown>) => void;
 	readonly closeStdin: () => void;
 }): void {
@@ -1298,11 +1305,15 @@ function handleChildRpcSessionEvent(
 	options: {
 		readonly rpcState: ChildRpcState;
 		readonly onSessionEvent: (event: unknown) => void;
+		readonly recordCost: (message: { readonly usage?: unknown }) => void;
 		readonly closeStdin: () => void;
 	},
 ): void {
 	if (options.rpcState.agentCompleted) {
 		return;
+	}
+	if (isAssistantMessageEnd(message)) {
+		options.recordCost(message.message);
 	}
 	resetChildAssistantDeltaOnStart(options.rpcState.outputState, message);
 	recordChildAssistantDelta(options.rpcState.outputState, message);
@@ -1615,7 +1626,10 @@ function isAssistantMessageStart(event: unknown): boolean {
 }
 
 /** Returns true when a child event completes the current assistant message stream. */
-function isAssistantMessageEnd(event: unknown): boolean {
+function isAssistantMessageEnd(event: unknown): event is {
+	readonly type: "message_end";
+	readonly message: { readonly role: "assistant"; readonly usage?: unknown };
+} {
 	if (!isRecord(event) || event["type"] !== "message_end") {
 		return false;
 	}

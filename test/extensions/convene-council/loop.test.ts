@@ -17,6 +17,7 @@ import {
 	isCouncilRunDetails,
 } from "../../../pi-package/extensions/convene-council/progress";
 import type { ParticipantRunnerFactory } from "../../../pi-package/extensions/convene-council/types";
+import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import {
 	withIsolatedAgentDir,
 	writeEnabledConfig,
@@ -970,9 +971,9 @@ describe("convene-council loop", () => {
 
 	test("emits participant child tool events in live TUI progress", async () => {
 		// Purpose: child RPC tool activity must be visible while council participants are working.
-		// Input and expected output: participant runners emit tool start/end events and progress details include A/B labeled tool rows.
+		// Input and expected output: participant runners emit tool start/end events, progress details include A/B labeled tool rows, and participant response costs are recorded.
 		// Edge case: full tool output is bounded and does not leak the raw long suffix into live details.
-		// Dependencies: fake participant runner events and the tool onUpdate callback.
+		// Dependencies: fake participant runner events, helper cost entries, and the tool onUpdate callback.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeEnabledConfig(agentDir, {});
 			const model = createModel("openai", "model-a");
@@ -1014,6 +1015,9 @@ describe("convene-council loop", () => {
 							role: "assistant",
 							usage: {
 								totalTokens: options.participantId === "llm1" ? 12_345 : 67_890,
+								cost: {
+									total: options.participantId === "llm1" ? 0.31 : 0.41,
+								},
 							},
 						},
 					});
@@ -1026,6 +1030,10 @@ describe("convene-council loop", () => {
 				async dispose() {},
 			});
 			const pi = createExtensionApiFake();
+			const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
+			pi.appendEntry = (customType: string, data: unknown): void => {
+				appendEntryCalls.push({ customType, data });
+			};
 			conveneCouncil(pi, { createParticipantRunner });
 			const updates: AgentToolResult<unknown>[] = [];
 
@@ -1071,6 +1079,14 @@ describe("convene-council loop", () => {
 			expect(finalParticipantsJson).toContain('"tokens":12345');
 			expect(finalParticipantsJson).toContain('"tokens":67890');
 			expect(finalParticipantsJson).toContain('"contextWindow":100000');
+			expect(appendEntryCalls).toContainEqual({
+				customType: HELPER_API_COST_CUSTOM_TYPE,
+				data: { source: "convene-council", cost: 0.31 },
+			});
+			expect(appendEntryCalls).toContainEqual({
+				customType: HELPER_API_COST_CUSTOM_TYPE,
+				data: { source: "convene-council", cost: 0.41 },
+			});
 		});
 	});
 

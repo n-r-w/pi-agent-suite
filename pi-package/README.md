@@ -180,7 +180,7 @@ Options:
 - `showProvider`: default `true`. Shows the provider name.
 - `showModel`: default `true`. Shows the model name.
 - `showThinkingLevel`: default `true`. Shows the thinking level.
-- `showApiCost`: default `true`. Shows cumulative API cost from the current session.
+- `showApiCost`: default `true`. Shows recorded cumulative API cost from the current session, including helper calls from `consult-advisor`, `context-projection`, `convene-council`, `custom-compaction`, and `run-subagent`.
 
 How it works:
 
@@ -200,7 +200,7 @@ workspace · 100%/5h 65%/5d · $0.123 · Coder · openai-codex/gpt-5.5/high · ~
 | --- | --- | --- |
 | Project | `workspace` | Current repository or directory. |
 | Codex quota | `100%/5h 65%/5d` | Remaining quota and reset windows. |
-| API cost | `$0.123` | Cumulative API cost from assistant usage in the current session. |
+| API cost | `$0.123` | Recorded cumulative API cost from assistant usage and helper model calls in the current session. |
 | Agent | `Coder` or `No agent` | Active main agent, or `No agent` when no main agent is active. |
 | Model | `openai-codex/gpt-5.5/high` | Provider, model, and reasoning level. |
 | Projection | `~80k` | Tokens saved by context projection. |

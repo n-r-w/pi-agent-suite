@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	CHILD_RPC_MALFORMED_OUTPUT_ERROR,
+	CHILD_RPC_SKIPPED_TEXT_PART_TYPE,
 	ChildRpcStreamParser,
 } from "../../pi-package/shared/child-rpc-stream";
 
@@ -55,6 +56,38 @@ describe("child RPC stream parser", () => {
 				toolName: "read",
 				isError: false,
 				result: { content: [{ type: "text", text: "image inspected" }] },
+			},
+		]);
+	});
+
+	test("preserves helper cost from oversized message_end projection", async () => {
+		// Purpose: helper cost accounting must still see child usage when large child messages are projected.
+		// Input and expected output: an oversized assistant message_end keeps only role, content markers, stop reason, and usage.cost.total.
+		// Edge case: large text content is replaced by a skipped-text marker while minimal cost metadata remains available.
+		// Dependencies: stream-json is used by the production parser for oversized event projection.
+		const parser = new ChildRpcStreamParser();
+		const events: unknown[] = [];
+		const line = `${JSON.stringify({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "x".repeat(300_000) }],
+				usage: { cost: { total: 0.9 } },
+				stopReason: "stop",
+			},
+		})}\n`;
+
+		expect(await processStdout(parser, line, events)).toBe(undefined);
+
+		expect(events).toEqual([
+			{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: CHILD_RPC_SKIPPED_TEXT_PART_TYPE }],
+					stopReason: "stop",
+					usage: { cost: { total: 0.9 } },
+				},
 			},
 		]);
 	});

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import customCompaction from "../../../pi-package/extensions/custom-compaction/index";
+import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -26,6 +27,7 @@ interface Notification {
 
 interface ExtensionApiFake extends ExtensionAPI {
 	readonly handlers: RegisteredHandler[];
+	readonly appendEntryCalls: Array<{ customType: string; data: unknown }>;
 }
 
 interface SessionContextFake {
@@ -92,11 +94,16 @@ interface CompactEvent {
 /** Creates the ExtensionAPI fake needed to observe compaction lifecycle hooks. */
 function createExtensionApiFake(thinkingLevel = "high"): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
+	const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
 
 	return {
 		handlers,
+		appendEntryCalls,
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
+		},
+		appendEntry(customType: string, data: unknown): void {
+			appendEntryCalls.push({ customType, data });
 		},
 		getThinkingLevel(): string {
 			return thinkingLevel;
@@ -339,7 +346,7 @@ async function writeConfig(agentDir: string, config: unknown): Promise<void> {
 }
 
 /** Creates the assistant response returned by the fake model layer. */
-function createAssistantResponse(text: string): AssistantMessage {
+function createAssistantResponse(text: string, cost = 0): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
@@ -352,7 +359,13 @@ function createAssistantResponse(text: string): AssistantMessage {
 			cacheRead: 0,
 			cacheWrite: 0,
 			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			cost: {
+				input: 0,
+				output: cost,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: cost,
+			},
 		},
 		stopReason: "stop",
 		timestamp: 1,
@@ -366,15 +379,17 @@ afterEach(() => {
 describe("custom-compaction", () => {
 	test("uses default prompts, current model, and current thinking when config file is missing", async () => {
 		// Purpose: custom-compaction is enabled by default and must use Pi's active runtime by default.
-		// Input and expected output: no custom-compaction.json returns a custom compaction using bundled prompts, current model, and current thinking.
+		// Input and expected output: no custom-compaction.json returns a custom compaction using bundled prompts, current model, current thinking, and recorded helper costs.
 		// Edge case: the config directory itself is absent, so all defaults come from the extension and active Pi runtime.
-		// Dependencies: this test uses mocked completeSimple, an in-memory ExtensionAPI fake, and a temp agent directory.
+		// Dependencies: this test uses mocked completeSimple, an in-memory ExtensionAPI fake, helper cost entries, and a temp agent directory.
 		await withIsolatedAgentDir(async () => {
 			completeSimpleMock
 				.mockResolvedValueOnce(
-					createAssistantResponse("default history summary"),
+					createAssistantResponse("default history summary", 0.6),
 				)
-				.mockResolvedValueOnce(createAssistantResponse("default turn summary"));
+				.mockResolvedValueOnce(
+					createAssistantResponse("default turn summary", 0.7),
+				);
 			const pi = createExtensionApiFake("high");
 			const currentModel = createModel("current", "model");
 			const session = createSessionContextFake({ currentModel });
@@ -395,6 +410,15 @@ describe("custom-compaction", () => {
 			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
 			const [, , options] = completeSimpleMock.mock.calls[0] ?? [];
 			expect(options).toMatchObject({ reasoning: "high" });
+			expect(pi.appendEntryCalls).toHaveLength(2);
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: HELPER_API_COST_CUSTOM_TYPE,
+				data: { source: "custom-compaction", cost: 0.6 },
+			});
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: HELPER_API_COST_CUSTOM_TYPE,
+				data: { source: "custom-compaction", cost: 0.7 },
+			});
 			expect(session.notifications).toEqual([]);
 		});
 	});

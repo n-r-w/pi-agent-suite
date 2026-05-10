@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	type Api,
+	type AssistantMessage,
 	type Context,
 	completeSimple,
 	type Model,
@@ -19,6 +20,7 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	buildRetryConfig,
 	createRetryableExternalError,
@@ -221,6 +223,9 @@ export default function customCompaction(pi: ExtensionAPI): void {
 				event.signal,
 			),
 			retry: config.config.retry,
+			recordCost: (message) => {
+				recordHelperApiCost(pi, "custom-compaction", message);
+			},
 		});
 		if (summary === undefined) {
 			reportIssue(session, "model response did not contain text summary");
@@ -558,12 +563,14 @@ async function generateCompactionSummary({
 	model,
 	baseOptions,
 	retry,
+	recordCost,
 }: {
 	readonly event: SessionBeforeCompactEvent;
 	readonly prompts: CustomCompactionPrompts;
 	readonly model: Model<Api>;
 	readonly baseOptions: SimpleStreamOptions;
 	readonly retry: RetryConfig;
+	readonly recordCost: (message: AssistantMessage) => void;
 }): Promise<string | undefined> {
 	if (
 		event.preparation.isSplitTurn &&
@@ -571,27 +578,29 @@ async function generateCompactionSummary({
 	) {
 		const [historySummary, turnPrefixSummary] = await Promise.all([
 			event.preparation.messagesToSummarize.length > 0
-				? executeSummaryRequest(
+				? executeSummaryRequest({
 						model,
-						buildHistorySummaryContext(event, prompts),
-						buildSummaryCompletionOptions(
+						context: buildHistorySummaryContext(event, prompts),
+						options: buildSummaryCompletionOptions(
 							baseOptions,
 							event,
 							HISTORY_SUMMARY_RESERVE_RATIO,
 						),
 						retry,
-					)
+						recordCost,
+					})
 				: Promise.resolve("No prior history."),
-			executeSummaryRequest(
+			executeSummaryRequest({
 				model,
-				buildTurnPrefixSummaryContext(event, prompts),
-				buildSummaryCompletionOptions(
+				context: buildTurnPrefixSummaryContext(event, prompts),
+				options: buildSummaryCompletionOptions(
 					baseOptions,
 					event,
 					TURN_PREFIX_SUMMARY_RESERVE_RATIO,
 				),
 				retry,
-			),
+				recordCost,
+			}),
 		]);
 		if (historySummary === undefined || turnPrefixSummary === undefined) {
 			return undefined;
@@ -600,16 +609,17 @@ async function generateCompactionSummary({
 		return `${historySummary}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixSummary}`;
 	}
 
-	return executeSummaryRequest(
+	return executeSummaryRequest({
 		model,
-		buildHistorySummaryContext(event, prompts),
-		buildSummaryCompletionOptions(
+		context: buildHistorySummaryContext(event, prompts),
+		options: buildSummaryCompletionOptions(
 			baseOptions,
 			event,
 			HISTORY_SUMMARY_RESERVE_RATIO,
 		),
 		retry,
-	);
+		recordCost,
+	});
 }
 
 /** Builds a summary request for normal history or previous-summary updates. */
@@ -673,17 +683,27 @@ function buildSummaryContext(
 	};
 }
 
+interface ExecuteSummaryRequestOptions {
+	readonly model: Model<Api>;
+	readonly context: Context;
+	readonly options: SimpleStreamOptions;
+	readonly retry: RetryConfig;
+	readonly recordCost: (message: AssistantMessage) => void;
+}
+
 /** Sends one summary request and extracts a text response. */
-async function executeSummaryRequest(
-	model: Model<Api>,
-	context: Context,
-	options: SimpleStreamOptions,
-	retry: RetryConfig,
-): Promise<string | undefined> {
+async function executeSummaryRequest({
+	model,
+	context,
+	options,
+	retry,
+	recordCost,
+}: ExecuteSummaryRequestOptions): Promise<string | undefined> {
 	try {
 		const response = await withRetry(
 			async () => {
 				const answer = await completeSimple(model, context, options);
+				recordCost(answer);
 				if (answer.stopReason === "error") {
 					throw createRetryableExternalError(
 						answer.errorMessage ?? "compaction provider returned an error",

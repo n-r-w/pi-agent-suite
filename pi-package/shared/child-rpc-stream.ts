@@ -93,9 +93,11 @@ interface ChildRpcLineProjection {
 interface ChildRpcLineProjectionState {
 	readonly stack: JsonProjectionContainer[];
 	currentString: JsonProjectionString | undefined;
+	currentNumber: JsonProjectionNumber | undefined;
 	eventType: string | undefined;
 	role: string | undefined;
 	stopReason: string | undefined;
+	helperCostTotal: number | undefined;
 	assistantMessageEventType: string | undefined;
 	assistantMessageEventDelta: string | undefined;
 	assistantMessageEventDeltaBytes: number;
@@ -127,6 +129,11 @@ interface JsonProjectionString {
 	readonly path: readonly string[];
 	text: string;
 	truncated: boolean;
+}
+
+interface JsonProjectionNumber {
+	readonly path: readonly string[];
+	text: string;
 }
 
 /** Parses child RPC stdout and stderr streams. */
@@ -313,9 +320,11 @@ function createChildRpcLineProjection(): ChildRpcLineProjection {
 	const state: ChildRpcLineProjectionState = {
 		stack: [],
 		currentString: undefined,
+		currentNumber: undefined,
 		eventType: undefined,
 		role: undefined,
 		stopReason: undefined,
+		helperCostTotal: undefined,
 		assistantMessageEventType: undefined,
 		assistantMessageEventDelta: undefined,
 		assistantMessageEventDeltaBytes: 0,
@@ -401,7 +410,16 @@ function recordChildRpcProjectionToken(
 		case "stringChunk":
 			recordJsonProjectionStringChunk(state, token.value);
 			return;
+		case "startNumber":
+			startJsonProjectionNumberValue(state);
+			return;
+		case "numberChunk":
+			recordJsonProjectionNumberChunk(state, token.value);
+			return;
+		case "endNumber":
 		case "numberValue":
+			finishJsonProjectionNumberValue(state, token.value);
+			return;
 		case "nullValue":
 			consumeJsonProjectionValuePath(state);
 			return;
@@ -683,6 +701,47 @@ function recordJsonProjectionStringValue(
 	}
 }
 
+/** Starts collecting a number value only when its path can affect helper-cost accounting. */
+function startJsonProjectionNumberValue(
+	state: ChildRpcLineProjectionState,
+): void {
+	state.currentNumber = {
+		path: consumeJsonProjectionValuePath(state),
+		text: "",
+	};
+}
+
+/** Records one numeric chunk for projected helper-cost accounting. */
+function recordJsonProjectionNumberChunk(
+	state: ChildRpcLineProjectionState,
+	value: unknown,
+): void {
+	if (state.currentNumber === undefined) {
+		return;
+	}
+	state.currentNumber.text += String(value);
+}
+
+/** Applies one completed number value to projected RPC event metadata. */
+function finishJsonProjectionNumberValue(
+	state: ChildRpcLineProjectionState,
+	value: unknown,
+): void {
+	const currentNumber = state.currentNumber;
+	state.currentNumber = undefined;
+	const path = currentNumber?.path ?? consumeJsonProjectionValuePath(state);
+	if (!isJsonProjectionPath(path, "message", "usage", "cost", "total")) {
+		return;
+	}
+
+	const rawValue = value ?? currentNumber?.text;
+	const numericValue =
+		typeof rawValue === "number" ? rawValue : Number(rawValue);
+	if (Number.isFinite(numericValue)) {
+		state.helperCostTotal = numericValue;
+	}
+}
+
 /** Applies one completed boolean value to the projected RPC event metadata. */
 function recordJsonProjectionBooleanValue(
 	state: ChildRpcLineProjectionState,
@@ -792,6 +851,9 @@ function buildProjectedMessageEndEvent(
 			...(state.stopReason === undefined
 				? {}
 				: { stopReason: state.stopReason }),
+			...(state.helperCostTotal === undefined
+				? {}
+				: { usage: { cost: { total: state.helperCostTotal } } }),
 		},
 	};
 }

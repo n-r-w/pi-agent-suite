@@ -106,6 +106,7 @@ export interface ExecuteConveneCouncilOptions {
 	readonly currentThinkingLevel: unknown;
 	readonly contextFiles: readonly ProjectContextFile[];
 	readonly availableTools: readonly ToolInfo[];
+	readonly recordCost: (message: { readonly usage?: unknown }) => void;
 	readonly onUpdate?: (partial: AgentToolResult<unknown>) => void;
 }
 

@@ -19,7 +19,9 @@
 - Shows the selected agent status from status key `agent`.
 - Shows the context projection status from status key `context-projection`.
 - Shows the Codex quota status from status key `codex-quota`.
-- Shows cumulative API cost from assistant usage stored in the pi session.
+- Shows recorded cumulative API cost from assistant usage stored in the pi session and helper model calls stored as extension custom entries.
+- Counts recorded helper model calls from `consult-advisor`, `context-projection`, `convene-council`, `custom-compaction`, and `run-subagent`.
+- Ignores helper cost persistence failures and keeps the helper result available.
 - Shows API cost as `$0.123` and adds ` (sub)` for OAuth subscription models.
 - Shows MCP errors only for status keys `mcp` and `mcp-*` when the status text means an error.
 - Keeps footer lines within the terminal width.
@@ -68,6 +70,7 @@ Tests must verify:
 - context usage when context-overflow config is invalid;
 - context usage coloring at `50%` and `80%` boundaries;
 - reasoning coloring for `xhigh`, `high`, `medium`, `low`, `minimal`, and `off`;
+- API cost aggregation from assistant usage and recorded helper model calls;
 - rendering order for `codex-quota`, API cost, `agent`, `context-projection`, and context usage;
 - MCP status filtering;
 - footer width staying within terminal width;

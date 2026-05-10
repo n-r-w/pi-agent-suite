@@ -6,6 +6,7 @@ import {
 	type Api,
 	type Context,
 	completeSimple as defaultCompleteSimple,
+	type AssistantMessage as LlmAssistantMessage,
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
@@ -45,6 +46,7 @@ import {
 	countProjectionTextTokens,
 	estimateSerializedInputTokens,
 } from "../../shared/context-size";
+import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	buildRetryConfig,
 	createRetryableExternalError,
@@ -134,7 +136,7 @@ type SummaryAttemptResult =
 	| { readonly kind: "fatal" };
 
 interface ProjectionDecisionOptions {
-	readonly pi: Pick<ExtensionAPI, "getThinkingLevel">;
+	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
 	readonly ctx: ExtensionContext;
 	readonly config: ContextProjectionConfig;
 	readonly mappedContext: readonly MappedContextEntry[];
@@ -156,7 +158,7 @@ interface ProjectionProgressReporter {
 }
 
 interface SummaryReplacementOptions {
-	readonly pi: Pick<ExtensionAPI, "getThinkingLevel">;
+	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
 	readonly ctx: ExtensionContext;
 	readonly config: ContextProjectionConfig;
 	readonly mappedContext: readonly MappedContextEntry[];
@@ -548,6 +550,9 @@ async function createSummaryReplacementsByEntryId({
 				completeSimple,
 				config: config.summary,
 				progress,
+				recordCost: (message) => {
+					recordHelperApiCost(pi, "context-projection", message);
+				},
 			});
 			if (summary === undefined) {
 				progress.notifySummaryUnavailable();
@@ -767,12 +772,14 @@ async function summarizeProjectionCandidateWithRetries({
 	completeSimple,
 	config,
 	progress,
+	recordCost,
 }: {
 	readonly candidate: ProjectionSummaryCandidate;
 	readonly runtimeConfig: SummaryRuntimeConfig;
 	readonly completeSimple: CompleteSimple;
 	readonly config: ContextProjectionSummaryConfig;
 	readonly progress: ProjectionProgressReporter;
+	readonly recordCost: (message: LlmAssistantMessage) => void;
 }): Promise<string | undefined> {
 	let attempt = 0;
 	try {
@@ -787,6 +794,7 @@ async function summarizeProjectionCandidateWithRetries({
 					candidate,
 					runtimeConfig,
 					completeSimple,
+					recordCost,
 				);
 				if (result.kind === "success") {
 					return result.summary;
@@ -826,6 +834,7 @@ async function summarizeProjectionCandidate(
 	candidate: ProjectionSummaryCandidate,
 	runtimeConfig: SummaryRuntimeConfig,
 	completeSimple: CompleteSimple,
+	recordCost: (message: LlmAssistantMessage) => void,
 ): Promise<SummaryAttemptResult> {
 	const context = buildSummaryContext(candidate, runtimeConfig);
 	if (!doesSummaryInputFitContextWindow(context, runtimeConfig)) {
@@ -841,6 +850,7 @@ async function summarizeProjectionCandidate(
 			context,
 			runtimeConfig.options,
 		);
+		recordCost(response);
 		if (response.stopReason === "error") {
 			return { kind: "retryable" };
 		}

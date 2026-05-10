@@ -27,6 +27,7 @@ import {
 	replayContextProjection,
 } from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
+import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -125,6 +126,7 @@ interface ExecuteConsultAdvisorOptions {
 	readonly currentThinkingLevel: unknown;
 	readonly loadedSkillRoots: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];
+	readonly recordCost: (message: AssistantMessage) => void;
 }
 
 /** Extension entry point for advisor consultation behavior. */
@@ -172,6 +174,9 @@ export default function consultAdvisor(
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
 				contextFiles,
+				recordCost: (message) => {
+					recordHelperApiCost(pi, "consult-advisor", message);
+				},
 			});
 		},
 	});
@@ -187,6 +192,7 @@ async function executeConsultAdvisor({
 	currentThinkingLevel,
 	loadedSkillRoots,
 	contextFiles,
+	recordCost,
 }: ExecuteConsultAdvisorOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readAdvisorConfig();
 	if ("disabled" in configResult) {
@@ -242,6 +248,7 @@ async function executeConsultAdvisor({
 		context,
 		options,
 		retry: configResult.config.retry,
+		recordCost,
 	});
 	if ("issue" in answer) {
 		return errorResult(answer.issue);
@@ -667,6 +674,7 @@ async function executeAdvisorModelWithRetry({
 	context,
 	options,
 	retry,
+	recordCost,
 }: {
 	readonly completeSimple: NonNullable<
 		ConsultAdvisorDependencies["completeSimple"]
@@ -675,11 +683,13 @@ async function executeAdvisorModelWithRetry({
 	readonly context: Context;
 	readonly options: SimpleStreamOptions;
 	readonly retry: RetryConfig;
+	readonly recordCost: (message: AssistantMessage) => void;
 }): Promise<AssistantMessage | { readonly issue: string }> {
 	try {
 		return await withRetry(
 			async () => {
 				const answer = await completeSimple(runtime.model, context, options);
+				recordCost(answer);
 				if (answer.stopReason === "error") {
 					throw createRetryableExternalError(
 						answer.errorMessage ?? "advisor provider returned an error",

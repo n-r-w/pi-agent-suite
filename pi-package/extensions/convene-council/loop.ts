@@ -60,6 +60,7 @@ export async function executeConveneCouncil({
 	currentThinkingLevel,
 	contextFiles,
 	availableTools,
+	recordCost,
 	onUpdate,
 }: ExecuteConveneCouncilOptions): Promise<AgentToolResult<unknown>> {
 	const configResult = await readConveneCouncilConfig();
@@ -118,6 +119,7 @@ export async function executeConveneCouncil({
 		startupPlan,
 		toolArgs: toolArgs.args,
 		tools: selectParticipantTools(toolArgs.args, availableTools),
+		recordCost,
 	});
 }
 
@@ -188,8 +190,10 @@ async function createOwnedParticipantRunner(
 		tools: options.tools,
 		ctx: options.ctx,
 		signal: options.signal,
-		onSessionEvent: (event) =>
-			options.progress.recordSessionEvent(participantId, event),
+		onSessionEvent: (event) => {
+			recordParticipantCost(event, options.recordCost);
+			options.progress.recordSessionEvent(participantId, event);
+		},
 	});
 }
 
@@ -786,6 +790,32 @@ type ParticipantSessions = Awaited<
 	ReturnType<typeof createParticipantSessions>
 >;
 
+function recordParticipantCost(
+	event: unknown,
+	recordCost: (message: { readonly usage?: unknown }) => void,
+): void {
+	if (!isAssistantMessageEnd(event)) {
+		return;
+	}
+
+	recordCost(event.message);
+}
+
+function isAssistantMessageEnd(event: unknown): event is {
+	readonly type: "message_end";
+	readonly message: { readonly role: "assistant"; readonly usage?: unknown };
+} {
+	if (!isRecord(event) || event["type"] !== "message_end") {
+		return false;
+	}
+	const { message } = event;
+	return isRecord(message) && message["role"] === "assistant";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
 interface OwnedParticipantsOptions {
 	readonly externalContextPackage: string;
 	readonly config: ConveneCouncilConfig;
@@ -799,6 +829,7 @@ interface OwnedParticipantsOptions {
 	readonly startupPlan: ChildStartupPlan;
 	readonly toolArgs: readonly string[];
 	readonly tools: readonly Tool[];
+	readonly recordCost: ExecuteConveneCouncilOptions["recordCost"];
 }
 
 interface BaseCouncilOptions {

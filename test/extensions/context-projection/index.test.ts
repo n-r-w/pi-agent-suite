@@ -21,6 +21,7 @@ import {
 	replayContextProjection,
 	resetPendingProjectionSavings,
 } from "../../../pi-package/shared/context-projection";
+import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -371,6 +372,7 @@ function createModel(provider: string, id: string): Model<Api> {
 /** Creates a completion fake that records summary requests and returns one text block. */
 function createCompletionFake(
 	text = "Summary: important projected result.",
+	cost = 0,
 ): CompletionFake {
 	const calls: CompletionCall[] = [];
 
@@ -396,10 +398,10 @@ function createCompletionFake(
 					totalTokens: 2,
 					cost: {
 						input: 0,
-						output: 0,
+						output: cost,
 						cacheRead: 0,
 						cacheWrite: 0,
-						total: 0,
+						total: cost,
 					},
 				},
 				stopReason: "stop",
@@ -1481,7 +1483,7 @@ describe("context-projection", () => {
 		// Purpose: summary-enabled projection should preserve a short factual result summary instead of a blind placeholder.
 		// Input and expected output: one eligible tool result above the summary token threshold is replaced with the summary text and persisted with that replacement.
 		// Edge case: summary uses separate system and user prompts, with the user instruction placed after the tool result data.
-		// Dependencies: isolated config, custom prompt files, fake completion function, fake model registry, and context hook.
+		// Dependencies: isolated config, custom prompt files, fake completion function, fake model registry, context hook, and helper cost entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const systemPromptFile = join(agentDir, "config", "summary-system.md");
 			const userPromptFile = join(agentDir, "config", "summary-user.md");
@@ -1510,6 +1512,7 @@ describe("context-projection", () => {
 			);
 			const completion = createCompletionFake(
 				"Summary: command output proves the projection summary path.",
+				0.4,
 			);
 			const { pi, contextHandler } = installContextProjectionTestHarness({
 				completeSimple: completion.completeSimple,
@@ -1548,6 +1551,10 @@ describe("context-projection", () => {
 				],
 			});
 			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: HELPER_API_COST_CUSTOM_TYPE,
+					data: { source: "context-projection", cost: 0.4 },
+				},
 				{
 					customType: CUSTOM_TYPE,
 					data: {

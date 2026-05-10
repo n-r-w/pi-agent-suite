@@ -12,6 +12,7 @@ import {
 	addPendingProjectionSavings,
 	resetPendingProjectionSavings,
 } from "../../../pi-package/shared/context-projection";
+import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -65,6 +66,8 @@ interface SessionEntryFake {
 			};
 		};
 	};
+	readonly customType?: string;
+	readonly data?: unknown;
 }
 
 interface ExtensionApiFake extends ExtensionAPI {
@@ -165,6 +168,18 @@ function createMessageEntryFake(role: string, cost: number): SessionEntryFake {
 				},
 			},
 		},
+	};
+}
+
+/** Creates an extension-owned helper API cost entry that stays outside LLM context. */
+function createHelperApiCostEntryFake(
+	source: string,
+	cost: number,
+): SessionEntryFake {
+	return {
+		type: "custom",
+		customType: HELPER_API_COST_CUSTOM_TYPE,
+		data: { source, cost },
 	};
 }
 
@@ -767,14 +782,15 @@ describe("footer", () => {
 	});
 
 	test("renders API cost by default after Codex quota", async () => {
-		// Purpose: the custom footer must show the same cumulative API cost that pi tracks for the active session.
-		// Input and expected output: assistant messages with total costs 0.12 and 0.0034 render `$0.123` after the Codex quota segment.
+		// Purpose: the custom footer must show the active-session API cost plus extension helper costs.
+		// Input and expected output: assistant message costs 0.12 and 0.0034 plus helper cost 0.45 render `$0.573` after the Codex quota segment.
 		// Edge case: non-assistant message entries do not affect the displayed API cost.
 		// Dependencies: this test uses in-memory session entries instead of real session files.
 		const { footerRenderer } = await installFooterTestHarness({
 			sessionEntries: [
 				createMessageEntryFake("assistant", 0.12),
 				createMessageEntryFake("user", 100),
+				createHelperApiCostEntryFake("consult-advisor", 0.45),
 				createMessageEntryFake("assistant", 0.0034),
 			],
 		});
@@ -786,7 +802,7 @@ describe("footer", () => {
 		const renderedText = footerComponent.render(120).join("\n");
 
 		expect(renderedText).toContain(
-			["90%/2h", "$0.123", "No agent"].join(SEGMENT_SEPARATOR),
+			["90%/2h", "$0.573", "No agent"].join(SEGMENT_SEPARATOR),
 		);
 	});
 

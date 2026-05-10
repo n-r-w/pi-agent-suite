@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import { readConveneCouncilRegistrationState } from "./config";
 import { TOOL_NAME } from "./constants";
 import { executeConveneCouncil } from "./loop";
@@ -73,6 +74,9 @@ export default function conveneCouncil(
 				currentThinkingLevel: pi.getThinkingLevel(),
 				contextFiles,
 				availableTools: pi.getAllTools(),
+				recordCost: (message) => {
+					recordHelperApiCost(pi, "convene-council", message);
+				},
 				...(onUpdate !== undefined ? { onUpdate } : {}),
 			});
 		},

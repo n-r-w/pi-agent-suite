@@ -25,6 +25,7 @@ import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
 } from "../../../pi-package/shared/child-agent-environment";
+import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -62,6 +63,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 	readonly activeToolCalls: string[][];
 	readonly setModelCalls: Model<Api>[];
 	readonly thinkingCalls: string[];
+	readonly appendEntryCalls: Array<{ customType: string; data: unknown }>;
 }
 
 interface SpawnCall {
@@ -216,6 +218,7 @@ function createExtensionApiFake(
 	const activeToolCalls: string[][] = [];
 	const setModelCalls: Model<Api>[] = [];
 	const thinkingCalls: string[] = [];
+	const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
 	let currentActiveTools: string[] = [];
 
 	return {
@@ -225,6 +228,7 @@ function createExtensionApiFake(
 		activeToolCalls,
 		setModelCalls,
 		thinkingCalls,
+		appendEntryCalls,
 		events: {
 			emit(): void {},
 			on(): () => void {
@@ -244,6 +248,9 @@ function createExtensionApiFake(
 			commands.push({ name, handler: options.handler });
 		},
 		registerShortcut(): void {},
+		appendEntry(customType: string, data: unknown): void {
+			appendEntryCalls.push({ customType, data });
+		},
 		getAllTools(): ToolInfoFake[] {
 			return allToolNames.map((name) => ({
 				name,
@@ -1645,9 +1652,9 @@ describe("run-subagent", () => {
 
 	test("uses the latest assistant message before RPC completion", async () => {
 		// Purpose: final output must be the latest completed assistant message before agent_end.
-		// Input and expected output: two assistant message_end events before completion return the second answer.
-		// Edge case: earlier completed text must be replaced only by another completed assistant text.
-		// Dependencies: this test uses temp agent files and a fake child RPC process.
+		// Input and expected output: two assistant message_end events before completion return the second answer and record both child response costs.
+		// Edge case: earlier completed text must be replaced only by another completed assistant text without double-counting cost after completion.
+		// Dependencies: this test uses temp agent files, helper cost entries, and a fake child RPC process.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
 				id: "helper",
@@ -1659,17 +1666,19 @@ describe("run-subagent", () => {
 				rpcOutputLines(
 					{
 						type: "message_end",
-						message: {
-							role: "assistant",
-							content: [{ type: "text", text: "first answer" }],
-						},
+						message: childAssistantMessage("first answer", {
+							usage: {
+								cost: { total: 0.11 },
+							},
+						}),
 					},
 					{
 						type: "message_end",
-						message: {
-							role: "assistant",
-							content: [{ type: "text", text: "second answer" }],
-						},
+						message: childAssistantMessage("second answer", {
+							usage: {
+								cost: { total: 0.22 },
+							},
+						}),
 					},
 				),
 			);
@@ -1685,6 +1694,16 @@ describe("run-subagent", () => {
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "second answer" }],
 			});
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: HELPER_API_COST_CUSTOM_TYPE,
+					data: { source: "run-subagent", cost: 0.11 },
+				},
+				{
+					customType: HELPER_API_COST_CUSTOM_TYPE,
+					data: { source: "run-subagent", cost: 0.22 },
+				},
+			]);
 		});
 	});
 

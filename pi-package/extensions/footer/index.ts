@@ -16,6 +16,7 @@ import {
 	sliceTextSuffixByWidth,
 	truncateTextByWidth,
 } from "../../shared/display-width";
+import { sumHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	type ContextOverflowConfig,
 	readContextOverflowConfig,
@@ -425,8 +426,9 @@ function buildApiCostSegment(
 		return undefined;
 	}
 
-	let totalCost = 0;
-	for (const entry of ctx.sessionManager.getEntries()) {
+	const entries = ctx.sessionManager.getEntries();
+	let totalCost = sumHelperApiCost(entries);
+	for (const entry of entries) {
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			totalCost += entry.message.usage.cost.total;
 		}

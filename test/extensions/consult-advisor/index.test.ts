@@ -22,6 +22,7 @@ import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/c
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
+import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -68,6 +69,7 @@ interface CompletionResponseOutcome {
 	readonly content: AssistantMessage["content"];
 	readonly stopReason?: AssistantMessage["stopReason"];
 	readonly errorMessage?: string;
+	readonly cost?: number;
 }
 
 interface CompletionThrowOutcome {
@@ -545,7 +547,13 @@ function createAssistantResponse<TApi extends Api>(
 			cacheRead: 0,
 			cacheWrite: 0,
 			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			cost: {
+				input: 0,
+				output: outcome.cost ?? 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: outcome.cost ?? 0,
+			},
 		},
 		stopReason: outcome.stopReason ?? "stop",
 		...(outcome.errorMessage !== undefined
@@ -1111,9 +1119,9 @@ describe("consult-advisor", () => {
 
 	test("retries retryable advisor error responses before returning the answer", async () => {
 		// Purpose: provider responses with stopReason error must use the same retry path as thrown transient errors.
-		// Input and expected output: first response has retryable error metadata, second response returns visible text.
+		// Input and expected output: first response has retryable error metadata, second response returns visible text, and both response costs are recorded.
 		// Edge case: completeSimple resolves successfully but the assistant response marks the provider call as failed.
-		// Dependencies: temp config, fake model registry, and fake completeSimple sequence.
+		// Dependencies: temp config, fake model registry, fake completeSimple sequence, and in-memory helper cost entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
 				enabled: true,
@@ -1125,10 +1133,12 @@ describe("consult-advisor", () => {
 					content: [],
 					stopReason: "error",
 					errorMessage: "provider returned error 503",
+					cost: 0.2,
 				},
 				{
 					kind: "response",
 					content: [{ type: "text", text: "advisor recovered" }],
+					cost: 0.3,
 				},
 			]);
 			const pi = createExtensionApiFake();
@@ -1141,6 +1151,16 @@ describe("consult-advisor", () => {
 				content: [{ type: "text", text: "advisor recovered" }],
 			});
 			expect(completion.calls).toHaveLength(2);
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: HELPER_API_COST_CUSTOM_TYPE,
+					data: { source: "consult-advisor", cost: 0.2 },
+				},
+				{
+					customType: HELPER_API_COST_CUSTOM_TYPE,
+					data: { source: "consult-advisor", cost: 0.3 },
+				},
+			]);
 		});
 	});
 
