@@ -19,6 +19,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `context-overflow` | Yes | Runs compaction before the next provider request fails because the context is already too large. |
 | `completion-sound` | Yes | Plays a completion sound only when the top-level agent finishes. |
 | `cmux` | Yes | Sends a cmux notification only when the top-level agent finishes. |
+| `url-scheme` | No | Converts final assistant file references into editor links after verifying files exist. |
 | `system-prompt` | Yes | Replaces pi's base system prompt from a Markdown template with explicit runtime variables. |
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
@@ -415,6 +416,33 @@ How it works:
 - Uses a 5 second timeout for `cmux notify`.
 - Ignores cmux command failures so cmux issues do not interrupt the agent.
 - Does not register commands, tools, prompts, skills, split commands, zoxide commands, review commands, continue commands, or open commands.
+
+### `url-scheme`
+
+Why you need it:
+
+- Converts final assistant file references into Markdown links that open the file in your editor.
+- Keeps intermediate tool-use messages unchanged.
+- Avoids broken links by checking that the referenced file exists before rewriting text.
+
+Config file: `~/.pi/agent/agent-suite/url-scheme/config.json`
+
+Options:
+
+- `enabled`: default `false`. Must be `true` to rewrite final assistant messages.
+- `scheme`: default `vscode`. Allowed values: `vscode`, `cursor`, `webstorm`, `idea`, `pycharm`, `phpstorm`, `txmt`, `bbedit`.
+
+How it works:
+
+- Runs on final assistant `message_end` events with `stop` or `length` stop reasons.
+- Skips tool-use, error, and aborted assistant messages.
+- Removes `textSignature` from text blocks whose text is changed.
+- Skips inline code, fenced code blocks, existing Markdown links, and Markdown images.
+- Supports relative paths, absolute paths, `path:line`, and `path:line:column`.
+- Percent-encodes URL path and query values, including spaces, `#`, `?`, `&`, Unicode, and Windows paths.
+- Leaves the assistant message unchanged when config is invalid or the file does not exist.
+
+More details: [docs/extensions/url-scheme.md](docs/extensions/url-scheme.md)
 
 ### `system-prompt`
 
