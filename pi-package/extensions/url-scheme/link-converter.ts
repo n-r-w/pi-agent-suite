@@ -27,8 +27,12 @@ const FENCED_CODE_BLOCK_REGEX = /(^|\n)```[\s\S]*?(?:\n```|$)/gu;
 /** Detects existing Markdown links and images that must not be modified. */
 const MARKDOWN_LINK_OR_IMAGE_REGEX = /!?\[[^\]]*\]\([^)]*\)/gu;
 
-/** Detects inline Markdown code spans that must not be modified. */
-const INLINE_CODE_REGEX = /`[^`\n]+`/gu;
+/** Detects existing Markdown links and images with parseable label and target spans. */
+const MARKDOWN_LINK_OR_IMAGE_PARSE_REGEX =
+	/(?<image>!)?\[(?<label>[^\]]*)\]\((?<target>[^)]*)\)/gu;
+
+/** Detects single-backtick spans that may contain one file reference. */
+const SINGLE_BACKTICK_SPAN_REGEX = /`([^`\n]+)`/gu;
 
 /** Detects non-boundary characters after a colon that make a line suffix invalid. */
 const INVALID_SUFFIX_TAIL_REGEX = /^[^\s,;)}\]]+/u;
@@ -129,29 +133,44 @@ function convertTextReferences(options: {
 	readonly scheme: SupportedScheme;
 	readonly fileExists: FileExists;
 }): string | undefined {
-	const protectedRanges = collectProtectedRanges(options.text);
 	const existenceCache = new Map<string, boolean>();
+	const textWithConvertedLinks = convertMarkdownFileLinks({
+		text: options.text,
+		cwd: options.cwd,
+		scheme: options.scheme,
+		fileExists: options.fileExists,
+		existenceCache,
+	});
+	const textWithConvertedBackticks = convertSingleBacktickFileReferences({
+		text: textWithConvertedLinks.text,
+		cwd: options.cwd,
+		scheme: options.scheme,
+		fileExists: options.fileExists,
+		existenceCache,
+	});
+	const sourceText = textWithConvertedBackticks.text;
+	const protectedRanges = collectProtectedRanges(sourceText);
 	let changed = false;
 	let output = "";
 	let index = 0;
 
-	while (index < options.text.length) {
+	while (index < sourceText.length) {
 		const protectedRange = findProtectedRangeAt(protectedRanges, index);
 		if (protectedRange !== undefined) {
-			output += options.text.slice(protectedRange.start, protectedRange.end);
+			output += sourceText.slice(protectedRange.start, protectedRange.end);
 			index = protectedRange.end;
 			continue;
 		}
 
 		const match = findFileReferenceAt({
-			text: options.text,
+			text: sourceText,
 			index,
 			cwd: options.cwd,
 			fileExists: options.fileExists,
 			existenceCache,
 		});
 		if (match === undefined) {
-			output += options.text[index] ?? "";
+			output += sourceText[index] ?? "";
 			index += 1;
 			continue;
 		}
@@ -166,7 +185,129 @@ function convertTextReferences(options: {
 		index += match.consumedLength;
 	}
 
-	return changed ? output : undefined;
+	return changed ||
+		textWithConvertedLinks.changed ||
+		textWithConvertedBackticks.changed
+		? output
+		: undefined;
+}
+
+/** Rewrites Markdown links whose target points to an existing file. */
+function convertMarkdownFileLinks(options: {
+	readonly text: string;
+	readonly cwd: string;
+	readonly scheme: SupportedScheme;
+	readonly fileExists: FileExists;
+	readonly existenceCache: Map<string, boolean>;
+}): { readonly text: string; readonly changed: boolean } {
+	let changed = false;
+	const text = options.text.replace(
+		MARKDOWN_LINK_OR_IMAGE_PARSE_REGEX,
+		(match: string, ...args: unknown[]): string => {
+			const groups = args.at(-1);
+			if (!isRecord(groups) || groups["image"] === "!") {
+				return match;
+			}
+
+			const label = groups["label"];
+			const target = groups["target"];
+			if (typeof label !== "string" || typeof target !== "string") {
+				return match;
+			}
+
+			const parsedReference = parseReferenceSuffix(target);
+			const fileLink = buildExistingFileLink({
+				cwd: options.cwd,
+				referenceText: target,
+				parsedReference,
+				scheme: options.scheme,
+				fileExists: options.fileExists,
+				existenceCache: options.existenceCache,
+			});
+			if (fileLink === undefined) {
+				return match;
+			}
+
+			changed = true;
+			return `[${label}](${fileLink.url})`;
+		},
+	);
+
+	return { text, changed };
+}
+
+/** Converts exact file references wrapped in single backticks and removes those backticks. */
+function convertSingleBacktickFileReferences(options: {
+	readonly text: string;
+	readonly cwd: string;
+	readonly scheme: SupportedScheme;
+	readonly fileExists: FileExists;
+	readonly existenceCache: Map<string, boolean>;
+}): { readonly text: string; readonly changed: boolean } {
+	let changed = false;
+	const text = options.text.replace(
+		SINGLE_BACKTICK_SPAN_REGEX,
+		(match: string, referenceText: string): string => {
+			const parsedReference = parseReferenceSuffix(referenceText);
+			const fileLink = buildExistingFileLink({
+				cwd: options.cwd,
+				referenceText,
+				parsedReference,
+				scheme: options.scheme,
+				fileExists: options.fileExists,
+				existenceCache: options.existenceCache,
+			});
+			if (fileLink === undefined) {
+				return match;
+			}
+
+			changed = true;
+			return `[${referenceText}](${fileLink.url})`;
+		},
+	);
+
+	return { text, changed };
+}
+
+/** Builds link data only when the parsed reference points to an existing file. */
+function buildExistingFileLink(options: {
+	readonly cwd: string;
+	readonly referenceText: string;
+	readonly parsedReference: ParsedReferenceSuffix;
+	readonly scheme: SupportedScheme;
+	readonly fileExists: FileExists;
+	readonly existenceCache: Map<string, boolean>;
+}): { readonly absolutePath: string; readonly url: string } | undefined {
+	if (!couldBeSupportedPath(options.parsedReference.filePath)) {
+		return undefined;
+	}
+
+	const absolutePath = resolveReferencePath(
+		options.cwd,
+		options.parsedReference.filePath,
+	);
+	const exists = cachedFileExists(
+		absolutePath,
+		options.fileExists,
+		options.existenceCache,
+	);
+	if (!exists) {
+		return undefined;
+	}
+
+	return {
+		absolutePath,
+		url: formatEditorUrl({
+			scheme: options.scheme,
+			absolutePath,
+			...(options.parsedReference.line === undefined
+				? {}
+				: { line: options.parsedReference.line }),
+			...(options.parsedReference.column === undefined
+				? {}
+				: { column: options.parsedReference.column }),
+		}),
+	};
 }
 
 /** Finds one file reference at a text position by selecting the longest existing file prefix. */
@@ -382,7 +523,6 @@ function collectProtectedRanges(text: string): readonly TextRange[] {
 	const ranges: TextRange[] = [];
 	collectRegexRanges(text, FENCED_CODE_BLOCK_REGEX, ranges);
 	collectRegexRanges(text, MARKDOWN_LINK_OR_IMAGE_REGEX, ranges);
-	collectRegexRanges(text, INLINE_CODE_REGEX, ranges);
 
 	return mergeRanges(ranges);
 }

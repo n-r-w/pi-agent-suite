@@ -378,9 +378,9 @@ describe("url-scheme", () => {
 		});
 	});
 
-	test("skips missing files, code, and existing Markdown links", async () => {
-		// Purpose: conversion must not alter unsafe or already formatted Markdown regions.
-		// Input and expected output: missing files, inline code, fenced code, links, and images stay unchanged.
+	test("skips missing files, fenced code blocks, and Markdown images", async () => {
+		// Purpose: conversion must not alter unsafe or non-link Markdown regions.
+		// Input and expected output: missing files, fenced code, and images stay unchanged.
 		// Edge case: a valid reference outside protected Markdown ranges is still converted.
 		// Dependencies: isolated suite config, real temporary file, and protected-range parsing.
 		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
@@ -388,11 +388,9 @@ describe("url-scheme", () => {
 			const file = await createProjectFile(cwd, "packages/foo/src/bar.ts");
 			const missingPath = "packages/foo/src/missing.ts";
 			const protectedText = [
-				`Inline \`${file.relativePath}\``,
 				"```ts",
 				file.relativePath,
 				"```",
-				`Existing [${file.relativePath}](${file.relativePath})`,
 				`Image ![${file.relativePath}](${file.relativePath})`,
 				`Missing ${missingPath}`,
 				`Valid ${file.relativePath}`,
@@ -406,14 +404,74 @@ describe("url-scheme", () => {
 
 			expect(result.text).toBe(
 				[
-					`Inline \`${file.relativePath}\``,
 					"```ts",
 					file.relativePath,
 					"```",
-					`Existing [${file.relativePath}](${file.relativePath})`,
 					`Image ![${file.relativePath}](${file.relativePath})`,
 					`Missing ${missingPath}`,
 					`Valid [${file.relativePath}](${expectedUrl})`,
+				].join("\n"),
+			);
+		});
+	});
+
+	test("removes single backticks around converted file references", async () => {
+		// Purpose: single backticks are emphasis in assistant prose and must not block file links.
+		// Input and expected output: a backticked file reference is converted and the surrounding backticks are removed.
+		// Edge case: backticked directories remain unchanged because only files are valid targets.
+		// Dependencies: isolated suite config, real temporary file and directory, and deterministic cwd.
+		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
+			await writeConfig(agentDir, { enabled: true });
+			const file = await createProjectFile(cwd, "internal/domain/model.go");
+			await mkdir(resolve(cwd, "internal/domain-only-dir"), {
+				recursive: true,
+			});
+			const expectedUrl = `vscode://file${encodePathForExpectedUrl(file.absolutePath)}`;
+
+			const result = await runMessageEnd({
+				cwd,
+				event: createAssistantMessageEndEvent(
+					`File \`${file.relativePath}:12\`, directory \`internal/domain-only-dir\``,
+				),
+			});
+
+			expect(result.text).toBe(
+				`File [${file.relativePath}:12](${expectedUrl}:12), directory \`internal/domain-only-dir\``,
+			);
+		});
+	});
+
+	test("rewrites existing Markdown links that point to files", async () => {
+		// Purpose: authored Markdown links should keep their label while file targets become editor URLs.
+		// Input and expected output: file link destinations are rewritten, while URLs, anchors, missing files, and images stay unchanged.
+		// Edge case: path line suffixes in Markdown link targets are preserved in the editor URL.
+		// Dependencies: isolated suite config, real temporary file, and Markdown link parsing.
+		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
+			await writeConfig(agentDir, { enabled: true });
+			const file = await createProjectFile(cwd, "packages/foo/src/bar.ts");
+			const expectedUrl = `vscode://file${encodePathForExpectedUrl(file.absolutePath)}`;
+			const text = [
+				`File [${file.relativePath}](${file.relativePath})`,
+				`Line [custom label](${file.relativePath}:12)`,
+				"URL [site](https://example.com/package.json)",
+				"Anchor [section](#section)",
+				"Missing [missing](does/not/exist.ts)",
+				`Image ![${file.relativePath}](${file.relativePath})`,
+			].join("\n");
+
+			const result = await runMessageEnd({
+				cwd,
+				event: createAssistantMessageEndEvent(text),
+			});
+
+			expect(result.text).toBe(
+				[
+					`File [${file.relativePath}](${expectedUrl})`,
+					`Line [custom label](${expectedUrl}:12)`,
+					"URL [site](https://example.com/package.json)",
+					"Anchor [section](#section)",
+					"Missing [missing](does/not/exist.ts)",
+					`Image ![${file.relativePath}](${file.relativePath})`,
 				].join("\n"),
 			);
 		});

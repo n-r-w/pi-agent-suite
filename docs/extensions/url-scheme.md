@@ -14,8 +14,11 @@
 - Skips intermediate tool-use, error, and aborted assistant messages.
 - Removes `textSignature` from text blocks whose text is changed.
 - Keeps `textSignature` when a text block is not changed.
-- Skips inline code, fenced code blocks, existing Markdown links, and Markdown images.
-- Rewrites relative and absolute file references only when the target file exists.
+- Removes single backticks around converted file references.
+- Rewrites existing Markdown links when their target is a file reference.
+- Preserves the label of rewritten Markdown links.
+- Skips fenced code blocks and Markdown images.
+- Rewrites relative and absolute file references only when the target file exists and is a regular file.
 - Resolves relative references against the active pi working directory.
 - Supports `path`, `path:line`, and `path:line:column` references.
 - Omits line and column URL parts when the source reference does not include them.
@@ -85,5 +88,7 @@ Tests must verify:
 - Windows path formatting without host OS assumptions;
 - `textSignature` removal from changed signed text blocks;
 - no `textSignature` removal from unchanged signed text blocks;
-- no rewriting inside inline code, fenced code blocks, existing Markdown links, and Markdown images;
+- single-backtick removal around converted file references;
+- Markdown file-link target rewriting while preserving labels;
+- no rewriting inside fenced code blocks and Markdown images;
 - configuration error isolation from other extensions.

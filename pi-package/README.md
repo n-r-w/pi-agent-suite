@@ -437,7 +437,9 @@ How it works:
 - Runs on final assistant `message_end` events with `stop` or `length` stop reasons.
 - Skips tool-use, error, and aborted assistant messages.
 - Removes `textSignature` from text blocks whose text is changed.
-- Skips inline code, fenced code blocks, existing Markdown links, and Markdown images.
+- Removes single backticks around converted file references.
+- Rewrites existing Markdown links when their target is a file reference.
+- Skips fenced code blocks and Markdown images.
 - Supports relative paths, absolute paths, `path:line`, and `path:line:column`.
 - Percent-encodes URL path and query values, including spaces, `#`, `?`, `&`, Unicode, and Windows paths.
 - Leaves the assistant message unchanged when config is invalid or the file does not exist.
