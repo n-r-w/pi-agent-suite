@@ -440,7 +440,7 @@ How it works:
 - Removes single backticks around converted file references.
 - Rewrites existing Markdown links when their target is a file reference.
 - Skips fenced code blocks and Markdown images.
-- Supports relative paths, absolute paths, `path:line`, and `path:line:column`.
+- Supports relative paths, absolute paths, `path:line`, `path:startLine-endLine`, and `path:line:column`.
 - Percent-encodes URL path and query values, including spaces, `#`, `?`, `&`, Unicode, and Windows paths.
 - Leaves the assistant message unchanged when config is invalid or the file does not exist.
 

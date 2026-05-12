@@ -5,9 +5,9 @@ import { formatEditorUrl, type SupportedScheme } from "./editor-url";
 /** Characters that can trail a prose file reference without being part of it. */
 const TRAILING_REFERENCE_PUNCTUATION = new Set([".", ",", ";", ")", "]", "}"]);
 
-/** Parses optional line and column suffixes after a file path. */
+/** Parses optional line, line range, and column suffixes after a file path. */
 const REFERENCE_SUFFIX_REGEX =
-	/^(?<filePath>.+?):(?<line>[1-9]\d*)(?::(?<column>[1-9]\d*))?$/u;
+	/^(?<filePath>.+?):(?<line>[1-9]\d*)(?:(?::(?<column>[1-9]\d*))|-(?<endLine>[1-9]\d*))?$/u;
 
 /** Detects absolute Windows drive paths independent of the host OS. */
 const WINDOWS_DRIVE_ABSOLUTE_REGEX = /^[A-Za-z]:[\\/]/u;
@@ -34,7 +34,7 @@ const MARKDOWN_LINK_OR_IMAGE_PARSE_REGEX =
 /** Detects single-backtick spans that may contain one file reference. */
 const SINGLE_BACKTICK_SPAN_REGEX = /`([^`\n]+)`/gu;
 
-/** Detects non-boundary characters after a colon that make a line suffix invalid. */
+/** Detects non-boundary characters that make a numeric suffix invalid. */
 const INVALID_SUFFIX_TAIL_REGEX = /^[^\s,;)}\]]+/u;
 
 /** Side-effect dependency used to verify candidate file references. */
@@ -386,14 +386,17 @@ function buildFileReferenceMatch(options: {
 	};
 }
 
-/** Returns true when a valid file prefix is followed by an invalid line or column suffix. */
+/** Returns true when a valid file prefix is followed by an invalid numeric suffix. */
 function hasInvalidNumericSuffixAfterCandidate(
 	remainder: string,
 	referenceText: string,
 ): boolean {
 	const suffix = remainder.slice(referenceText.length);
+	const parsedReference = parseReferenceSuffix(referenceText);
 	return (
-		suffix.startsWith(":") && INVALID_SUFFIX_TAIL_REGEX.test(suffix.slice(1))
+		(suffix.startsWith(":") ||
+			(parsedReference.line !== undefined && suffix.startsWith("-"))) &&
+		INVALID_SUFFIX_TAIL_REGEX.test(suffix.slice(1))
 	);
 }
 
@@ -420,9 +423,15 @@ function parseReferenceSuffix(referenceText: string): ParsedReferenceSuffix {
 		return { filePath: referenceText };
 	}
 
+	const line = Number(match.groups["line"]);
+	const endLine = Number(match.groups["endLine"]);
+	if (match.groups["endLine"] !== undefined && endLine < line) {
+		return { filePath: referenceText };
+	}
+
 	return {
 		filePath: match.groups["filePath"] ?? referenceText,
-		line: Number(match.groups["line"]),
+		line,
 		...(match.groups["column"] === undefined
 			? {}
 			: { column: Number(match.groups["column"]) }),

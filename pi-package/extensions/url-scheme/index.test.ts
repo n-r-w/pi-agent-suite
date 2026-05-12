@@ -320,7 +320,8 @@ describe("url-scheme", () => {
 		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
 			await writeConfig(agentDir, { enabled: true });
 			await createProjectFile(cwd, "package.json");
-			const text = "Open package.json:0, package.json:1:0 and package.json:abc";
+			const text =
+				"Open package.json:0, package.json:1:0, package.json:abc, package.json:1-0, package.json:1-abc and package.json:1-2-3";
 
 			const result = await runMessageEnd({
 				cwd,
@@ -378,6 +379,29 @@ describe("url-scheme", () => {
 		});
 	});
 
+	test("supports line range references by opening the start line", async () => {
+		// Purpose: line range references must be clickable even when editor schemes only support one target line.
+		// Input and expected output: path:line-endLine keeps the full label and opens the start line.
+		// Edge case: the converter must not expose unsupported editor-specific range syntax.
+		// Dependencies: isolated suite config, real temporary file, and deterministic cwd.
+		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
+			await writeConfig(agentDir, { enabled: true });
+			const file = await createProjectFile(cwd, "packages/foo/src/bar.ts");
+			const expectedUrl = `vscode://file${encodePathForExpectedUrl(file.absolutePath)}`;
+
+			const result = await runMessageEnd({
+				cwd,
+				event: createAssistantMessageEndEvent(
+					`Open ${file.relativePath}:16-18 and ${file.relativePath}:16-16`,
+				),
+			});
+
+			expect(result.text).toBe(
+				`Open [${file.relativePath}:16-18](${expectedUrl}:16) and [${file.relativePath}:16-16](${expectedUrl}:16)`,
+			);
+		});
+	});
+
 	test("skips missing files, fenced code blocks, and Markdown images", async () => {
 		// Purpose: conversion must not alter unsafe or non-link Markdown regions.
 		// Input and expected output: missing files, fenced code, and images stay unchanged.
@@ -431,12 +455,12 @@ describe("url-scheme", () => {
 			const result = await runMessageEnd({
 				cwd,
 				event: createAssistantMessageEndEvent(
-					`File \`${file.relativePath}:12\`, directory \`internal/domain-only-dir\``,
+					`File \`${file.relativePath}:12\`, range \`${file.relativePath}:16-18\`, directory \`internal/domain-only-dir\``,
 				),
 			});
 
 			expect(result.text).toBe(
-				`File [${file.relativePath}:12](${expectedUrl}:12), directory \`internal/domain-only-dir\``,
+				`File [${file.relativePath}:12](${expectedUrl}:12), range [${file.relativePath}:16-18](${expectedUrl}:16), directory \`internal/domain-only-dir\``,
 			);
 		});
 	});
@@ -453,6 +477,7 @@ describe("url-scheme", () => {
 			const text = [
 				`File [${file.relativePath}](${file.relativePath})`,
 				`Line [custom label](${file.relativePath}:12)`,
+				`Range [range label](${file.relativePath}:16-18)`,
 				"URL [site](https://example.com/package.json)",
 				"Anchor [section](#section)",
 				"Missing [missing](does/not/exist.ts)",
@@ -468,6 +493,7 @@ describe("url-scheme", () => {
 				[
 					`File [${file.relativePath}](${expectedUrl})`,
 					`Line [custom label](${expectedUrl}:12)`,
+					`Range [range label](${expectedUrl}:16)`,
 					"URL [site](https://example.com/package.json)",
 					"Anchor [section](#section)",
 					"Missing [missing](does/not/exist.ts)",

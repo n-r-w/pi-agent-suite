@@ -20,7 +20,8 @@
 - Skips fenced code blocks and Markdown images.
 - Rewrites relative and absolute file references only when the target file exists and is a regular file.
 - Resolves relative references against the active pi working directory.
-- Supports `path`, `path:line`, and `path:line:column` references.
+- Supports `path`, `path:line`, `path:startLine-endLine`, and `path:line:column` references.
+- Opens `path:startLine-endLine` references at `startLine` because the supported editor URL schemes do not share a documented line-range format.
 - Omits line and column URL parts when the source reference does not include them.
 - Percent-encodes URL path and query values, including spaces, `#`, `?`, `&`, Unicode, and Windows paths.
 - Normalizes Windows path separators to URL path separators in generated editor URLs.
@@ -83,7 +84,7 @@ Tests must verify:
 - no rewriting for `toolUse`, `error`, and `aborted` assistant messages;
 - no rewriting for missing files;
 - relative and absolute path rewriting;
-- `path:line` and `path:line:column` rewriting;
+- `path:line`, `path:startLine-endLine`, and `path:line:column` rewriting;
 - percent-encoding of path and query values;
 - Windows path formatting without host OS assumptions;
 - `textSignature` removal from changed signed text blocks;
