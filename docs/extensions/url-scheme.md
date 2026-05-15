@@ -12,6 +12,7 @@
 - Uses `vscode` as the default `scheme` when enabled config omits `scheme`.
 - Rewrites only final assistant messages with `stop` or `length` stop reasons.
 - Skips intermediate tool-use, error, and aborted assistant messages.
+- Skips `url-scheme` processing in marked child Pi processes, including invalid config warnings.
 - Removes `textSignature` from text blocks whose text is changed.
 - Keeps `textSignature` when a text block is not changed.
 - Removes single backticks around converted file references.
@@ -82,6 +83,7 @@ Tests must verify:
 - all supported editor schemes;
 - final-only rewriting for `stop` and `length` assistant messages;
 - no rewriting for `toolUse`, `error`, and `aborted` assistant messages;
+- marked child Pi processes leave assistant messages unchanged and do not report `url-scheme` config warnings;
 - no rewriting for missing files;
 - relative and absolute path rewriting;
 - `path:line`, `path:startLine-endLine`, and `path:line:column` rewriting;

@@ -436,6 +436,7 @@ How it works:
 
 - Runs on final assistant `message_end` events with `stop` or `length` stop reasons.
 - Skips tool-use, error, and aborted assistant messages.
+- Skips `url-scheme` processing in marked child Pi processes.
 - Removes `textSignature` from text blocks whose text is changed.
 - Removes single backticks around converted file references.
 - Rewrites existing Markdown links when their target is a file reference.

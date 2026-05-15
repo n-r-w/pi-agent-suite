@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { withChildAgentProcessMarker } from "../../shared/child-agent-environment";
 import urlScheme from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -222,14 +223,19 @@ async function runMessageEnd(options: {
 	readonly cwd: string;
 	readonly event: MessageEndEventFake;
 	readonly fileExists?: (path: string) => boolean;
+	readonly env?: NodeJS.ProcessEnv;
 }): Promise<{ readonly text: string | undefined; readonly result: unknown }> {
 	const pi = createExtensionApiFake();
-	urlScheme(
-		pi,
-		options.fileExists === undefined
+	const dependencies =
+		options.fileExists === undefined && options.env === undefined
 			? undefined
-			: { fileExists: options.fileExists },
-	);
+			: {
+					...(options.fileExists === undefined
+						? {}
+						: { fileExists: options.fileExists }),
+					...(options.env === undefined ? {} : { env: options.env }),
+				};
+	urlScheme(pi, dependencies);
 	const result = await getRegisteredHandler(pi, "message_end")(
 		options.event,
 		createSessionContextFake(options.cwd),
@@ -309,6 +315,39 @@ describe("url-scheme", () => {
 
 				expect(result.result).toBeUndefined();
 			}
+		});
+	});
+
+	test("skips marked child processes", async () => {
+		// Purpose: child Pi processes must not convert child assistant answers.
+		// Input and expected output: a marked child environment returns no replacement for an enabled final assistant answer.
+		// Edge case: invalid config in a marked child process must not create a url-scheme warning.
+		// Dependencies: isolated suite config, real temporary file, injected child environment, and fake UI notification capture.
+		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
+			await writeConfig(agentDir, { enabled: true });
+			const file = await createProjectFile(cwd, "packages/foo/src/bar.ts");
+			const childEnv = withChildAgentProcessMarker({});
+
+			expect(
+				await runMessageEnd({
+					cwd,
+					event: createAssistantMessageEndEvent(`See ${file.relativePath}`),
+					env: childEnv,
+				}),
+			).toEqual({ result: undefined, text: undefined });
+
+			await writeConfig(agentDir, { enabled: true, scheme: "sublime" });
+			const pi = createExtensionApiFake();
+			const ctx = createSessionContextFake(cwd);
+			urlScheme(pi, { env: childEnv });
+
+			const result = await getRegisteredHandler(pi, "message_end")(
+				createAssistantMessageEndEvent(`See ${file.relativePath}`),
+				ctx,
+			);
+
+			expect(result).toBeUndefined();
+			expect(ctx.notifications).toEqual([]);
 		});
 	});
 

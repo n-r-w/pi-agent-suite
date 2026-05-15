@@ -1,7 +1,9 @@
+import { env as processEnv } from "node:process";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { isChildAgentProcess } from "../../shared/child-agent-environment";
 import { readUrlSchemeConfig } from "./config";
 import {
 	convertAssistantContent,
@@ -17,6 +19,7 @@ type FinalAssistantStopReason = (typeof FINAL_ASSISTANT_STOP_REASONS)[number];
 /** Optional side-effect dependencies for deterministic tests. */
 export interface UrlSchemeDependencies {
 	readonly fileExists?: FileExists;
+	readonly env?: NodeJS.ProcessEnv;
 }
 
 /** Minimal object shape needed before reading dynamic fields. */
@@ -35,9 +38,14 @@ export default function urlScheme(
 	dependencies?: UrlSchemeDependencies,
 ): void {
 	const fileExists = dependencies?.fileExists ?? defaultFileExists;
+	const runtimeEnv = dependencies?.env ?? processEnv;
 	let reportedInvalidConfigIssue: string | undefined;
 
 	pi.on("message_end", (event, ctx) => {
+		if (isChildAgentProcess(runtimeEnv)) {
+			return undefined;
+		}
+
 		const config = readUrlSchemeConfig();
 		if (config.kind === "invalid") {
 			if (reportedInvalidConfigIssue !== config.issue) {
