@@ -20,6 +20,7 @@ import {
 	sliceTextByWidth,
 	truncateTextByWidth,
 } from "../../shared/display-width";
+import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
 import {
 	type CouncilContextUsage,
 	type CouncilProgressEvent,
@@ -30,6 +31,7 @@ import {
 
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
 const PARTICIPANT_TITLE_PATTERN = /^(A|B)(?:\s+(.*))?$/;
+const COUNCIL_CALL_QUESTION_PREVIEW_LINES = 3;
 const COLLAPSED_COUNCIL_PREVIEW_LINES = 5;
 const COLLAPSED_COUNCIL_DETAILS_ANSWER_LINES = 3;
 const EXPANDED_EVENT_PREVIEW_WIDTH = 240;
@@ -51,6 +53,7 @@ interface CouncilRenderContext {
 	readonly state?: CouncilRenderState;
 	readonly invalidate?: () => void;
 	readonly isError?: boolean;
+	readonly expanded?: boolean;
 }
 
 /** One renderable piece of a fixed-width line before color is applied. */
@@ -61,33 +64,95 @@ interface FixedLinePart {
 	readonly truncate?: boolean;
 }
 
-/** Renders the compact question preview as one tool-call header row. */
+/** Renders the tool-call question with bounded collapsed height and full expanded content. */
 class CouncilQuestionHeader implements Component {
 	public constructor(
 		private readonly questionPreview: string,
 		private readonly theme: Theme,
+		private readonly expanded: boolean,
 	) {}
 
-	/** Returns one width-bounded row because tool-call arguments must not consume collapsed output space. */
+	/** Returns wrapped question rows while preserving the collapsed call preview budget. */
 	public render(width: number): string[] {
-		const title = "convene_council:";
-		const separator = " ";
-		const questionWidth = Math.max(
-			0,
-			width - visibleWidth(title) - visibleWidth(separator),
-		);
-		const question = truncateTextByWidth(
-			this.questionPreview,
-			questionWidth,
-			"…",
-		);
-		return [
-			`${this.theme.fg("toolTitle", this.theme.bold(title))}${separator}${this.theme.fg("dim", question)}`,
-		];
+		return renderWrappedCouncilQuestion({
+			label: "convene_council:",
+			question: this.questionPreview,
+			width,
+			expanded: this.expanded,
+			previewLineBudget: COUNCIL_CALL_QUESTION_PREVIEW_LINES,
+			labelStyle: (value) => this.theme.fg("toolTitle", this.theme.bold(value)),
+			textStyle: (value) => this.theme.fg("dim", value),
+			theme: this.theme,
+		});
 	}
 
 	/** Keeps the component compatible with the TUI invalidation contract. */
 	public invalidate(): void {}
+}
+
+/** Renders the persisted progress question with the same collapsed and expanded contract as the main call header. */
+class CouncilProgressQuestion implements Component {
+	public constructor(
+		private readonly questionPreview: string,
+		private readonly theme: Theme,
+		private readonly expanded: boolean,
+	) {}
+
+	/** Returns wrapped question rows while preserving the collapsed call preview budget. */
+	public render(width: number): string[] {
+		return renderWrappedCouncilQuestion({
+			label: "  Question:",
+			question: this.questionPreview,
+			width,
+			expanded: this.expanded,
+			previewLineBudget: COUNCIL_CALL_QUESTION_PREVIEW_LINES,
+			labelStyle: (value) => this.theme.fg("muted", value),
+			textStyle: (value) => this.theme.fg("dim", value),
+			theme: this.theme,
+		});
+	}
+
+	/** Keeps the component compatible with the TUI invalidation contract. */
+	public invalidate(): void {}
+}
+
+/** Applies the shared wrapped-question collapsed and expanded rendering contract. */
+function renderWrappedCouncilQuestion(options: {
+	readonly label: string;
+	readonly question: string;
+	readonly width: number;
+	readonly expanded: boolean;
+	readonly previewLineBudget: number;
+	readonly labelStyle: (value: string) => string;
+	readonly textStyle: (value: string) => string;
+	readonly theme: Theme;
+}): string[] {
+	const wrappedLines = renderLabeledWrappedText({
+		label: options.label,
+		text: options.question,
+		width: options.width,
+		labelStyle: options.labelStyle,
+		textStyle: options.textStyle,
+	});
+	if (options.expanded) {
+		return wrappedLines;
+	}
+
+	const previewLines = wrappedLines.slice(0, options.previewLineBudget);
+	const hiddenLineCount = wrappedLines.length - previewLines.length;
+	if (hiddenLineCount <= 0) {
+		return previewLines;
+	}
+
+	previewLines.push(
+		renderHiddenLineHint({
+			hiddenLineCount,
+			totalLineCount: wrappedLines.length,
+			width: options.width,
+			theme: options.theme,
+		}),
+	);
+	return previewLines;
 }
 
 /** Renders the visible header for a convene_council tool call. */
@@ -101,20 +166,26 @@ export function renderConveneCouncilCall(
 		: "...";
 	const details = context.state?.headerDetails;
 	if (details === undefined) {
-		return new CouncilQuestionHeader(questionPreview, theme);
+		return new CouncilQuestionHeader(
+			questionPreview,
+			theme,
+			context.expanded === true,
+		);
 	}
 
-	return new FixedLines(
-		[
-			formatCouncilHeaderLine(details),
-			[
-				{ text: "  Question: ", color: "muted" },
-				{ text: questionPreview, color: "dim", truncate: true },
-			],
-			formatParticipantRuntimeLine(details),
-		],
-		theme,
+	const container = new Container();
+	container.addChild(new FixedLines([formatCouncilHeaderLine(details)], theme));
+	container.addChild(
+		new CouncilProgressQuestion(
+			questionPreview,
+			theme,
+			context.expanded === true,
+		),
 	);
+	container.addChild(
+		new FixedLines([formatParticipantRuntimeLine(details)], theme),
+	);
+	return container;
 }
 
 /** Renders council output as live progress when details are partial and final answer otherwise. */
@@ -709,7 +780,12 @@ class CollapsedCouncilAnswer implements Component {
 		}
 
 		previewLines.push(
-			this.renderHiddenLineHint(hiddenLineCount, wrappedLines.length, width),
+			renderHiddenLineHint({
+				hiddenLineCount,
+				totalLineCount: wrappedLines.length,
+				width,
+				theme: this.theme,
+			}),
 		);
 		return previewLines;
 	}
@@ -721,22 +797,6 @@ class CollapsedCouncilAnswer implements Component {
 		return new Text(text, 0, 0).render(width);
 	}
 
-	/** Renders the standard collapsed-output summary with the active Pi expansion key. */
-	private renderHiddenLineHint(
-		hiddenLineCount: number,
-		totalLineCount: number,
-		width: number,
-	): string {
-		const hint =
-			this.theme.fg(
-				"muted",
-				`... (${hiddenLineCount} more ${formatLineWord(hiddenLineCount)}, ${totalLineCount} total, `,
-			) +
-			this.theme.fg("dim", formatToolExpandKeybindingText()) +
-			this.theme.fg("muted", " to expand)");
-		return truncateToWidth(hint, width, "...");
-	}
-
 	/** Keeps the component compatible with the TUI invalidation contract. */
 	public invalidate(): void {}
 }
@@ -744,6 +804,23 @@ class CollapsedCouncilAnswer implements Component {
 /** Selects a readable singular or plural word for hidden-line status. */
 function formatLineWord(lineCount: number): string {
 	return lineCount === 1 ? "line" : "lines";
+}
+
+/** Renders the standard collapsed-output summary with the active Pi expansion key. */
+function renderHiddenLineHint(options: {
+	readonly hiddenLineCount: number;
+	readonly totalLineCount: number;
+	readonly width: number;
+	readonly theme: Theme;
+}): string {
+	const hint =
+		options.theme.fg(
+			"muted",
+			`... (${options.hiddenLineCount} more ${formatLineWord(options.hiddenLineCount)}, ${options.totalLineCount} total, `,
+		) +
+		options.theme.fg("dim", formatToolExpandKeybindingText()) +
+		options.theme.fg("muted", " to expand)");
+	return truncateToWidth(hint, options.width, "...");
 }
 
 /** Renders fixed lines without wrapping into extra terminal rows. */

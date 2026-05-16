@@ -45,11 +45,126 @@ describe("convene-council rendering", () => {
 			{ isError: false },
 		).render(60);
 
-		expect(callLines).toHaveLength(1);
+		expect(callLines.length).toBeGreaterThan(1);
 		expect(callLines[0]).toStartWith("convene_council:");
 		for (const line of [...callLines, ...resultLines]) {
 			expect(line).not.toContain(SGR_RESET);
 			expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+		}
+	});
+
+	test("counts wrapped call question rows against the call preview line budget", () => {
+		// Purpose: convene_council call rendering must not let a huge wrapped question consume unbounded TUI height.
+		// Input and expected output: a huge question is capped when collapsed and shows the standard hidden-line hint.
+		// Edge case: the final token is beyond the collapsed line budget.
+		// Dependencies: public renderer function and pi-tui visible-width measurement.
+		const question = Array.from(
+			{ length: 80 },
+			(_, index) => `question-token-${index}`,
+		).join(" ");
+
+		const collapsedLines = renderConveneCouncilCall({ question }, theme, {
+			expanded: false,
+		} as never).render(48);
+		const expandedLines = renderConveneCouncilCall({ question }, theme, {
+			expanded: true,
+		} as never).render(48);
+		const collapsed = collapsedLines.join("\n");
+
+		expect(collapsedLines).toHaveLength(4);
+		expect(collapsed).toContain("convene_council:");
+		expect(collapsed).toContain("more lines");
+		expect(collapsed).toContain("total");
+		expect(collapsed).toContain("to expand");
+		expect(collapsed).not.toContain("question-token-79");
+		expect(expandedLines.length).toBeGreaterThan(collapsedLines.length);
+		expect(expandedLines.join("")).toContain("question-token-79");
+		expect(expandedLines.join("\n")).not.toContain("more lines");
+		for (const line of [...collapsedLines, ...expandedLines]) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(48);
+		}
+	});
+
+	test("renders collapsed call question hint with segmented colors", () => {
+		// Purpose: convene_council call hidden-line hint must use the same color segmentation as result hints.
+		// Input and expected output: a huge question produces muted count text, dim keybinding text, and muted suffix.
+		// Edge case: keybinding text may be empty in tests, but the dim segment must still be present.
+		// Dependencies: public renderer function and theme color callbacks.
+		const question = Array.from(
+			{ length: 80 },
+			(_, index) => `question-token-${index}`,
+		).join(" ");
+
+		const rendered = renderConveneCouncilCall({ question }, colorTheme, {
+			expanded: false,
+		} as never)
+			.render(200)
+			.join("\n");
+
+		expect(rendered).toContain("<muted>... (");
+		expect(rendered).toContain("more lines, ");
+		expect(rendered).toContain("total, </muted><dim>");
+		expect(rendered).toContain("</dim><muted> to expand)</muted>");
+	});
+
+	test("counts wrapped persisted call question rows against the call preview line budget", () => {
+		// Purpose: persisted council call headers must not clip or lose the question after progress details exist.
+		// Input and expected output: the question row is capped when collapsed and fully visible when expanded.
+		// Edge case: header and participant rows remain present around the wrapped question block.
+		// Dependencies: public renderer function and a persisted headerDetails state object.
+		const question = Array.from(
+			{ length: 80 },
+			(_, index) => `question-token-${index}`,
+		).join(" ");
+		const headerDetails = {
+			type: "convene_council_progress",
+			runId: "call-council",
+			question,
+			status: "running",
+			phase: "review",
+			elapsedMs: 1_000,
+			iteration: 1,
+			iterationLimit: 3,
+			participants: [
+				{
+					label: "A",
+					displayName: "Socrates",
+					participantId: "llm1",
+					modelId: "openai/model-a",
+					thinking: "medium",
+					display: "openai/model-a/medium",
+					contextWindow: 272_000,
+					status: "running",
+					elapsedMs: 1_000,
+					activity: "thinking",
+				},
+			],
+			events: [],
+			omittedEventCount: 0,
+		};
+
+		const collapsedLines = renderConveneCouncilCall({ question }, theme, {
+			state: { headerDetails },
+			expanded: false,
+		} as never).render(64);
+		const expandedLines = renderConveneCouncilCall({ question }, theme, {
+			state: { headerDetails },
+			expanded: true,
+		} as never).render(64);
+		const collapsed = collapsedLines.join("\n");
+
+		expect(collapsed).toContain("convene_council · review");
+		expect(collapsed).toContain("Question:");
+		expect(collapsed).toContain("more lines");
+		expect(collapsed).toContain("total");
+		expect(collapsed).toContain("to expand");
+		expect(collapsed).toContain("Socrates");
+		expect(collapsed).not.toContain("question-token-79");
+		expect(expandedLines.length).toBeGreaterThan(collapsedLines.length);
+		expect(expandedLines.join("")).toContain("question-token-79");
+		expect(expandedLines.join("\n")).not.toContain("more lines");
+		for (const line of [...collapsedLines, ...expandedLines]) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(64);
 		}
 	});
 
