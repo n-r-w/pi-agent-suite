@@ -49,22 +49,32 @@ describe("mcp-wrapper rendering", () => {
 		);
 	});
 
-	test("clips long call rows within the default Pi tool shell width", () => {
+	test("wraps long call arguments within the default Pi tool shell width", () => {
 		const component = new Box(1, 1);
 		component.addChild(
 			renderMcpToolCall(
-				"very_long_mcp_tool_name_that_fills_the_provider_name_budget",
-				{ query: "x".repeat(200) },
+				"team_message_create",
+				{
+					topic_id: "17537fcd-7230-49bf-ab1d-a78b5ff4ab30",
+					title: "Audit task context",
+					content: "Task: audit implementation against pricing rules",
+				},
 				THEME as never,
 			),
 		);
+		const lines = component.render(WIDTH);
+		const output = lines.join("\n");
 
-		for (const line of component.render(WIDTH)) {
+		expect(lines.length).toBeGreaterThan(3);
+		expect(output).toContain("team_message_create:");
+		expect(output).toContain("pricing rules");
+		expect(output).not.toContain("…");
+		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
 		}
 	});
 
-	test("dims collapsed successful result text", () => {
+	test("renders collapsed successful result with a prominent TUI-only header", () => {
 		const result: AgentToolResult<unknown> = {
 			content: [{ type: "text", text: "result text" }],
 			details: {},
@@ -74,7 +84,9 @@ describe("mcp-wrapper rendering", () => {
 			renderMcpToolResult(result, {}, MARKED_THEME as never, {})
 				.render(WIDTH)
 				.join("\n"),
-		).toBe("<dim>result text</dim>");
+		).toBe(
+			"<toolTitle><bold>Result:</bold></toolTitle><dim> result text</dim>",
+		);
 	});
 
 	test("keeps collapsed error result text styled as error", () => {
@@ -87,10 +99,12 @@ describe("mcp-wrapper rendering", () => {
 			renderMcpToolResult(result, {}, MARKED_THEME as never, { isError: true })
 				.render(WIDTH)
 				.join("\n"),
-		).toBe("<error>error text</error>");
+		).toBe(
+			"<toolTitle><bold>Result:</bold></toolTitle><error> error text</error>",
+		);
 	});
 
-	test("renders collapsed result with bounded preview and expand hint", () => {
+	test("renders collapsed result with bounded preview and segmented expand hint colors", () => {
 		const result: AgentToolResult<unknown> = {
 			content: [
 				{
@@ -102,18 +116,27 @@ describe("mcp-wrapper rendering", () => {
 			],
 			details: {},
 		};
+		const markedOutput = renderMcpToolResult(
+			result,
+			{},
+			MARKED_THEME as never,
+			{},
+		)
+			.render(200)
+			.join("\n");
 		const component = new Box(1, 1);
 		component.addChild(renderMcpToolResult(result, {}, THEME as never, {}));
 		const lines = component.render(WIDTH);
 
 		expect(lines.length).toBeLessThanOrEqual(8);
-		expect(lines.join("\n")).toContain("to expand");
+		expect(markedOutput).toContain("<muted>... (15 more lines, 20 total, ");
+		expect(markedOutput).toContain("</dim><muted> to expand)</muted>");
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
 		}
 	});
 
-	test("renders expanded full result content", () => {
+	test("renders expanded full result content with a prominent TUI-only header", () => {
 		const result: AgentToolResult<unknown> = {
 			content: [{ type: "text", text: "full result" }],
 			details: {},
@@ -121,10 +144,12 @@ describe("mcp-wrapper rendering", () => {
 		const lines = renderMcpToolResult(
 			result,
 			{ expanded: true },
-			THEME as never,
+			MARKED_THEME as never,
 			{},
 		).render(WIDTH);
+		const output = lines.join("\n");
 
-		expect(lines.join("\n")).toContain("full result");
+		expect(output).toContain("<toolTitle><bold>Result:</bold></toolTitle>");
+		expect(output).toContain("full result");
 	});
 });
