@@ -1,13 +1,23 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
 import type { McpClientManager } from "./client-manager.ts";
+import type { McpServerConfig } from "./config.ts";
 import mcpWrapper from "./index.ts";
+import {
+	computeMcpServerConfigHash,
+	saveMcpWrapperCache,
+} from "./metadata-cache.ts";
 
 const FILES_READ_TOOL_NAME = "files_read";
+const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -105,6 +115,32 @@ async function runSessionStart(
 	} as ExtensionContext);
 }
 
+async function prepareSuiteCacheDir(): Promise<string> {
+	const suiteDir = await mkdtemp(join(tmpdir(), "mcp-wrapper-index-"));
+	process.env[AGENT_SUITE_DIR_ENV] = suiteDir;
+	return suiteDir;
+}
+
+function restoreSuiteDir(): void {
+	if (previousSuiteDir === undefined) {
+		delete process.env[AGENT_SUITE_DIR_ENV];
+		return;
+	}
+	process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
+}
+
+async function resolvesWithin(
+	promise: Promise<unknown>,
+	milliseconds: number,
+): Promise<boolean> {
+	return (await Promise.race([
+		promise.then(() => true),
+		new Promise<boolean>((resolve) =>
+			setTimeout(() => resolve(false), milliseconds),
+		),
+	])) as boolean;
+}
+
 async function runBeforeAgentStart(
 	pi: ExtensionApiFake,
 	systemPrompt = "Base prompt",
@@ -135,6 +171,14 @@ async function runBeforeAgentStart(
 
 	return currentPrompt;
 }
+
+beforeEach(async () => {
+	await prepareSuiteCacheDir();
+});
+
+afterEach(() => {
+	restoreSuiteDir();
+});
 
 describe("mcp-wrapper extension", () => {
 	test("registers no tools and reports no warning when config is missing", async () => {
@@ -252,10 +296,148 @@ describe("mcp-wrapper extension", () => {
 		expect(result?.content).toEqual([{ type: "text", text: "ok" }]);
 		expect(notifications).toEqual([
 			{
+				message:
+					"[mcp-wrapper] MCP cache is empty. Discovering MCP tools before startup continues: files",
+				type: "info",
+			},
+			{
 				message: "[mcp-wrapper] MCPs: connected: files; tools: files_read",
 				type: "info",
 			},
 		]);
+	});
+
+	test("registers tools from complete cache without waiting for discovery", async () => {
+		await prepareSuiteCacheDir();
+		const pi = createExtensionApiFake();
+		const serverConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: [],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				files: {
+					configHash: computeMcpServerConfigHash(serverConfig),
+					cachedAt: Date.now(),
+					tools: [
+						{
+							name: "read",
+							description: "Read cached file",
+							inputSchema: { type: "object" },
+						},
+					],
+					instructions: "Use cached file instructions.",
+				},
+			},
+		});
+		const manager = {
+			discoverServers: async () => new Promise<never>(() => {}),
+			callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: { files: serverConfig },
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		expect(await resolvesWithin(runSessionStart(pi), 25)).toBe(true);
+		expect(pi.tools[0]?.name).toBe(FILES_READ_TOOL_NAME);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
+			"Use cached file instructions.",
+		);
+	});
+
+	test("waits for servers missing from partial cache and notifies the user", async () => {
+		await prepareSuiteCacheDir();
+		const pi = createExtensionApiFake();
+		const cachedConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: ["cached.js"],
+			env: {},
+		};
+		const missingConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: ["missing.js"],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				cached: {
+					configHash: computeMcpServerConfigHash(cachedConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "read", inputSchema: { type: "object" } }],
+				},
+			},
+		});
+		const discoveredServerMaps: Readonly<Record<string, McpServerConfig>>[] =
+			[];
+		const manager = {
+			discoverServers: async (servers) => {
+				discoveredServerMaps.push(servers);
+				return {
+					serverToolLists: [
+						{
+							serverKey: "missing",
+							tools: [{ name: "search", inputSchema: { type: "object" } }],
+						},
+					],
+					serverInstructions: [
+						{ serverKey: "missing", instructions: "Use missing server." },
+					],
+					failures: [],
+				};
+			},
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+		const notifications: NotificationRecord[] = [];
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: { cached: cachedConfig, missing: missingConfig },
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi, notifications);
+
+		expect(discoveredServerMaps[0]).toEqual({ missing: missingConfig });
+		expect(pi.tools.map((tool) => tool.name)).toEqual([
+			"cached_read",
+			"missing_search",
+		]);
+		expect(notifications).toContainEqual({
+			message:
+				"[mcp-wrapper] MCP cache is missing for 1 server. Discovering MCP tools before startup continues: missing",
+			type: "info",
+		});
 	});
 
 	test("uses fallback prompt snippet when MCP tool has no description", async () => {
@@ -520,6 +702,11 @@ Use this server. Do not call &lt;private>.
 			},
 		]);
 		expect(notifications).toEqual([
+			{
+				message:
+					"[mcp-wrapper] MCP cache is empty. Discovering MCP tools before startup continues: 123-files, bad/server",
+				type: "info",
+			},
 			{
 				message:
 					"[mcp-wrapper] MCPs: connected: 123-files; failed: bad/server (connection failed); rejected: 123-files (server key slug must start with an ASCII letter or underscore)",

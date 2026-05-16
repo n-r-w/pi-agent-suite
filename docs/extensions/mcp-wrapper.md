@@ -1,6 +1,6 @@
 # MCP Wrapper Extension
 
-The MCP wrapper extension reads `agent-suite/mcp-wrapper/config.json`, connects to configured MCP servers, discovers supported MCP tools, and registers one Pi tool per supported MCP tool.
+The MCP wrapper extension reads `agent-suite/mcp-wrapper/config.json`, discovers supported MCP tools, stores discovery metadata in `agent-suite/mcp-wrapper/cache.json`, and registers one Pi tool per supported MCP tool.
 
 ## Config
 
@@ -73,7 +73,7 @@ Each registered MCP tool sets Pi `promptSnippet` so the tool appears in the `Ava
 
 The provider tool `description` uses the same server prefix without truncation.
 
-MCP initialize `instructions` are appended to the system prompt for connected servers with at least one registered Pi tool. Instructions are not truncated.
+MCP initialize `instructions` are appended to the system prompt for cached or connected servers with at least one registered Pi tool. Instructions are not truncated.
 
 ```xml
 <mcp_instructions>
@@ -89,7 +89,7 @@ Escaping rules:
 
 The block is added through `before_agent_start` after `system-prompt` replaces the base prompt. `pi.sendMessage` is not used.
 
-Startup notifications list connected servers, registered tools, failed servers, and rejected tools.
+Startup notifications list connected servers, cached servers, registered tools, failed servers, and rejected tools.
 
 ## Output handling
 
@@ -101,6 +101,13 @@ Startup notifications list connected servers, registered tools, failed servers, 
 ## Runtime behavior
 
 - Config is read during extension startup or Pi reload.
+- Metadata cache is stored at `agent-suite/mcp-wrapper/cache.json` with mode `0o600`.
+- Cache entries store the server config hash, cache write time, discovered tool names, descriptions, input schemas, and MCP initialize `instructions`.
+- Cache entries do not store raw server config, env values, headers, tokens, or credentials.
+- If every configured server has a matching cache entry, MCP tools and instructions are registered from cache without waiting for MCP connections.
+- If cache is missing for one or more configured servers, startup shows an info notification and waits for discovery only for those servers.
+- After startup, live discovery refreshes the cache in the background.
+- Background refresh does not change active tools or active MCP instructions in the current session.
 - Editing the config file during an active session does not change registered MCP tools or active MCP connections until restart or reload.
 - Failed MCP servers do not block healthy servers.
 - Failed servers and rejected routes are shown through MCP status entries in the footer.

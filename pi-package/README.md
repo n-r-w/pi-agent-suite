@@ -26,7 +26,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `ask-llm` | Yes | Lets you ask a one-off model question without writing it to the current session. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
 | `convene-council` | No | Lets two model participants discuss one question and return one bounded answer. |
-| `mcp-wrapper` | Yes | Registers supported tools from configured MCP servers as Pi tools and appends MCP initialize `instructions` for servers with registered tools. |
+| `mcp-wrapper` | Yes | Registers supported tools from configured MCP servers as Pi tools, caches MCP tool metadata for faster startup, and appends MCP initialize `instructions` for servers with registered tools. |
 
 ## Best practices
 
