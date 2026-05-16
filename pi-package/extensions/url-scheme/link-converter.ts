@@ -21,8 +21,8 @@ const REFERENCE_BOUNDARY_REGEX = /[\s([{<"']/u;
 /** Detects characters allowed at the start of relative file paths. */
 const RELATIVE_PATH_START_CHARACTER_REGEX = /^[\p{L}\p{N}_@+-]$/u;
 
-/** Detects fenced Markdown code blocks that must not be modified. */
-const FENCED_CODE_BLOCK_REGEX = /(^|\n)```[\s\S]*?(?:\n```|$)/gu;
+/** Delimiter that starts or ends text that must not be modified. */
+const TRIPLE_BACKTICK_DELIMITER = "```";
 
 /** Detects existing Markdown links and images that must not be modified. */
 const MARKDOWN_LINK_OR_IMAGE_REGEX = /!?\[[^\]]*\]\([^)]*\)/gu;
@@ -138,14 +138,14 @@ function convertTextReferences(options: {
 	readonly fileExists: FileExists;
 }): string | undefined {
 	const existenceCache = new Map<string, boolean>();
-	const fencedCodeRanges = collectFencedCodeRanges(options.text);
+	const tripleBacktickRanges = collectTripleBacktickRanges(options.text);
 	const textWithConvertedBackticks = convertSingleBacktickFileReferences({
 		text: options.text,
 		cwd: options.cwd,
 		scheme: options.scheme,
 		fileExists: options.fileExists,
 		existenceCache,
-		protectedRanges: fencedCodeRanges,
+		protectedRanges: tripleBacktickRanges,
 	});
 	const preMarkdownProtectedRanges = collectPreMarkdownProtectedRanges(
 		textWithConvertedBackticks.text,
@@ -654,28 +654,43 @@ function trimReferenceEnd(referenceText: string): string {
 	return referenceText.slice(0, end);
 }
 
-/** Collects Markdown ranges where automatic file-link conversion would corrupt authored content. */
+/** Collects text ranges where automatic file-link conversion would corrupt authored content. */
 function collectProtectedRanges(text: string): readonly TextRange[] {
-	const ranges: TextRange[] = [];
-	collectRegexRanges(text, FENCED_CODE_BLOCK_REGEX, ranges);
+	const ranges: TextRange[] = [...collectTripleBacktickRanges(text)];
 	collectRegexRanges(text, MARKDOWN_LINK_OR_IMAGE_REGEX, ranges);
 	collectRegexRanges(text, SINGLE_BACKTICK_SPAN_REGEX, ranges);
 
 	return mergeRanges(ranges);
 }
 
-/** Collects fenced code blocks before inline code rewriting runs. */
-function collectFencedCodeRanges(text: string): readonly TextRange[] {
+/** Collects ranges between triple-backtick delimiters before inline code rewriting runs. */
+function collectTripleBacktickRanges(text: string): readonly TextRange[] {
 	const ranges: TextRange[] = [];
-	collectRegexRanges(text, FENCED_CODE_BLOCK_REGEX, ranges);
+	let searchStart = 0;
 
-	return mergeRanges(ranges);
+	while (searchStart < text.length) {
+		const openingStart = text.indexOf(TRIPLE_BACKTICK_DELIMITER, searchStart);
+		if (openingStart === -1) {
+			break;
+		}
+
+		const contentStart = openingStart + TRIPLE_BACKTICK_DELIMITER.length;
+		const closingStart = text.indexOf(TRIPLE_BACKTICK_DELIMITER, contentStart);
+		const rangeEnd =
+			closingStart === -1
+				? text.length
+				: closingStart + TRIPLE_BACKTICK_DELIMITER.length;
+
+		ranges.push({ start: openingStart, end: rangeEnd });
+		searchStart = rangeEnd;
+	}
+
+	return ranges;
 }
 
 /** Collects ranges that must not be changed before Markdown link rewriting runs. */
 function collectPreMarkdownProtectedRanges(text: string): readonly TextRange[] {
-	const ranges: TextRange[] = [];
-	collectRegexRanges(text, FENCED_CODE_BLOCK_REGEX, ranges);
+	const ranges: TextRange[] = [...collectTripleBacktickRanges(text)];
 	collectRegexRanges(text, SINGLE_BACKTICK_SPAN_REGEX, ranges);
 
 	return mergeRanges(ranges);

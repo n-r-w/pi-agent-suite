@@ -19,7 +19,8 @@
 - Leaves inline code spans unchanged when they contain commands, images, or other text.
 - Rewrites existing Markdown links when their target is a file reference.
 - Preserves the label of rewritten Markdown links.
-- Skips fenced code blocks and Markdown images.
+- Skips text between triple-backtick delimiters and Markdown images.
+- Treats an unmatched opening triple-backtick delimiter as protected text through the end of the message.
 - Rewrites relative and absolute file references only when the target file exists and is a regular file.
 - Resolves relative references against the active pi working directory.
 - Supports `path`, `path:line`, `path:startLine-endLine`, and `path:line:column` references.
@@ -94,5 +95,5 @@ Tests must verify:
 - no `textSignature` removal from unchanged signed text blocks;
 - single-backtick removal around converted file references and link-only inline code;
 - Markdown file-link target rewriting while preserving labels;
-- no rewriting inside inline code spans, fenced code blocks, and Markdown images;
+- no rewriting inside inline code spans, text between triple-backtick delimiters, and Markdown images;
 - configuration error isolation from other extensions.
