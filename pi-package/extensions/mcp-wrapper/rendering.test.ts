@@ -60,6 +60,7 @@ describe("mcp-wrapper rendering", () => {
 					content: "Task: audit implementation against pricing rules",
 				},
 				THEME as never,
+				{ expanded: true } as never,
 			),
 		);
 		const lines = component.render(WIDTH);
@@ -70,6 +71,73 @@ describe("mcp-wrapper rendering", () => {
 		expect(output).toContain("pricing rules");
 		expect(output).not.toContain("…");
 		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
+		}
+	});
+
+	test("counts wrapped call arguments against the call preview line budget", () => {
+		// Purpose: mcp-wrapper call rendering must not let huge wrapped arguments consume unbounded TUI height.
+		// Input and expected output: huge arguments are capped when collapsed and show a standard hidden-line hint.
+		// Edge case: the limit is checked through the default Box shell, whose padding adds two outer rows.
+		// Dependencies: this test uses the public Pi Box shell and visible-width measurement.
+		const component = new Box(1, 1);
+		component.addChild(
+			renderMcpToolCall(
+				"team_message_create",
+				{
+					content: Array.from(
+						{ length: 80 },
+						(_, index) => `argument-token-${index}`,
+					).join(" "),
+				},
+				THEME as never,
+			),
+		);
+		const lines = component.render(WIDTH);
+		const output = lines.join("\n");
+
+		expect(lines).toHaveLength(6);
+		expect(output).toContain("team_message_create:");
+		expect(output).toContain("more lines");
+		expect(output).toContain("total");
+		expect(output).toContain("to expand");
+		expect(output).not.toContain("argument-token-79");
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
+		}
+	});
+
+	test("shows full wrapped call arguments when the call header is expanded", () => {
+		// Purpose: mcp-wrapper must not lose hidden argument text when the user expands the call header.
+		// Input and expected output: huge arguments are capped when collapsed and fully visible when expanded.
+		// Edge case: the final token is beyond the collapsed line budget.
+		// Dependencies: this test uses the renderCall expanded flag from Pi's ToolRenderContext.
+		const args = {
+			content: Array.from(
+				{ length: 80 },
+				(_, index) => `argument-token-${index}`,
+			).join(" "),
+		};
+
+		const collapsedLines = renderMcpToolCall(
+			"team_message_create",
+			args,
+			THEME as never,
+			{ expanded: false } as never,
+		).render(WIDTH);
+		const expandedLines = renderMcpToolCall(
+			"team_message_create",
+			args,
+			THEME as never,
+			{ expanded: true } as never,
+		).render(WIDTH);
+
+		expect(collapsedLines.join("\n")).toContain("more lines");
+		expect(collapsedLines.join("\n")).not.toContain("argument-token-79");
+		expect(expandedLines.length).toBeGreaterThan(collapsedLines.length);
+		expect(expandedLines.join("")).toContain("argument-token-79");
+		expect(expandedLines.join("\n")).not.toContain("more lines");
+		for (const line of expandedLines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
 		}
 	});

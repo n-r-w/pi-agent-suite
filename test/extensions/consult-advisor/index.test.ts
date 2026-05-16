@@ -656,10 +656,11 @@ describe("consult-advisor", () => {
 		const wordWrapCollapsedLines = wordWrapCollapsedResult?.render(24) ?? [];
 		const expandedText = expandedResult?.render(80).join("\n") ?? "";
 
-		expect(callLines).toHaveLength(1);
+		expect(callLines.length).toBeGreaterThan(1);
 		expect(callLines[0]).toStartWith(
 			"consult_advisor: Which implementation risk",
 		);
+		expect(callLines.join("")).toContain("runtime policy");
 		expect(collapsedLines).toHaveLength(COLLAPSED_ADVICE_PREVIEW_LINES + 1);
 		expect(collapsedLines[0]).toStartWith(
 			"Advice: Check the active tool policy",
@@ -678,10 +679,10 @@ describe("consult-advisor", () => {
 		}
 	});
 
-	test("keeps advisor question preview bounded to one collapsed header row", () => {
-		// Purpose: consult_advisor must keep the tool-call header compact even when the question contains a long prompt.
-		// Input and expected output: a long Unicode question renders as one width-bounded header row.
-		// Edge case: the question contains mixed-direction Unicode text that Pi Text would otherwise wrap into many rows.
+	test("wraps advisor question preview within bounded header rows", () => {
+		// Purpose: consult_advisor must keep the full tool-call question visible when the prompt is long.
+		// Input and expected output: a long Unicode question renders as width-bounded wrapped header rows without ellipsis clipping.
+		// Edge case: the question contains mixed-direction Unicode text and emoji variation sequences.
 		// Dependencies: this test uses the registered consult_advisor call renderer and pi-tui visible-width measurement.
 		const pi = createExtensionApiFake();
 		consultAdvisor(pi);
@@ -697,11 +698,16 @@ describe("consult-advisor", () => {
 		const lines =
 			tool.renderCall?.({ question }, theme, {} as never).render(width) ?? [];
 
-		expect(lines).toHaveLength(1);
+		expect(lines.length).toBeGreaterThan(1);
 		expect(lines[0]).toStartWith("consult_advisor: Task Return");
-		expect(lines[0]).toEndWith("…");
-		expect(lines[0]).not.toContain(SGR_RESET);
-		expect(visibleWidth(lines[0] ?? "")).toBeLessThanOrEqual(width);
+		expect(lines).toHaveLength(4);
+		expect(lines.join("\n")).toContain("... (1 more line, 4 total, ");
+		expect(lines.join("\n")).toContain("to expand)");
+		expect(lines.join("\n")).not.toContain("…");
+		for (const line of lines) {
+			expect(line).not.toContain(SGR_RESET);
+			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		}
 	});
 
 	test("renders collapsed advisor preview through the standard Pi tool box", () => {

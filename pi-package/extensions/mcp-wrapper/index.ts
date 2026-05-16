@@ -390,8 +390,8 @@ function buildToolDefinition(
 		description: buildToolDescription(entry),
 		promptSnippet: buildPromptSnippet(entry),
 		parameters: entry.definition.parameters,
-		renderCall: (args, theme) =>
-			renderMcpToolCall(entry.definition.name, args, theme),
+		renderCall: (args, theme, context) =>
+			renderMcpToolCall(entry.definition.name, args, theme, context),
 		renderResult: renderMcpToolResult,
 		async execute(_toolCallId, params) {
 			const serverConfig = servers[entry.route.serverKey];
