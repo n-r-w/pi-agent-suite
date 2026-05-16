@@ -31,6 +31,10 @@ const MARKDOWN_LINK_OR_IMAGE_REGEX = /!?\[[^\]]*\]\([^)]*\)/gu;
 const MARKDOWN_LINK_OR_IMAGE_PARSE_REGEX =
 	/(?<image>!)?\[(?<label>[^\]]*)\]\((?<target>[^)]*)\)/gu;
 
+/** Detects a whole Markdown link or image inside an inline code span. */
+const MARKDOWN_LINK_OR_IMAGE_EXACT_REGEX =
+	/^(?<image>!)?\[(?<label>[^\]]*)\]\((?<target>[^)]*)\)$/u;
+
 /** Detects single-backtick spans that may contain one file reference. */
 const SINGLE_BACKTICK_SPAN_REGEX = /`([^`\n]+)`/gu;
 
@@ -134,21 +138,27 @@ function convertTextReferences(options: {
 	readonly fileExists: FileExists;
 }): string | undefined {
 	const existenceCache = new Map<string, boolean>();
-	const textWithConvertedLinks = convertMarkdownFileLinks({
+	const fencedCodeRanges = collectFencedCodeRanges(options.text);
+	const textWithConvertedBackticks = convertSingleBacktickFileReferences({
 		text: options.text,
 		cwd: options.cwd,
 		scheme: options.scheme,
 		fileExists: options.fileExists,
 		existenceCache,
+		protectedRanges: fencedCodeRanges,
 	});
-	const textWithConvertedBackticks = convertSingleBacktickFileReferences({
-		text: textWithConvertedLinks.text,
+	const preMarkdownProtectedRanges = collectPreMarkdownProtectedRanges(
+		textWithConvertedBackticks.text,
+	);
+	const textWithConvertedLinks = convertMarkdownFileLinks({
+		text: textWithConvertedBackticks.text,
 		cwd: options.cwd,
 		scheme: options.scheme,
 		fileExists: options.fileExists,
 		existenceCache,
+		protectedRanges: preMarkdownProtectedRanges,
 	});
-	const sourceText = textWithConvertedBackticks.text;
+	const sourceText = textWithConvertedLinks.text;
 	const protectedRanges = collectProtectedRanges(sourceText);
 	let changed = false;
 	let output = "";
@@ -186,8 +196,8 @@ function convertTextReferences(options: {
 	}
 
 	return changed ||
-		textWithConvertedLinks.changed ||
-		textWithConvertedBackticks.changed
+		textWithConvertedBackticks.changed ||
+		textWithConvertedLinks.changed
 		? output
 		: undefined;
 }
@@ -199,41 +209,87 @@ function convertMarkdownFileLinks(options: {
 	readonly scheme: SupportedScheme;
 	readonly fileExists: FileExists;
 	readonly existenceCache: Map<string, boolean>;
+	readonly protectedRanges: readonly TextRange[];
 }): { readonly text: string; readonly changed: boolean } {
 	let changed = false;
-	const text = options.text.replace(
+	let output = "";
+	let index = 0;
+
+	for (const match of options.text.matchAll(
 		MARKDOWN_LINK_OR_IMAGE_PARSE_REGEX,
-		(match: string, ...args: unknown[]): string => {
-			const groups = args.at(-1);
-			if (!isRecord(groups) || groups["image"] === "!") {
-				return match;
-			}
+	)) {
+		const matchStart = match.index;
+		if (matchStart === undefined) {
+			continue;
+		}
 
-			const label = groups["label"];
-			const target = groups["target"];
-			if (typeof label !== "string" || typeof target !== "string") {
-				return match;
-			}
+		output += options.text.slice(index, matchStart);
+		index = matchStart + match[0].length;
 
-			const parsedReference = parseReferenceSuffix(target);
-			const fileLink = buildExistingFileLink({
-				cwd: options.cwd,
-				referenceText: target,
-				parsedReference,
-				scheme: options.scheme,
-				fileExists: options.fileExists,
-				existenceCache: options.existenceCache,
-			});
-			if (fileLink === undefined) {
-				return match;
-			}
+		const replacement = buildMarkdownFileLinkReplacement({
+			match,
+			cwd: options.cwd,
+			scheme: options.scheme,
+			fileExists: options.fileExists,
+			existenceCache: options.existenceCache,
+			protectedRanges: options.protectedRanges,
+		});
+		if (replacement === undefined) {
+			output += match[0];
+			continue;
+		}
 
-			changed = true;
-			return `[${label}](${fileLink.url})`;
-		},
-	);
+		changed = true;
+		output += replacement;
+	}
 
-	return { text, changed };
+	output += options.text.slice(index);
+
+	return { text: output, changed };
+}
+
+/** Builds a Markdown link replacement unless the match is protected or not a file link. */
+function buildMarkdownFileLinkReplacement(options: {
+	readonly match: RegExpMatchArray;
+	readonly cwd: string;
+	readonly scheme: SupportedScheme;
+	readonly fileExists: FileExists;
+	readonly existenceCache: Map<string, boolean>;
+	readonly protectedRanges: readonly TextRange[];
+}): string | undefined {
+	const matchStart = options.match.index;
+	if (
+		matchStart === undefined ||
+		isIndexInsideRange(options.protectedRanges, matchStart)
+	) {
+		return undefined;
+	}
+
+	const groups = options.match.groups;
+	if (groups === undefined || groups["image"] === "!") {
+		return undefined;
+	}
+
+	const label = groups["label"];
+	const target = groups["target"];
+	if (label === undefined || target === undefined) {
+		return undefined;
+	}
+
+	const parsedReference = parseReferenceSuffix(target);
+	const fileLink = buildExistingFileLink({
+		cwd: options.cwd,
+		referenceText: target,
+		parsedReference,
+		scheme: options.scheme,
+		fileExists: options.fileExists,
+		existenceCache: options.existenceCache,
+	});
+	if (fileLink === undefined) {
+		return undefined;
+	}
+
+	return `[${label}](${fileLink.url})`;
 }
 
 /** Converts exact file references wrapped in single backticks and removes those backticks. */
@@ -243,30 +299,101 @@ function convertSingleBacktickFileReferences(options: {
 	readonly scheme: SupportedScheme;
 	readonly fileExists: FileExists;
 	readonly existenceCache: Map<string, boolean>;
+	readonly protectedRanges: readonly TextRange[];
 }): { readonly text: string; readonly changed: boolean } {
 	let changed = false;
-	const text = options.text.replace(
-		SINGLE_BACKTICK_SPAN_REGEX,
-		(match: string, referenceText: string): string => {
-			const parsedReference = parseReferenceSuffix(referenceText);
-			const fileLink = buildExistingFileLink({
-				cwd: options.cwd,
-				referenceText,
-				parsedReference,
-				scheme: options.scheme,
-				fileExists: options.fileExists,
-				existenceCache: options.existenceCache,
-			});
-			if (fileLink === undefined) {
-				return match;
-			}
+	let output = "";
+	let index = 0;
 
-			changed = true;
-			return `[${referenceText}](${fileLink.url})`;
-		},
+	for (const match of options.text.matchAll(SINGLE_BACKTICK_SPAN_REGEX)) {
+		const matchStart = match.index;
+		if (matchStart === undefined) {
+			continue;
+		}
+
+		output += options.text.slice(index, matchStart);
+		index = matchStart + match[0].length;
+
+		const referenceText = match[1];
+		if (
+			referenceText === undefined ||
+			isIndexInsideRange(options.protectedRanges, matchStart)
+		) {
+			output += match[0];
+			continue;
+		}
+
+		const replacement = buildSingleBacktickReplacement({
+			referenceText,
+			cwd: options.cwd,
+			scheme: options.scheme,
+			fileExists: options.fileExists,
+			existenceCache: options.existenceCache,
+		});
+		if (replacement === undefined) {
+			output += match[0];
+			continue;
+		}
+
+		changed = true;
+		output += replacement;
+	}
+
+	output += options.text.slice(index);
+
+	return { text: output, changed };
+}
+
+/** Builds a replacement for inline code that contains exactly one file reference. */
+function buildSingleBacktickReplacement(options: {
+	readonly referenceText: string;
+	readonly cwd: string;
+	readonly scheme: SupportedScheme;
+	readonly fileExists: FileExists;
+	readonly existenceCache: Map<string, boolean>;
+}): string | undefined {
+	const parsedReference = parseReferenceSuffix(options.referenceText);
+	const fileLink = buildExistingFileLink({
+		cwd: options.cwd,
+		referenceText: options.referenceText,
+		parsedReference,
+		scheme: options.scheme,
+		fileExists: options.fileExists,
+		existenceCache: options.existenceCache,
+	});
+	if (fileLink !== undefined) {
+		return `[${options.referenceText}](${fileLink.url})`;
+	}
+
+	const markdownLink = MARKDOWN_LINK_OR_IMAGE_EXACT_REGEX.exec(
+		options.referenceText,
 	);
+	if (
+		markdownLink?.groups === undefined ||
+		markdownLink.groups["image"] === "!"
+	) {
+		return undefined;
+	}
 
-	return { text, changed };
+	const label = markdownLink.groups["label"];
+	const target = markdownLink.groups["target"];
+	if (label === undefined || target === undefined) {
+		return undefined;
+	}
+
+	const linkTarget = buildExistingFileLink({
+		cwd: options.cwd,
+		referenceText: target,
+		parsedReference: parseReferenceSuffix(target),
+		scheme: options.scheme,
+		fileExists: options.fileExists,
+		existenceCache: options.existenceCache,
+	});
+	if (linkTarget === undefined) {
+		return undefined;
+	}
+
+	return `[${label}](${linkTarget.url})`;
 }
 
 /** Builds link data only when the parsed reference points to an existing file. */
@@ -532,6 +659,24 @@ function collectProtectedRanges(text: string): readonly TextRange[] {
 	const ranges: TextRange[] = [];
 	collectRegexRanges(text, FENCED_CODE_BLOCK_REGEX, ranges);
 	collectRegexRanges(text, MARKDOWN_LINK_OR_IMAGE_REGEX, ranges);
+	collectRegexRanges(text, SINGLE_BACKTICK_SPAN_REGEX, ranges);
+
+	return mergeRanges(ranges);
+}
+
+/** Collects fenced code blocks before inline code rewriting runs. */
+function collectFencedCodeRanges(text: string): readonly TextRange[] {
+	const ranges: TextRange[] = [];
+	collectRegexRanges(text, FENCED_CODE_BLOCK_REGEX, ranges);
+
+	return mergeRanges(ranges);
+}
+
+/** Collects ranges that must not be changed before Markdown link rewriting runs. */
+function collectPreMarkdownProtectedRanges(text: string): readonly TextRange[] {
+	const ranges: TextRange[] = [];
+	collectRegexRanges(text, FENCED_CODE_BLOCK_REGEX, ranges);
+	collectRegexRanges(text, SINGLE_BACKTICK_SPAN_REGEX, ranges);
 
 	return mergeRanges(ranges);
 }
@@ -586,6 +731,14 @@ function findProtectedRangeAt(
 	index: number,
 ): TextRange | undefined {
 	return ranges.find((range) => range.start === index);
+}
+
+/** Returns true when an index belongs to a protected text range. */
+function isIndexInsideRange(
+	ranges: readonly TextRange[],
+	index: number,
+): boolean {
+	return ranges.some((range) => range.start <= index && index < range.end);
 }
 
 /** Returns true when an unknown value is safe for dynamic property reads. */

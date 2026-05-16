@@ -438,7 +438,8 @@ How it works:
 - Skips tool-use, error, and aborted assistant messages.
 - Skips `url-scheme` processing in marked child Pi processes.
 - Removes `textSignature` from text blocks whose text is changed.
-- Removes single backticks around converted file references.
+- Removes single backticks only when the whole inline code span is a file reference or one Markdown link to a file.
+- Leaves inline code spans unchanged when they contain commands, images, or other text.
 - Rewrites existing Markdown links when their target is a file reference.
 - Skips fenced code blocks and Markdown images.
 - Supports relative paths, absolute paths, `path:line`, `path:startLine-endLine`, and `path:line:column`.

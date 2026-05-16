@@ -443,7 +443,7 @@ describe("url-scheme", () => {
 
 	test("skips missing files, fenced code blocks, and Markdown images", async () => {
 		// Purpose: conversion must not alter unsafe or non-link Markdown regions.
-		// Input and expected output: missing files, fenced code, and images stay unchanged.
+		// Input and expected output: missing files, fenced code, inline code in fenced code, Markdown links in fenced code, and images stay unchanged.
 		// Edge case: a valid reference outside protected Markdown ranges is still converted.
 		// Dependencies: isolated suite config, real temporary file, and protected-range parsing.
 		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
@@ -453,6 +453,9 @@ describe("url-scheme", () => {
 			const protectedText = [
 				"```ts",
 				file.relativePath,
+				`\`${file.relativePath}\``,
+				`\`[${file.relativePath}](${file.relativePath})\``,
+				`[${file.relativePath}](${file.relativePath})`,
 				"```",
 				`Image ![${file.relativePath}](${file.relativePath})`,
 				`Missing ${missingPath}`,
@@ -469,6 +472,9 @@ describe("url-scheme", () => {
 				[
 					"```ts",
 					file.relativePath,
+					`\`${file.relativePath}\``,
+					`\`[${file.relativePath}](${file.relativePath})\``,
+					`[${file.relativePath}](${file.relativePath})`,
 					"```",
 					`Image ![${file.relativePath}](${file.relativePath})`,
 					`Missing ${missingPath}`,
@@ -480,7 +486,7 @@ describe("url-scheme", () => {
 
 	test("removes single backticks around converted file references", async () => {
 		// Purpose: single backticks are emphasis in assistant prose and must not block file links.
-		// Input and expected output: a backticked file reference is converted and the surrounding backticks are removed.
+		// Input and expected output: file-only inline code and link-only inline code are converted, while command inline code stays unchanged.
 		// Edge case: backticked directories remain unchanged because only files are valid targets.
 		// Dependencies: isolated suite config, real temporary file and directory, and deterministic cwd.
 		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
@@ -490,16 +496,18 @@ describe("url-scheme", () => {
 				recursive: true,
 			});
 			const expectedUrl = `vscode://file${encodePathForExpectedUrl(file.absolutePath)}`;
+			const markdownLink = `[${file.relativePath}](${file.relativePath})`;
+			const labeledMarkdownLink = `[custom label](${file.relativePath}:12)`;
 
 			const result = await runMessageEnd({
 				cwd,
 				event: createAssistantMessageEndEvent(
-					`File \`${file.relativePath}:12\`, range \`${file.relativePath}:16-18\`, directory \`internal/domain-only-dir\``,
+					`File \`${file.relativePath}:12\`, range \`${file.relativePath}:16-18\`, linked \`${labeledMarkdownLink}\`, image \`![${file.relativePath}](${file.relativePath})\`, directory \`internal/domain-only-dir\`, command \`git diff -- ${file.relativePath}\`, linked command \`git diff -- ${markdownLink}\``,
 				),
 			});
 
 			expect(result.text).toBe(
-				`File [${file.relativePath}:12](${expectedUrl}:12), range [${file.relativePath}:16-18](${expectedUrl}:16), directory \`internal/domain-only-dir\``,
+				`File [${file.relativePath}:12](${expectedUrl}:12), range [${file.relativePath}:16-18](${expectedUrl}:16), linked [custom label](${expectedUrl}:12), image \`![${file.relativePath}](${file.relativePath})\`, directory \`internal/domain-only-dir\`, command \`git diff -- ${file.relativePath}\`, linked command \`git diff -- ${markdownLink}\``,
 			);
 		});
 	});

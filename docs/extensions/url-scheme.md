@@ -15,7 +15,8 @@
 - Skips `url-scheme` processing in marked child Pi processes, including invalid config warnings.
 - Removes `textSignature` from text blocks whose text is changed.
 - Keeps `textSignature` when a text block is not changed.
-- Removes single backticks around converted file references.
+- Removes single backticks only when the whole inline code span is a file reference or one Markdown link to a file.
+- Leaves inline code spans unchanged when they contain commands, images, or other text.
 - Rewrites existing Markdown links when their target is a file reference.
 - Preserves the label of rewritten Markdown links.
 - Skips fenced code blocks and Markdown images.
@@ -91,7 +92,7 @@ Tests must verify:
 - Windows path formatting without host OS assumptions;
 - `textSignature` removal from changed signed text blocks;
 - no `textSignature` removal from unchanged signed text blocks;
-- single-backtick removal around converted file references;
+- single-backtick removal around converted file references and link-only inline code;
 - Markdown file-link target rewriting while preserving labels;
-- no rewriting inside fenced code blocks and Markdown images;
+- no rewriting inside inline code spans, fenced code blocks, and Markdown images;
 - configuration error isolation from other extensions.
