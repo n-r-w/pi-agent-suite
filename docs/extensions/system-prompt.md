@@ -19,6 +19,7 @@
 - Does not append runtime values unless the matching variable exists in the template.
 - Keeps static prompt text in the Markdown template.
 - Inserts dynamic pi runtime values only through variables.
+- Runs before `mcp-wrapper`, so MCP initialize `instructions` appended by `mcp-wrapper` are not overwritten by the template replacement.
 - Runs before agent runtime prompt contributors from `main-agent-selection`, `run-subagent`, `consult-advisor`, and `convene-council` in this package.
 
 ## Configuration

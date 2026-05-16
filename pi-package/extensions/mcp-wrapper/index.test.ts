@@ -1,0 +1,554 @@
+import { describe, expect, test } from "bun:test";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import type { McpClientManager } from "./client-manager.ts";
+import mcpWrapper from "./index.ts";
+
+const FILES_READ_TOOL_NAME = "files_read";
+
+interface RegisteredHandler {
+	readonly eventName: string;
+	readonly handler: (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<unknown> | unknown;
+}
+
+interface NotificationRecord {
+	readonly message: string;
+	readonly type: "info" | "warning" | "error" | undefined;
+}
+
+interface ExtensionApiFake extends ExtensionAPI {
+	readonly handlers: RegisteredHandler[];
+	readonly tools: ToolDefinition[];
+}
+
+function createExtensionApiFake(): ExtensionApiFake {
+	const handlers: RegisteredHandler[] = [];
+	const tools: ToolDefinition[] = [];
+
+	return {
+		handlers,
+		tools,
+		events: {
+			emit(): void {},
+			on(): () => void {
+				return () => {};
+			},
+		},
+		on(eventName: string, handler: RegisteredHandler["handler"]): void {
+			handlers.push({ eventName, handler });
+		},
+		registerTool(tool: ToolDefinition): void {
+			tools.push(tool);
+		},
+		registerCommand(): void {},
+		registerShortcut(): void {},
+		registerFlag(): void {},
+		getFlag(): undefined {
+			return undefined;
+		},
+		registerCompletionProvider(): void {},
+		registerResourceProvider(): void {},
+		registerCustomProvider(): void {},
+		getAllTools() {
+			return [];
+		},
+		getActiveTools() {
+			return [];
+		},
+		setActiveTools(): void {},
+		getModel(): undefined {
+			return undefined;
+		},
+		setModel(): void {},
+		getThinkingLevel(): undefined {
+			return undefined;
+		},
+		setThinkingLevel(): void {},
+		appendEntry(): void {},
+		getSessionHistory() {
+			return [];
+		},
+		getSessionTree() {
+			return undefined;
+		},
+		getActiveBranch() {
+			return [];
+		},
+	} as unknown as ExtensionApiFake;
+}
+
+async function runSessionStart(
+	pi: ExtensionApiFake,
+	notifications: NotificationRecord[] = [],
+	statuses: Array<{ readonly key: string; readonly text: string }> = [],
+): Promise<void> {
+	const sessionStart = pi.handlers.find(
+		(handler) => handler.eventName === "session_start",
+	);
+	expect(sessionStart).toBeDefined();
+	await sessionStart?.handler({ type: "session_start", reason: "startup" }, {
+		hasUI: true,
+		ui: {
+			notify(message: string, type?: "info" | "warning" | "error"): void {
+				notifications.push({ message, type });
+			},
+			setStatus(key: string, text: string): void {
+				statuses.push({ key, text });
+			},
+		},
+	} as ExtensionContext);
+}
+
+async function runBeforeAgentStart(
+	pi: ExtensionApiFake,
+	systemPrompt = "Base prompt",
+): Promise<string> {
+	let currentPrompt = systemPrompt;
+	for (const item of pi.handlers.filter(
+		(handler) => handler.eventName === "before_agent_start",
+	)) {
+		const result = await item.handler(
+			{
+				type: "before_agent_start",
+				prompt: "work",
+				images: [],
+				systemPrompt: currentPrompt,
+				systemPromptOptions: {},
+			},
+			{} as ExtensionContext,
+		);
+		if (
+			typeof result === "object" &&
+			result !== null &&
+			"systemPrompt" in result &&
+			typeof result.systemPrompt === "string"
+		) {
+			currentPrompt = result.systemPrompt;
+		}
+	}
+
+	return currentPrompt;
+}
+
+describe("mcp-wrapper extension", () => {
+	test("registers no tools and reports no warning when config is missing", async () => {
+		const pi = createExtensionApiFake();
+		const notifications: NotificationRecord[] = [];
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {},
+				},
+			}),
+		});
+
+		await runSessionStart(pi, notifications);
+
+		expect(pi.tools).toHaveLength(0);
+		expect(notifications).toEqual([]);
+	});
+
+	test("reports invalid config without registering tools", async () => {
+		const pi = createExtensionApiFake();
+		const notifications: NotificationRecord[] = [];
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "invalid",
+				issue: "config must be an object",
+			}),
+		});
+
+		await runSessionStart(pi, notifications);
+
+		expect(pi.tools).toHaveLength(0);
+		expect(notifications).toEqual([
+			{ message: "[mcp-wrapper] config must be an object", type: "warning" },
+		]);
+	});
+
+	test("discovers MCP tools, registers Pi tools, and routes execution", async () => {
+		const pi = createExtensionApiFake();
+		const callResults: unknown[] = [];
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [
+							{
+								name: "read",
+								description: "Read a file",
+								inputSchema: { type: "object", title: "Read arguments" },
+							},
+						],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async (route, _config, args) => {
+				callResults.push({ route, args });
+				return { content: [{ type: "text", text: "ok" }] };
+			},
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		const notifications: NotificationRecord[] = [];
+		await runSessionStart(pi, notifications);
+		const tool = pi.tools[0];
+		expect(tool?.name).toBe(FILES_READ_TOOL_NAME);
+		expect(tool?.description).toBe('Tool from MCP server "files": Read a file');
+		expect(tool?.promptSnippet).toBe(
+			'Tool from MCP server "files": Read a file',
+		);
+		const result = await tool?.execute(
+			"call-1",
+			{ path: "/tmp/a" },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(callResults).toEqual([
+			{
+				route: { serverKey: "files", mcpToolName: "read" },
+				args: { path: "/tmp/a" },
+			},
+		]);
+		expect(result?.content).toEqual([{ type: "text", text: "ok" }]);
+		expect(notifications).toEqual([
+			{
+				message: "[mcp-wrapper] MCPs: connected: files; tools: files_read",
+				type: "info",
+			},
+		]);
+	});
+
+	test("uses fallback prompt snippet when MCP tool has no description", async () => {
+		const pi = createExtensionApiFake();
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi);
+
+		expect(pi.tools[0]?.description).toBe('Tool from MCP server "files".');
+		expect(pi.tools[0]?.promptSnippet).toBe('Tool from MCP server "files".');
+	});
+
+	test("truncates long prompt snippets at a word boundary", async () => {
+		const pi = createExtensionApiFake();
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [
+							{
+								name: "read",
+								description: "alpha ".repeat(20),
+								inputSchema: { type: "object" },
+							},
+						],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi);
+
+		expect(pi.tools[0]?.description).toBe(
+			`Tool from MCP server "files": ${"alpha ".repeat(20).trim()}`,
+		);
+		expect(pi.tools[0]?.promptSnippet).toBe(
+			'Tool from MCP server "files": alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha...',
+		);
+	});
+
+	test("appends MCP initialize instructions for servers with registered Pi tools", async () => {
+		const pi = createExtensionApiFake();
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "docs&server",
+						tools: [{ name: "search", inputSchema: { type: "object" } }],
+					},
+					{
+						serverKey: "empty",
+						tools: [{ name: "!!!", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [
+					{
+						serverKey: "docs&server",
+						instructions: "Use this server. Do not call <private>.",
+					},
+					{
+						serverKey: "empty",
+						instructions: "This server has no registered tools.",
+					},
+				],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						"docs&server": {
+							type: "stdio",
+							command: "node",
+							args: [],
+							env: {},
+						},
+						empty: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi);
+
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe(`Base prompt
+
+<mcp_instructions>
+  <server name="docs&amp;server">
+Use this server. Do not call &lt;private>.
+  </server>
+</mcp_instructions>`);
+	});
+
+	test("clears MCP initialize instructions when a later startup registers no tools", async () => {
+		const pi = createExtensionApiFake();
+		let enabled = true;
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [
+					{ serverKey: "files", instructions: "Use this server for files." },
+				],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: enabled
+						? {
+								files: {
+									type: "stdio",
+									command: "node",
+									args: [],
+									env: {},
+								},
+							}
+						: {},
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
+			"<mcp_instructions>",
+		);
+
+		enabled = false;
+		await runSessionStart(pi);
+
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
+	});
+
+	test("reports discovery failures and catalog rejections at startup", async () => {
+		const pi = createExtensionApiFake();
+		const notifications: NotificationRecord[] = [];
+		const statuses: Array<{ readonly key: string; readonly text: string }> = [];
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "123-files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [{ serverKey: "bad/server", issue: "connection failed" }],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						"123-files": { type: "stdio", command: "node", args: [], env: {} },
+						"bad/server": { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi, notifications, statuses);
+
+		expect(pi.tools).toHaveLength(0);
+		expect(statuses).toEqual([
+			{ key: "mcp-bad-server", text: "bad/server: connection failed" },
+			{
+				key: "mcp-123-files",
+				text: "123-files: server key slug must start with an ASCII letter or underscore",
+			},
+		]);
+		expect(notifications).toEqual([
+			{
+				message:
+					"[mcp-wrapper] MCPs: connected: 123-files; failed: bad/server (connection failed); rejected: 123-files (server key slug must start with an ASCII letter or underscore)",
+				type: "warning",
+			},
+		]);
+	});
+
+	test("registers no tools when config disables the extension", async () => {
+		const pi = createExtensionApiFake();
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: false,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {},
+				},
+			}),
+		});
+
+		await runSessionStart(pi);
+
+		expect(pi.tools).toHaveLength(0);
+	});
+});
