@@ -17,12 +17,12 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.13",
-		"@earendil-works/pi-agent-core": "0.74.0",
-		"@earendil-works/pi-ai": "0.74.0",
-		"@earendil-works/pi-coding-agent": "0.74.0",
-		"@earendil-works/pi-tui": "0.74.0",
+		"@earendil-works/pi-agent-core": "0.74.1",
+		"@earendil-works/pi-ai": "0.74.1",
+		"@earendil-works/pi-coding-agent": "0.74.1",
+		"@earendil-works/pi-tui": "0.74.1",
 		"@types/bun": "latest",
-		"typebox": "1.1.33",
+		"typebox": "1.1.38",
 		"typescript": "^5.7.3"
 	},
 	"dependencies": {
@@ -30,7 +30,6 @@
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.0",
-		"stream-json": "^2.1.0",
-		"zod": "^4.4.3"
+		"stream-json": "^2.1.0"
 	}
 }

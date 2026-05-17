@@ -56,7 +56,6 @@
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.0",
-		"stream-json": "^2.1.0",
-		"zod": "^4.4.3"
+		"stream-json": "^2.1.0"
 	}
 }

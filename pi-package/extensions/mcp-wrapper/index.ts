@@ -53,10 +53,10 @@ export default function mcpWrapper(
 	const readConfig = dependencies.readConfig ?? readMcpWrapperConfig;
 	const loadCache = dependencies.loadCache ?? loadMcpWrapperCache;
 	const saveCache = dependencies.saveCache ?? saveMcpWrapperCache;
-	let activeServerInstructions: readonly ServerInstructions[] = [];
+	let serverInstructionRecords: readonly ServerInstructionRecord[] = [];
 
 	pi.on("session_start", async (_event, ctx) => {
-		activeServerInstructions = await handleSessionStart({
+		serverInstructionRecords = await handleSessionStart({
 			pi,
 			ctx,
 			readConfig,
@@ -67,12 +67,23 @@ export default function mcpWrapper(
 	});
 
 	pi.on("before_agent_start", (event) => {
-		if (activeServerInstructions.length === 0) {
+		if (serverInstructionRecords.length === 0) {
+			return undefined;
+		}
+
+		const activeToolNames = new Set(pi.getActiveTools());
+		const visibleServerInstructions = serverInstructionRecords.filter(
+			(serverInstructions) =>
+				serverInstructions.registeredPiToolNames.some((toolName) =>
+					activeToolNames.has(toolName),
+				),
+		);
+		if (visibleServerInstructions.length === 0) {
 			return undefined;
 		}
 
 		return {
-			systemPrompt: `${(event as BeforeAgentStartEventLike).systemPrompt}\n\n${renderMcpInstructions(activeServerInstructions)}`,
+			systemPrompt: `${(event as BeforeAgentStartEventLike).systemPrompt}\n\n${renderMcpInstructions(visibleServerInstructions)}`,
 		};
 	});
 }
@@ -97,9 +108,14 @@ interface HandleSessionStartOptions {
 	readonly saveCache: (cache: McpWrapperMetadataCache) => Promise<void>;
 }
 
+interface ServerInstructionRecord extends ServerInstructions {
+	/** Accepted generated Pi tool names that make this server instruction visible when active. */
+	readonly registeredPiToolNames: readonly string[];
+}
+
 async function handleSessionStart(
 	options: HandleSessionStartOptions,
-): Promise<readonly ServerInstructions[]> {
+): Promise<readonly ServerInstructionRecord[]> {
 	const configResult = await options.readConfig();
 	if (configResult.kind === "invalid") {
 		options.ctx.ui.notify(`${ISSUE_PREFIX} ${configResult.issue}`, "warning");
@@ -154,12 +170,30 @@ async function handleSessionStart(
 		rejected: catalog.rejected,
 	});
 
-	const registeredServerKeys = new Set(
-		catalog.tools.map((entry) => entry.route.serverKey),
+	return buildActiveServerInstructions(
+		startup.serverInstructions,
+		catalog.tools,
 	);
-	return startup.serverInstructions.filter((serverInstructions) =>
-		registeredServerKeys.has(serverInstructions.serverKey),
-	);
+}
+
+/** Links server instructions to accepted Pi tool names for active-tool prompt filtering. */
+function buildActiveServerInstructions(
+	serverInstructions: readonly ServerInstructions[],
+	tools: readonly PiToolCatalogEntry[],
+): readonly ServerInstructionRecord[] {
+	const toolNamesByServer = new Map<string, string[]>();
+	for (const entry of tools) {
+		const toolNames = toolNamesByServer.get(entry.route.serverKey) ?? [];
+		toolNames.push(entry.definition.name);
+		toolNamesByServer.set(entry.route.serverKey, toolNames);
+	}
+
+	return serverInstructions.flatMap((instructions) => {
+		const registeredPiToolNames = toolNamesByServer.get(instructions.serverKey);
+		return registeredPiToolNames === undefined
+			? []
+			: [{ ...instructions, registeredPiToolNames }];
+	});
 }
 
 type McpDiscoveryResult = Awaited<

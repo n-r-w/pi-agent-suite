@@ -40,6 +40,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 function createExtensionApiFake(): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
 	const tools: ToolDefinition[] = [];
+	let activeTools: readonly string[] = [];
 
 	return {
 		handlers,
@@ -69,9 +70,11 @@ function createExtensionApiFake(): ExtensionApiFake {
 			return [];
 		},
 		getActiveTools() {
-			return [];
+			return activeTools;
 		},
-		setActiveTools(): void {},
+		setActiveTools(toolNames: readonly string[]): void {
+			activeTools = [...toolNames];
+		},
 		getModel(): undefined {
 			return undefined;
 		},
@@ -357,6 +360,7 @@ describe("mcp-wrapper extension", () => {
 
 		expect(await resolvesWithin(runSessionStart(pi), 25)).toBe(true);
 		expect(pi.tools[0]?.name).toBe(FILES_READ_TOOL_NAME);
+		pi.setActiveTools([FILES_READ_TOOL_NAME]);
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
 			"Use cached file instructions.",
 		);
@@ -532,7 +536,7 @@ describe("mcp-wrapper extension", () => {
 		);
 	});
 
-	test("appends MCP initialize instructions for servers with registered Pi tools", async () => {
+	test("appends MCP initialize instructions only for servers with active Pi tools", async () => {
 		const pi = createExtensionApiFake();
 		const manager = {
 			discoverServers: async () => ({
@@ -540,6 +544,10 @@ describe("mcp-wrapper extension", () => {
 					{
 						serverKey: "docs&server",
 						tools: [{ name: "search", inputSchema: { type: "object" } }],
+					},
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
 					},
 					{
 						serverKey: "empty",
@@ -550,6 +558,10 @@ describe("mcp-wrapper extension", () => {
 					{
 						serverKey: "docs&server",
 						instructions: "Use this server. Do not call <private>.",
+					},
+					{
+						serverKey: "files",
+						instructions: "Use this server for files.",
 					},
 					{
 						serverKey: "empty",
@@ -579,6 +591,7 @@ describe("mcp-wrapper extension", () => {
 							args: [],
 							env: {},
 						},
+						files: { type: "stdio", command: "node", args: [], env: {} },
 						empty: { type: "stdio", command: "node", args: [], env: {} },
 					},
 				},
@@ -587,6 +600,7 @@ describe("mcp-wrapper extension", () => {
 		});
 
 		await runSessionStart(pi);
+		pi.setActiveTools(["docs_server_search"]);
 
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe(`Base prompt
 
@@ -595,6 +609,52 @@ describe("mcp-wrapper extension", () => {
 Use this server. Do not call &lt;private>.
   </server>
 </mcp_instructions>`);
+	});
+
+	test("omits MCP initialize instructions when no registered MCP tool is active", async () => {
+		// Purpose: MCP instructions must not expose server guidance when the active agent cannot call that server.
+		// Input and expected output: a server registers one Pi tool and one instruction, but active tools are empty, so the prompt stays unchanged.
+		// Edge case: registration alone is not enough to expose instructions.
+		// Dependencies: this test uses only the mcp-wrapper entry point, an in-memory manager fake, and the ExtensionAPI fake.
+		const pi = createExtensionApiFake();
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [
+					{ serverKey: "files", instructions: "Use this server for files." },
+				],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi);
+
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
 	});
 
 	test("clears MCP initialize instructions when a later startup registers no tools", async () => {
@@ -643,6 +703,7 @@ Use this server. Do not call &lt;private>.
 		});
 
 		await runSessionStart(pi);
+		pi.setActiveTools([FILES_READ_TOOL_NAME]);
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
 			"<mcp_instructions>",
 		);
