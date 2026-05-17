@@ -24,6 +24,7 @@ import {
 	sliceTextByWidth,
 	truncateTextByWidth,
 } from "../../shared/display-width";
+import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
 import {
 	formatSubagentContextUsage,
 	type SubagentProgressEvent,
@@ -33,6 +34,8 @@ import {
 /** Identifies the standard Pi action that expands collapsed tool results. */
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
 export const COLLAPSED_SUBAGENT_RESULT_LINES = 5;
+/** Limits wrapped task preview rows before the collapsed-call hint is shown. */
+const RUN_SUBAGENT_TASK_PREVIEW_LINES = 3;
 const EXPANDED_EVENT_PREVIEW_WIDTH = 240;
 const STDERR_PREVIEW_WIDTH = 1000;
 const SECOND_MS = 1000;
@@ -56,6 +59,7 @@ interface RunSubagentHeaderDetails {
 /** Describes the subset of Pi renderer context used by this renderer. */
 interface RunSubagentRenderContext {
 	readonly args?: { readonly prompt?: string };
+	readonly expanded?: boolean;
 	readonly state?: RunSubagentRenderState;
 	readonly invalidate?: () => void;
 }
@@ -69,12 +73,11 @@ export function renderRunSubagentCall(
 	const agentId =
 		context.state?.headerDetails?.agentId ?? args.agentId ?? "...";
 	const promptPreview = args.prompt ? normalizePreviewText(args.prompt) : "...";
-	return new FixedLines(
-		[
-			formatRunSubagentToolHeaderLine(agentId, context.state?.headerDetails),
-			[{ text: "  " }, { text: promptPreview, color: "dim", truncate: true }],
-		],
+	return new RunSubagentCallHeader(
+		formatRunSubagentToolHeaderLine(agentId, context.state?.headerDetails),
+		promptPreview,
 		theme,
+		context.expanded === true,
 	);
 }
 
@@ -440,6 +443,50 @@ interface FixedLinePart {
 	readonly color?: ThemeColor;
 	readonly bold?: boolean;
 	readonly truncate?: boolean;
+}
+
+/** Renders the subagent call header with a bounded, expandable task preview. */
+class RunSubagentCallHeader implements Component {
+	public constructor(
+		private readonly headerLine: readonly FixedLinePart[],
+		private readonly taskPreview: string,
+		private readonly theme: Theme,
+		private readonly expanded: boolean,
+	) {}
+
+	/** Renders the compact runtime header and wraps the task text below it. */
+	public render(width: number): string[] {
+		const taskLines = renderLabeledWrappedText({
+			label: "Task:",
+			text: this.taskPreview,
+			width,
+			labelStyle: (value) => this.theme.fg("muted", value),
+			textStyle: (value) => this.theme.fg("dim", value),
+		});
+		const headerLine = renderFixedLine(this.headerLine, width, this.theme);
+		if (this.expanded) {
+			return [headerLine, ...taskLines];
+		}
+
+		const previewLines = taskLines.slice(0, RUN_SUBAGENT_TASK_PREVIEW_LINES);
+		const hiddenLineCount = taskLines.length - previewLines.length;
+		if (hiddenLineCount <= 0) {
+			return [headerLine, ...previewLines];
+		}
+
+		return [
+			headerLine,
+			...previewLines,
+			renderFixedLine(
+				formatSubagentExpandHintLine(hiddenLineCount, taskLines.length),
+				width,
+				this.theme,
+			),
+		];
+	}
+
+	/** Keeps the component compatible with the TUI invalidation contract. */
+	public invalidate(): void {}
 }
 
 /** Renders fixed lines without wrapping into extra terminal rows. */

@@ -541,6 +541,7 @@ How it works:
 - Starts a separate pi process for the selected subagent.
 - Applies the subagent's model, thinking level, and tools.
 - Reads oversized child RPC progress.
+- Wraps long `prompt` text in the `Task` field and limits collapsed task previews.
 - Shows live progress and returns the subagent's final answer.
 
 ### `ask-llm`
