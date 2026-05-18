@@ -26,7 +26,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `ask-llm` | Yes | Lets you ask a one-off model question without writing it to the current session. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
 | `convene-council` | No | Lets two model participants discuss one question and return one bounded answer. |
-| `mcp-wrapper` | Yes | Registers supported tools from configured MCP servers as Pi tools, caches MCP tool metadata for faster startup, and appends MCP initialize `instructions` only for servers with active generated tools. |
+| `mcp-wrapper` | Yes | Registers tools from configured MCP servers as Pi tools, caches MCP tool metadata for faster startup. |
 
 ## Best practices
 
@@ -87,6 +87,10 @@ Set `PI_AGENT_SUITE_DIR` to use another suite directory.
 Compatibility with earlier storage paths is documented in the legacy storage guide: [docs/extensions/legacy-storage.md](docs/extensions/legacy-storage.md).
 
 MCP wrapper configuration is documented in [docs/extensions/mcp-wrapper.md](docs/extensions/mcp-wrapper.md).
+
+Recommended MCP servers:
+- https://github.com/n-r-w/team-mcp collaboration desk for subagents.
+- https://github.com/n-r-w/asteria for symbolic code search.
 
 ## Agent files
 
