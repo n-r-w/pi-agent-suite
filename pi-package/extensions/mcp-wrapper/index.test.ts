@@ -37,6 +37,28 @@ interface ExtensionApiFake extends ExtensionAPI {
 	readonly tools: ToolDefinition[];
 }
 
+function deferred<T>(): {
+	readonly promise: Promise<T>;
+	readonly resolve: (value: T) => void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((innerResolve) => {
+		resolve = innerResolve;
+	});
+	return { promise, resolve };
+}
+
+function managerWithCleanup<
+	T extends Pick<McpClientManager, "discoverServers" | "callTool">,
+>(
+	manager: T & Partial<Pick<McpClientManager, "closeAll">>,
+): T & Pick<McpClientManager, "closeAll"> {
+	return {
+		...manager,
+		closeAll: manager.closeAll ?? (async () => {}),
+	};
+}
+
 function createExtensionApiFake(): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
 	const tools: ToolDefinition[] = [];
@@ -116,6 +138,17 @@ async function runSessionStart(
 			},
 		},
 	} as ExtensionContext);
+}
+
+async function runSessionShutdown(pi: ExtensionApiFake): Promise<void> {
+	const sessionShutdown = pi.handlers.find(
+		(handler) => handler.eventName === "session_shutdown",
+	);
+	expect(sessionShutdown).toBeDefined();
+	await sessionShutdown?.handler(
+		{ type: "session_shutdown" },
+		{} as ExtensionContext,
+	);
 }
 
 async function prepareSuiteCacheDir(): Promise<string> {
@@ -271,7 +304,7 @@ describe("mcp-wrapper extension", () => {
 					},
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		const notifications: NotificationRecord[] = [];
@@ -355,7 +388,7 @@ describe("mcp-wrapper extension", () => {
 					mcpServers: { files: serverConfig },
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		expect(await resolvesWithin(runSessionStart(pi), 25)).toBe(true);
@@ -364,6 +397,291 @@ describe("mcp-wrapper extension", () => {
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
 			"Use cached file instructions.",
 		);
+	});
+
+	test("closes the active manager and clears instructions on session shutdown", async () => {
+		// Purpose: Pi lifecycle cleanup must release live MCP clients and remove prompt-visible server instructions.
+		// Input and expected output: startup registers one server with instructions, then shutdown calls closeAll once and the prompt returns to its base text.
+		// Edge case: active tools may still contain old tool names after shutdown.
+		// Dependencies: this test uses the mcp-wrapper entry point, an in-memory manager fake, and the ExtensionAPI fake.
+		const pi = createExtensionApiFake();
+		let closeAllCalls = 0;
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [
+					{ serverKey: "files", instructions: "Use this server for files." },
+				],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+			closeAll: async () => {
+				closeAllCalls += 1;
+			},
+		};
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+		});
+
+		await runSessionStart(pi);
+		pi.setActiveTools([FILES_READ_TOOL_NAME]);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
+			"Use this server for files.",
+		);
+
+		await runSessionShutdown(pi);
+
+		expect(closeAllCalls).toBe(1);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
+	});
+
+	test("closes startup manager and keeps instructions cleared when shutdown happens during discovery", async () => {
+		// Purpose: shutdown during startup discovery must not leave a live manager or restore MCP instructions after shutdown.
+		// Input and expected output: discovery completes after shutdown, closeAll runs once, and the prompt stays unchanged.
+		// Edge case: shutdown can happen before session_start handler finishes.
+		// Dependencies: this test uses the mcp-wrapper entry point, a deferred manager fake, and the ExtensionAPI fake.
+		const pi = createExtensionApiFake();
+		const discovery = deferred<{
+			readonly serverToolLists: readonly {
+				readonly serverKey: string;
+				readonly tools: readonly {
+					readonly name: string;
+					readonly inputSchema: unknown;
+				}[];
+			}[];
+			readonly serverInstructions: readonly {
+				readonly serverKey: string;
+				readonly instructions: string;
+			}[];
+			readonly failures: readonly [];
+		}>();
+		let closeAllCalls = 0;
+		const manager = {
+			discoverServers: async () => discovery.promise,
+			callTool: async () => ({ content: [] }),
+			closeAll: async () => {
+				closeAllCalls += 1;
+			},
+		};
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+		});
+
+		const startup = runSessionStart(pi);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await runSessionShutdown(pi);
+		discovery.resolve({
+			serverToolLists: [
+				{
+					serverKey: "files",
+					tools: [{ name: "read", inputSchema: { type: "object" } }],
+				},
+			],
+			serverInstructions: [
+				{ serverKey: "files", instructions: "Use this server for files." },
+			],
+			failures: [],
+		});
+		await startup;
+		pi.setActiveTools([FILES_READ_TOOL_NAME]);
+
+		expect(closeAllCalls).toBe(1);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
+	});
+
+	test("closes the background refresh manager after cached-server discovery", async () => {
+		// Purpose: cache refresh must not leave a discovery-only MCP connection alive after metadata update.
+		// Input and expected output: startup uses cached metadata, background refresh uses a separate manager and closes it after discovery.
+		// Edge case: cached startup registers tools without waiting for live discovery.
+		// Dependencies: this test uses the mcp-wrapper entry point, metadata cache, and manager fakes.
+		await prepareSuiteCacheDir();
+		const pi = createExtensionApiFake();
+		const serverConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: [],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				files: {
+					configHash: computeMcpServerConfigHash(serverConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "read", inputSchema: { type: "object" } }],
+				},
+			},
+		});
+		let refreshCloseCalls = 0;
+		const startupManager = {
+			discoverServers: async () => {
+				throw new Error("startup manager must not refresh cached servers");
+			},
+			callTool: async () => ({ content: [] }),
+		};
+		const refreshManager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+			closeAll: async () => {
+				refreshCloseCalls += 1;
+			},
+		};
+		const managers = [startupManager, refreshManager];
+		const nextManager = () => {
+			const manager = managers.shift();
+			if (manager === undefined) {
+				throw new Error("expected a manager fake");
+			}
+			return managerWithCleanup(manager);
+		};
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: { files: serverConfig },
+				},
+			}),
+			createManager: nextManager,
+		});
+
+		await runSessionStart(pi);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(pi.tools[0]?.name).toBe(FILES_READ_TOOL_NAME);
+		expect(refreshCloseCalls).toBe(1);
+	});
+
+	test("closes the background refresh manager after cached-server discovery failure", async () => {
+		// Purpose: failed cache refresh must still release the temporary MCP connection manager.
+		// Input and expected output: background discovery rejects and closeAll still runs once.
+		// Edge case: cleanup must run through the failure path.
+		// Dependencies: this test uses the mcp-wrapper entry point, metadata cache, and manager fakes.
+		await prepareSuiteCacheDir();
+		const pi = createExtensionApiFake();
+		const notifications: NotificationRecord[] = [];
+		const serverConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: [],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				files: {
+					configHash: computeMcpServerConfigHash(serverConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "read", inputSchema: { type: "object" } }],
+				},
+			},
+		});
+		let refreshCloseCalls = 0;
+		const startupManager = {
+			discoverServers: async () => ({
+				serverToolLists: [],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		};
+		const refreshManager = {
+			discoverServers: async () => {
+				throw new Error("refresh failed");
+			},
+			callTool: async () => ({ content: [] }),
+			closeAll: async () => {
+				refreshCloseCalls += 1;
+			},
+		};
+		const managers = [startupManager, refreshManager];
+		const nextManager = () => {
+			const manager = managers.shift();
+			if (manager === undefined) {
+				throw new Error("expected a manager fake");
+			}
+			return managerWithCleanup(manager);
+		};
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					mcpServers: { files: serverConfig },
+				},
+			}),
+			createManager: nextManager,
+		});
+
+		await runSessionStart(pi, notifications);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(refreshCloseCalls).toBe(1);
+		expect(notifications).toContainEqual({
+			message:
+				"[mcp-wrapper] failed to refresh MCP metadata cache: refresh failed",
+			type: "warning",
+		});
 	});
 
 	test("waits for servers missing from partial cache and notifies the user", async () => {
@@ -427,7 +745,7 @@ describe("mcp-wrapper extension", () => {
 					mcpServers: { cached: cachedConfig, missing: missingConfig },
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi, notifications);
@@ -476,7 +794,7 @@ describe("mcp-wrapper extension", () => {
 					},
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi);
@@ -523,7 +841,7 @@ describe("mcp-wrapper extension", () => {
 					},
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi);
@@ -596,7 +914,7 @@ describe("mcp-wrapper extension", () => {
 					},
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi);
@@ -649,7 +967,7 @@ Use this server. Do not call &lt;private>.
 					},
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi);
@@ -699,7 +1017,7 @@ Use this server. Do not call &lt;private>.
 						: {},
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi);
@@ -749,7 +1067,7 @@ Use this server. Do not call &lt;private>.
 					},
 				},
 			}),
-			createManager: () => manager,
+			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi, notifications, statuses);

@@ -35,7 +35,10 @@ type ValidMcpWrapperConfig = Extract<
 	{ readonly kind: "valid" }
 >["config"];
 
-type McpManagerLike = Pick<McpClientManager, "discoverServers" | "callTool">;
+type McpManagerLike = Pick<
+	McpClientManager,
+	"discoverServers" | "callTool" | "closeAll"
+>;
 type McpManagerFactory = (config: ValidMcpWrapperConfig) => McpManagerLike;
 
 interface McpWrapperDependencies {
@@ -53,17 +56,47 @@ export default function mcpWrapper(
 	const readConfig = dependencies.readConfig ?? readMcpWrapperConfig;
 	const loadCache = dependencies.loadCache ?? loadMcpWrapperCache;
 	const saveCache = dependencies.saveCache ?? saveMcpWrapperCache;
+	const createManager =
+		dependencies.createManager ?? createDefaultMcpClientManager;
+	let activeManager: McpManagerLike | undefined;
+	let lifecycleVersion = 0;
 	let serverInstructionRecords: readonly ServerInstructionRecord[] = [];
 
 	pi.on("session_start", async (_event, ctx) => {
-		serverInstructionRecords = await handleSessionStart({
+		const sessionVersion = lifecycleVersion + 1;
+		lifecycleVersion = sessionVersion;
+		serverInstructionRecords = [];
+		await activeManager?.closeAll();
+		activeManager = undefined;
+
+		const result = await handleSessionStart({
 			pi,
 			ctx,
 			readConfig,
-			createManager: dependencies.createManager,
+			createManager,
+			activateManager: (manager) => {
+				if (sessionVersion !== lifecycleVersion) {
+					manager.closeAll().catch(() => {});
+					return;
+				}
+				activeManager = manager;
+			},
 			loadCache,
 			saveCache,
 		});
+		if (sessionVersion !== lifecycleVersion) {
+			return;
+		}
+		activeManager = result.manager;
+		serverInstructionRecords = result.serverInstructionRecords;
+	});
+
+	pi.on("session_shutdown", async () => {
+		lifecycleVersion += 1;
+		serverInstructionRecords = [];
+		const manager = activeManager;
+		activeManager = undefined;
+		await manager?.closeAll();
 	});
 
 	pi.on("before_agent_start", (event) => {
@@ -103,9 +136,15 @@ interface HandleSessionStartOptions {
 	readonly pi: ExtensionAPI;
 	readonly ctx: SessionStartContextLike;
 	readonly readConfig: () => Promise<McpWrapperConfigResult>;
-	readonly createManager: McpManagerFactory | undefined;
+	readonly createManager: McpManagerFactory;
+	readonly activateManager: (manager: McpManagerLike) => void;
 	readonly loadCache: () => Promise<McpWrapperMetadataCache | null>;
 	readonly saveCache: (cache: McpWrapperMetadataCache) => Promise<void>;
+}
+
+interface HandleSessionStartResult {
+	readonly manager: McpManagerLike | undefined;
+	readonly serverInstructionRecords: readonly ServerInstructionRecord[];
 }
 
 interface ServerInstructionRecord extends ServerInstructions {
@@ -115,25 +154,21 @@ interface ServerInstructionRecord extends ServerInstructions {
 
 async function handleSessionStart(
 	options: HandleSessionStartOptions,
-): Promise<readonly ServerInstructionRecord[]> {
+): Promise<HandleSessionStartResult> {
 	const configResult = await options.readConfig();
 	if (configResult.kind === "invalid") {
 		options.ctx.ui.notify(`${ISSUE_PREFIX} ${configResult.issue}`, "warning");
-		return [];
+		return { manager: undefined, serverInstructionRecords: [] };
 	}
 	if (!configResult.config.enabled) {
-		return [];
+		return { manager: undefined, serverInstructionRecords: [] };
 	}
 	if (Object.keys(configResult.config.mcpServers).length === 0) {
-		return [];
+		return { manager: undefined, serverInstructionRecords: [] };
 	}
 
-	const manager =
-		options.createManager?.(configResult.config) ??
-		new McpClientManager({
-			createClient: createSdkMcpClient,
-			timeouts: configResult.config.timeouts,
-		});
+	const manager = options.createManager(configResult.config);
+	options.activateManager(manager);
 	const startup = await loadStartupMetadata(
 		configResult.config.mcpServers,
 		manager,
@@ -144,15 +179,21 @@ async function handleSessionStart(
 		) => void,
 	);
 	await saveStartupCache(configResult.config.mcpServers, startup, options);
-	refreshCacheInBackground(
-		manager,
-		pickServers(configResult.config.mcpServers, startup.cachedServerKeys),
-		options.saveCache,
-		options.ctx.ui.notify.bind(options.ctx.ui) as (
-			message: string,
-			type?: "info" | "warning",
-		) => void,
+	const cachedServers = pickServers(
+		configResult.config.mcpServers,
+		startup.cachedServerKeys,
 	);
+	if (Object.keys(cachedServers).length > 0) {
+		refreshCacheInBackground(
+			options.createManager(configResult.config),
+			cachedServers,
+			options.saveCache,
+			options.ctx.ui.notify.bind(options.ctx.ui) as (
+				message: string,
+				type?: "info" | "warning",
+			) => void,
+		);
+	}
 
 	const catalog = buildPiToolCatalog(startup.serverToolLists);
 	reportStatuses(options.ctx, startup, catalog.rejected);
@@ -170,10 +211,22 @@ async function handleSessionStart(
 		rejected: catalog.rejected,
 	});
 
-	return buildActiveServerInstructions(
-		startup.serverInstructions,
-		catalog.tools,
-	);
+	return {
+		manager,
+		serverInstructionRecords: buildActiveServerInstructions(
+			startup.serverInstructions,
+			catalog.tools,
+		),
+	};
+}
+
+function createDefaultMcpClientManager(
+	config: ValidMcpWrapperConfig,
+): McpManagerLike {
+	return new McpClientManager({
+		createClient: createSdkMcpClient,
+		timeouts: config.timeouts,
+	});
 }
 
 /** Links server instructions to accepted Pi tool names for active-tool prompt filtering. */
@@ -410,7 +463,8 @@ function refreshCacheInBackground(
 				`${ISSUE_PREFIX} failed to refresh MCP metadata cache: ${formatError(error)}`,
 				"warning",
 			);
-		});
+		})
+		.finally(() => manager.closeAll());
 }
 
 function buildToolDefinition(

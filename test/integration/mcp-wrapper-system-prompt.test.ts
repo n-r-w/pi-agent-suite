@@ -194,7 +194,11 @@ describe("mcp-wrapper and system-prompt integration", () => {
 					failures: [],
 				}),
 				callTool: async () => ({ content: [] }),
-			} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+				closeAll: async () => {},
+			} satisfies Pick<
+				McpClientManager,
+				"discoverServers" | "callTool" | "closeAll"
+			>;
 
 			systemPrompt(pi);
 			mcpWrapper(pi, {
@@ -264,7 +268,11 @@ Use fetch for web pages.
 					failures: [],
 				}),
 				callTool: async () => ({ content: [] }),
-			} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+				closeAll: async () => {},
+			} satisfies Pick<
+				McpClientManager,
+				"discoverServers" | "callTool" | "closeAll"
+			>;
 
 			systemPrompt(pi);
 			mcpWrapper(pi, {
@@ -362,7 +370,11 @@ Use fetch for web pages.
 						failures: [],
 					}),
 					callTool: async () => ({ content: [] }),
-				} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+					closeAll: async () => {},
+				} satisfies Pick<
+					McpClientManager,
+					"discoverServers" | "callTool" | "closeAll"
+				>;
 
 				systemPrompt(pi);
 				mcpWrapper(pi, {

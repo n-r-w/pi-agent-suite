@@ -73,8 +73,10 @@ type ServerDiscoveryResult =
 export class McpClientManager {
 	private readonly connections = new Map<string, McpConnection>();
 	private readonly connectPromises = new Map<string, Promise<McpConnection>>();
+	private readonly connectingClients = new Map<string, McpClientLike>();
 	private readonly createClient: McpClientManagerOptions["createClient"];
 	private readonly timeouts: McpWrapperTimeouts;
+	private closed = false;
 
 	constructor(options: McpClientManagerOptions) {
 		this.createClient = options.createClient;
@@ -114,6 +116,18 @@ export class McpClientManager {
 		config: McpServerConfig,
 	): Promise<McpClientLike> {
 		return (await this.getOrCreateConnection(serverKey, config)).client;
+	}
+
+	async closeAll(): Promise<void> {
+		this.closed = true;
+		const clients = [
+			...[...this.connections.values()].map((connection) => connection.client),
+			...this.connectingClients.values(),
+		];
+		this.connections.clear();
+		this.connectingClients.clear();
+		this.connectPromises.clear();
+		await Promise.all(clients.map((client) => client.close().catch(() => {})));
 	}
 
 	async callTool(
@@ -181,6 +195,7 @@ export class McpClientManager {
 		serverKey: string,
 		config: McpServerConfig,
 	): Promise<McpConnection> {
+		this.ensureOpen();
 		const existing = this.connections.get(serverKey);
 		if (existing !== undefined) {
 			return existing;
@@ -195,6 +210,10 @@ export class McpClientManager {
 		this.connectPromises.set(serverKey, promise);
 		try {
 			const connection = await promise;
+			if (this.closed) {
+				await connection.client.close().catch(() => {});
+				throw new Error("MCP client manager is closed");
+			}
 			this.connections.set(serverKey, connection);
 			return connection;
 		} finally {
@@ -206,7 +225,9 @@ export class McpClientManager {
 		serverKey: string,
 		config: McpServerConfig,
 	): Promise<McpConnection> {
+		this.ensureOpen();
 		const client = this.createClient(serverKey, config);
+		this.connectingClients.set(serverKey, client);
 		try {
 			await withAbortTimeout(
 				this.timeouts.startupSeconds,
@@ -223,6 +244,8 @@ export class McpClientManager {
 		} catch (error) {
 			await client.close().catch(() => {});
 			throw error;
+		} finally {
+			this.connectingClients.delete(serverKey);
 		}
 	}
 
@@ -251,6 +274,12 @@ export class McpClientManager {
 		return page.nextCursor === undefined
 			? tools
 			: this.fetchToolPage(client, page.nextCursor, tools);
+	}
+
+	private ensureOpen(): void {
+		if (this.closed) {
+			throw new Error("MCP client manager is closed");
+		}
 	}
 
 	private async closeStoredConnection(serverKey: string): Promise<void> {

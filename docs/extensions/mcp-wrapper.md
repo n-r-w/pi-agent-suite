@@ -107,7 +107,9 @@ Startup notifications list connected servers, cached servers, registered tools, 
 - If every configured server has a matching cache entry, MCP tools and instruction metadata are registered from cache without waiting for MCP connections.
 - If cache is missing for one or more configured servers, startup shows an info notification and waits for discovery only for those servers.
 - After startup, live discovery refreshes the cache in the background.
+- Background refresh uses its own MCP client manager and closes it after the refresh finishes or fails.
 - Background refresh does not change registered tools, session instruction metadata, active tools, or prompt-visible MCP instructions in the current session.
+- Session shutdown closes active MCP clients and clears stored MCP instruction metadata.
 - Editing the config file during an active session does not change registered MCP tools or active MCP connections until restart or reload.
 - Failed MCP servers do not block healthy servers.
 - Failed servers and rejected routes are shown through MCP status entries in the footer.

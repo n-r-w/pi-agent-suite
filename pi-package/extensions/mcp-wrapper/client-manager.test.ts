@@ -102,6 +102,17 @@ class FakeMcpClient implements McpClientLike {
 	}
 }
 
+function deferred<T>(): {
+	readonly promise: Promise<T>;
+	readonly resolve: (value: T) => void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((innerResolve) => {
+		resolve = innerResolve;
+	});
+	return { promise, resolve };
+}
+
 describe("mcp-wrapper client manager", () => {
 	test("discovers paginated tools and applies startup/list timeouts", async () => {
 		const client = new FakeMcpClient();
@@ -247,6 +258,61 @@ describe("mcp-wrapper client manager", () => {
 
 		expect(createCalls).toBe(1);
 		expect(client.connectCalls).toBe(1);
+	});
+
+	test("closes all active connections and allows repeated cleanup", async () => {
+		// Purpose: session cleanup must release every live MCP client and stay safe when called more than once.
+		// Input and expected output: two connected servers are closed once each, and a second cleanup call does not close them again.
+		// Edge case: repeated lifecycle cleanup must be idempotent.
+		// Dependencies: this test uses only McpClientManager and fake MCP clients.
+		const filesClient = new FakeMcpClient();
+		const docsClient = new FakeMcpClient();
+		const clients = new Map([
+			["files", filesClient],
+			["docs", docsClient],
+		]);
+		const manager = new McpClientManager({
+			createClient: (serverKey) =>
+				clients.get(serverKey) ?? new FakeMcpClient(),
+			timeouts: DEFAULT_TIMEOUTS,
+		});
+
+		await Promise.all([
+			manager.getConnection("files", STDIO_SERVER),
+			manager.getConnection("docs", STDIO_SERVER),
+		]);
+		await manager.closeAll();
+		await manager.closeAll();
+
+		expect(filesClient.closeCalls).toEqual(["close"]);
+		expect(docsClient.closeCalls).toEqual(["close"]);
+	});
+
+	test("closes a pending connection during cleanup and rejects later use", async () => {
+		// Purpose: lifecycle cleanup must reach a client whose startup connect call has not finished yet.
+		// Input and expected output: one pending connection is closed during cleanup, then the pending getConnection call rejects after connect resolves.
+		// Edge case: connection creation can complete after cleanup starts.
+		// Dependencies: this test uses only McpClientManager, a deferred fake client, and no real process.
+		const connected = deferred<void>();
+		const client = new FakeMcpClient();
+		client.connect = async () => connected.promise;
+		const manager = new McpClientManager({
+			createClient: () => client,
+			timeouts: DEFAULT_TIMEOUTS,
+		});
+
+		const connectionPromise = manager.getConnection("files", STDIO_SERVER);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await manager.closeAll();
+		connected.resolve();
+
+		await expect(connectionPromise).rejects.toThrow(
+			"MCP client manager is closed",
+		);
+		expect(client.closeCalls).toEqual(["close", "close"]);
+		await expect(manager.getConnection("files", STDIO_SERVER)).rejects.toThrow(
+			"MCP client manager is closed",
+		);
 	});
 
 	test("calls the routed MCP tool with call and total timeouts", async () => {
