@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
@@ -63,6 +66,8 @@ const TOOL_NAME = "run_subagent";
 const ISSUE_PREFIX = "[run-subagent]";
 const RUN_SUBAGENT_EXTENSION_DIR = "run-subagent";
 const RUN_SUBAGENT_LEGACY_CONFIG_FILE = "run-subagent.json";
+const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "prompts");
+const RUN_SUBAGENT_DESCRIPTION = readPromptFile("description.md");
 const ENABLED_CONFIG_KEY = "enabled";
 /** Default maximum child-subagent nesting depth when config omits maxDepth. */
 const DEFAULT_MAX_DEPTH = 1;
@@ -221,9 +226,7 @@ export default async function runSubagent(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Run subagent",
-		description:
-			"Run independent subagent. Running a subagent blocks your work until it finishes. " +
-			"For parallel work, emit multiple run_subagent calls in the same tool call.",
+		description: RUN_SUBAGENT_DESCRIPTION,
 		parameters: RunSubagentParameters,
 		executionMode: "parallel",
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
@@ -1562,6 +1565,11 @@ function reportIssue(ctx: RunSubagentContext, issue: string): void {
 	}
 
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
+}
+
+/** Reads one bundled prompt file and trims trailing file whitespace. */
+function readPromptFile(fileName: string): string {
+	return readFileSync(join(PROMPTS_DIR, fileName), "utf8").trim();
 }
 
 /** Reads the current subagent nesting depth from the process environment. */
