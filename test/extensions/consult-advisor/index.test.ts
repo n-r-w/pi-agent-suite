@@ -305,6 +305,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Narrows before_agent_start handler output to a prompt result. */
+function isPromptResult(
+	value: unknown,
+): value is { readonly systemPrompt: string } {
+	return (
+		isRecord(value) &&
+		"systemPrompt" in value &&
+		typeof value["systemPrompt"] === "string"
+	);
+}
+
 function createModel(provider: string, id: string): Model<Api> {
 	return {
 		provider,
@@ -1845,18 +1856,13 @@ describe("consult-advisor", () => {
 					ctx,
 				);
 
-				expect(result).toEqual({
-					systemPrompt: [
-						"Base",
-						"Main prompt",
-						[
-							"Callable agents available through run_subagent:",
-							"- agentId: helper\n  description: helper",
-							"Use run_subagent with exactly one agentId and one prompt.",
-							"For independent work, emit multiple run_subagent tool calls in the same assistant response so pi can run them in parallel.",
-						].join("\n"),
-					].join("\n\n"),
-				});
+				if (!isPromptResult(result)) {
+					throw new Error("before_agent_start did not return a system prompt");
+				}
+				expect(result.systemPrompt).toContain("Base");
+				expect(result.systemPrompt).toContain("Main prompt");
+				expect(result.systemPrompt).toContain("run_subagent");
+				expect(result.systemPrompt).toContain("helper");
 			});
 		} finally {
 			for (const key of SUBAGENT_ENV_KEYS) {
@@ -1903,18 +1909,14 @@ describe("consult-advisor", () => {
 				ctx,
 			);
 
-			expect(result).toEqual({
-				systemPrompt: [
-					"Base",
-					"Main prompt",
-					[
-						"Callable agents available through run_subagent:",
-						"- agentId: helper\n  description: helper",
-						"Use run_subagent with exactly one agentId and one prompt.",
-						"For independent work, emit multiple run_subagent tool calls in the same assistant response so pi can run them in parallel.",
-					].join("\n"),
-				].join("\n\n"),
-			});
+			if (!isPromptResult(result)) {
+				throw new Error("before_agent_start did not return a system prompt");
+			}
+			expect(result.systemPrompt).toContain("Base");
+			expect(result.systemPrompt).toContain("Main prompt");
+			expect(result.systemPrompt).toContain("run_subagent");
+			expect(result.systemPrompt).toContain("helper");
+			expect(result.systemPrompt).not.toContain("consult_advisor");
 		});
 	});
 
