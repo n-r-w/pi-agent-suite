@@ -222,7 +222,8 @@ export default async function runSubagent(
 		name: TOOL_NAME,
 		label: "Run subagent",
 		description:
-			"Run independent subagent. Running a subagent blocks your work until it finishes`",
+			"Run independent subagent. Running a subagent blocks your work until it finishes. " +
+			"For parallel work, emit multiple run_subagent calls in the same tool call.",
 		parameters: RunSubagentParameters,
 		executionMode: "parallel",
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
@@ -402,8 +403,8 @@ function formatCallableAgentsPrompt(
 	return [
 		"Callable agents available through run_subagent:",
 		rows,
-		"Use run_subagent with exactly one agentId and one prompt.",
-		"For independent work, emit multiple run_subagent tool calls in the same assistant response so pi can run them in parallel.",
+		"Use run_subagent with agentId and prompt.",
+		"For parallel execution, emit multiple run_subagent in the single tool call.",
 	].join("\n");
 }
 
