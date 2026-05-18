@@ -9,36 +9,60 @@ import {
 	Markdown,
 	Text,
 	truncateToWidth,
-	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { truncateTextByWidth } from "../../shared/display-width";
+import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
 
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
+const CALL_QUESTION_PREVIEW_LINES = 3;
 export const COLLAPSED_ADVICE_PREVIEW_LINES = 5;
 
-/** Renders the compact question preview as one tool-call header row. */
+/** Renders the question preview as wrapped rows in the tool-call header. */
 class AdvisorQuestionHeader implements Component {
 	public constructor(
 		private readonly questionPreview: string,
 		private readonly theme: Theme,
+		private readonly expanded: boolean,
 	) {}
 
-	/** Returns one width-bounded row because tool-call arguments must not consume collapsed output space. */
+	/** Returns width-bounded rows and counts wrapped rows against the call preview budget. */
 	public render(width: number): string[] {
-		const title = "consult_advisor:";
-		const separator = " ";
-		const questionWidth = Math.max(
-			0,
-			width - visibleWidth(title) - visibleWidth(separator),
+		const wrappedLines = renderLabeledWrappedText({
+			label: "consult_advisor:",
+			text: this.questionPreview,
+			width,
+			labelStyle: (value) => this.theme.fg("toolTitle", this.theme.bold(value)),
+			textStyle: (value) => this.theme.fg("dim", value),
+		});
+		if (this.expanded) {
+			return wrappedLines;
+		}
+
+		const previewLines = wrappedLines.slice(0, CALL_QUESTION_PREVIEW_LINES);
+		const hiddenLineCount = wrappedLines.length - previewLines.length;
+		if (hiddenLineCount <= 0) {
+			return previewLines;
+		}
+
+		previewLines.push(
+			this.renderHiddenLineHint(hiddenLineCount, wrappedLines.length, width),
 		);
-		const question = truncateTextByWidth(
-			this.questionPreview,
-			questionWidth,
-			"…",
-		);
-		return [
-			`${this.theme.fg("toolTitle", this.theme.bold(title))}${separator}${this.theme.fg("dim", question)}`,
-		];
+		return previewLines;
+	}
+
+	/** Renders the standard collapsed-output summary with the active Pi expansion key. */
+	private renderHiddenLineHint(
+		hiddenLineCount: number,
+		totalLineCount: number,
+		width: number,
+	): string {
+		const hint =
+			this.theme.fg(
+				"muted",
+				`... (${hiddenLineCount} more ${formatLineWord(hiddenLineCount)}, ${totalLineCount} total, `,
+			) +
+			this.theme.fg("dim", formatToolExpandKeybindingText()) +
+			this.theme.fg("muted", " to expand)");
+		return truncateToWidth(hint, width, "...");
 	}
 
 	/** Keeps the component compatible with the TUI invalidation contract. */
@@ -49,11 +73,16 @@ class AdvisorQuestionHeader implements Component {
 export function renderConsultAdvisorCall(
 	args: { readonly question?: string },
 	theme: Theme,
+	context?: { readonly expanded?: boolean },
 ): Component {
 	const questionPreview = args.question
 		? normalizePreviewText(args.question)
 		: "...";
-	return new AdvisorQuestionHeader(questionPreview, theme);
+	return new AdvisorQuestionHeader(
+		questionPreview,
+		theme,
+		context?.expanded === true,
+	);
 }
 
 /** Renders advisor output as compact advice by default and full Markdown when Pi expands tool output. */

@@ -441,25 +441,26 @@ describe("url-scheme", () => {
 		});
 	});
 
-	test("skips missing files, fenced code blocks, and Markdown images", async () => {
-		// Purpose: conversion must not alter unsafe or non-link Markdown regions.
-		// Input and expected output: missing files, fenced code, inline code in fenced code, Markdown links in fenced code, and images stay unchanged.
-		// Edge case: a valid reference outside protected Markdown ranges is still converted.
+	test("skips missing files, triple-backtick text, and Markdown images", async () => {
+		// Purpose: conversion must not alter unsafe or non-link text ranges.
+		// Input and expected output: missing files, text between triple-backtick delimiters, inline code inside that text, Markdown links inside that text, and images stay unchanged.
+		// Edge case: triple-backtick delimiters can appear in the middle of a line, and an unmatched opening delimiter protects text to the end of the message.
 		// Dependencies: isolated suite config, real temporary file, and protected-range parsing.
 		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
 			await writeConfig(agentDir, { enabled: true });
 			const file = await createProjectFile(cwd, "packages/foo/src/bar.ts");
 			const missingPath = "packages/foo/src/missing.ts";
 			const protectedText = [
-				"```ts",
+				"   ```text",
 				file.relativePath,
 				`\`${file.relativePath}\``,
 				`\`[${file.relativePath}](${file.relativePath})\``,
 				`[${file.relativePath}](${file.relativePath})`,
-				"```",
+				"   ```",
 				`Image ![${file.relativePath}](${file.relativePath})`,
 				`Missing ${missingPath}`,
-				`Valid ${file.relativePath}`,
+				`Inline keep \`\`\`${file.relativePath} [${file.relativePath}](${file.relativePath})\`\`\` then ${file.relativePath}`,
+				`Unmatched \`\`\`${file.relativePath}`,
 			].join("\n");
 			const expectedUrl = `vscode://file${encodePathForExpectedUrl(file.absolutePath)}`;
 
@@ -470,15 +471,16 @@ describe("url-scheme", () => {
 
 			expect(result.text).toBe(
 				[
-					"```ts",
+					"   ```text",
 					file.relativePath,
 					`\`${file.relativePath}\``,
 					`\`[${file.relativePath}](${file.relativePath})\``,
 					`[${file.relativePath}](${file.relativePath})`,
-					"```",
+					"   ```",
 					`Image ![${file.relativePath}](${file.relativePath})`,
 					`Missing ${missingPath}`,
-					`Valid [${file.relativePath}](${expectedUrl})`,
+					`Inline keep \`\`\`${file.relativePath} [${file.relativePath}](${file.relativePath})\`\`\` then [${file.relativePath}](${expectedUrl})`,
+					`Unmatched \`\`\`${file.relativePath}`,
 				].join("\n"),
 			);
 		});

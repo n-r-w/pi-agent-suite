@@ -25,6 +25,8 @@
 	],
 	"pi": {
 		"extensions": [
+			"./extensions/system-prompt/index.ts",
+			"./extensions/mcp-wrapper/index.ts",
 			"./extensions/enable-tools/index.ts",
 			"./extensions/footer/index.ts",
 			"./extensions/codex-verbosity/index.ts",
@@ -35,7 +37,6 @@
 			"./extensions/completion-sound/index.ts",
 			"./extensions/cmux/index.ts",
 			"./extensions/url-scheme/index.ts",
-			"./extensions/system-prompt/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
 			"./extensions/ask-llm/index.ts",
@@ -51,6 +52,7 @@
 		"typebox": "*"
 	},
 	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.0",

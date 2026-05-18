@@ -42,8 +42,11 @@
 - Colors only positive summary counts in the widget header: `accent` for running, `error` for failed, and `success` for done.
 - Colors child context usage in widget rows with the same context pressure thresholds as the footer: plain below 50%, `warning` from 50%, and `error` from 80%.
 - Does not copy parent footer statuses or context-overflow limits into subagent widget rows.
-- Renders collapsed and expanded tool results through width-aware components.
+- Renders collapsed and expanded tool calls and tool results through width-aware components.
 - Renders child agent, model, thinking level, child-owned context-projection savings, context usage, and elapsed time in the `run_subagent` tool-call header.
+- Wraps the `Task` field below the tool-call header.
+- Shows only the first three wrapped `Task` rows in collapsed tool calls and then shows `... (xx more lines, yy total, {key} to expand)` with segmented muted and dim colors.
+- Shows the full wrapped `Task` field in expanded tool calls.
 - Does not repeat child runtime metadata as a separate row in collapsed or expanded result body.
 - Shows the latest `COLLAPSED_SUBAGENT_RESULT_LINES` progress events in collapsed tool results.
 - `COLLAPSED_SUBAGENT_RESULT_LINES` is exported from `pi-package/extensions/run-subagent/rendering.ts`.

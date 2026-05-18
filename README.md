@@ -26,6 +26,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `ask-llm` | Yes | Lets you ask a one-off model question without writing it to the current session. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
 | `convene-council` | No | Lets two model participants discuss one question and return one bounded answer. |
+| `mcp-wrapper` | Yes | Registers supported tools from configured MCP servers as Pi tools, caches MCP tool metadata for faster startup, and appends MCP initialize `instructions` only for servers with active generated tools. |
 
 ## Best practices
 
@@ -84,6 +85,8 @@ Extension settings and artifacts are stored under the suite directory:
 Set `PI_AGENT_SUITE_DIR` to use another suite directory.
 
 Compatibility with earlier storage paths is documented in the legacy storage guide: [docs/extensions/legacy-storage.md](docs/extensions/legacy-storage.md).
+
+MCP wrapper configuration is documented in [docs/extensions/mcp-wrapper.md](docs/extensions/mcp-wrapper.md).
 
 ## Agent files
 
@@ -441,7 +444,8 @@ How it works:
 - Removes single backticks only when the whole inline code span is a file reference or one Markdown link to a file.
 - Leaves inline code spans unchanged when they contain commands, images, or other text.
 - Rewrites existing Markdown links when their target is a file reference.
-- Skips fenced code blocks and Markdown images.
+- Skips text between triple-backtick delimiters and Markdown images.
+- Treats an unmatched opening triple-backtick delimiter as protected text through the end of the message.
 - Supports relative paths, absolute paths, `path:line`, `path:startLine-endLine`, and `path:line:column`.
 - Percent-encodes URL path and query values, including spaces, `#`, `?`, `&`, Unicode, and Windows paths.
 - Leaves the assistant message unchanged when config is invalid or the file does not exist.
@@ -537,6 +541,7 @@ How it works:
 - Starts a separate pi process for the selected subagent.
 - Applies the subagent's model, thinking level, and tools.
 - Reads oversized child RPC progress.
+- Wraps long `prompt` text in the `Task` field and limits collapsed task previews.
 - Shows live progress and returns the subagent's final answer.
 
 ### `ask-llm`

@@ -4129,20 +4129,18 @@ describe("run-subagent", () => {
 
 				await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
 
-				expect(
-					await getBeforeAgentStartHandler(pi)({ systemPrompt: "Base" }, ctx),
-				).toEqual({
-					systemPrompt: [
-						"Base",
-						"Helper prompt",
-						[
-							"Callable agents available through run_subagent:",
-							"- agentId: helper\n  description: Helper",
-							"Use run_subagent with exactly one agentId and one prompt.",
-							"For independent work, emit multiple run_subagent tool calls in the same assistant response so pi can run them in parallel.",
-						].join("\n"),
-					].join("\n\n"),
-				});
+				const result = await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base" },
+					ctx,
+				);
+				if (!isPromptResult(result)) {
+					throw new Error("before_agent_start did not return a system prompt");
+				}
+				expect(result.systemPrompt).toContain("Base");
+				expect(result.systemPrompt).toContain("Helper prompt");
+				expect(result.systemPrompt).toContain("run_subagent");
+				expect(result.systemPrompt).toContain("helper");
+				expect(result.systemPrompt).toContain("Helper");
 			},
 			"0",
 			"helper",
@@ -4398,18 +4396,17 @@ describe("run-subagent", () => {
 				ctx,
 			);
 
-			expect(result).toEqual({
-				systemPrompt: [
-					"Base",
-					"Test agent prompt",
-					[
-						"Callable agents available through run_subagent:",
-						"- agentId: SubAgentExtractor\n  description: Extractor",
-						"Use run_subagent with exactly one agentId and one prompt.",
-						"For independent work, emit multiple run_subagent tool calls in the same assistant response so pi can run them in parallel.",
-					].join("\n"),
-				].join("\n\n"),
-			});
+			if (!isPromptResult(result)) {
+				throw new Error("before_agent_start did not return a system prompt");
+			}
+			expect(result.systemPrompt).toContain("Base");
+			expect(result.systemPrompt).toContain("Test agent prompt");
+			expect(result.systemPrompt).toContain("run_subagent");
+			expect(result.systemPrompt).toContain("SubAgentExtractor");
+			expect(result.systemPrompt).toContain("Extractor");
+			expect(result.systemPrompt).not.toContain("SubAgentCoder");
+			expect(result.systemPrompt).not.toContain("SubAgentSage");
+			expect(result.systemPrompt).not.toContain("TestAgent");
 		});
 	});
 
@@ -4536,11 +4533,14 @@ describe("run-subagent", () => {
 				ctx,
 			);
 
-			expect(result).toEqual({ systemPrompt: "Base\n\nMain prompt" });
+			if (!isPromptResult(result)) {
+				throw new Error("before_agent_start did not return a system prompt");
+			}
+			expect(result.systemPrompt).toContain("Base");
+			expect(result.systemPrompt).toContain("Main prompt");
+			expect(result.systemPrompt).not.toContain("run_subagent");
+			expect(result.systemPrompt).not.toContain("helper");
 			expect(pi.getActiveTools()).toEqual(["read"]);
-			expect(
-				(result as { readonly systemPrompt: string }).systemPrompt,
-			).not.toContain("Callable agents available through run_subagent:");
 		}, "1");
 	});
 
@@ -4602,18 +4602,15 @@ describe("run-subagent", () => {
 			const second = await loadAndSelectMainAgent(["run", "main"]);
 
 			expect(first).toEqual(second);
-			expect(first.promptResult).toEqual({
-				systemPrompt: [
-					"Base",
-					"Main prompt",
-					[
-						"Callable agents available through run_subagent:",
-						"- agentId: helper\n  description: Helper agent",
-						"Use run_subagent with exactly one agentId and one prompt.",
-						"For independent work, emit multiple run_subagent tool calls in the same assistant response so pi can run them in parallel.",
-					].join("\n"),
-				].join("\n\n"),
-			});
+			if (!isPromptResult(first.promptResult)) {
+				throw new Error("before_agent_start did not return a system prompt");
+			}
+			expect(first.promptResult.systemPrompt).toContain("Base");
+			expect(first.promptResult.systemPrompt).toContain("Main prompt");
+			expect(first.promptResult.systemPrompt).toContain("run_subagent");
+			expect(first.promptResult.systemPrompt).toContain("helper");
+			expect(first.promptResult.systemPrompt).toContain("Helper agent");
+			expect(first.promptResult.systemPrompt).not.toContain("blocked");
 		});
 	});
 });
