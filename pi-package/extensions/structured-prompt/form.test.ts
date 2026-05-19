@@ -13,6 +13,8 @@ const PAGE_DOWN = "\x1b[6~";
 const HOME = "\x1b[H";
 const CTRL_T = "\x14";
 const CTRL_Y = "\x19";
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
 
 describe("structured-prompt form", () => {
 	test("submits entered section values from the review screen", () => {
@@ -64,6 +66,94 @@ describe("structured-prompt form", () => {
 			kind: "submitted",
 			values: expect.arrayContaining([
 				{ sectionId: "goal", value: "Line one\nLine two" },
+			]),
+		});
+	});
+
+	test("keeps bracketed pasted filename and backslash render-safe", () => {
+		// Purpose: pasted filename text must not leak terminal paste control bytes into the editor.
+		// Input and expected output: bracketed paste plus backslash renders within width and submits plain text.
+		// Edge case: the cursor is after a trailing backslash.
+		// Dependencies: this test uses fake TUI rendering and visible width measurement.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result));
+		const filename = "pi-package/README.md";
+
+		form.handleInput(
+			`${BRACKETED_PASTE_START}${filename}${BRACKETED_PASTE_END}`,
+		);
+		form.handleInput("\\");
+		const rows = form.render(120);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		form.handleInput(ENTER);
+
+		const renderedText = rows.join("\n");
+		expect(renderedText).toContain(`${filename}\\`);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_START);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_END);
+		expect(rows.every((row) => visibleWidth(row) <= 120)).toBe(true);
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: `${filename}\\` },
+			]),
+		});
+	});
+
+	test("keeps fragmented bracketed pasted filename render-safe", () => {
+		// Purpose: paste control handling must survive terminals that split paste into chunks.
+		// Input and expected output: fragmented bracketed paste plus backslash submits plain text.
+		// Edge case: the paste start and paste end markers arrive in different input chunks.
+		// Dependencies: this test uses fake TUI rendering and visible width measurement.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result));
+		const filename = "README.md";
+
+		form.handleInput(`${BRACKETED_PASTE_START}READ`);
+		form.handleInput(`ME.md${BRACKETED_PASTE_END}`);
+		form.handleInput("\\");
+		const rows = form.render(80);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		form.handleInput(ENTER);
+
+		const renderedText = rows.join("\n");
+		expect(renderedText).toContain(`${filename}\\`);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_START);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_END);
+		expect(rows.every((row) => visibleWidth(row) <= 80)).toBe(true);
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: `${filename}\\` },
+			]),
+		});
+	});
+
+	test("submits expanded content from large bracketed paste", () => {
+		// Purpose: large pasted text must not be submitted as an internal paste marker.
+		// Input and expected output: bracketed paste with many lines submits the original text.
+		// Edge case: Pi Editor may render a compact paste marker for large paste.
+		// Dependencies: this test checks the form result, not the editor display string.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result));
+		const pastedText = numberedLines(12);
+
+		form.handleInput(
+			`${BRACKETED_PASTE_START}${pastedText}${BRACKETED_PASTE_END}`,
+		);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		form.handleInput(ENTER);
+
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: pastedText },
 			]),
 		});
 	});
