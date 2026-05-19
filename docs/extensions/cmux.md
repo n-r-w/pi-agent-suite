@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`cmux` sends a cmux notification only after completed top-level pi agent runs.
+`cmux` sends [cmux](https://cmux.com/) notification only after completed top-level pi agent runs.
 
 ## Behavior
 

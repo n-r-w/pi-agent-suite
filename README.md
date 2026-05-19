@@ -51,9 +51,7 @@ Add optional extensions only when you need their specific behavior:
 - Enable `codex-verbosity` when you want to control Codex answer detail.
 - Configure `mcp-wrapper` when you want MCP server tools inside pi.
 - Enable `url-scheme` when you want final answer file references to open in your editor.
-- Enable `context-projection` only after tuning it for your workload:
-  - use summary mode with a fast model in `summary.model` when projected tool output may still matter;
-  - keep `summary.maxConcurrency` low unless provider rate limits and cost are acceptable.
+- Enable `context-projection`. Use summary mode with a fast model in `summary.model` (e.g. `gpt-5.3-codex-spark`).
 - Enable `convene-council`. Do not rely on current session model defaults. Configure `llm1` and `llm2` with the most capable available models and set `model.thinking` to `high` or `xhigh`. Use two different models when possible.
 
 Recommended MCP servers:
@@ -75,16 +73,14 @@ Recommended MCP servers:
 | `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with a placeholder or summary. | `context-projection/config.json`: `enabled`, projection thresholds, recent-turn protection, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
 | `context-overflow` | Enabled | Starts preventive compaction before the model context is too full. | `context-overflow/config.json`: `enabled`, `compactRemainingTokens`. | [docs/extensions/context-overflow.md](docs/extensions/context-overflow.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
-| `cmux` | Enabled | Sends a cmux notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |
+| `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |
 | `url-scheme` | Disabled | Converts final answer file references into editor links. | `url-scheme/config.json`: `enabled`, `scheme` (`vscode`, `cursor`, `webstorm`, `idea`, `pycharm`, `phpstorm`, `txmt`, `bbedit`). | [docs/extensions/url-scheme.md](docs/extensions/url-scheme.md) |
 | `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](docs/extensions/main-agent-selection.md) |
-| `run-subagent` | Enabled | Adds the `run_subagent` tool for running configured subagents in child pi processes. | `run-subagent/config.json`: `enabled`, `maxDepth`, `widgetLineBudget`. | [docs/extensions/run-subagent.md](docs/extensions/run-subagent.md) |
+| `run-subagent` | Enabled | Adds the `run_subagent` tool for running subagents in child pi processes. | `run-subagent/config.json`: `enabled`, `maxDepth`, `widgetLineBudget`. | [docs/extensions/run-subagent.md](docs/extensions/run-subagent.md) |
 | `structured-prompt` | Enabled | Adds `/prompt` and `Ctrl+Alt+P` for building structured user requests. | `structured-prompt/config.json`: `enabled`. | [docs/extensions/structured-prompt.md](docs/extensions/structured-prompt.md) |
 | `ask-llm` | Enabled | Adds `/ask` for one-off model questions that are not saved to the current session. | `ask-llm/config.json`: `enabled`, `model`, `systemPromptFile`, `retry`. | [docs/extensions/ask-llm.md](docs/extensions/ask-llm.md) |
 | `consult-advisor` | Enabled | Adds the `consult_advisor` tool for an independent model opinion. | `consult-advisor/config.json`: `enabled`, `model`, `promptFile`, `debugPayloadFile`, `retry`. | [docs/extensions/consult-advisor.md](docs/extensions/consult-advisor.md) |
 | `convene-council` | Disabled | Adds the `convene_council` tool for a bounded two-participant model discussion. | `convene-council/config.json`: `enabled`, `llm1`, `llm2`, `participantIterationLimit`, `finalAnswerParticipant`, `responseDefectRetries`, `tools`. | [docs/extensions/convene-council.md](docs/extensions/convene-council.md) |
-
-Legacy storage compatibility is described in [docs/extensions/legacy-storage.md](docs/extensions/legacy-storage.md).
 
 ## Agent files
 
@@ -104,7 +100,7 @@ Basic rules:
 - The Markdown text after the settings block is the agent prompt.
 - `type` can be `main`, `subagent`, or `both`.
 - `tools` can list exact tool names or narrow wildcard patterns. Full wildcard `*` is not allowed.
-- `agents` limits which subagents a main agent may call.
+- `agents` limits which subagents agent may call.
 
 Example:
 
@@ -119,6 +115,7 @@ tools:
   - read
   - bash
   - grep
+  - mymcp_*
 agents:
   - Researcher
   - Reviewer

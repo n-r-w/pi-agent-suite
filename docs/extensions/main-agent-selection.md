@@ -59,6 +59,7 @@ tools:
   - read
   - bash
   - grep
+  - mymcp_*
 agents:
   - Researcher
   - Reviewer
