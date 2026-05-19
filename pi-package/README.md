@@ -2,8 +2,6 @@
 
 Pi Agent Suite adds pi extensions for agent profiles, subagents, advisor tools, context management, notifications, MCP tools, and prompt helpers.
 
-Use this README to choose extensions and find their basic settings.
-
 ## Quick start
 
 Install from npm:
