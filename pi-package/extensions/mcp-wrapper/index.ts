@@ -202,12 +202,13 @@ async function handleSessionStart(
 
 	const catalog = buildPiToolCatalog(startup.serverToolLists);
 	reportStatuses(options.ctx, startup, catalog.rejected);
-	registerCatalogTools(
-		options.pi,
-		catalog.tools,
+	registerCatalogTools({
+		pi: options.pi,
+		tools: catalog.tools,
 		manager,
-		configResult.config.mcpServers,
-	);
+		servers: configResult.config.mcpServers,
+		widgetLineBudget: configResult.config.widgetLineBudget,
+	});
 	reportStartupDiagnostics(options.ctx, {
 		connectedServers: startup.discoveredServerKeys,
 		cachedServers: startup.cachedServerKeys,
@@ -417,14 +418,22 @@ function reportStatuses(
 	}
 }
 
-function registerCatalogTools(
-	pi: ExtensionAPI,
-	tools: readonly PiToolCatalogEntry[],
-	manager: McpManagerLike,
-	servers: ValidMcpWrapperConfig["mcpServers"],
-): void {
-	for (const entry of tools) {
-		pi.registerTool(buildToolDefinition(entry, manager, servers));
+function registerCatalogTools(options: {
+	readonly pi: ExtensionAPI;
+	readonly tools: readonly PiToolCatalogEntry[];
+	readonly manager: McpManagerLike;
+	readonly servers: ValidMcpWrapperConfig["mcpServers"];
+	readonly widgetLineBudget: number;
+}): void {
+	for (const entry of options.tools) {
+		options.pi.registerTool(
+			buildToolDefinition(
+				entry,
+				options.manager,
+				options.servers,
+				options.widgetLineBudget,
+			),
+		);
 	}
 }
 
@@ -495,6 +504,7 @@ function buildToolDefinition(
 	entry: PiToolCatalogEntry,
 	manager: Pick<McpClientManager, "callTool">,
 	servers: ValidMcpWrapperConfig["mcpServers"],
+	widgetLineBudget: number,
 ): ToolDefinition {
 	return {
 		name: entry.definition.name,
@@ -504,7 +514,11 @@ function buildToolDefinition(
 		parameters: entry.definition.parameters,
 		renderCall: (args, theme, context) =>
 			renderMcpToolCall(entry.definition.name, args, theme, context),
-		renderResult: renderMcpToolResult,
+		renderResult: (result, options, theme, context) =>
+			renderMcpToolResult(result, options, theme, {
+				isError: context.isError,
+				widgetLineBudget,
+			}),
 		async execute(_toolCallId, params) {
 			const serverConfig = servers[entry.route.serverKey];
 			if (serverConfig === undefined) {

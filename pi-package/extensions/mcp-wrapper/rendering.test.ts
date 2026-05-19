@@ -149,7 +149,9 @@ describe("mcp-wrapper rendering", () => {
 		};
 
 		expect(
-			renderMcpToolResult(result, {}, MARKED_THEME as never, {})
+			renderMcpToolResult(result, {}, MARKED_THEME as never, {
+				widgetLineBudget: 5,
+			})
 				.render(WIDTH)
 				.join("\n"),
 		).toBe(
@@ -164,7 +166,10 @@ describe("mcp-wrapper rendering", () => {
 		};
 
 		expect(
-			renderMcpToolResult(result, {}, MARKED_THEME as never, { isError: true })
+			renderMcpToolResult(result, {}, MARKED_THEME as never, {
+				isError: true,
+				widgetLineBudget: 5,
+			})
 				.render(WIDTH)
 				.join("\n"),
 		).toBe(
@@ -188,16 +193,18 @@ describe("mcp-wrapper rendering", () => {
 			result,
 			{},
 			MARKED_THEME as never,
-			{},
+			{ widgetLineBudget: 2 },
 		)
 			.render(200)
 			.join("\n");
 		const component = new Box(1, 1);
-		component.addChild(renderMcpToolResult(result, {}, THEME as never, {}));
+		component.addChild(
+			renderMcpToolResult(result, {}, THEME as never, { widgetLineBudget: 2 }),
+		);
 		const lines = component.render(WIDTH);
 
-		expect(lines.length).toBeLessThanOrEqual(8);
-		expect(markedOutput).toContain("<muted>... (15 more lines, 20 total, ");
+		expect(lines.length).toBeLessThanOrEqual(5);
+		expect(markedOutput).toContain("<muted>... (18 more lines, 20 total, ");
 		expect(markedOutput).toContain("</dim><muted> to expand)</muted>");
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
@@ -213,7 +220,7 @@ describe("mcp-wrapper rendering", () => {
 			result,
 			{ expanded: true },
 			MARKED_THEME as never,
-			{},
+			{ widgetLineBudget: 5 },
 		).render(WIDTH);
 		const output = lines.join("\n");
 

@@ -12,14 +12,18 @@ describe("mcp-wrapper config", () => {
 		if (result.kind !== "valid") {
 			throw new Error(result.issue);
 		}
-		expect(result.config.enabled).toBe(true);
-		expect(result.config.timeouts).toEqual({
-			startupSeconds: 30,
-			listToolsSeconds: 15,
-			callSeconds: 120,
-			maxTotalSeconds: 180,
+		const config: Record<string, unknown> = { ...result.config };
+		expect(config).toEqual({
+			enabled: true,
+			timeouts: {
+				startupSeconds: 30,
+				listToolsSeconds: 15,
+				callSeconds: 120,
+				maxTotalSeconds: 180,
+			},
+			widgetLineBudget: 5,
+			mcpServers: {},
 		});
-		expect(result.config.mcpServers).toEqual({});
 	});
 
 	test("accepts an empty mcpServers object without registering server configs", () => {
@@ -39,6 +43,7 @@ describe("mcp-wrapper config", () => {
 		const result = parseMcpWrapperConfig({
 			settings: {
 				enabled: false,
+				widgetLineBudget: 3,
 				timeouts: {
 					startupSeconds: 5,
 					listToolsSeconds: 6,
@@ -72,6 +77,8 @@ describe("mcp-wrapper config", () => {
 			callSeconds: 7,
 			maxTotalSeconds: 8,
 		});
+		const config: Record<string, unknown> = { ...result.config };
+		expect(config).toMatchObject({ widgetLineBudget: 3 });
 		expect(result.config.mcpServers["files"]).toEqual({
 			type: "stdio",
 			command: "npx",
@@ -99,6 +106,12 @@ describe("mcp-wrapper config", () => {
 		expect(
 			parseMcpWrapperConfig({
 				settings: { timeouts: { callSeconds: 0 } },
+				mcpServers: {},
+			}).kind,
+		).toBe("invalid");
+		expect(
+			parseMcpWrapperConfig({
+				settings: { widgetLineBudget: 0 },
 				mcpServers: {},
 			}).kind,
 		).toBe("invalid");

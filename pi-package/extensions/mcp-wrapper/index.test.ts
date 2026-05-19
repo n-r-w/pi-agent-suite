@@ -19,6 +19,27 @@ import {
 
 const FILES_READ_TOOL_NAME = "files_read";
 const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
+const THEME = {
+	bold: (value: string) => value,
+	fg: (_name: string, value: string) => value,
+};
+type RenderResultContext = Parameters<
+	NonNullable<ToolDefinition["renderResult"]>
+>[3];
+const RESULT_RENDER_CONTEXT: RenderResultContext = {
+	args: {},
+	toolCallId: "call-1",
+	invalidate(): void {},
+	lastComponent: undefined,
+	state: undefined,
+	cwd: "/tmp",
+	executionStarted: true,
+	argsComplete: true,
+	isPartial: false,
+	expanded: false,
+	showImages: false,
+	isError: false,
+};
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -233,6 +254,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {},
 				},
 			}),
@@ -300,6 +322,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 2,
 					mcpServers: {
 						files: { type: "stdio", command: "node", args: [], env: {} },
 					},
@@ -316,7 +339,30 @@ describe("mcp-wrapper extension", () => {
 		expect(tool?.promptSnippet).toBe(
 			'Tool from MCP server "files": Read a file',
 		);
-		const result = await tool?.execute(
+		if (tool?.renderResult === undefined) {
+			throw new Error("expected MCP tool result renderer");
+		}
+		const previewLines = tool
+			.renderResult(
+				{
+					content: [
+						{
+							type: "text",
+							text: ["line 0", "line 1", "line 2", "line 3", "line 4"].join(
+								"\n",
+							),
+						},
+					],
+					details: {},
+				},
+				{ expanded: false, isPartial: false },
+				THEME as never,
+				RESULT_RENDER_CONTEXT,
+			)
+			.render(200);
+		expect(previewLines).toHaveLength(3);
+		expect(previewLines.join("\n")).toContain("3 more lines, 5 total");
+		const result = await tool.execute(
 			"call-1",
 			{ path: "/tmp/a" },
 			undefined,
@@ -386,6 +432,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: { files: serverConfig },
 				},
 			}),
@@ -437,6 +484,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {
 						files: { type: "stdio", command: "node", args: [], env: {} },
 					},
@@ -497,6 +545,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {
 						files: { type: "stdio", command: "node", args: [], env: {} },
 					},
@@ -593,6 +642,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: { files: serverConfig },
 				},
 			}),
@@ -668,6 +718,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: { files: serverConfig },
 				},
 			}),
@@ -757,6 +808,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: { cached: cachedConfig, missing: missingConfig },
 				},
 			}),
@@ -818,6 +870,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {
 						files: { type: "stdio", command: "node", args: [], env: {} },
 					},
@@ -865,6 +918,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {
 						files: { type: "stdio", command: "node", args: [], env: {} },
 					},
@@ -931,6 +985,7 @@ describe("mcp-wrapper extension", () => {
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {
 						"docs&server": {
 							type: "stdio",
@@ -991,6 +1046,7 @@ Use this server. Do not call &lt;private>.
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {
 						files: { type: "stdio", command: "node", args: [], env: {} },
 					},
@@ -1034,6 +1090,7 @@ Use this server. Do not call &lt;private>.
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: enabled
 						? {
 								files: {
@@ -1090,6 +1147,7 @@ Use this server. Do not call &lt;private>.
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {
 						"123-files": { type: "stdio", command: "node", args: [], env: {} },
 						"bad/server": { type: "stdio", command: "node", args: [], env: {} },
@@ -1137,6 +1195,7 @@ Use this server. Do not call &lt;private>.
 						callSeconds: 120,
 						maxTotalSeconds: 180,
 					},
+					widgetLineBudget: 5,
 					mcpServers: {},
 				},
 			}),

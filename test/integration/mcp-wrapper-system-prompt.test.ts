@@ -212,6 +212,7 @@ describe("mcp-wrapper and system-prompt integration", () => {
 							callSeconds: 120,
 							maxTotalSeconds: 180,
 						},
+						widgetLineBudget: 5,
 						mcpServers: {
 							fetch: { type: "stdio", command: "node", args: [], env: {} },
 						},
@@ -286,6 +287,7 @@ Use fetch for web pages.
 							callSeconds: 120,
 							maxTotalSeconds: 180,
 						},
+						widgetLineBudget: 5,
 						mcpServers: {
 							fetch: { type: "stdio", command: "node", args: [], env: {} },
 						},
@@ -388,6 +390,7 @@ Use fetch for web pages.
 								callSeconds: 120,
 								maxTotalSeconds: 180,
 							},
+							widgetLineBudget: 5,
 							mcpServers: {
 								fetch: {
 									type: "stdio",

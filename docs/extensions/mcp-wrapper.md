@@ -13,7 +13,8 @@ The MCP wrapper extension reads `agent-suite/mcp-wrapper/config.json`, discovers
       "listToolsSeconds": 15,
       "callSeconds": 120,
       "maxTotalSeconds": 180
-    }
+    },
+    "widgetLineBudget": 5
   },
   "mcpServers": {
     "files": {
@@ -39,6 +40,9 @@ Rules:
 - Missing config file means no MCP tools are registered.
 - `settings.enabled` defaults to `true`.
 - Missing timeout fields use the defaults shown above.
+- `settings.widgetLineBudget` controls collapsed MCP result preview lines before the expand hint.
+- `settings.widgetLineBudget` has integer type and must be greater than or equal to `1`.
+- Default `settings.widgetLineBudget` is `5`.
 - `mcpServers` must be an object when the config file exists.
 - Empty `mcpServers` means no MCP tools are registered.
 - Supported server types are `stdio` and `streamableHttp`.
