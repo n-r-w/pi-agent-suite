@@ -13,6 +13,7 @@ import type { McpServerConfig } from "./config.ts";
 import mcpWrapper from "./index.ts";
 import {
 	computeMcpServerConfigHash,
+	loadMcpWrapperCache,
 	saveMcpWrapperCache,
 } from "./metadata-cache.ts";
 
@@ -709,11 +710,25 @@ describe("mcp-wrapper extension", () => {
 				},
 			},
 		});
+		const backgroundRefreshSaved = deferred<void>();
 		const discoveredServerMaps: Readonly<Record<string, McpServerConfig>>[] =
 			[];
+		let saveCount = 0;
 		const manager = {
 			discoverServers: async (servers) => {
 				discoveredServerMaps.push(servers);
+				if (servers["cached"] !== undefined) {
+					return {
+						serverToolLists: [
+							{
+								serverKey: "cached",
+								tools: [{ name: "read", inputSchema: { type: "object" } }],
+							},
+						],
+						serverInstructions: [],
+						failures: [],
+					};
+				}
 				return {
 					serverToolLists: [
 						{
@@ -746,6 +761,13 @@ describe("mcp-wrapper extension", () => {
 				},
 			}),
 			createManager: () => managerWithCleanup(manager),
+			saveCache: async (cache) => {
+				saveCount += 1;
+				await saveMcpWrapperCache(cache);
+				if (saveCount === 2) {
+					backgroundRefreshSaved.resolve();
+				}
+			},
 		});
 
 		await runSessionStart(pi, notifications);
@@ -760,6 +782,13 @@ describe("mcp-wrapper extension", () => {
 				"[mcp-wrapper] MCP cache is missing for 1 server. Discovering MCP tools before startup continues: missing",
 			type: "info",
 		});
+		expect(discoveredServerMaps[1]).toEqual({ cached: cachedConfig });
+		expect(await resolvesWithin(backgroundRefreshSaved.promise, 25)).toBe(true);
+		const cache = await loadMcpWrapperCache();
+		expect(Object.keys(cache?.servers ?? {}).sort()).toEqual([
+			"cached",
+			"missing",
+		]);
 	});
 
 	test("uses fallback prompt snippet when MCP tool has no description", async () => {

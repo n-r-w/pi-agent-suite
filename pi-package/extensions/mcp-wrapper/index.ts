@@ -178,21 +178,26 @@ async function handleSessionStart(
 			type?: "info" | "warning",
 		) => void,
 	);
-	await saveStartupCache(configResult.config.mcpServers, startup, options);
+	const startupCache = await saveStartupCache(
+		configResult.config.mcpServers,
+		startup,
+		options,
+	);
 	const cachedServers = pickServers(
 		configResult.config.mcpServers,
 		startup.cachedServerKeys,
 	);
 	if (Object.keys(cachedServers).length > 0) {
-		refreshCacheInBackground(
-			options.createManager(configResult.config),
-			cachedServers,
-			options.saveCache,
-			options.ctx.ui.notify.bind(options.ctx.ui) as (
+		refreshCacheInBackground({
+			manager: options.createManager(configResult.config),
+			servers: cachedServers,
+			startupCache,
+			saveCache: options.saveCache,
+			notify: options.ctx.ui.notify.bind(options.ctx.ui) as (
 				message: string,
 				type?: "info" | "warning",
 			) => void,
-		);
+		});
 	}
 
 	const catalog = buildPiToolCatalog(startup.serverToolLists);
@@ -380,15 +385,17 @@ async function saveStartupCache(
 	servers: Readonly<Record<string, McpServerConfig>>,
 	startup: StartupMetadata,
 	options: Pick<HandleSessionStartOptions, "ctx" | "saveCache">,
-): Promise<void> {
+): Promise<McpWrapperMetadataCache> {
+	const cache = buildCacheFromStartup(servers, startup);
 	try {
-		await options.saveCache(buildCacheFromStartup(servers, startup));
+		await options.saveCache(cache);
 	} catch (error) {
 		options.ctx.ui.notify(
 			`${ISSUE_PREFIX} failed to save MCP metadata cache: ${formatError(error)}`,
 			"warning",
 		);
 	}
+	return cache;
 }
 
 function reportStatuses(
@@ -433,31 +440,48 @@ function pickServers(
 	);
 }
 
-function refreshCacheInBackground(
-	manager: McpManagerLike,
-	servers: Readonly<Record<string, McpServerConfig>>,
-	saveCache: (cache: McpWrapperMetadataCache) => Promise<void>,
-	notify: (message: string, type?: "info" | "warning") => void,
-): void {
-	if (Object.keys(servers).length === 0) {
+function refreshCacheInBackground({
+	manager,
+	servers,
+	startupCache,
+	saveCache,
+	notify,
+}: {
+	readonly manager: McpManagerLike;
+	readonly servers: Readonly<Record<string, McpServerConfig>>;
+	readonly startupCache: McpWrapperMetadataCache;
+	readonly saveCache: (cache: McpWrapperMetadataCache) => Promise<void>;
+	readonly notify: (message: string, type?: "info" | "warning") => void;
+}): void {
+	const refreshedServerKeys = new Set(Object.keys(servers));
+	if (refreshedServerKeys.size === 0) {
 		return;
 	}
 
 	manager
 		.discoverServers(servers)
-		.then((discovery) =>
-			saveCache(
-				buildCacheFromStartup(servers, {
-					serverToolLists: discovery.serverToolLists,
-					serverInstructions: discovery.serverInstructions,
-					failures: discovery.failures,
-					cachedServerKeys: [],
-					discoveredServerKeys: discovery.serverToolLists.map(
-						(serverToolList) => serverToolList.serverKey,
+		.then((discovery) => {
+			const refreshedCache = buildCacheFromStartup(servers, {
+				serverToolLists: discovery.serverToolLists,
+				serverInstructions: discovery.serverInstructions,
+				failures: discovery.failures,
+				cachedServerKeys: [],
+				discoveredServerKeys: discovery.serverToolLists.map(
+					(serverToolList) => serverToolList.serverKey,
+				),
+			});
+			return saveCache({
+				version: startupCache.version,
+				servers: {
+					...Object.fromEntries(
+						Object.entries(startupCache.servers).filter(
+							([serverKey]) => !refreshedServerKeys.has(serverKey),
+						),
 					),
-				}),
-			),
-		)
+					...refreshedCache.servers,
+				},
+			});
+		})
 		.catch((error: unknown) => {
 			notify(
 				`${ISSUE_PREFIX} failed to refresh MCP metadata cache: ${formatError(error)}`,
