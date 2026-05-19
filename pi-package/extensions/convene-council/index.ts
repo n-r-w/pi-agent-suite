@@ -60,7 +60,6 @@ export default function conveneCouncil(
 		label: "Convene council",
 		description:
 			"Convene a council of experts to solve a very complex problem. The Council knows everything you know. " +
-			"Running a council blocks your work until it finishes. " +
 			"For parallel work, emit multiple convene_council calls in the same tool call.",
 		parameters: ConveneCouncilParameters,
 		executionMode: "parallel",

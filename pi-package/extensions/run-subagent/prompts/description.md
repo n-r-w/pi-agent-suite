@@ -1,4 +1,4 @@
-Run independent subagent. Running a subagent blocks your work until it finishes.
+Run independent subagent.
 For parallel work, emit multiple run_subagent calls in the same tool call.
 
 RULES:
