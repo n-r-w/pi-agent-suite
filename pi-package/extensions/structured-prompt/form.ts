@@ -1,5 +1,6 @@
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
+	type AutocompleteProvider,
 	type Component,
 	Editor,
 	type EditorTheme,
@@ -37,6 +38,7 @@ export interface StructuredPromptFormOptions {
 	readonly tui: TUI;
 	readonly theme: PromptFormTheme;
 	readonly sections: readonly PromptSection[];
+	readonly autocompleteProvider?: AutocompleteProvider;
 	readonly onCopyPrompt?:
 		| ((promptText: string) => Promise<void> | void)
 		| undefined;
@@ -49,6 +51,8 @@ const FRAME_SIDE_WIDTH = 2;
 const FRAME_HORIZONTAL_PADDING = 2;
 const FRAME_DECORATION_WIDTH = FRAME_SIDE_WIDTH + FRAME_HORIZONTAL_PADDING;
 const REVIEW_NON_PREVIEW_ROWS = 6;
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
 
 /** Captures section text first, then requires a review confirmation before submit. */
 export class StructuredPromptForm implements Component {
@@ -67,6 +71,7 @@ export class StructuredPromptForm implements Component {
 	private reviewMaxScrollOffset = 0;
 	private reviewPageRows = 1;
 	private copyInProgress = false;
+	private editorPasteInProgress = false;
 
 	/** Creates the form with a Pi editor for multi-line section input. */
 	public constructor(options: StructuredPromptFormOptions) {
@@ -76,6 +81,9 @@ export class StructuredPromptForm implements Component {
 		this.onCopyPrompt = options.onCopyPrompt;
 		this.onDone = options.onDone;
 		this.editor = new Editor(this.tui, this.createEditorTheme());
+		if (options.autocompleteProvider !== undefined) {
+			this.editor.setAutocompleteProvider(options.autocompleteProvider);
+		}
 	}
 
 	/** Renders either the active section editor or the final prompt preview. */
@@ -95,6 +103,15 @@ export class StructuredPromptForm implements Component {
 	/** Routes cancel and step confirmation keys before passing text input to the editor. */
 	public handleInput(data: string): void {
 		if (this.mode === "closed") {
+			return;
+		}
+		if (
+			this.mode === "edit" &&
+			this.editor.isShowingAutocomplete() &&
+			(matchesKey(data, Key.escape) || matchesKey(data, Key.enter))
+		) {
+			this.editor.handleInput(data);
+			this.tui.requestRender();
 			return;
 		}
 		if (matchesKey(data, Key.escape)) {
@@ -117,7 +134,10 @@ export class StructuredPromptForm implements Component {
 			return;
 		}
 
-		if (data.length > 1 && parseKey(data) === undefined) {
+		if (this.shouldRouteToEditorPaste(data)) {
+			this.editor.handleInput(data);
+			this.updateEditorPasteState(data);
+		} else if (data.length > 1 && parseKey(data) === undefined) {
 			this.editor.insertTextAtCursor(data);
 		} else {
 			this.editor.handleInput(data);
@@ -282,6 +302,34 @@ export class StructuredPromptForm implements Component {
 		}
 	}
 
+	/** Routes bracketed paste chunks through the editor so terminal control bytes are handled as paste metadata. */
+	private shouldRouteToEditorPaste(data: string): boolean {
+		return (
+			this.editorPasteInProgress ||
+			data.includes(BRACKETED_PASTE_START) ||
+			data.includes(BRACKETED_PASTE_END)
+		);
+	}
+
+	/** Tracks bracketed paste across terminal chunks until the paste end marker arrives. */
+	private updateEditorPasteState(data: string): void {
+		let cursor = 0;
+		while (cursor < data.length) {
+			const nextStart = data.indexOf(BRACKETED_PASTE_START, cursor);
+			const nextEnd = data.indexOf(BRACKETED_PASTE_END, cursor);
+			if (nextStart === -1 && nextEnd === -1) {
+				break;
+			}
+			if (nextEnd === -1 || (nextStart !== -1 && nextStart < nextEnd)) {
+				this.editorPasteInProgress = true;
+				cursor = nextStart + BRACKETED_PASTE_START.length;
+			} else {
+				this.editorPasteInProgress = false;
+				cursor = nextEnd + BRACKETED_PASTE_END.length;
+			}
+		}
+	}
+
 	/** Starts clipboard copy and blocks send actions until the copy attempt finishes. */
 	private copyCurrentPrompt(): void {
 		if (this.copyInProgress) {
@@ -311,7 +359,7 @@ export class StructuredPromptForm implements Component {
 
 		const section = this.currentSection();
 		if (section !== undefined) {
-			this.values.set(section.id, this.editor.getText());
+			this.values.set(section.id, this.editor.getExpandedText());
 		}
 		this.sectionIndex += 1;
 		if (this.sectionIndex >= this.sections.length) {

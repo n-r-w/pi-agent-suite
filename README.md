@@ -557,6 +557,7 @@ Why you need it:
 - Separates Goal, Task, Context, Criteria, Constraints, and Work order before sending.
 - Shows a review screen before the request is sent.
 - Can copy the generated prompt or place it in the main input before sending.
+- Can insert `@...` file references from a section editor dropdown when `fd` is available.
 
 Config file: `~/.pi/agent/agent-suite/structured-prompt/config.json`
 
@@ -572,6 +573,7 @@ Command and shortcut:
 How it works:
 
 - Opens a centered overlay with one active multi-line section editor.
+- Uses Pi TUI file autocomplete for `@...` references in section editors when `fd` is available in `PATH`.
 - Builds one Markdown prompt from non-empty sections.
 - Omits empty sections from the generated prompt.
 - Copies the generated prompt from the review screen with `Ctrl+Y`.

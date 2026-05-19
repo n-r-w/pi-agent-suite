@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+	type AutocompleteProvider,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import {
 	StructuredPromptForm,
 	type StructuredPromptFormResult,
@@ -13,6 +17,8 @@ const PAGE_DOWN = "\x1b[6~";
 const HOME = "\x1b[H";
 const CTRL_T = "\x14";
 const CTRL_Y = "\x19";
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
 
 describe("structured-prompt form", () => {
 	test("submits entered section values from the review screen", () => {
@@ -64,6 +70,125 @@ describe("structured-prompt form", () => {
 			kind: "submitted",
 			values: expect.arrayContaining([
 				{ sectionId: "goal", value: "Line one\nLine two" },
+			]),
+		});
+	});
+
+	test("selects @ file autocomplete before advancing to the next section", async () => {
+		// Purpose: file references selected from the section dropdown must become section text.
+		// Input and expected output: @READ opens a README.md suggestion, Enter selects it, and later Enter advances the form.
+		// Edge case: Enter must go to the editor while autocomplete is open instead of saving a partial prefix.
+		// Dependencies: this test uses the Pi Editor autocomplete contract with a fake provider.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const provider = createAutocompleteProviderFake();
+		const form = createForm((result) => observedResults.push(result), {
+			autocompleteProvider: provider,
+		});
+
+		typeCharacters(form, "@READ");
+		const suggestionRender = await waitForRenderedText(form, "README.md");
+		expect(suggestionRender.join("\n")).toContain("README.md");
+
+		form.handleInput(ENTER);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		expect(observedResults).toEqual([]);
+
+		form.handleInput(ENTER);
+
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: "@README.md " },
+			]),
+		});
+	});
+
+	test("keeps bracketed pasted filename and backslash render-safe", () => {
+		// Purpose: pasted filename text must not leak terminal paste control bytes into the editor.
+		// Input and expected output: bracketed paste plus backslash renders within width and submits plain text.
+		// Edge case: the cursor is after a trailing backslash.
+		// Dependencies: this test uses fake TUI rendering and visible width measurement.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result));
+		const filename = "pi-package/README.md";
+
+		form.handleInput(
+			`${BRACKETED_PASTE_START}${filename}${BRACKETED_PASTE_END}`,
+		);
+		form.handleInput("\\");
+		const rows = form.render(120);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		form.handleInput(ENTER);
+
+		const renderedText = rows.join("\n");
+		expect(renderedText).toContain(`${filename}\\`);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_START);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_END);
+		expect(rows.every((row) => visibleWidth(row) <= 120)).toBe(true);
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: `${filename}\\` },
+			]),
+		});
+	});
+
+	test("keeps fragmented bracketed pasted filename render-safe", () => {
+		// Purpose: paste control handling must survive terminals that split paste into chunks.
+		// Input and expected output: fragmented bracketed paste plus backslash submits plain text.
+		// Edge case: the paste start and paste end markers arrive in different input chunks.
+		// Dependencies: this test uses fake TUI rendering and visible width measurement.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result));
+		const filename = "README.md";
+
+		form.handleInput(`${BRACKETED_PASTE_START}READ`);
+		form.handleInput(`ME.md${BRACKETED_PASTE_END}`);
+		form.handleInput("\\");
+		const rows = form.render(80);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		form.handleInput(ENTER);
+
+		const renderedText = rows.join("\n");
+		expect(renderedText).toContain(`${filename}\\`);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_START);
+		expect(renderedText).not.toContain(BRACKETED_PASTE_END);
+		expect(rows.every((row) => visibleWidth(row) <= 80)).toBe(true);
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: `${filename}\\` },
+			]),
+		});
+	});
+
+	test("submits expanded content from large bracketed paste", () => {
+		// Purpose: large pasted text must not be submitted as an internal paste marker.
+		// Input and expected output: bracketed paste with many lines submits the original text.
+		// Edge case: Pi Editor may render a compact paste marker for large paste.
+		// Dependencies: this test checks the form result, not the editor display string.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result));
+		const pastedText = numberedLines(12);
+
+		form.handleInput(
+			`${BRACKETED_PASTE_START}${pastedText}${BRACKETED_PASTE_END}`,
+		);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		form.handleInput(ENTER);
+
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: pastedText },
 			]),
 		});
 	});
@@ -369,6 +494,7 @@ describe("structured-prompt form", () => {
 function createForm(
 	onDone: (result: StructuredPromptFormResult) => void,
 	options: {
+		readonly autocompleteProvider?: AutocompleteProvider;
 		readonly onCopyPrompt?: (promptText: string) => void;
 		readonly rows?: number;
 	} = {},
@@ -383,6 +509,9 @@ function createForm(
 			bold: (value) => value,
 		},
 		sections: PROMPT_SECTIONS,
+		...(options.autocompleteProvider === undefined
+			? {}
+			: { autocompleteProvider: options.autocompleteProvider }),
 		onCopyPrompt: options.onCopyPrompt,
 		onDone,
 	});
@@ -404,6 +533,55 @@ function numberedLines(count: number): string {
 
 function typeText(form: StructuredPromptForm, value: string): void {
 	form.handleInput(value);
+}
+
+function typeCharacters(form: StructuredPromptForm, value: string): void {
+	for (const char of value) {
+		form.handleInput(char);
+	}
+}
+
+async function waitForRenderedText(
+	form: StructuredPromptForm,
+	text: string,
+): Promise<string[]> {
+	let latestRows = form.render(80);
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		if (latestRows.join("\n").includes(text)) {
+			return latestRows;
+		}
+		await delay(10);
+		latestRows = form.render(80);
+	}
+	return latestRows;
+}
+
+function createAutocompleteProviderFake(): AutocompleteProvider {
+	return {
+		async getSuggestions(lines, cursorLine, cursorCol) {
+			const currentLine = lines[cursorLine] ?? "";
+			const prefix = currentLine.slice(0, cursorCol);
+			if (!prefix.startsWith("@")) {
+				return null;
+			}
+			return {
+				prefix,
+				items: [{ value: "@README.md", label: "README.md" }],
+			};
+		},
+		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+			const currentLine = lines[cursorLine] ?? "";
+			const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+			const afterCursor = currentLine.slice(cursorCol);
+			const newLines = [...lines];
+			newLines[cursorLine] = `${beforePrefix}${item.value} ${afterCursor}`;
+			return {
+				lines: newLines,
+				cursorLine,
+				cursorCol: beforePrefix.length + item.value.length + 1,
+			};
+		},
+	};
 }
 
 async function waitForCopySettlement(): Promise<void> {

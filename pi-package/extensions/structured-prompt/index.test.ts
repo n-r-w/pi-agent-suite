@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
 import type { StructuredPromptFormResult } from "./form.ts";
@@ -44,9 +45,11 @@ interface PromptExtensionApiFake {
 
 interface StructuredPromptDependenciesFake {
 	readonly copyToClipboard?: (text: string) => Promise<void>;
+	readonly resolveFdPath?: () => string | null;
 }
 
 interface CustomComponentFake {
+	render(width: number): string[];
 	handleInput(data: string): Promise<void> | void;
 }
 
@@ -62,6 +65,7 @@ interface PromptCommandContextFake {
 	}>;
 	readonly customOptions: unknown[];
 	readonly editorTexts: string[];
+	readonly cwd: string;
 	ui: {
 		notify(message: string, type?: string): void;
 		confirm(title: string, message: string): Promise<boolean>;
@@ -69,6 +73,7 @@ interface PromptCommandContextFake {
 		setEditorText(text: string): void;
 	};
 	isIdle(): boolean;
+	getLastCustomComponent(): CustomComponentFake | undefined;
 	triggerLastReviewCopy(): Promise<void>;
 }
 
@@ -196,6 +201,116 @@ describe("structured-prompt extension", () => {
 			expect(ctx.notifications).toEqual([
 				{ message: "Prompt form requires interactive mode.", type: "warning" },
 			]);
+		});
+	});
+
+	test("wires @ file autocomplete through the runtime fd path", async () => {
+		// Purpose: the command must give the form a Pi TUI file autocomplete provider.
+		// Input and expected output: @ renders the README.md suggestion from fd-backed completion.
+		// Edge case: slash commands are not part of the form provider because the provider is created with no commands.
+		// Dependencies: this test uses a temporary fake fd executable and a captured custom component.
+		await withIsolatedSuiteDir(async () => {
+			const projectDir = await mkdtemp(
+				join(tmpdir(), "structured-prompt-project-"),
+			);
+			tempDirs.push(projectDir);
+			await writeFile(join(projectDir, "README.md"), "# Fixture\n");
+			const binDir = await mkdtemp(join(tmpdir(), "structured-prompt-bin-"));
+			tempDirs.push(binDir);
+			const fdPath = join(binDir, "fd");
+			await writeFile(fdPath, "#!/bin/sh\nprintf 'README.md\\n'\n");
+			await chmod(fdPath, 0o755);
+
+			const pi = createExtensionApiFake();
+			const dependencies: StructuredPromptDependenciesFake = {
+				resolveFdPath: () => fdPath,
+			};
+			const ctx = createCommandContextFake({
+				cwd: projectDir,
+				formResult: { kind: "cancelled" },
+				idle: true,
+			});
+			prompt(pi as unknown as ExtensionAPI, dependencies);
+
+			await getPromptCommand(pi).handler("", ctx);
+			const component = ctx.getLastCustomComponent();
+			expect(component).toBeDefined();
+			if (component === undefined) {
+				throw new Error("structured prompt form was not opened");
+			}
+
+			typeCharacters(component, "@");
+			const rows = await waitForRenderedText(component, "README.md");
+
+			expect(rows.join("\n")).toContain("README.md");
+		});
+	});
+
+	test("keeps normal submission when runtime fd is unavailable", async () => {
+		// Purpose: file autocomplete depends on fd, but prompt delivery must not depend on it.
+		// Input and expected output: fd resolution returns null and the submitted form still sends the prompt.
+		// Edge case: no autocomplete provider is passed to the form.
+		// Dependencies: this test uses fake UI result and fake user-message delivery.
+		await withIsolatedSuiteDir(async () => {
+			const pi = createExtensionApiFake();
+			const dependencies: StructuredPromptDependenciesFake = {
+				resolveFdPath: () => null,
+			};
+			const ctx = createCommandContextFake({
+				formResult: submittedFormResult(),
+				idle: true,
+			});
+			prompt(pi as unknown as ExtensionAPI, dependencies);
+
+			await getPromptCommand(pi).handler("", ctx);
+
+			expect(pi.sentUserMessages).toEqual([
+				{
+					content: ["## Goal", "Create structured requests"].join("\n"),
+					options: undefined,
+				},
+			]);
+		});
+	});
+
+	test("keeps slash commands disabled inside the form editor", async () => {
+		// Purpose: section text must not show command completion or consume Enter for slash commands.
+		// Input and expected output: typing / then Enter moves from Goal to Task.
+		// Edge case: the provider is fd-backed but has no command list.
+		// Dependencies: this test uses a temporary fake fd executable and a captured custom component.
+		await withIsolatedSuiteDir(async () => {
+			const projectDir = await mkdtemp(
+				join(tmpdir(), "structured-prompt-project-"),
+			);
+			tempDirs.push(projectDir);
+			const binDir = await mkdtemp(join(tmpdir(), "structured-prompt-bin-"));
+			tempDirs.push(binDir);
+			const fdPath = join(binDir, "fd");
+			await writeFile(fdPath, "#!/bin/sh\nprintf ''\n");
+			await chmod(fdPath, 0o755);
+			const pi = createExtensionApiFake();
+			const dependencies: StructuredPromptDependenciesFake = {
+				resolveFdPath: () => fdPath,
+			};
+			const ctx = createCommandContextFake({
+				cwd: projectDir,
+				formResult: { kind: "cancelled" },
+				idle: true,
+			});
+			prompt(pi as unknown as ExtensionAPI, dependencies);
+
+			await getPromptCommand(pi).handler("", ctx);
+			const component = ctx.getLastCustomComponent();
+			expect(component).toBeDefined();
+			if (component === undefined) {
+				throw new Error("structured prompt form was not opened");
+			}
+
+			typeCharacters(component, "/");
+			await delay(30);
+			component.handleInput(ENTER);
+
+			expect(component.render(80).join("\n")).toContain("2/6: Task");
 		});
 	});
 
@@ -382,6 +497,7 @@ function createExtensionApiFake(): PromptExtensionApiFake {
 }
 
 function createCommandContextFake(options: {
+	readonly cwd?: string;
 	readonly formResult: StructuredPromptFormResult;
 	readonly hasUI?: boolean;
 	readonly idle: boolean;
@@ -404,6 +520,7 @@ function createCommandContextFake(options: {
 		confirmations,
 		customOptions,
 		editorTexts,
+		cwd: options.cwd ?? process.cwd(),
 		ui: {
 			notify(message: string, type?: string): void {
 				notifications.push({ message, type });
@@ -439,6 +556,9 @@ function createCommandContextFake(options: {
 		},
 		isIdle(): boolean {
 			return options.idle;
+		},
+		getLastCustomComponent(): CustomComponentFake | undefined {
+			return lastCustomComponent;
 		},
 		async triggerLastReviewCopy(): Promise<void> {
 			if (lastCustomComponent === undefined) {
@@ -489,6 +609,27 @@ function getPromptShortcut(pi: PromptExtensionApiFake): RegisteredShortcutFake {
 		throw new Error("prompt shortcut was not registered");
 	}
 	return shortcut;
+}
+
+function typeCharacters(component: CustomComponentFake, value: string): void {
+	for (const char of value) {
+		component.handleInput(char);
+	}
+}
+
+async function waitForRenderedText(
+	component: CustomComponentFake,
+	text: string,
+): Promise<string[]> {
+	let latestRows = component.render(80);
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		if (latestRows.join("\n").includes(text)) {
+			return latestRows;
+		}
+		await delay(10);
+		latestRows = component.render(80);
+	}
+	return latestRows;
 }
 
 async function withIsolatedSuiteDir(
