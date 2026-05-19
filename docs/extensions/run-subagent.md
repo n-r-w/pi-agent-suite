@@ -9,6 +9,8 @@
 - Is enabled by default when `config.json` is missing.
 - Registers tool `run_subagent`.
 - Accepts `agentId` and `prompt`.
+- Matches `agentId` and selected main-agent `agents` allowlist entries without case sensitivity.
+- Keeps the stored agent ID casing in the child process environment.
 - Runs one callable agent per tool call.
 - Publishes the callable-agent list into the model context.
 - Restores the selected main agent before building the callable-agent prompt.
@@ -114,6 +116,7 @@ Tests must verify:
 - omission of callable-agent guidance at `maxDepth`;
 - contribution publication to `Agent Runtime Composition` without direct `pi.setActiveTools()` calls;
 - callable-agent prompt filtering from the selected main agent's `agents` allowlist;
+- case-insensitive `agentId` and `agents` allowlist matching;
 - execution rejection for callable agents blocked by the selected main agent's `agents` allowlist;
 - TUI progress rendering that does not expose raw `text_delta` chunks;
 - final output extraction from completed assistant `message_end` events before `agent_end`;

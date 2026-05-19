@@ -536,13 +536,13 @@ Options:
 
 Tool input:
 
-- `agentId`: subagent to run.
+- `agentId`: subagent to run. Matching does not depend on letter case.
 - `prompt`: task for the subagent.
 
 How it works:
 
 - Shows callable subagents to the main model.
-- Allows only subagents permitted by the selected main agent.
+- Allows only subagents permitted by the selected main agent. Allowlist matching does not depend on letter case.
 - Starts a separate pi process for the selected subagent.
 - Applies the subagent's model, thinking level, and tools.
 - Reads oversized child RPC progress.

@@ -876,13 +876,13 @@ describe("main-agent-selection", () => {
 
 	test("selects an agent through /agent, persists state, applies model and thinking, and publishes runtime contribution", async () => {
 		// Purpose: explicit /agent selection must apply only selected main-agent behavior and persist minimal state.
-		// Input and expected output: /agent builder selects builder, writes cwd and activeAgentId, sets model/thinking, tools, and prompt contribution.
-		// Edge case: state file must not contain model, thinking level, or tools.
+		// Input and expected output: /agent builder selects Builder, writes the stored activeAgentId, sets model/thinking, tools, and prompt contribution.
+		// Edge case: state file must preserve stored agent ID casing and omit model, thinking level, and tools.
 		// Dependencies: this test uses temp agent files, temp state, fake model calls, and runtime composition fake through ExtensionAPI.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const model = createModel("openai", "gpt-test");
 			await writeAgent(agentDir, {
-				id: "builder",
+				id: "Builder",
 				description: "Builds code",
 				body: "Builder system prompt",
 				model: { id: "openai/gpt-test", thinking: "high" },
@@ -896,7 +896,7 @@ describe("main-agent-selection", () => {
 
 			expect(await readOnlyStateFile(agentDir)).toEqual({
 				cwd: "/tmp/project",
-				activeAgentId: "builder",
+				activeAgentId: "Builder",
 			});
 			expect(pi.setModelCalls).toEqual([model]);
 			expect(pi.thinkingCalls).toEqual(["high"]);
@@ -964,8 +964,8 @@ describe("main-agent-selection", () => {
 
 	test("reload rereads selected-agent state and updates runtime contribution", async () => {
 		// Purpose: /reload must be the boundary where persisted selected-agent state affects the running session.
-		// Input and expected output: missing state at startup then Sage state before reload publishes Sage prompt after reload.
-		// Edge case: reload uses the same extension instance in this unit test, matching the observable session_start contract.
+		// Input and expected output: missing state at startup then lowercase Sage state before reload publishes Sage prompt after reload.
+		// Edge case: reload preserves the stored agent ID casing in runtime contribution.
 		// Dependencies: this test writes only isolated agent definitions and selected-agent state files.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -989,7 +989,7 @@ describe("main-agent-selection", () => {
 			});
 			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
 				cwd: "/tmp/project",
-				activeAgentId: "Sage",
+				activeAgentId: "sage",
 			});
 
 			await sessionStart({ type: "session_start", reason: "reload" }, ctx);

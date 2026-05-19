@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-tui";
 import {
 	type AgentDefinition,
+	agentIdMatches,
 	loadAgentDefinitions,
 } from "../../shared/agent-registry";
 import {
@@ -462,9 +463,10 @@ async function restoreSessionReplacementMainAgent(
 		return true;
 	}
 
+	const activeAgentId = handoff.activeAgentId;
 	const agents = await loadSelectableAgents();
-	const agent = agents.find(
-		(candidate) => candidate.id === handoff.activeAgentId,
+	const agent = agents.find((candidate) =>
+		agentIdMatches(candidate.id, activeAgentId),
 	);
 	if (agent === undefined) {
 		reportIssue(
@@ -599,8 +601,9 @@ async function restoreSelectedMainAgent(
 		return;
 	}
 
-	const agent = agents.find(
-		(candidate) => candidate.id === state.state.activeAgentId,
+	const activeAgentId = state.state.activeAgentId;
+	const agent = agents.find((candidate) =>
+		agentIdMatches(candidate.id, activeAgentId),
 	);
 	if (agent === undefined) {
 		reportIssue(
@@ -635,7 +638,9 @@ async function selectMainAgent(
 		return;
 	}
 
-	const agent = agents.find((candidate) => candidate.id === selectedAgentId);
+	const agent = agents.find((candidate) =>
+		agentIdMatches(candidate.id, selectedAgentId),
+	);
 	if (agent === undefined) {
 		reportIssue(ctx, `agent ${selectedAgentId} was not found`);
 		return;

@@ -633,12 +633,12 @@ describe("run-subagent", () => {
 
 	test("starts child pi with explicit model, thinking, tools, and subagent environment", async () => {
 		// Purpose: a valid callable agent must start an isolated child pi process with explicit runtime options.
-		// Input and expected output: subagent helper resolves tools, model, thinking, depth, env, prompt, and parses final assistant text.
-		// Edge case: wildcard tool pattern resolves narrowly and deduplicates with an exact tool.
+		// Input and expected output: subagent helper resolves Helper tools, model, thinking, depth, env, prompt, and parses final assistant text.
+		// Edge case: lowercase agentId input preserves stored agent ID casing in the child environment.
 		// Dependencies: this test uses temp agent files, fake tool registry, and fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
-				id: "helper",
+				id: "Helper",
 				type: "subagent",
 				description: "Helps with code",
 				body: "Helper prompt",
@@ -699,7 +699,7 @@ describe("run-subagent", () => {
 			expect(spawn.calls[0]?.options.env[CHILD_AGENT_PROCESS_ENV]).toBe(
 				CHILD_AGENT_PROCESS_ENV_VALUE,
 			);
-			expect(spawn.calls[0]?.options.env[SUBAGENT_AGENT_ID_ENV]).toBe("helper");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_AGENT_ID_ENV]).toBe("Helper");
 			expect(spawn.calls[0]?.options.env[SUBAGENT_DEPTH_ENV]).toBe("1");
 			expect(spawn.calls[0]?.options.env[SUBAGENT_TOOLS_ENV]).toBe("read,grep");
 			expect(spawn.calls[0]?.process.stdin.writes).toEqual([
@@ -724,8 +724,8 @@ describe("run-subagent", () => {
 			const renderedWidget = widget.render(24);
 			expect(renderedWidget).toContain("────────────────────────");
 			expect(renderedWidget.join("\n")).toContain("Subagents:");
-			expect(renderedWidget.join("\n")).toContain("helper");
-			expect(renderedWidget.join("\n")).not.toContain("helper: wor");
+			expect(renderedWidget.join("\n")).toContain("Helper");
+			expect(renderedWidget.join("\n")).not.toContain("Helper: wor");
 			expect(renderedWidget.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);
@@ -4347,7 +4347,7 @@ describe("run-subagent", () => {
 
 	test("restores selected main-agent allowlist before exposing callable agents", async () => {
 		// Purpose: callable-agent prompt must use the persisted selected main agent after session_start restores it.
-		// Input and expected output: persisted TestAgent allows only SubAgentExtractor, so other callable agents and TestAgent itself are omitted.
+		// Input and expected output: persisted TestAgent allows only SubAgentExtractor through a lowercase allowlist, so other callable agents and TestAgent itself are omitted.
 		// Edge case: TestAgent has type both and would be globally callable without the selected main-agent allowlist.
 		// Dependencies: this test uses temp agent files, temp selected-agent state, main-agent-selection, and run-subagent composition.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -4375,7 +4375,7 @@ describe("run-subagent", () => {
 				description: "Agent for testing subagents subsystem.",
 				body: "Test agent prompt",
 				tools: ["run_subagent"],
-				agents: ["SubAgentExtractor"],
+				agents: ["subagentextractor"],
 			});
 			await writeSelectedAgentState(agentDir, "/tmp/project", "TestAgent");
 			const pi = createExtensionApiFake(["run_subagent"]);
