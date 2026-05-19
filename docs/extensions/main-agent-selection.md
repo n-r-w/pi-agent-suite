@@ -46,6 +46,26 @@ File: `~/.pi/agent/agent-suite/agent-selection/config.json`.
 
 ## Agent definition contract
 
+Example:
+
+```md
+---
+description: Reviews code and checks implementation risks.
+type: both
+model:
+  id: openai-codex/gpt-5-codex
+  thinking: high
+tools:
+  - read
+  - bash
+  - grep
+agents:
+  - Researcher
+  - Reviewer
+---
+You are a code review agent. Check correctness, risks, and missing validation.
+```
+
 Allowed top-level keys:
 
 - `description`
