@@ -23,6 +23,7 @@ Use it to define main agents, delegate work to allowed subagents, and ask an adv
 | `system-prompt` | Yes | Replaces pi's base system prompt from a Markdown template with explicit runtime variables. |
 | `main-agent-selection` | Yes | Lets you switch between predefined working modes instead of repeating instructions manually. |
 | `run-subagent` | Yes | Lets the main agent delegate focused tasks to subagents. |
+| `structured-prompt` | Yes | Opens a structured form for building one user request from named sections. |
 | `ask-llm` | Yes | Lets you ask a one-off model question without writing it to the current session. |
 | `consult-advisor` | Yes | Lets the main agent ask another model for an independent opinion before deciding. |
 | `convene-council` | No | Lets two model participants discuss one question and return one bounded answer. |
@@ -547,6 +548,38 @@ How it works:
 - Reads oversized child RPC progress.
 - Wraps long `prompt` text in the `Task` field and limits collapsed task previews.
 - Shows live progress and returns the subagent's final answer.
+
+### `structured-prompt`
+
+Why you need it:
+
+- Helps build complex user requests without rewriting the same prompt structure.
+- Separates Goal, Task, Context, Criteria, Constraints, and Work order before sending.
+- Shows a review screen before the request is sent.
+- Can copy the generated prompt or place it in the main input before sending.
+
+Config file: `~/.pi/agent/agent-suite/structured-prompt/config.json`
+
+Options:
+
+- `enabled`: default `true`. Enables or disables `/prompt` and `ctrl+alt+p`.
+
+Command and shortcut:
+
+- `/prompt` opens the structured prompt form.
+- `ctrl+alt+p` opens the same form when the terminal and operating system pass that key sequence to Pi.
+
+How it works:
+
+- Opens a centered overlay with one active multi-line section editor.
+- Builds one Markdown prompt from non-empty sections.
+- Omits empty sections from the generated prompt.
+- Copies the generated prompt from the review screen with `Ctrl+Y`.
+- Places the generated prompt in the main input field from the review screen with `Ctrl+T`.
+- Sends the generated prompt as a user message when the agent is idle.
+- Asks before queuing the generated prompt as a follow-up when the agent is busy.
+- Sends nothing when the form is cancelled or every section is empty.
+- Treats `/prompt` as the reliable entry point because `ctrl+alt+p` can be intercepted outside Pi.
 
 ### `ask-llm`
 
