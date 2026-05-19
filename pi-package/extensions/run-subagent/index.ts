@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -71,6 +71,7 @@ const RUN_SUBAGENT_LEGACY_CONFIG_FILE = "run-subagent.json";
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "prompts");
 const RUN_SUBAGENT_DESCRIPTION = readPromptFile("description.md");
 const ENABLED_CONFIG_KEY = "enabled";
+const DESCRIPTION_PROMPT_FILE_CONFIG_KEY = "descriptionPromptFile";
 /** Default maximum child-subagent nesting depth when config omits maxDepth. */
 const DEFAULT_MAX_DEPTH = 1;
 /** Default number of lines kept in the live subagent widget. */
@@ -116,8 +117,14 @@ interface RunSubagentConfig {
 	readonly enabled: boolean;
 	readonly maxDepth: number;
 	readonly widgetLineBudget: number;
+	readonly descriptionPromptFile?: string;
+	readonly descriptionPromptFileIssue?: string;
 	readonly issue?: string;
 }
+
+type DescriptionPromptFileValidation =
+	| { readonly valid: true; readonly descriptionPromptFile?: string }
+	| { readonly valid: false; readonly issue: string };
 
 interface RunSubagentContext extends ExtensionContext {
 	readonly model: Model<Api> | undefined;
@@ -221,6 +228,7 @@ export default async function runSubagent(
 		return;
 	}
 
+	const description = resolveRunSubagentDescription(startupConfig);
 	const spawnPi = dependencies.spawnPi ?? defaultSpawnPi;
 	const subagentWidgetState = createSubagentWidgetState();
 	await publishRunSubagentPromptContribution(pi);
@@ -228,7 +236,7 @@ export default async function runSubagent(
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Run subagent",
-		description: RUN_SUBAGENT_DESCRIPTION,
+		description,
 		parameters: RunSubagentParameters,
 		executionMode: "parallel",
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
@@ -751,12 +759,17 @@ function parseRunSubagentConfig(value: unknown): RunSubagentConfig {
 		return invalidConfig("config must be an object");
 	}
 	if (
-		!hasOnlyKeys(value, [ENABLED_CONFIG_KEY, "maxDepth", "widgetLineBudget"])
+		!hasOnlyKeys(value, [
+			ENABLED_CONFIG_KEY,
+			"maxDepth",
+			"widgetLineBudget",
+			DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
+		])
 	) {
 		return invalidConfig("config contains unsupported keys");
 	}
 
-	const { enabled, maxDepth, widgetLineBudget } = value;
+	const { enabled, maxDepth, widgetLineBudget, descriptionPromptFile } = value;
 	if (enabled !== undefined && typeof enabled !== "boolean") {
 		return invalidConfig(`${ENABLED_CONFIG_KEY} must be a boolean`);
 	}
@@ -787,11 +800,57 @@ function parseRunSubagentConfig(value: unknown): RunSubagentConfig {
 			"widgetLineBudget must be an integer greater than or equal to 1",
 		);
 	}
+	const descriptionPromptFileValidation = validateDescriptionPromptFile(
+		descriptionPromptFile,
+	);
+	if (!descriptionPromptFileValidation.valid) {
+		return invalidDescriptionPromptConfig(
+			descriptionPromptFileValidation.issue,
+		);
+	}
 
-	return {
+	const config = {
 		enabled: true,
 		maxDepth: maxDepth ?? DEFAULT_MAX_DEPTH,
 		widgetLineBudget: widgetLineBudget ?? DEFAULT_WIDGET_LINE_BUDGET,
+	};
+	return descriptionPromptFileValidation.descriptionPromptFile === undefined
+		? config
+		: {
+				...config,
+				descriptionPromptFile:
+					descriptionPromptFileValidation.descriptionPromptFile,
+			};
+}
+
+/** Validates the optional custom description prompt path. */
+function validateDescriptionPromptFile(
+	value: unknown,
+): DescriptionPromptFileValidation {
+	if (value === undefined) {
+		return { valid: true };
+	}
+	if (typeof value !== "string" || value.trim().length === 0) {
+		return {
+			valid: false,
+			issue: "descriptionPromptFile must be a non-empty string",
+		};
+	}
+	if (!isAbsolute(value)) {
+		return {
+			valid: false,
+			issue: "descriptionPromptFile must be an absolute path",
+		};
+	}
+
+	return { valid: true, descriptionPromptFile: value };
+}
+
+/** Marks description prompt config errors that block tool registration. */
+function invalidDescriptionPromptConfig(issue: string): RunSubagentConfig {
+	return {
+		...invalidConfig(issue),
+		descriptionPromptFileIssue: issue,
 	};
 }
 
@@ -1569,6 +1628,35 @@ function reportIssue(ctx: RunSubagentContext, issue: string): void {
 	}
 
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
+}
+
+/** Resolves the model-facing run_subagent tool description. */
+function resolveRunSubagentDescription(config: RunSubagentConfig): string {
+	if (config.descriptionPromptFileIssue !== undefined) {
+		throw new Error(`${ISSUE_PREFIX} ${config.descriptionPromptFileIssue}`);
+	}
+	if (config.descriptionPromptFile === undefined) {
+		return RUN_SUBAGENT_DESCRIPTION;
+	}
+
+	return readDescriptionPromptFile(config.descriptionPromptFile);
+}
+
+/** Reads a configured custom description prompt and rejects unusable content. */
+function readDescriptionPromptFile(filePath: string): string {
+	let prompt: string;
+	try {
+		prompt = readFileSync(filePath, "utf8").trim();
+	} catch (error) {
+		throw new Error(
+			`${ISSUE_PREFIX} failed to read description prompt: ${formatError(error)}`,
+		);
+	}
+	if (prompt.length === 0) {
+		throw new Error(`${ISSUE_PREFIX} description prompt must not be empty`);
+	}
+
+	return prompt;
 }
 
 /** Reads one bundled prompt file and trims trailing file whitespace. */
