@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+	type AutocompleteProvider,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import {
 	StructuredPromptForm,
 	type StructuredPromptFormResult,
@@ -66,6 +70,37 @@ describe("structured-prompt form", () => {
 			kind: "submitted",
 			values: expect.arrayContaining([
 				{ sectionId: "goal", value: "Line one\nLine two" },
+			]),
+		});
+	});
+
+	test("selects @ file autocomplete before advancing to the next section", async () => {
+		// Purpose: file references selected from the section dropdown must become section text.
+		// Input and expected output: @READ opens a README.md suggestion, Enter selects it, and later Enter advances the form.
+		// Edge case: Enter must go to the editor while autocomplete is open instead of saving a partial prefix.
+		// Dependencies: this test uses the Pi Editor autocomplete contract with a fake provider.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const provider = createAutocompleteProviderFake();
+		const form = createForm((result) => observedResults.push(result), {
+			autocompleteProvider: provider,
+		});
+
+		typeCharacters(form, "@READ");
+		const suggestionRender = await waitForRenderedText(form, "README.md");
+		expect(suggestionRender.join("\n")).toContain("README.md");
+
+		form.handleInput(ENTER);
+		for (const _section of PROMPT_SECTIONS) {
+			form.handleInput(ENTER);
+		}
+		expect(observedResults).toEqual([]);
+
+		form.handleInput(ENTER);
+
+		expect(observedResults[0]).toEqual({
+			kind: "submitted",
+			values: expect.arrayContaining([
+				{ sectionId: "goal", value: "@README.md " },
 			]),
 		});
 	});
@@ -459,6 +494,7 @@ describe("structured-prompt form", () => {
 function createForm(
 	onDone: (result: StructuredPromptFormResult) => void,
 	options: {
+		readonly autocompleteProvider?: AutocompleteProvider;
 		readonly onCopyPrompt?: (promptText: string) => void;
 		readonly rows?: number;
 	} = {},
@@ -473,6 +509,9 @@ function createForm(
 			bold: (value) => value,
 		},
 		sections: PROMPT_SECTIONS,
+		...(options.autocompleteProvider === undefined
+			? {}
+			: { autocompleteProvider: options.autocompleteProvider }),
 		onCopyPrompt: options.onCopyPrompt,
 		onDone,
 	});
@@ -494,6 +533,55 @@ function numberedLines(count: number): string {
 
 function typeText(form: StructuredPromptForm, value: string): void {
 	form.handleInput(value);
+}
+
+function typeCharacters(form: StructuredPromptForm, value: string): void {
+	for (const char of value) {
+		form.handleInput(char);
+	}
+}
+
+async function waitForRenderedText(
+	form: StructuredPromptForm,
+	text: string,
+): Promise<string[]> {
+	let latestRows = form.render(80);
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		if (latestRows.join("\n").includes(text)) {
+			return latestRows;
+		}
+		await delay(10);
+		latestRows = form.render(80);
+	}
+	return latestRows;
+}
+
+function createAutocompleteProviderFake(): AutocompleteProvider {
+	return {
+		async getSuggestions(lines, cursorLine, cursorCol) {
+			const currentLine = lines[cursorLine] ?? "";
+			const prefix = currentLine.slice(0, cursorCol);
+			if (!prefix.startsWith("@")) {
+				return null;
+			}
+			return {
+				prefix,
+				items: [{ value: "@README.md", label: "README.md" }],
+			};
+		},
+		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+			const currentLine = lines[cursorLine] ?? "";
+			const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+			const afterCursor = currentLine.slice(cursorCol);
+			const newLines = [...lines];
+			newLines[cursorLine] = `${beforePrefix}${item.value} ${afterCursor}`;
+			return {
+				lines: newLines,
+				cursorLine,
+				cursorCol: beforePrefix.length + item.value.length + 1,
+			};
+		},
+	};
 }
 
 async function waitForCopySettlement(): Promise<void> {

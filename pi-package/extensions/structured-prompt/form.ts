@@ -1,5 +1,6 @@
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
+	type AutocompleteProvider,
 	type Component,
 	Editor,
 	type EditorTheme,
@@ -37,6 +38,7 @@ export interface StructuredPromptFormOptions {
 	readonly tui: TUI;
 	readonly theme: PromptFormTheme;
 	readonly sections: readonly PromptSection[];
+	readonly autocompleteProvider?: AutocompleteProvider;
 	readonly onCopyPrompt?:
 		| ((promptText: string) => Promise<void> | void)
 		| undefined;
@@ -79,6 +81,9 @@ export class StructuredPromptForm implements Component {
 		this.onCopyPrompt = options.onCopyPrompt;
 		this.onDone = options.onDone;
 		this.editor = new Editor(this.tui, this.createEditorTheme());
+		if (options.autocompleteProvider !== undefined) {
+			this.editor.setAutocompleteProvider(options.autocompleteProvider);
+		}
 	}
 
 	/** Renders either the active section editor or the final prompt preview. */
@@ -98,6 +103,15 @@ export class StructuredPromptForm implements Component {
 	/** Routes cancel and step confirmation keys before passing text input to the editor. */
 	public handleInput(data: string): void {
 		if (this.mode === "closed") {
+			return;
+		}
+		if (
+			this.mode === "edit" &&
+			this.editor.isShowingAutocomplete() &&
+			(matchesKey(data, Key.escape) || matchesKey(data, Key.enter))
+		) {
+			this.editor.handleInput(data);
+			this.tui.requestRender();
 			return;
 		}
 		if (matchesKey(data, Key.escape)) {

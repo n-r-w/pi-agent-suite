@@ -22,6 +22,8 @@
   - Constraints
   - Work order
 - Supports multi-line section text.
+- Shows file suggestions for `@...` in section editors when `fd` is available in `PATH`.
+- Keeps slash-command completion disabled inside section editors.
 - Shows a review screen before sending.
 - On the review screen, `Ctrl+Y` copies the generated prompt to the clipboard without closing the form.
 - On the review screen, `Ctrl+T` places the generated prompt in the main input field and sends no message.
@@ -86,5 +88,9 @@ Tests must verify:
 - clipboard copy failure reports a warning and sends no message;
 - empty sections are omitted from the generated prompt;
 - multi-line section text is preserved;
+- `@...` file autocomplete suggestions render in section editors when `fd` is available;
+- selected `@...` file autocomplete is saved as section text;
+- slash commands stay disabled inside section editors;
+- missing `fd` does not block normal form submission;
 - terminal navigation escape sequences are not inserted into section text;
 - rendered form rows stay within the requested width.
