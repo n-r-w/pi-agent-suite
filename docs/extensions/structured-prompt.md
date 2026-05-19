@@ -23,6 +23,8 @@
   - Work order
 - Supports multi-line section text.
 - Shows a review screen before sending.
+- On the review screen, `Ctrl+Y` copies the generated prompt to the clipboard without closing the form.
+- On the review screen, `Ctrl+T` places the generated prompt in the main input field and sends no message.
 - Omits empty sections from the generated prompt.
 - Sends the generated prompt as one user message when the agent is idle.
 - When the agent is busy, asks whether to queue the generated prompt as a follow-up.
@@ -79,6 +81,9 @@ Tests must verify:
 - busy submit asks before follow-up delivery;
 - rejecting follow-up sends no message;
 - accepting follow-up queues the generated prompt as `followUp`;
+- review copy copies the full generated prompt without closing the form;
+- review input placement writes the full generated prompt to the main input and sends no message;
+- clipboard copy failure reports a warning and sends no message;
 - empty sections are omitted from the generated prompt;
 - multi-line section text is preserved;
 - terminal navigation escape sequences are not inserted into section text;

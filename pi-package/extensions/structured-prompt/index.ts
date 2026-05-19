@@ -1,7 +1,8 @@
-import type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionContext,
+import {
+	copyToClipboard as defaultCopyToClipboard,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { readPromptConfig } from "./config.ts";
@@ -18,24 +19,34 @@ const PROMPT_OVERLAY_OPTIONS = {
 	overlayOptions: { anchor: "center" as const },
 };
 
+interface StructuredPromptDependencies {
+	readonly copyToClipboard?: (text: string) => Promise<void>;
+}
+
 /** Registers the structured prompt form command and shortcut when the extension is enabled. */
-export default function prompt(pi: ExtensionAPI): void {
+export default function prompt(
+	pi: ExtensionAPI,
+	dependencies: StructuredPromptDependencies = {},
+): void {
 	const configResult = readPromptConfig();
 	if (configResult.kind === "invalid" || !configResult.config.enabled) {
 		return;
 	}
 
+	const copyToClipboard =
+		dependencies.copyToClipboard ?? defaultCopyToClipboard;
+
 	pi.registerCommand(PROMPT_COMMAND, {
 		description: "Open a structured prompt form",
 		handler: async (_args, ctx) => {
-			await openPromptForm(pi, ctx);
+			await openPromptForm(pi, ctx, copyToClipboard);
 		},
 	});
 
 	pi.registerShortcut(PROMPT_SHORTCUT, {
 		description: "Open a structured prompt form",
 		handler: async (ctx) => {
-			await openPromptForm(pi, ctx);
+			await openPromptForm(pi, ctx, copyToClipboard);
 		},
 	});
 }
@@ -43,6 +54,7 @@ export default function prompt(pi: ExtensionAPI): void {
 async function openPromptForm(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext | ExtensionContext,
+	copyToClipboard: (text: string) => Promise<void>,
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("Prompt form requires interactive mode.", "warning");
@@ -55,6 +67,8 @@ async function openPromptForm(
 				tui,
 				theme,
 				sections: PROMPT_SECTIONS,
+				onCopyPrompt: (promptText) =>
+					copyPromptToClipboard(ctx, copyToClipboard, promptText),
 				onDone: done,
 			}),
 		PROMPT_OVERLAY_OPTIONS,
@@ -66,6 +80,11 @@ async function openPromptForm(
 	const promptText = formatStructuredPrompt(PROMPT_SECTIONS, result.values);
 	if (promptText.length === 0) {
 		ctx.ui.notify("Prompt form is empty.", "warning");
+		return;
+	}
+
+	if (result.kind === "inserted") {
+		ctx.ui.setEditorText(promptText);
 		return;
 	}
 
@@ -83,4 +102,27 @@ async function openPromptForm(
 	}
 
 	pi.sendUserMessage(promptText, { deliverAs: "followUp" });
+}
+
+async function copyPromptToClipboard(
+	ctx: ExtensionCommandContext | ExtensionContext,
+	copyToClipboard: (text: string) => Promise<void>,
+	promptText: string,
+): Promise<void> {
+	try {
+		await copyToClipboard(promptText);
+		ctx.ui.notify("Prompt copied to clipboard.", "info");
+	} catch (error) {
+		ctx.ui.notify(
+			`Failed to copy prompt to clipboard: ${formatError(error)}`,
+			"warning",
+		);
+	}
+}
+
+function formatError(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	return String(error);
 }

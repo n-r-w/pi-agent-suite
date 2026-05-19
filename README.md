@@ -556,6 +556,7 @@ Why you need it:
 - Helps build complex user requests without rewriting the same prompt structure.
 - Separates Goal, Task, Context, Criteria, Constraints, and Work order before sending.
 - Shows a review screen before the request is sent.
+- Can copy the generated prompt or place it in the main input before sending.
 
 Config file: `~/.pi/agent/agent-suite/structured-prompt/config.json`
 
@@ -573,6 +574,8 @@ How it works:
 - Opens a centered overlay with one active multi-line section editor.
 - Builds one Markdown prompt from non-empty sections.
 - Omits empty sections from the generated prompt.
+- Copies the generated prompt from the review screen with `Ctrl+Y`.
+- Places the generated prompt in the main input field from the review screen with `Ctrl+T`.
 - Sends the generated prompt as a user message when the agent is idle.
 - Asks before queuing the generated prompt as a follow-up when the agent is busy.
 - Sends nothing when the form is cancelled or every section is empty.

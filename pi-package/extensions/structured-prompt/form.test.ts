@@ -11,6 +11,8 @@ const ESCAPE = "\x1b";
 const ARROW_DOWN = "\x1b[B";
 const PAGE_DOWN = "\x1b[6~";
 const HOME = "\x1b[H";
+const CTRL_T = "\x14";
+const CTRL_Y = "\x19";
 
 describe("structured-prompt form", () => {
 	test("submits entered section values from the review screen", () => {
@@ -227,6 +229,124 @@ describe("structured-prompt form", () => {
 		]);
 	});
 
+	test("copies the full generated prompt from review without closing it", async () => {
+		// Purpose: users must be able to copy the generated prompt before deciding whether to send.
+		// Input and expected output: Ctrl+Y reports the full formatted prompt and Enter can still submit.
+		// Edge case: the copied text contains rows that are outside the current review viewport.
+		// Dependencies: this test uses a callback fake for the clipboard action.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const copiedPrompts: string[] = [];
+		const form = createForm((result) => observedResults.push(result), {
+			onCopyPrompt: (promptText) => copiedPrompts.push(promptText),
+			rows: 12,
+		});
+		const longGoal = numberedLines(80);
+		openReviewWithGoal(form, longGoal);
+
+		form.handleInput(PAGE_DOWN);
+		form.handleInput(CTRL_Y);
+		await waitForCopySettlement();
+		form.handleInput(ENTER);
+
+		expect(copiedPrompts).toEqual([["## Goal", longGoal].join("\n")]);
+		expect(observedResults).toEqual([
+			{
+				kind: "submitted",
+				values: expect.arrayContaining([
+					{ sectionId: "goal", value: longGoal },
+				]),
+			},
+		]);
+	});
+
+	test("waits for review copy before allowing submit", async () => {
+		// Purpose: copying before sending must not race with an immediate Enter press.
+		// Input and expected output: Enter is ignored while Ctrl+Y copy is still pending, then works after copy finishes.
+		// Edge case: the clipboard callback is asynchronous.
+		// Dependencies: this test uses a deferred callback fake for the clipboard action.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const copy = createDeferred();
+		const form = createForm((result) => observedResults.push(result), {
+			onCopyPrompt: () => copy.promise,
+			rows: 12,
+		});
+		const longGoal = numberedLines(80);
+		openReviewWithGoal(form, longGoal);
+
+		form.handleInput(CTRL_Y);
+		form.handleInput(ENTER);
+		expect(observedResults).toEqual([]);
+
+		copy.resolve();
+		await copy.promise;
+		await waitForCopySettlement();
+		form.handleInput(ENTER);
+
+		expect(observedResults).toEqual([
+			{
+				kind: "submitted",
+				values: expect.arrayContaining([
+					{ sectionId: "goal", value: longGoal },
+				]),
+			},
+		]);
+	});
+
+	test("unblocks submit after a synchronous review copy failure", async () => {
+		// Purpose: a clipboard callback defect must not leave review actions blocked.
+		// Input and expected output: a synchronous copy failure is swallowed and a later Enter submits.
+		// Edge case: the callback throws before returning a Promise.
+		// Dependencies: this test uses a throwing callback fake for the clipboard action.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result), {
+			onCopyPrompt: () => {
+				throw new Error("copy callback failed");
+			},
+			rows: 12,
+		});
+		const longGoal = numberedLines(80);
+		openReviewWithGoal(form, longGoal);
+
+		form.handleInput(CTRL_Y);
+		await waitForCopySettlement();
+		form.handleInput(ENTER);
+
+		expect(observedResults).toEqual([
+			{
+				kind: "submitted",
+				values: expect.arrayContaining([
+					{ sectionId: "goal", value: longGoal },
+				]),
+			},
+		]);
+	});
+
+	test("returns the full generated prompt for input placement without submitting", () => {
+		// Purpose: users must be able to place the generated prompt in the main input instead of sending it.
+		// Input and expected output: Ctrl+T returns an inserted result with all section values.
+		// Edge case: Enter after Ctrl+T does not create a later submit result because the form is closed.
+		// Dependencies: this test uses the form component result instead of Pi editor integration.
+		const observedResults: StructuredPromptFormResult[] = [];
+		const form = createForm((result) => observedResults.push(result), {
+			rows: 12,
+		});
+		const longGoal = numberedLines(80);
+		openReviewWithGoal(form, longGoal);
+
+		form.handleInput(PAGE_DOWN);
+		form.handleInput(CTRL_T);
+		form.handleInput(ENTER);
+
+		expect(observedResults).toEqual([
+			{
+				kind: "inserted",
+				values: expect.arrayContaining([
+					{ sectionId: "goal", value: longGoal },
+				]),
+			},
+		]);
+	});
+
 	test("keeps rendered rows within the requested width", () => {
 		// Purpose: the custom overlay must honor the TUI render width contract.
 		// Input and expected output: narrow and normal widths produce rows within those widths.
@@ -248,7 +368,10 @@ describe("structured-prompt form", () => {
 
 function createForm(
 	onDone: (result: StructuredPromptFormResult) => void,
-	options: { readonly rows?: number } = {},
+	options: {
+		readonly onCopyPrompt?: (promptText: string) => void;
+		readonly rows?: number;
+	} = {},
 ): StructuredPromptForm {
 	return new StructuredPromptForm({
 		tui: {
@@ -260,6 +383,7 @@ function createForm(
 			bold: (value) => value,
 		},
 		sections: PROMPT_SECTIONS,
+		onCopyPrompt: options.onCopyPrompt,
 		onDone,
 	});
 }
@@ -280,4 +404,24 @@ function numberedLines(count: number): string {
 
 function typeText(form: StructuredPromptForm, value: string): void {
 	form.handleInput(value);
+}
+
+async function waitForCopySettlement(): Promise<void> {
+	for (let index = 0; index < 5; index += 1) {
+		await Promise.resolve();
+	}
+}
+
+function createDeferred(): {
+	readonly promise: Promise<void>;
+	readonly resolve: () => void;
+} {
+	let resolvePromise: (() => void) | undefined;
+	const promise = new Promise<void>((resolve) => {
+		resolvePromise = resolve;
+	});
+	if (resolvePromise === undefined) {
+		throw new Error("deferred promise resolver was not initialized");
+	}
+	return { promise, resolve: resolvePromise };
 }

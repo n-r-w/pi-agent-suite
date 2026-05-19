@@ -42,6 +42,14 @@ interface PromptExtensionApiFake {
 	readonly sentUserMessages: SentUserMessageFake[];
 }
 
+interface StructuredPromptDependenciesFake {
+	readonly copyToClipboard?: (text: string) => Promise<void>;
+}
+
+interface CustomComponentFake {
+	handleInput(data: string): Promise<void> | void;
+}
+
 interface PromptCommandContextFake {
 	readonly hasUI: boolean;
 	readonly notifications: Array<{
@@ -53,14 +61,19 @@ interface PromptCommandContextFake {
 		readonly message: string;
 	}>;
 	readonly customOptions: unknown[];
+	readonly editorTexts: string[];
 	ui: {
 		notify(message: string, type?: string): void;
 		confirm(title: string, message: string): Promise<boolean>;
 		custom<T>(factory: unknown, options?: unknown): Promise<T>;
+		setEditorText(text: string): void;
 	};
 	isIdle(): boolean;
+	triggerLastReviewCopy(): Promise<void>;
 }
 
+const ENTER = "\r";
+const CTRL_Y = "\x19";
 const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 const tempDirs: string[] = [];
 
@@ -253,6 +266,89 @@ describe("structured-prompt extension", () => {
 			]);
 		});
 	});
+
+	test("places the generated prompt in the input field without sending", async () => {
+		// Purpose: users must be able to review and then edit the generated prompt manually.
+		// Input and expected output: inserted form result sets the main editor text and sends no message.
+		// Edge case: the agent is busy, but no follow-up confirmation is requested because nothing is sent.
+		// Dependencies: this test uses fake UI editor integration.
+		await withIsolatedSuiteDir(async () => {
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContextFake({
+				formResult: insertedFormResult(),
+				idle: false,
+			});
+			prompt(pi as unknown as ExtensionAPI);
+
+			await getPromptCommand(pi).handler("", ctx);
+
+			expect(ctx.editorTexts).toEqual([
+				["## Goal", "Create structured requests"].join("\n"),
+			]);
+			expect(pi.sentUserMessages).toEqual([]);
+			expect(ctx.confirmations).toEqual([]);
+		});
+	});
+
+	test("copies the generated prompt from review without sending", async () => {
+		// Purpose: users must be able to copy the generated prompt before deciding whether to send.
+		// Input and expected output: Ctrl+Y copy callback copies the formatted prompt and sends no message.
+		// Edge case: copy is a review action and does not finish the form by itself.
+		// Dependencies: this test executes the custom UI factory with fake TUI and theme objects.
+		await withIsolatedSuiteDir(async () => {
+			const copiedPrompts: string[] = [];
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContextFake({
+				formResult: { kind: "cancelled" },
+				idle: true,
+			});
+			prompt(pi as unknown as ExtensionAPI, {
+				copyToClipboard: async (text) => {
+					copiedPrompts.push(text);
+				},
+			} satisfies StructuredPromptDependenciesFake);
+
+			await getPromptCommand(pi).handler("", ctx);
+			await ctx.triggerLastReviewCopy();
+
+			expect(copiedPrompts).toEqual([
+				["## Goal", "Create structured requests"].join("\n"),
+			]);
+			expect(pi.sentUserMessages).toEqual([]);
+			expect(ctx.notifications).toContainEqual({
+				message: "Prompt copied to clipboard.",
+				type: "info",
+			});
+		});
+	});
+
+	test("reports clipboard copy failures without sending", async () => {
+		// Purpose: clipboard failures must be visible and must not submit a message.
+		// Input and expected output: failed Ctrl+Y reports a warning while the command result remains cancelled.
+		// Edge case: the copy dependency rejects while the review action is active.
+		// Dependencies: this test executes the custom UI factory with fake TUI and theme objects.
+		await withIsolatedSuiteDir(async () => {
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContextFake({
+				formResult: { kind: "cancelled" },
+				idle: true,
+			});
+			prompt(pi as unknown as ExtensionAPI, {
+				copyToClipboard: async () => {
+					throw new Error("clipboard unavailable");
+				},
+			} satisfies StructuredPromptDependenciesFake);
+
+			await getPromptCommand(pi).handler("", ctx);
+			await ctx.triggerLastReviewCopy();
+
+			expect(ctx.notifications).toContainEqual({
+				message: "Failed to copy prompt to clipboard: clipboard unavailable",
+				type: "warning",
+			});
+			expect(pi.sentUserMessages).toEqual([]);
+		});
+	});
 });
 
 function createExtensionApiFake(): PromptExtensionApiFake {
@@ -300,11 +396,14 @@ function createCommandContextFake(options: {
 		readonly message: string;
 	}> = [];
 	const customOptions: unknown[] = [];
+	const editorTexts: string[] = [];
+	let lastCustomComponent: CustomComponentFake | undefined;
 	return {
 		hasUI: options.hasUI ?? true,
 		notifications,
 		confirmations,
 		customOptions,
+		editorTexts,
 		ui: {
 			notify(message: string, type?: string): void {
 				notifications.push({ message, type });
@@ -314,15 +413,42 @@ function createCommandContextFake(options: {
 				return options.confirmResult ?? false;
 			},
 			async custom<T>(
-				_factory: unknown,
+				factory: unknown,
 				customOptionsValue?: unknown,
 			): Promise<T> {
 				customOptions.push(customOptionsValue);
+				if (typeof factory === "function") {
+					lastCustomComponent = factory(
+						{
+							terminal: { rows: 40 },
+							requestRender(): void {},
+						},
+						{
+							fg: (_color: string, value: string) => value,
+							bold: (value: string) => value,
+						},
+						undefined,
+						() => {},
+					) as CustomComponentFake;
+				}
 				return options.formResult as T;
+			},
+			setEditorText(text: string): void {
+				editorTexts.push(text);
 			},
 		},
 		isIdle(): boolean {
 			return options.idle;
+		},
+		async triggerLastReviewCopy(): Promise<void> {
+			if (lastCustomComponent === undefined) {
+				throw new Error("custom form was not opened");
+			}
+			await lastCustomComponent.handleInput("Create structured requests");
+			for (let index = 0; index < 6; index += 1) {
+				await lastCustomComponent.handleInput(ENTER);
+			}
+			await lastCustomComponent.handleInput(CTRL_Y);
 		},
 	};
 }
@@ -330,6 +456,16 @@ function createCommandContextFake(options: {
 function submittedFormResult(): StructuredPromptFormResult {
 	return {
 		kind: "submitted",
+		values: [
+			{ sectionId: "goal", value: "Create structured requests" },
+			{ sectionId: "task", value: "" },
+		],
+	};
+}
+
+function insertedFormResult(): StructuredPromptFormResult {
+	return {
+		kind: "inserted",
 		values: [
 			{ sectionId: "goal", value: "Create structured requests" },
 			{ sectionId: "task", value: "" },

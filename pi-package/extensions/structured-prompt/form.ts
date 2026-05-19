@@ -22,6 +22,10 @@ export type StructuredPromptFormResult =
 			readonly kind: "submitted";
 			readonly values: readonly PromptSectionValue[];
 	  }
+	| {
+			readonly kind: "inserted";
+			readonly values: readonly PromptSectionValue[];
+	  }
 	| { readonly kind: "cancelled" };
 
 export interface PromptFormTheme {
@@ -33,6 +37,9 @@ export interface StructuredPromptFormOptions {
 	readonly tui: TUI;
 	readonly theme: PromptFormTheme;
 	readonly sections: readonly PromptSection[];
+	readonly onCopyPrompt?:
+		| ((promptText: string) => Promise<void> | void)
+		| undefined;
 	readonly onDone: (result: StructuredPromptFormResult) => void;
 }
 
@@ -41,13 +48,16 @@ type PromptFormMode = "edit" | "review" | "closed";
 const FRAME_SIDE_WIDTH = 2;
 const FRAME_HORIZONTAL_PADDING = 2;
 const FRAME_DECORATION_WIDTH = FRAME_SIDE_WIDTH + FRAME_HORIZONTAL_PADDING;
-const REVIEW_NON_PREVIEW_ROWS = 5;
+const REVIEW_NON_PREVIEW_ROWS = 6;
 
 /** Captures section text first, then requires a review confirmation before submit. */
 export class StructuredPromptForm implements Component {
 	private readonly tui: TUI;
 	private readonly theme: PromptFormTheme;
 	private readonly sections: readonly PromptSection[];
+	private readonly onCopyPrompt:
+		| ((promptText: string) => Promise<void> | void)
+		| undefined;
 	private readonly onDone: (result: StructuredPromptFormResult) => void;
 	private readonly values = new Map<string, string>();
 	private readonly editor: Editor;
@@ -56,12 +66,14 @@ export class StructuredPromptForm implements Component {
 	private reviewScrollOffset = 0;
 	private reviewMaxScrollOffset = 0;
 	private reviewPageRows = 1;
+	private copyInProgress = false;
 
 	/** Creates the form with a Pi editor for multi-line section input. */
 	public constructor(options: StructuredPromptFormOptions) {
 		this.tui = options.tui;
 		this.theme = options.theme;
 		this.sections = options.sections;
+		this.onCopyPrompt = options.onCopyPrompt;
 		this.onDone = options.onDone;
 		this.editor = new Editor(this.tui, this.createEditorTheme());
 	}
@@ -87,6 +99,13 @@ export class StructuredPromptForm implements Component {
 		}
 		if (matchesKey(data, Key.escape)) {
 			this.finish({ kind: "cancelled" });
+			return;
+		}
+		if (
+			this.mode === "review" &&
+			this.copyInProgress &&
+			matchesKey(data, Key.enter)
+		) {
 			return;
 		}
 		if (matchesKey(data, Key.enter)) {
@@ -192,7 +211,14 @@ export class StructuredPromptForm implements Component {
 			truncateToWidth(
 				this.theme.fg(
 					"dim",
-					"Enter: send • Esc: cancel • Up/Down: scroll • PageUp/PageDown: page",
+					"Enter: send • Ctrl+Y: copy • Ctrl+T: place in input • Esc: cancel",
+				),
+				width,
+			),
+			truncateToWidth(
+				this.theme.fg(
+					"dim",
+					"Up/Down: scroll • PageUp/PageDown: page • Home/End: jump",
 				),
 				width,
 			),
@@ -203,8 +229,19 @@ export class StructuredPromptForm implements Component {
 		];
 	}
 
-	/** Handles review-only navigation keys without changing the generated prompt. */
+	/** Handles review-only actions without changing the generated prompt. */
 	private handleReviewInput(data: string): void {
+		if (matchesKey(data, "ctrl+y")) {
+			this.copyCurrentPrompt();
+			return;
+		}
+		if (matchesKey(data, "ctrl+t")) {
+			if (this.copyInProgress) {
+				return;
+			}
+			this.finish({ kind: "inserted", values: this.collectValues() });
+			return;
+		}
 		if (matchesKey(data, Key.down)) {
 			this.reviewScrollOffset = Math.min(
 				this.reviewMaxScrollOffset,
@@ -243,6 +280,26 @@ export class StructuredPromptForm implements Component {
 			this.reviewScrollOffset = this.reviewMaxScrollOffset;
 			this.tui.requestRender();
 		}
+	}
+
+	/** Starts clipboard copy and blocks send actions until the copy attempt finishes. */
+	private copyCurrentPrompt(): void {
+		if (this.copyInProgress) {
+			return;
+		}
+
+		const promptText = formatStructuredPrompt(
+			this.sections,
+			this.collectValues(),
+		);
+		this.copyInProgress = true;
+		Promise.resolve()
+			.then(() => this.onCopyPrompt?.(promptText))
+			.catch(() => undefined)
+			.finally(() => {
+				this.copyInProgress = false;
+				this.tui.requestRender();
+			});
 	}
 
 	/** Advances from editing to review, or submits when the review screen is active. */
