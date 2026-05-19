@@ -19,6 +19,7 @@
 - Owns selected-agent state under `~/.pi/agent/agent-suite/agent-selection/state/`.
 - Stores only `cwd` and `activeAgentId` in the state file.
 - Stores `activeAgentId: null` for the explicit no-agent state.
+- Matches `activeAgentId` without case sensitivity and keeps the stored agent ID casing after selection.
 - Does not store model, thinking level, or tools in the state file.
 - Applies `model` only when the agent defines `model.id`.
 - Applies thinking level only when the agent defines `model.thinking`.
@@ -90,6 +91,7 @@ Tests must verify:
 
 - no command or shortcut registration when `enabled` is `false`;
 - agent selection through `/agent`;
+- case-insensitive agent ID matching that keeps stored agent ID casing;
 - no-agent selection through `/agent none` and the interactive `No agent` option;
 - current selection restoration when opening `/agent` without arguments;
 - agent selection through `Ctrl+Shift+A`;

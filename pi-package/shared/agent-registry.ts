@@ -44,6 +44,16 @@ export interface AgentDefinition {
 	readonly agents?: readonly string[];
 }
 
+/** Normalizes an agent ID for case-insensitive matching while preserving the stored ID for runtime state. */
+export function toAgentIdMatchKey(agentId: string): string {
+	return agentId.toLowerCase();
+}
+
+/** Compares agent IDs without requiring callers to know the stored ID casing. */
+export function agentIdMatches(left: string, right: string): boolean {
+	return toAgentIdMatchKey(left) === toAgentIdMatchKey(right);
+}
+
 /** Loads valid agent definitions from the isolated pi agent directory. */
 export async function loadAgentDefinitions(): Promise<AgentDefinition[]> {
 	const agentsDir = await resolveAgentsDir();

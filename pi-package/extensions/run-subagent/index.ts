@@ -11,7 +11,9 @@ import type {
 import { Type } from "typebox";
 import {
 	type AgentDefinition,
+	agentIdMatches,
 	loadAgentDefinitions,
+	toAgentIdMatchKey,
 } from "../../shared/agent-registry";
 import {
 	getAgentRuntimeComposition,
@@ -315,8 +317,8 @@ function buildRunSubagentPrompt({
 	});
 	const prompts: string[] = [];
 	if (childAgentId !== undefined) {
-		const childAgent = callableAgents.find(
-			(agent) => agent.id === childAgentId,
+		const childAgent = callableAgents.find((agent) =>
+			agentIdMatches(agent.id, childAgentId),
 		);
 		if (childAgent?.prompt) {
 			prompts.push(childAgent.prompt);
@@ -359,7 +361,7 @@ function resolveEffectiveAgentPolicy(
 		return mainAgent;
 	}
 
-	return callableAgents.find((agent) => agent.id === childAgentId);
+	return callableAgents.find((agent) => agentIdMatches(agent.id, childAgentId));
 }
 
 /** Applies the effective agent's explicit subagent allowlist to callable agents. */
@@ -371,8 +373,10 @@ function filterCallableAgents(
 		return callableAgents;
 	}
 
-	const allowedIds = new Set(effectiveAgent.agents);
-	return callableAgents.filter((agent) => allowedIds.has(agent.id));
+	const allowedIds = new Set(effectiveAgent.agents.map(toAgentIdMatchKey));
+	return callableAgents.filter((agent) =>
+		allowedIds.has(toAgentIdMatchKey(agent.id)),
+	);
 }
 
 /** Checks whether the effective agent can call run_subagent under its tool allowlist. */
@@ -511,8 +515,8 @@ async function resolveCallableAgent(
 		readSubagentAgentId(),
 	);
 	const allowedAgents = filterCallableAgents(agents, effectiveAgent);
-	const agent = allowedAgents.find(
-		(candidate) => candidate.id === params.agentId,
+	const agent = allowedAgents.find((candidate) =>
+		agentIdMatches(candidate.id, params.agentId),
 	);
 	return agent === undefined
 		? { result: errorResult(`agent ${params.agentId} was not found`) }
