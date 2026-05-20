@@ -5,6 +5,7 @@ import {
 } from "../../shared/agent-suite-storage.ts";
 
 const MCP_WRAPPER_EXTENSION_DIR = "mcp-wrapper";
+const DEFAULT_WIDGET_LINE_BUDGET = 5;
 
 const DEFAULT_TIMEOUTS: McpWrapperTimeouts = {
 	startupSeconds: 30,
@@ -14,7 +15,7 @@ const DEFAULT_TIMEOUTS: McpWrapperTimeouts = {
 };
 
 const TOP_LEVEL_KEYS = ["settings", "mcpServers"] as const;
-const SETTINGS_KEYS = ["enabled", "timeouts"] as const;
+const SETTINGS_KEYS = ["enabled", "timeouts", "widgetLineBudget"] as const;
 const TIMEOUT_KEYS = [
 	"startupSeconds",
 	"listToolsSeconds",
@@ -48,6 +49,7 @@ export type McpServerConfig =
 export interface McpWrapperConfig {
 	readonly enabled: boolean;
 	readonly timeouts: McpWrapperTimeouts;
+	readonly widgetLineBudget: number;
 	readonly mcpServers: Readonly<Record<string, McpServerConfig>>;
 }
 
@@ -106,6 +108,7 @@ export function parseMcpWrapperConfig(config: unknown): McpWrapperConfigResult {
 		config: {
 			enabled: settingsResult.settings.enabled,
 			timeouts: settingsResult.settings.timeouts,
+			widgetLineBudget: settingsResult.settings.widgetLineBudget,
 			mcpServers: serversResult.mcpServers,
 		},
 	};
@@ -118,13 +121,18 @@ function parseSettings(value: unknown):
 			readonly settings: {
 				readonly enabled: boolean;
 				readonly timeouts: McpWrapperTimeouts;
+				readonly widgetLineBudget: number;
 			};
 	  }
 	| InvalidConfigResult {
 	if (value === undefined) {
 		return {
 			kind: "valid",
-			settings: { enabled: true, timeouts: DEFAULT_TIMEOUTS },
+			settings: {
+				enabled: true,
+				timeouts: DEFAULT_TIMEOUTS,
+				widgetLineBudget: DEFAULT_WIDGET_LINE_BUDGET,
+			},
 		};
 	}
 	if (!isRecord(value)) {
@@ -141,6 +149,13 @@ function parseSettings(value: unknown):
 		return invalidConfig("settings.enabled must be a boolean");
 	}
 
+	const widgetLineBudget = value["widgetLineBudget"];
+	if (widgetLineBudget !== undefined && !isPositiveInteger(widgetLineBudget)) {
+		return invalidConfig(
+			"settings.widgetLineBudget must be a positive integer",
+		);
+	}
+
 	const timeoutsResult = parseTimeouts(value["timeouts"]);
 	if (timeoutsResult.kind === "invalid") {
 		return timeoutsResult;
@@ -151,6 +166,7 @@ function parseSettings(value: unknown):
 		settings: {
 			enabled: enabled ?? true,
 			timeouts: timeoutsResult.timeouts,
+			widgetLineBudget: widgetLineBudget ?? DEFAULT_WIDGET_LINE_BUDGET,
 		},
 	};
 }

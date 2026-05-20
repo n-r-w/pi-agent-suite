@@ -10,8 +10,10 @@
 - Reads configuration from `~/.pi/agent/agent-suite/ask-llm/config.json`.
 - Is enabled by default when `config.json` is missing.
 - Does not write the question or answer to the current session.
-- Uses command arguments as the question.
-- Opens a question editor when command arguments are empty.
+- Uses command arguments as the question and runs without opening the question dialog.
+- Opens a centered question dialog when command arguments are empty.
+- Supports `@...` file autocomplete in the question dialog when executable `fd` is available in `PATH`.
+- Keeps normal question entry available when `fd` is unavailable.
 - Cancels without a model call when the question is empty.
 - Requires interactive UI and exits before the model call when UI is unavailable.
 - Uses the current session model when `model.id` is missing.
@@ -29,8 +31,10 @@
 - Appends the `/ask` question as the final provider-only user message.
 - Wraps the question in `<user_question>...</user_question>`.
 - Sends `tools: []`.
-- Shows a cancellable loading UI while the model request is running.
-- Shows the model answer as Markdown in a focused UI.
+- Shows a centered cancellable loading UI while the model request is running.
+- Shows the question and model answer in a centered focused UI.
+- Renders the answer as Markdown.
+- Keeps long questions and answers inside the focused UI with scroll controls.
 - Copies the model answer to the clipboard when `Ctrl+Y` is pressed in the focused answer UI.
 - Retries retryable provider failures through bounded shared retry config.
 - Reports configuration, prompt, model, auth, provider, context-window, and empty-response issues as `ask-llm` warnings.
@@ -86,7 +90,10 @@ Tests must verify:
 - default command registration when the config file is missing;
 - command omission when `enabled` is `false`;
 - command argument use as the question;
-- question editor use when command arguments are empty;
+- centered question dialog use when command arguments are empty;
+- `@...` file autocomplete in the centered question dialog when `fd` is available;
+- normal question entry when `fd` is unavailable;
+- centered loading UI use while the model request is running;
 - model call prevention when UI is unavailable;
 - active-branch conversation forwarding to the model;
 - projection replay from recorded `context-projection` state;
@@ -104,5 +111,6 @@ Tests must verify:
 - retry of retryable provider failures;
 - retry of retryable provider error responses;
 - no retry for aborted requests;
-- Markdown answer display in focused UI;
+- question and Markdown answer display in centered focused UI;
+- scrolling for long question and answer content;
 - answer copying from the focused UI with `Ctrl+Y`.

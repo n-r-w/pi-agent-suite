@@ -78,11 +78,12 @@ File: `~/.pi/agent/agent-suite/run-subagent/config.json`.
 {
   "enabled": true,
   "maxDepth": 1,
-  "widgetLineBudget": 7
+  "widgetLineBudget": 7,
+  "descriptionPromptFile": "/absolute/path/to/run-subagent-description.md"
 }
 ```
 
-`enabled` is optional and defaults to `true`. `maxDepth` and `widgetLineBudget` are optional.
+`enabled` is optional and defaults to `true`. `maxDepth`, `widgetLineBudget`, and `descriptionPromptFile` are optional.
 
 Rules:
 
@@ -91,9 +92,14 @@ Rules:
 - `enabled: false` prevents tool registration.
 - `maxDepth` has integer type and must be greater than or equal to `0`.
 - `widgetLineBudget` has integer type and must be greater than or equal to `1`.
+- `descriptionPromptFile` must be a non-empty string with an absolute path when present.
+- Missing `descriptionPromptFile` uses bundled `pi-package/extensions/run-subagent/prompts/description.md`.
+- Configured `descriptionPromptFile` replaces the bundled `run_subagent` tool description.
+- Configured description prompt file must be readable and non-empty after trimming whitespace.
+- Invalid configured `descriptionPromptFile` fails `run-subagent` startup before `run_subagent` registration and does not fall back to the bundled description.
 - Default `maxDepth` is `1`.
 - Default `widgetLineBudget` is `7`.
-- Configuration error moves `run_subagent` to fail-closed state: `maxDepth` becomes `0`, `widgetLineBudget` becomes `7`, and the issue is shown only for `run-subagent`.
+- Configuration errors outside `descriptionPromptFile` move `run_subagent` to fail-closed state: `maxDepth` becomes `0`, `widgetLineBudget` becomes `7`, and the issue is shown only for `run-subagent`.
 
 ## Environment contract
 
@@ -108,6 +114,10 @@ Tests must verify:
 
 - no tool registration when `enabled` is `false`;
 - unchanged public `run_subagent` schema;
+- bundled tool description when `descriptionPromptFile` is missing;
+- custom tool description from an absolute `descriptionPromptFile`;
+- rejection of relative, tilde, empty, and non-string `descriptionPromptFile` values;
+- rejection of unreadable and empty configured description prompt files;
 - child `pi` startup with `--mode rpc`, `--no-session`, `--model`, and `--thinking`;
 - environment contract propagation;
 - `--tools`, `--no-tools`, and missing `tools` behavior;

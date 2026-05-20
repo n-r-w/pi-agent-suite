@@ -1,18 +1,17 @@
-import { accessSync, constants } from "node:fs";
-import { delimiter, join } from "node:path";
 import {
 	copyToClipboard as defaultCopyToClipboard,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { Key } from "@earendil-works/pi-tui";
+import { readPathEnvironment } from "../../shared/environment";
 import {
-	type AutocompleteProvider,
-	CombinedAutocompleteProvider,
-	Key,
-} from "@earendil-works/pi-tui";
+	type CreateFileAutocompleteProvider,
+	createFileAutocompleteProvider,
+	resolveFdPathFromPathValue,
+} from "../../shared/file-autocomplete";
 import { readPromptConfig } from "./config.ts";
-import { readPathEnvironment } from "./environment.ts";
 import {
 	StructuredPromptForm,
 	type StructuredPromptFormResult,
@@ -26,9 +25,16 @@ const PROMPT_OVERLAY_OPTIONS = {
 	overlayOptions: { anchor: "center" as const },
 };
 
+interface PromptFormRuntime {
+	readonly copyToClipboard: (text: string) => Promise<void>;
+	readonly resolveFdPath: () => string | null;
+	readonly createAutocompleteProvider: CreateFileAutocompleteProvider;
+}
+
 interface StructuredPromptDependencies {
 	readonly copyToClipboard?: (text: string) => Promise<void>;
 	readonly resolveFdPath?: () => string | null;
+	readonly createAutocompleteProvider?: CreateFileAutocompleteProvider;
 }
 
 /** Registers the structured prompt form command and shortcut when the extension is enabled. */
@@ -43,19 +49,29 @@ export default function prompt(
 
 	const copyToClipboard =
 		dependencies.copyToClipboard ?? defaultCopyToClipboard;
-	const resolveFdPath = dependencies.resolveFdPath ?? resolveFdPathFromPath;
+	const resolveFdPath =
+		dependencies.resolveFdPath ??
+		(() => resolveFdPathFromPathValue(readPathEnvironment()));
+	const createProvider =
+		dependencies.createAutocompleteProvider ?? createFileAutocompleteProvider;
+
+	const runtime = {
+		copyToClipboard,
+		resolveFdPath,
+		createAutocompleteProvider: createProvider,
+	};
 
 	pi.registerCommand(PROMPT_COMMAND, {
 		description: "Open a structured prompt form",
 		handler: async (_args, ctx) => {
-			await openPromptForm(pi, ctx, copyToClipboard, resolveFdPath);
+			await openPromptForm(pi, ctx, runtime);
 		},
 	});
 
 	pi.registerShortcut(PROMPT_SHORTCUT, {
 		description: "Open a structured prompt form",
 		handler: async (ctx) => {
-			await openPromptForm(pi, ctx, copyToClipboard, resolveFdPath);
+			await openPromptForm(pi, ctx, runtime);
 		},
 	});
 }
@@ -63,17 +79,16 @@ export default function prompt(
 async function openPromptForm(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext | ExtensionContext,
-	copyToClipboard: (text: string) => Promise<void>,
-	resolveFdPath: () => string | null,
+	runtime: PromptFormRuntime,
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("Prompt form requires interactive mode.", "warning");
 		return;
 	}
 
-	const autocompleteProvider = createAutocompleteProvider(
+	const autocompleteProvider = runtime.createAutocompleteProvider(
 		ctx.cwd,
-		resolveFdPath(),
+		runtime.resolveFdPath(),
 	);
 	const result = await ctx.ui.custom<StructuredPromptFormResult>(
 		(tui, theme, _keybindings, done) =>
@@ -83,7 +98,7 @@ async function openPromptForm(
 				sections: PROMPT_SECTIONS,
 				...(autocompleteProvider === undefined ? {} : { autocompleteProvider }),
 				onCopyPrompt: (promptText) =>
-					copyPromptToClipboard(ctx, copyToClipboard, promptText),
+					copyPromptToClipboard(ctx, runtime.copyToClipboard, promptText),
 				onDone: done,
 			}),
 		PROMPT_OVERLAY_OPTIONS,
@@ -117,39 +132,6 @@ async function openPromptForm(
 	}
 
 	pi.sendUserMessage(promptText, { deliverAs: "followUp" });
-}
-
-/** Creates a Pi TUI CombinedAutocompleteProvider for form file references when fd is available. */
-function createAutocompleteProvider(
-	cwd: string,
-	fdPath: string | null,
-): AutocompleteProvider | undefined {
-	if (fdPath === null) {
-		return undefined;
-	}
-	return new CombinedAutocompleteProvider([], cwd, fdPath);
-}
-
-/** Finds an executable fd on PATH for Pi TUI file autocomplete. */
-function resolveFdPathFromPath(): string | null {
-	const pathValue = readPathEnvironment();
-	if (pathValue === undefined || pathValue.length === 0) {
-		return null;
-	}
-
-	for (const directory of pathValue.split(delimiter)) {
-		if (directory.length === 0) {
-			continue;
-		}
-		const candidate = join(directory, "fd");
-		try {
-			accessSync(candidate, constants.X_OK);
-			return candidate;
-		} catch {
-			// Keep scanning PATH entries until an executable fd is found.
-		}
-	}
-	return null;
 }
 
 async function copyPromptToClipboard(

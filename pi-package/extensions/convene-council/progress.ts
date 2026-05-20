@@ -1,4 +1,8 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import {
+	CONTEXT_PROJECTION_STATUS_KEY,
+	normalizePositiveProjectionStatus,
+} from "../../shared/context-projection-status";
 import type {
 	CouncilRuntime,
 	ParticipantId,
@@ -80,6 +84,7 @@ export interface CouncilParticipantDetails {
 	readonly elapsedMs: number;
 	readonly activity?: string;
 	readonly contextUsage?: CouncilContextUsage;
+	readonly contextProjectionStatus?: string | undefined;
 }
 
 /** Stores one visible council event without raw participant opinions. */
@@ -232,7 +237,12 @@ function createCouncilProgressReporterApi(
 				maxAttempts,
 			}),
 		recordSessionEvent: (participantId, event) =>
-			recordParticipantSessionEvent(state, append, participantId, event),
+			recordParticipantSessionEvent(state, {
+				append,
+				emit,
+				participantId,
+				event,
+			}),
 		recordInfo: (title, phase) =>
 			recordEvent(state, append, {
 				kind: "info",
@@ -272,6 +282,14 @@ interface ParticipantPatch {
 	readonly status?: CouncilRunStatus;
 	readonly activity?: string;
 	readonly contextUsage?: CouncilContextUsage;
+	readonly contextProjectionStatus?: string | undefined;
+}
+
+interface ParticipantSessionEventRecord {
+	readonly append: ProgressAppender;
+	readonly emit: ProgressEmitter;
+	readonly participantId: ParticipantId;
+	readonly event: unknown;
 }
 
 type ProgressEmitter = (status: CouncilRunStatus) => CouncilRunDetails;
@@ -417,29 +435,33 @@ function recordParticipantRetry(
 /** Records one child session event as participant-labeled live progress. */
 function recordParticipantSessionEvent(
 	state: CouncilProgressState,
-	append: ProgressAppender,
-	participantId: ParticipantId,
-	event: unknown,
+	record: ParticipantSessionEventRecord,
 ): void {
 	const participantUpdate = toParticipantProgressUpdate(
 		state,
-		participantId,
-		event,
+		record.participantId,
+		record.event,
 	);
 	if (participantUpdate !== undefined) {
-		const eventType = isPlainRecord(event)
-			? getStringField(event, "type")
+		const eventType = isPlainRecord(record.event)
+			? getStringField(record.event, "type")
 			: undefined;
 		if (eventType === "agent_end") {
-			finishParticipantTurn(state, participantId, Date.now());
+			finishParticipantTurn(state, record.participantId, Date.now());
 		}
-		updateParticipantProgress(state, participantId, participantUpdate);
+		updateParticipantProgress(state, record.participantId, participantUpdate);
 	}
-	const progressEvent = toParticipantSessionProgressEvent(participantId, event);
+	const progressEvent = toParticipantSessionProgressEvent(
+		record.participantId,
+		record.event,
+	);
 	if (progressEvent === undefined) {
+		if (participantUpdate !== undefined) {
+			record.emit("running");
+		}
 		return;
 	}
-	append(progressEvent.kind, progressEvent.title, progressEvent.text);
+	record.append(progressEvent.kind, progressEvent.title, progressEvent.text);
 }
 
 /** Converts model-visible child RPC events into compact TUI progress rows. */
@@ -511,7 +533,27 @@ function toParticipantProgressUpdate(
 	if (eventType === "message_end") {
 		return toParticipantMessageEndProgressUpdate(state, participantId, event);
 	}
+	if (eventType === "extension_ui_request") {
+		return toParticipantContextProjectionProgressUpdate(event);
+	}
 	return undefined;
+}
+
+/** Converts child context-projection footer updates into participant row state. */
+function toParticipantContextProjectionProgressUpdate(
+	event: Record<string, unknown>,
+): ParticipantPatch | undefined {
+	if (
+		getStringField(event, "method") !== "setStatus" ||
+		getStringField(event, "statusKey") !== CONTEXT_PROJECTION_STATUS_KEY
+	) {
+		return undefined;
+	}
+	return {
+		contextProjectionStatus: normalizePositiveProjectionStatus(
+			getStringField(event, "statusText"),
+		),
+	};
 }
 
 /** Converts a child tool-start event into participant row state. */
@@ -692,7 +734,9 @@ function isCouncilParticipantDetails(
 		(value["activity"] === undefined ||
 			typeof value["activity"] === "string") &&
 		(value["contextUsage"] === undefined ||
-			isCouncilContextUsage(value["contextUsage"]))
+			isCouncilContextUsage(value["contextUsage"])) &&
+		(value["contextProjectionStatus"] === undefined ||
+			typeof value["contextProjectionStatus"] === "string")
 	);
 }
 
@@ -915,6 +959,9 @@ function updateParticipantProgress(
 		...(patch.contextUsage === undefined
 			? {}
 			: { contextUsage: patch.contextUsage }),
+		...(Object.hasOwn(patch, "contextProjectionStatus")
+			? { contextProjectionStatus: patch.contextProjectionStatus }
+			: {}),
 	};
 }
 

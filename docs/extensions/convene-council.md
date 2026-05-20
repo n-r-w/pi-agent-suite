@@ -56,7 +56,7 @@ Use it when a high-impact question benefits from two model participants comparin
 - Shows a compact tool header with the current phase, iteration, elapsed time, question preview, and participant runtime mapping.
 - Shows collapsed progress as stable participant rows, not as a scrolling event stream.
 - Keeps participant rows after success, logical failure, transport failure, and abort when council progress already exists.
-- Shows each participant's persisted philosopher or sage name, status icon, elapsed time, context usage when available, and latest activity.
+- Shows each participant's persisted philosopher or sage name, status icon, elapsed time, context projection savings and context usage when available, and latest activity.
 - Uses the same status indicator colors as `run_subagent`: `⏳` accent, `✓` success, `■` error, and `✗` error.
 - Shows expanded progress with question, participant runtime details, full retained progress history, and final result text when available.
 - Does not show raw transcripts, provider payloads, token deltas, or unbounded intermediate answers in progress rows.
@@ -153,7 +153,7 @@ Collapsed progress example while running:
 ```text
 convene_council · Hypatia reviews Socrates · iter 2/3 · 18.2s
 ⏳ Socrates 18.2s · 120k/272k · read {"path":"plan.md"}
-✓ Hypatia 18.2s · 98k/272k · AGREE PostgreSQL is the safest default...
+✓ Hypatia 18.2s · ~15/98k/272k · AGREE PostgreSQL is the safest default...
 ```
 
 Collapsed result example after completion:
@@ -161,13 +161,13 @@ Collapsed result example after completion:
 ```text
 convene_council · agreed · iter 2/3 · 82.8s
 ✓ Socrates 82.8s · 120k/272k · AGREE PostgreSQL fits core storage...
-✓ Hypatia 82.8s · 98k/272k · final answer accepted
+✓ Hypatia 82.8s · ~15/98k/272k · final answer accepted
 Council: Use PostgreSQL as the source of truth...
 ```
 
 Participant display names are selected once per council run from this finite English name set and persisted in result details.
 
-Participant status indicators use the same indicator color contract as `run_subagent`: `⏳` uses `accent`, `✓` uses `success`, `■` uses `error`, and `✗` uses `error`. Context usage is shown as `used/contextWindow` when child `message_end` usage is available. Context values use warning color from 50% and error color from 80%.
+Participant status indicators use the same indicator color contract as `run_subagent`: `⏳` uses `accent`, `✓` uses `success`, `■` uses `error`, and `✗` uses `error`. Context usage is shown as `used/contextWindow` when child `message_end` usage is available. If the participant child process publishes context projection savings, the row shows `saved/used/contextWindow`. Context values use warning color from 50% and error color from 80%.
 
 Expanded progress sections:
 

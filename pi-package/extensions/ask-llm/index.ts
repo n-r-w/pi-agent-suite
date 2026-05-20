@@ -11,15 +11,11 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import {
-	BorderedLoader,
 	convertToLlm,
-	DynamicBorder,
 	copyToClipboard as defaultCopyToClipboard,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
-	getMarkdownTheme,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
 import { escapeUTF8 } from "entities";
 import {
 	getSuiteConfigLocation,
@@ -30,6 +26,12 @@ import {
 	replayContextProjection,
 } from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
+import { readPathEnvironment } from "../../shared/environment";
+import {
+	type CreateFileAutocompleteProvider,
+	createFileAutocompleteProvider,
+	resolveFdPathFromPathValue,
+} from "../../shared/file-autocomplete";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -41,6 +43,11 @@ import {
 	validateRetryConfig,
 	withRetry,
 } from "../../shared/retry";
+import {
+	AskAnswerDialog,
+	AskLoadingDialog,
+	AskQuestionDialog,
+} from "./dialogs.ts";
 
 const ASK_LLM_EXTENSION_DIR = "ask-llm";
 const ASK_LLM_COMMAND = "ask";
@@ -49,6 +56,10 @@ const ENABLED_CONFIG_KEY = "enabled";
 const SYSTEM_PROMPT_FILE_CONFIG_KEY = "systemPromptFile";
 const RETRY_CONFIG_KEY = "retry";
 const USER_QUESTION_TAG = "user_question";
+const ASK_LLM_OVERLAY_OPTIONS = {
+	overlay: true,
+	overlayOptions: { anchor: "center" as const },
+};
 
 const DEFAULT_SYSTEM_PROMPT_FILE = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -103,6 +114,8 @@ interface AskLlmDependencies {
 		options?: SimpleStreamOptions,
 	) => Promise<AssistantMessage>;
 	readonly copyToClipboard?: (text: string) => Promise<void>;
+	readonly resolveFdPath?: () => string | null;
+	readonly createAutocompleteProvider?: CreateFileAutocompleteProvider;
 }
 
 interface AskLlmConfig {
@@ -137,6 +150,11 @@ export default function askLlm(
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	const copyToClipboard =
 		dependencies.copyToClipboard ?? defaultCopyToClipboard;
+	const resolveFdPath =
+		dependencies.resolveFdPath ??
+		(() => resolveFdPathFromPathValue(readPathEnvironment()));
+	const createProvider =
+		dependencies.createAutocompleteProvider ?? createFileAutocompleteProvider;
 	let loadedSkillRoots: readonly string[] = [];
 	let contextFiles: readonly ProjectContextFile[] = [];
 
@@ -151,6 +169,8 @@ export default function askLlm(
 			await handleAskCommand(args, ctx as AskLlmCommandContext, {
 				completeSimple,
 				copyToClipboard,
+				resolveFdPath,
+				createAutocompleteProvider: createProvider,
 				currentThinkingLevel: pi.getThinkingLevel(),
 				loadedSkillRoots,
 				contextFiles,
@@ -168,6 +188,8 @@ async function handleAskCommand(
 		readonly copyToClipboard: NonNullable<
 			AskLlmDependencies["copyToClipboard"]
 		>;
+		readonly resolveFdPath: () => string | null;
+		readonly createAutocompleteProvider: CreateFileAutocompleteProvider;
 		readonly currentThinkingLevel: unknown;
 		readonly loadedSkillRoots: readonly string[];
 		readonly contextFiles: readonly ProjectContextFile[];
@@ -178,7 +200,10 @@ async function handleAskCommand(
 		return;
 	}
 
-	const question = await resolveQuestion(args, ctx);
+	const question = await resolveQuestion(args, ctx, {
+		resolveFdPath: options.resolveFdPath,
+		createAutocompleteProvider: options.createAutocompleteProvider,
+	});
 	if (question === undefined) {
 		ctx.ui.notify("Ask cancelled", "info");
 		return;
@@ -194,22 +219,37 @@ async function handleAskCommand(
 		return;
 	}
 
-	await showAnswer(result.answer, ctx, options.copyToClipboard);
+	await showAnswer(question, result.answer, ctx, options.copyToClipboard);
 }
 
 /** Resolves the one-off user question from command args or an editor dialog. */
 async function resolveQuestion(
 	args: string,
 	ctx: AskLlmCommandContext,
+	options: {
+		readonly resolveFdPath: () => string | null;
+		readonly createAutocompleteProvider: CreateFileAutocompleteProvider;
+	},
 ): Promise<string | undefined> {
 	const inlineQuestion = args.trim();
 	if (inlineQuestion.length > 0) {
 		return inlineQuestion;
 	}
 
-	const editedQuestion = await ctx.ui.editor("Ask LLM");
-	const question = editedQuestion?.trim() ?? "";
-	return question.length > 0 ? question : undefined;
+	const autocompleteProvider = options.createAutocompleteProvider(
+		ctx.cwd,
+		options.resolveFdPath(),
+	);
+	return ctx.ui.custom<string | undefined>(
+		(tui, theme, _keybindings, done) =>
+			new AskQuestionDialog({
+				tui,
+				theme,
+				...(autocompleteProvider === undefined ? {} : { autocompleteProvider }),
+				onDone: done,
+			}),
+		ASK_LLM_OVERLAY_OPTIONS,
+	);
 }
 
 /** Shows cancellable progress while the model call is running. */
@@ -223,8 +263,8 @@ async function runWithLoader(
 		readonly contextFiles: readonly ProjectContextFile[];
 	},
 ): Promise<AskLlmResult> {
-	return ctx.ui.custom<AskLlmResult>((tui, theme, _keybindings, done) => {
-		const loader = new BorderedLoader(tui, theme, "Asking LLM...");
+	return ctx.ui.custom<AskLlmResult>((_tui, theme, _keybindings, done) => {
+		const loader = new AskLoadingDialog(theme);
 		loader.onAbort = () => done({ kind: "cancelled" });
 
 		executeAskLlm({
@@ -246,7 +286,7 @@ async function runWithLoader(
 			});
 
 		return loader;
-	});
+	}, ASK_LLM_OVERLAY_OPTIONS);
 }
 
 /** Executes one direct model call with config, prompt, model, and auth validation. */
@@ -709,36 +749,21 @@ function buildOptions(
 	return options;
 }
 
-/** Shows the answer in focused UI without appending it to the session. */
+/** Shows the question and answer in focused UI without appending them to the session. */
 async function showAnswer(
+	question: string,
 	answer: string,
 	ctx: AskLlmCommandContext,
 	copyToClipboard: NonNullable<AskLlmDependencies["copyToClipboard"]>,
 ): Promise<void> {
-	await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
-		const container = new Container();
-		const border = new DynamicBorder((text: string) =>
-			theme.fg("accent", text),
-		);
-		container.addChild(border);
-		container.addChild(
-			new Text(theme.fg("accent", theme.bold("Ask LLM")), 1, 0),
-		);
-		container.addChild(new Markdown(answer, 1, 1, getMarkdownTheme()));
-		container.addChild(
-			new Text(
-				theme.fg("dim", "Press Ctrl+Y to copy, Enter or Esc to close"),
-				1,
-				0,
-			),
-		);
-		container.addChild(border);
-
-		return {
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: async (data: string) => {
-				if (matchesKey(data, "ctrl+y")) {
+	await ctx.ui.custom<void>(
+		(tui, theme, _keybindings, done) =>
+			new AskAnswerDialog({
+				tui,
+				theme,
+				question,
+				answer,
+				onCopyAnswer: async () => {
 					try {
 						await copyToClipboard(answer);
 						ctx.ui.notify("Answer copied to clipboard", "info");
@@ -748,14 +773,11 @@ async function showAnswer(
 							`failed to copy answer to clipboard: ${formatError(error)}`,
 						);
 					}
-					return;
-				}
-				if (matchesKey(data, "enter") || matchesKey(data, "escape")) {
-					done(undefined);
-				}
-			},
-		};
-	});
+				},
+				onDone: () => done(undefined),
+			}),
+		ASK_LLM_OVERLAY_OPTIONS,
+	);
 }
 
 /** Extracts visible text from a model response. */

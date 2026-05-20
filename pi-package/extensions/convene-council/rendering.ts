@@ -444,13 +444,18 @@ function formatCouncilParticipantLine(
 		{ text: formatCouncilElapsedMs(participant.elapsedMs), color: "dim" },
 	];
 	const contextUsage = formatCouncilContextUsage(participant.contextUsage);
-	if (contextUsage !== undefined) {
+	const projectedContextUsage =
+		contextUsage !== undefined &&
+		participant.contextProjectionStatus !== undefined
+			? `${participant.contextProjectionStatus}/${contextUsage}`
+			: contextUsage;
+	if (projectedContextUsage !== undefined) {
 		const color = formatCouncilContextUsageColor(participant.contextUsage);
 		parts.push(
 			{ text: " · " },
 			color === undefined
-				? { text: contextUsage }
-				: { text: contextUsage, color },
+				? { text: projectedContextUsage }
+				: { text: projectedContextUsage, color },
 		);
 	}
 	if (participant.activity !== undefined) {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
@@ -16,6 +17,7 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import askLlm from "./index.ts";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -78,7 +80,7 @@ type AuthResult =
 	  }
 	| { readonly ok: false; readonly error: string };
 
-interface AnswerComponentFake {
+interface CustomComponentFake {
 	readonly render?: (width: number) => string[];
 	readonly handleInput?: (data: string) => void | Promise<void>;
 	readonly dispose?: () => void;
@@ -91,7 +93,8 @@ interface AskLlmContextFake extends ExtensionCommandContext {
 	}>;
 	readonly renderedCustomOutputs: string[];
 	readonly editorPrompts: string[];
-	readonly answerComponents: AnswerComponentFake[];
+	readonly customOptions: unknown[];
+	readonly customComponents: CustomComponentFake[];
 }
 
 /** Runs one test with isolated pi storage so extension config never touches user files. */
@@ -358,6 +361,7 @@ function createContextFake(
 	},
 	hasUI = true,
 	autoCloseAnswer = true,
+	autoSubmitFirstCustom = true,
 ): AskLlmContextFake {
 	const notifications: Array<{
 		message: string;
@@ -365,8 +369,8 @@ function createContextFake(
 	}> = [];
 	const renderedCustomOutputs: string[] = [];
 	const editorPrompts: string[] = [];
-	const answerComponents: AnswerComponentFake[] = [];
-	let customCallIndex = 0;
+	const customOptions: unknown[] = [];
+	const customComponents: CustomComponentFake[] = [];
 
 	return {
 		cwd: "/tmp/project",
@@ -375,7 +379,8 @@ function createContextFake(
 		notifications,
 		renderedCustomOutputs,
 		editorPrompts,
-		answerComponents,
+		customOptions,
+		customComponents,
 		modelRegistry: {
 			find(provider: string, modelId: string): Model<Api> | undefined {
 				return models.find(
@@ -406,11 +411,11 @@ function createContextFake(
 				editorPrompts.push(title);
 				return editorResult;
 			},
-			async custom<T>(factory: never): Promise<T> {
-				const callIndex = customCallIndex++;
+			async custom<T>(factory: never, options?: unknown): Promise<T> {
+				customOptions.push(options);
 				return new Promise<T>((resolve, reject) => {
 					let settled = false;
-					let component: AnswerComponentFake | undefined;
+					let component: CustomComponentFake | undefined;
 					const done = (result: T) => {
 						if (settled) {
 							return;
@@ -428,7 +433,10 @@ function createContextFake(
 								done: (result: T) => void,
 							) => unknown
 						)(
-							{ requestRender(): void {} },
+							{
+								terminal: { rows: 12 },
+								requestRender(): void {},
+							},
 							{
 								fg: (_color: string, value: string) => value,
 								bold: (value: string) => value,
@@ -437,16 +445,25 @@ function createContextFake(
 							done,
 						),
 					)
-						.then((created) => {
-							component = created as AnswerComponentFake;
-							if (callIndex > 0) {
-								renderedCustomOutputs.push(
-									component.render?.(100).join("\n") ?? "",
-								);
-								answerComponents.push(component);
-								if (autoCloseAnswer) {
-									done(undefined as T);
+						.then(async (created) => {
+							component = created as CustomComponentFake;
+							customComponents.push(component);
+							renderedCustomOutputs.push(
+								component.render?.(100).join("\n") ?? "",
+							);
+							const rendered = component.render?.(100).join("\n") ?? "";
+							if (
+								autoSubmitFirstCustom &&
+								customComponents.length === 1 &&
+								rendered.toLowerCase().includes("question")
+							) {
+								for (const char of editorResult) {
+									await component.handleInput?.(char);
 								}
+								await component.handleInput?.("\r");
+							}
+							if (autoCloseAnswer && rendered.includes("Ctrl+Y")) {
+								done(undefined as T);
 							}
 						})
 						.catch(reject);
@@ -572,18 +589,47 @@ function createToolResultMessage(
 	};
 }
 
-/** Waits until the answer UI component is created by the fake custom UI. */
-async function waitForAnswerComponent(
+/** Waits until the requested custom UI component is created by the fake custom UI. */
+async function waitForCustomComponent(
 	ctx: AskLlmContextFake,
-): Promise<AnswerComponentFake> {
+	index: number,
+): Promise<CustomComponentFake> {
 	for (let attempt = 0; attempt < 20; attempt += 1) {
-		const component = ctx.answerComponents[0];
+		const component = ctx.customComponents[index];
 		if (component !== undefined) {
 			return component;
 		}
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await delay(0);
 	}
-	throw new Error("expected answer component");
+	throw new Error(`expected custom component ${index}`);
+}
+
+function createAutocompleteProviderFake(
+	onSuggestionsRequested: () => void,
+	suggestionsReleased: Promise<void>,
+): AutocompleteProvider {
+	return {
+		async getSuggestions() {
+			onSuggestionsRequested();
+			await suggestionsReleased;
+			return {
+				prefix: "@",
+				items: [{ value: "README.md", label: "README.md" }],
+			};
+		},
+		applyCompletion(lines, cursorLine, cursorCol, item) {
+			const completedLines = [...lines];
+			completedLines[cursorLine] = item.value;
+			return {
+				lines: completedLines,
+				cursorLine,
+				cursorCol,
+			};
+		},
+		shouldTriggerFileCompletion() {
+			return true;
+		},
+	};
 }
 
 describe("ask-llm", () => {
@@ -687,26 +733,33 @@ describe("ask-llm", () => {
 		});
 	});
 
-	test("opens a question editor when ask command arguments are empty", async () => {
-		// Purpose: users must be able to run /ask without inline arguments and still provide a one-off question.
-		// Input and expected output: empty args open the editor and use the editor result as the model question.
+	test("opens a centered question dialog when ask command arguments are empty", async () => {
+		// Purpose: empty /ask must collect the question without replacing the main editor area.
+		// Input and expected output: whitespace-only args open a centered overlay dialog and use its submitted text as the model question.
 		// Edge case: whitespace-only args are treated as empty.
-		// Dependencies: this test uses a fake editor and fake model completion.
+		// Dependencies: this test uses fake custom UI, fake model completion, and fake ExtensionAPI session-write methods.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "gpt-test");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
-			const ctx = createContextFake([model], "Question from editor");
+			const ctx = createContextFake([model], "Question from dialog");
 			askLlm(pi, { completeSimple: completion.completeSimple });
 
 			await getAskCommand(pi).handler("   ", ctx);
 
-			expect(ctx.editorPrompts).toEqual(["Ask LLM"]);
+			expect(ctx.editorPrompts).toEqual([]);
+			expect(ctx.customOptions).toHaveLength(3);
+			for (const options of ctx.customOptions) {
+				expect(options).toMatchObject({
+					overlay: true,
+					overlayOptions: { anchor: "center" },
+				});
+			}
 			expect(completion.calls[0]?.context.messages.at(-1)).toEqual({
 				role: "user",
 				content: [
 					USER_QUESTION_OPEN_TAG,
-					"Question from editor",
+					"Question from dialog",
 					USER_QUESTION_CLOSE_TAG,
 				].join("\n"),
 				timestamp: expect.any(Number),
@@ -714,11 +767,11 @@ describe("ask-llm", () => {
 		});
 	});
 
-	test("cancels without model call when the editor question is empty", async () => {
-		// Purpose: /ask must not call the provider when the editor does not return a usable question.
-		// Input and expected output: whitespace-only editor text produces one cancellation notification and no completion request.
+	test("cancels without model call when the dialog question is empty", async () => {
+		// Purpose: /ask must not call the provider when the dialog does not return a usable question.
+		// Input and expected output: whitespace-only dialog text produces one cancellation notification and no completion request.
 		// Edge case: whitespace is trimmed before the empty-question decision.
-		// Dependencies: this test uses a fake editor, fake model completion, and fake ExtensionAPI session-write methods.
+		// Dependencies: this test uses fake custom UI, fake model completion, and fake ExtensionAPI session-write methods.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "gpt-test");
 			const completion = createCompletionFake();
@@ -733,6 +786,66 @@ describe("ask-llm", () => {
 			]);
 			expect(completion.calls).toEqual([]);
 			expect(pi.sessionWriteCalls).toEqual([]);
+		});
+	});
+
+	test("wires @ file autocomplete into the centered question dialog", async () => {
+		// Purpose: the question dialog must support the same @ file completion path used by structured-prompt.
+		// Input and expected output: typing @ requests file suggestions from the provider and renders README.md.
+		// Edge case: slash-command completion is outside this provider because ask questions need only file references.
+		// Dependencies: this test uses fake custom UI, fake autocomplete provider, and fake model completion.
+		await withIsolatedAgentDir(async () => {
+			let providerCwd: string | undefined;
+			let providerFdPath: string | null | undefined;
+			let suggestionsRequested = false;
+			const autocompleteProvider = createAutocompleteProviderFake(() => {
+				suggestionsRequested = true;
+			}, Promise.resolve());
+			const model = createModel("openai", "gpt-test");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContextFake(
+				[model],
+				"Question with @README.md",
+				[],
+				{
+					ok: true,
+					apiKey: "ask-llm-api-key",
+					headers: { "x-ask-llm": "enabled" },
+				},
+				true,
+				true,
+				false,
+			);
+			askLlm(pi, {
+				completeSimple: completion.completeSimple,
+				resolveFdPath: () => "/tmp/fd",
+				createAutocompleteProvider: (cwd: string, fdPath: string | null) => {
+					providerCwd = cwd;
+					providerFdPath = fdPath;
+					return autocompleteProvider;
+				},
+			} as never);
+
+			const commandPromise = getAskCommand(pi).handler("   ", ctx);
+			const questionComponent = await waitForCustomComponent(ctx, 0);
+			questionComponent.handleInput?.("@");
+			for (
+				let attempt = 0;
+				attempt < 20 && !suggestionsRequested;
+				attempt += 1
+			) {
+				await delay(10);
+			}
+
+			expect(providerCwd).toBe("/tmp/project");
+			expect(providerFdPath).toBe("/tmp/fd");
+			expect(suggestionsRequested).toBe(true);
+			expect(questionComponent.render?.(80).join("\n")).toContain("README.md");
+
+			await questionComponent.handleInput?.("\x1b");
+			await questionComponent.handleInput?.("\r");
+			await commandPromise;
 		});
 	});
 
@@ -910,6 +1023,106 @@ describe("ask-llm", () => {
 		});
 	});
 
+	test("shows the pending request loader inside the ask dialog frame", async () => {
+		// Purpose: the loading state must keep the same centered dialog frame used by ask question and answer views.
+		// Input and expected output: an inline question starts a pending model call, and the loader render contains the ask dialog frame.
+		// Edge case: the request is still pending, so no answer dialog has replaced the loader.
+		// Dependencies: this test uses fake custom UI and a manually released model completion.
+		await withIsolatedAgentDir(async () => {
+			let releaseCompletion: ((message: AssistantMessage) => void) | undefined;
+			const completionPromise = new Promise<AssistantMessage>((resolve) => {
+				releaseCompletion = resolve;
+			});
+			const model = createModel("openai", "gpt-test");
+			const completionCalls: CompletionCall[] = [];
+			const pi = createExtensionApiFake();
+			const ctx = createContextFake([model]);
+			askLlm(pi, {
+				completeSimple: (calledModel, context, options) => {
+					completionCalls.push({
+						model: calledModel as Model<Api>,
+						context,
+						options,
+					});
+					return completionPromise;
+				},
+			});
+
+			const commandPromise = getAskCommand(pi).handler("Wait for this", ctx);
+			const loaderComponent = await waitForCustomComponent(ctx, 0);
+			const loaderRender = loaderComponent.render?.(60).join("\n") ?? "";
+
+			expect(completionCalls).toHaveLength(1);
+			expect(loaderRender).toContain("┏");
+			expect(loaderRender).toContain("┃");
+			expect(loaderRender).toContain("Asking LLM");
+			expect(loaderRender).toContain("Esc/Ctrl+C: cancel");
+
+			releaseCompletion?.(
+				createAssistantResponse(model, {
+					kind: "response",
+					content: [{ type: "text", text: "Released answer" }],
+				}),
+			);
+			await commandPromise;
+		});
+	});
+
+	test("shows a scrollable centered result dialog with the question and answer", async () => {
+		// Purpose: the result dialog must show both sides of the ask exchange without overflowing the overlay height.
+		// Input and expected output: a long answer renders within the terminal row budget and can scroll to later content.
+		// Edge case: the question and answer are longer than the dialog can show at once.
+		// Dependencies: this test uses fake model completion and fake custom UI input.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "gpt-test");
+			const longAnswer = Array.from(
+				{ length: 20 },
+				(_, index) => `answer line ${index + 1}`,
+			).join("\n");
+			const completion = createCompletionFake(longAnswer);
+			const pi = createExtensionApiFake();
+			const ctx = createContextFake(
+				[model],
+				"Question from editor",
+				[],
+				{
+					ok: true,
+					apiKey: "ask-llm-api-key",
+					headers: { "x-ask-llm": "enabled" },
+				},
+				true,
+				false,
+			);
+			askLlm(pi, { completeSimple: completion.completeSimple });
+
+			const commandPromise = getAskCommand(pi).handler(
+				"Explain this long question with enough detail to require scrolling.",
+				ctx,
+			);
+			const answerComponent = await waitForCustomComponent(ctx, 1);
+			const firstRender = answerComponent.render?.(50) ?? [];
+
+			expect(ctx.customOptions).toHaveLength(2);
+			for (const options of ctx.customOptions) {
+				expect(options).toMatchObject({
+					overlay: true,
+					overlayOptions: { anchor: "center" },
+				});
+			}
+			expect(firstRender.length).toBeLessThanOrEqual(12);
+			expect(firstRender.join("\n")).toContain("Explain this long question");
+			expect(firstRender.join("\n")).toContain("answer line 1");
+			expect(firstRender.join("\n")).not.toContain("answer line 20");
+
+			await answerComponent.handleInput?.("\x1b[F");
+			const lastRender = answerComponent.render?.(50).join("\n") ?? "";
+			expect(lastRender).toContain("answer line 20");
+
+			await answerComponent.handleInput?.("\r");
+			await commandPromise;
+		});
+	});
+
 	test("copies the rendered answer with Ctrl+Y without closing", async () => {
 		// Purpose: the focused answer UI must let users copy the exact model answer without closing the dialog.
 		// Input and expected output: Ctrl+Y copies the answer once, and Enter closes the already rendered answer view.
@@ -945,7 +1158,7 @@ describe("ask-llm", () => {
 				.then(() => {
 					commandResolved = true;
 				});
-			const answerComponent = await waitForAnswerComponent(ctx);
+			const answerComponent = await waitForCustomComponent(ctx, 1);
 
 			expect(answerComponent.render?.(100).join("\n")).toContain("Ctrl+Y");
 			await answerComponent.handleInput?.("\x19");
@@ -997,7 +1210,7 @@ describe("ask-llm", () => {
 				.then(() => {
 					commandResolved = true;
 				});
-			const answerComponent = await waitForAnswerComponent(ctx);
+			const answerComponent = await waitForCustomComponent(ctx, 1);
 
 			await answerComponent.handleInput?.("\x19");
 			await Promise.resolve();

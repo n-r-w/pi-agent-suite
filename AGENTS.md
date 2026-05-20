@@ -10,8 +10,9 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 3. If open questions arise during coding that do not have a clear answer, stop immediately and ask the user for clarification.
 4. Keep documentation in `docs/extensions/*` up to date.
 5. Keep `README.md` and `pi-package/README.md` up to date.
-6. Keep files small and readable. Avoid giant dump files.
-7. Suppressing linter warnings is prohibited without user approval.
+6. `README.md` files should be concise. All details in `docs/extensions/*`.
+7. Keep files small and readable. Avoid giant dump files.
+8. Suppressing linter warnings is prohibited without user approval.
 
 ## Testing rules
 

@@ -133,7 +133,7 @@ async function withIsolatedAgentDir<T>(
 	const cwd = await mkdtemp(join(tmpdir(), "pi-url-scheme-cwd-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
-	delete process.env[AGENT_SUITE_DIR_ENV];
+	process.env[AGENT_SUITE_DIR_ENV] = join(agentDir, "agent-suite");
 	try {
 		return await action({ agentDir, cwd });
 	} finally {

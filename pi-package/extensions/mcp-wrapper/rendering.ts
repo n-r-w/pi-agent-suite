@@ -13,7 +13,6 @@ import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
 const RESULT_LABEL = "Result:";
 const MCP_CALL_PREVIEW_LINES = 3;
-export const MCP_COLLAPSED_RESULT_PREVIEW_LINES = 5;
 
 class McpCallHeader implements Component {
 	constructor(
@@ -73,7 +72,7 @@ export function renderMcpToolResult(
 	result: AgentToolResult<unknown>,
 	options: { readonly expanded?: boolean },
 	theme: Theme,
-	context: { readonly isError?: boolean },
+	context: { readonly isError?: boolean; readonly widgetLineBudget: number },
 ): Component {
 	const text = getResultText(result) || "(no MCP output)";
 	if (options.expanded === true) {
@@ -85,7 +84,12 @@ export function renderMcpToolResult(
 		return container;
 	}
 
-	return new CollapsedMcpResult(text, theme, context.isError === true);
+	return new CollapsedMcpResult(
+		text,
+		theme,
+		context.isError === true,
+		context.widgetLineBudget,
+	);
 }
 
 class CollapsedMcpResult implements Component {
@@ -93,6 +97,7 @@ class CollapsedMcpResult implements Component {
 		private readonly text: string,
 		private readonly theme: Theme,
 		private readonly isError: boolean,
+		private readonly widgetLineBudget: number,
 	) {}
 
 	render(width: number): string[] {
@@ -104,7 +109,7 @@ class CollapsedMcpResult implements Component {
 			textStyle: (value) =>
 				this.theme.fg(this.isError ? "error" : "dim", value),
 		});
-		const preview = rendered.slice(0, MCP_COLLAPSED_RESULT_PREVIEW_LINES);
+		const preview = rendered.slice(0, this.widgetLineBudget);
 		const hidden = rendered.length - preview.length;
 		if (hidden <= 0) {
 			return preview;

@@ -101,4 +101,52 @@ describe("convene-council progress", () => {
 			activity: "assistant initial opinion text",
 		});
 	});
+
+	test("records participant context projection status from child UI status events", () => {
+		// Purpose: participant rows must use the projection status published by that child process.
+		// Input and expected output: setStatus(context-projection, ~65k) stores ~65k on the participant details.
+		// Edge case: unrelated footer statuses and themed status text must not leak into the participant state.
+		// Dependencies: isolated reporter state and child RPC extension UI event shapes.
+		const updates: AgentToolResult<unknown>[] = [];
+		const reporter = createCouncilProgressReporter({
+			runId: "run-1",
+			question: "question",
+			runtime: createRuntime(),
+			iterationLimit: 3,
+			onUpdate: (partial) => updates.push(partial),
+		});
+
+		reporter.recordSessionEvent("llm1", {
+			type: "extension_ui_request",
+			method: "setStatus",
+			statusKey: "context-projection",
+			statusText: "\u001b[33m~65k\u001b[39m",
+		});
+		reporter.recordSessionEvent("llm1", {
+			type: "extension_ui_request",
+			method: "setStatus",
+			statusKey: "context-overflow",
+			statusText: "262k",
+		});
+
+		const latestDetails = requireLatestDetails(updates);
+		expect(latestDetails.participants[0]).toMatchObject({
+			contextProjectionStatus: "~65k",
+		});
+		expect(latestDetails.participants[1]).not.toHaveProperty(
+			"contextProjectionStatus",
+		);
+
+		reporter.recordSessionEvent("llm1", {
+			type: "extension_ui_request",
+			method: "setStatus",
+			statusKey: "context-projection",
+			statusText: "~0",
+		});
+
+		const clearedDetails = requireLatestDetails(updates);
+		expect(clearedDetails.participants[0]?.contextProjectionStatus).toBe(
+			undefined,
+		);
+	});
 });

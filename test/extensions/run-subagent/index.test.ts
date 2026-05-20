@@ -631,6 +631,151 @@ describe("run-subagent", () => {
 		expect(Object.keys(parameters.properties)).toEqual(["agentId", "prompt"]);
 	});
 
+	test("uses the bundled run_subagent description when descriptionPromptFile is missing", async () => {
+		// Purpose: missing descriptionPromptFile must keep the bundled tool description active.
+		// Input and expected output: default extension load registers run_subagent with a non-empty description.
+		// Edge case: the test does not depend on the bundled prompt wording.
+		// Dependencies: this test uses only an in-memory ExtensionAPI fake.
+		const pi = createExtensionApiFake();
+
+		await runSubagent(pi);
+
+		expect(getRunSubagentTool(pi).description.trim().length).toBeGreaterThan(0);
+	});
+
+	test("uses a configured absolute descriptionPromptFile for run_subagent description", async () => {
+		// Purpose: a custom description prompt file must replace the bundled tool description.
+		// Input and expected output: an absolute prompt path registers run_subagent with the trimmed file content.
+		// Edge case: surrounding whitespace is removed from the custom prompt.
+		// Dependencies: this test uses a temporary prompt file and in-memory ExtensionAPI fake.
+		await withIsolatedEnvironment(async (agentDir) => {
+			const promptFile = join(agentDir, "custom-description.md");
+			await writeFile(promptFile, "\nCustom run_subagent description\n\n");
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({ descriptionPromptFile: promptFile }),
+			);
+			const pi = createExtensionApiFake();
+
+			await runSubagent(pi);
+
+			expect(getRunSubagentTool(pi).description).toBe(
+				"Custom run_subagent description",
+			);
+		});
+	});
+
+	test("rejects a relative descriptionPromptFile", async () => {
+		// Purpose: custom prompt file paths must follow the project absolute-path standard.
+		// Input and expected output: a relative descriptionPromptFile rejects extension startup.
+		// Edge case: no prompt file is read after path validation fails.
+		// Dependencies: this test uses an isolated agent directory and in-memory ExtensionAPI fake.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({ descriptionPromptFile: "description.md" }),
+			);
+
+			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+				"[run-subagent] descriptionPromptFile must be an absolute path",
+			);
+		});
+	});
+
+	test("rejects a tilde descriptionPromptFile", async () => {
+		// Purpose: custom prompt file paths must not use shell-specific expansion.
+		// Input and expected output: a tilde descriptionPromptFile rejects extension startup.
+		// Edge case: the path is treated as non-absolute instead of expanded.
+		// Dependencies: this test uses an isolated agent directory and in-memory ExtensionAPI fake.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({ descriptionPromptFile: "~/description.md" }),
+			);
+
+			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+				"[run-subagent] descriptionPromptFile must be an absolute path",
+			);
+		});
+	});
+
+	test("rejects empty and non-string descriptionPromptFile values", async () => {
+		// Purpose: descriptionPromptFile must be absent or a non-empty absolute path string.
+		// Input and expected output: empty and non-string values reject extension startup.
+		// Edge case: invalid values must not fall back to the bundled description.
+		// Dependencies: this test uses isolated agent directories and in-memory ExtensionAPI fake.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({ descriptionPromptFile: "" }),
+			);
+
+			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+				"[run-subagent] descriptionPromptFile must be a non-empty string",
+			);
+		});
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({ descriptionPromptFile: 42 }),
+			);
+
+			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+				"[run-subagent] descriptionPromptFile must be a non-empty string",
+			);
+		});
+	});
+
+	test("rejects unreadable and empty configured description prompts", async () => {
+		// Purpose: invalid custom description files must not silently fall back to the bundled description.
+		// Input and expected output: missing and empty absolute files reject extension startup.
+		// Edge case: unreadable file errors are matched without OS-specific details.
+		// Dependencies: this test uses isolated prompt files and in-memory ExtensionAPI fake.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({ descriptionPromptFile: join(agentDir, "missing.md") }),
+			);
+
+			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+				"[run-subagent] failed to read description prompt:",
+			);
+		});
+		await withIsolatedEnvironment(async (agentDir) => {
+			const promptFile = join(agentDir, "empty-description.md");
+			await writeFile(promptFile, "\n\t ");
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({ descriptionPromptFile: promptFile }),
+			);
+
+			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+				"[run-subagent] description prompt must not be empty",
+			);
+		});
+	});
+
+	test("does not validate descriptionPromptFile when run-subagent is disabled", async () => {
+		// Purpose: disabled run-subagent config must not validate unused prompt paths.
+		// Input and expected output: enabled false with an invalid path registers no run_subagent tool and does not throw.
+		// Edge case: disabled config keeps its existing early-return behavior.
+		// Dependencies: this test uses an isolated agent directory and in-memory ExtensionAPI fake.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeRunSubagentConfig(
+				agentDir,
+				JSON.stringify({
+					enabled: false,
+					descriptionPromptFile: "description.md",
+				}),
+			);
+			const pi = createExtensionApiFake();
+
+			await runSubagent(pi);
+
+			expect(pi.tools.map((tool) => tool.name)).not.toContain("run_subagent");
+		});
+	});
+
 	test("starts child pi with explicit model, thinking, tools, and subagent environment", async () => {
 		// Purpose: a valid callable agent must start an isolated child pi process with explicit runtime options.
 		// Input and expected output: subagent helper resolves Helper tools, model, thinking, depth, env, prompt, and parses final assistant text.
