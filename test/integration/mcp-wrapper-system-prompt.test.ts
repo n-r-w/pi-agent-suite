@@ -11,6 +11,7 @@ import { resolveCouncilToolArgsForNames } from "../../pi-package/extensions/conv
 import type { ConveneCouncilConfig } from "../../pi-package/extensions/convene-council/types";
 import type { McpClientManager } from "../../pi-package/extensions/mcp-wrapper/client-manager";
 import mcpWrapper from "../../pi-package/extensions/mcp-wrapper/index";
+import projectRules from "../../pi-package/extensions/project-rules/index";
 import systemPrompt from "../../pi-package/extensions/system-prompt/index";
 
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -119,7 +120,10 @@ function toolNamesFromArgs(args: readonly string[]): readonly string[] {
 		: toolsValue.split(",").filter((toolName) => toolName.length > 0);
 }
 
-async function runBeforeAgentStart(pi: ExtensionApiFake): Promise<string> {
+async function runBeforeAgentStart(
+	pi: ExtensionApiFake,
+	cwd = "/tmp/project",
+): Promise<string> {
 	let currentPrompt = "Original prompt";
 	for (const item of pi.handlers.filter(
 		(handler) => handler.eventName === "before_agent_start",
@@ -131,7 +135,7 @@ async function runBeforeAgentStart(pi: ExtensionApiFake): Promise<string> {
 				images: [],
 				systemPrompt: currentPrompt,
 				systemPromptOptions: {
-					cwd: "/tmp/project",
+					cwd,
 					selectedTools: [],
 					toolSnippets: {},
 					promptGuidelines: [],
@@ -163,12 +167,13 @@ afterEach(() => {
 });
 
 describe("mcp-wrapper and system-prompt integration", () => {
-	test("appends MCP instructions after system-prompt replaces the base prompt", async () => {
-		// Purpose: MCP initialize instructions must survive the system-prompt template replacement.
-		// Input and expected output: system-prompt renders a template, then mcp-wrapper appends the approved mcp_instructions block.
-		// Edge case: handler order must preserve the template output and append MCP instructions after it.
-		// Dependencies: this test composes both extension entry points with in-memory fakes and temp suite config.
+	test("appends project rules and MCP instructions after system-prompt replaces the base prompt", async () => {
+		// Purpose: project rules and MCP initialize instructions must survive the system-prompt template replacement.
+		// Input and expected output: system-prompt renders a template, project-rules appends project_rules, then mcp-wrapper appends mcp_instructions.
+		// Edge case: handler order must preserve the template output and append each later section once.
+		// Dependencies: this test composes three extension entry points with in-memory fakes and temp suite config.
 		const suiteDir = await mkdtemp(join(tmpdir(), "pi-mcp-system-prompt-"));
+		const projectDir = await mkdtemp(join(tmpdir(), "pi-project-rules-order-"));
 		try {
 			process.env[AGENT_SUITE_DIR_ENV] = suiteDir;
 			const templateFile = join(suiteDir, "template.md");
@@ -178,6 +183,8 @@ describe("mcp-wrapper and system-prompt integration", () => {
 				join(suiteDir, "system-prompt", "config.json"),
 				JSON.stringify({ templateFile }),
 			);
+			await mkdir(join(projectDir, ".pi"));
+			await writeFile(join(projectDir, ".pi", "rules.md"), "Project rule");
 
 			const pi = createExtensionApiFake();
 			const manager = {
@@ -201,6 +208,7 @@ describe("mcp-wrapper and system-prompt integration", () => {
 			>;
 
 			systemPrompt(pi);
+			projectRules(pi);
 			mcpWrapper(pi, {
 				readConfig: async () => ({
 					kind: "valid",
@@ -225,8 +233,14 @@ describe("mcp-wrapper and system-prompt integration", () => {
 			pi.setActiveTools(["fetch_fetch"]);
 
 			expect(
-				await runBeforeAgentStart(pi),
-			).toBe(`Suite template for /tmp/project
+				await runBeforeAgentStart(pi, projectDir),
+			).toBe(`Suite template for ${projectDir}
+
+<project_rules>
+  <project_rule path=".pi/rules.md">
+Project rule
+  </project_rule>
+</project_rules>
 
 <mcp_instructions>
   <server name="fetch">
@@ -235,6 +249,7 @@ Use fetch for web pages.
 </mcp_instructions>`);
 		} finally {
 			await rm(suiteDir, { recursive: true, force: true });
+			await rm(projectDir, { recursive: true, force: true });
 		}
 	});
 
