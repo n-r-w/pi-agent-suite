@@ -333,7 +333,7 @@ describe("convene-council rendering", () => {
 
 	test("colors running and succeeded indicators and context pressure like subagents", () => {
 		// Purpose: council participant rows must use subagent indicator colors and context pressure colors.
-		// Input and expected output: running uses accent, succeeded uses success, warning and error context values are colored.
+		// Input and expected output: running uses accent, succeeded uses success, and context projection precedes usage.
 		// Edge case: participant names replace A/B labels without coloring the whole row.
 		// Dependencies: public renderer functions and theme color callbacks.
 		const result: AgentToolResult<unknown> = {
@@ -364,6 +364,7 @@ describe("convene-council rendering", () => {
 							contextWindow: 272_000,
 							percent: 51.5,
 						},
+						contextProjectionStatus: "~65k",
 					},
 					{
 						label: "B",
@@ -398,7 +399,7 @@ describe("convene-council rendering", () => {
 			.join("\n");
 
 		expect(rendered).toContain("<accent>⏳</accent> Socrates");
-		expect(rendered).toContain("<warning>140k/272k</warning> · read");
+		expect(rendered).toContain("<warning>~65k/140k/272k</warning> · read");
 		expect(rendered).toContain("<accent>⏳</accent> Confucius");
 		expect(rendered).toContain("<error>220k/272k</error> · AGREE");
 		expect(rendered).not.toContain("<accent>Socrates");

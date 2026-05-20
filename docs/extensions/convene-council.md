@@ -56,7 +56,7 @@ Use it when a high-impact question benefits from two model participants comparin
 - Shows a compact tool header with the current phase, iteration, elapsed time, question preview, and participant runtime mapping.
 - Shows collapsed progress as stable participant rows, not as a scrolling event stream.
 - Keeps participant rows after success, logical failure, transport failure, and abort when council progress already exists.
-- Shows each participant's persisted philosopher or sage name, status icon, elapsed time, context usage when available, and latest activity.
+- Shows each participant's persisted philosopher or sage name, status icon, elapsed time, context projection savings and context usage when available, and latest activity.
 - Uses the same status indicator colors as `run_subagent`: `⏳` accent, `✓` success, `■` error, and `✗` error.
 - Shows expanded progress with question, participant runtime details, full retained progress history, and final result text when available.
 - Does not show raw transcripts, provider payloads, token deltas, or unbounded intermediate answers in progress rows.
@@ -167,7 +167,7 @@ Council: Use PostgreSQL as the source of truth...
 
 Participant display names are selected once per council run from this finite English name set and persisted in result details.
 
-Participant status indicators use the same indicator color contract as `run_subagent`: `⏳` uses `accent`, `✓` uses `success`, `■` uses `error`, and `✗` uses `error`. Context usage is shown as `used/contextWindow` when child `message_end` usage is available. Context values use warning color from 50% and error color from 80%.
+Participant status indicators use the same indicator color contract as `run_subagent`: `⏳` uses `accent`, `✓` uses `success`, `■` uses `error`, and `✗` uses `error`. Context usage is shown as `used/contextWindow` when child `message_end` usage is available. If the participant child process publishes context projection savings, the row shows `saved/used/contextWindow`. Context values use warning color from 50% and error color from 80%.
 
 Expanded progress sections:
 
