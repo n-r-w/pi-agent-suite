@@ -26,6 +26,7 @@
 	"pi": {
 		"extensions": [
 			"./extensions/system-prompt/index.ts",
+			"./extensions/project-rules/index.ts",
 			"./extensions/mcp-wrapper/index.ts",
 			"./extensions/enable-tools/index.ts",
 			"./extensions/footer/index.ts",
