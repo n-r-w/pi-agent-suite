@@ -26,9 +26,21 @@ const PROMPT_OVERLAY_OPTIONS = {
 	overlayOptions: { anchor: "center" as const },
 };
 
+type CreateAutocompleteProvider = (
+	cwd: string,
+	fdPath: string | null,
+) => AutocompleteProvider | undefined;
+
+interface PromptFormRuntime {
+	readonly copyToClipboard: (text: string) => Promise<void>;
+	readonly resolveFdPath: () => string | null;
+	readonly createAutocompleteProvider: CreateAutocompleteProvider;
+}
+
 interface StructuredPromptDependencies {
 	readonly copyToClipboard?: (text: string) => Promise<void>;
 	readonly resolveFdPath?: () => string | null;
+	readonly createAutocompleteProvider?: CreateAutocompleteProvider;
 }
 
 /** Registers the structured prompt form command and shortcut when the extension is enabled. */
@@ -44,18 +56,26 @@ export default function prompt(
 	const copyToClipboard =
 		dependencies.copyToClipboard ?? defaultCopyToClipboard;
 	const resolveFdPath = dependencies.resolveFdPath ?? resolveFdPathFromPath;
+	const createProvider =
+		dependencies.createAutocompleteProvider ?? createAutocompleteProvider;
+
+	const runtime = {
+		copyToClipboard,
+		resolveFdPath,
+		createAutocompleteProvider: createProvider,
+	};
 
 	pi.registerCommand(PROMPT_COMMAND, {
 		description: "Open a structured prompt form",
 		handler: async (_args, ctx) => {
-			await openPromptForm(pi, ctx, copyToClipboard, resolveFdPath);
+			await openPromptForm(pi, ctx, runtime);
 		},
 	});
 
 	pi.registerShortcut(PROMPT_SHORTCUT, {
 		description: "Open a structured prompt form",
 		handler: async (ctx) => {
-			await openPromptForm(pi, ctx, copyToClipboard, resolveFdPath);
+			await openPromptForm(pi, ctx, runtime);
 		},
 	});
 }
@@ -63,17 +83,16 @@ export default function prompt(
 async function openPromptForm(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext | ExtensionContext,
-	copyToClipboard: (text: string) => Promise<void>,
-	resolveFdPath: () => string | null,
+	runtime: PromptFormRuntime,
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("Prompt form requires interactive mode.", "warning");
 		return;
 	}
 
-	const autocompleteProvider = createAutocompleteProvider(
+	const autocompleteProvider = runtime.createAutocompleteProvider(
 		ctx.cwd,
-		resolveFdPath(),
+		runtime.resolveFdPath(),
 	);
 	const result = await ctx.ui.custom<StructuredPromptFormResult>(
 		(tui, theme, _keybindings, done) =>
@@ -83,7 +102,7 @@ async function openPromptForm(
 				sections: PROMPT_SECTIONS,
 				...(autocompleteProvider === undefined ? {} : { autocompleteProvider }),
 				onCopyPrompt: (promptText) =>
-					copyPromptToClipboard(ctx, copyToClipboard, promptText),
+					copyPromptToClipboard(ctx, runtime.copyToClipboard, promptText),
 				onDone: done,
 			}),
 		PROMPT_OVERLAY_OPTIONS,

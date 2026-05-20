@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
 import type { StructuredPromptFormResult } from "./form.ts";
 import prompt from "./index.ts";
@@ -46,6 +47,10 @@ interface PromptExtensionApiFake {
 interface StructuredPromptDependenciesFake {
 	readonly copyToClipboard?: (text: string) => Promise<void>;
 	readonly resolveFdPath?: () => string | null;
+	readonly createAutocompleteProvider?: (
+		cwd: string,
+		fdPath: string | null,
+	) => AutocompleteProvider | undefined;
 }
 
 interface CustomComponentFake {
@@ -74,6 +79,7 @@ interface PromptCommandContextFake {
 	};
 	isIdle(): boolean;
 	getLastCustomComponent(): CustomComponentFake | undefined;
+	waitForNextRender(): Promise<void>;
 	triggerLastReviewCopy(): Promise<void>;
 }
 
@@ -205,25 +211,38 @@ describe("structured-prompt extension", () => {
 	});
 
 	test("wires @ file autocomplete through the runtime fd path", async () => {
-		// Purpose: the command must give the form a Pi TUI file autocomplete provider.
-		// Input and expected output: @ renders the README.md suggestion from fd-backed completion.
+		// Purpose: the command must give the form the file autocomplete provider built from the resolved fd path.
+		// Input and expected output: @ asks the provider for suggestions and renders README.md.
 		// Edge case: slash commands are not part of the form provider because the provider is created with no commands.
-		// Dependencies: this test uses a temporary fake fd executable and a captured custom component.
+		// Dependencies: this test uses a deterministic autocomplete provider fake and a captured custom component.
 		await withIsolatedSuiteDir(async () => {
 			const projectDir = await mkdtemp(
 				join(tmpdir(), "structured-prompt-project-"),
 			);
 			tempDirs.push(projectDir);
-			await writeFile(join(projectDir, "README.md"), "# Fixture\n");
-			const binDir = await mkdtemp(join(tmpdir(), "structured-prompt-bin-"));
-			tempDirs.push(binDir);
-			const fdPath = join(binDir, "fd");
-			await writeFile(fdPath, "#!/bin/sh\nprintf 'README.md\\n'\n");
-			await chmod(fdPath, 0o755);
-
+			const fdPath = join(projectDir, "fd");
+			let providerCwd: string | undefined;
+			let providerFdPath: string | null | undefined;
+			let resolveSuggestions: (() => void) | undefined;
+			let releaseSuggestions: (() => void) | undefined;
+			const suggestionsRequested = new Promise<void>((resolve) => {
+				resolveSuggestions = resolve;
+			});
+			const suggestionsReleased = new Promise<void>((resolve) => {
+				releaseSuggestions = resolve;
+			});
+			const autocompleteProvider = createAutocompleteProviderFake(
+				() => resolveSuggestions?.(),
+				suggestionsReleased,
+			);
 			const pi = createExtensionApiFake();
 			const dependencies: StructuredPromptDependenciesFake = {
 				resolveFdPath: () => fdPath,
+				createAutocompleteProvider: (cwd, resolvedFdPath) => {
+					providerCwd = cwd;
+					providerFdPath = resolvedFdPath;
+					return autocompleteProvider;
+				},
 			};
 			const ctx = createCommandContextFake({
 				cwd: projectDir,
@@ -240,9 +259,14 @@ describe("structured-prompt extension", () => {
 			}
 
 			typeCharacters(component, "@");
-			const rows = await waitForRenderedText(component, "README.md");
+			await suggestionsRequested;
+			const renderAfterSuggestions = ctx.waitForNextRender();
+			releaseSuggestions?.();
+			await renderAfterSuggestions;
 
-			expect(rows.join("\n")).toContain("README.md");
+			expect(providerCwd).toBe(projectDir);
+			expect(providerFdPath).toBe(fdPath);
+			expect(component.render(80).join("\n")).toContain("README.md");
 		});
 	});
 
@@ -514,6 +538,7 @@ function createCommandContextFake(options: {
 	const customOptions: unknown[] = [];
 	const editorTexts: string[] = [];
 	let lastCustomComponent: CustomComponentFake | undefined;
+	let resolveNextRender: (() => void) | undefined;
 	return {
 		hasUI: options.hasUI ?? true,
 		notifications,
@@ -538,7 +563,10 @@ function createCommandContextFake(options: {
 					lastCustomComponent = factory(
 						{
 							terminal: { rows: 40 },
-							requestRender(): void {},
+							requestRender(): void {
+								resolveNextRender?.();
+								resolveNextRender = undefined;
+							},
 						},
 						{
 							fg: (_color: string, value: string) => value,
@@ -559,6 +587,11 @@ function createCommandContextFake(options: {
 		},
 		getLastCustomComponent(): CustomComponentFake | undefined {
 			return lastCustomComponent;
+		},
+		waitForNextRender(): Promise<void> {
+			return new Promise((resolve) => {
+				resolveNextRender = resolve;
+			});
 		},
 		async triggerLastReviewCopy(): Promise<void> {
 			if (lastCustomComponent === undefined) {
@@ -617,19 +650,32 @@ function typeCharacters(component: CustomComponentFake, value: string): void {
 	}
 }
 
-async function waitForRenderedText(
-	component: CustomComponentFake,
-	text: string,
-): Promise<string[]> {
-	let latestRows = component.render(80);
-	for (let attempt = 0; attempt < 50; attempt += 1) {
-		if (latestRows.join("\n").includes(text)) {
-			return latestRows;
-		}
-		await delay(10);
-		latestRows = component.render(80);
-	}
-	return latestRows;
+function createAutocompleteProviderFake(
+	onSuggestionsRequested: () => void,
+	suggestionsReleased: Promise<void>,
+): AutocompleteProvider {
+	return {
+		async getSuggestions() {
+			onSuggestionsRequested();
+			await suggestionsReleased;
+			return {
+				prefix: "@",
+				items: [{ value: "README.md", label: "README.md" }],
+			};
+		},
+		applyCompletion(lines, cursorLine, cursorCol, item) {
+			const completedLines = [...lines];
+			completedLines[cursorLine] = item.value;
+			return {
+				lines: completedLines,
+				cursorLine,
+				cursorCol,
+			};
+		},
+		shouldTriggerFileCompletion() {
+			return true;
+		},
+	};
 }
 
 async function withIsolatedSuiteDir(
