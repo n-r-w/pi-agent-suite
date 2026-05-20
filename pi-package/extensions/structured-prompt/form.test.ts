@@ -306,6 +306,35 @@ describe("structured-prompt form", () => {
 		expect(homeRows).toBe(initialRows);
 	});
 
+	test("keeps unicode review rendering height and width stable while scrolling", () => {
+		// Purpose: scrolling a long Unicode review must not leave stale overlay rows behind.
+		// Input and expected output: long mixed-script text renders with a stable bounded row count before and after scrolling.
+		// Edge case: lines include Cyrillic, emoji, CJK, accents, RTL text, symbols, and wrapped rows.
+		// Dependencies: this test uses the form component with fake TUI and plain theme.
+		const terminalRows = 18;
+		const width = 72;
+		const form = createForm(() => {}, { rows: terminalRows });
+		openReviewWithGoal(form, unicodeLines(50));
+
+		const firstRender = form.render(width);
+		form.handleInput(PAGE_DOWN);
+		const secondRender = form.render(width);
+		form.handleInput(HOME);
+		const thirdRender = form.render(width);
+
+		expect(firstRender).toHaveLength(terminalRows - 2);
+		expect(secondRender).toHaveLength(firstRender.length);
+		expect(thirdRender).toHaveLength(firstRender.length);
+		for (const render of [firstRender, secondRender, thirdRender]) {
+			for (const row of render) {
+				expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+			}
+		}
+		expect(firstRender.join("\n")).toContain("line-001");
+		expect(secondRender.join("\n")).not.toBe(firstRender.join("\n"));
+		expect(thirdRender.join("\n")).toBe(firstRender.join("\n"));
+	});
+
 	test("can scroll to the bottom of a wrapped narrow review", () => {
 		// Purpose: narrow terminals wrap preview lines and must still allow reaching the end.
 		// Input and expected output: repeated PageDown reaches the final visual content.
@@ -528,6 +557,14 @@ function numberedLines(count: number): string {
 	return Array.from(
 		{ length: count },
 		(_value, index) => `line-${String(index + 1).padStart(3, "0")}`,
+	).join("\n");
+}
+
+function unicodeLines(count: number): string {
+	return Array.from(
+		{ length: count },
+		(_value, index) =>
+			`line-${String(index + 1).padStart(3, "0")} кириллица, emoji 🧊🚀, CJK 漢字, kana かな, accents café naïve, RTL مثال, symbols ∞ Ω Σ and wrapped suffix.`,
 	).join("\n");
 }
 

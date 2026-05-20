@@ -137,7 +137,10 @@
 			}
 		},
 		{
-			"includes": ["pi-package/extensions/**/environment.ts"],
+			"includes": [
+				"pi-package/extensions/**/environment.ts",
+				"pi-package/shared/environment.ts"
+			],
 			"linter": {
 				"rules": {
 					"style": {
