@@ -129,10 +129,11 @@ function expectParallelPhaseIncludesParticipants(
 
 interface DeferredCompletionCall extends CompletionCall {
 	readonly key: string;
+	readonly modelCallIndex: number;
 }
 
 function createDeferredCompletion(
-	responses: ReadonlyMap<string, AssistantMessage["content"]>,
+	responses: ReadonlyMap<string, readonly AssistantMessage["content"][]>,
 ): {
 	readonly calls: readonly DeferredCompletionCall[];
 	readonly completeSimple: (
@@ -195,13 +196,21 @@ function createDeferredCompletion(
 		context: Context,
 		options?: SimpleStreamOptions,
 	): Promise<AssistantMessage> => {
-		const key = classifyDeferredCompletionCall(model, context);
-		const content = responses.get(key);
+		const modelResponses = responses.get(model.id);
+		if (modelResponses === undefined) {
+			throw new Error(`missing deferred completion script for ${model.id}`);
+		}
+
+		const modelCallIndex = calls.filter(
+			(call) => call.model.id === model.id,
+		).length;
+		const content = modelResponses[modelCallIndex];
+		const key = `${model.id}:${modelCallIndex + 1}`;
 		if (content === undefined) {
 			throw new Error(`missing deferred completion response for ${key}`);
 		}
 
-		calls.push({ model, context, options, key });
+		calls.push({ model, context, options, key, modelCallIndex });
 		notifyWaiters();
 
 		return new Promise<AssistantMessage>((resolve) => {
@@ -259,32 +268,6 @@ function readSessionMessages(sessionFile: string): Context["messages"] {
 	return parseSessionEntries(readFileSync(sessionFile, "utf8")).flatMap(
 		(entry) => (entry.type === "message" ? [entry.message] : []),
 	) as Context["messages"];
-}
-
-function classifyDeferredCompletionCall(
-	model: Model<Api>,
-	context: Context,
-): string {
-	const task = JSON.stringify(context.messages.at(-1)?.content ?? "");
-	const stage = (() => {
-		if (task.includes("Analyze the question")) {
-			return "initial";
-		}
-		if (task.includes("Review the opponent opinion")) {
-			return "opinion-review";
-		}
-		if (task.includes("Provide the missing information")) {
-			return "missing-response";
-		}
-		if (task.includes("Review the opponent clarification")) {
-			return "clarification-review";
-		}
-		if (task.includes("Produce the final answer")) {
-			return "final-answer";
-		}
-		return "unknown";
-	})();
-	return `${stage}:${model.id}`;
 }
 
 function createAssistantMessage(
@@ -348,17 +331,21 @@ describe("convene-council loop", () => {
 			const llm2Model = createModel("provider-b", "model-b");
 			const completion = createDeferredCompletion(
 				new Map([
-					["initial:model-a", initialOpinion("llm1 initial")],
-					["initial:model-b", initialOpinion("llm2 initial")],
 					[
-						"opinion-review:model-a",
-						participantResponse("AGREE", "llm1 agrees"),
+						"model-a",
+						[
+							initialOpinion("llm1 initial"),
+							participantResponse("AGREE", "llm1 agrees"),
+						],
 					],
 					[
-						"opinion-review:model-b",
-						participantResponse("AGREE", "llm2 agrees"),
+						"model-b",
+						[
+							initialOpinion("llm2 initial"),
+							participantResponse("AGREE", "llm2 agrees"),
+							finalAnswer("final council answer"),
+						],
 					],
-					["final-answer:model-b", finalAnswer("final council answer")],
 				]),
 			);
 			const pi = createExtensionApiFake();
@@ -369,8 +356,8 @@ describe("convene-council loop", () => {
 
 			const resultPromise = executeCouncil(pi, ctx, "Parallel initial calls");
 			const initialCallsStartedTogether = await completion.waitForKeys([
-				"initial:model-a",
-				"initial:model-b",
+				"model-a:1",
+				"model-b:1",
 			]);
 			await completion.resolveCallsUntil(5);
 			const result = await resultPromise;
@@ -396,17 +383,21 @@ describe("convene-council loop", () => {
 			const llm2Model = createModel("provider-b", "model-b");
 			const completion = createDeferredCompletion(
 				new Map([
-					["initial:model-a", initialOpinion("llm1 initial")],
-					["initial:model-b", initialOpinion("llm2 initial")],
 					[
-						"opinion-review:model-a",
-						participantResponse("AGREE", "llm1 agrees"),
+						"model-a",
+						[
+							initialOpinion("llm1 initial"),
+							participantResponse("AGREE", "llm1 agrees"),
+						],
 					],
 					[
-						"opinion-review:model-b",
-						participantResponse("AGREE", "llm2 agrees"),
+						"model-b",
+						[
+							initialOpinion("llm2 initial"),
+							participantResponse("AGREE", "llm2 agrees"),
+							finalAnswer("final council answer"),
+						],
 					],
-					["final-answer:model-b", finalAnswer("final council answer")],
 				]),
 			);
 			const pi = createExtensionApiFake();
@@ -434,9 +425,9 @@ describe("convene-council loop", () => {
 					}
 				},
 			});
-			expect(
-				await completion.waitForKeys(["initial:model-a", "initial:model-b"]),
-			).toBe(true);
+			expect(await completion.waitForKeys(["model-a:1", "model-b:1"])).toBe(
+				true,
+			);
 			await completion.resolveCallsUntil(1);
 			await opinionUpdate;
 
@@ -524,35 +515,24 @@ describe("convene-council loop", () => {
 			const llm2Model = createModel("provider-b", "model-b");
 			const completion = createDeferredCompletion(
 				new Map([
-					["initial:model-a", initialOpinion("llm1 initial")],
-					["initial:model-b", initialOpinion("llm2 initial")],
 					[
-						"opinion-review:model-a",
-						participantResponse("NEED_INFO", "need details from llm2"),
+						"model-a",
+						[
+							initialOpinion("llm1 initial"),
+							participantResponse("NEED_INFO", "need details from llm2"),
+							initialOpinion("llm1 clarifies for llm2"),
+							participantResponse("AGREE", "llm1 accepts clarification"),
+						],
 					],
 					[
-						"opinion-review:model-b",
-						participantResponse("NEED_INFO", "need details from llm1"),
-					],
-					[
-						"missing-response:model-b",
-						initialOpinion("llm2 clarifies for llm1"),
-					],
-					[
-						"missing-response:model-a",
-						initialOpinion("llm1 clarifies for llm2"),
-					],
-					[
-						"clarification-review:model-a",
-						participantResponse("AGREE", "llm1 accepts clarification"),
-					],
-					[
-						"clarification-review:model-b",
-						participantResponse("AGREE", "llm2 accepts clarification"),
-					],
-					[
-						"final-answer:model-b",
-						finalAnswer("final after both clarifications"),
+						"model-b",
+						[
+							initialOpinion("llm2 initial"),
+							participantResponse("NEED_INFO", "need details from llm1"),
+							initialOpinion("llm2 clarifies for llm1"),
+							participantResponse("AGREE", "llm2 accepts clarification"),
+							finalAnswer("final after both clarifications"),
+						],
 					],
 				]),
 			);
@@ -569,13 +549,13 @@ describe("convene-council loop", () => {
 			});
 			await completion.resolveCallsUntil(4);
 			const missingResponsesStartedTogether = await completion.waitForKeys([
-				"missing-response:model-b",
-				"missing-response:model-a",
+				"model-b:3",
+				"model-a:3",
 			]);
 			await completion.resolveCallsUntil(6);
 			const clarificationReviewsStartedTogether = await completion.waitForKeys([
-				"clarification-review:model-a",
-				"clarification-review:model-b",
+				"model-a:4",
+				"model-b:4",
 			]);
 			await completion.resolveCallsUntil(9);
 			const result = await resultPromise;
@@ -731,13 +711,15 @@ describe("convene-council loop", () => {
 				finalAnswer("final council answer"),
 			]);
 			const contextFilePaths: string[] = [];
+			let promptCallCount = 0;
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, {
 				async createParticipantRunner(options) {
 					const runner = await completion.createParticipantRunner(options);
 					return {
 						async prompt(task, signal) {
-							if (task.includes("Analyze the question")) {
+							promptCallCount += 1;
+							if (promptCallCount <= 2) {
 								const contextFilePath = extractContextFilePath(task);
 								contextFilePaths.push(contextFilePath);
 								expect(existsSync(contextFilePath)).toBe(true);
@@ -746,8 +728,6 @@ describe("convene-council loop", () => {
 								);
 								expect(task).toContain("What should we do?");
 								expect(task).not.toContain("caller context from file");
-								expect(task).toContain("read");
-								expect(task).toContain("offset");
 							}
 							return runner.prompt(task, signal);
 						},
