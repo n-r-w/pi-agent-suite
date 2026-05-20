@@ -153,7 +153,7 @@ Collapsed progress example while running:
 ```text
 convene_council · Hypatia reviews Socrates · iter 2/3 · 18.2s
 ⏳ Socrates 18.2s · 120k/272k · read {"path":"plan.md"}
-✓ Hypatia 18.2s · 98k/272k · AGREE PostgreSQL is the safest default...
+✓ Hypatia 18.2s · ~15/98k/272k · AGREE PostgreSQL is the safest default...
 ```
 
 Collapsed result example after completion:
@@ -161,7 +161,7 @@ Collapsed result example after completion:
 ```text
 convene_council · agreed · iter 2/3 · 82.8s
 ✓ Socrates 82.8s · 120k/272k · AGREE PostgreSQL fits core storage...
-✓ Hypatia 82.8s · 98k/272k · final answer accepted
+✓ Hypatia 82.8s · ~15/98k/272k · final answer accepted
 Council: Use PostgreSQL as the source of truth...
 ```
 
