@@ -2,42 +2,17 @@
 
 ## Purpose
 
-`structured-prompt` owns the `/prompt` command and the `ctrl+alt+p` shortcut for creating structured user requests from a focused form.
-
-## Behavior
-
-- Registers command `/prompt`.
-- Registers shortcut `ctrl+alt+p` as a best-effort default.
-- Reads configuration from `~/.pi/agent/agent-suite/structured-prompt/config.json`.
-- Is enabled by default when `config.json` is missing.
-- Does not register the command or shortcut when `enabled` is `false`.
-- Does not register the command or shortcut when config is invalid.
-- Requires interactive UI.
-- Opens a centered custom UI overlay.
-- Captures these sections in order:
-  - Goal
-  - Task
-  - Context
-  - Criteria
-  - Constraints
-  - Work order
-- Supports multi-line section text.
-- Shows file suggestions for `@...` in section editors when `fd` is available in `PATH`.
-- Keeps slash-command completion disabled inside section editors.
-- Shows a review screen before sending.
-- On the review screen, `Ctrl+Y` copies the generated prompt to the clipboard without closing the form.
-- On the review screen, `Ctrl+T` places the generated prompt in the main input field and sends no message.
-- Omits empty sections from the generated prompt.
-- Sends the generated prompt as one user message when the agent is idle.
-- When the agent is busy, asks whether to queue the generated prompt as a follow-up.
-- Sends no message when the form is cancelled.
-- Sends no message when every section is empty.
-
-`/prompt` is the reliable entry point. `ctrl+alt+p` can be intercepted by a terminal, operating system, or user keybinding before Pi receives it.
+`structured-prompt` opens a focused form for writing structured user requests. Use it to fill prompt sections, review the generated prompt, and send it as one user message.
 
 ## Configuration
 
-File: `~/.pi/agent/agent-suite/structured-prompt/config.json`.
+Default config file: `~/.pi/agent/agent-suite/structured-prompt/config.json`.
+
+If `PI_AGENT_SUITE_DIR` is set, the config file is `$PI_AGENT_SUITE_DIR/structured-prompt/config.json`.
+
+Missing config enables the extension.
+
+### Full config example
 
 ```json
 {
@@ -45,11 +20,30 @@ File: `~/.pi/agent/agent-suite/structured-prompt/config.json`.
 }
 ```
 
-Options:
+### Parameters
 
-- `enabled`: default `true`. Enables or disables `/prompt` and `ctrl+alt+p`.
+| Parameter | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | No | Boolean | `true` | Enables `/prompt` and the `ctrl+alt+p` shortcut when set to `true`. Set to `false` to disable them. |
 
-Unsupported keys make the config invalid. The first version does not support custom sections or shortcut configuration.
+No other config keys are allowed. Invalid config prevents `/prompt` and the shortcut from loading.
+
+## Usage
+
+- Run `/prompt` or press `ctrl+alt+p` to open the form.
+- `ctrl+alt+p` can be intercepted by a terminal, operating system, or user keybinding before Pi receives it. `/prompt` is the reliable entry point.
+- The form requires interactive UI.
+- The form sections are fixed: Goal, Task, Context, Criteria, Constraints, Work order.
+- Section text can span multiple lines.
+- Empty sections are omitted from the generated prompt.
+- `@...` file suggestions are available in section editors when `fd` is available in `PATH`.
+- Review the generated prompt before sending it.
+- On the review screen, `Ctrl+Y` copies the generated prompt to the clipboard without closing the form.
+- On the review screen, `Ctrl+T` places the generated prompt in the main input field and sends no message.
+- If the agent is idle, submitting sends the generated prompt as one user message.
+- If the agent is busy, Pi asks whether to queue the generated prompt as a follow-up.
+- Cancelling the form sends no message.
+- Submitting an empty form sends no message.
 
 ## Generated prompt format
 
@@ -67,30 +61,3 @@ Implement the structured-prompt extension.
 ## Constraints
 Keep tests isolated.
 ```
-
-## Verification
-
-Tests must verify:
-
-- default command and shortcut registration when the config file is missing;
-- command and shortcut omission when `enabled` is `false`;
-- command and shortcut omission when config is invalid;
-- command and shortcut use the same submit flow;
-- UI-unavailable mode sends no message;
-- cancel sends no message;
-- empty submit sends no message;
-- idle submit sends one generated user message;
-- busy submit asks before follow-up delivery;
-- rejecting follow-up sends no message;
-- accepting follow-up queues the generated prompt as `followUp`;
-- review copy copies the full generated prompt without closing the form;
-- review input placement writes the full generated prompt to the main input and sends no message;
-- clipboard copy failure reports a warning and sends no message;
-- empty sections are omitted from the generated prompt;
-- multi-line section text is preserved;
-- `@...` file autocomplete suggestions render in section editors when `fd` is available;
-- selected `@...` file autocomplete is saved as section text;
-- slash commands stay disabled inside section editors;
-- missing `fd` does not block normal form submission;
-- terminal navigation escape sequences are not inserted into section text;
-- rendered form rows stay within the requested width.

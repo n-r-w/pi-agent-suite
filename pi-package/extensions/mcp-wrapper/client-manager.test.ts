@@ -339,6 +339,52 @@ describe("mcp-wrapper client manager", () => {
 		]);
 	});
 
+	test("closes and replaces the affected connection after call failure", async () => {
+		// Purpose: a failed tool call must not leave a dead MCP client cached for later calls.
+		// Input and expected output: the first client throws once, is closed, and the next call uses a new client.
+		// Edge case: the failed call is not retried automatically, so side-effecting MCP tools are not duplicated.
+		// Dependencies: this test uses only McpClientManager and fake MCP clients.
+		const failedClient = new FakeMcpClient();
+		let failedCallCount = 0;
+		failedClient.callTool = async () => {
+			failedCallCount += 1;
+			throw new Error("server process closed");
+		};
+		const replacementClient = new FakeMcpClient();
+		const clients = [failedClient, replacementClient];
+		let createCalls = 0;
+		const manager = new McpClientManager({
+			createClient: () => {
+				const client = clients[createCalls];
+				createCalls += 1;
+				if (client === undefined) {
+					throw new Error("unexpected client creation");
+				}
+				return client;
+			},
+			timeouts: DEFAULT_TIMEOUTS,
+		});
+
+		await expect(
+			manager.callTool(
+				{ serverKey: "files", mcpToolName: "read" },
+				STDIO_SERVER,
+				{},
+			),
+		).rejects.toThrow("server process closed");
+		const result = await manager.callTool(
+			{ serverKey: "files", mcpToolName: "read" },
+			STDIO_SERVER,
+			{},
+		);
+
+		expect(result).toEqual({ content: [{ type: "text", text: "ok" }] });
+		expect(failedClient.closeCalls).toEqual(["close"]);
+		expect(failedCallCount).toBe(1);
+		expect(replacementClient.callToolCalls).toHaveLength(1);
+		expect(createCalls).toBe(2);
+	});
+
 	test("closes the affected connection after SDK timeout rejection", async () => {
 		const client = new FakeMcpClient();
 		client.callTool = async () => {

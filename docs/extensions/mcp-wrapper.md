@@ -1,8 +1,14 @@
 # MCP Wrapper Extension
 
-The MCP wrapper extension reads `agent-suite/mcp-wrapper/config.json`, discovers supported MCP tools, stores discovery metadata in `agent-suite/mcp-wrapper/cache.json`, and registers one Pi tool per supported MCP tool.
+## Purpose
 
-## Config
+The MCP wrapper extension registers configured MCP server tools as Pi tools.
+
+## Configuration file
+
+By default, place the configuration at `agent-suite/mcp-wrapper/config.json`. If the file is missing, no MCP tools are registered.
+
+## Full configuration example
 
 ```json
 {
@@ -23,7 +29,8 @@ The MCP wrapper extension reads `agent-suite/mcp-wrapper/config.json`, discovers
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
       "env": {
         "EXAMPLE_TOKEN": "value"
-      }
+      },
+      "cwd": "/tmp"
     },
     "docs": {
       "type": "streamableHttp",
@@ -36,84 +43,64 @@ The MCP wrapper extension reads `agent-suite/mcp-wrapper/config.json`, discovers
 }
 ```
 
-Rules:
-- Missing config file means no MCP tools are registered.
-- `settings.enabled` defaults to `true`.
-- Missing timeout fields use the defaults shown above.
-- `settings.widgetLineBudget` controls collapsed MCP result preview lines before the expand hint.
-- `settings.widgetLineBudget` has integer type and must be greater than or equal to `1`.
-- Default `settings.widgetLineBudget` is `5`.
-- `mcpServers` must be an object when the config file exists.
-- Empty `mcpServers` means no MCP tools are registered.
-- Supported server types are `stdio` and `streamableHttp`.
-- A server with `command` and no `type` is treated as `stdio`.
-- Configured `env` and `headers` values are literal strings. Placeholders such as `${VAR}` and `$env:VAR` are not interpolated.
-- Stdio child process env is `process.env` filtered to string values plus configured `stdio.env`. Configured values override inherited values.
-- Commands and args are passed unchanged. `npx` and `npm` are not rewritten.
-- Host MCP config files are not read or merged.
+## Parameters
+
+Top-level parameters:
+
+| Parameter | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `settings` | No | Object | Uses defaults for all settings | Extension settings. |
+| `mcpServers` | Yes when the config file exists | Object keyed by non-empty server name | None | MCP servers to expose as Pi tools. Empty object registers no MCP tools. |
+
+`settings` parameters:
+
+| Parameter | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | No | Boolean | `true` | Enables or disables MCP tool registration. `false` registers no MCP tools. |
+| `timeouts` | No | Object | Uses defaults for all timeout fields | Time limits for MCP startup, discovery, and calls. Values are seconds. |
+| `widgetLineBudget` | No | Positive integer | `5` | Number of result preview lines shown before the collapsed-output hint. |
+
+`settings.timeouts` parameters:
+
+| Parameter | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `startupSeconds` | No | Positive integer | `30` | Maximum wait for starting a connection to an MCP server. |
+| `listToolsSeconds` | No | Positive integer | `15` | Maximum wait for listing tools from an MCP server. |
+| `callSeconds` | No | Positive integer | `120` | Maximum wait for one MCP tool call. |
+| `maxTotalSeconds` | No | Positive integer | `180` | Maximum total time budget for an MCP operation. |
+
+Each `mcpServers` entry must be either a `stdio` server or a `streamableHttp` server. `type` may be omitted for `stdio` servers.
+
+`stdio` server parameters:
+
+| Parameter | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `type` | No | `"stdio"` | `"stdio"` when omitted | Starts a local MCP server process over standard input and output. |
+| `command` | Yes | Non-empty string | None | Command used to start the MCP server. |
+| `args` | No | Array of strings | `[]` | Arguments passed to `command` unchanged. |
+| `env` | No | Object with string values | `{}` | Environment variables for the server process. Values are literal strings. Configured values override inherited environment variables with the same name. |
+| `cwd` | No | String | Not set by the extension | Working directory for the server process. |
+
+`streamableHttp` server parameters:
+
+| Parameter | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `type` | Yes | `"streamableHttp"` | None | Connects to an MCP server over streamable HTTP. |
+| `url` | Yes | Non-empty string | None | MCP server URL. |
+| `headers` | No | Object with string values | `{}` | HTTP headers sent to the MCP server. Values are literal strings. |
+
+## Config rules
+
+- Only the parameters listed above are supported.
+- Placeholders such as `${VAR}` and `$env:VAR` are not expanded.
+- Commands, arguments, environment values, headers, and URLs are used as written.
 
 ## Tool names
 
-Generated Pi tool names use:
+Generated Pi tool names are based on the server name and MCP tool name:
 
 ```text
-${serverSlug}_${toolSlug}
+server_slug_tool_slug
 ```
 
-The final name must match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`.
-
-Invalid handling:
-- Invalid `serverKey` rejects only that server.
-- Invalid MCP tool name rejects only that tool.
-- Duplicate generated names reject all colliding routes.
-
-## Schema support
-
-MCP `inputSchema` is passed to Pi tool registration as JSON Schema. The wrapper does not maintain its own JSON Schema keyword allowlist. Missing `inputSchema` uses an empty object schema.
-
-## Prompt visibility
-
-Each registered MCP tool sets Pi `promptSnippet` so the tool appears in the `Available tools` section of the system prompt. The snippet uses `Tool from MCP server "${serverKey}": ${description}`, truncated to 100 characters at a word boundary. Tools without a description use `Tool from MCP server "${serverKey}".`.
-
-The provider tool `description` uses the same server prefix without truncation.
-
-MCP initialize `instructions` are appended to the system prompt only for cached or connected servers where the current active tool list contains at least one generated Pi tool from that MCP server. Servers with registered tools but no active tool for the current agent are omitted. If no server matches, the whole `<mcp_instructions>` block is omitted. Instructions are not truncated.
-
-```xml
-<mcp_instructions>
-  <server name="fetch">
-Use fetch for web pages.
-  </server>
-</mcp_instructions>
-```
-
-Escaping rules:
-- `server name` escapes `&`, `"`, and `<`.
-- Instruction text escapes only `<`.
-
-The block is added through `before_agent_start` after `system-prompt` replaces the base prompt. `pi.sendMessage` is not used.
-
-Startup notifications list connected servers, cached servers, registered tools, failed servers, and rejected tools.
-
-## Output handling
-
-- Text output uses Pi-style truncation.
-- Truncated full output is saved to a temp file and the model-facing result includes the path.
-- Under-limit images are returned as Pi image content.
-- Oversized image payloads are saved to temp files with mode `0o600`, and the model-facing result includes the file path.
-
-## Runtime behavior
-
-- Config is read during extension startup or Pi reload.
-- Metadata cache is stored at `agent-suite/mcp-wrapper/cache.json` with mode `0o600`.
-- Cache entries store the server config hash, cache write time, discovered tool names, descriptions, input schemas, and MCP initialize `instructions`.
-- Cache entries do not store raw server config, env values, headers, tokens, or credentials.
-- If every configured server has a matching cache entry, MCP tools and instruction metadata are registered from cache without waiting for MCP connections.
-- If cache is missing for one or more configured servers, startup shows an info notification and waits for discovery only for those servers.
-- After startup, live discovery refreshes the cache in the background.
-- Background refresh uses its own MCP client manager and closes it after the refresh finishes or fails.
-- Background refresh does not change registered tools, session instruction metadata, active tools, or prompt-visible MCP instructions in the current session.
-- Session shutdown closes active MCP clients and clears stored MCP instruction metadata.
-- Editing the config file during an active session does not change registered MCP tools or active MCP connections until restart or reload.
-- Failed MCP servers do not block healthy servers.
-- Failed servers and rejected routes are shown through MCP status entries in the footer.
+Slugs are lowercase. Characters outside `a-z` and `0-9` become `_`. The generated name must start with a lowercase ASCII letter or `_`. Names longer than 64 characters are shortened. Routes with invalid or colliding generated names are not registered.

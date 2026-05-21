@@ -2,33 +2,13 @@
 
 ## Purpose
 
-`context-overflow` starts preventive standard pi compaction when the active model has too few remaining context tokens.
+`context-overflow` starts preventive pi context compaction before the active model runs out of context tokens.
 
-## Behavior
-
-- Handles `turn_end`.
-- Runs only when `ctx.hasUI !== false`.
-- Reads current usage through `ctx.getContextUsage()`.
-- Skips compaction when UI is unavailable.
-- Skips compaction when context usage is unavailable.
-- Skips compaction when `tokens` is `null`.
-- Computes `remainingTokens = contextWindow - tokens`.
-- Starts standard compaction when `remainingTokens <= compactRemainingTokens`.
-- Calls `ctx.compact()` without `customInstructions`.
-- Leaves `session_before_compact` and compaction summary content to standard pi compaction or the configured `custom-compaction` extension.
-- Waits for successful compaction before the `turn_end` handler returns.
-- Sends user message `System message: Context summarization complete, continue` with follow-up delivery after successful compaction.
-- Sends no continuation when compaction fails.
-- Does not retry after compaction failure while usage stays at or below the threshold.
-- Prevents repeated or parallel compactions for one threshold exceedance.
-- Re-arms compaction only after a later known usage returns above the threshold.
-- Does not register or call UI APIs.
-- Exposes its parsed config contract for footer display of the used-token compaction threshold.
-- Does not modify `custom-compaction`.
-
-## Configuration
+## Configuration file
 
 File: `~/.pi/agent/agent-suite/context-overflow/config.json`.
+
+Full example:
 
 ```json
 {
@@ -37,42 +17,17 @@ File: `~/.pi/agent/agent-suite/context-overflow/config.json`.
 }
 ```
 
-`enabled` is optional and defaults to `true`. `compactRemainingTokens` is optional.
+## Parameters
 
-Optional fields:
+| Parameter | Required | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | No | Boolean | `true` | Enables preventive context compaction. Set to `false` to disable the extension. |
+| `compactRemainingTokens` | No | Non-negative integer | `49152` | Sets the remaining-token threshold that starts compaction. Compaction starts when remaining tokens are less than or equal to this value. |
 
-- `compactRemainingTokens`
+The configuration file must contain a JSON object. Only `enabled` and `compactRemainingTokens` are supported. Unsupported keys or wrong value types make the configuration invalid.
 
-Defaults:
+## Usage notes
 
-- Missing config file enables the extension.
-- Default `compactRemainingTokens` is `49152`.
-
-Rules:
-
-- `enabled` must be a boolean value.
-- `compactRemainingTokens` must be a non-negative integer.
-- Unsupported keys make the configuration invalid.
+- Missing configuration uses the defaults and keeps the extension enabled.
 - Invalid configuration disables preventive compaction.
-- Invalid configuration does not show a notification because the extension owns no UI.
-- Invalid configuration makes footer omit the context-overflow limit and keep `current/full-window` context usage.
-
-## Verification
-
-Tests must verify:
-
-- default enabled behavior when the config file is missing;
-- valid non-default `compactRemainingTokens` behavior;
-- no compaction when UI is unavailable;
-- no compaction when context usage is unavailable;
-- no compaction when `tokens` is `null`;
-- compaction when `remainingTokens` equals `compactRemainingTokens`;
-- `ctx.compact()` call without `customInstructions`;
-- `turn_end` waits for compaction completion before queuing continuation;
-- user message `System message: Context summarization complete, continue` only after successful compaction;
-- no continuation after compaction failure;
-- no retry after compaction failure until known usage returns above the threshold and later crosses the threshold again;
-- duplicate and parallel compaction prevention for one threshold exceedance;
-- re-arming only after known usage returns above the threshold;
-- fail-closed behavior for disabled or invalid configuration;
-- no UI API calls.
+- The extension starts compaction only when context usage is available.

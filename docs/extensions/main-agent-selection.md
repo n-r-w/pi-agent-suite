@@ -2,51 +2,33 @@
 
 ## Purpose
 
-`main-agent-selection` owns main-agent selection for top-level pi sessions.
-
-## Behavior
-
-- Is enabled by default when `config.json` is missing.
-- Registers command `/agent`.
-- Supports `/agent none` to store the explicit no-agent state for the current directory.
-- Registers shortcut `Ctrl+Shift+A`.
-- Shows `No agent` as the first interactive selector option.
-- Reopens the interactive selector with the current directory selection highlighted.
-- Restores the selected main agent before each model turn when runtime composition needs selected-agent state.
-- Does not restore persisted main-agent state inside child subagent processes because `run-subagent` owns child prompt and tool policy.
-- Resolves exact tool names and wildcard tool patterns with the same policy as `run-subagent` before applying active tools.
-- Reads agent definitions from `~/.pi/agent/agent-suite/agent-selection/agents`.
-- Owns selected-agent state under `~/.pi/agent/agent-suite/agent-selection/state/`.
-- Stores only `cwd` and `activeAgentId` in the state file.
-- Stores `activeAgentId: null` for the explicit no-agent state.
-- Matches `activeAgentId` without case sensitivity and keeps the stored agent ID casing after selection.
-- Does not store model, thinking level, or tools in the state file.
-- Applies `model` only when the agent defines `model.id`.
-- Applies thinking level only when the agent defines `model.thinking`.
-- Publishes a contribution to `Agent Runtime Composition` for prompt and active tools.
-- Clears the main-agent prompt and restores baseline active tools when no agent is selected.
-- Does not call `pi.setActiveTools()` directly.
-- Does not own `run_subagent`.
-- Does not own `consult_advisor`.
+`main-agent-selection` allows you to create and select agents with a preconfigured prompt, model, thinking level, allowed tools list, and allowed callable subagents list.
 
 ## Configuration
 
-File: `~/.pi/agent/agent-suite/agent-selection/config.json`.
+Preferred file: `~/.pi/agent/agent-suite/agent-selection/config.json`.
+
+Legacy fallback file: `~/.pi/agent/config/main-agent-selection.json`.
+
+Full example:
 
 ```json
 {
-  "enabled": true,
-  "diagnosticsEnabled": false
+  "enabled": true
 }
 ```
 
-`enabled` is optional and defaults to `true`. Missing config enables main-agent selection. `enabled: false` prevents command and shortcut registration.
+## Config parameters
 
-`diagnosticsEnabled` is optional and defaults to `false`. `diagnosticsEnabled: true` writes runtime diagnostics to `~/.pi/agent/agent-suite/agent-selection/runtime-diagnostics.jsonl`.
+| Name | Type or shape | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | Boolean | No | `true` | Enables `/agent` and `Ctrl+Shift+A`. Set to `false` to disable this extension. |
 
-## Agent definition contract
+## Agent definitions
 
-Example:
+Agent files are Markdown files in `~/.pi/agent/agent-suite/agent-selection/agents/*.md`.
+
+Full example:
 
 ```md
 ---
@@ -58,7 +40,6 @@ model:
 tools:
   - read
   - bash
-  - grep
   - mymcp_*
 agents:
   - Researcher
@@ -67,56 +48,25 @@ agents:
 You are a code review agent. Check correctness, risks, and missing validation.
 ```
 
-Allowed top-level keys:
+## Agent definition fields
 
-- `description`
-- `type`
-- `model`
-- `tools`
-- `agents`
+| Name | Type or shape | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `description` | String | No | Empty string | Short text shown in the selector. |
+| `type` | `main`, `subagent`, or `both` | No | `main` | Controls where the agent can be used. `main` and `both` agents are available in `/agent`. |
+| `model` | Object with optional `id` and `thinking` fields | No | Not set | Sets the model options applied when this main agent is selected. |
+| `model.id` | String in `provider/model` form | No | Not set | Selects the model for this main agent. |
+| `model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | No | Not set | Sets the thinking level for this main agent. |
+| `tools` | Array of unique non-empty strings | No | Not set | Allows exact tool names or wildcard tool patterns for this main agent. The full wildcard `*` is not allowed. |
+| `agents` | Array of unique non-empty strings | No | Not set | Allows the listed subagents when this main agent is selected. |
+| Markdown body | Markdown text after frontmatter | No | Empty after trimming | Becomes the main-agent prompt. |
 
-Allowed `type` values:
+Only `main` and `both` agent definitions appear in the main-agent selector. `subagent` is used together with the [run-subagent](run-subagent.md) extension.
 
-- `main`
-- `subagent`
-- `both`
+## Usage
 
-Allowed `model` keys:
-
-- `id`
-- `thinking`
-
-Allowed `model.thinking` values:
-
-- `off`
-- `minimal`
-- `low`
-- `medium`
-- `high`
-- `xhigh`
-
-## State contract
-
-Directory: `~/.pi/agent/agent-suite/agent-selection/state/`.
-
-Allowed fields:
-
-- `cwd`
-- `activeAgentId`
-
-Invalid state is not migrated or silently fixed. Invalid state disables selected-agent application and creates a visible state issue.
-
-## Verification
-
-Tests must verify:
-
-- no command or shortcut registration when `enabled` is `false`;
-- agent selection through `/agent`;
-- case-insensitive agent ID matching that keeps stored agent ID casing;
-- no-agent selection through `/agent none` and the interactive `No agent` option;
-- current selection restoration when opening `/agent` without arguments;
-- agent selection through `Ctrl+Shift+A`;
-- state file persistence under `~/.pi/agent/agent-suite/agent-selection/state/`;
-- strict state file schema;
-- separate model and thinking level application;
-- contribution publication to `Agent Runtime Composition` without direct `pi.setActiveTools()` calls.
+- Run `/agent` to open the selector.
+- Run `/agent <agent-id>` to select an agent by file name without the `.md` extension.
+- Run `/agent none` to clear the selected main agent for the current working directory.
+- Press `Ctrl+Shift+A` to open the selector.
+- Agent ID matching is case-insensitive.

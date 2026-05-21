@@ -6,7 +6,6 @@ import type {
 } from "./tool-catalog.ts";
 
 const MILLISECONDS_PER_SECOND = 1_000;
-const TIMEOUT_ERROR_PATTERN = /time(?:d)? out|timeout/i;
 
 export interface McpRequestOptions {
 	readonly signal?: AbortSignal;
@@ -158,9 +157,7 @@ export class McpClientManager {
 				},
 			);
 		} catch (error) {
-			if (isAbortError(error) || isTimeoutError(error)) {
-				await this.closeConnection(route.serverKey, connection);
-			}
+			await this.closeConnection(route.serverKey, connection);
 			throw error;
 		}
 	}
@@ -328,14 +325,6 @@ async function withAbortTimeout<T>(
 
 function secondsToMilliseconds(seconds: number): number {
 	return seconds * MILLISECONDS_PER_SECOND;
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
-}
-
-function isTimeoutError(error: unknown): boolean {
-	return error instanceof Error && TIMEOUT_ERROR_PATTERN.test(error.message);
 }
 
 function formatError(error: unknown): string {
