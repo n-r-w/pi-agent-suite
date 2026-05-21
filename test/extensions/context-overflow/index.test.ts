@@ -426,10 +426,10 @@ describe("context-overflow", () => {
 		});
 	});
 
-	test("waits for compaction completion before the turn-end handler returns", async () => {
-		// Purpose: turn_end must keep the extension runtime active until the compaction continuation is queued.
-		// Input and expected output: turn_end remains pending until onComplete sends exactly one follow-up continuation.
-		// Edge case: the completion callback is the only operation that resolves the in-flight turn_end promise.
+	test("returns from turn_end without waiting for compaction completion", async () => {
+		// Purpose: turn_end must not wait for compaction because pi compact waits for the active agent run to become idle.
+		// Input and expected output: turn_end resolves after starting one compaction, while onComplete later sends one follow-up continuation.
+		// Edge case: compaction remains in flight until the callback, so a second exceeded turn_end does not start duplicate compaction.
 		// Dependencies: this test uses captured callbacks and the ExtensionAPI fake call records.
 		await withIsolatedAgentDir(async () => {
 			const { pi, turnEndHandler } = installContextOverflowTestHarness();
@@ -445,14 +445,17 @@ describe("context-overflow", () => {
 				turnEndResolved = true;
 			});
 			await waitForCompactCall(context, 1);
+			await Promise.resolve();
 
-			expect(turnEndResolved).toBe(false);
+			expect(turnEndResolved).toBe(true);
 			expect(pi.sendUserMessageCalls).toEqual([]);
+
+			await turnEndHandler({ type: "turn_end" }, context.ctx);
+			expect(context.compactCalls).toHaveLength(1);
 
 			context.compactCalls[0]?.options.onComplete?.({});
 			await turnEndPromise;
 
-			expect(turnEndResolved).toBe(true);
 			expect(pi.sendUserMessageCalls).toHaveLength(1);
 			expect(context.uiCalls).toEqual([]);
 		});
