@@ -55,23 +55,21 @@ export default function contextOverflow(pi: ExtensionAPI): void {
 		thresholdExceeded = true;
 		compactionInFlight = true;
 		try {
-			await new Promise<void>((resolve) => {
-				session.compact({
-					onComplete: () => {
-						compactionInFlight = false;
-						pi.sendUserMessage(CONTINUATION_MESSAGE, {
-							deliverAs: "followUp",
-						});
-						resolve();
-					},
-					onError: () => {
-						compactionInFlight = false;
-						resolve();
-					},
-				});
+			session.compact({
+				onComplete: () => {
+					compactionInFlight = false;
+					pi.sendUserMessage(CONTINUATION_MESSAGE, {
+						deliverAs: "followUp",
+					});
+				},
+				onError: () => {
+					compactionInFlight = false;
+					thresholdExceeded = false;
+				},
 			});
 		} catch (error) {
 			compactionInFlight = false;
+			thresholdExceeded = false;
 			throw error;
 		}
 	});
