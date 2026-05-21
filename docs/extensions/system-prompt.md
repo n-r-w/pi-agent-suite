@@ -2,29 +2,13 @@
 
 ## Purpose
 
-`system-prompt` replaces pi's base system prompt with a Markdown template and explicit runtime variables.
-
-## Behavior
-
-- Handles `session_start` and `before_agent_start`.
-- Reads configuration from `~/.pi/agent/agent-suite/system-prompt/config.json`.
-- Does not read legacy config paths.
-- Is enabled by default when `config.json` is missing.
-- Uses the bundled Markdown template when `templateFile` is missing.
-- Bundled prompt file lives at `pi-package/extensions/system-prompt/prompts/system.md`.
-- Requires `templateFile` to be an absolute path.
-- Leaves pi's original system prompt unchanged when config or template loading fails.
-- Warns during startup or reload when config or template loading fails.
-- Removes unsupported `{{...}}` variables and warns with the variable names during startup or reload.
-- Does not append runtime values unless the matching variable exists in the template.
-- Keeps static prompt text in the Markdown template.
-- Inserts dynamic pi runtime values only through variables.
-- Runs before `mcp-wrapper`, so MCP initialize `instructions` appended by `mcp-wrapper` are not overwritten by the template replacement.
-- Runs before agent runtime prompt contributors from `main-agent-selection`, `run-subagent`, `consult-advisor`, and `convene-council` in this package.
+`system-prompt` replaces pi's base system prompt with a Markdown template. The template can include runtime values such as the current date, working directory, active tool text, and loaded project context.
 
 ## Configuration
 
-File: `~/.pi/agent/agent-suite/system-prompt/config.json`.
+Default config file: `~/.pi/agent/agent-suite/system-prompt/config.json`.
+
+Full config example:
 
 ```json
 {
@@ -33,38 +17,36 @@ File: `~/.pi/agent/agent-suite/system-prompt/config.json`.
 }
 ```
 
-Fields:
+Parameters:
 
-- `enabled`: optional. Default `true`. Set to `false` to leave pi's original system prompt unchanged.
-- `templateFile`: optional absolute path to a Markdown template file.
+| Name | Type or shape | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | Boolean | No | `true` | Enables this extension. Set to `false` to keep pi's original system prompt. |
+| `templateFile` | Absolute file path string | No | Bundled system prompt template | Markdown template file used as the system prompt. Relative paths are rejected. |
 
-## Variables
+Only these parameters are accepted.
+
+If the config file is missing, the extension uses the bundled system prompt template. If the config file is invalid or the template file cannot be read, pi keeps its original system prompt.
+
+## Template variables
+
+Use variables in the template as `{{variableName}}`. Whitespace inside braces is allowed, such as `{{ date }}`.
 
 Supported variables:
 
-- `{{date}}`: local date in `YYYY-MM-DD` format.
-- `{{cwd}}`: current working directory with `/` path separators.
-- `{{tools}}`: active tools that have prompt snippets, formatted as `- name: snippet`.
-- `{{toolGuidelines}}`: dynamic `promptGuidelines` supplied by active tools or extensions.
-- `{{appendSystemPrompt}}`: text from pi append-system-prompt inputs.
-- `{{contextFiles}}`: loaded context files formatted as `<project_specific_instruction path="...">` blocks inside `<project_specific_instructions>`.
-- `{{skills}}`: loaded skills formatted by pi when the `read` tool is active.
+| Variable | Inserts |
+| --- | --- |
+| `{{date}}` | Local date in `YYYY-MM-DD` format. |
+| `{{cwd}}` | Current working directory with `/` path separators. |
+| `{{tools}}` | Active tools that have prompt text, formatted as `- name: text`. If no matching tools are available, inserts `(none)`. |
+| `{{toolGuidelines}}` | Prompt guidelines supplied by active tools or extensions, one bullet per guideline. |
+| `{{appendSystemPrompt}}` | Text passed through pi append-system-prompt inputs. |
+| `{{contextFiles}}` | Loaded context files inside `<project_specific_instructions>` XML-style blocks. |
+| `{{skills}}` | Loaded skills formatted by pi when the `read` tool is active. |
 
-Unsupported variables are removed from rendered output.
+Unsupported variables are removed from the rendered prompt.
 
-`{{contextFiles}}` example output:
-
-```xml
-<project_specific_instructions>
-  <project_specific_instruction path="/repo/AGENTS.md">
-# AGENTS.md
-
-Project rules.
-  </project_specific_instruction>
-</project_specific_instructions>
-```
-
-## Example template
+## Template example
 
 ```md
 You are an expert coding assistant.
@@ -73,14 +55,12 @@ Available tools:
 {{tools}}
 
 Guidelines:
-- Be concise in your responses.
-- Show file paths clearly when working with files.
 {{toolGuidelines}}
 
+Additional instructions:
 {{appendSystemPrompt}}
 
-# Project Context
-
+Project context:
 {{contextFiles}}
 
 {{skills}}
@@ -88,16 +68,3 @@ Guidelines:
 Current date: {{date}}
 Current working directory: {{cwd}}
 ```
-
-## Verification
-
-Tests must verify:
-
-- default template usage when config is missing;
-- suite-only config reading without legacy fallback;
-- absolute `templateFile` validation;
-- startup and reload warnings for unsupported variables;
-- removal of unsupported variables from rendered output;
-- no automatic insertion when a supported variable is absent;
-- fail-closed behavior for invalid config or unreadable templates;
-- package loading order preserves later agent runtime prompt contributions.

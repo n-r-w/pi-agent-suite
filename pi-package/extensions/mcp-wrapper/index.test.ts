@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
+	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
@@ -55,6 +57,9 @@ interface NotificationRecord {
 }
 
 interface ExtensionApiFake extends ExtensionAPI {
+	readonly commands: Array<
+		Omit<RegisteredCommand, "name" | "sourceInfo"> & { readonly name: string }
+	>;
 	readonly handlers: RegisteredHandler[];
 	readonly tools: ToolDefinition[];
 }
@@ -82,11 +87,15 @@ function managerWithCleanup<
 }
 
 function createExtensionApiFake(): ExtensionApiFake {
+	const commands: Array<
+		Omit<RegisteredCommand, "name" | "sourceInfo"> & { readonly name: string }
+	> = [];
 	const handlers: RegisteredHandler[] = [];
 	const tools: ToolDefinition[] = [];
 	let activeTools: readonly string[] = [];
 
 	return {
+		commands,
 		handlers,
 		tools,
 		events: {
@@ -101,7 +110,12 @@ function createExtensionApiFake(): ExtensionApiFake {
 		registerTool(tool: ToolDefinition): void {
 			tools.push(tool);
 		},
-		registerCommand(): void {},
+		registerCommand(
+			name: string,
+			options: Omit<RegisteredCommand, "name" | "sourceInfo">,
+		): void {
+			commands.push({ name, ...options });
+		},
 		registerShortcut(): void {},
 		registerFlag(): void {},
 		getFlag(): undefined {
@@ -171,6 +185,30 @@ async function runSessionShutdown(pi: ExtensionApiFake): Promise<void> {
 		{ type: "session_shutdown" },
 		{} as ExtensionContext,
 	);
+}
+
+async function runCommand(
+	pi: ExtensionApiFake,
+	name: string,
+	options: {
+		readonly notifications?: NotificationRecord[];
+		readonly reloads?: string[];
+	} = {},
+): Promise<void> {
+	const command = pi.commands.find((item) => item.name === name);
+	expect(command).toBeDefined();
+	await command?.handler("", {
+		hasUI: true,
+		ui: {
+			notify(message: string, type?: "info" | "warning" | "error"): void {
+				options.notifications?.push({ message, type });
+			},
+		},
+		async waitForIdle(): Promise<void> {},
+		async reload(): Promise<void> {
+			options.reloads?.push(name);
+		},
+	} as ExtensionCommandContext);
 }
 
 async function prepareSuiteCacheDir(): Promise<string> {
@@ -445,6 +483,449 @@ describe("mcp-wrapper extension", () => {
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
 			"Use cached file instructions.",
 		);
+	});
+
+	test("registers a manual MCP cache refresh command", () => {
+		// Purpose: users need a slash command that refreshes MCP metadata on demand.
+		// Input and expected output: registering the extension adds one mcp-refresh command.
+		// Edge case: command registration must not depend on config presence.
+		// Dependencies: this test uses only the ExtensionAPI fake.
+		const pi = createExtensionApiFake();
+
+		mcpWrapper(pi);
+
+		expect(pi.commands.map((command) => command.name)).toContain("mcp-refresh");
+	});
+
+	test("refresh command ignores old cache, writes discovered metadata, and reloads", async () => {
+		// Purpose: manual refresh must rebuild cache from live MCP discovery instead of trusting stale metadata.
+		// Input and expected output: old cached tool read is replaced by discovered tool search, then reload runs once.
+		// Edge case: successful refresh does not emit a success notification.
+		// Dependencies: this test uses metadata cache, the command handler, and an in-memory manager fake.
+		const pi = createExtensionApiFake();
+		const serverConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: [],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				files: {
+					configHash: computeMcpServerConfigHash(serverConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "read", inputSchema: { type: "object" } }],
+				},
+			},
+		});
+		let closeAllCalls = 0;
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [
+							{
+								name: "search",
+								description: "Search files",
+								inputSchema: { type: "object" },
+							},
+						],
+					},
+				],
+				serverInstructions: [
+					{ serverKey: "files", instructions: "Use refreshed files." },
+				],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+			closeAll: async () => {
+				closeAllCalls += 1;
+			},
+		};
+		const notifications: NotificationRecord[] = [];
+		const reloads: string[] = [];
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: { files: serverConfig },
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+		});
+
+		await runCommand(pi, "mcp-refresh", { notifications, reloads });
+
+		const cache = await loadMcpWrapperCache();
+		expect(cache?.servers["files"]?.tools.map((tool) => tool.name)).toEqual([
+			"search",
+		]);
+		expect(cache?.servers["files"]?.instructions).toBe("Use refreshed files.");
+		expect(reloads).toEqual(["mcp-refresh"]);
+		expect(notifications).toEqual([]);
+		expect(closeAllCalls).toBe(1);
+	});
+
+	test("refresh command removes cached metadata for servers that fail discovery", async () => {
+		// Purpose: partial refresh failures must not keep stale tools for failed servers.
+		// Input and expected output: docs exists only in old cache, docs discovery fails, and the saved cache contains only files.
+		// Edge case: the command still reloads because the successfully discovered cache was saved.
+		// Dependencies: this test uses metadata cache, the command handler, and an in-memory manager fake.
+		const pi = createExtensionApiFake();
+		const filesConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: ["files.js"],
+			env: {},
+		};
+		const docsConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: ["docs.js"],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				files: {
+					configHash: computeMcpServerConfigHash(filesConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "read", inputSchema: { type: "object" } }],
+				},
+				docs: {
+					configHash: computeMcpServerConfigHash(docsConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "search", inputSchema: { type: "object" } }],
+				},
+			},
+		});
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [{ serverKey: "docs", issue: "connection failed" }],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+		const notifications: NotificationRecord[] = [];
+		const reloads: string[] = [];
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: { files: filesConfig, docs: docsConfig },
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+		});
+
+		await runCommand(pi, "mcp-refresh", { notifications, reloads });
+
+		const cache = await loadMcpWrapperCache();
+		expect(Object.keys(cache?.servers ?? {})).toEqual(["files"]);
+		expect(reloads).toEqual(["mcp-refresh"]);
+		expect(notifications).toEqual([
+			{
+				message:
+					"[mcp-wrapper] MCP refresh completed with failures: docs (connection failed)",
+				type: "warning",
+			},
+		]);
+	});
+
+	test("refresh command does not reload when saving cache fails", async () => {
+		// Purpose: reload must not apply stale metadata after a failed cache write.
+		// Input and expected output: saveCache rejects, command reports a warning, and reload is not called.
+		// Edge case: the discovery manager is still closed after the failure.
+		// Dependencies: this test uses dependency-injected cache writing and an in-memory manager fake.
+		const pi = createExtensionApiFake();
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "read", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+		const notifications: NotificationRecord[] = [];
+		const reloads: string[] = [];
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+			saveCache: async () => {
+				throw new Error("disk full");
+			},
+		});
+
+		await runCommand(pi, "mcp-refresh", { notifications, reloads });
+
+		expect(reloads).toEqual([]);
+		expect(notifications).toEqual([
+			{
+				message: "[mcp-wrapper] failed to save MCP metadata cache: disk full",
+				type: "warning",
+			},
+		]);
+	});
+
+	test("manual refresh is not overwritten by an older background refresh", async () => {
+		// Purpose: a pending automatic refresh must not replace the cache written by /mcp-refresh.
+		// Input and expected output: background discovery returns old metadata after manual refresh, but cache keeps the manual metadata.
+		// Edge case: the background refresh started before the manual refresh.
+		// Dependencies: this test uses metadata cache, command handling, and deferred discovery fakes.
+		const pi = createExtensionApiFake();
+		const serverConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: [],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				files: {
+					configHash: computeMcpServerConfigHash(serverConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "cached", inputSchema: { type: "object" } }],
+				},
+			},
+		});
+		const backgroundDiscovery = deferred<{
+			readonly serverToolLists: readonly {
+				readonly serverKey: string;
+				readonly tools: readonly {
+					readonly name: string;
+					readonly inputSchema: unknown;
+				}[];
+			}[];
+			readonly serverInstructions: readonly [];
+			readonly failures: readonly [];
+		}>();
+		const startupManager = {
+			discoverServers: async () => {
+				throw new Error("startup manager must use cache");
+			},
+			callTool: async () => ({ content: [] }),
+		};
+		const backgroundManager = {
+			discoverServers: async () => backgroundDiscovery.promise,
+			callTool: async () => ({ content: [] }),
+		};
+		const commandManager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "manual", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		};
+		const managers = [startupManager, backgroundManager, commandManager];
+		const nextManager = () => {
+			const manager = managers.shift();
+			if (manager === undefined) {
+				throw new Error("expected a manager fake");
+			}
+			return managerWithCleanup(manager);
+		};
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: { files: serverConfig },
+				},
+			}),
+			createManager: nextManager,
+		});
+
+		await runSessionStart(pi);
+		await runCommand(pi, "mcp-refresh");
+		backgroundDiscovery.resolve({
+			serverToolLists: [
+				{
+					serverKey: "files",
+					tools: [{ name: "background", inputSchema: { type: "object" } }],
+				},
+			],
+			serverInstructions: [],
+			failures: [],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		const cache = await loadMcpWrapperCache();
+		expect(cache?.servers["files"]?.tools.map((tool) => tool.name)).toEqual([
+			"manual",
+		]);
+	});
+
+	test("manual refresh writes after a background save that is already in progress", async () => {
+		// Purpose: manual refresh must be the last cache write even when a background save has already started.
+		// Input and expected output: background save is paused, manual refresh starts, background save resumes, and cache keeps manual metadata.
+		// Edge case: generation checks cannot cancel a saveCache call that already began.
+		// Dependencies: this test uses injected cache writing, metadata cache, and deferred save control.
+		const pi = createExtensionApiFake();
+		const serverConfig: McpServerConfig = {
+			type: "stdio",
+			command: "node",
+			args: [],
+			env: {},
+		};
+		await saveMcpWrapperCache({
+			version: 1,
+			servers: {
+				files: {
+					configHash: computeMcpServerConfigHash(serverConfig),
+					cachedAt: Date.now(),
+					tools: [{ name: "cached", inputSchema: { type: "object" } }],
+				},
+			},
+		});
+		const backgroundSaveStarted = deferred<void>();
+		const backgroundSaveFinished = deferred<void>();
+		const releaseBackgroundSave = deferred<void>();
+		const startupManager = {
+			discoverServers: async () => {
+				throw new Error("startup manager must use cache");
+			},
+			callTool: async () => ({ content: [] }),
+		};
+		const backgroundManager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "background", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		};
+		const commandManager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [{ name: "manual", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		};
+		const managers = [startupManager, backgroundManager, commandManager];
+		const nextManager = () => {
+			const manager = managers.shift();
+			if (manager === undefined) {
+				throw new Error("expected a manager fake");
+			}
+			return managerWithCleanup(manager);
+		};
+		let saveCallCount = 0;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: { files: serverConfig },
+				},
+			}),
+			createManager: nextManager,
+			saveCache: async (cache) => {
+				saveCallCount += 1;
+				const currentSaveCall = saveCallCount;
+				if (currentSaveCall === 2) {
+					backgroundSaveStarted.resolve();
+					await releaseBackgroundSave.promise;
+				}
+				await saveMcpWrapperCache(cache);
+				if (currentSaveCall === 2) {
+					backgroundSaveFinished.resolve();
+				}
+			},
+		});
+
+		await runSessionStart(pi);
+		await backgroundSaveStarted.promise;
+		const command = runCommand(pi, "mcp-refresh");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		releaseBackgroundSave.resolve();
+		await command;
+		await backgroundSaveFinished.promise;
+
+		const cache = await loadMcpWrapperCache();
+		expect(cache?.servers["files"]?.tools.map((tool) => tool.name)).toEqual([
+			"manual",
+		]);
 	});
 
 	test("closes the active manager and clears instructions on session shutdown", async () => {

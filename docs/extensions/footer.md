@@ -2,36 +2,15 @@
 
 ## Purpose
 
-`footer` owns the custom pi footer for this package.
+`footer` installs this package's custom pi footer. It shows project, quota, API cost, active agent, model and context.
 
-## Behavior
+## Configuration file
 
-- Is enabled by default when `config.json` is missing.
-- Installs one custom footer for the active pi session.
-- Shows footer segments in this order: project, Codex quota, API cost, selected agent, model display, context projection, MCP errors, and context usage.
-- Shows the model display as `provider/model/thinking-level` by default.
-- Does not show the git branch.
-- Shows context usage as `current/context-overflow-limit/full-window` when `context-overflow` is enabled.
-- Shows context usage as `current/full-window` when `context-overflow` is disabled or its config is invalid.
-- Computes `context-overflow-limit` as `contextWindow - compactRemainingTokens` from `~/.pi/agent/agent-suite/context-overflow/config.json`.
-- Colors context usage by used context percentage: plain text below `50%`, warning from `50%` to below `80%`, and error from `80%`.
-- Colors reasoning levels: `xhigh` uses error, `low`, `minimal`, and `off` use warning, and `high` and `medium` use plain text.
-- Shows the selected agent status from status key `agent`.
-- Shows the context projection status from status key `context-projection`.
-- Shows the Codex quota status from status key `codex-quota`.
-- Shows recorded cumulative API cost from assistant usage stored in the pi session and helper model calls stored as extension custom entries.
-- Counts recorded helper model calls from `consult-advisor`, `context-projection`, `convene-council`, `custom-compaction`, and `run-subagent`.
-- Ignores helper cost persistence failures and keeps the helper result available.
-- Shows API cost as `$0.123` and adds ` (sub)` for OAuth subscription models.
-- Shows MCP errors only for status keys `mcp` and `mcp-*` when the status text means an error.
-- Keeps footer lines within the terminal width.
-- Reserves width for quota, API cost, agent, model display, projection, MCP error, and context segments before rendering the project segment.
-- Shortens long project labels from the middle when footer space is limited.
-- Does not own agent selection, context projection calculation, Codex quota calculation, model selection, context-overflow compaction behavior, or context calculation.
+Default file: `~/.pi/agent/agent-suite/footer/config.json`.
 
-## Configuration
+If this file is missing, the footer is enabled with all display options turned on.
 
-File: `~/.pi/agent/agent-suite/footer/config.json`.
+## Full configuration example
 
 ```json
 {
@@ -43,36 +22,19 @@ File: `~/.pi/agent/agent-suite/footer/config.json`.
 }
 ```
 
-All fields are optional. Missing config enables the custom footer and shows provider, model, thinking level, and API cost.
+## Parameters
 
-Defaults:
+| Name | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | boolean | No | `true` | Enables this custom footer. Set to `false` to keep this footer from being installed. |
+| `showProvider` | boolean | No | `true` | Shows the model provider in the model segment. |
+| `showModel` | boolean | No | `true` | Shows the model name in the model segment. |
+| `showThinkingLevel` | boolean | No | `true` | Shows the model thinking level in the model segment. |
+| `showApiCost` | boolean | No | `true` | Shows the recorded API cost segment. |
 
-- `enabled`: `true`
-- `showProvider`: `true`
-- `showModel`: `true`
-- `showThinkingLevel`: `true`
-- `showApiCost`: `true`
+## Usage notes
 
-`enabled: false` leaves pi without this package's custom footer while other extensions may still publish status values through `ctx.ui.setStatus`.
-
-## Verification
-
-Tests must verify:
-
-- footer installation on session start;
-- no footer installation when `enabled` is `false`;
-- redraw request after model selection;
-- provider, model, and thinking-level display defaults;
-- independent provider, model, and thinking-level display config;
-- context usage with the default context-overflow limit;
-- context usage when context-overflow is disabled;
-- context usage with a configured context-overflow limit;
-- context usage when context-overflow config is invalid;
-- context usage coloring at `50%` and `80%` boundaries;
-- reasoning coloring for `xhigh`, `high`, `medium`, `low`, `minimal`, and `off`;
-- API cost aggregation from assistant usage and recorded helper model calls;
-- rendering order for `codex-quota`, API cost, `agent`, `context-projection`, and context usage;
-- MCP status filtering;
-- footer width staying within terminal width;
-- compact context projection statuses staying within terminal width;
-- long project labels not hiding quota, API cost, agent, reasoning, projection, MCP error, or context segments.
+- The config file must contain a JSON object.
+- Only the parameters listed above are supported.
+- Each parameter value must be a boolean.
+- Invalid config prevents this custom footer from being installed.

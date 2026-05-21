@@ -2,24 +2,19 @@
 
 ## Purpose
 
-`enable-tools` enables built-in search tools that this package expects agents to use.
-
-## Behavior
-
-- Is enabled by default.
-- Runs when a pi session starts.
-- Adds configured tools to the active tool list when pi has registered them.
-- Uses `grep`, `find`, and `ls` when config is missing or `include` is omitted.
-- Keeps active tools that were already enabled.
-- Does not register new tools.
-- Does not enable tools that pi has not registered.
-- Applies `exclude` after `include`, so `exclude` wins when a tool appears in both lists.
-- Fails closed on invalid config and leaves active tools unchanged.
-- Does not own main-agent tool selection, subagent tool selection, or advisor tool disabling.
+`enable-tools` enables additional tools that are disabled in pi by default. By default, it enables `grep`, `find`, and `ls`.
 
 ## Configuration
 
-File: `~/.pi/agent/agent-suite/enable-tools/config.json`.
+Default config file: `~/.pi/agent/agent-suite/enable-tools/config.json`.
+
+If `PI_AGENT_SUITE_DIR` is set, the config file is `$PI_AGENT_SUITE_DIR/enable-tools/config.json`.
+
+Older `~/.pi/agent/config/enable-tools.json` is read only when the suite config file is absent.
+
+Missing config enables `grep`, `find`, and `ls`.
+
+### Full config example
 
 ```json
 {
@@ -29,25 +24,12 @@ File: `~/.pi/agent/agent-suite/enable-tools/config.json`.
 }
 ```
 
-All fields are optional. Missing config enables `grep`, `find`, and `ls`.
+### Parameters
 
-Defaults:
+| Parameter | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | No | Boolean | `true` | Enables this extension when set to `true`. Set to `false` to disable it. |
+| `include` | No | Array of non-empty tool-name strings | `["grep", "find", "ls"]` | Tool names to add to the active tool list when those tools are registered in pi. |
+| `exclude` | No | Array of non-empty tool-name strings | `[]` | Tool names this extension must not add. `exclude` wins when the same tool name appears in `include` and `exclude`. |
 
-- `enabled`: `true`
-- `include`: `["grep", "find", "ls"]`
-- `exclude`: `[]`
-
-`enabled: false` disables all behavior owned by this extension.
-
-`include` lists tool names to add to active tools. `exclude` lists tool names that must not be added by this extension. If the same tool name appears in both lists, `exclude` wins.
-
-## Verification
-
-Tests must verify:
-
-- `grep`, `find`, and `ls` are enabled on session start when config is missing and tools are registered;
-- configured `include` and `exclude` lists are applied;
-- `exclude` wins over `include`;
-- disabled config leaves active tools unchanged;
-- invalid config fails closed and reports an extension warning;
-- already active tools are preserved.
+No other config keys are allowed. Invalid config is not applied.

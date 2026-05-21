@@ -2,77 +2,15 @@
 
 ## Purpose
 
-`run-subagent` owns the `run_subagent` tool and child `pi` execution.
+`run-subagent` adds the `run_subagent` tool. The tool lets the active agent delegate a task to a configured callable agent.
 
-## Behavior
+## Configuration file
 
-- Is enabled by default when `config.json` is missing.
-- Registers tool `run_subagent`.
-- Accepts `agentId` and `prompt`.
-- Matches `agentId` and selected main-agent `agents` allowlist entries without case sensitivity.
-- Keeps the stored agent ID casing in the child process environment.
-- Runs one callable agent per tool call.
-- Publishes the callable-agent list into the model context.
-- Restores the selected main agent before building the callable-agent prompt.
-- Filters callable agents by the selected main agent's `agents` allowlist.
-- Rejects tool calls for callable agents blocked by the selected main agent's `agents` allowlist.
-- Starts a child `pi` process with `--mode rpc`, `--no-session`, explicit `--model`, and explicit `--thinking`.
-- Sends the child prompt through RPC stdin.
-- Treats the RPC prompt response as prompt acceptance or prompt failure, not as subagent completion.
-- Treats `agent_end` as the completion event for one child prompt.
-- Reads oversized child RPC stdout events through a `stream-json` projection layer so large `agent_end.messages` payloads do not block completion.
-- Extracts `text_delta` from oversized `message_update` events while ignoring large partial-message snapshots.
-- Applies the same streamed-answer memory limit to projected `text_delta` as to normal `message_update` events.
-- Ignores oversized `message_update` events without usable `text_delta` instead of failing the run.
-- Preserves assistant `message_start` role from oversized events so streamed-text state resets at assistant turn boundaries.
-- Uses completed assistant `message_end` text as the primary final-answer source.
-- Uses streamed `text_delta` only as fallback when `stream-json` projection confirms the completed assistant `message_end` text was skipped because the payload was too large.
-- Rejects assistant messages with tool calls as final answers.
-- Cancels blocking child RPC UI requests with deterministic responses.
-- Closes child stdin after normal completion.
-- Sends RPC `abort` when the parent abort signal fires, waits for completion, closes child stdin, and terminates the child only after the abort timeout.
-- Converts child RPC session events into logical progress events.
-- Ignores raw `text_delta` chunks for TUI progress and never uses them as successful final output without a completed assistant message.
-- Applies Pi `truncateTail` behavior to the final child answer before returning model-facing tool result `content`.
-- Saves the complete final child answer to a system temp file when the answer exceeds Pi output truncation limits.
-- Adds a `Full output: {path}` notice to truncated model-facing `content`.
-- Stores `truncation` and `fullOutputPath` in tool result `details` when the final child answer is truncated.
-- Renders live subagent status through a width-aware widget component.
-- Shows positive child-owned context-projection savings before the same child's context usage in widget rows.
-- Colors child-owned context-projection savings with the `warning` theme color in widget rows.
-- Colors subagent widget status icons by run status: `accent` for running, `success` for succeeded, and `error` for failed or aborted.
-- Colors only positive summary counts in the widget header: `accent` for running, `error` for failed, and `success` for done.
-- Colors child context usage in widget rows with the same context pressure thresholds as the footer: plain below 50%, `warning` from 50%, and `error` from 80%.
-- Does not copy parent footer statuses or context-overflow limits into subagent widget rows.
-- Renders collapsed and expanded tool calls and tool results through width-aware components.
-- Renders child agent, model, thinking level, child-owned context-projection savings, context usage, and elapsed time in the `run_subagent` tool-call header.
-- Wraps the `Task` field below the tool-call header.
-- Shows only the first three wrapped `Task` rows in collapsed tool calls and then shows `... (xx more lines, yy total, {key} to expand)` with segmented muted and dim colors.
-- Shows the full wrapped `Task` field in expanded tool calls.
-- Does not repeat child runtime metadata as a separate row in collapsed or expanded result body.
-- Shows the latest `COLLAPSED_SUBAGENT_RESULT_LINES` progress events in collapsed tool results.
-- `COLLAPSED_SUBAGENT_RESULT_LINES` is exported from `pi-package/extensions/run-subagent/rendering.ts`.
-- Does not duplicate the child final answer in collapsed tool results because the answer is already shown as assistant output.
-- Shows `... (xx more lines, yy total, {key} to expand)` when collapsed output hides earlier progress events.
-- Passes `PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1`, `PI_SUBAGENT_AGENT_ID`, and `PI_SUBAGENT_DEPTH` to the child process environment.
-- Owns the child process tool policy through child `pi` CLI tool flags.
-- Passes `PI_SUBAGENT_TOOLS` when child tools are explicitly resolved.
-- Uses `--tools` for a non-empty child tools list.
-- Uses `--no-tools` for an empty child tools list.
-- Does not pass tool flags when `tools` is missing from the agent definition.
-- Rejects full wildcard `*`.
-- Resolves narrower wildcard patterns against the tool list from `pi.getAllTools()`.
-- Limits nesting through `maxDepth`.
-- Removes `run_subagent` from active tools when the current process depth reaches `maxDepth`.
-- Omits callable-agent guidance from the prompt when the current process depth reaches `maxDepth`.
-- Publishes a contribution to `Agent Runtime Composition` for prompt and active tools.
-- Does not call `pi.setActiveTools()` directly.
-- Does not own main-agent selection.
-- Does not own `consult_advisor`.
+Default file: `~/.pi/agent/agent-suite/run-subagent/config.json`.
 
-## Configuration
+If the file is missing, the extension is enabled with default settings.
 
-File: `~/.pi/agent/agent-suite/run-subagent/config.json`.
+## Full configuration example
 
 ```json
 {
@@ -83,77 +21,22 @@ File: `~/.pi/agent/agent-suite/run-subagent/config.json`.
 }
 ```
 
-`enabled` is optional and defaults to `true`. `maxDepth`, `widgetLineBudget`, and `descriptionPromptFile` are optional.
+## Parameters
 
-Rules:
+| Name | Required | Type or shape | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | No | Boolean | `true` | Enables or disables `run_subagent`. Set to `false` to prevent tool registration. |
+| `maxDepth` | No | Integer greater than or equal to `0` | `1` | Limits nested subagent calls. `0` prevents this extension from exposing `run_subagent` in the active tool list. |
+| `widgetLineBudget` | No | Integer greater than or equal to `1` | `7` | Sets how many progress lines the live subagent widget keeps. |
+| `descriptionPromptFile` | No | Non-empty absolute file path string | Bundled tool description | Replaces the `run_subagent` tool description with the trimmed contents of the file. The file must be readable and must not be empty after trimming whitespace. |
 
-- `enabled` must be a boolean value.
-- Missing config enables `run_subagent` with default parameters.
-- `enabled: false` prevents tool registration.
-- `maxDepth` has integer type and must be greater than or equal to `0`.
-- `widgetLineBudget` has integer type and must be greater than or equal to `1`.
-- `descriptionPromptFile` must be a non-empty string with an absolute path when present.
-- Missing `descriptionPromptFile` uses bundled `pi-package/extensions/run-subagent/prompts/description.md`.
-- Configured `descriptionPromptFile` replaces the bundled `run_subagent` tool description.
-- Configured description prompt file must be readable and non-empty after trimming whitespace.
-- Invalid configured `descriptionPromptFile` fails `run-subagent` startup before `run_subagent` registration and does not fall back to the bundled description.
-- Default `maxDepth` is `1`.
-- Default `widgetLineBudget` is `7`.
-- Configuration errors outside `descriptionPromptFile` move `run_subagent` to fail-closed state: `maxDepth` becomes `0`, `widgetLineBudget` becomes `7`, and the issue is shown only for `run-subagent`.
+The config object accepts only these keys: `enabled`, `maxDepth`, `widgetLineBudget`, and `descriptionPromptFile`.
 
-## Environment contract
+## Tool input
 
-- `PI_AGENT_SUITE_CHILD_AGENT_PROCESS`
-- `PI_SUBAGENT_AGENT_ID`
-- `PI_SUBAGENT_DEPTH`
-- `PI_SUBAGENT_TOOLS`
+When the tool is available, a model calls `run_subagent` with:
 
-## Verification
-
-Tests must verify:
-
-- no tool registration when `enabled` is `false`;
-- unchanged public `run_subagent` schema;
-- bundled tool description when `descriptionPromptFile` is missing;
-- custom tool description from an absolute `descriptionPromptFile`;
-- rejection of relative, tilde, empty, and non-string `descriptionPromptFile` values;
-- rejection of unreadable and empty configured description prompt files;
-- child `pi` startup with `--mode rpc`, `--no-session`, `--model`, and `--thinking`;
-- environment contract propagation;
-- `--tools`, `--no-tools`, and missing `tools` behavior;
-- fail-closed behavior on configuration error;
-- removal of `run_subagent` from active tools at `maxDepth`;
-- omission of callable-agent guidance at `maxDepth`;
-- contribution publication to `Agent Runtime Composition` without direct `pi.setActiveTools()` calls;
-- callable-agent prompt filtering from the selected main agent's `agents` allowlist;
-- case-insensitive `agentId` and `agents` allowlist matching;
-- execution rejection for callable agents blocked by the selected main agent's `agents` allowlist;
-- TUI progress rendering that does not expose raw `text_delta` chunks;
-- final output extraction from completed assistant `message_end` events before `agent_end`;
-- completion when `agent_end.messages` exceeds the child stdout line buffer;
-- extraction of `text_delta` from oversized `message_update` events with large partial-message snapshots;
-- preservation of large projected `text_delta` values up to the streamed-answer memory limit;
-- ignored oversized `message_update` events without usable `text_delta`;
-- oversized assistant `message_start` events that reset provisional streamed text;
-- fallback final output extraction from streamed text only when oversized `message_end` projection confirms skipped text;
-- rejection of streamed text when completed `message_end` confirms text is absent;
-- rejection of assistant tool-use messages as final output;
-- deterministic cancellation of blocking RPC UI requests;
-- stdin close after normal completion and bounded stdin error diagnostics;
-- abort behavior that sends RPC `abort`, waits for completion, closes stdin, and terminates only after timeout;
-- runtime metadata placement in the `run_subagent` tool-call header, including child-owned context-projection savings before child context usage;
-- absence of a standalone status/runtime row in the result body;
-- collapsed result preview height through `COLLAPSED_SUBAGENT_RESULT_LINES`;
-- collapsed result rendering that shows latest progress events, not earliest progress events;
-- collapsed result rendering that does not duplicate the child final answer;
-- model-facing truncation of large final child answers;
-- exact full-output temp file content for truncated final child answers;
-- unchanged model-facing content when the final child answer does not exceed Pi output truncation limits;
-- Pi-style hidden-line expansion hint for collapsed long progress;
-- widget rows that show positive child-owned context-projection savings before the same child's context usage;
-- widget rows that color positive child-owned context-projection savings as `warning`;
-- widget rows that color status icons as `accent`, `success`, `error`, and `error` for running, succeeded, failed, and aborted statuses;
-- widget headers that color only positive summary counts as `accent`, `error`, and `success` for running, failed, and done counts;
-- widget rows that color child context usage with the same context pressure thresholds as the footer;
-- widget rows that ignore parent footer statuses, context-overflow limits, zero projection savings, projection errors, and cleared projection status;
-- widget and collapsed result lines that stay within the terminal width passed to `render(width)`.
+| Name | Required | Type or shape | Meaning |
+| --- | --- | --- | --- |
+| `agentId` | Yes | String | Callable agent ID to run. |
+| `prompt` | Yes | String | Task prompt for the selected subagent. |

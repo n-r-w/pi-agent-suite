@@ -2,36 +2,27 @@
 
 ## Purpose
 
-`custom-compaction` owns custom pi compaction through a dedicated config file, bundled default prompt files, and optional custom prompt files.
+`custom-compaction` replaces pi's default conversation compaction with a configurable summary step. It can use the current session model or a configured model, the current thinking level or a configured reasoning level, and optional custom prompt files.
 
-## Behavior
+## Configuration file
 
-- Handles `session_before_compact`.
-- Reads configuration from `~/.pi/agent/agent-suite/custom-compaction/config.json`.
-- Is enabled by default when `config.json` is missing.
-- Uses bundled prompt files when `systemPromptFile`, `historyPromptFile`, `updatePromptFile`, or `turnPrefixPromptFile` is missing.
-- Bundled prompt files live under `pi-package/extensions/custom-compaction/prompts/`.
-- Serializes compacted history into one `<conversation>` block before sending it to the model, so the model summarizes the discarded conversation instead of continuing it.
-- Uses `systemPromptFile` as the role prompt for compaction model calls.
-- Uses `historyPromptFile` as the user command when there is no previous summary.
-- Uses `updatePromptFile` as the user command when a previous summary exists.
-- Uses `turnPrefixPromptFile` as the user command in a separate model request when compaction cuts through one turn.
-- Stops startup when a configured custom prompt file path is not absolute.
-- Disables custom compaction and creates an issue only for `custom-compaction` for other configuration errors.
-- Uses the current session model when `model` is missing.
-- Uses the current thinking level when `reasoning` is missing.
-- Retries transient compaction provider failures with `p-retry`.
-- Uses compaction retry defaults `retry.enabled: true`, `retry.maxRetries: 3`, and `retry.baseDelayMs: 2000`.
-- Does not retry aborted compaction requests.
-- Does not read configuration for other extensions.
+Default config file:
 
-## Configuration
+```text
+~/.pi/agent/agent-suite/custom-compaction/config.json
+```
 
-File: `~/.pi/agent/agent-suite/custom-compaction/config.json`.
+If the config file is missing, the extension stays enabled and uses its defaults.
+
+## Full configuration example
 
 ```json
 {
   "enabled": true,
+  "systemPromptFile": "/absolute/path/to/compaction-system.md",
+  "historyPromptFile": "/absolute/path/to/compaction.md",
+  "updatePromptFile": "/absolute/path/to/compaction-update.md",
+  "turnPrefixPromptFile": "/absolute/path/to/compaction-turn-prefix.md",
   "model": "provider/model",
   "reasoning": "medium",
   "retry": {
@@ -42,41 +33,18 @@ File: `~/.pi/agent/agent-suite/custom-compaction/config.json`.
 }
 ```
 
-`enabled` is optional and defaults to `true`. Missing config enables custom compaction with bundled prompts, the current session model, and the current thinking level.
+## Parameters
 
-Optional fields:
-
-- `systemPromptFile`
-- `historyPromptFile`
-- `updatePromptFile`
-- `turnPrefixPromptFile`
-- `model`
-- `reasoning`
-- `retry`
-- `retry.enabled`
-- `retry.maxRetries`
-- `retry.baseDelayMs`
-
-Allowed `reasoning` values:
-
-- `off`
-- `minimal`
-- `low`
-- `medium`
-- `high`
-- `xhigh`
-
-## Verification
-
-Tests must verify:
-
-- default custom compaction replacement when the config file is missing;
-- successful reading of bundled default prompt files;
-- successful reading of all custom prompt files;
-- custom compaction disablement for an empty custom prompt file;
-- startup failure for non-absolute custom prompt paths;
-- issue creation only for `custom-compaction` on non-path configuration error;
-- model calls through a fake model layer without real models;
-- serialized `<conversation>` requests instead of direct chat-message continuation;
-- retry for transient compaction model failures;
-- custom-compaction retry config validation.
+| Parameter | Required | Type or shape | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | No | Boolean | `true` | Enables custom compaction. Set to `false` to disable this extension. |
+| `systemPromptFile` | No | Non-empty absolute path string | Built-in system prompt | Prompt file used as the system prompt for compaction. |
+| `historyPromptFile` | No | Non-empty absolute path string | Built-in history prompt | Prompt file used when there is no previous summary. |
+| `updatePromptFile` | No | Non-empty absolute path string | Built-in update prompt | Prompt file used when a previous summary exists. |
+| `turnPrefixPromptFile` | No | Non-empty absolute path string | Built-in turn-prefix prompt | Prompt file used when compaction needs a summary for the start of a turn. |
+| `model` | No | String in `provider/model` format | Current session model | Model used for compaction. Both `provider` and `model` must be present. |
+| `reasoning` | No | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | Current thinking level when it uses one of the allowed values | Reasoning level used for compaction model calls. |
+| `retry` | No | Object | `{ "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }` | Retry settings for transient compaction model failures. |
+| `retry.enabled` | No | Boolean | `true` | Enables retry for transient compaction model failures. |
+| `retry.maxRetries` | No | Non-negative integer | `3` | Maximum number of retry attempts. |
+| `retry.baseDelayMs` | No | Non-negative integer | `2000` | Base delay between retry attempts in milliseconds. |

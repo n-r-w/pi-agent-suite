@@ -2,21 +2,13 @@
 
 ## Purpose
 
-`codex-verbosity` owns `text.verbosity` injection for OpenAI Codex provider requests.
+`codex-verbosity` sets the verbosity level for OpenAI Codex responses.
 
-## Behavior
-
-- Handles only OpenAI Codex provider requests.
-- Reads configuration from `~/.pi/agent/agent-suite/codex-verbosity/config.json`.
-- Is disabled by default when `config.json` is missing.
-- Requires `enabled: true` before injecting `text.verbosity`.
-- Uses `medium` as the default `verbosity` when enabled config omits `verbosity`.
-- Leaves the provider request unchanged and creates an issue only for `codex-verbosity` when configuration is invalid.
-- Preserves all other provider payload fields.
-
-## Configuration
+## Configuration file
 
 File: `~/.pi/agent/agent-suite/codex-verbosity/config.json`.
+
+Full example:
 
 ```json
 {
@@ -25,28 +17,16 @@ File: `~/.pi/agent/agent-suite/codex-verbosity/config.json`.
 }
 ```
 
-`enabled` is optional and defaults to `false`. `verbosity` is optional and defaults to `medium`.
+## Parameters
 
-Allowed `verbosity` values:
+| Parameter | Required | Type | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | No | Boolean | Disabled when omitted or set to `false` | Enables verbosity control for OpenAI Codex responses. Set to `true` to enable the extension. |
+| `verbosity` | No | String: `low`, `medium`, or `high` | `medium` when `enabled` is `true` and `verbosity` is omitted | Sets the response verbosity level. |
 
-- `low`
-- `medium`
-- `high`
+The configuration file must contain a JSON object. Only `enabled` and `verbosity` are supported. Unsupported keys or wrong value types make the configuration invalid.
 
-Invalid configuration cases:
+## Usage notes
 
-- invalid JSON;
-- unsupported key;
-- non-boolean `enabled` value;
-- `verbosity` outside the allowed value set;
-- non-string `verbosity` value.
-
-## Verification
-
-Tests must verify:
-
-- no provider request change when the config file is missing;
-- default `medium` injection when enabled config omits `verbosity`;
-- `text.verbosity` injection for `low`, `medium`, and `high`;
-- configuration error isolation from other extensions;
-- no provider request change for non-OpenAI Codex providers.
+- The extension affects only OpenAI Codex responses.
+- Missing configuration keeps the extension disabled.
