@@ -95,6 +95,12 @@ Each `mcpServers` entry must be either a `stdio` server or a `streamableHttp` se
 - Placeholders such as `${VAR}` and `$env:VAR` are not expanded.
 - Commands, arguments, environment values, headers, and URLs are used as written.
 
+## Manual cache refresh
+
+Use `/mcp-refresh` to rebuild cached MCP tool metadata from the configured servers.
+
+The command ignores the existing cache, discovers tools from every configured server, writes a new `cache.json`, and reloads the pi runtime. The reload applies added tools and removes tools that no longer exist.
+
 ## Tool names
 
 Generated Pi tool names are based on the server name and MCP tool name:

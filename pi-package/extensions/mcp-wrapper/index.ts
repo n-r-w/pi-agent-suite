@@ -1,5 +1,6 @@
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { McpClientManager, type ServerInstructions } from "./client-manager.ts";
@@ -60,7 +61,18 @@ export default function mcpWrapper(
 		dependencies.createManager ?? createDefaultMcpClientManager;
 	let activeManager: McpManagerLike | undefined;
 	let lifecycleVersion = 0;
+	let metadataWriteGeneration = 0;
 	let serverInstructionRecords: readonly ServerInstructionRecord[] = [];
+	const queueCacheSave = createQueuedCacheSave(saveCache);
+
+	registerMcpRefreshCommand(pi, {
+		readConfig,
+		createManager,
+		queueCacheSave,
+		invalidateBackgroundCacheWrites: () => {
+			metadataWriteGeneration += 1;
+		},
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionVersion = lifecycleVersion + 1;
@@ -82,7 +94,8 @@ export default function mcpWrapper(
 				activeManager = manager;
 			},
 			loadCache,
-			saveCache,
+			saveCache: queueCacheSave,
+			getMetadataWriteGeneration: () => metadataWriteGeneration,
 		});
 		if (sessionVersion !== lifecycleVersion) {
 			return;
@@ -140,6 +153,7 @@ interface HandleSessionStartOptions {
 	readonly activateManager: (manager: McpManagerLike) => void;
 	readonly loadCache: () => Promise<McpWrapperMetadataCache | null>;
 	readonly saveCache: (cache: McpWrapperMetadataCache) => Promise<void>;
+	readonly getMetadataWriteGeneration: () => number;
 }
 
 interface HandleSessionStartResult {
@@ -147,9 +161,44 @@ interface HandleSessionStartResult {
 	readonly serverInstructionRecords: readonly ServerInstructionRecord[];
 }
 
+interface HandleManualRefreshOptions {
+	readonly ctx: ExtensionCommandContext;
+	readonly readConfig: () => Promise<McpWrapperConfigResult>;
+	readonly createManager: McpManagerFactory;
+	readonly queueCacheSave: (cache: McpWrapperMetadataCache) => Promise<void>;
+	readonly invalidateBackgroundCacheWrites: () => void;
+}
+
+type QueuedCacheSave = (cache: McpWrapperMetadataCache) => Promise<void>;
+
 interface ServerInstructionRecord extends ServerInstructions {
 	/** Accepted generated Pi tool names that make this server instruction visible when active. */
 	readonly registeredPiToolNames: readonly string[];
+}
+
+/** Serializes cache writes so a later manual refresh cannot be overwritten by an older background write. */
+function createQueuedCacheSave(
+	saveCache: (cache: McpWrapperMetadataCache) => Promise<void>,
+): QueuedCacheSave {
+	let cacheWriteQueue = Promise.resolve();
+	return async (cache) => {
+		const write = cacheWriteQueue.then(() => saveCache(cache));
+		cacheWriteQueue = write.catch(() => {});
+		await write;
+	};
+}
+
+/** Registers the user command that rebuilds MCP metadata cache and reloads runtime state. */
+function registerMcpRefreshCommand(
+	pi: ExtensionAPI,
+	options: Omit<HandleManualRefreshOptions, "ctx">,
+): void {
+	pi.registerCommand("mcp-refresh", {
+		description: "Refresh cached MCP tool metadata and reload pi runtime",
+		handler: async (_args, ctx) => {
+			await handleManualRefresh({ ctx, ...options });
+		},
+	});
 }
 
 async function handleSessionStart(
@@ -188,11 +237,13 @@ async function handleSessionStart(
 		startup.cachedServerKeys,
 	);
 	if (Object.keys(cachedServers).length > 0) {
+		const refreshGeneration = options.getMetadataWriteGeneration();
 		refreshCacheInBackground({
 			manager: options.createManager(configResult.config),
 			servers: cachedServers,
 			startupCache,
 			saveCache: options.saveCache,
+			canSave: () => refreshGeneration === options.getMetadataWriteGeneration(),
 			notify: options.ctx.ui.notify.bind(options.ctx.ui) as (
 				message: string,
 				type?: "info" | "warning",
@@ -224,6 +275,76 @@ async function handleSessionStart(
 			catalog.tools,
 		),
 	};
+}
+
+/** Rebuilds MCP metadata from live discovery and reloads pi only after the cache is saved. */
+async function handleManualRefresh(
+	options: HandleManualRefreshOptions,
+): Promise<void> {
+	await options.ctx.waitForIdle();
+	const configResult = await options.readConfig();
+	if (configResult.kind === "invalid") {
+		options.ctx.ui.notify(`${ISSUE_PREFIX} ${configResult.issue}`, "warning");
+		return;
+	}
+	if (!configResult.config.enabled) {
+		options.ctx.ui.notify(`${ISSUE_PREFIX} MCP wrapper is disabled`, "warning");
+		return;
+	}
+	if (Object.keys(configResult.config.mcpServers).length === 0) {
+		options.ctx.ui.notify(
+			`${ISSUE_PREFIX} no MCP servers configured`,
+			"warning",
+		);
+		return;
+	}
+
+	options.invalidateBackgroundCacheWrites();
+	const manager = options.createManager(configResult.config);
+	try {
+		const discovery = await manager.discoverServers(
+			configResult.config.mcpServers,
+		);
+		const cache = buildCacheFromStartup(configResult.config.mcpServers, {
+			serverToolLists: discovery.serverToolLists,
+			serverInstructions: discovery.serverInstructions,
+			failures: discovery.failures,
+			cachedServerKeys: [],
+			discoveredServerKeys: discovery.serverToolLists.map(
+				(serverToolList) => serverToolList.serverKey,
+			),
+		});
+		try {
+			await options.queueCacheSave(cache);
+		} catch (error) {
+			options.ctx.ui.notify(
+				`${ISSUE_PREFIX} failed to save MCP metadata cache: ${formatError(error)}`,
+				"warning",
+			);
+			return;
+		}
+		if (discovery.failures.length > 0) {
+			options.ctx.ui.notify(
+				`${ISSUE_PREFIX} MCP refresh completed with failures: ${discovery.failures.map((failure) => `${failure.serverKey} (${failure.issue})`).join(", ")}`,
+				"warning",
+			);
+		}
+		try {
+			await options.ctx.reload();
+		} catch (error) {
+			options.ctx.ui.notify(
+				`${ISSUE_PREFIX} failed to reload after MCP refresh: ${formatError(error)}`,
+				"warning",
+			);
+		}
+	} catch (error) {
+		options.ctx.ui.notify(
+			`${ISSUE_PREFIX} failed to refresh MCP metadata cache: ${formatError(error)}`,
+			"warning",
+		);
+	} finally {
+		await manager.closeAll();
+	}
 }
 
 function createDefaultMcpClientManager(
@@ -454,12 +575,14 @@ function refreshCacheInBackground({
 	servers,
 	startupCache,
 	saveCache,
+	canSave,
 	notify,
 }: {
 	readonly manager: McpManagerLike;
 	readonly servers: Readonly<Record<string, McpServerConfig>>;
 	readonly startupCache: McpWrapperMetadataCache;
 	readonly saveCache: (cache: McpWrapperMetadataCache) => Promise<void>;
+	readonly canSave: () => boolean;
 	readonly notify: (message: string, type?: "info" | "warning") => void;
 }): void {
 	const refreshedServerKeys = new Set(Object.keys(servers));
@@ -470,6 +593,9 @@ function refreshCacheInBackground({
 	manager
 		.discoverServers(servers)
 		.then((discovery) => {
+			if (!canSave()) {
+				return undefined;
+			}
 			const refreshedCache = buildCacheFromStartup(servers, {
 				serverToolLists: discovery.serverToolLists,
 				serverInstructions: discovery.serverInstructions,
