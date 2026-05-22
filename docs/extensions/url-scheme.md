@@ -24,7 +24,7 @@ If the file is missing, the extension stays disabled.
 | Name | Required | Type or value shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `false` | Enables file-reference conversion when set to `true`. |
-| `scheme` | No | String. One of `vscode`, `cursor`, `webstorm`, `idea`, `pycharm`, `phpstorm`, `txmt`, `bbedit`. | `vscode` | Selects the editor URL scheme used in generated links. |
+| `scheme` | No | String. One of `vscode`, `cursor`, `webstorm`, `idea`, `pycharm`, `phpstorm`, `txmt`, `bbedit`, `zed`. | `vscode` | Selects the editor URL scheme used in generated links. |
 
 Only `enabled` and `scheme` are supported.
 

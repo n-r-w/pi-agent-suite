@@ -25,15 +25,16 @@ const RELATIVE_PATH_START_CHARACTER_REGEX = /^[\p{L}\p{N}_@+-]$/u;
 const TRIPLE_BACKTICK_DELIMITER = "```";
 
 /** Detects existing Markdown links and images that must not be modified. */
-const MARKDOWN_LINK_OR_IMAGE_REGEX = /!?\[[^\]]*\]\([^)]*\)/gu;
+const MARKDOWN_LINK_OR_IMAGE_REGEX =
+	/!?\[(?:[^[\]]|\[[^\]]*\]\([^)]*\))*\]\([^)]*\)/gu;
 
 /** Detects existing Markdown links and images with parseable label and target spans. */
 const MARKDOWN_LINK_OR_IMAGE_PARSE_REGEX =
-	/(?<image>!)?\[(?<label>[^\]]*)\]\((?<target>[^)]*)\)/gu;
+	/(?<image>!)?\[(?<label>(?:[^[\]]|\[[^\]]*\]\([^)]*\))*)\]\((?<target>[^)]*)\)/gu;
 
 /** Detects a whole Markdown link or image inside an inline code span. */
 const MARKDOWN_LINK_OR_IMAGE_EXACT_REGEX =
-	/^(?<image>!)?\[(?<label>[^\]]*)\]\((?<target>[^)]*)\)$/u;
+	/^(?<image>!)?\[(?<label>(?:[^[\]]|\[[^\]]*\]\([^)]*\))*)\]\((?<target>[^)]*)\)$/u;
 
 /** Detects single-backtick spans that may contain one file reference. */
 const SINGLE_BACKTICK_SPAN_REGEX = /`([^`\n]+)`/gu;
@@ -287,6 +288,11 @@ function buildMarkdownFileLinkReplacement(options: {
 	});
 	if (fileLink === undefined) {
 		return undefined;
+	}
+
+	const labelLink = MARKDOWN_LINK_OR_IMAGE_EXACT_REGEX.exec(label);
+	if (labelLink !== null && labelLink.groups?.["image"] !== "!") {
+		return label;
 	}
 
 	return `[${label}](${fileLink.url})`;
