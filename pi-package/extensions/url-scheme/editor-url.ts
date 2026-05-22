@@ -8,6 +8,7 @@ export const SUPPORTED_SCHEMES = [
 	"phpstorm",
 	"txmt",
 	"bbedit",
+	"zed",
 ] as const;
 
 export type SupportedScheme = (typeof SUPPORTED_SCHEMES)[number];
@@ -50,6 +51,8 @@ export function formatEditorUrl(options: {
 			return `txmt://open?url=${encodeURIComponent(formatFileUrl(options.absolutePath))}${query}`;
 		case "bbedit":
 			return `x-bbedit://open?url=${encodeURIComponent(formatFileUrl(options.absolutePath))}${query}`;
+		case "zed":
+			return `zed://${formatPathUrlTarget(encodedPath)}${suffix}`;
 	}
 }
 

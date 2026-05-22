@@ -517,7 +517,7 @@ describe("url-scheme", () => {
 	test("rewrites existing Markdown links that point to files", async () => {
 		// Purpose: authored Markdown links should keep their label while file targets become editor URLs.
 		// Input and expected output: file link destinations are rewritten, while URLs, anchors, missing files, and images stay unchanged.
-		// Edge case: path line suffixes in Markdown link targets are preserved in the editor URL.
+		// Edge case: path line suffixes in Markdown link targets are preserved, and already linked labels are not nested again.
 		// Dependencies: isolated suite config, real temporary file, and Markdown link parsing.
 		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
 			await writeConfig(agentDir, { enabled: true });
@@ -525,6 +525,8 @@ describe("url-scheme", () => {
 			const expectedUrl = `vscode://file${encodePathForExpectedUrl(file.absolutePath)}`;
 			const text = [
 				`File [${file.relativePath}](${file.relativePath})`,
+				`Nested [[${file.relativePath}](${expectedUrl})](${file.relativePath})`,
+				`Nested external [[docs](https://example.com)](${file.relativePath})`,
 				`Line [custom label](${file.relativePath}:12)`,
 				`Range [range label](${file.relativePath}:16-18)`,
 				"URL [site](https://example.com/package.json)",
@@ -541,6 +543,8 @@ describe("url-scheme", () => {
 			expect(result.text).toBe(
 				[
 					`File [${file.relativePath}](${expectedUrl})`,
+					`Nested [${file.relativePath}](${expectedUrl})`,
+					"Nested external [docs](https://example.com)",
 					`Line [custom label](${expectedUrl}:12)`,
 					`Range [range label](${expectedUrl}:16)`,
 					"URL [site](https://example.com/package.json)",
@@ -591,7 +595,7 @@ describe("url-scheme", () => {
 	test("uses configured schemes and percent-encodes paths and query parameters", async () => {
 		// Purpose: every supported editor scheme must format URLs with safe percent-encoding.
 		// Input and expected output: special characters, spaces, Unicode, and query-sensitive characters are encoded.
-		// Edge case: JetBrains-style query strings must encode file values before adding line and column parameters.
+		// Edge case: Zed uses a hostless absolute path while JetBrains-style query strings encode file values before line and column parameters.
 		// Dependencies: isolated suite config, real temporary file with special characters, and scheme formatter.
 		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
 			const file = await createProjectFile(cwd, "dir with space/файл#?&.ts");
@@ -607,6 +611,7 @@ describe("url-scheme", () => {
 				phpstorm: `phpstorm://open?file=${queryPath}&line=12&column=5`,
 				txmt: `txmt://open?url=${encodeURIComponent(`file://${file.absolutePath}`)}&line=12&column=5`,
 				bbedit: `x-bbedit://open?url=${encodeURIComponent(`file://${file.absolutePath}`)}&line=12&column=5`,
+				zed: `zed://${encodedPath}:12:5`,
 			} as const;
 
 			for (const [scheme, expectedUrl] of Object.entries(expectedByScheme)) {
@@ -619,6 +624,27 @@ describe("url-scheme", () => {
 
 				expect(result.text).toBe(`Open [${lineReference}](${expectedUrl})`);
 			}
+		});
+	});
+
+	test("formats Zed file URLs with hostless absolute paths", async () => {
+		// Purpose: Zed links must use the editor's hostless absolute-path URL shape.
+		// Input and expected output: an absolute file reference becomes zed:///absolute/path without line suffixes.
+		// Edge case: the third slash belongs to the absolute path, not to a file host.
+		// Dependencies: isolated suite config, real temporary file, and scheme formatter.
+		await withIsolatedAgentDir(async ({ agentDir, cwd }) => {
+			await writeConfig(agentDir, { enabled: true, scheme: "zed" });
+			const file = await createProjectFile(cwd, "packages/foo/src/bar.ts");
+			const encodedPath = encodePathForExpectedUrl(file.absolutePath);
+
+			const result = await runMessageEnd({
+				cwd,
+				event: createAssistantMessageEndEvent(`Open ${file.absolutePath}`),
+			});
+
+			expect(result.text).toBe(
+				`Open [${file.absolutePath}](zed://${encodedPath})`,
+			);
 		});
 	});
 
@@ -685,7 +711,7 @@ describe("url-scheme", () => {
 			expect(ctx.notifications).toEqual([
 				{
 					message:
-						"[url-scheme] scheme must be one of: vscode, cursor, webstorm, idea, pycharm, phpstorm, txmt, bbedit",
+						"[url-scheme] scheme must be one of: vscode, cursor, webstorm, idea, pycharm, phpstorm, txmt, bbedit, zed",
 					type: "warning",
 				},
 			]);
