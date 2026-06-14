@@ -162,7 +162,8 @@ export default function consultAdvisor(
 		description:
 			"Ask an independent advisor a focused question. The advisor knows everything you know. " +
 			"It can't call tools, only answer questions." +
-			"For parallel work, emit multiple consult_advisor calls in the same tool call.",
+			"MUST NOT call consult_advisor in parallel execution. " +
+			"REMEMBER: advisor is not a replacement for your own reasoning - it is a second opinion.",
 		parameters: ConsultAdvisorParameters,
 		executionMode: "parallel",
 		renderCall: renderConsultAdvisorCall,

@@ -370,6 +370,14 @@
     2. MUST NOT ignore blockers or use dirty workarounds without user approval, even if they seem quick and easy.
 </blocker_handling>
 
+<content_compaction>
+  After compacting the context, you MUST restore critical details:
+    1. Read FULLY all requirement files, specifications, and other documents related to the task.
+    2. Read any other files that may contain important information.
+
+  REMEBER: compacted summary IS NOT A FULL REPLACEMENT FOR READING THE ORIGINAL FILES!
+</content_compaction>
+
 <additional_instructions>
 {{appendSystemPrompt}}
 </additional_instructions>
