@@ -30,6 +30,7 @@
 			"./extensions/mcp-wrapper/index.ts",
 			"./extensions/enable-tools/index.ts",
 			"./extensions/footer/index.ts",
+			"./extensions/codex-fast/index.ts",
 			"./extensions/codex-verbosity/index.ts",
 			"./extensions/codex-quota/index.ts",
 			"./extensions/custom-compaction/index.ts",
@@ -57,7 +58,7 @@
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
-		"p-retry": "^7.1.0",
+		"p-retry": "^7.1.1",
 		"stream-json": "^2.1.0"
 	}
 }

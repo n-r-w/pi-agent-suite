@@ -10,6 +10,10 @@ import {
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
+import {
+	CODEX_FAST_ENABLED_STATUS,
+	CODEX_FAST_STATUS_KEY,
+} from "../../shared/codex-fast-status";
 import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import {
 	sliceTextByWidth,
@@ -116,7 +120,7 @@ interface FooterEventBus {
 
 /** Minimal theme surface needed by the footer renderer. */
 interface FooterTheme {
-	fg(color: "warning" | "error", value: string): string;
+	fg(color: "accent" | "warning" | "error", value: string): string;
 }
 
 /** Context usage fields that the footer displays without owning context calculation. */
@@ -307,6 +311,17 @@ function buildModelDisplaySegment(
 	].filter((part): part is string => Boolean(part));
 
 	return parts.length === 0 ? undefined : parts.join("/");
+}
+
+/** Builds the fast-mode suffix shown in the model segment. */
+function buildCodexFastSuffix(
+	footerData: FooterData,
+	theme: FooterTheme,
+): string {
+	return footerData.getExtensionStatuses().get(CODEX_FAST_STATUS_KEY) ===
+		CODEX_FAST_ENABLED_STATUS
+		? `-${theme.fg("accent", "F")}`
+		: "";
 }
 
 /** Selects the context usage color from used context percentage. */
@@ -513,7 +528,7 @@ function renderFooterLines({
 	);
 	const modelDisplaySegment = rawModelDisplaySegment
 		? truncateTextByWidth(
-				rawModelDisplaySegment,
+				`${rawModelDisplaySegment}${buildCodexFastSuffix(footerData, theme)}`,
 				width -
 					fixedPriorityWidth -
 					(fixedPrioritySegments.length > 0

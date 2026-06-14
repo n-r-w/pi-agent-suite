@@ -681,6 +681,26 @@ describe("footer", () => {
 		expect(renderedText).toContain("42k/151k/200k");
 	});
 
+	test("renders a colored fast marker in the model display when Codex fast mode is enabled", async () => {
+		// Purpose: the footer must expose fast mode without adding another footer segment.
+		// Input and expected output: codex-fast enabled status renders `openai-codex/gpt-5.4/high-<accent>F</accent>`.
+		// Edge case: only the `F` marker is colored; the dash stays in the normal model segment.
+		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
+		const { footerRenderer } = await installFooterTestHarness();
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(new Map([["codex-fast", "enabled"]])),
+			createTuiFake(),
+			true,
+		);
+
+		const renderedText = footerComponent.render(120).join("\n");
+
+		expect(renderedText).toContain(
+			"openai-codex/gpt-5.4/high-<accent>F</accent>",
+		);
+	});
+
 	test("renders projection-aware context usage while provider usage is stale", async () => {
 		// Purpose: footer context usage must match the projected provider payload after projection succeeds but provider usage is still stale.
 		// Input and expected output: 48k pending projection savings turns raw `130k/262k/272k` into `82k/262k/272k`.
