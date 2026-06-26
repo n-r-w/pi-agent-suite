@@ -76,6 +76,10 @@ interface ExtensionApiFake extends ExtensionAPI {
 
 interface FooterDataFake {
 	getExtensionStatuses(): ReadonlyMap<string, string>;
+	getGitBranch(): string | null;
+	onBranchChange(callback: () => void): () => void;
+	emitBranchChange(): void;
+	setGitBranch(branch: string | null): void;
 }
 
 interface TuiFake {
@@ -319,10 +323,30 @@ function createTuiFake(): TuiFake {
 /** Creates the footer data fake needed to expose extension statuses. */
 function createFooterDataFake(
 	statuses: ReadonlyMap<string, string> = new Map(),
+	gitBranch: string | null = null,
 ): FooterDataFake {
+	const branchChangeCallbacks = new Set<() => void>();
+	let currentGitBranch = gitBranch;
+
 	return {
 		getExtensionStatuses() {
 			return statuses;
+		},
+		getGitBranch() {
+			return currentGitBranch;
+		},
+		onBranchChange(callback: () => void): () => void {
+			branchChangeCallbacks.add(callback);
+
+			return () => branchChangeCallbacks.delete(callback);
+		},
+		emitBranchChange(): void {
+			for (const callback of branchChangeCallbacks) {
+				callback();
+			}
+		},
+		setGitBranch(branch: string | null): void {
+			currentGitBranch = branch;
 		},
 	};
 }
@@ -580,21 +604,77 @@ describe("footer", () => {
 		);
 	});
 
-	test("renders project name without a branch suffix", async () => {
-		// Purpose: the footer must show the project directory label without branch noise.
-		// Input and expected output: project `pi-harness` renders without `(main)` or branch text.
-		// Edge case: session data still comes from the same footer data callback used by other statuses.
+	test("renders project name without a branch suffix by default", async () => {
+		// Purpose: the footer must keep branch text disabled unless the user opts in.
+		// Input and expected output: project `pi-harness` with git branch `main` renders without `(main)`.
+		// Edge case: branch data is available from pi, but the default config still hides it.
 		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
 		const { footerRenderer } = await installFooterTestHarness();
 		const footerComponent = createFooterComponent(
 			footerRenderer,
-			createFooterDataFake(),
+			createFooterDataFake(new Map(), "main"),
 		);
 
 		const renderedText = footerComponent.render(120).join("\n");
 
 		expect(renderedText).toContain("pi-harness");
 		expect(renderedText).not.toContain("(main)");
+	});
+
+	test("renders git branch suffix when explicitly enabled", async () => {
+		// Purpose: showGitBranch true must mirror pi's default footer branch suffix.
+		// Input and expected output: git branch `feature/footer` renders as `pi-harness (feature/footer)`.
+		// Edge case: branch data comes from pi footerData instead of shelling out during render.
+		// Dependencies: this test uses isolated config and footer data fakes.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeFooterConfig(agentDir, { showGitBranch: true });
+			const { footerRenderer } = await installFooterTestHarness();
+			const footerComponent = createFooterComponent(
+				footerRenderer,
+				createFooterDataFake(new Map(), "feature/footer"),
+			);
+
+			const renderedText = footerComponent.render(120).join("\n");
+
+			expect(renderedText).toContain("pi-harness (feature/footer)");
+		});
+	});
+
+	test("requests render after git branch changes only when branch display is enabled", async () => {
+		// Purpose: branch changes must redraw the footer only when branch text can affect rendering.
+		// Input and expected output: enabled config subscribes to branch changes, default config does not.
+		// Edge case: the branch value changes after component creation.
+		// Dependencies: this test uses isolated config, footer data, and TUI fakes.
+		const { footerRenderer: defaultFooterRenderer } =
+			await installFooterTestHarness();
+		const defaultFooterData = createFooterDataFake(new Map(), "main");
+		const defaultTui = createTuiFake();
+		createFooterComponent(defaultFooterRenderer, defaultFooterData, defaultTui);
+
+		defaultFooterData.setGitBranch("next");
+		defaultFooterData.emitBranchChange();
+
+		expect(defaultTui.requestRenderCalls).toHaveLength(0);
+
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeFooterConfig(agentDir, { showGitBranch: true });
+			const { footerRenderer } = await installFooterTestHarness();
+			const footerData = createFooterDataFake(new Map(), "main");
+			const tui = createTuiFake();
+			const footerComponent = createFooterComponent(
+				footerRenderer,
+				footerData,
+				tui,
+			);
+
+			footerData.setGitBranch("next");
+			footerData.emitBranchChange();
+
+			expect(tui.requestRenderCalls).toHaveLength(1);
+			expect(footerComponent.render(120).join("\n")).toContain(
+				"pi-harness (next)",
+			);
+		});
 	});
 
 	test("renders repository name when session starts from a nested working directory", async () => {
@@ -1097,6 +1177,47 @@ describe("footer", () => {
 		expect(renderedText).toContain("github error: token denied");
 		expect(renderedText).not.toContain("connected");
 		expect(renderedText).not.toContain("files available");
+	});
+
+	test("omits the extension status line by default", async () => {
+		// Purpose: the default footer must not add pi's separate extension status line unless requested.
+		// Input and expected output: unknown status `foo` is absent because no compact segment consumes it.
+		// Edge case: existing compact status handling remains unchanged for known keys.
+		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
+		const { footerRenderer } = await installFooterTestHarness();
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(new Map([["foo", "Foo ready"]])),
+		);
+
+		const renderedText = footerComponent.render(120).join("\n");
+
+		expect(renderedText).not.toContain("Foo ready");
+	});
+
+	test("renders a separate extension status line when explicitly enabled", async () => {
+		// Purpose: showExtensionStatusLine true must mirror pi's default footer status line.
+		// Input and expected output: statuses are sorted by key, sanitized, joined with spaces, and rendered on a second line.
+		// Edge case: newline and tab characters are normalized before rendering.
+		// Dependencies: this test uses isolated config and in-memory footer data fakes.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeFooterConfig(agentDir, { showExtensionStatusLine: true });
+			const { footerRenderer } = await installFooterTestHarness();
+			const footerComponent = createFooterComponent(
+				footerRenderer,
+				createFooterDataFake(
+					new Map([
+						["z-status", "Zulu\nStatus"],
+						["a-status", " Alpha\tStatus "],
+					]),
+				),
+			);
+
+			const renderedLines = footerComponent.render(120);
+
+			expect(renderedLines).toHaveLength(2);
+			expect(renderedLines[1]).toBe("Alpha Status Zulu Status");
+		});
 	});
 
 	test("keeps compact context projection statuses within terminal width", async () => {
