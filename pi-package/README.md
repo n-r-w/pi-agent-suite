@@ -52,7 +52,7 @@ Add optional extensions only when you need their specific behavior:
 - Enable `codex-verbosity` when you want to control Codex answer detail.
 - Configure `mcp-wrapper` when you want MCP server tools inside pi.
 - Enable `url-scheme` when you want final answer file references to open in your editor.
-- Enable `context-projection`. Use summary mode with a fast model in `summary.model` (e.g. `gpt-5.3-codex-spark`).
+- Enable `context-projection`. Use summary mode with a fast model in `summary.model` (e.g. `gpt-5.4-mini`, `gpt-5.3-codex-spark`).
 - Enable `convene-council`. Do not rely on current session model defaults. Configure `llm1` and `llm2` with the most capable available models and set `model.thinking` to `high` or `xhigh`. Use two different models when possible.
 
 Recommended MCP servers:
