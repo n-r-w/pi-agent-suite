@@ -74,7 +74,6 @@ Recommended MCP servers:
 | `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](docs/extensions/codex-quota.md) |
 | `custom-compaction` | Enabled | Uses custom prompts for pi conversation compaction. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
 | `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with a placeholder or summary. | `context-projection/config.json`: `enabled`, projection thresholds, recent-turn protection, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
-| `context-overflow` | Enabled | Starts preventive compaction before the model context is too full. | `context-overflow/config.json`: `enabled`, `compactRemainingTokens`. | [docs/extensions/context-overflow.md](docs/extensions/context-overflow.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |
 | `url-scheme` | Disabled | Converts final answer file references into editor links. | `url-scheme/config.json`: `enabled`, `scheme` (`vscode`, `cursor`, `webstorm`, `idea`, `pycharm`, `phpstorm`, `txmt`, `bbedit`, `zed`). | [docs/extensions/url-scheme.md](docs/extensions/url-scheme.md) |
@@ -127,3 +126,11 @@ You are a code review agent. Check correctness, risks, and missing validation.
 ```
 
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+
+## Changelog
+
+### 2026-07-06: Removed `context-overflow`
+
+`context-overflow` was removed because native pi now handles context overflow recovery: it detects provider overflow errors, runs compaction, and continues the interrupted work. Keeping this extension caused duplicate compaction paths and could stop continuation after Codex context overflow.
+
+Use native pi `compaction.reserveTokens` to configure the displayed compaction threshold. `custom-compaction` remains enabled and still replaces pi's compaction summary with this package's custom prompt.

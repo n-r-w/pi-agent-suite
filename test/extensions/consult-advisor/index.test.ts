@@ -1465,7 +1465,7 @@ describe("consult-advisor", () => {
 				completion.calls[0]?.context.messages,
 			);
 			expect(advisorMessages).toContain(
-				"[Result omitted. Run tool again if you want to see it]",
+				"Result omitted. Run tool again if you want to see it",
 			);
 			expect(advisorMessages).not.toContain("old output old output");
 		});
@@ -1555,7 +1555,7 @@ describe("consult-advisor", () => {
 				'<tool_result full_result="omitted" content="summary">',
 			);
 			expect(advisorReplacement.text).toContain(
-				"<notice>[Result omitted. Run tool again if you want to see it]</notice>",
+				"<notice>Result omitted. Run tool again if you want to see it</notice>",
 			);
 			expect(advisorReplacement.text).toContain("Generated projection summary");
 			expect(advisorReplacement.text).not.toContain("old output old output");
@@ -1564,7 +1564,7 @@ describe("consult-advisor", () => {
 					{
 						entryId: "2",
 						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>[Result omitted. Run tool again if you want to see it]</notice>\n<summary>\nGenerated projection summary\n</summary>\n</tool_result>',
+							'<tool_result full_result="omitted" content="summary">\n<notice>Result omitted. Run tool again if you want to see it</notice>\n<summary>\nGenerated projection summary\n</summary>\n</tool_result>',
 					},
 				],
 			});

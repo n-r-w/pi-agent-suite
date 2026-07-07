@@ -1,8 +1,10 @@
 import { basename } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type {
-	ExtensionAPI,
-	SessionEntry,
+import {
+	type ExtensionAPI,
+	getAgentDir,
+	type SessionEntry,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -21,10 +23,6 @@ import {
 	truncateTextByWidth,
 } from "../../shared/display-width";
 import { sumHelperApiCost } from "../../shared/helper-api-cost";
-import {
-	type ContextOverflowConfig,
-	readContextOverflowConfig,
-} from "../context-overflow/config";
 
 /** Footer label shown when no main-agent runtime contribution is active. */
 const NO_AGENT_LABEL = "No agent";
@@ -146,6 +144,11 @@ interface FooterConfig {
 	readonly showApiCost: boolean;
 }
 
+interface FooterCompactionSettings {
+	readonly enabled: boolean;
+	readonly reserveTokens: number;
+}
+
 type FooterConfigResult =
 	| { readonly kind: "enabled"; readonly config: FooterConfig }
 	| { readonly kind: "disabled" }
@@ -161,7 +164,7 @@ interface FooterRenderState {
 /** Input needed to build one footer render. */
 interface FooterRenderOptions {
 	readonly config: FooterConfig;
-	readonly contextOverflowConfig: ContextOverflowConfig | undefined;
+	readonly compactionSettings: FooterCompactionSettings | undefined;
 	readonly footerData: FooterData;
 	readonly ctx: FooterSessionContext;
 	readonly renderState: FooterRenderState;
@@ -344,21 +347,19 @@ function getContextUsageColor(
 function buildContextSegment(
 	state: FooterRenderState,
 	theme: FooterTheme,
-	contextOverflowConfig: ContextOverflowConfig | undefined,
+	compactionSettings: FooterCompactionSettings | undefined,
 ): string | undefined {
 	const contextWindow = state.contextUsage?.contextWindow;
 	if (!contextWindow) {
 		return undefined;
 	}
 
-	const contextOverflowLimit = calculateContextOverflowLimit(
+	const compactionLimit = calculateCompactionLimit(
 		contextWindow,
-		contextOverflowConfig,
+		compactionSettings,
 	);
 	const contextWindowParts = [
-		contextOverflowLimit === undefined
-			? undefined
-			: formatTokens(contextOverflowLimit),
+		compactionLimit === undefined ? undefined : formatTokens(compactionLimit),
 		formatTokens(contextWindow),
 	].filter((part): part is string => Boolean(part));
 
@@ -373,16 +374,16 @@ function buildContextSegment(
 	return color ? theme.fg(color, segment) : segment;
 }
 
-/** Converts context-overflow remaining-token reserve into the used-token limit shown in the footer. */
-function calculateContextOverflowLimit(
+/** Converts native compaction reserve into the used-token limit shown in the footer. */
+function calculateCompactionLimit(
 	contextWindow: number,
-	config: ContextOverflowConfig | undefined,
+	settings: FooterCompactionSettings | undefined,
 ): number | undefined {
-	if (config === undefined || !config.enabled) {
+	if (settings === undefined || !settings.enabled) {
 		return undefined;
 	}
 
-	return Math.max(0, contextWindow - config.compactRemainingTokens);
+	return Math.max(0, contextWindow - settings.reserveTokens);
 }
 
 /** Normalizes status text because footer statuses must stay on one terminal row. */
@@ -501,7 +502,7 @@ function calculateProjectSegmentWidth(
 /** Builds footer lines from extension-owned status values and session-owned display state. */
 function renderFooterLines({
 	config,
-	contextOverflowConfig,
+	compactionSettings,
 	footerData,
 	ctx,
 	renderState,
@@ -515,7 +516,7 @@ function renderFooterLines({
 		buildAgentSegment(renderState),
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
-		buildContextSegment(renderState, theme, contextOverflowConfig),
+		buildContextSegment(renderState, theme, compactionSettings),
 	].filter((part): part is string => Boolean(part));
 	const rawModelDisplaySegment = buildModelDisplaySegment(
 		config,
@@ -543,7 +544,7 @@ function renderFooterLines({
 		modelDisplaySegment,
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
-		buildContextSegment(renderState, theme, contextOverflowConfig),
+		buildContextSegment(renderState, theme, compactionSettings),
 	].filter((part): part is string => Boolean(part));
 	const projectSegment = buildProjectSegment(
 		sessionState,
@@ -561,7 +562,7 @@ function renderFooterLines({
 
 interface CreateFooterComponentOptions {
 	readonly config: FooterConfig;
-	readonly contextOverflowConfig: ContextOverflowConfig | undefined;
+	readonly compactionSettings: FooterCompactionSettings | undefined;
 	readonly pi: ExtensionAPI;
 	readonly ctx: FooterSessionContext;
 	readonly footerData: FooterData;
@@ -573,7 +574,7 @@ interface CreateFooterComponentOptions {
 /** Creates the footer component installed into the active pi session. */
 function createFooterComponent({
 	config,
-	contextOverflowConfig,
+	compactionSettings,
 	pi,
 	ctx,
 	footerData,
@@ -598,7 +599,7 @@ function createFooterComponent({
 		render(width: number) {
 			return renderFooterLines({
 				config,
-				contextOverflowConfig,
+				compactionSettings,
 				footerData,
 				ctx,
 				renderState: readFooterRenderState(pi, ctx),
@@ -626,13 +627,13 @@ async function installSessionFooter(
 		return;
 	}
 
-	const contextOverflowConfig = await readFooterContextOverflowConfig();
+	const compactionSettings = readFooterCompactionSettings(ctx.cwd);
 	state.projectName = await resolveProjectName(pi, ctx.cwd);
 	state.model = ctx.model;
 	ctx.ui.setFooter((tui, theme, footerData) =>
 		createFooterComponent({
 			config: config.config,
-			contextOverflowConfig,
+			compactionSettings,
 			pi,
 			ctx,
 			footerData,
@@ -643,16 +644,20 @@ async function installSessionFooter(
 	);
 }
 
-/** Reads context-overflow config for footer display without surfacing context-overflow errors as footer errors. */
-async function readFooterContextOverflowConfig(): Promise<
-	ContextOverflowConfig | undefined
-> {
-	const result = await readContextOverflowConfig();
-	if (result.kind === "invalid" || !result.config.enabled) {
+/** Reads native pi compaction settings for footer display without surfacing settings errors as footer errors. */
+function readFooterCompactionSettings(
+	cwd: string,
+): FooterCompactionSettings | undefined {
+	const settings = SettingsManager.create(cwd, getAgentDir());
+	const compactionSettings = settings.getCompactionSettings();
+	if (settings.drainErrors().length > 0 || !compactionSettings.enabled) {
 		return undefined;
 	}
 
-	return result.config;
+	return {
+		enabled: compactionSettings.enabled,
+		reserveTokens: compactionSettings.reserveTokens,
+	};
 }
 
 /** Reads footer config while missing config keeps the footer enabled with defaults. */
