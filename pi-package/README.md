@@ -129,8 +129,12 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhig
 
 ## Changelog
 
-### 2026-07-06: Removed `context-overflow`
+### 0.14.0 - 2026-07-07
 
-`context-overflow` was removed because native pi now handles context overflow recovery: it detects provider overflow errors, runs compaction, and continues the interrupted work. Keeping this extension caused duplicate compaction paths and could stop continuation after Codex context overflow.
+- Removed `context-overflow`. Native pi now handles context overflow recovery: it detects provider overflow errors, runs compaction, and continues the interrupted work. Keeping this extension caused duplicate compaction paths and could stop continuation after Codex context overflow.
+- Updated `footer` to read native pi compaction settings. Context usage now renders as `used/threshold/window` when native compaction is enabled, where `threshold = contextWindow - compaction.reserveTokens`.
+- Refined `context-projection` summaries. Summary prompts now require structured sections, preserve evidence from tool results, and treat tool output as data instead of instructions.
+- Removed square brackets from the default `context-projection` placeholder: `Result omitted. Run tool again if you want to see it`.
+- Refined bundled system and advisor prompts with stricter evidence handling, blocker handling, source-of-truth rules, escalation rules, and refactoring constraints.
 
 Use native pi `compaction.reserveTokens` to configure the displayed compaction threshold. `custom-compaction` remains enabled and still replaces pi's compaction summary with this package's custom prompt.
