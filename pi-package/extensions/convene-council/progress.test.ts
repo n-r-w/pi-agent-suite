@@ -125,7 +125,7 @@ describe("convene-council progress", () => {
 		reporter.recordSessionEvent("llm1", {
 			type: "extension_ui_request",
 			method: "setStatus",
-			statusKey: "context-overflow",
+			statusKey: "unrelated-status",
 			statusText: "262k",
 		});
 

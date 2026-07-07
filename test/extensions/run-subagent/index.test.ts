@@ -896,7 +896,7 @@ describe("run-subagent", () => {
 	test("renders child projection savings before child context usage in widget rows", async () => {
 		// Purpose: widget rows must show the projection state published by the same child process.
 		// Input and expected output: child setStatus(context-projection, ~65k) plus usage renders ~65k/154.7k/272k.
-		// Edge case: parent/global statuses and context-overflow status must not be copied into the child row.
+		// Edge case: parent/global statuses and unrelated child statuses must not be copied into the child row.
 		// Dependencies: this test uses temp agent files, fake context statuses, and fake child RPC output.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -922,9 +922,9 @@ describe("run-subagent", () => {
 				}),
 				JSON.stringify({
 					type: "extension_ui_request",
-					id: "context-overflow-status-1",
+					id: "unrelated-status-1",
 					method: "setStatus",
-					statusKey: "context-overflow",
+					statusKey: "unrelated-status",
 					statusText: "262k",
 				}),
 				JSON.stringify({
@@ -948,7 +948,7 @@ describe("run-subagent", () => {
 				[childModel],
 			);
 			ctx.ui.setStatus("context-projection", "~99k");
-			ctx.ui.setStatus("context-overflow", "262k");
+			ctx.ui.setStatus("unrelated-status", "262k");
 			await runSubagent(pi, { spawnPi: spawn.spawnPi });
 
 			await executeRunSubagent(pi, ctx, {

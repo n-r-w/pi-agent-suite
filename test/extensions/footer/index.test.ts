@@ -133,12 +133,19 @@ async function writeFooterConfig(
 	await writeConfig(agentDir, "footer.json", config);
 }
 
-/** Writes context-overflow config into the isolated pi agent directory. */
-async function writeContextOverflowConfig(
+interface PiSettingsConfig {
+	readonly compaction?: {
+		readonly enabled?: boolean;
+		readonly reserveTokens?: number;
+	};
+}
+
+/** Writes native pi settings into the isolated pi agent directory. */
+async function writePiSettings(
 	agentDir: string,
-	config: unknown,
+	config: PiSettingsConfig,
 ): Promise<void> {
-	await writeConfig(agentDir, "context-overflow.json", config);
+	await writeFile(join(agentDir, "settings.json"), JSON.stringify(config));
 }
 
 /** Writes one extension config into the isolated pi agent directory. */
@@ -539,7 +546,7 @@ describe("footer", () => {
 	test("renders the compact footer segments in the requested order", async () => {
 		// Purpose: the footer must keep the compact order requested for daily use.
 		// Input and expected output: project, quota, agent, model display, context projection, and context usage render in one row.
-		// Edge case: a zero-token context usage remains visible as `0/223k/272k`.
+		// Edge case: a zero-token context usage remains visible as `0/256k/272k`.
 		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
 		const { pi, footerRenderer } = await installFooterTestHarness({
 			contextUsage: { tokens: 0, contextWindow: 272_000 },
@@ -568,7 +575,7 @@ describe("footer", () => {
 				"Coder",
 				"openai-codex/gpt-5.4/high",
 				"~0",
-				"0/223k/272k",
+				"0/256k/272k",
 			].join(SEGMENT_SEPARATOR),
 		);
 	});
@@ -639,7 +646,7 @@ describe("footer", () => {
 		expect(renderedText).toContain("Coder");
 		expect(renderedText).toContain("openai-codex/gpt-5.4/high");
 		expect(renderedText).toContain("~0");
-		expect(renderedText).toContain("42k/151k/200k");
+		expect(renderedText).toContain("42k/184k/200k");
 	});
 
 	test("preserves priority segments when the project segment budget ends before an emoji variation sequence", async () => {
@@ -665,10 +672,10 @@ describe("footer", () => {
 	});
 
 	test("renders provider, model, thinking level, and token context usage by default", async () => {
-		// Purpose: model display defaults must expose provider, model, and thinking level in the footer.
-		// Input and expected output: openai-codex gpt-5.4 with high thinking renders `openai-codex/gpt-5.4/high` and `42k/151k/200k`.
+		// Purpose: model display defaults must expose provider, model, thinking level, and native compaction threshold in the footer.
+		// Input and expected output: openai-codex gpt-5.4 with high thinking renders `openai-codex/gpt-5.4/high` and `42k/184k/200k`.
 		// Edge case: provider, model, and thinking level render as one slash-delimited segment.
-		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
+		// Dependencies: this test uses only in-memory extension, session, footer data, TUI fakes, and isolated pi settings.
 		const { footerRenderer } = await installFooterTestHarness();
 		const footerComponent = createFooterComponent(
 			footerRenderer,
@@ -678,7 +685,7 @@ describe("footer", () => {
 		const renderedText = footerComponent.render(120).join("\n");
 
 		expect(renderedText).toContain("openai-codex/gpt-5.4/high");
-		expect(renderedText).toContain("42k/151k/200k");
+		expect(renderedText).toContain("42k/184k/200k");
 	});
 
 	test("renders a colored fast marker in the model display when Codex fast mode is enabled", async () => {
@@ -704,12 +711,11 @@ describe("footer", () => {
 	test("renders projection-aware context usage while provider usage is stale", async () => {
 		// Purpose: footer context usage must match the projected provider payload after projection succeeds but provider usage is still stale.
 		// Input and expected output: 48k pending projection savings turns raw `130k/262k/272k` into `82k/262k/272k`.
-		// Edge case: context-overflow limit remains based on the full context window and is not reduced by projection.
-		// Dependencies: shared in-memory projection state and footer renderer fake.
+		// Edge case: the native compaction limit remains based on the full context window and is not reduced by projection.
+		// Dependencies: shared in-memory projection state, pi settings, and footer renderer fake.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeContextOverflowConfig(agentDir, {
-				enabled: true,
-				compactRemainingTokens: 10_000,
+			await writePiSettings(agentDir, {
+				compaction: { enabled: true, reserveTokens: 10_000 },
 			});
 			const sessionId = "footer-projection-aware-usage";
 			resetPendingProjectionSavings(sessionId);
@@ -738,13 +744,13 @@ describe("footer", () => {
 		});
 	});
 
-	test("omits the context-overflow limit when context-overflow is disabled", async () => {
-		// Purpose: footer context usage must keep the old two-part format when context-overflow is disabled.
-		// Input and expected output: disabled context-overflow config renders `42k/200k`.
-		// Edge case: footer itself stays enabled while context-overflow is disabled.
-		// Dependencies: this test uses isolated config files and in-memory fakes.
+	test("omits the compaction limit when native compaction is disabled", async () => {
+		// Purpose: footer context usage must keep the two-part format when native compaction is disabled.
+		// Input and expected output: disabled native compaction renders `42k/200k`.
+		// Edge case: footer itself stays enabled while native compaction is disabled.
+		// Dependencies: this test uses isolated pi settings and in-memory fakes.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeContextOverflowConfig(agentDir, { enabled: false });
+			await writePiSettings(agentDir, { compaction: { enabled: false } });
 			const { footerRenderer } = await installFooterTestHarness();
 			const footerComponent = createFooterComponent(
 				footerRenderer,
@@ -754,18 +760,18 @@ describe("footer", () => {
 			const renderedText = footerComponent.render(120).join("\n");
 
 			expect(renderedText).toContain("42k/200k");
-			expect(renderedText).not.toContain("151k");
+			expect(renderedText).not.toContain("184k");
 		});
 	});
 
-	test("uses the configured context-overflow limit in context usage", async () => {
-		// Purpose: footer context usage must show the configured context-overflow compaction threshold.
-		// Input and expected output: compactRemainingTokens 10000 with a 200000-token window renders `42k/190k/200k`.
-		// Edge case: the config stores remaining tokens, while the footer displays the used-token threshold.
-		// Dependencies: this test uses isolated config files and in-memory fakes.
+	test("uses the configured native compaction limit in context usage", async () => {
+		// Purpose: footer context usage must show the configured native compaction threshold.
+		// Input and expected output: reserveTokens 10000 with a 200000-token window renders `42k/190k/200k`.
+		// Edge case: pi stores reserved tokens, while the footer displays the used-token threshold.
+		// Dependencies: this test uses isolated pi settings and in-memory fakes.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeContextOverflowConfig(agentDir, {
-				compactRemainingTokens: 10_000,
+			await writePiSettings(agentDir, {
+				compaction: { reserveTokens: 10_000 },
 			});
 			const { footerRenderer } = await installFooterTestHarness();
 			const footerComponent = createFooterComponent(
@@ -779,14 +785,14 @@ describe("footer", () => {
 		});
 	});
 
-	test("omits the context-overflow limit when context-overflow config is invalid", async () => {
-		// Purpose: a context-overflow config error must not break footer rendering.
-		// Input and expected output: invalid compactRemainingTokens renders `42k/200k`.
-		// Edge case: footer does not report or render another extension's invalid config state.
-		// Dependencies: this test uses isolated config files and in-memory fakes.
+	test("omits the compaction limit when native compaction settings are invalid", async () => {
+		// Purpose: a pi settings error must not break footer rendering.
+		// Input and expected output: invalid reserveTokens renders `42k/200k`.
+		// Edge case: footer keeps rendering without showing a threshold from invalid settings.
+		// Dependencies: this test uses isolated pi settings and in-memory fakes.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeContextOverflowConfig(agentDir, {
-				compactRemainingTokens: -1,
+			await writePiSettings(agentDir, {
+				compaction: { reserveTokens: -1 },
 			});
 			const { footerRenderer } = await installFooterTestHarness();
 			const footerComponent = createFooterComponent(
@@ -797,7 +803,7 @@ describe("footer", () => {
 			const renderedText = footerComponent.render(120).join("\n");
 
 			expect(renderedText).toContain("42k/200k");
-			expect(renderedText).not.toContain("151k");
+			expect(renderedText).not.toContain("184k");
 		});
 	});
 
@@ -924,7 +930,7 @@ describe("footer", () => {
 		expect(renderedText).toContain("Coder");
 		expect(renderedText).toContain("openai-codex/gpt-5.4/high");
 		expect(renderedText).toContain("~0");
-		expect(renderedText).toContain("42k/151k/200k");
+		expect(renderedText).toContain("42k/184k/200k");
 	});
 
 	test("customizes provider, model, and thinking level visibility independently", async () => {
@@ -971,7 +977,7 @@ describe("footer", () => {
 			const renderedText = footerComponent.render(120).join("\n");
 
 			expect(renderedText).toBe(
-				["pi-harness", "No agent", "42k/151k/200k"].join(SEGMENT_SEPARATOR),
+				["pi-harness", "No agent", "42k/184k/200k"].join(SEGMENT_SEPARATOR),
 			);
 		});
 	});
@@ -1016,9 +1022,9 @@ describe("footer", () => {
 		// Edge cases: exact boundary values 50% and 80% are covered.
 		// Dependencies: this test uses only in-memory extension, session, footer data, TUI fakes, and a colorized theme fake.
 		const cases = [
-			{ tokens: 49_000, expectedText: "49k/51k/100k" },
-			{ tokens: 50_000, expectedText: "<warning>50k/51k/100k</warning>" },
-			{ tokens: 80_000, expectedText: "<error>80k/51k/100k</error>" },
+			{ tokens: 49_000, expectedText: "49k/84k/100k" },
+			{ tokens: 50_000, expectedText: "<warning>50k/84k/100k</warning>" },
+			{ tokens: 80_000, expectedText: "<error>80k/84k/100k</error>" },
 		] as const;
 
 		for (const { tokens, expectedText } of cases) {

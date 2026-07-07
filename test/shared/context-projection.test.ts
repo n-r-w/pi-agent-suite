@@ -199,7 +199,7 @@ describe("context projection config", () => {
 					keepRecentTurns: 10,
 					keepRecentTurnsPercent: 0.2,
 					projectionIgnoredTools: [],
-					placeholder: "[Result omitted. Run tool again if you want to see it]",
+					placeholder: "Result omitted. Run tool again if you want to see it",
 					summary: {
 						enabled: false,
 						maxConcurrency: 1,

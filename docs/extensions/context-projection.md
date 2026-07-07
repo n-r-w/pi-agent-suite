@@ -28,7 +28,7 @@ Full config example:
   "keepRecentTurns": 10,
   "keepRecentTurnsPercent": 0.2,
   "projectionIgnoredTools": [],
-  "placeholder": "[Result omitted. Run tool again if you want to see it]",
+  "placeholder": "Result omitted. Run tool again if you want to see it",
   "summary": {
     "enabled": false,
     "model": null,
@@ -58,7 +58,7 @@ All parameters are optional. Unknown parameters make the configuration invalid.
 | `keepRecentTurns` | No | Non-negative integer | `10` | Minimum number of newest tool-use turns kept visible. A tool-use turn is an assistant tool call plus its matching tool results. |
 | `keepRecentTurnsPercent` | No | Number from `0` to `1` | `0.2` | Fraction of newest tool-use turns kept visible in long sessions. The extension uses the larger value from `keepRecentTurns` and this percentage. |
 | `projectionIgnoredTools` | No | Array of unique non-empty strings | `[]` | Tool names whose results stay visible. `consult_advisor` and `convene_council` always stay visible, even when omitted from this list. |
-| `placeholder` | No | Non-empty string | `[Result omitted. Run tool again if you want to see it]` | Text that replaces projected tool results when summary mode is disabled or a summary cannot be used. |
+| `placeholder` | No | Non-empty string | `Result omitted. Run tool again if you want to see it` | Text that replaces projected tool results when summary mode is disabled or a summary cannot be used. |
 | `summary` | No | Object | Summary disabled | Configures optional generated summaries for projected tool results. |
 
 If multiple projection levels use the same remaining-token threshold, the extension uses the lowest matching `minToolResultTokens*` value for those levels.
