@@ -36,6 +36,9 @@ interface SessionContextFake {
 		readonly ui: {
 			notify(message: string, type: string | undefined): void;
 		};
+		readonly sessionManager: {
+			getLeafId(): string | null;
+		};
 		readonly model: Model<Api> | undefined;
 		readonly modelRegistry: {
 			find(provider: string, modelId: string): Model<Api> | undefined;
@@ -179,6 +182,7 @@ function createSessionContextFake(options?: {
 	readonly thinkingLevel?: string;
 	readonly authFailure?: string;
 	readonly hasUI?: boolean;
+	readonly leafId?: string | null;
 }): SessionContextFake {
 	const notifications: Notification[] = [];
 	const requestedModels: Model<Api>[] = [];
@@ -191,6 +195,11 @@ function createSessionContextFake(options?: {
 			ui: {
 				notify(message: string, type: string | undefined): void {
 					notifications.push({ message, type });
+				},
+			},
+			sessionManager: {
+				getLeafId(): string | null {
+					return options?.leafId ?? null;
 				},
 			},
 			model: currentModel,
@@ -537,6 +546,95 @@ describe("custom-compaction", () => {
 				signal: event.signal,
 			});
 			expect(session.notifications).toEqual([]);
+		});
+	});
+
+	test("moves overflow retry boundary after a retained assistant error", async () => {
+		// Purpose: overflow retry must not restore a context whose last message is an assistant error.
+		// Input and expected output: retained context ends with assistant error, so custom compaction summarizes that retained tail and keeps from a new non-message boundary.
+		// Edge case: the final provider overflow assistant message has empty content after an earlier retry text.
+		// Dependencies: mocked completeSimple, temp agent directory, fake ExtensionAPI appendEntry, and fake session leaf ID.
+		await withIsolatedAgentDir(async () => {
+			completeSimpleMock.mockResolvedValueOnce(
+				createAssistantResponse("overflow recovery summary"),
+			);
+			const pi = createExtensionApiFake();
+			const session = createSessionContextFake({
+				leafId: "retry-boundary-entry",
+			});
+			const event = {
+				...createHistoryCompactionEvent(),
+				reason: "overflow",
+				willRetry: true,
+				branchEntries: [
+					{
+						type: "message",
+						id: "entry-keep",
+						parentId: "before-keep",
+						timestamp: "2026-07-08T16:25:00.000Z",
+						message: {
+							role: "user",
+							content: [{ type: "text", text: "recent user request" }],
+							timestamp: 10,
+						},
+					},
+					{
+						type: "message",
+						id: "websocket-error",
+						parentId: "entry-keep",
+						timestamp: "2026-07-08T16:25:15.000Z",
+						message: {
+							role: "assistant",
+							content: [
+								{
+									type: "text",
+									text: "Repeat search by separate paths.",
+								},
+							],
+							provider: "openai-codex",
+							model: "gpt-5.5",
+							stopReason: "error",
+							errorMessage: "WebSocket closed 1012",
+							timestamp: 11,
+						},
+					},
+					{
+						type: "message",
+						id: "overflow-error",
+						parentId: "websocket-error",
+						timestamp: "2026-07-08T16:25:21.000Z",
+						message: {
+							role: "assistant",
+							content: [],
+							provider: "openai-codex",
+							model: "gpt-5.5",
+							stopReason: "error",
+							errorMessage:
+								"Codex error: Your input exceeds the context window of this model.",
+							timestamp: 12,
+						},
+					},
+				],
+			} as CompactEvent;
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(event, session.ctx);
+
+			expect(result).toMatchObject({
+				compaction: {
+					summary: "overflow recovery summary",
+					firstKeptEntryId: "retry-boundary-entry",
+				},
+			});
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: "custom-compaction-overflow-retry-boundary",
+				data: { reason: "overflow-retry-after-assistant-error" },
+			});
+			const [, context] = completeSimpleMock.mock.calls[0] ?? [];
+			expect(getSummaryRequestText(context)).toContain("recent user request");
+			expect(getSummaryRequestText(context)).toContain(
+				"Repeat search by separate paths.",
+			);
 		});
 	});
 

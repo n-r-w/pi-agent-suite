@@ -13,6 +13,7 @@ import {
 	type CompactionResult,
 	convertToLlm,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type SessionBeforeCompactEvent,
 	serializeConversation,
 } from "@earendil-works/pi-coding-agent";
@@ -34,6 +35,10 @@ const CUSTOM_COMPACTION_EXTENSION_DIR = "custom-compaction";
 
 /** Legacy config file name supported for existing installations. */
 const CUSTOM_COMPACTION_LEGACY_CONFIG_FILE = "custom-compaction.json";
+
+/** Custom entry used as a safe retry boundary after overflow compaction summarized the retained tail. */
+const OVERFLOW_RETRY_BOUNDARY_CUSTOM_TYPE =
+	"custom-compaction-overflow-retry-boundary";
 
 /** Extension issue prefix used for isolated diagnostics. */
 const ISSUE_PREFIX = "[custom-compaction]";
@@ -213,8 +218,9 @@ export default function customCompaction(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
+		const compactionPlan = createOverflowRetryCompactionPlan(event);
 		const summary = await generateCompactionSummary({
-			event,
+			event: compactionPlan.event,
 			prompts: prompts.prompts,
 			model: runtimeConfig.config.model,
 			baseOptions: buildCompletionOptions(
@@ -232,8 +238,15 @@ export default function customCompaction(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
+		const firstKeptEntryId = compactionPlan.needsRetryBoundary
+			? appendOverflowRetryBoundary(pi, ctx)
+			: compactionPlan.event.preparation.firstKeptEntryId;
 		return {
-			compaction: buildCompactionResult(event, summary),
+			compaction: buildCompactionResult(
+				compactionPlan.event,
+				summary,
+				firstKeptEntryId,
+			),
 		};
 	});
 }
@@ -757,9 +770,103 @@ function buildCompletionOptions(
 }
 
 /** Builds the compaction result expected by pi session compaction. */
+type CompactionInputMessage =
+	SessionBeforeCompactEvent["preparation"]["messagesToSummarize"][number];
+
+interface OverflowRetryCompactionPlan {
+	readonly event: SessionBeforeCompactEvent;
+	readonly needsRetryBoundary: boolean;
+}
+
+/** Prepares compaction inputs so overflow retry can continue from a non-assistant boundary. */
+function createOverflowRetryCompactionPlan(
+	event: SessionBeforeCompactEvent,
+): OverflowRetryCompactionPlan {
+	if (!isOverflowRetryCompaction(event)) {
+		return { event, needsRetryBoundary: false };
+	}
+
+	const retainedMessages = collectRetainedMessages(event);
+	if (!endsWithAssistantError(retainedMessages)) {
+		return { event, needsRetryBoundary: false };
+	}
+
+	return {
+		event: {
+			...event,
+			preparation: {
+				...event.preparation,
+				messagesToSummarize: [
+					...event.preparation.messagesToSummarize,
+					...retainedMessages,
+				],
+			},
+		},
+		needsRetryBoundary: true,
+	};
+}
+
+/** Detects the runtime-only overflow retry metadata that is absent from older type declarations. */
+function isOverflowRetryCompaction(event: SessionBeforeCompactEvent): boolean {
+	const eventWithRuntimeFields = event as SessionBeforeCompactEvent & {
+		readonly reason?: unknown;
+		readonly willRetry?: unknown;
+	};
+	return (
+		eventWithRuntimeFields.reason === "overflow" &&
+		eventWithRuntimeFields.willRetry === true
+	);
+}
+
+/** Collects model-visible retained messages that would be dropped when a retry boundary is inserted. */
+function collectRetainedMessages(
+	event: SessionBeforeCompactEvent,
+): CompactionInputMessage[] {
+	const retainedMessages: CompactionInputMessage[] = [];
+	let foundFirstKeptEntry = false;
+	for (const entry of event.branchEntries) {
+		if (entry.id === event.preparation.firstKeptEntryId) {
+			foundFirstKeptEntry = true;
+		}
+		if (!foundFirstKeptEntry || entry.type !== "message") {
+			continue;
+		}
+		retainedMessages.push(entry.message as CompactionInputMessage);
+	}
+	return retainedMessages;
+}
+
+/** Returns true when retrying from the retained context would hit pi core's assistant-role guard. */
+function endsWithAssistantError(
+	messages: readonly CompactionInputMessage[],
+): boolean {
+	const lastMessage = messages.at(-1);
+	return (
+		lastMessage?.role === "assistant" && lastMessage.stopReason === "error"
+	);
+}
+
+/** Appends a non-message session entry that becomes the kept boundary for overflow retry recovery. */
+function appendOverflowRetryBoundary(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ctx: Pick<ExtensionContext, "sessionManager">,
+): string {
+	pi.appendEntry(OVERFLOW_RETRY_BOUNDARY_CUSTOM_TYPE, {
+		reason: "overflow-retry-after-assistant-error",
+	});
+	const leafId = ctx.sessionManager.getLeafId();
+	if (leafId === null) {
+		throw new Error(
+			"custom-compaction failed to create overflow retry boundary entry",
+		);
+	}
+	return leafId;
+}
+
 function buildCompactionResult(
 	event: SessionBeforeCompactEvent,
 	summary: string,
+	firstKeptEntryId: string,
 ): CompactionResult<{
 	readonly readFiles: readonly string[];
 	readonly modifiedFiles: readonly string[];
@@ -768,7 +875,7 @@ function buildCompactionResult(
 
 	return {
 		summary,
-		firstKeptEntryId: event.preparation.firstKeptEntryId,
+		firstKeptEntryId,
 		tokensBefore: event.preparation.tokensBefore,
 		details: {
 			readFiles: fileLists.readFiles,

@@ -134,6 +134,7 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhig
 - Breaking change: removed `context-projection.placeholder`. Use `omittedNotice` for projected results without summaries and `summaryNotice` for summary blocks.
 - `context-projection` now fails startup when `placeholder` remains in config, so stale configs show a direct migration error instead of only `CP!` in the footer.
 - Updated default projection notices to distinguish fully omitted results from results that include summaries.
+- Fixed `custom-compaction` overflow retry recovery when retained context ends with an assistant error. It now summarizes the retained tail and keeps the retry boundary at a non-message entry so pi can continue.
 
 ### 0.14.0 - 2026-07-07
 
