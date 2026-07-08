@@ -129,13 +129,13 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhig
 
 ## Changelog
 
-### 1.15.0 - 2026-07-08
+### v1.15.0 - 2026-07-08
 
 - Breaking change: removed `context-projection.placeholder`. Use `omittedNotice` for projected results without summaries and `summaryNotice` for summary blocks.
 - `context-projection` now fails startup when `placeholder` remains in config, so stale configs show a direct migration error instead of only `CP!` in the footer.
 - Updated default projection notices to distinguish fully omitted results from results that include summaries.
 
-### 0.14.0 - 2026-07-07
+### v0.14.0 - 2026-07-07
 
 - Removed `context-overflow`. Native pi now handles context overflow recovery: it detects provider overflow errors, runs compaction, and continues the interrupted work. Keeping this extension caused duplicate compaction paths and could stop continuation after Codex context overflow.
 - Updated `footer` to read native pi compaction settings. Context usage now renders as `used/threshold/window` when native compaction is enabled, where `threshold = contextWindow - compaction.reserveTokens`.
