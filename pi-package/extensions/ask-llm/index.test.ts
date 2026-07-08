@@ -531,7 +531,7 @@ function createMessageEntry(
 function createProjectionStateEntry(
 	id: string,
 	projectedEntryId: string,
-	placeholder: string,
+	replacementText: string,
 	parentId: string | null,
 ): SessionEntry {
 	return {
@@ -540,7 +540,9 @@ function createProjectionStateEntry(
 		parentId,
 		timestamp: "t",
 		customType: CONTEXT_PROJECTION_CUSTOM_TYPE,
-		data: { projectedEntries: [{ entryId: projectedEntryId, placeholder }] },
+		data: {
+			projectedEntries: [{ entryId: projectedEntryId, replacementText }],
+		},
 	} as SessionEntry;
 }
 
@@ -981,12 +983,12 @@ describe("ask-llm", () => {
 
 	test("replays persisted context projection state before calling ask-llm", async () => {
 		// Purpose: ask-llm input must match the projected task state when context-projection has recorded omitted tool results.
-		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded placeholder.
+		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded replacement text.
 		// Edge case: the one-off ask question is appended after projection replay.
 		// Dependencies: temp context-projection config, fake model registry, fake completion function, and fake session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const placeholder = "[projected old output]";
+			const replacementText = "[projected old output]";
 			const model = createModel("openai", "gpt-test");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1002,7 +1004,7 @@ describe("ask-llm", () => {
 					"2",
 					createToolResultMessage("old-tool", "old full tool output"),
 				),
-				createProjectionStateEntry("4", "3", placeholder, "3"),
+				createProjectionStateEntry("4", "3", replacementText, "3"),
 			];
 			const ctx = createContextFake([model], "Question from editor", entries);
 			askLlm(pi, { completeSimple: completion.completeSimple });
@@ -1011,7 +1013,7 @@ describe("ask-llm", () => {
 
 			expect(completion.calls).toHaveLength(1);
 			const askMessages = JSON.stringify(completion.calls[0]?.context.messages);
-			expect(askMessages).toContain(placeholder);
+			expect(askMessages).toContain(replacementText);
 			expect(askMessages).not.toContain("old full tool output");
 			expect(completion.calls[0]?.context.messages.at(-1)?.content).toBe(
 				[

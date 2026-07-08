@@ -25,7 +25,7 @@ import {
 	type ContextProjectionConfigResult,
 	type ContextProjectionSummaryConfig,
 	collectLoadedSkillRoots,
-	collectProjectedPlaceholders,
+	collectProjectedReplacements,
 	estimatePendingProjectionSavings,
 	estimateProjectedSavedTokens,
 	estimateSavedTokens,
@@ -37,7 +37,7 @@ import {
 	type ProjectionDecision,
 	type ProjectionLevel,
 	projectContextMessages,
-	publishRuntimeProjectedPlaceholders,
+	publishRuntimeProjectedReplacements,
 	readContextProjectionConfig,
 	resetPendingProjectionSavings,
 	setPendingProjectionSavings,
@@ -88,7 +88,7 @@ interface HandleContextProjectionOptions {
 	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
 	readonly event: ContextEvent;
 	readonly ctx: ExtensionContext;
-	readonly projectedPlaceholdersByEntryId: Map<string, string>;
+	readonly projectedReplacementsByEntryId: Map<string, string>;
 	readonly publishedStatusText: string | undefined;
 	readonly loadedSkillRoots: readonly string[];
 	readonly completeSimple: CompleteSimple;
@@ -103,7 +103,7 @@ interface ContextProjectionChangeResultOptions {
 	readonly pi: Pick<ExtensionAPI, "appendEntry">;
 	readonly ctx: ExtensionContext;
 	readonly config: Extract<ContextProjectionConfigResult, { kind: "valid" }>;
-	readonly projectedPlaceholdersByEntryId: Map<string, string>;
+	readonly projectedReplacementsByEntryId: Map<string, string>;
 	readonly publishedStatusText: string | undefined;
 	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	readonly decision: ProjectionDecision;
@@ -140,7 +140,7 @@ interface ProjectionDecisionOptions {
 	readonly ctx: ExtensionContext;
 	readonly config: ContextProjectionConfig;
 	readonly mappedContext: readonly MappedContextEntry[];
-	readonly projectedPlaceholdersByEntryId: Map<string, string>;
+	readonly projectedReplacementsByEntryId: Map<string, string>;
 	readonly loadedSkillRoots: readonly string[];
 	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	readonly completeSimple: CompleteSimple;
@@ -172,7 +172,7 @@ interface RecordNewProjectedEntriesOptions {
 	readonly cwd: string;
 	readonly sessionId: string;
 	readonly branchLeafId: string | null;
-	readonly projectedPlaceholdersByEntryId: Map<string, string>;
+	readonly projectedReplacementsByEntryId: Map<string, string>;
 	readonly newProjectedEntries: readonly ProjectedEntryState[];
 	readonly newSavedTokens: number;
 }
@@ -183,7 +183,7 @@ export default function contextProjection(
 	dependencies: ContextProjectionDependencies = {},
 ): void {
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
-	let projectedPlaceholdersByEntryId = new Map<string, string>();
+	let projectedReplacementsByEntryId = new Map<string, string>();
 	let publishedStatusText: string | undefined;
 	let loadedSkillRoots: readonly string[] = [];
 
@@ -191,12 +191,12 @@ export default function contextProjection(
 		readonly cwd: string;
 		readonly sessionManager: { getBranch(): SessionEntry[] };
 	}): void => {
-		projectedPlaceholdersByEntryId = collectProjectedPlaceholders(
+		projectedReplacementsByEntryId = collectProjectedReplacements(
 			ctx.sessionManager.getBranch(),
 		);
-		publishRuntimeProjectedPlaceholders(
+		publishRuntimeProjectedReplacements(
 			ctx.cwd,
-			projectedPlaceholdersByEntryId,
+			projectedReplacementsByEntryId,
 		);
 	};
 
@@ -210,7 +210,7 @@ export default function contextProjection(
 			estimateCurrentProjectedSavedTokens(
 				ctx,
 				config,
-				projectedPlaceholdersByEntryId,
+				projectedReplacementsByEntryId,
 				loadedSkillRoots,
 			),
 			publishedStatusText,
@@ -236,7 +236,7 @@ export default function contextProjection(
 			pi,
 			event,
 			ctx,
-			projectedPlaceholdersByEntryId,
+			projectedReplacementsByEntryId,
 			publishedStatusText,
 			loadedSkillRoots,
 			completeSimple,
@@ -257,7 +257,7 @@ async function handleContextProjection({
 	pi,
 	event,
 	ctx,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	publishedStatusText,
 	loadedSkillRoots,
 	completeSimple,
@@ -276,7 +276,7 @@ async function handleContextProjection({
 	const currentProjectedSavedTokens = estimateCurrentProjectedSavedTokens(
 		ctx,
 		config,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		loadedSkillRoots,
 	);
 	const createNoChangeResult = (): HandleContextProjectionResult =>
@@ -291,7 +291,7 @@ async function handleContextProjection({
 		config.config,
 	);
 	if (
-		!hasProjectionWork(activeProjectionLevel, projectedPlaceholdersByEntryId)
+		!hasProjectionWork(activeProjectionLevel, projectedReplacementsByEntryId)
 	) {
 		return createNoChangeResult();
 	}
@@ -309,7 +309,7 @@ async function handleContextProjection({
 		ctx,
 		config: config.config,
 		mappedContext,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		loadedSkillRoots,
 		activeProjectionLevel,
 		completeSimple,
@@ -322,7 +322,7 @@ async function handleContextProjection({
 		pi,
 		ctx,
 		config,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		publishedStatusText,
 		activeProjectionLevel,
 		decision,
@@ -332,11 +332,11 @@ async function handleContextProjection({
 /** Returns true when a context event can apply stored projections or discover new projected entries. */
 function hasProjectionWork(
 	activeProjectionLevel: ProjectionLevel | undefined,
-	projectedPlaceholdersByEntryId: ReadonlyMap<string, string>,
+	projectedReplacementsByEntryId: ReadonlyMap<string, string>,
 ): boolean {
 	return (
 		activeProjectionLevel !== undefined ||
-		projectedPlaceholdersByEntryId.size > 0
+		projectedReplacementsByEntryId.size > 0
 	);
 }
 
@@ -346,14 +346,14 @@ async function createProjectionDecision({
 	ctx,
 	config,
 	mappedContext,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	loadedSkillRoots,
 	activeProjectionLevel,
 	completeSimple,
 }: ProjectionDecisionOptions): Promise<ProjectionDecision> {
 	let decision = projectContextMessages({
 		mappedContext,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		config,
 		loadedSkillRoots,
 		cwd: ctx.cwd,
@@ -385,7 +385,7 @@ async function createProjectionDecision({
 
 	decision = projectContextMessages({
 		mappedContext,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		replacementTextByEntryId: summaryReplacementsByEntryId,
 		config,
 		loadedSkillRoots,
@@ -477,14 +477,14 @@ function notifyProjectionSummaryRetry(
 	);
 }
 
-/** Shows that summary generation failed and the projected entry uses the configured placeholder. */
+/** Shows that summary generation failed and the projected entry uses the omitted notice. */
 function notifyProjectionSummaryUnavailable(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) {
 		return;
 	}
 
 	ctx.ui.notify(
-		"Context projection summary unavailable; using placeholder",
+		"Context projection summary unavailable; using omitted notice",
 		"info",
 	);
 }
@@ -496,7 +496,7 @@ function notifyProjectionSummaryNotSmaller(ctx: ExtensionContext): void {
 	}
 
 	ctx.ui.notify(
-		"Context projection summary not smaller; using placeholder",
+		"Context projection summary not smaller; using omitted notice",
 		"info",
 	);
 }
@@ -569,7 +569,7 @@ async function createSummaryReplacementsByEntryId({
 			continue;
 		}
 
-		const replacement = wrapSummaryReplacement(summary, config.placeholder);
+		const replacement = wrapSummaryReplacement(summary, config.summaryNotice);
 		if (
 			countProjectionTextTokens(replacement) >=
 			countProjectionTextTokens(candidate.text)
@@ -611,8 +611,11 @@ function collectNewProjectionSummaryCandidates({
 }
 
 /** Marks generated summaries as omitted full tool results in the final projected context. */
-function wrapSummaryReplacement(summary: string, placeholder: string): string {
-	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeUTF8(placeholder)}</notice>\n<summary>\n${escapeUTF8(summary)}\n</summary>\n</tool_result>`;
+function wrapSummaryReplacement(
+	summary: string,
+	summaryNotice: string,
+): string {
+	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeUTF8(summaryNotice)}</notice>\n<summary>\n${escapeUTF8(summary)}\n</summary>\n</tool_result>`;
 }
 
 /** Selects the model, thinking level, auth, and prompt used for one-tool-result summaries. */
@@ -996,7 +999,7 @@ function createContextProjectionChangeResult({
 	pi,
 	ctx,
 	config,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	publishedStatusText,
 	activeProjectionLevel,
 	decision,
@@ -1006,7 +1009,7 @@ function createContextProjectionChangeResult({
 		cwd: ctx.cwd,
 		sessionId: ctx.sessionManager.getSessionId(),
 		branchLeafId: ctx.sessionManager.getLeafId(),
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		newProjectedEntries: decision.newProjectedEntries,
 		newSavedTokens: decision.newSavedTokens,
 	});
@@ -1079,7 +1082,7 @@ function syncPendingProjectionSavings(
 function estimateCurrentProjectedSavedTokens(
 	ctx: ExtensionContext,
 	config: ContextProjectionConfigResult,
-	projectedPlaceholdersByEntryId: ReadonlyMap<string, string>,
+	projectedReplacementsByEntryId: ReadonlyMap<string, string>,
 	loadedSkillRoots: readonly string[],
 ): number {
 	if (config.kind !== "valid") {
@@ -1089,7 +1092,7 @@ function estimateCurrentProjectedSavedTokens(
 	return estimateProjectedSavedTokens({
 		branchEntries: ctx.sessionManager.getBranch(),
 		cwd: ctx.cwd,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		config: config.config,
 		loadedSkillRoots,
 	});
@@ -1166,7 +1169,7 @@ function recordNewProjectedEntries({
 	cwd,
 	sessionId,
 	branchLeafId,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	newProjectedEntries,
 	newSavedTokens,
 }: RecordNewProjectedEntriesOptions): void {
@@ -1190,12 +1193,12 @@ function recordNewProjectedEntries({
 		throw error;
 	}
 	for (const projectedEntry of newProjectedEntries) {
-		projectedPlaceholdersByEntryId.set(
+		projectedReplacementsByEntryId.set(
 			projectedEntry.entryId,
-			projectedEntry.placeholder,
+			projectedEntry.replacementText,
 		);
 	}
-	publishRuntimeProjectedPlaceholders(cwd, projectedPlaceholdersByEntryId);
+	publishRuntimeProjectedReplacements(cwd, projectedReplacementsByEntryId);
 	addPendingProjectionSavings(sessionId, estimateSavedTokens(newSavedTokens), {
 		branchLeafId,
 		entryIds: newProjectedEntries.map(

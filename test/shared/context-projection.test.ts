@@ -20,26 +20,31 @@ import {
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const CUSTOM_TYPE = "context-projection";
-const PLACEHOLDER = "[projected]";
+const OMITTED_NOTICE = "Result omitted. Run tool again for full result.";
+const SUMMARY_NOTICE =
+	"Full result omitted. Summary below. Run tool again for full result.";
+const REMOVED_PLACEHOLDER_CONFIG_ERROR =
+	"unsupported config key: placeholder. Use omittedNotice and summaryNotice.";
 const PROJECTION_LEVEL = {
 	label: "L1",
 	remainingTokens: 100_000,
 	minToolResultTokens: 0,
 } as const;
-const PROJECTION_CONFIG: ContextProjectionConfig = {
+const PROJECTION_CONFIG = {
 	enabled: true,
 	projectionLevels: [PROJECTION_LEVEL, PROJECTION_LEVEL, PROJECTION_LEVEL],
 	keepRecentTurns: 0,
 	keepRecentTurnsPercent: 0,
 	projectionIgnoredTools: [],
-	placeholder: PLACEHOLDER,
+	omittedNotice: OMITTED_NOTICE,
+	summaryNotice: SUMMARY_NOTICE,
 	summary: {
 		enabled: false,
 		maxConcurrency: 1,
 		retryCount: 1,
 		retryDelayMs: 0,
 	},
-};
+} as unknown as ContextProjectionConfig;
 
 /** Runs a test with an isolated pi agent directory. */
 async function withIsolatedAgentDir<T>(
@@ -99,7 +104,7 @@ function messageEntry(
 function projectionStateEntry(
 	id: string,
 	entryId: string,
-	placeholder: string,
+	replacementText: string,
 	parentId: string | null,
 ): SessionEntry {
 	return {
@@ -108,7 +113,7 @@ function projectionStateEntry(
 		parentId,
 		timestamp: "t",
 		customType: CUSTOM_TYPE,
-		data: { projectedEntries: [{ entryId, placeholder }] },
+		data: { projectedEntries: [{ entryId, replacementText }] },
 	} as SessionEntry;
 }
 
@@ -175,7 +180,7 @@ describe("context projection config", () => {
 
 			const config = await readContextProjectionConfig();
 
-			expect(config).toEqual({
+			expect(config as unknown).toEqual({
 				kind: "valid",
 				config: {
 					enabled: true,
@@ -199,7 +204,8 @@ describe("context projection config", () => {
 					keepRecentTurns: 10,
 					keepRecentTurnsPercent: 0.2,
 					projectionIgnoredTools: [],
-					placeholder: "Result omitted. Run tool again if you want to see it",
+					omittedNotice: OMITTED_NOTICE,
+					summaryNotice: SUMMARY_NOTICE,
 					summary: {
 						enabled: false,
 						maxConcurrency: 1,
@@ -211,9 +217,9 @@ describe("context projection config", () => {
 		});
 	});
 
-	test("rejects old single-level projection config keys", async () => {
-		// Purpose: the new config contract must not silently accept removed single-level keys.
-		// Input and expected output: each old key makes the config invalid.
+	test("rejects removed single-level projection config keys", async () => {
+		// Purpose: the current config contract must not silently accept removed single-level projection keys.
+		// Input and expected output: each removed single-level key makes the config invalid.
 		// Edge case: the config also contains enabled true, so invalidity is caused by unsupported keys only.
 		// Dependencies: isolated config file and shared config reader.
 		for (const oldKey of ["projectionRemainingTokens", "minToolResultTokens"]) {
@@ -230,16 +236,37 @@ describe("context projection config", () => {
 		}
 	});
 
+	test("reports removed placeholder config as fatal with migration guidance", async () => {
+		// Purpose: users must get a clear startup error when the removed placeholder key remains in config.
+		// Input and expected output: enabled config with placeholder returns a fatal issue that names the replacement keys.
+		// Edge case: omittedNotice and summaryNotice are valid, so the removed key is the only fatal issue.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				omittedNotice: OMITTED_NOTICE,
+				summaryNotice: SUMMARY_NOTICE,
+				placeholder: "legacy",
+			});
+
+			expect(await readContextProjectionConfig()).toEqual({
+				kind: "invalid",
+				issue: REMOVED_PLACEHOLDER_CONFIG_ERROR,
+				fatal: true,
+			});
+		});
+	});
+
 	test("keeps disabled config disabled when unrelated fields are invalid", async () => {
 		// Purpose: disabled projection must not fail startup because of invalid fields that are ignored while disabled.
-		// Input and expected output: invalid summary, placeholder, and recent-turn values still return disabled when projection levels are ordered.
+		// Input and expected output: invalid summary, notice, and recent-turn values still return disabled when projection levels are ordered.
 		// Edge case: projection level order is still validated before returning disabled.
 		// Dependencies: isolated config file and shared config reader.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, {
 				enabled: false,
 				keepRecentTurns: "invalid",
-				placeholder: "",
+				omittedNotice: "",
 				summary: {
 					enabled: true,
 					systemPromptFile: "relative.md",
@@ -451,7 +478,7 @@ describe("projection-aware context usage", () => {
 				toolResultMessage("call-old", "old output ".repeat(20)),
 				"01",
 			),
-			projectionStateEntry("03", "02", PLACEHOLDER, "02"),
+			projectionStateEntry("03", "02", OMITTED_NOTICE, "02"),
 			messageEntry(
 				"04",
 				{ ...assistantMessage("call-error"), stopReason: "error" },
@@ -486,9 +513,9 @@ describe("projection-aware context usage", () => {
 });
 
 describe("context projection replay", () => {
-	test("replays persisted placeholders when projection config is valid", async () => {
+	test("replays persisted replacements when projection config is valid", async () => {
 		// Purpose: advisor input must reuse recorded projection instead of sending full old tool output.
-		// Input and expected output: valid config plus one projected entry replaces only that tool result with its placeholder.
+		// Input and expected output: valid config plus one projected entry replaces only that tool result with its replacement text.
 		// Edge case: projection state is stored as a custom entry after the projected message and must still match by entry ID.
 		// Dependencies: isolated agent config and in-memory session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -497,7 +524,7 @@ describe("context projection replay", () => {
 				messageEntry("01", userMessage(), null),
 				messageEntry("02", assistantMessage("call-old"), "01"),
 				messageEntry("03", toolResultMessage("call-old", "old output"), "02"),
-				projectionStateEntry("04", "03", PLACEHOLDER, "03"),
+				projectionStateEntry("04", "03", OMITTED_NOTICE, "03"),
 			];
 
 			const messages = await replayContextProjection({
@@ -506,14 +533,14 @@ describe("context projection replay", () => {
 			});
 
 			expect(JSON.stringify(messages)).not.toContain("old output");
-			expect(JSON.stringify(messages)).toContain(PLACEHOLDER);
+			expect(JSON.stringify(messages)).toContain(OMITTED_NOTICE);
 		});
 	});
 
 	test("keeps protected council results visible during projection replay", async () => {
 		// Purpose: replay must not hide built-in protected tool results even when stale projection state contains their entry IDs.
-		// Input and expected output: convene_council output stays visible, while ordinary bash output replays its persisted placeholder.
-		// Edge case: both entries have persisted placeholders, but built-in protection takes precedence for the council result.
+		// Input and expected output: convene_council output stays visible, while ordinary bash output replays its persisted replacement text.
+		// Edge case: both entries have persisted replacements, but built-in protection takes precedence for the council result.
 		// Dependencies: isolated agent config and in-memory session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
@@ -536,7 +563,7 @@ describe("context projection replay", () => {
 				messageEntry("04", assistantMessage("call-bash"), "03"),
 				messageEntry("05", toolResultMessage("call-bash", "bash output"), "04"),
 				projectionStateEntry("06", "03", "[hidden council]", "05"),
-				projectionStateEntry("07", "05", PLACEHOLDER, "06"),
+				projectionStateEntry("07", "05", OMITTED_NOTICE, "06"),
 			];
 
 			const replayed = JSON.stringify(
@@ -546,7 +573,7 @@ describe("context projection replay", () => {
 			expect(replayed).toContain("council output");
 			expect(replayed).not.toContain("[hidden council]");
 			expect(replayed).not.toContain("bash output");
-			expect(replayed).toContain(PLACEHOLDER);
+			expect(replayed).toContain(OMITTED_NOTICE);
 		});
 	});
 
@@ -596,7 +623,7 @@ describe("context projection replay", () => {
 
 		const decision = projectContextMessages({
 			mappedContext,
-			projectedPlaceholdersByEntryId: new Map(),
+			projectedReplacementsByEntryId: new Map(),
 			config: PROJECTION_CONFIG,
 			loadedSkillRoots: [],
 			cwd: "/tmp/project",
@@ -606,9 +633,9 @@ describe("context projection replay", () => {
 
 		expect(projected).toContain("council output");
 		expect(projected).not.toContain("bash output");
-		expect(projected).toContain(PLACEHOLDER);
-		expect(decision.newProjectedEntries).toEqual([
-			{ entryId: "04", placeholder: PLACEHOLDER },
+		expect(projected).toContain(OMITTED_NOTICE);
+		expect(decision.newProjectedEntries as unknown).toEqual([
+			{ entryId: "04", replacementText: OMITTED_NOTICE },
 		]);
 	});
 
@@ -621,7 +648,7 @@ describe("context projection replay", () => {
 			const branchEntries = [
 				messageEntry("01", assistantMessage("call-old"), null),
 				messageEntry("02", toolResultMessage("call-old", "old output"), "01"),
-				projectionStateEntry("03", "02", PLACEHOLDER, "02"),
+				projectionStateEntry("03", "02", OMITTED_NOTICE, "02"),
 			];
 
 			await writeProjectionConfig(agentDir, { enabled: false });
@@ -642,7 +669,7 @@ describe("context projection replay", () => {
 
 	test("returns full context when enabled projection has no valid active-branch state", async () => {
 		// Purpose: replay must fail safe to full context unless valid projection state matches active branch entries.
-		// Input and expected output: empty state, malformed state, empty placeholder, and stale entry IDs all keep original output visible.
+		// Input and expected output: empty state, malformed state, empty replacement text, and stale entry IDs all keep original output visible.
 		// Edge case: persisted custom entries can exist without a valid projected item for this active branch.
 		// Dependencies: isolated agent config and in-memory session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -667,7 +694,7 @@ describe("context projection replay", () => {
 				[...baseEntries, projectionStateEntry("03", "02", "", "02")],
 				[
 					...baseEntries,
-					projectionStateEntry("03", "stale-id", PLACEHOLDER, "02"),
+					projectionStateEntry("03", "stale-id", OMITTED_NOTICE, "02"),
 				],
 			];
 
@@ -677,7 +704,7 @@ describe("context projection replay", () => {
 				);
 
 				expect(replayed).toContain("old output");
-				expect(replayed).not.toContain(PLACEHOLDER);
+				expect(replayed).not.toContain(OMITTED_NOTICE);
 			}
 		});
 	});

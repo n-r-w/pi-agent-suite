@@ -80,7 +80,7 @@ export function toolResultMessage(
 export function projectionStateEntry(
 	id: string,
 	projectedEntryId: string,
-	placeholder: string,
+	replacementText: string,
 	parentId: string | null,
 ): SessionEntry {
 	return {
@@ -89,6 +89,8 @@ export function projectionStateEntry(
 		parentId,
 		timestamp: "t",
 		customType: "context-projection",
-		data: { projectedEntries: [{ entryId: projectedEntryId, placeholder }] },
+		data: {
+			projectedEntries: [{ entryId: projectedEntryId, replacementText }],
+		},
 	} as SessionEntry;
 }

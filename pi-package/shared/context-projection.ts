@@ -49,8 +49,14 @@ const MIN_TOOL_RESULT_TOKENS_L3_CONFIG_KEY = "minToolResultTokensL3";
 /** Config key for tool names whose successful text results must stay visible. */
 const PROJECTION_IGNORED_TOOLS_CONFIG_KEY = "projectionIgnoredTools";
 
-/** Config key for the exact replacement text used in projected tool results. */
-const PLACEHOLDER_CONFIG_KEY = "placeholder";
+/** Removed config key that now fails fast with migration guidance. */
+const REMOVED_PLACEHOLDER_CONFIG_KEY = "placeholder";
+
+/** Config key for the text used when a projected tool result has no summary. */
+const OMITTED_NOTICE_CONFIG_KEY = "omittedNotice";
+
+/** Config key for the notice used when a projected tool result includes a summary. */
+const SUMMARY_NOTICE_CONFIG_KEY = "summaryNotice";
 
 /** Config key for optional summaries generated before projecting tool results. */
 const SUMMARY_CONFIG_KEY = "summary";
@@ -113,9 +119,13 @@ const DEFAULT_MIN_TOOL_RESULT_TOKENS_L2 = 2_000;
 /** Default third-level minimum token count for projecting a tool result. */
 const DEFAULT_MIN_TOOL_RESULT_TOKENS_L3 = 1_000;
 
-/** Default replacement text for projected old tool results. */
-const DEFAULT_PLACEHOLDER =
-	"Result omitted. Run tool again if you want to see it";
+/** Default notice for projected tool results that have no summary. */
+const DEFAULT_OMITTED_NOTICE =
+	"Result omitted. Run tool again for full result.";
+
+/** Default notice for projected tool results that include a summary. */
+const DEFAULT_SUMMARY_NOTICE =
+	"Full result omitted. Summary below. Run tool again for full result.";
 
 /** Default summary request concurrency. */
 const DEFAULT_SUMMARY_MAX_CONCURRENCY = 1;
@@ -132,6 +142,10 @@ const PERCENT_FACTOR = 100;
 /** Fatal issue reported when projection level remaining-token thresholds are not descending. */
 const PROJECTION_LEVEL_ORDER_ERROR =
 	"projectionRemainingTokensL1 must be greater than or equal to projectionRemainingTokensL2, and projectionRemainingTokensL2 must be greater than or equal to projectionRemainingTokensL3";
+
+/** Fatal issue reported when the removed placeholder config key is still present. */
+const REMOVED_PLACEHOLDER_CONFIG_ERROR =
+	"unsupported config key: placeholder. Use omittedNotice and summaryNotice.";
 
 /** Thinking values accepted by context projection summary configuration. */
 const SUMMARY_THINKING_VALUES = [
@@ -167,7 +181,8 @@ const CONTEXT_PROJECTION_CONFIG_KEYS = [
 	KEEP_RECENT_TURNS_CONFIG_KEY,
 	KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY,
 	PROJECTION_IGNORED_TOOLS_CONFIG_KEY,
-	PLACEHOLDER_CONFIG_KEY,
+	OMITTED_NOTICE_CONFIG_KEY,
+	SUMMARY_NOTICE_CONFIG_KEY,
 	SUMMARY_CONFIG_KEY,
 ] as const;
 
@@ -225,13 +240,14 @@ export interface ContextProjectionConfig {
 	readonly keepRecentTurns: number;
 	readonly keepRecentTurnsPercent: number;
 	readonly projectionIgnoredTools: readonly string[];
-	readonly placeholder: string;
+	readonly omittedNotice: string;
+	readonly summaryNotice: string;
 	readonly summary: ContextProjectionSummaryConfig;
 }
 
 export interface ProjectedEntryState {
 	readonly entryId: string;
-	readonly placeholder: string;
+	readonly replacementText: string;
 }
 
 interface ContextProjectionStateEntryData {
@@ -253,7 +269,7 @@ export interface ProjectionDecision {
 
 interface ProjectContextMessagesOptions {
 	readonly mappedContext: readonly MappedContextEntry[];
-	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
 	readonly replacementTextByEntryId?: ReadonlyMap<string, string>;
 	readonly config: ContextProjectionConfig;
 	readonly loadedSkillRoots: readonly string[];
@@ -264,7 +280,7 @@ interface ProjectContextMessagesOptions {
 interface ProjectionSavingsEstimateOptions {
 	readonly branchEntries: readonly SessionEntry[];
 	readonly cwd: string;
-	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
 	readonly config: ContextProjectionConfig;
 	readonly loadedSkillRoots?: readonly string[];
 }
@@ -283,7 +299,7 @@ interface ProjectMappedContextEntryOptions {
 	readonly readPathsByToolCallId: ReadonlyMap<string, string>;
 	readonly loadedSkillRoots: readonly string[];
 	readonly ignoredTools: ReadonlySet<string>;
-	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
 	readonly replacementTextByEntryId: ReadonlyMap<string, string> | undefined;
 	readonly config: ContextProjectionConfig;
 	readonly activeProjectionLevel: ProjectionLevel | undefined;
@@ -305,7 +321,7 @@ export interface ContextProjectionReplayOptions {
 	readonly loadedSkillRoots?: readonly string[];
 }
 
-const runtimeProjectedPlaceholdersByScope = new Map<
+const runtimeProjectedReplacementsByScope = new Map<
 	string,
 	Map<string, string>
 >();
@@ -465,9 +481,9 @@ export function estimatePendingProjectionSavings({
 	config,
 	loadedSkillRoots = [],
 }: PendingProjectionSavingsEstimateOptions): PendingProjectionSavingsEstimate {
-	const pendingPlaceholders =
-		collectPendingProjectedPlaceholders(branchEntries);
-	if (pendingPlaceholders.size === 0) {
+	const pendingReplacements =
+		collectPendingProjectedReplacements(branchEntries);
+	if (pendingReplacements.size === 0) {
 		return { savedTokens: 0, entryIds: [] };
 	}
 
@@ -475,11 +491,11 @@ export function estimatePendingProjectionSavings({
 		savedTokens: estimateProjectedSavedTokens({
 			branchEntries,
 			cwd,
-			projectedPlaceholdersByEntryId: pendingPlaceholders,
+			projectedReplacementsByEntryId: pendingReplacements,
 			config,
 			loadedSkillRoots,
 		}),
-		entryIds: [...pendingPlaceholders.keys()],
+		entryIds: [...pendingReplacements.keys()],
 	};
 }
 
@@ -526,6 +542,13 @@ function parseContextProjectionConfig(
 				key as (typeof CONTEXT_PROJECTION_CONFIG_KEYS)[number],
 			),
 	);
+	if (unsupportedKey === REMOVED_PLACEHOLDER_CONFIG_KEY) {
+		return {
+			kind: "invalid",
+			issue: REMOVED_PLACEHOLDER_CONFIG_ERROR,
+			fatal: true,
+		};
+	}
 	if (unsupportedKey !== undefined) {
 		return { kind: "invalid" };
 	}
@@ -550,7 +573,10 @@ function parseContextProjectionConfig(
 		DEFAULT_KEEP_RECENT_TURNS_PERCENT;
 	const projectionIgnoredTools =
 		config[PROJECTION_IGNORED_TOOLS_CONFIG_KEY] ?? [];
-	const placeholder = config[PLACEHOLDER_CONFIG_KEY] ?? DEFAULT_PLACEHOLDER;
+	const omittedNotice =
+		config[OMITTED_NOTICE_CONFIG_KEY] ?? DEFAULT_OMITTED_NOTICE;
+	const summaryNotice =
+		config[SUMMARY_NOTICE_CONFIG_KEY] ?? DEFAULT_SUMMARY_NOTICE;
 	const summary = parseContextProjectionSummaryConfig(
 		config[SUMMARY_CONFIG_KEY],
 	);
@@ -558,7 +584,8 @@ function parseContextProjectionConfig(
 		!isNonNegativeInteger(keepRecentTurns) ||
 		!isPercentNumber(keepRecentTurnsPercent) ||
 		!isUniqueNonEmptyStringArray(projectionIgnoredTools) ||
-		!isNonEmptyString(placeholder) ||
+		!isNonEmptyString(omittedNotice) ||
+		!isNonEmptyString(summaryNotice) ||
 		summary === undefined
 	) {
 		return { kind: "invalid" };
@@ -572,7 +599,8 @@ function parseContextProjectionConfig(
 			keepRecentTurns,
 			keepRecentTurnsPercent,
 			projectionIgnoredTools,
-			placeholder,
+			omittedNotice,
+			summaryNotice,
 			summary,
 		},
 	};
@@ -809,17 +837,17 @@ export async function replayContextProjection({
 		return originalMessages;
 	}
 
-	const projectedPlaceholdersByEntryId = mergeProjectedPlaceholders(
-		collectProjectedPlaceholders(branchEntries),
-		getRuntimeProjectedPlaceholders(cwd),
+	const projectedReplacementsByEntryId = mergeProjectedReplacements(
+		collectProjectedReplacements(branchEntries),
+		getRuntimeProjectedReplacements(cwd),
 	);
-	if (projectedPlaceholdersByEntryId.size === 0) {
+	if (projectedReplacementsByEntryId.size === 0) {
 		return originalMessages;
 	}
 
 	const decision = projectContextMessages({
 		mappedContext,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		config: config.config,
 		loadedSkillRoots,
 		cwd,
@@ -829,14 +857,14 @@ export async function replayContextProjection({
 }
 
 /** Collects projected entries from extension-owned custom entries on the active branch only. */
-export function collectProjectedPlaceholders(
+export function collectProjectedReplacements(
 	branchEntries: readonly SessionEntry[],
 ): Map<string, string> {
-	return collectProjectedPlaceholdersFromEntries(branchEntries);
+	return collectProjectedReplacementsFromEntries(branchEntries);
 }
 
 /** Collects projection state appended after the latest valid provider usage. */
-function collectPendingProjectedPlaceholders(
+function collectPendingProjectedReplacements(
 	branchEntries: readonly SessionEntry[],
 ): Map<string, string> {
 	const latestValidUsageIndex = findLastEntryIndex(
@@ -845,16 +873,16 @@ function collectPendingProjectedPlaceholders(
 			entry.type === "message" && hasValidAssistantContextUsage(entry.message),
 	);
 
-	return collectProjectedPlaceholdersFromEntries(
+	return collectProjectedReplacementsFromEntries(
 		branchEntries.slice(latestValidUsageIndex + 1),
 	);
 }
 
-/** Collects projection placeholders from extension-owned custom state entries. */
-function collectProjectedPlaceholdersFromEntries(
+/** Collects projection replacement text from extension-owned custom state entries. */
+function collectProjectedReplacementsFromEntries(
 	entries: readonly SessionEntry[],
 ): Map<string, string> {
-	const projectedPlaceholdersByEntryId = new Map<string, string>();
+	const projectedReplacementsByEntryId = new Map<string, string>();
 	for (const entry of entries) {
 		if (
 			entry.type !== "custom" ||
@@ -865,14 +893,14 @@ function collectProjectedPlaceholdersFromEntries(
 		}
 
 		for (const projectedEntry of entry.data.projectedEntries) {
-			projectedPlaceholdersByEntryId.set(
+			projectedReplacementsByEntryId.set(
 				projectedEntry.entryId,
-				projectedEntry.placeholder,
+				projectedEntry.replacementText,
 			);
 		}
 	}
 
-	return projectedPlaceholdersByEntryId;
+	return projectedReplacementsByEntryId;
 }
 
 /** Returns true when an assistant message contains provider usage that reflects its request. */
@@ -899,13 +927,13 @@ function estimateAssistantUsageTokens(
 }
 
 /** Publishes active in-memory projection state for other extension entry points in the same process. */
-export function publishRuntimeProjectedPlaceholders(
+export function publishRuntimeProjectedReplacements(
 	cwd: string,
-	projectedPlaceholdersByEntryId: ReadonlyMap<string, string>,
+	projectedReplacementsByEntryId: ReadonlyMap<string, string>,
 ): void {
-	runtimeProjectedPlaceholdersByScope.set(
+	runtimeProjectedReplacementsByScope.set(
 		getRuntimeProjectionScope(cwd),
-		new Map(projectedPlaceholdersByEntryId),
+		new Map(projectedReplacementsByEntryId),
 	);
 }
 
@@ -913,17 +941,17 @@ export function publishRuntimeProjectedPlaceholders(
 export function estimateProjectedSavedTokens({
 	branchEntries,
 	cwd,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	config,
 	loadedSkillRoots = [],
 }: ProjectionSavingsEstimateOptions): number {
-	if (projectedPlaceholdersByEntryId.size === 0) {
+	if (projectedReplacementsByEntryId.size === 0) {
 		return 0;
 	}
 
 	const decision = projectContextMessages({
 		mappedContext: buildContextEntryMapping(branchEntries),
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		config,
 		loadedSkillRoots,
 		cwd,
@@ -1027,7 +1055,7 @@ function buildContextEntryMapping(
 /** Returns projected provider-context messages and newly persisted projection state. */
 export function projectContextMessages({
 	mappedContext,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	replacementTextByEntryId,
 	config,
 	loadedSkillRoots,
@@ -1052,7 +1080,7 @@ export function projectContextMessages({
 			readPathsByToolCallId,
 			loadedSkillRoots,
 			ignoredTools,
-			projectedPlaceholdersByEntryId,
+			projectedReplacementsByEntryId,
 			replacementTextByEntryId,
 			config,
 			activeProjectionLevel,
@@ -1088,7 +1116,7 @@ function projectMappedContextEntry({
 	readPathsByToolCallId,
 	loadedSkillRoots,
 	ignoredTools,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	replacementTextByEntryId,
 	config,
 	activeProjectionLevel,
@@ -1107,7 +1135,7 @@ function projectMappedContextEntry({
 		return { kind: "unchanged", message };
 	}
 
-	const alreadyProjected = projectedPlaceholdersByEntryId.has(entry.id);
+	const alreadyProjected = projectedReplacementsByEntryId.has(entry.id);
 	const newlyEligible =
 		activeProjectionLevel !== undefined &&
 		!protectedEntryIds.has(entry.id) &&
@@ -1117,21 +1145,21 @@ function projectMappedContextEntry({
 		return { kind: "unchanged", message };
 	}
 
-	const placeholder = alreadyProjected
-		? (projectedPlaceholdersByEntryId.get(entry.id) ?? config.placeholder)
-		: (replacementTextByEntryId?.get(entry.id) ?? config.placeholder);
+	const replacementText = alreadyProjected
+		? (projectedReplacementsByEntryId.get(entry.id) ?? config.omittedNotice)
+		: (replacementTextByEntryId?.get(entry.id) ?? config.omittedNotice);
 	return {
 		kind: "projected",
 		message: {
 			...message,
-			content: [{ type: "text" as const, text: placeholder }],
+			content: [{ type: "text" as const, text: replacementText }],
 		},
 		projectedEntry: alreadyProjected
 			? undefined
-			: { entryId: entry.id, placeholder },
+			: { entryId: entry.id, replacementText },
 		savedTokens: calculateProjectedTokenSavings(
 			getTextToolResultText(message),
-			placeholder,
+			replacementText,
 		),
 	};
 }
@@ -1420,12 +1448,12 @@ function isProjectionStateEntryData(
 	);
 }
 
-/** Returns true when a custom-entry item identifies one projected entry and its stable placeholder. */
+/** Returns true when a custom-entry item identifies one projected entry and its stable replacement text. */
 function isProjectedEntryState(value: unknown): value is ProjectedEntryState {
 	return (
 		isRecord(value) &&
 		isNonEmptyString(value["entryId"]) &&
-		isNonEmptyString(value["placeholder"])
+		isNonEmptyString(value["replacementText"])
 	);
 }
 
@@ -1533,11 +1561,11 @@ function getProjectionIgnoredTools(
 	]);
 }
 
-function getRuntimeProjectedPlaceholders(
+function getRuntimeProjectedReplacements(
 	cwd: string,
 ): ReadonlyMap<string, string> {
 	return (
-		runtimeProjectedPlaceholdersByScope.get(getRuntimeProjectionScope(cwd)) ??
+		runtimeProjectedReplacementsByScope.get(getRuntimeProjectionScope(cwd)) ??
 		new Map()
 	);
 }
@@ -1550,11 +1578,11 @@ function getRuntimePendingProjectionScope(sessionId: string): string {
 	return `${getAgentDir()}\0${sessionId}`;
 }
 
-function mergeProjectedPlaceholders(
-	persistedPlaceholders: ReadonlyMap<string, string>,
-	runtimePlaceholders: ReadonlyMap<string, string>,
+function mergeProjectedReplacements(
+	persistedReplacements: ReadonlyMap<string, string>,
+	runtimeReplacements: ReadonlyMap<string, string>,
 ): Map<string, string> {
-	return new Map([...persistedPlaceholders, ...runtimePlaceholders]);
+	return new Map([...persistedReplacements, ...runtimeReplacements]);
 }
 
 /** Returns true when a runtime value is a non-array object. */
@@ -1562,14 +1590,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Returns the token count removed after the original content is replaced by placeholder text. */
+/** Returns the token count removed after the original content is replaced by projection text. */
 function calculateProjectedTokenSavings(
 	originalText: string,
-	placeholder: string,
+	replacementText: string,
 ): number {
 	return Math.max(
 		0,
 		countProjectionTextTokens(originalText) -
-			countProjectionTextTokens(placeholder),
+			countProjectionTextTokens(replacementText),
 	);
 }

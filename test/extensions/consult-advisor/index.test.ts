@@ -479,7 +479,7 @@ function createToolCallMessage(
 function createProjectionStateEntry(
 	id: string,
 	projectedEntryId: string,
-	placeholder: string,
+	replacementText: string,
 	parentId: string | null,
 ): SessionEntry {
 	return {
@@ -488,7 +488,9 @@ function createProjectionStateEntry(
 		parentId,
 		timestamp: "t",
 		customType: "context-projection",
-		data: { projectedEntries: [{ entryId: projectedEntryId, placeholder }] },
+		data: {
+			projectedEntries: [{ entryId: projectedEntryId, replacementText }],
+		},
 	} as SessionEntry;
 }
 
@@ -1252,12 +1254,12 @@ describe("consult-advisor", () => {
 
 	test("replays persisted context projection state before calling the advisor", async () => {
 		// Purpose: advisor input must match the projected task state when context-projection has recorded omitted tool results.
-		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded placeholder.
+		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded replacement text.
 		// Edge case: the current pending consult_advisor call is still removed after projection replay.
 		// Dependencies: temp context-projection config, fake model registry, fake completion function, and fake session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const placeholder = "[projected old output]";
+			const replacementText = "[projected old output]";
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1290,7 +1292,7 @@ describe("consult-advisor", () => {
 						timestamp: 3,
 					},
 				},
-				createProjectionStateEntry("4", "3", placeholder, "3"),
+				createProjectionStateEntry("4", "3", replacementText, "3"),
 				{
 					type: "message",
 					id: "5",
@@ -1312,7 +1314,7 @@ describe("consult-advisor", () => {
 			const advisorMessages = JSON.stringify(
 				completion.calls[0]?.context.messages,
 			);
-			expect(advisorMessages).toContain(placeholder);
+			expect(advisorMessages).toContain(replacementText);
 			expect(advisorMessages).not.toContain("old full tool output");
 			expect(advisorMessages).not.toContain("current question");
 			expect(advisorMessages).not.toContain("call-1");
@@ -1326,7 +1328,7 @@ describe("consult-advisor", () => {
 		// Dependencies: context-projection and consult-advisor factories, fake completion function, and in-memory session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const placeholder = "[projected shared output]";
+			const replacementText = "[projected shared output]";
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1359,7 +1361,7 @@ describe("consult-advisor", () => {
 						timestamp: 3,
 					},
 				},
-				createProjectionStateEntry("4", "3", placeholder, "3"),
+				createProjectionStateEntry("4", "3", replacementText, "3"),
 			] satisfies SessionEntry[];
 			const ctx = createContext([model], branchEntries);
 			contextProjection(pi);
@@ -1393,7 +1395,7 @@ describe("consult-advisor", () => {
 			const advisorProjectedToolResult = JSON.stringify(
 				completion.calls[0]?.context.messages[2],
 			);
-			expect(mainProjectedToolResult).toContain(placeholder);
+			expect(mainProjectedToolResult).toContain(replacementText);
 			expect(advisorProjectedToolResult).toBe(mainProjectedToolResult);
 			expect(advisorProjectedToolResult).not.toContain("old full tool output");
 		});
@@ -1401,7 +1403,7 @@ describe("consult-advisor", () => {
 
 	test("uses live projection state before the persisted custom entry appears in the active branch", async () => {
 		// Purpose: advisor replay must use context-projection's runtime state from the same process, not only persisted branch entries.
-		// Input and expected output: context-projection records an omission in memory, and consult_advisor receives the placeholder without the custom state entry in branch.
+		// Input and expected output: context-projection records an omission in memory, and consult_advisor receives the replacement text without the custom state entry in branch.
 		// Edge case: projection state has been appended by the context hook but is not part of the active branch snapshot used by the advisor tool call.
 		// Dependencies: context-projection and consult-advisor factories share the same imported projection state module.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1465,7 +1467,7 @@ describe("consult-advisor", () => {
 				completion.calls[0]?.context.messages,
 			);
 			expect(advisorMessages).toContain(
-				"Result omitted. Run tool again if you want to see it",
+				"Result omitted. Run tool again for full result.",
 			);
 			expect(advisorMessages).not.toContain("old output old output");
 		});
@@ -1555,7 +1557,7 @@ describe("consult-advisor", () => {
 				'<tool_result full_result="omitted" content="summary">',
 			);
 			expect(advisorReplacement.text).toContain(
-				"<notice>Result omitted. Run tool again if you want to see it</notice>",
+				"<notice>Full result omitted. Summary below. Run tool again for full result.</notice>",
 			);
 			expect(advisorReplacement.text).toContain("Generated projection summary");
 			expect(advisorReplacement.text).not.toContain("old output old output");
@@ -1563,8 +1565,8 @@ describe("consult-advisor", () => {
 				projectedEntries: [
 					{
 						entryId: "2",
-						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>Result omitted. Run tool again if you want to see it</notice>\n<summary>\nGenerated projection summary\n</summary>\n</tool_result>',
+						replacementText:
+							'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nGenerated projection summary\n</summary>\n</tool_result>',
 					},
 				],
 			});
@@ -1573,12 +1575,12 @@ describe("consult-advisor", () => {
 
 	test("does not let stored projection state hide loaded skill read results from the advisor", async () => {
 		// Purpose: advisor projection replay must preserve skill instructions even when stale projection state references a skill read result.
-		// Input and expected output: loaded skill root plus stored projection state keeps the read output visible and omits the placeholder.
+		// Input and expected output: loaded skill root plus stored projection state keeps the read output visible and omits the replacement text.
 		// Edge case: stale projection state exists for the same read result entry.
 		// Dependencies: before_agent_start hook, temp context-projection config, fake completion function, and in-memory session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const placeholder = "[projected skill output]";
+			const replacementText = "[projected skill output]";
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1611,7 +1613,7 @@ describe("consult-advisor", () => {
 							timestamp: 2,
 						},
 					},
-					createProjectionStateEntry("3", "2", placeholder, "2"),
+					createProjectionStateEntry("3", "2", replacementText, "2"),
 				],
 			);
 			consultAdvisor(pi, { completeSimple: completion.completeSimple });
@@ -1630,7 +1632,7 @@ describe("consult-advisor", () => {
 				completion.calls[0]?.context.messages,
 			);
 			expect(advisorMessages).toContain("skill instruction text");
-			expect(advisorMessages).not.toContain(placeholder);
+			expect(advisorMessages).not.toContain(replacementText);
 		});
 	});
 
