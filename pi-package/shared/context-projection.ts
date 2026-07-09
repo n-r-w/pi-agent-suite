@@ -9,6 +9,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
+import {
+	parseToolResultSummaryConfig,
+	type ToolResultSummaryConfig,
+} from "./tool-result-summary";
 
 /** Suite directory owned by context-projection. */
 const CONTEXT_PROJECTION_EXTENSION_DIR = "context-projection";
@@ -61,30 +65,6 @@ const SUMMARY_NOTICE_CONFIG_KEY = "summaryNotice";
 /** Config key for optional summaries generated before projecting tool results. */
 const SUMMARY_CONFIG_KEY = "summary";
 
-/** Config key that enables summary generation. */
-const SUMMARY_ENABLED_CONFIG_KEY = "enabled";
-
-/** Config key for the model used by summary generation. */
-const SUMMARY_MODEL_CONFIG_KEY = "model";
-
-/** Config key for the thinking level used by summary generation. */
-const SUMMARY_THINKING_CONFIG_KEY = "thinking";
-
-/** Config key for the maximum number of concurrent summary requests. */
-const SUMMARY_MAX_CONCURRENCY_CONFIG_KEY = "maxConcurrency";
-
-/** Config key for retry attempts after the first summary request fails. */
-const SUMMARY_RETRY_COUNT_CONFIG_KEY = "retryCount";
-
-/** Config key for the pause between summary retry attempts in milliseconds. */
-const SUMMARY_RETRY_DELAY_MS_CONFIG_KEY = "retryDelayMs";
-
-/** Config key for the custom summary system prompt path. */
-const SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY = "systemPromptFile";
-
-/** Config key for the custom summary user prompt path. */
-const SUMMARY_USER_PROMPT_FILE_CONFIG_KEY = "userPromptFile";
-
 /** Advisor and council outputs must stay visible because they carry decision-critical guidance. */
 const CONSULT_ADVISOR_TOOL_NAME = "consult_advisor";
 const CONVENE_COUNCIL_TOOL_NAME = "convene_council";
@@ -127,15 +107,6 @@ const DEFAULT_OMITTED_NOTICE =
 const DEFAULT_SUMMARY_NOTICE =
 	"Full result omitted. Summary below. Run tool again for full result.";
 
-/** Default summary request concurrency. */
-const DEFAULT_SUMMARY_MAX_CONCURRENCY = 1;
-
-/** Default retry attempts after the first failed summary request. */
-const DEFAULT_SUMMARY_RETRY_COUNT = 1;
-
-/** Default pause between summary retry attempts. */
-const DEFAULT_SUMMARY_RETRY_DELAY_MS = 5_000;
-
 /** Factor used to render token usage as a percentage of the context window. */
 const PERCENT_FACTOR = 100;
 
@@ -146,28 +117,6 @@ const PROJECTION_LEVEL_ORDER_ERROR =
 /** Fatal issue reported when the removed placeholder config key is still present. */
 const REMOVED_PLACEHOLDER_CONFIG_ERROR =
 	"unsupported config key: placeholder. Use omittedNotice and summaryNotice.";
-
-/** Thinking values accepted by context projection summary configuration. */
-const SUMMARY_THINKING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const;
-
-/** Config keys accepted by the summary config object. */
-const CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS = [
-	SUMMARY_ENABLED_CONFIG_KEY,
-	SUMMARY_MODEL_CONFIG_KEY,
-	SUMMARY_THINKING_CONFIG_KEY,
-	SUMMARY_MAX_CONCURRENCY_CONFIG_KEY,
-	SUMMARY_RETRY_COUNT_CONFIG_KEY,
-	SUMMARY_RETRY_DELAY_MS_CONFIG_KEY,
-	SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY,
-	SUMMARY_USER_PROMPT_FILE_CONFIG_KEY,
-] as const;
 
 /** Config keys accepted by the context projection config object. */
 const CONTEXT_PROJECTION_CONFIG_KEYS = [
@@ -198,8 +147,7 @@ export type ContextProjectionConfigResult =
 			readonly fatal?: boolean;
 	  };
 
-type ContextProjectionSummaryThinking =
-	(typeof SUMMARY_THINKING_VALUES)[number];
+export type ContextProjectionSummaryConfig = ToolResultSummaryConfig;
 
 export interface ProjectionLevel {
 	readonly label: "L1" | "L2" | "L3";
@@ -212,27 +160,6 @@ type ProjectionLevelTuple = readonly [
 	ProjectionLevel,
 	ProjectionLevel,
 ];
-
-interface EnabledSummaryConfigValues {
-	readonly maxConcurrency: number;
-	readonly retryCount: number;
-	readonly retryDelayMs: number;
-	readonly model?: string;
-	readonly thinking?: ContextProjectionSummaryThinking;
-	readonly systemPromptFile?: string;
-	readonly userPromptFile?: string;
-}
-
-export interface ContextProjectionSummaryConfig {
-	readonly enabled: boolean;
-	readonly model?: string;
-	readonly thinking?: ContextProjectionSummaryThinking;
-	readonly maxConcurrency: number;
-	readonly retryCount: number;
-	readonly retryDelayMs: number;
-	readonly systemPromptFile?: string;
-	readonly userPromptFile?: string;
-}
 
 export interface ContextProjectionConfig {
 	readonly enabled: true;
@@ -712,116 +639,7 @@ function normalizeProjectionLevelThreshold(
 function parseContextProjectionSummaryConfig(
 	config: unknown,
 ): ContextProjectionSummaryConfig | undefined {
-	if (config === undefined) {
-		return createDisabledSummaryConfig();
-	}
-	if (!isRecord(config)) {
-		return undefined;
-	}
-
-	const unsupportedKey = Object.keys(config).find(
-		(key) =>
-			!CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS.includes(
-				key as (typeof CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS)[number],
-			),
-	);
-	if (unsupportedKey !== undefined) {
-		return undefined;
-	}
-
-	const enabled = config[SUMMARY_ENABLED_CONFIG_KEY];
-	if (enabled !== undefined && typeof enabled !== "boolean") {
-		return undefined;
-	}
-	if (enabled !== true) {
-		return createDisabledSummaryConfig();
-	}
-
-	const model = config[SUMMARY_MODEL_CONFIG_KEY];
-	const thinking = config[SUMMARY_THINKING_CONFIG_KEY];
-	const maxConcurrency =
-		config[SUMMARY_MAX_CONCURRENCY_CONFIG_KEY] ??
-		DEFAULT_SUMMARY_MAX_CONCURRENCY;
-	const retryCount =
-		config[SUMMARY_RETRY_COUNT_CONFIG_KEY] ?? DEFAULT_SUMMARY_RETRY_COUNT;
-	const retryDelayMs =
-		config[SUMMARY_RETRY_DELAY_MS_CONFIG_KEY] ?? DEFAULT_SUMMARY_RETRY_DELAY_MS;
-	const systemPromptFile = config[SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY];
-	const userPromptFile = config[SUMMARY_USER_PROMPT_FILE_CONFIG_KEY];
-	const values = parseEnabledSummaryConfigValues({
-		model,
-		thinking,
-		maxConcurrency,
-		retryCount,
-		retryDelayMs,
-		systemPromptFile,
-		userPromptFile,
-	});
-	if (values === undefined) {
-		return undefined;
-	}
-
-	return {
-		enabled: true,
-		...values,
-	};
-}
-
-/** Parses enabled summary fields after defaults are applied. */
-function parseEnabledSummaryConfigValues({
-	model,
-	thinking,
-	maxConcurrency,
-	retryCount,
-	retryDelayMs,
-	systemPromptFile,
-	userPromptFile,
-}: {
-	readonly model: unknown;
-	readonly thinking: unknown;
-	readonly maxConcurrency: unknown;
-	readonly retryCount: unknown;
-	readonly retryDelayMs: unknown;
-	readonly systemPromptFile: unknown;
-	readonly userPromptFile: unknown;
-}): EnabledSummaryConfigValues | undefined {
-	if (
-		!isOptionalModelId(model) ||
-		!isOptionalSummaryThinking(thinking) ||
-		!isPositiveInteger(maxConcurrency) ||
-		!isNonNegativeInteger(retryCount) ||
-		!isNonNegativeInteger(retryDelayMs) ||
-		!isOptionalNonEmptyString(systemPromptFile) ||
-		!isOptionalNonEmptyString(userPromptFile)
-	) {
-		return undefined;
-	}
-	if (typeof systemPromptFile === "string" && !isAbsolute(systemPromptFile)) {
-		throw new Error("summary.systemPromptFile must be an absolute path");
-	}
-	if (typeof userPromptFile === "string" && !isAbsolute(userPromptFile)) {
-		throw new Error("summary.userPromptFile must be an absolute path");
-	}
-
-	return {
-		maxConcurrency,
-		retryCount,
-		retryDelayMs,
-		...(typeof model === "string" ? { model } : {}),
-		...(isSummaryThinking(thinking) ? { thinking } : {}),
-		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
-		...(typeof userPromptFile === "string" ? { userPromptFile } : {}),
-	};
-}
-
-/** Builds the default disabled summary config. */
-function createDisabledSummaryConfig(): ContextProjectionSummaryConfig {
-	return {
-		enabled: false,
-		maxConcurrency: DEFAULT_SUMMARY_MAX_CONCURRENCY,
-		retryCount: DEFAULT_SUMMARY_RETRY_COUNT,
-		retryDelayMs: DEFAULT_SUMMARY_RETRY_DELAY_MS,
-	};
+	return parseToolResultSummaryConfig(config, { defaultEnabled: false });
 }
 
 /** Returns branch context with persisted projection state applied when projection is active. */
@@ -1477,11 +1295,6 @@ function isNonNegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-/** Returns true when the value is a positive integer. */
-function isPositiveInteger(value: unknown): value is number {
-	return typeof value === "number" && Number.isInteger(value) && value >= 1;
-}
-
 /** Returns true when the value is a ratio from zero to one. */
 function isPercentNumber(value: unknown): value is number {
 	return typeof value === "number" && value >= 0 && value <= 1;
@@ -1490,43 +1303,6 @@ function isPercentNumber(value: unknown): value is number {
 /** Returns true when a value is a non-empty string after whitespace is ignored. */
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.trim() !== "";
-}
-
-/** Returns true when an optional string field is absent, null, or non-empty. */
-function isOptionalNonEmptyString(
-	value: unknown,
-): value is string | null | undefined {
-	return value === undefined || value === null || isNonEmptyString(value);
-}
-
-/** Returns true when an optional model ID is absent, null, or provider/model. */
-function isOptionalModelId(value: unknown): value is string | null | undefined {
-	if (value === undefined || value === null) {
-		return true;
-	}
-	if (typeof value !== "string") {
-		return false;
-	}
-
-	const separatorIndex = value.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < value.length - 1;
-}
-
-/** Returns true when an optional thinking field is absent, null, or supported. */
-function isOptionalSummaryThinking(
-	value: unknown,
-): value is ContextProjectionSummaryThinking | null | undefined {
-	return value === undefined || value === null || isSummaryThinking(value);
-}
-
-/** Returns true when a value is a supported summary thinking level. */
-function isSummaryThinking(
-	value: unknown,
-): value is ContextProjectionSummaryThinking {
-	return (
-		typeof value === "string" &&
-		(SUMMARY_THINKING_VALUES as readonly string[]).includes(value)
-	);
 }
 
 /** Returns true when a value is a duplicate-free list of non-empty tool names. */

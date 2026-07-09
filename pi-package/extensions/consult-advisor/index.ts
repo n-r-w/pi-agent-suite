@@ -2,15 +2,15 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import {
-	type Api,
-	type AssistantMessage,
-	type Context,
-	completeSimple as defaultCompleteSimple,
-	type Message,
-	type Model,
-	type SimpleStreamOptions,
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Message,
+	Model,
+	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	type ExtensionAPI,

@@ -82,6 +82,26 @@ If multiple projection levels use the same remaining-token threshold, the extens
 
 When `summary.enabled` is omitted or set to `false`, other summary values are ignored except unsupported summary keys.
 
+## Summary diagnostics
+
+Each failed tool-result summary attempt appends a `tool-result-summary-diagnostic` custom entry to the JSONL session. Custom entries do not participate in model context.
+
+| Field | Meaning |
+| --- | --- |
+| `source` | Extension that requested the summary: `context-projection` or `custom-compaction`. |
+| `provider` | Summary model provider. |
+| `model` | Summary model ID. |
+| `candidateId` | Stable identifier of the tool result being summarized. |
+| `toolName` | Tool that produced the result. |
+| `attempt` | Failed attempt number, starting at `1`. |
+| `totalAttempts` | Initial attempt plus configured retries. |
+| `failureKind` | `context-too-large`, `aborted`, `provider-error`, `empty-response`, or `exception`. |
+| `errorName` | Exception name when the provider call threw. |
+| `errorCode` | String or numeric exception code when available. |
+| `errorMessage` | Single-line failure message, limited to 2,000 characters. |
+
+Diagnostic entries never contain prompts, tool-result text, authentication data, request headers, or exception stacks. A diagnostic persistence failure does not change summary retry or fallback behavior.
+
 ## Usage notes
 
 - Missing configuration keeps projection disabled.

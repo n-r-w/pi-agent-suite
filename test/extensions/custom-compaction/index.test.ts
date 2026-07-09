@@ -11,7 +11,7 @@ const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const completeSimpleMock = mock();
 
-mock.module("@earendil-works/pi-ai", () => ({
+mock.module("@earendil-works/pi-ai/compat", () => ({
 	completeSimple: completeSimpleMock,
 }));
 
@@ -160,7 +160,11 @@ function getCompactionHandler(
 }
 
 /** Creates a fake model with the fields used by custom compaction. */
-function createModel(provider: string, id: string): TestModel {
+function createModel(
+	provider: string,
+	id: string,
+	contextWindow = 100_000,
+): TestModel {
 	return {
 		provider,
 		id,
@@ -170,7 +174,7 @@ function createModel(provider: string, id: string): TestModel {
 		name: `${provider}/${id}`,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 100_000,
+		contextWindow,
 		maxTokens: 8_192,
 	};
 }
@@ -546,6 +550,137 @@ describe("custom-compaction", () => {
 				signal: event.signal,
 			});
 			expect(session.notifications).toEqual([]);
+		});
+	});
+
+	test("summarizes large tool results before oversized compaction summary requests", async () => {
+		// Purpose: custom compaction must shrink natural tool-result boundaries before final summary when the full summary input exceeds the compaction model window.
+		// Input and expected output: the first helper call fails and records a safe diagnostic, its retry summarizes the tool result, and final compaction uses that summary.
+		// Edge case: helper summary retries use the same context-projection summary config shape and preserve matching tool call context.
+		// Dependencies: mocked completeSimple, temp agent directory, fake model registry, and tokenizer-based input estimation.
+		await withIsolatedAgentDir(async (agentDir) => {
+			completeSimpleMock
+				.mockImplementationOnce(async () => {
+					throw new Error("WebSocket closed");
+				})
+				.mockResolvedValueOnce(createAssistantResponse("large tool summary"))
+				.mockResolvedValueOnce(
+					createAssistantResponse("final compact summary"),
+				);
+			const promptFiles = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, {
+				enabled: true,
+				...promptFiles,
+				summary: {
+					enabled: true,
+					model: "helper/summary",
+					thinking: "low",
+					maxConcurrency: 1,
+					retryCount: 1,
+					retryDelayMs: 0,
+				},
+			});
+			const currentModel = createModel("current", "small", 500);
+			const helperModel = createModel("helper", "summary", 100_000);
+			const pi = createExtensionApiFake("high");
+			const session = createSessionContextFake({
+				currentModel,
+				configuredModel: helperModel,
+			});
+			const rawMarker = "UNIQUE_RAW_TOOL_RESULT_MARKER";
+			const largeToolResult = `${rawMarker} ${"large output ".repeat(5_000)}`;
+			const baseEvent = createHistoryCompactionEvent();
+			const event = {
+				...baseEvent,
+				preparation: {
+					...baseEvent.preparation,
+					messagesToSummarize: [
+						{ role: "user", content: "inspect repository", timestamp: 1 },
+						{
+							role: "assistant",
+							content: [
+								{
+									type: "toolCall",
+									id: "tool-call-large",
+									name: "bash",
+									arguments: { command: "printf large-output" },
+								},
+							],
+							timestamp: 2,
+						},
+						{
+							role: "toolResult",
+							toolCallId: "tool-call-large",
+							toolName: "bash",
+							content: [{ type: "text", text: largeToolResult }],
+							isError: false,
+							timestamp: 3,
+						},
+					],
+				},
+			} as CompactEvent;
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(event, session.ctx);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "final compact summary" },
+			});
+			expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: "tool-result-summary-diagnostic",
+					data: {
+						source: "custom-compaction",
+						provider: "helper",
+						model: "summary",
+						candidateId: "history:2",
+						toolName: "bash",
+						attempt: 1,
+						totalAttempts: 2,
+						failureKind: "exception",
+						errorName: "Error",
+						errorMessage: "WebSocket closed",
+					},
+				},
+			]);
+			const [helperModelArg, helperContext, helperOptions] =
+				completeSimpleMock.mock.calls[1] ?? [];
+			expect(helperModelArg).toBe(helperModel);
+			expect(helperOptions).toMatchObject({ reasoning: "low" });
+			expect(getSummaryRequestText(helperContext)).toContain(
+				"printf large-output",
+			);
+			expect(getSummaryRequestText(helperContext)).toContain(rawMarker);
+			const [finalModelArg, finalContext] =
+				completeSimpleMock.mock.calls[2] ?? [];
+			expect(finalModelArg).toBe(currentModel);
+			expect(getSummaryRequestText(finalContext)).toContain(
+				"large tool summary",
+			);
+			expect(getSummaryRequestText(finalContext)).not.toContain(rawMarker);
+			expect(session.notifications).toEqual([
+				{
+					message:
+						"[custom-compaction] compressing large tool results before compaction: 0/1",
+					type: "info",
+				},
+				{
+					message:
+						"[custom-compaction] compressing bash tool result before compaction: 1/1",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] retrying tool result summary 2/2",
+					type: "info",
+				},
+				{
+					message:
+						"[custom-compaction] compressed 1/1 large tool results before compaction",
+					type: "info",
+				},
+			]);
+			expect(session.requestedModels).toEqual([currentModel, helperModel]);
 		});
 	});
 

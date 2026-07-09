@@ -1,16 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import {
-	type Api,
-	type Context,
-	completeSimple as defaultCompleteSimple,
-	type AssistantMessage as LlmAssistantMessage,
-	type Message,
-	type Model,
-	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import type {
 	ContextEvent,
 	ExtensionAPI,
@@ -23,7 +12,6 @@ import {
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
 	type ContextProjectionConfig,
 	type ContextProjectionConfigResult,
-	type ContextProjectionSummaryConfig,
 	collectLoadedSkillRoots,
 	collectProjectedReplacements,
 	estimatePendingProjectionSavings,
@@ -42,35 +30,17 @@ import {
 	resetPendingProjectionSavings,
 	setPendingProjectionSavings,
 } from "../../shared/context-projection";
-import {
-	countProjectionTextTokens,
-	estimateSerializedInputTokens,
-} from "../../shared/context-size";
+import { countProjectionTextTokens } from "../../shared/context-size";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
-	buildRetryConfig,
-	createRetryableExternalError,
-	isAbortError,
-	withRetry,
-} from "../../shared/retry";
-
-/** Directory that stores the bundled context projection prompts. */
-const DEFAULT_PROMPT_DIR = join(
-	dirname(fileURLToPath(import.meta.url)),
-	"prompts",
-);
-
-/** Bundled system prompt used to define the summary role. */
-const DEFAULT_SUMMARY_SYSTEM_PROMPT_FILE = join(
-	DEFAULT_PROMPT_DIR,
-	"tool-result-summary-system.md",
-);
-
-/** Bundled user prompt appended after the tool result data. */
-const DEFAULT_SUMMARY_USER_PROMPT_FILE = join(
-	DEFAULT_PROMPT_DIR,
-	"tool-result-summary-user.md",
-);
+	collectToolResultSummaryCandidates,
+	mapWithConcurrency,
+	resolveToolResultSummaryRuntimeConfig,
+	summarizeToolResultCandidateWithRetries,
+	type ToolResultSummaryCandidate,
+	type ToolResultSummaryCompleteSimple,
+} from "../../shared/tool-result-summary";
+import { createToolResultSummaryDiagnosticRecorder } from "../../shared/tool-result-summary-diagnostic";
 
 /** Footer status key owned by this extension. */
 const CONTEXT_PROJECTION_STATUS_KEY = "context-projection";
@@ -109,31 +79,11 @@ interface ContextProjectionChangeResultOptions {
 	readonly decision: ProjectionDecision;
 }
 
-type CompleteSimple = typeof defaultCompleteSimple;
+type CompleteSimple = ToolResultSummaryCompleteSimple;
 
 interface ContextProjectionDependencies {
 	readonly completeSimple?: CompleteSimple;
 }
-
-interface SummaryRuntimeConfig {
-	readonly model: Model<Api>;
-	readonly thinking: ContextProjectionSummaryConfig["thinking"] | undefined;
-	readonly systemPrompt: string;
-	readonly userPrompt: string;
-	readonly options: SimpleStreamOptions;
-}
-
-interface ProjectionSummaryCandidate {
-	readonly entryId: string;
-	readonly text: string;
-	readonly message: Extract<AgentMessage, { role: "toolResult" }>;
-	readonly toolCallContext: string | undefined;
-}
-
-type SummaryAttemptResult =
-	| { readonly kind: "success"; readonly summary: string }
-	| { readonly kind: "retryable" }
-	| { readonly kind: "fatal" };
 
 interface ProjectionDecisionOptions {
 	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
@@ -518,11 +468,13 @@ async function createSummaryReplacementsByEntryId({
 		return new Map();
 	}
 
-	const runtimeConfig = await resolveSummaryRuntimeConfig(
-		pi,
-		ctx,
-		config.summary,
-	);
+	const runtimeConfig = await resolveToolResultSummaryRuntimeConfig({
+		currentModel: ctx.model,
+		modelRegistry: ctx.modelRegistry,
+		config: config.summary,
+		currentThinking: pi.getThinkingLevel(),
+		signal: ctx.signal,
+	});
 	if (runtimeConfig === undefined) {
 		for (const _entry of newProjectedEntries) {
 			progress.notifySummaryUnavailable();
@@ -540,16 +492,27 @@ async function createSummaryReplacementsByEntryId({
 		return new Map();
 	}
 
+	const recordAttemptFailure = createToolResultSummaryDiagnosticRecorder(
+		pi,
+		"context-projection",
+		runtimeConfig.model,
+	);
 	const summaries = await mapWithConcurrency(
 		candidates,
 		config.summary.maxConcurrency,
 		async (candidate) => {
-			const summary = await summarizeProjectionCandidateWithRetries({
+			const summary = await summarizeToolResultCandidateWithRetries({
 				candidate,
 				runtimeConfig,
 				completeSimple,
 				config: config.summary,
-				progress,
+				onAttemptFailure: recordAttemptFailure,
+				onRetryAttempt: () => {
+					progress.notifyCurrent();
+				},
+				onRetryScheduled: (nextAttempt, totalAttempts) => {
+					progress.notifyRetry(nextAttempt, totalAttempts);
+				},
 				recordCost: (message) => {
 					recordHelperApiCost(pi, "context-projection", message);
 				},
@@ -561,6 +524,21 @@ async function createSummaryReplacementsByEntryId({
 			return summary;
 		},
 	);
+	return createUsableSummaryReplacements(
+		candidates,
+		summaries,
+		config.summaryNotice,
+		progress,
+	);
+}
+
+/** Keeps generated summaries only when their replacement reduces the original result size. */
+function createUsableSummaryReplacements(
+	candidates: readonly ToolResultSummaryCandidate[],
+	summaries: readonly (string | undefined)[],
+	summaryNotice: string,
+	progress: ProjectionProgressReporter,
+): Map<string, string> {
 	const replacementsByEntryId = new Map<string, string>();
 	for (let index = 0; index < candidates.length; index += 1) {
 		const candidate = candidates[index];
@@ -569,7 +547,7 @@ async function createSummaryReplacementsByEntryId({
 			continue;
 		}
 
-		const replacement = wrapSummaryReplacement(summary, config.summaryNotice);
+		const replacement = wrapSummaryReplacement(summary, summaryNotice);
 		if (
 			countProjectionTextTokens(replacement) >=
 			countProjectionTextTokens(candidate.text)
@@ -579,9 +557,8 @@ async function createSummaryReplacementsByEntryId({
 			continue;
 		}
 
-		replacementsByEntryId.set(candidate.entryId, replacement);
+		replacementsByEntryId.set(candidate.id, replacement);
 	}
-
 	return replacementsByEntryId;
 }
 
@@ -594,9 +571,14 @@ function collectNewProjectionSummaryCandidates({
 	readonly mappedContext: readonly MappedContextEntry[];
 	readonly newProjectedEntries: readonly ProjectedEntryState[];
 	readonly progress: ProjectionProgressReporter;
-}): ProjectionSummaryCandidate[] {
-	const candidatesByEntryId = collectSummaryCandidates(mappedContext);
-	const candidates: ProjectionSummaryCandidate[] = [];
+}): ToolResultSummaryCandidate[] {
+	const candidatesByEntryId = new Map(
+		collectToolResultSummaryCandidates(
+			mappedContext.map(({ entry, message }) => ({ id: entry.id, message })),
+			0,
+		).map((candidate) => [candidate.id, candidate]),
+	);
+	const candidates: ToolResultSummaryCandidate[] = [];
 	for (const projectedEntry of newProjectedEntries) {
 		const candidate = candidatesByEntryId.get(projectedEntry.entryId);
 		if (candidate === undefined) {
@@ -616,383 +598,6 @@ function wrapSummaryReplacement(
 	summaryNotice: string,
 ): string {
 	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeUTF8(summaryNotice)}</notice>\n<summary>\n${escapeUTF8(summary)}\n</summary>\n</tool_result>`;
-}
-
-/** Selects the model, thinking level, auth, and prompt used for one-tool-result summaries. */
-async function resolveSummaryRuntimeConfig(
-	pi: Pick<ExtensionAPI, "getThinkingLevel">,
-	ctx: ExtensionContext,
-	config: ContextProjectionSummaryConfig,
-): Promise<SummaryRuntimeConfig | undefined> {
-	const model = selectSummaryModel(ctx, config);
-	if (model === undefined) {
-		return undefined;
-	}
-
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		return undefined;
-	}
-
-	const prompts = await readSummaryPrompts(config);
-	if (prompts === undefined) {
-		return undefined;
-	}
-
-	const thinking =
-		config.thinking ?? parseSummaryThinking(pi.getThinkingLevel());
-	const options: SimpleStreamOptions = {};
-	if (ctx.signal !== undefined) {
-		options.signal = ctx.signal;
-	}
-	if (auth.apiKey !== undefined) {
-		options.apiKey = auth.apiKey;
-	}
-	if (auth.headers !== undefined) {
-		options.headers = auth.headers;
-	}
-	if (thinking !== undefined && thinking !== "off") {
-		options.reasoning = thinking;
-	}
-
-	return { model, thinking, ...prompts, options };
-}
-
-/** Selects the configured summary model, or the active main model when omitted. */
-function selectSummaryModel(
-	ctx: ExtensionContext,
-	config: ContextProjectionSummaryConfig,
-): Model<Api> | undefined {
-	if (config.model === undefined) {
-		return ctx.model;
-	}
-
-	const separatorIndex = config.model.indexOf("/");
-	const provider = config.model.slice(0, separatorIndex);
-	const modelId = config.model.slice(separatorIndex + 1);
-	return ctx.modelRegistry.find(provider, modelId);
-}
-
-/** Reads configured summary prompts or bundled defaults. */
-async function readSummaryPrompts(
-	config: ContextProjectionSummaryConfig,
-): Promise<
-	{ readonly systemPrompt: string; readonly userPrompt: string } | undefined
-> {
-	const [systemPrompt, userPrompt] = await Promise.all([
-		readPromptFile(
-			resolveSummaryPromptPath(
-				config.systemPromptFile,
-				DEFAULT_SUMMARY_SYSTEM_PROMPT_FILE,
-			),
-		),
-		readPromptFile(
-			resolveSummaryPromptPath(
-				config.userPromptFile,
-				DEFAULT_SUMMARY_USER_PROMPT_FILE,
-			),
-		),
-	]);
-	if (systemPrompt === undefined || userPrompt === undefined) {
-		return undefined;
-	}
-
-	return { systemPrompt, userPrompt };
-}
-
-/** Reads one prompt file and rejects empty content. */
-async function readPromptFile(path: string): Promise<string | undefined> {
-	try {
-		const prompt = await readFile(path, "utf8");
-		return prompt.trim().length === 0 ? undefined : prompt;
-	} catch {
-		return undefined;
-	}
-}
-
-/** Resolves custom summary prompt paths after config validation guarantees absolute paths. */
-function resolveSummaryPromptPath(
-	promptFile: string | undefined,
-	defaultPromptFile: string,
-): string {
-	return promptFile ?? defaultPromptFile;
-}
-
-/** Collects new projected tool results that are large enough to summarize. */
-function collectSummaryCandidates(
-	mappedContext: readonly MappedContextEntry[],
-): Map<string, ProjectionSummaryCandidate> {
-	const toolCallContextById = collectToolCallContextById(mappedContext);
-	const candidatesByEntryId = new Map<string, ProjectionSummaryCandidate>();
-	for (const { entry, message } of mappedContext) {
-		if (entry.type !== "message" || message.role !== "toolResult") {
-			continue;
-		}
-		const text = getToolResultText(message);
-		if (text === undefined) {
-			continue;
-		}
-
-		candidatesByEntryId.set(entry.id, {
-			entryId: entry.id,
-			text,
-			message,
-			toolCallContext: toolCallContextById.get(message.toolCallId),
-		});
-	}
-
-	return candidatesByEntryId;
-}
-
-/** Collects model-visible tool-call context for summary prompts. */
-function collectToolCallContextById(
-	mappedContext: readonly MappedContextEntry[],
-): Map<string, string> {
-	const contextById = new Map<string, string>();
-	for (const { message } of mappedContext) {
-		if (message.role !== "assistant" || !Array.isArray(message.content)) {
-			continue;
-		}
-		for (const block of message.content) {
-			if (block.type !== "toolCall") {
-				continue;
-			}
-
-			contextById.set(
-				block.id,
-				JSON.stringify({ name: block.name, arguments: block.arguments }),
-			);
-		}
-	}
-
-	return contextById;
-}
-
-/** Retries transient summary failures before giving up on a generated replacement. */
-async function summarizeProjectionCandidateWithRetries({
-	candidate,
-	runtimeConfig,
-	completeSimple,
-	config,
-	progress,
-	recordCost,
-}: {
-	readonly candidate: ProjectionSummaryCandidate;
-	readonly runtimeConfig: SummaryRuntimeConfig;
-	readonly completeSimple: CompleteSimple;
-	readonly config: ContextProjectionSummaryConfig;
-	readonly progress: ProjectionProgressReporter;
-	readonly recordCost: (message: LlmAssistantMessage) => void;
-}): Promise<string | undefined> {
-	let attempt = 0;
-	try {
-		return await withRetry(
-			async () => {
-				attempt += 1;
-				if (attempt > 1) {
-					progress.notifyCurrent();
-				}
-
-				const result = await summarizeProjectionCandidate(
-					candidate,
-					runtimeConfig,
-					completeSimple,
-					recordCost,
-				);
-				if (result.kind === "success") {
-					return result.summary;
-				}
-				if (result.kind === "fatal") {
-					throw new DOMException("summary request aborted", "AbortError");
-				}
-
-				throw createRetryableExternalError(
-					"summary provider returned an error",
-				);
-			},
-			{
-				retry: buildRetryConfig(
-					{
-						maxRetries: config.retryCount,
-						baseDelayMs: config.retryDelayMs,
-					},
-					{ maxRetries: config.retryCount, baseDelayMs: config.retryDelayMs },
-				),
-				signal: runtimeConfig.options.signal,
-				factor: 1,
-				onFailedAttempt: ({ attemptNumber, retriesLeft }) => {
-					if (retriesLeft > 0) {
-						progress.notifyRetry(attemptNumber + 1, config.retryCount + 1);
-					}
-				},
-			},
-		);
-	} catch {
-		return undefined;
-	}
-}
-
-/** Summarizes one projected tool result and classifies failures for retry handling. */
-async function summarizeProjectionCandidate(
-	candidate: ProjectionSummaryCandidate,
-	runtimeConfig: SummaryRuntimeConfig,
-	completeSimple: CompleteSimple,
-	recordCost: (message: LlmAssistantMessage) => void,
-): Promise<SummaryAttemptResult> {
-	const context = buildSummaryContext(candidate, runtimeConfig);
-	if (!doesSummaryInputFitContextWindow(context, runtimeConfig)) {
-		return { kind: "fatal" };
-	}
-	if (runtimeConfig.options.signal?.aborted === true) {
-		return { kind: "fatal" };
-	}
-
-	try {
-		const response = await completeSimple(
-			runtimeConfig.model,
-			context,
-			runtimeConfig.options,
-		);
-		recordCost(response);
-		if (response.stopReason === "error") {
-			return { kind: "retryable" };
-		}
-
-		const summary = extractSummaryText(response.content);
-		return summary === undefined
-			? { kind: "retryable" }
-			: { kind: "success", summary };
-	} catch (error) {
-		return isAbortError(error) || runtimeConfig.options.signal?.aborted
-			? { kind: "fatal" }
-			: { kind: "retryable" };
-	}
-}
-
-/** Checks summary input locally to avoid provider calls that cannot fit the summary model window. */
-function doesSummaryInputFitContextWindow(
-	context: Context,
-	runtimeConfig: SummaryRuntimeConfig,
-): boolean {
-	return (
-		estimateSerializedInputTokens(
-			context,
-			runtimeConfig.model.id,
-			runtimeConfig.model.provider,
-		) <= runtimeConfig.model.contextWindow
-	);
-}
-
-/** Builds the isolated summary request context for one tool result. */
-function buildSummaryContext(
-	candidate: ProjectionSummaryCandidate,
-	runtimeConfig: SummaryRuntimeConfig,
-): Context {
-	const toolCallContext = escapeUTF8(
-		candidate.toolCallContext ??
-			JSON.stringify({
-				name: candidate.message.toolName,
-				toolCallId: candidate.message.toolCallId,
-			}),
-	);
-	return {
-		systemPrompt: runtimeConfig.systemPrompt,
-		messages: [
-			{
-				role: "user",
-				content: [
-					{
-						type: "text",
-						text: [
-							"<tool_call>",
-							toolCallContext,
-							"</tool_call>",
-							"",
-							"<tool_result>",
-							escapeUTF8(candidate.text),
-							"</tool_result>",
-							"",
-							runtimeConfig.userPrompt,
-						].join("\n"),
-					},
-				],
-				timestamp: Date.now(),
-			},
-		],
-		tools: [],
-	};
-}
-
-/** Returns text from a summary response when the model produced visible text. */
-function extractSummaryText(content: Message["content"]): string | undefined {
-	if (!Array.isArray(content)) {
-		return undefined;
-	}
-
-	const summary = content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("\n")
-		.trim();
-	return summary.length === 0 ? undefined : summary;
-}
-
-/** Returns combined text for a successful text-only tool result. */
-function getToolResultText(
-	message: Extract<AgentMessage, { role: "toolResult" }>,
-): string | undefined {
-	if (message.isError || !Array.isArray(message.content)) {
-		return undefined;
-	}
-	if (!message.content.every((block) => block.type === "text")) {
-		return undefined;
-	}
-
-	return message.content.map((block) => block.text).join("");
-}
-
-/** Maps values through an async worker pool with deterministic result ordering. */
-async function mapWithConcurrency<T, R>(
-	items: readonly T[],
-	maxConcurrency: number,
-	mapper: (item: T) => Promise<R>,
-): Promise<Array<R | undefined>> {
-	const results: Array<R | undefined> = new Array(items.length);
-	let nextIndex = 0;
-	const workerCount = Math.min(maxConcurrency, items.length);
-	const runNext = async (): Promise<void> => {
-		const index = nextIndex;
-		nextIndex += 1;
-		const item = items[index];
-		if (item === undefined) {
-			return;
-		}
-
-		results[index] = await mapper(item);
-		return runNext();
-	};
-
-	const workers = Array.from({ length: workerCount }, () => runNext());
-	await Promise.all(workers);
-	return results;
-}
-
-/** Returns a supported thinking level from dynamic pi state. */
-function parseSummaryThinking(
-	value: unknown,
-): ContextProjectionSummaryConfig["thinking"] | undefined {
-	if (
-		value === "off" ||
-		value === "minimal" ||
-		value === "low" ||
-		value === "medium" ||
-		value === "high" ||
-		value === "xhigh"
-	) {
-		return value;
-	}
-
-	return undefined;
 }
 
 function createContextProjectionChangeResult({

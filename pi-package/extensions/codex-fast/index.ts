@@ -24,7 +24,13 @@ const FAST_COMMAND = "fast";
 const FAST_SHORTCUT = Key.ctrlAlt("f");
 
 /** Provider/model pairs that support fast mode payload injection. */
-const FAST_MODELS = ["openai-codex/gpt-5.4", "openai-codex/gpt-5.5"] as const;
+const FAST_MODELS = [
+	"openai-codex/gpt-5.4",
+	"openai-codex/gpt-5.5",
+	"openai-codex/gpt-5.6-sol",
+	"openai-codex/gpt-5.6-terra",
+	"openai-codex/gpt-5.6-luna",
+] as const;
 
 /** Payload field expected by the OpenAI Codex provider for fast mode routing. */
 const SERVICE_TIER_PAYLOAD_KEY = "service_tier";

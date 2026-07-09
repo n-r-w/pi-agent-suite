@@ -72,13 +72,13 @@ Recommended MCP servers:
 | `codex-fast` | Disabled | Toggles fast mode for supported OpenAI Codex requests and marks the footer model with `-F`. | State: `codex-fast/state.json`. Toggle with `/fast` or `Ctrl+Alt+F`. | [docs/extensions/codex-fast.md](docs/extensions/codex-fast.md) |
 | `codex-verbosity` | Disabled | Adds `text.verbosity` to OpenAI Codex requests. | `codex-verbosity/config.json`: `enabled`, `verbosity` (`low`, `medium`, `high`). | [docs/extensions/codex-verbosity.md](docs/extensions/codex-verbosity.md) |
 | `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](docs/extensions/codex-quota.md) |
-| `custom-compaction` | Enabled | Uses custom prompts for pi conversation compaction. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
+| `custom-compaction` | Enabled | Uses custom prompts for pi conversation compaction and summarizes large tool results before oversized compaction requests. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, prompt file paths, `retry`, `summary`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
 | `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary. | `context-projection/config.json`: `enabled`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |
 | `url-scheme` | Disabled | Converts final answer file references into editor links. | `url-scheme/config.json`: `enabled`, `scheme` (`vscode`, `cursor`, `webstorm`, `idea`, `pycharm`, `phpstorm`, `txmt`, `bbedit`, `zed`). | [docs/extensions/url-scheme.md](docs/extensions/url-scheme.md) |
 | `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](docs/extensions/main-agent-selection.md) |
-| `run-subagent` | Enabled | Adds the `run_subagent` tool for running subagents in child pi processes. | `run-subagent/config.json`: `enabled`, `maxDepth`, `widgetLineBudget`. | [docs/extensions/run-subagent.md](docs/extensions/run-subagent.md) |
+| `run-subagent` | Enabled | Adds the `run_subagent` tool for running subagents in child pi processes with separate child session logs. | `run-subagent/config.json`: `enabled`, `maxDepth`, `widgetLineBudget`. | [docs/extensions/run-subagent.md](docs/extensions/run-subagent.md) |
 | `structured-prompt` | Enabled | Adds `/prompt` and `Ctrl+Alt+P` for building structured user requests. | `structured-prompt/config.json`: `enabled`. | [docs/extensions/structured-prompt.md](docs/extensions/structured-prompt.md) |
 | `ask-llm` | Enabled | Adds `/ask` for one-off model questions that are not saved to the current session. | `ask-llm/config.json`: `enabled`, `model`, `systemPromptFile`, `retry`. | [docs/extensions/ask-llm.md](docs/extensions/ask-llm.md) |
 | `consult-advisor` | Enabled | Adds the `consult_advisor` tool for an independent model opinion. | `consult-advisor/config.json`: `enabled`, `model`, `promptFile`, `debugPayloadFile`, `retry`. | [docs/extensions/consult-advisor.md](docs/extensions/consult-advisor.md) |
@@ -128,6 +128,13 @@ You are a code review agent. Check correctness, risks, and missing validation.
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
 
 ## Changelog
+
+### Unreleased
+
+- `run-subagent` now stores child JSONL sessions under `agent-suite/run-subagent/sessions` and includes child session metadata in tool result details.
+- `run-subagent` shows approximate child context usage for zero-usage provider overflow errors instead of displaying real zero usage.
+- `custom-compaction` now summarizes large successful text tool results before final compaction when the full summary input does not fit the selected compaction model.
+- Shared tool-result summary prompts and helper logic are used by both `context-projection` and `custom-compaction`.
 
 ### 1.15.0 - 2026-07-08
 

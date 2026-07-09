@@ -6,6 +6,8 @@
  * deltas.
  */
 
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { isContextOverflow } from "@earendil-works/pi-ai";
 import {
 	CONTEXT_PROJECTION_STATUS_KEY,
 	normalizePositiveProjectionStatus,
@@ -46,6 +48,7 @@ export interface SubagentRuntimeDetails {
 /** Stores the latest known context usage for one child process. */
 export interface SubagentContextUsage {
 	readonly tokens: number | null;
+	readonly estimatedTokens?: number | undefined;
 	readonly contextWindow: number;
 	readonly percent: number | null;
 }
@@ -64,6 +67,9 @@ export interface SubagentProgressState {
 	readonly agentId: string;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
+	readonly childSessionId: string | undefined;
+	readonly childSessionDir: string | undefined;
+	childSessionPath: string | undefined;
 	contextUsage: SubagentContextUsage | undefined;
 	contextProjectionStatus: string | undefined;
 	readonly startedAtMs: number;
@@ -82,6 +88,9 @@ export interface SubagentRunDetails {
 	readonly agentId: string;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
+	readonly childSessionId?: string | undefined;
+	readonly childSessionDir?: string | undefined;
+	readonly childSessionPath?: string | undefined;
 	readonly contextUsage: SubagentContextUsage | undefined;
 	readonly contextProjectionStatus: string | undefined;
 	readonly status: SubagentRunStatus;
@@ -102,6 +111,8 @@ interface CreateSubagentProgressStateOptions {
 	readonly startedAtMs: number;
 	readonly runtime?: SubagentRuntimeDetails;
 	readonly runId?: string;
+	readonly childSessionId?: string;
+	readonly childSessionDir?: string;
 }
 
 /** Creates mutable progress state for one child run. */
@@ -116,9 +127,13 @@ export function createSubagentProgressState(
 		agentId: options.agentId,
 		depth: options.depth,
 		runtime: options.runtime,
+		childSessionId: options.childSessionId,
+		childSessionDir: options.childSessionDir,
+		childSessionPath: undefined,
 		contextUsage: options.runtime
 			? {
 					tokens: null,
+					estimatedTokens: undefined,
 					contextWindow: options.runtime.contextWindow,
 					percent: null,
 				}
@@ -147,6 +162,9 @@ export function toSubagentRunDetails(
 		agentId: state.agentId,
 		depth: state.depth,
 		runtime: state.runtime,
+		childSessionId: state.childSessionId,
+		childSessionDir: state.childSessionDir,
+		childSessionPath: state.childSessionPath,
 		contextUsage: state.contextUsage ? { ...state.contextUsage } : undefined,
 		contextProjectionStatus: state.contextProjectionStatus,
 		status,
@@ -178,6 +196,10 @@ export function formatSubagentContextUsage(
 ): string | undefined {
 	if (contextUsage === undefined) {
 		return undefined;
+	}
+
+	if (contextUsage.estimatedTokens !== undefined) {
+		return `~/${formatTokenCount(contextUsage.estimatedTokens)}`;
 	}
 
 	const tokensText =
@@ -538,6 +560,25 @@ function normalizeNonEmptyText(text: string): string | undefined {
 	return normalizedText.length > 0 ? normalizedText : undefined;
 }
 
+/** Detects provider overflow messages whose usage cannot be trusted as measured context. */
+function isContextOverflowMessage(
+	message: Record<string, unknown>,
+	contextWindow: number,
+): boolean {
+	if (
+		typeof message["provider"] !== "string" ||
+		typeof message["model"] !== "string" ||
+		typeof message["stopReason"] !== "string"
+	) {
+		return false;
+	}
+
+	return isContextOverflow(
+		message as unknown as AssistantMessage,
+		contextWindow,
+	);
+}
+
 /** Extracts context usage from assistant usage metadata emitted by the child session. */
 function getMessageContextUsage(
 	message: Record<string, unknown>,
@@ -554,8 +595,18 @@ function getMessageContextUsage(
 		return undefined;
 	}
 
+	if (totalTokens === 0 && isContextOverflowMessage(message, contextWindow)) {
+		return {
+			tokens: null,
+			estimatedTokens: contextWindow,
+			contextWindow,
+			percent: null,
+		};
+	}
+
 	return {
 		tokens: Math.max(0, totalTokens),
+		estimatedTokens: undefined,
 		contextWindow,
 		percent:
 			contextWindow > 0

@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	type Api,
-	type AssistantMessage,
-	type Context,
-	completeSimple as defaultCompleteSimple,
-	type Model,
-	type SimpleStreamOptions,
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Model,
+	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	copyToClipboard as defaultCopyToClipboard,

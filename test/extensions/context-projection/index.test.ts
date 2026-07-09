@@ -1811,7 +1811,7 @@ describe("context-projection", () => {
 
 	test("retries failed summary requests before falling back to omitted notice", async () => {
 		// Purpose: transient provider failures must not immediately lose summary value when retries are configured.
-		// Input and expected output: first summary call throws, retry succeeds, retry status is shown, progress status is restored, and the generated summary is persisted.
+		// Input and expected output: two summary calls throw and persist separate safe diagnostics before the final retry succeeds and persists its summary.
 		// Edge case: retry delay is configured to zero so the behavior is deterministic and fast.
 		// Dependencies: isolated config, fake completion function, summary retry loop, and UI call recording.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1822,7 +1822,7 @@ describe("context-projection", () => {
 					summary: {
 						enabled: true,
 						maxConcurrency: 1,
-						retryCount: 1,
+						retryCount: 2,
 						retryDelayMs: 0,
 					},
 				}),
@@ -1835,8 +1835,8 @@ describe("context-projection", () => {
 				options,
 			) => {
 				callCount += 1;
-				if (callCount === 1) {
-					throw new Error("temporary provider failure");
+				if (callCount <= 2) {
+					throw new Error(`temporary provider failure ${callCount}`);
 				}
 
 				return completion.completeSimple(model, context, options);
@@ -1862,7 +1862,37 @@ describe("context-projection", () => {
 				context.ctx,
 			);
 
-			expect(callCount).toBe(2);
+			expect(callCount).toBe(3);
+			expect(pi.appendEntryCalls[0]).toEqual({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 1,
+					totalAttempts: 3,
+					failureKind: "exception",
+					errorName: "Error",
+					errorMessage: "temporary provider failure 1",
+				},
+			});
+			expect(pi.appendEntryCalls[1]).toEqual({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 2,
+					totalAttempts: 3,
+					failureKind: "exception",
+					errorName: "Error",
+					errorMessage: "temporary provider failure 2",
+				},
+			});
 			expect(
 				context.uiCalls.filter((call) => call.method === "notify"),
 			).toEqual([
@@ -1872,7 +1902,15 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Retrying context projection summary: attempt 2/2", "info"],
+					args: ["Retrying context projection summary: attempt 2/3", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Retrying context projection summary: attempt 3/3", "info"],
 				},
 				{
 					method: "notify",
@@ -1887,7 +1925,7 @@ describe("context-projection", () => {
 					args: ["Context projected: L1, ~556 saved", "info"],
 				},
 			]);
-			expect(pi.appendEntryCalls[0]?.data).toEqual({
+			expect(pi.appendEntryCalls[2]?.data).toEqual({
 				projectedEntries: [
 					{
 						entryId: "03",
@@ -1965,7 +2003,22 @@ describe("context-projection", () => {
 					args: ["Context projected: L1, ~591 saved", "info"],
 				},
 			]);
-			expect(pi.appendEntryCalls[0]?.data).toEqual({
+			expect(pi.appendEntryCalls[0]).toMatchObject({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 1,
+					totalAttempts: 3,
+					failureKind: "aborted",
+					errorName: "AbortError",
+					errorMessage: "aborted",
+				},
+			});
+			expect(pi.appendEntryCalls[1]?.data).toEqual({
 				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
@@ -2056,7 +2109,21 @@ describe("context-projection", () => {
 			);
 
 			expect(completion.calls).toHaveLength(0);
-			expect(pi.appendEntryCalls[0]?.data).toEqual({
+			expect(pi.appendEntryCalls[0]).toEqual({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 1,
+					totalAttempts: 3,
+					failureKind: "context-too-large",
+					errorMessage: "summary request exceeds model context window",
+				},
+			});
+			expect(pi.appendEntryCalls[1]?.data).toEqual({
 				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
