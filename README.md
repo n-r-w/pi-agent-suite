@@ -129,19 +129,14 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhig
 
 ## Changelog
 
-### Unreleased
+### v1.15.0 - 2026-07-10
 
-- `run-subagent` now stores child JSONL sessions under `agent-suite/run-subagent/sessions` and includes child session metadata in tool result details.
-- `run-subagent` shows approximate child context usage for zero-usage provider overflow errors instead of displaying real zero usage.
-- `custom-compaction` now summarizes large successful text tool results before final compaction when the full summary input does not fit the selected compaction model.
-- Shared tool-result summary prompts and helper logic are used by both `context-projection` and `custom-compaction`.
-
-### v1.15.0 - 2026-07-08
-
-- Breaking change: removed `context-projection.placeholder`. Use `omittedNotice` for projected results without summaries and `summaryNotice` for summary blocks.
-- `context-projection` now fails startup when `placeholder` remains in config, so stale configs show a direct migration error instead of only `CP!` in the footer.
-- Updated default projection notices to distinguish fully omitted results from results that include summaries.
-- Fixed `custom-compaction` overflow retry recovery when retained context ends with an assistant error. It now summarizes the retained tail and keeps the retry boundary at a non-message entry so pi can continue.
+- Breaking change: replaced `context-projection.placeholder` with `omittedNotice` and `summaryNotice`; stale configurations now fail startup with a direct migration error.
+- Shared tool-result summary prompts and helper logic now support `context-projection` and oversized `custom-compaction` requests.
+- Fixed `custom-compaction` overflow retry recovery when retained context ends with an assistant error.
+- `run-subagent` now stores child JSONL sessions with result metadata and estimates context use for zero-usage overflow errors.
+- Auxiliary LLM requests and child agents now use isolated Pi-compatible UUIDv7 session IDs, fixing Luna routing through Codex OAuth.
+- Updated Pi dependencies to `0.80.5`.
 
 ### v0.14.0 - 2026-07-07
 
