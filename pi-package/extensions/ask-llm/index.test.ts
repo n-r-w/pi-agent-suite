@@ -25,6 +25,9 @@ const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const USER_QUESTION_OPEN_TAG = "<user_question>";
 const USER_QUESTION_CLOSE_TAG = "</user_question>";
 const CONTEXT_PROJECTION_CUSTOM_TYPE = "context-projection";
+/** Matches Pi-compatible UUIDv7 provider session identifiers. */
+const AUXILIARY_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 initTheme("dark");
 
@@ -680,9 +683,9 @@ describe("ask-llm", () => {
 	});
 
 	test("sends tagged command argument to the selected model without session writes", async () => {
-		// Purpose: /ask must send the active branch as context without persisting its question or answer in the active session.
-		// Input and expected output: the existing session message is preserved, and the command argument becomes the tagged final user message.
-		// Edge case: the saved session has no /ask question or answer because those are never written through ExtensionAPI session methods.
+		// Purpose: /ask must send the active branch with an isolated provider session without persisting its question or answer.
+		// Input and expected output: the session context and tagged command argument are sent with a Pi-compatible UUIDv7.
+		// Edge case: the provider session differs from the main session while the saved session receives no /ask messages.
 		// Dependencies: this test uses a fake model layer, fake UI, and fake ExtensionAPI session-write methods.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "gpt-test");
@@ -726,6 +729,9 @@ describe("ask-llm", () => {
 				USER_QUESTION_CLOSE_TAG,
 			);
 			expect(completion.calls[0]?.options?.reasoning).toBe("medium");
+			expect(completion.calls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
 			expect(completion.calls[0]?.options?.apiKey).toBe("ask-llm-api-key");
 			expect(completion.calls[0]?.options?.headers).toEqual({
 				"x-ask-llm": "enabled",
@@ -1370,9 +1376,9 @@ describe("ask-llm", () => {
 	});
 
 	test("retries retryable provider failures before showing the answer", async () => {
-		// Purpose: ask-llm must retry transient provider failures inside command execution.
-		// Input and expected output: first provider call throws a network error, second call renders the recovered answer.
-		// Edge case: zero retry delay keeps the test deterministic and proves maxRetries controls provider calls.
+		// Purpose: ask-llm must retry transient provider failures inside one isolated provider session.
+		// Input and expected output: first provider call throws, second renders the answer, and both use one session ID.
+		// Edge case: zero retry delay keeps the test deterministic while preserving request identity across retries.
 		// Dependencies: temp config, fake model registry, and fake completeSimple sequence.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
@@ -1393,6 +1399,11 @@ describe("ask-llm", () => {
 			await getAskCommand(pi).handler("Retry this", ctx);
 
 			expect(completion.calls).toHaveLength(2);
+			const retrySessionIds = completion.calls.map(
+				(call) => call.options?.sessionId,
+			);
+			expect(retrySessionIds[0]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(retrySessionIds[1]).toBe(retrySessionIds[0]);
 			expect(ctx.renderedCustomOutputs.join("\n")).toContain(
 				"answer after retry",
 			);

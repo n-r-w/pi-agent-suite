@@ -21,6 +21,7 @@ import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	collectLoadedSkillRoots,
 	replayContextProjection,
@@ -344,6 +345,7 @@ async function executeAskLlm({
 		};
 	}
 
+	const auxiliarySessionId = createAuxiliaryLlmSessionId();
 	const response = await executeAskLlmModelWithRetry({
 		completeSimple,
 		runtime: runtimeResult.runtime,
@@ -353,6 +355,7 @@ async function executeAskLlm({
 				parseThinking(currentThinkingLevel),
 			signal,
 			runtimeResult.runtime,
+			auxiliarySessionId,
 		),
 		retry: configResult.config.retry,
 	});
@@ -732,8 +735,9 @@ function buildOptions(
 	thinking: Thinking | undefined,
 	signal: AbortSignal | undefined,
 	runtime: AskLlmRuntime,
+	sessionId: string,
 ): SimpleStreamOptions {
-	const options: SimpleStreamOptions = {};
+	const options: SimpleStreamOptions = { sessionId };
 	if (signal !== undefined) {
 		options.signal = signal;
 	}

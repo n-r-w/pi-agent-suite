@@ -33,7 +33,9 @@ import {
 } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
-const PI_SESSION_ID_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+/** Matches Pi-compatible UUIDv7 session identifiers. */
+const PI_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DEPTH_ENV = SUBAGENT_DEPTH_ENV;
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 
@@ -778,8 +780,8 @@ describe("run-subagent", () => {
 	});
 
 	test("starts child pi with explicit model, thinking, tools, and subagent environment", async () => {
-		// Purpose: a valid callable agent must start an isolated child pi process with explicit runtime options.
-		// Input and expected output: subagent helper resolves Helper tools, model, thinking, depth, env, prompt, and parses final assistant text.
+		// Purpose: a valid callable agent must start child Pi with a UUIDv7 session and explicit runtime options.
+		// Input and expected output: the child receives model, thinking, tools, environment, prompt, and a Pi-compatible session ID.
 		// Edge case: lowercase agentId input preserves stored agent ID casing in the child environment.
 		// Dependencies: this test uses temp agent files, fake tool registry, and fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -824,6 +826,9 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(spawn.calls).toHaveLength(1);
+			const sessionIdIndex = spawn.calls[0]?.args.indexOf("--session-id") ?? -1;
+			const childSessionId = spawn.calls[0]?.args[sessionIdIndex + 1];
+			expect(childSessionId).toMatch(PI_SESSION_ID_PATTERN);
 			expect(spawn.calls[0]).toMatchObject({
 				command: "pi",
 				args: [
@@ -832,7 +837,7 @@ describe("run-subagent", () => {
 					"--session-dir",
 					join(agentDir, "agent-suite", "run-subagent", "sessions"),
 					"--session-id",
-					"run-subagent-tool-call-1",
+					expect.any(String),
 					"--model",
 					"openai/child",
 					"--thinking",
@@ -863,7 +868,7 @@ describe("run-subagent", () => {
 				content: [{ type: "text", text: "done" }],
 			});
 			expect(result.details).toMatchObject({
-				childSessionId: "run-subagent-tool-call-1",
+				childSessionId,
 				childSessionDir: join(
 					agentDir,
 					"agent-suite",
@@ -907,9 +912,9 @@ describe("run-subagent", () => {
 	});
 
 	test("keeps child session id within provider prompt cache key limit", async () => {
-		// Purpose: child session persistence must not create a session id that exceeds Codex prompt_cache_key limits.
-		// Input and expected output: a long tool call id is mapped to a deterministic child session id no longer than 64 characters.
-		// Edge case: the session id must still use characters accepted by pi session id validation.
+		// Purpose: child session persistence must use the UUIDv7 format expected by Codex subscription routing.
+		// Input and expected output: a long tool call ID still produces a Pi-compatible UUIDv7 no longer than 64 characters.
+		// Edge case: the child session ID remains independent from the parent tool call ID.
 		// Dependencies: fake child process output and the run_subagent tool execution path.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {

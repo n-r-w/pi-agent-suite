@@ -22,6 +22,7 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	collectLoadedSkillRoots,
 	replayContextProjection,
@@ -238,6 +239,7 @@ async function executeConsultAdvisor({
 		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel),
 		signal,
 		runtimeResult.runtime,
+		createAuxiliaryLlmSessionId(),
 	);
 	if (configResult.config.debugPayloadFile !== undefined) {
 		await writeDebugPayload(configResult.config.debugPayloadFile, {
@@ -637,8 +639,9 @@ function buildAdvisorOptions(
 	thinking: Thinking | undefined,
 	signal: AbortSignal | undefined,
 	runtime: AdvisorRuntime,
+	sessionId: string,
 ): SimpleStreamOptions {
-	const options: SimpleStreamOptions = {};
+	const options: SimpleStreamOptions = { sessionId };
 	if (signal !== undefined) {
 		options.signal = signal;
 	}

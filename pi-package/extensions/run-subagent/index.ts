@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -26,6 +25,7 @@ import {
 	getSuiteExtensionDir,
 	readExtensionConfigFile,
 } from "../../shared/agent-suite-storage";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	type ChildRpcPromptCompletion,
 	type ChildRpcRuntimeFacts,
@@ -107,11 +107,6 @@ const PROMPT_COMMAND_ID = "run-subagent-prompt";
 const ABORT_COMMAND_ID = "run-subagent-abort";
 /** Valid canonical non-negative integer format for child nesting depth. */
 const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
-/** Maximum child session id length accepted by Codex prompt cache keys. */
-const CHILD_SESSION_ID_MAX_LENGTH = 64;
-/** Hash suffix length used to keep truncated child session ids deterministic. */
-const CHILD_SESSION_ID_HASH_LENGTH = 12;
-
 const RunSubagentParameters = Type.Object({
 	agentId: Type.String({ description: "Callable agent ID to run" }),
 	prompt: Type.String({ description: "Task prompt for the selected subagent" }),
@@ -554,7 +549,7 @@ function createRunSubagentProgress(
 } {
 	let lastWidgetUpdateAt = 0;
 	const childSessionDir = resolveChildSessionDir();
-	const childSessionId = createChildSessionId(options.toolCallId);
+	const childSessionId = createAuxiliaryLlmSessionId();
 	const state = createSubagentProgressState({
 		agentId: plan.agent.id,
 		depth: plan.depth + 1,
@@ -665,8 +660,7 @@ async function runResolvedChildPi(
 			childSessionDir:
 				progress.state.childSessionDir ?? resolveChildSessionDir(),
 			childSessionId:
-				progress.state.childSessionId ??
-				createChildSessionId(progress.state.runId),
+				progress.state.childSessionId ?? createAuxiliaryLlmSessionId(),
 		}),
 		cwd: options.ctx.cwd,
 		env,
@@ -982,34 +976,7 @@ function resolveChildSessionDir(): string {
 	return join(getSuiteExtensionDir(RUN_SUBAGENT_EXTENSION_DIR), "sessions");
 }
 
-/** Builds a pi-compatible session id from the parent tool-call id. */
-function createChildSessionId(runId: string): string {
-	const normalizedRunId = runId
-		.replace(/[^A-Za-z0-9._-]+/g, "-")
-		.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
-	const candidate = `run-subagent-${normalizedRunId || "child"}`;
-	if (candidate.length <= CHILD_SESSION_ID_MAX_LENGTH) {
-		return candidate;
-	}
-
-	const hash = createHash("sha256")
-		.update(runId)
-		.digest("hex")
-		.slice(0, CHILD_SESSION_ID_HASH_LENGTH);
-	const prefix = "run-subagent-";
-	const separatorLength = 1;
-	const maxStemLength =
-		CHILD_SESSION_ID_MAX_LENGTH -
-		prefix.length -
-		separatorLength -
-		CHILD_SESSION_ID_HASH_LENGTH;
-	const stem = (normalizedRunId || "child")
-		.slice(0, maxStemLength)
-		.replace(/[^A-Za-z0-9]+$/g, "");
-	return `${prefix}${stem || "child"}-${hash}`;
-}
-
-/** Finds the JSONL session file created by pi for the deterministic child session id. */
+/** Finds the JSONL session file created by Pi for the assigned child session ID. */
 async function findChildSessionPath(
 	childSessionDir: string | undefined,
 	childSessionId: string | undefined,

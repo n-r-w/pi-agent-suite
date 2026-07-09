@@ -365,6 +365,7 @@ export function collectToolResultSummaryCandidates(
 export async function summarizeToolResultCandidateWithRetries({
 	candidate,
 	runtimeConfig,
+	sessionId,
 	completeSimple,
 	config,
 	recordCost,
@@ -374,6 +375,7 @@ export async function summarizeToolResultCandidateWithRetries({
 }: {
 	readonly candidate: ToolResultSummaryCandidate;
 	readonly runtimeConfig: ToolResultSummaryRuntimeConfig;
+	readonly sessionId: string;
 	readonly completeSimple: ToolResultSummaryCompleteSimple;
 	readonly config: ToolResultSummaryConfig;
 	readonly recordCost: (message: LlmAssistantMessage) => void;
@@ -399,12 +401,13 @@ export async function summarizeToolResultCandidateWithRetries({
 					onRetryAttempt?.();
 				}
 
-				const result = await summarizeToolResultCandidate(
+				const result = await summarizeToolResultCandidate({
 					candidate,
 					runtimeConfig,
+					sessionId,
 					completeSimple,
 					recordCost,
-				);
+				});
 				if (result.kind === "success") {
 					return result.summary;
 				}
@@ -610,12 +613,19 @@ function collectToolCallContextById(
 }
 
 /** Summarizes one projected tool result and classifies failures for retry handling. */
-async function summarizeToolResultCandidate(
-	candidate: ToolResultSummaryCandidate,
-	runtimeConfig: ToolResultSummaryRuntimeConfig,
-	completeSimple: ToolResultSummaryCompleteSimple,
-	recordCost: (message: LlmAssistantMessage) => void,
-): Promise<SummaryAttemptResult> {
+async function summarizeToolResultCandidate({
+	candidate,
+	runtimeConfig,
+	sessionId,
+	completeSimple,
+	recordCost,
+}: {
+	readonly candidate: ToolResultSummaryCandidate;
+	readonly runtimeConfig: ToolResultSummaryRuntimeConfig;
+	readonly sessionId: string;
+	readonly completeSimple: ToolResultSummaryCompleteSimple;
+	readonly recordCost: (message: LlmAssistantMessage) => void;
+}): Promise<SummaryAttemptResult> {
 	const context = buildSummaryContext(candidate, runtimeConfig);
 	if (!doesContextFitModel(context, runtimeConfig.model)) {
 		return {
@@ -634,11 +644,10 @@ async function summarizeToolResultCandidate(
 	}
 
 	try {
-		const response = await completeSimple(
-			runtimeConfig.model,
-			context,
-			runtimeConfig.options,
-		);
+		const response = await completeSimple(runtimeConfig.model, context, {
+			...runtimeConfig.options,
+			sessionId,
+		});
 		recordCost(response);
 		if (response.stopReason === "error") {
 			return {

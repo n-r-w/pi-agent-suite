@@ -31,6 +31,9 @@ import {
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+/** Matches Pi-compatible UUIDv7 provider session identifiers. */
+const AUXILIARY_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SUBAGENT_ENV_KEYS = [
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_AGENT_ID_ENV,
@@ -1002,8 +1005,8 @@ describe("consult-advisor", () => {
 	});
 
 	test("calls advisor model with prompt, sanitized transcript, tools disabled, and debug payload", async () => {
-		// Purpose: valid config must call completeSimple with advisor prompt, transcript, and tools: [].
-		// Input and expected output: pending consult_advisor tool call and result are removed from advisor context.
+		// Purpose: valid config must call completeSimple with an isolated session, advisor prompt, transcript, and no tools.
+		// Input and expected output: the request has a Pi-compatible UUIDv7 and excludes the pending advisor call.
 		// Edge case: debug payload path is resolved relative to consult-advisor.json directory.
 		// Dependencies: temp config, temp prompt, fake model registry, fake completion function, fake session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1089,6 +1092,12 @@ describe("consult-advisor", () => {
 				apiKey: "advisor-api-key",
 				headers: { "x-advisor": "enabled" },
 			});
+			expect(completion.calls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
+			expect(completion.calls[0]?.options?.sessionId).not.toBe(
+				"consult-advisor-test-session",
+			);
 			expect(completion.calls[0]?.context.systemPrompt).toBe("Advisor prompt");
 			expect(completion.calls[0]?.context.tools).toEqual([]);
 			const advisorMessages = JSON.stringify(
@@ -1107,9 +1116,9 @@ describe("consult-advisor", () => {
 	});
 
 	test("retries retryable advisor provider failures before returning the answer", async () => {
-		// Purpose: consult_advisor must own retries for transient provider failures that happen inside tool execution.
-		// Input and expected output: first provider call throws a network error, second call returns visible advisor text.
-		// Edge case: zero retry delay keeps the test deterministic and proves retryCount controls provider calls.
+		// Purpose: consult_advisor must retry transient provider failures inside one isolated provider session.
+		// Input and expected output: first provider call throws, second returns advisor text, and both use one session ID.
+		// Edge case: zero retry delay keeps the test deterministic while preserving request identity across retries.
 		// Dependencies: temp config, fake model registry, and fake completeSimple sequence.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
@@ -1133,6 +1142,11 @@ describe("consult-advisor", () => {
 				content: [{ type: "text", text: "advisor answer after retry" }],
 			});
 			expect(completion.calls).toHaveLength(2);
+			const retrySessionIds = completion.calls.map(
+				(call) => call.options?.sessionId,
+			);
+			expect(retrySessionIds[0]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(retrySessionIds[1]).toBe(retrySessionIds[0]);
 		});
 	});
 
@@ -2035,8 +2049,8 @@ describe("consult-advisor", () => {
 	});
 
 	test("omits reasoning when configured thinking is off", async () => {
-		// Purpose: thinking off is valid config and must not be sent as a SimpleStreamOptions reasoning value.
-		// Input and expected output: thinking off calls completeSimple with no reasoning option.
+		// Purpose: thinking off must omit reasoning while preserving the isolated provider session.
+		// Input and expected output: completeSimple receives auth and a session ID but no reasoning option.
 		// Edge case: `off` is accepted by config but not by pi-ai reasoning options.
 		// Dependencies: temp config, temp prompt, fake completion function, and fake model registry.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2054,10 +2068,14 @@ describe("consult-advisor", () => {
 
 			await executeConsult(pi, ctx, "Question");
 
-			expect(completion.calls[0]?.options).toEqual({
+			expect(completion.calls[0]?.options).toMatchObject({
 				apiKey: "advisor-api-key",
 				headers: { "x-advisor": "enabled" },
 			});
+			expect(completion.calls[0]?.options?.reasoning).toBeUndefined();
+			expect(completion.calls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
 		});
 	});
 

@@ -66,6 +66,8 @@ If the config file is missing, the extension stays enabled and uses its defaults
 
 Helper summaries run only when the normal compaction summary input is too large. A large `toolResult` is a successful text tool result with at least 4,000 estimated tokens.
 
+Every helper and final compaction request uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session. Retries reuse the ID for one logical request. Concurrent history and turn-prefix summaries, separate tool-result candidates, and the final compaction summary use distinct IDs.
+
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `summary.enabled` | No | Boolean | `true` | Enables helper summaries for large tool results before final compaction. |

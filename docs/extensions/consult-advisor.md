@@ -4,7 +4,7 @@
 
 `consult-advisor` adds the `consult_advisor` tool. Use it to ask an independent advisor model a focused question during a Pi session.
 
-The model with the highest "thinking" level and reasoning capabilities is recommended for best results.
+The model with the highest "thinking" level and reasoning capabilities is recommended for best results. Each tool call uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session. Retries for one tool call reuse that ID.
 
 ## Configuration file
 

@@ -7,6 +7,7 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { escapeUTF8 } from "entities";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	addPendingProjectionSavings,
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
@@ -504,6 +505,7 @@ async function createSummaryReplacementsByEntryId({
 			const summary = await summarizeToolResultCandidateWithRetries({
 				candidate,
 				runtimeConfig,
+				sessionId: createAuxiliaryLlmSessionId(),
 				completeSimple,
 				config: config.summary,
 				onAttemptFailure: recordAttemptFailure,

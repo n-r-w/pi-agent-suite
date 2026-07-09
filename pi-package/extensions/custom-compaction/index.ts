@@ -22,6 +22,7 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	buildRetryConfig,
@@ -38,8 +39,10 @@ import {
 	parseToolResultSummaryConfig,
 	resolveToolResultSummaryRuntimeConfig,
 	summarizeToolResultCandidateWithRetries,
+	type ToolResultSummaryAttemptFailure,
 	type ToolResultSummaryCandidate,
 	type ToolResultSummaryConfig,
+	type ToolResultSummaryRuntimeConfig,
 } from "../../shared/tool-result-summary";
 import { createToolResultSummaryDiagnosticRecorder } from "../../shared/tool-result-summary-diagnostic";
 
@@ -705,6 +708,7 @@ async function generateCompactionSummary({
 							baseOptions,
 							event,
 							HISTORY_SUMMARY_RESERVE_RATIO,
+							createAuxiliaryLlmSessionId(),
 						),
 						retry,
 						recordCost,
@@ -717,6 +721,7 @@ async function generateCompactionSummary({
 					baseOptions,
 					event,
 					TURN_PREFIX_SUMMARY_RESERVE_RATIO,
+					createAuxiliaryLlmSessionId(),
 				),
 				retry,
 				recordCost,
@@ -736,6 +741,7 @@ async function generateCompactionSummary({
 			baseOptions,
 			event,
 			HISTORY_SUMMARY_RESERVE_RATIO,
+			createAuxiliaryLlmSessionId(),
 		),
 		retry,
 		recordCost,
@@ -857,25 +863,16 @@ async function prepareCompactionSummaryEvent({
 	const summaries = await mapWithConcurrency(
 		candidates,
 		summaryConfig.maxConcurrency,
-		async (candidate) => {
-			const position = candidates.indexOf(candidate) + 1;
-			progress.notifyCandidate(candidate.message.toolName, position);
-			const summary = await summarizeToolResultCandidateWithRetries({
+		async (candidate) =>
+			summarizeCompactionToolResultCandidate({
 				candidate,
+				position: candidates.indexOf(candidate) + 1,
 				runtimeConfig,
-				completeSimple,
-				config: summaryConfig,
+				summaryConfig,
+				progress,
+				recordAttemptFailure,
 				recordCost,
-				onAttemptFailure: recordAttemptFailure,
-				onRetryScheduled: (nextAttempt, totalAttempts) => {
-					progress.notifyRetry(nextAttempt, totalAttempts);
-				},
-			});
-			if (summary === undefined) {
-				progress.notifyUnavailable();
-			}
-			return summary;
-		},
+			}),
 	);
 	const replacementById = createCompactionSummaryReplacements(
 		candidates,
@@ -891,6 +888,48 @@ async function prepareCompactionSummaryEvent({
 	return doesCompactionSummaryEventFitModel(reducedEvent, prompts, model)
 		? reducedEvent
 		: undefined;
+}
+
+/** Summarizes one compaction tool result while reporting request progress. */
+async function summarizeCompactionToolResultCandidate({
+	candidate,
+	position,
+	runtimeConfig,
+	summaryConfig,
+	progress,
+	recordAttemptFailure,
+	recordCost,
+}: {
+	readonly candidate: ToolResultSummaryCandidate;
+	readonly position: number;
+	readonly runtimeConfig: ToolResultSummaryRuntimeConfig;
+	readonly summaryConfig: ToolResultSummaryConfig;
+	readonly progress: ToolResultCompressionProgressReporter;
+	readonly recordAttemptFailure: (
+		candidate: ToolResultSummaryCandidate,
+		failure: ToolResultSummaryAttemptFailure,
+		attempt: number,
+		totalAttempts: number,
+	) => void;
+	readonly recordCost: (message: AssistantMessage) => void;
+}): Promise<string | undefined> {
+	progress.notifyCandidate(candidate.message.toolName, position);
+	const summary = await summarizeToolResultCandidateWithRetries({
+		candidate,
+		runtimeConfig,
+		sessionId: createAuxiliaryLlmSessionId(),
+		completeSimple,
+		config: summaryConfig,
+		recordCost,
+		onAttemptFailure: recordAttemptFailure,
+		onRetryScheduled: (nextAttempt, totalAttempts) => {
+			progress.notifyRetry(nextAttempt, totalAttempts);
+		},
+	});
+	if (summary === undefined) {
+		progress.notifyUnavailable();
+	}
+	return summary;
 }
 
 /** Maps successful helper summaries back to their original compaction message identifiers. */
@@ -1103,9 +1142,11 @@ function buildSummaryCompletionOptions(
 	baseOptions: SimpleStreamOptions,
 	event: SessionBeforeCompactEvent,
 	reserveRatio: number,
+	sessionId: string,
 ): SimpleStreamOptions {
 	return {
 		...baseOptions,
+		sessionId,
 		maxTokens: Math.floor(
 			event.preparation.settings.reserveTokens * reserveRatio,
 		),

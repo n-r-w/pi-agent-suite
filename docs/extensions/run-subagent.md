@@ -48,7 +48,7 @@ The tool result `details` includes:
 
 | Field | Meaning |
 | --- | --- |
-| `childSessionId` | Deterministic child session ID derived from the tool call ID. |
+| `childSessionId` | Pi-compatible UUIDv7 assigned to the child session. |
 | `childSessionDir` | Directory passed to child `pi` through `--session-dir`. |
 | `childSessionPath` | JSONL session file path when the file is found after child exit. |
 

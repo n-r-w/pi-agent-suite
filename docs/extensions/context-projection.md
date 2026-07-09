@@ -82,6 +82,8 @@ If multiple projection levels use the same remaining-token threshold, the extens
 
 When `summary.enabled` is omitted or set to `false`, other summary values are ignored except unsupported summary keys.
 
+Each tool-result summary candidate uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session and other candidates. Retries for one candidate reuse that ID.
+
 ## Summary diagnostics
 
 Each failed tool-result summary attempt appends a `tool-result-summary-diagnostic` custom entry to the JSONL session. Custom entries do not participate in model context.

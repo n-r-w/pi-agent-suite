@@ -26,6 +26,9 @@ import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-a
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const CUSTOM_TYPE = "context-projection";
+/** Matches Pi-compatible UUIDv7 provider session identifiers. */
+const AUXILIARY_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const OMITTED_NOTICE = "Result omitted. Run tool again for full result.";
 const SUMMARY_NOTICE =
 	"Full result omitted. Summary below. Run tool again for full result.";
@@ -1517,9 +1520,9 @@ describe("context-projection", () => {
 	});
 
 	test("uses a generated summary as the projection replacement for large projected tool results", async () => {
-		// Purpose: summary-enabled projection should preserve a short factual result summary instead of an omitted-only notice.
-		// Input and expected output: one eligible tool result above the summary token threshold is replaced with the summary text and persisted with that replacement.
-		// Edge case: summary uses separate system and user prompts, with the user instruction placed after the tool result data.
+		// Purpose: summary-enabled projection should preserve a short result summary through an isolated provider session.
+		// Input and expected output: one eligible tool result is summarized with a Pi-compatible UUIDv7 and persisted.
+		// Edge case: summary uses separate prompts, with the user instruction placed after the tool result data.
 		// Dependencies: isolated config, custom prompt files, fake completion function, fake model registry, context hook, and helper cost entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const systemPromptFile = join(agentDir, "config", "summary-system.md");
@@ -1631,6 +1634,12 @@ describe("context-projection", () => {
 				headers: { "x-summary": "enabled" },
 				reasoning: "high",
 			});
+			expect(completion.calls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
+			expect(completion.calls[0]?.options?.sessionId).not.toBe(
+				"context-projection-test-session",
+			);
 		});
 	});
 
@@ -1810,9 +1819,9 @@ describe("context-projection", () => {
 	});
 
 	test("retries failed summary requests before falling back to omitted notice", async () => {
-		// Purpose: transient provider failures must not immediately lose summary value when retries are configured.
-		// Input and expected output: two summary calls throw and persist separate safe diagnostics before the final retry succeeds and persists its summary.
-		// Edge case: retry delay is configured to zero so the behavior is deterministic and fast.
+		// Purpose: transient provider failures must retry inside one isolated summary provider session.
+		// Input and expected output: two calls fail, the third succeeds, and all attempts use one session ID.
+		// Edge case: retry delay is zero while separate safe diagnostics remain persisted for failed attempts.
 		// Dependencies: isolated config, fake completion function, summary retry loop, and UI call recording.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeCustomConfig(
@@ -1828,6 +1837,7 @@ describe("context-projection", () => {
 				}),
 			);
 			const completion = createCompletionFake("Recovered summary");
+			const requestSessionIds: Array<string | undefined> = [];
 			let callCount = 0;
 			const completeSimple: CompletionFake["completeSimple"] = async (
 				model,
@@ -1835,6 +1845,7 @@ describe("context-projection", () => {
 				options,
 			) => {
 				callCount += 1;
+				requestSessionIds.push(options?.sessionId);
 				if (callCount <= 2) {
 					throw new Error(`temporary provider failure ${callCount}`);
 				}
@@ -1863,6 +1874,9 @@ describe("context-projection", () => {
 			);
 
 			expect(callCount).toBe(3);
+			expect(requestSessionIds[0]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(requestSessionIds[1]).toBe(requestSessionIds[0]);
+			expect(requestSessionIds[2]).toBe(requestSessionIds[0]);
 			expect(pi.appendEntryCalls[0]).toEqual({
 				customType: "tool-result-summary-diagnostic",
 				data: {

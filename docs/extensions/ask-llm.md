@@ -8,7 +8,7 @@
 
 Run `/ask <question>` to ask a question directly. Run `/ask` without text to open the question dialog.
 
-The extension uses the current session model and thinking level unless you configure another model or thinking level.
+The extension uses the current session model and thinking level unless you configure another model or thinking level. Each `/ask` invocation uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session. Retries for one invocation reuse that ID.
 
 ## Configuration
 

@@ -9,6 +9,9 @@ import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-a
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+/** Matches Pi-compatible UUIDv7 provider session identifiers. */
+const AUXILIARY_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const completeSimpleMock = mock();
 
 mock.module("@earendil-works/pi-ai/compat", () => ({
@@ -493,8 +496,8 @@ describe("custom-compaction", () => {
 	});
 
 	test("reads all prompt files and returns custom compaction with the current model and thinking level", async () => {
-		// Purpose: valid config must replace built-in compaction through a fake model call.
-		// Input and expected output: custom prompt files and current model produce a compaction result with the model summary.
+		// Purpose: valid config must replace built-in compaction through isolated history and turn-prefix sessions.
+		// Input and expected output: two summary branches return one compaction and use distinct UUIDv7 session IDs.
 		// Edge case: model and reasoning are omitted, so current session values are used.
 		// Dependencies: this test uses temp config/prompt files, fake model registry auth, and mocked completeSimple.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -549,14 +552,17 @@ describe("custom-compaction", () => {
 				reasoning: "high",
 				signal: event.signal,
 			});
+			expect(options?.sessionId).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(turnOptions?.sessionId).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(turnOptions?.sessionId).not.toBe(options?.sessionId);
 			expect(session.notifications).toEqual([]);
 		});
 	});
 
 	test("summarizes large tool results before oversized compaction summary requests", async () => {
-		// Purpose: custom compaction must shrink natural tool-result boundaries before final summary when the full summary input exceeds the compaction model window.
-		// Input and expected output: the first helper call fails and records a safe diagnostic, its retry summarizes the tool result, and final compaction uses that summary.
-		// Edge case: helper summary retries use the same context-projection summary config shape and preserve matching tool call context.
+		// Purpose: custom compaction must isolate tool-result compression from the final compaction provider session.
+		// Input and expected output: the helper retry keeps one session ID while the final summary uses a different ID.
+		// Edge case: helper summary retries preserve matching tool-call context and separate safe diagnostics.
 		// Dependencies: mocked completeSimple, temp agent directory, fake model registry, and tokenizer-based input estimation.
 		await withIsolatedAgentDir(async (agentDir) => {
 			completeSimpleMock
@@ -627,6 +633,13 @@ describe("custom-compaction", () => {
 				compaction: { summary: "final compact summary" },
 			});
 			expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+			const requestSessionIds = completeSimpleMock.mock.calls.map(
+				(call) => call[2]?.sessionId,
+			);
+			expect(requestSessionIds[0]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(requestSessionIds[1]).toBe(requestSessionIds[0]);
+			expect(requestSessionIds[2]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(requestSessionIds[2]).not.toBe(requestSessionIds[0]);
 			expect(pi.appendEntryCalls).toEqual([
 				{
 					customType: "tool-result-summary-diagnostic",

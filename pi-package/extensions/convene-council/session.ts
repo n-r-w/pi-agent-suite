@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import type { ParticipantId } from "./types";
 
 /** Owns the temporary session files created for one council run. */
@@ -56,7 +57,7 @@ async function writeParticipantSession(
 	const header = JSON.stringify({
 		type: "session",
 		version: CURRENT_SESSION_VERSION,
-		id: randomUUID(),
+		id: createAuxiliaryLlmSessionId(),
 		timestamp: new Date().toISOString(),
 		cwd: options.cwd,
 	});
