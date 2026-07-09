@@ -1,18 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	type Api,
-	type AssistantMessage,
-	type Context,
-	completeSimple,
-	type Model,
-	type SimpleStreamOptions,
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Model,
+	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
 	type CompactionResult,
 	convertToLlm,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type SessionBeforeCompactEvent,
 	serializeConversation,
 } from "@earendil-works/pi-coding-agent";
@@ -20,6 +22,7 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	buildRetryConfig,
@@ -28,12 +31,30 @@ import {
 	validateRetryConfig,
 	withRetry,
 } from "../../shared/retry";
+import {
+	buildSummarizedToolResultMessage,
+	collectToolResultSummaryCandidates,
+	doesContextFitModel,
+	mapWithConcurrency,
+	parseToolResultSummaryConfig,
+	resolveToolResultSummaryRuntimeConfig,
+	summarizeToolResultCandidateWithRetries,
+	type ToolResultSummaryAttemptFailure,
+	type ToolResultSummaryCandidate,
+	type ToolResultSummaryConfig,
+	type ToolResultSummaryRuntimeConfig,
+} from "../../shared/tool-result-summary";
+import { createToolResultSummaryDiagnosticRecorder } from "../../shared/tool-result-summary-diagnostic";
 
 /** Suite directory owned only by this extension. */
 const CUSTOM_COMPACTION_EXTENSION_DIR = "custom-compaction";
 
 /** Legacy config file name supported for existing installations. */
 const CUSTOM_COMPACTION_LEGACY_CONFIG_FILE = "custom-compaction.json";
+
+/** Custom entry used as a safe retry boundary after overflow compaction summarized the retained tail. */
+const OVERFLOW_RETRY_BOUNDARY_CUSTOM_TYPE =
+	"custom-compaction-overflow-retry-boundary";
 
 /** Extension issue prefix used for isolated diagnostics. */
 const ISSUE_PREFIX = "[custom-compaction]";
@@ -72,6 +93,12 @@ const REASONING_CONFIG_KEY = "reasoning";
 /** Config key that controls retry behavior for compaction model calls. */
 const RETRY_CONFIG_KEY = "retry";
 
+/** Config key for helper summaries used to shrink large tool results before compaction. */
+const SUMMARY_CONFIG_KEY = "summary";
+
+/** Minimum tool-result size summarized before oversized compaction requests. */
+const TOOL_RESULT_SUMMARY_MIN_TOKENS = 4_000;
+
 /** Config keys accepted by this extension. */
 const CUSTOM_COMPACTION_CONFIG_KEYS = [
 	...PROMPT_FILE_KEYS,
@@ -79,6 +106,7 @@ const CUSTOM_COMPACTION_CONFIG_KEYS = [
 	MODEL_CONFIG_KEY,
 	REASONING_CONFIG_KEY,
 	RETRY_CONFIG_KEY,
+	SUMMARY_CONFIG_KEY,
 ] as const;
 
 /** Reasoning values accepted by pi configuration for custom compaction. */
@@ -128,6 +156,11 @@ type ModelSelectionResult =
 	| { readonly kind: "valid"; readonly model: Model<Api> }
 	| { readonly kind: "invalid"; readonly issue: string };
 
+interface ModelAuth {
+	readonly apiKey?: string;
+	readonly headers?: Record<string, string>;
+}
+
 interface CustomCompactionConfig {
 	readonly systemPromptFile: string;
 	readonly historyPromptFile: string;
@@ -136,6 +169,7 @@ interface CustomCompactionConfig {
 	readonly model?: string;
 	readonly reasoning?: Reasoning;
 	readonly retry: RetryConfig;
+	readonly summary: ToolResultSummaryConfig;
 }
 
 interface CustomCompactionRuntimeConfig {
@@ -148,6 +182,21 @@ interface CustomCompactionPrompts {
 	readonly historyPrompt: string;
 	readonly updatePrompt: string;
 	readonly turnPrefixPrompt: string;
+}
+
+interface ResolvedCompactionRequest {
+	readonly config: CustomCompactionConfig;
+	readonly prompts: CustomCompactionPrompts;
+	readonly runtimeConfig: CustomCompactionRuntimeConfig;
+	readonly auth: ModelAuth;
+}
+
+interface ToolResultCompressionProgressReporter {
+	notifyStart(): void;
+	notifyCandidate(toolName: string, position: number): void;
+	notifyRetry(nextAttempt: number, totalAttempts: number): void;
+	notifyUnavailable(): void;
+	notifyCompleted(compressedCount: number): void;
 }
 
 interface CustomCompactionSession {
@@ -178,64 +227,122 @@ interface TextBlockRecord extends Record<string, unknown> {
 export default function customCompaction(pi: ExtensionAPI): void {
 	assertConfiguredPromptPathsAreAbsolute();
 
-	pi.on("session_before_compact", async (event, ctx) => {
-		const session = ctx as unknown as CustomCompactionSession;
-		const config = await readCustomCompactionConfig();
-		if (config.kind === "disabled") {
-			return undefined;
-		}
-		if (config.kind === "invalid") {
-			reportIssue(session, config.issue);
-			return undefined;
-		}
+	pi.on("session_before_compact", (event, ctx) =>
+		handleSessionBeforeCompact(pi, event, ctx),
+	);
+}
 
-		const prompts = await readPromptFiles(config.config);
-		if (prompts.kind === "invalid") {
-			reportIssue(session, prompts.issue);
-			return undefined;
-		}
+/** Handles one custom compaction request from Pi session lifecycle. */
+async function handleSessionBeforeCompact(
+	pi: ExtensionAPI,
+	event: SessionBeforeCompactEvent,
+	ctx: ExtensionContext,
+): Promise<{ readonly compaction: CompactionResult } | undefined> {
+	const session = ctx as unknown as CustomCompactionSession;
+	const request = await resolveCompactionRequest(
+		session,
+		pi.getThinkingLevel(),
+	);
+	if (request === undefined) {
+		return undefined;
+	}
 
-		const runtimeConfig = resolveCustomCompactionRuntimeConfig(
-			session,
-			config.config,
-			pi.getThinkingLevel(),
-		);
-		if (runtimeConfig.kind === "invalid") {
-			reportIssue(session, runtimeConfig.issue);
-			return undefined;
-		}
-
-		const auth = await session.modelRegistry.getApiKeyAndHeaders(
-			runtimeConfig.config.model,
-		);
-		if (!auth.ok) {
-			reportIssue(session, `failed to resolve model auth: ${auth.error}`);
-			return undefined;
-		}
-
-		const summary = await generateCompactionSummary({
-			event,
-			prompts: prompts.prompts,
-			model: runtimeConfig.config.model,
-			baseOptions: buildCompletionOptions(
-				runtimeConfig.config,
-				auth,
-				event.signal,
-			),
-			retry: config.config.retry,
-			recordCost: (message) => {
-				recordHelperApiCost(pi, "custom-compaction", message);
-			},
-		});
-		if (summary === undefined) {
-			reportIssue(session, "model response did not contain text summary");
-			return undefined;
-		}
-
-		return {
-			compaction: buildCompactionResult(event, summary),
-		};
+	const compactionPlan = createOverflowRetryCompactionPlan(event);
+	const recordCost = (message: AssistantMessage): void => {
+		recordHelperApiCost(pi, "custom-compaction", message);
+	};
+	const summaryEvent = await prepareCompactionSummaryEvent({
+		pi,
+		event: compactionPlan.event,
+		prompts: request.prompts,
+		model: request.runtimeConfig.model,
+		summaryConfig: request.config.summary,
+		session,
+		currentThinking: request.runtimeConfig.reasoning ?? pi.getThinkingLevel(),
+		signal: event.signal,
+		recordCost,
 	});
+	if (summaryEvent === undefined) {
+		reportIssue(
+			session,
+			"compaction summary input exceeds model context window",
+		);
+		return undefined;
+	}
+
+	const summary = await generateCompactionSummary({
+		event: summaryEvent,
+		prompts: request.prompts,
+		model: request.runtimeConfig.model,
+		baseOptions: buildCompletionOptions(
+			request.runtimeConfig,
+			request.auth,
+			event.signal,
+		),
+		retry: request.config.retry,
+		recordCost,
+	});
+	if (summary === undefined) {
+		reportIssue(session, "model response did not contain text summary");
+		return undefined;
+	}
+
+	const firstKeptEntryId = compactionPlan.needsRetryBoundary
+		? appendOverflowRetryBoundary(pi, ctx)
+		: compactionPlan.event.preparation.firstKeptEntryId;
+	return {
+		compaction: buildCompactionResult(
+			compactionPlan.event,
+			summary,
+			firstKeptEntryId,
+		),
+	};
+}
+
+/** Resolves config, prompts, model runtime, and auth for one compaction request. */
+async function resolveCompactionRequest(
+	session: CustomCompactionSession,
+	thinkingLevel: string,
+): Promise<ResolvedCompactionRequest | undefined> {
+	const config = await readCustomCompactionConfig();
+	if (config.kind === "disabled") {
+		return undefined;
+	}
+	if (config.kind === "invalid") {
+		reportIssue(session, config.issue);
+		return undefined;
+	}
+
+	const prompts = await readPromptFiles(config.config);
+	if (prompts.kind === "invalid") {
+		reportIssue(session, prompts.issue);
+		return undefined;
+	}
+
+	const runtimeConfig = resolveCustomCompactionRuntimeConfig(
+		session,
+		config.config,
+		thinkingLevel,
+	);
+	if (runtimeConfig.kind === "invalid") {
+		reportIssue(session, runtimeConfig.issue);
+		return undefined;
+	}
+
+	const auth = await session.modelRegistry.getApiKeyAndHeaders(
+		runtimeConfig.config.model,
+	);
+	if (!auth.ok) {
+		reportIssue(session, `failed to resolve model auth: ${auth.error}`);
+		return undefined;
+	}
+
+	return {
+		config: config.config,
+		prompts: prompts.prompts,
+		runtimeConfig: runtimeConfig.config,
+		auth,
+	};
 }
 
 /** Fails startup when enabled config uses prompt paths that depend on config-relative or home expansion. */
@@ -371,6 +478,19 @@ function validateCustomCompactionConfig(
 		return { issue: retryIssue };
 	}
 
+	try {
+		const summary = parseToolResultSummaryConfig(config[SUMMARY_CONFIG_KEY], {
+			defaultEnabled: true,
+		});
+		if (summary === undefined) {
+			return {
+				issue: `${SUMMARY_CONFIG_KEY} must match context-projection summary config`,
+			};
+		}
+	} catch (error) {
+		return { issue: formatError(error) };
+	}
+
 	return { config };
 }
 
@@ -425,6 +545,9 @@ function buildCustomCompactionConfig(
 		...(typeof model === "string" ? { model } : {}),
 		...(isReasoning(reasoning) ? { reasoning } : {}),
 		retry: buildRetryConfig(config[RETRY_CONFIG_KEY]),
+		summary: parseToolResultSummaryConfig(config[SUMMARY_CONFIG_KEY], {
+			defaultEnabled: true,
+		}) as ToolResultSummaryConfig,
 	};
 }
 
@@ -585,6 +708,7 @@ async function generateCompactionSummary({
 							baseOptions,
 							event,
 							HISTORY_SUMMARY_RESERVE_RATIO,
+							createAuxiliaryLlmSessionId(),
 						),
 						retry,
 						recordCost,
@@ -597,6 +721,7 @@ async function generateCompactionSummary({
 					baseOptions,
 					event,
 					TURN_PREFIX_SUMMARY_RESERVE_RATIO,
+					createAuxiliaryLlmSessionId(),
 				),
 				retry,
 				recordCost,
@@ -616,9 +741,296 @@ async function generateCompactionSummary({
 			baseOptions,
 			event,
 			HISTORY_SUMMARY_RESERVE_RATIO,
+			createAuxiliaryLlmSessionId(),
 		),
 		retry,
 		recordCost,
+	});
+}
+
+/** Creates user-visible progress notifications for large tool-result compression. */
+function createToolResultCompressionProgressReporter(
+	session: CustomCompactionSession,
+	total: number,
+): ToolResultCompressionProgressReporter {
+	return {
+		notifyStart(): void {
+			notifyCompressionProgress(
+				session,
+				`compressing large tool results before compaction: 0/${total}`,
+			);
+		},
+		notifyCandidate(toolName, position): void {
+			notifyCompressionProgress(
+				session,
+				`compressing ${toolName} tool result before compaction: ${position}/${total}`,
+			);
+		},
+		notifyRetry(nextAttempt, totalAttempts): void {
+			notifyCompressionProgress(
+				session,
+				`retrying tool result summary ${nextAttempt}/${totalAttempts}`,
+			);
+		},
+		notifyUnavailable(): void {
+			notifyCompressionProgress(
+				session,
+				"tool result summary unavailable during compaction compression",
+				"warning",
+			);
+		},
+		notifyCompleted(compressedCount): void {
+			notifyCompressionProgress(
+				session,
+				`compressed ${compressedCount}/${total} large tool results before compaction`,
+			);
+		},
+	};
+}
+
+/** Emits one custom-compaction compression notification when interactive UI is available. */
+function notifyCompressionProgress(
+	session: CustomCompactionSession,
+	message: string,
+	type: "info" | "warning" = "info",
+): void {
+	if (session.hasUI === false) {
+		return;
+	}
+
+	session.ui.notify(`${ISSUE_PREFIX} ${message}`, type);
+}
+
+/** Prepares compaction input and summarizes large tool results only when the original request is oversized. */
+async function prepareCompactionSummaryEvent({
+	pi,
+	event,
+	prompts,
+	model,
+	summaryConfig,
+	session,
+	currentThinking,
+	signal,
+	recordCost,
+}: {
+	readonly pi: Pick<ExtensionAPI, "appendEntry">;
+	readonly event: SessionBeforeCompactEvent;
+	readonly prompts: CustomCompactionPrompts;
+	readonly model: Model<Api>;
+	readonly summaryConfig: ToolResultSummaryConfig;
+	readonly session: CustomCompactionSession;
+	readonly currentThinking: string | undefined;
+	readonly signal: AbortSignal;
+	readonly recordCost: (message: AssistantMessage) => void;
+}): Promise<SessionBeforeCompactEvent | undefined> {
+	if (doesCompactionSummaryEventFitModel(event, prompts, model)) {
+		return event;
+	}
+	if (!summaryConfig.enabled) {
+		return undefined;
+	}
+
+	const runtimeConfig = await resolveToolResultSummaryRuntimeConfig({
+		currentModel: model,
+		modelRegistry: session.modelRegistry,
+		config: summaryConfig,
+		currentThinking,
+		signal,
+	});
+	if (runtimeConfig === undefined) {
+		return undefined;
+	}
+
+	const sources = createCompactionToolResultSources(event);
+	const candidates = collectToolResultSummaryCandidates(
+		sources,
+		TOOL_RESULT_SUMMARY_MIN_TOKENS,
+	);
+	if (candidates.length === 0) {
+		return undefined;
+	}
+
+	const progress = createToolResultCompressionProgressReporter(
+		session,
+		candidates.length,
+	);
+	progress.notifyStart();
+	const recordAttemptFailure = createToolResultSummaryDiagnosticRecorder(
+		pi,
+		"custom-compaction",
+		runtimeConfig.model,
+	);
+	const summaries = await mapWithConcurrency(
+		candidates,
+		summaryConfig.maxConcurrency,
+		async (candidate) =>
+			summarizeCompactionToolResultCandidate({
+				candidate,
+				position: candidates.indexOf(candidate) + 1,
+				runtimeConfig,
+				summaryConfig,
+				progress,
+				recordAttemptFailure,
+				recordCost,
+			}),
+	);
+	const replacementById = createCompactionSummaryReplacements(
+		candidates,
+		summaries,
+	);
+	if (replacementById.size === 0) {
+		progress.notifyCompleted(0);
+		return undefined;
+	}
+	progress.notifyCompleted(replacementById.size);
+
+	const reducedEvent = replaceCompactionToolResults(event, replacementById);
+	return doesCompactionSummaryEventFitModel(reducedEvent, prompts, model)
+		? reducedEvent
+		: undefined;
+}
+
+/** Summarizes one compaction tool result while reporting request progress. */
+async function summarizeCompactionToolResultCandidate({
+	candidate,
+	position,
+	runtimeConfig,
+	summaryConfig,
+	progress,
+	recordAttemptFailure,
+	recordCost,
+}: {
+	readonly candidate: ToolResultSummaryCandidate;
+	readonly position: number;
+	readonly runtimeConfig: ToolResultSummaryRuntimeConfig;
+	readonly summaryConfig: ToolResultSummaryConfig;
+	readonly progress: ToolResultCompressionProgressReporter;
+	readonly recordAttemptFailure: (
+		candidate: ToolResultSummaryCandidate,
+		failure: ToolResultSummaryAttemptFailure,
+		attempt: number,
+		totalAttempts: number,
+	) => void;
+	readonly recordCost: (message: AssistantMessage) => void;
+}): Promise<string | undefined> {
+	progress.notifyCandidate(candidate.message.toolName, position);
+	const summary = await summarizeToolResultCandidateWithRetries({
+		candidate,
+		runtimeConfig,
+		sessionId: createAuxiliaryLlmSessionId(),
+		completeSimple,
+		config: summaryConfig,
+		recordCost,
+		onAttemptFailure: recordAttemptFailure,
+		onRetryScheduled: (nextAttempt, totalAttempts) => {
+			progress.notifyRetry(nextAttempt, totalAttempts);
+		},
+	});
+	if (summary === undefined) {
+		progress.notifyUnavailable();
+	}
+	return summary;
+}
+
+/** Maps successful helper summaries back to their original compaction message identifiers. */
+function createCompactionSummaryReplacements(
+	candidates: readonly ToolResultSummaryCandidate[],
+	summaries: readonly (string | undefined)[],
+): Map<string, AgentMessage> {
+	const replacementById = new Map<string, AgentMessage>();
+	for (let index = 0; index < candidates.length; index += 1) {
+		const candidate = candidates[index];
+		const summary = summaries[index];
+		if (candidate === undefined || summary === undefined) {
+			continue;
+		}
+
+		replacementById.set(
+			candidate.id,
+			buildSummarizedToolResultMessage(candidate.message, summary),
+		);
+	}
+	return replacementById;
+}
+
+/** Checks all summary requests that may be sent for a compaction event. */
+function doesCompactionSummaryEventFitModel(
+	event: SessionBeforeCompactEvent,
+	prompts: CustomCompactionPrompts,
+	model: Model<Api>,
+): boolean {
+	return buildCompactionSummaryContexts(event, prompts).every((context) =>
+		doesContextFitModel(context, model),
+	);
+}
+
+/** Builds only the contexts that the compaction flow will send to the model. */
+function buildCompactionSummaryContexts(
+	event: SessionBeforeCompactEvent,
+	prompts: CustomCompactionPrompts,
+): Context[] {
+	if (
+		event.preparation.isSplitTurn &&
+		event.preparation.turnPrefixMessages.length > 0
+	) {
+		const contexts = [buildTurnPrefixSummaryContext(event, prompts)];
+		if (event.preparation.messagesToSummarize.length > 0) {
+			contexts.unshift(buildHistorySummaryContext(event, prompts));
+		}
+		return contexts;
+	}
+
+	return [buildHistorySummaryContext(event, prompts)];
+}
+
+/** Creates stable source IDs for both compaction message groups. */
+function createCompactionToolResultSources(
+	event: SessionBeforeCompactEvent,
+): Array<{ readonly id: string; readonly message: AgentMessage }> {
+	return [
+		...event.preparation.messagesToSummarize.map((message, index) => ({
+			id: `history:${index}`,
+			message: message as AgentMessage,
+		})),
+		...event.preparation.turnPrefixMessages.map((message, index) => ({
+			id: `turn-prefix:${index}`,
+			message: message as AgentMessage,
+		})),
+	];
+}
+
+/** Replaces only helper-summarized tool results and preserves all other compaction messages. */
+function replaceCompactionToolResults(
+	event: SessionBeforeCompactEvent,
+	replacementById: ReadonlyMap<string, AgentMessage>,
+): SessionBeforeCompactEvent {
+	return {
+		...event,
+		preparation: {
+			...event.preparation,
+			messagesToSummarize: replaceMessageGroup(
+				event.preparation.messagesToSummarize,
+				"history",
+				replacementById,
+			),
+			turnPrefixMessages: replaceMessageGroup(
+				event.preparation.turnPrefixMessages,
+				"turn-prefix",
+				replacementById,
+			),
+		},
+	};
+}
+
+/** Replaces messages by the same stable IDs used when summary candidates were collected. */
+function replaceMessageGroup<T>(
+	messages: readonly T[],
+	prefix: "history" | "turn-prefix",
+	replacementById: ReadonlyMap<string, AgentMessage>,
+): T[] {
+	return messages.map((message, index) => {
+		const replacement = replacementById.get(`${prefix}:${index}`);
+		return replacement === undefined ? message : (replacement as T);
 	});
 }
 
@@ -699,6 +1111,10 @@ async function executeSummaryRequest({
 	retry,
 	recordCost,
 }: ExecuteSummaryRequestOptions): Promise<string | undefined> {
+	if (!doesContextFitModel(context, model)) {
+		return undefined;
+	}
+
 	try {
 		const response = await withRetry(
 			async () => {
@@ -726,9 +1142,11 @@ function buildSummaryCompletionOptions(
 	baseOptions: SimpleStreamOptions,
 	event: SessionBeforeCompactEvent,
 	reserveRatio: number,
+	sessionId: string,
 ): SimpleStreamOptions {
 	return {
 		...baseOptions,
+		sessionId,
 		maxTokens: Math.floor(
 			event.preparation.settings.reserveTokens * reserveRatio,
 		),
@@ -757,9 +1175,103 @@ function buildCompletionOptions(
 }
 
 /** Builds the compaction result expected by pi session compaction. */
+type CompactionInputMessage =
+	SessionBeforeCompactEvent["preparation"]["messagesToSummarize"][number];
+
+interface OverflowRetryCompactionPlan {
+	readonly event: SessionBeforeCompactEvent;
+	readonly needsRetryBoundary: boolean;
+}
+
+/** Prepares compaction inputs so overflow retry can continue from a non-assistant boundary. */
+function createOverflowRetryCompactionPlan(
+	event: SessionBeforeCompactEvent,
+): OverflowRetryCompactionPlan {
+	if (!isOverflowRetryCompaction(event)) {
+		return { event, needsRetryBoundary: false };
+	}
+
+	const retainedMessages = collectRetainedMessages(event);
+	if (!endsWithAssistantError(retainedMessages)) {
+		return { event, needsRetryBoundary: false };
+	}
+
+	return {
+		event: {
+			...event,
+			preparation: {
+				...event.preparation,
+				messagesToSummarize: [
+					...event.preparation.messagesToSummarize,
+					...retainedMessages,
+				],
+			},
+		},
+		needsRetryBoundary: true,
+	};
+}
+
+/** Detects the runtime-only overflow retry metadata that is absent from older type declarations. */
+function isOverflowRetryCompaction(event: SessionBeforeCompactEvent): boolean {
+	const eventWithRuntimeFields = event as SessionBeforeCompactEvent & {
+		readonly reason?: unknown;
+		readonly willRetry?: unknown;
+	};
+	return (
+		eventWithRuntimeFields.reason === "overflow" &&
+		eventWithRuntimeFields.willRetry === true
+	);
+}
+
+/** Collects model-visible retained messages that would be dropped when a retry boundary is inserted. */
+function collectRetainedMessages(
+	event: SessionBeforeCompactEvent,
+): CompactionInputMessage[] {
+	const retainedMessages: CompactionInputMessage[] = [];
+	let foundFirstKeptEntry = false;
+	for (const entry of event.branchEntries) {
+		if (entry.id === event.preparation.firstKeptEntryId) {
+			foundFirstKeptEntry = true;
+		}
+		if (!foundFirstKeptEntry || entry.type !== "message") {
+			continue;
+		}
+		retainedMessages.push(entry.message as CompactionInputMessage);
+	}
+	return retainedMessages;
+}
+
+/** Returns true when retrying from the retained context would hit pi core's assistant-role guard. */
+function endsWithAssistantError(
+	messages: readonly CompactionInputMessage[],
+): boolean {
+	const lastMessage = messages.at(-1);
+	return (
+		lastMessage?.role === "assistant" && lastMessage.stopReason === "error"
+	);
+}
+
+/** Appends a non-message session entry that becomes the kept boundary for overflow retry recovery. */
+function appendOverflowRetryBoundary(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ctx: Pick<ExtensionContext, "sessionManager">,
+): string {
+	pi.appendEntry(OVERFLOW_RETRY_BOUNDARY_CUSTOM_TYPE, {
+		reason: "overflow-retry-after-assistant-error",
+	});
+	const leafId = ctx.sessionManager.getLeafId();
+	if (leafId === null) {
+		throw new Error(
+			"custom-compaction failed to create overflow retry boundary entry",
+		);
+	}
+	return leafId;
+}
+
 function buildCompactionResult(
 	event: SessionBeforeCompactEvent,
 	summary: string,
+	firstKeptEntryId: string,
 ): CompactionResult<{
 	readonly readFiles: readonly string[];
 	readonly modifiedFiles: readonly string[];
@@ -768,7 +1280,7 @@ function buildCompactionResult(
 
 	return {
 		summary,
-		firstKeptEntryId: event.preparation.firstKeptEntryId,
+		firstKeptEntryId,
 		tokensBefore: event.preparation.tokensBefore,
 		details: {
 			readFiles: fileLists.readFiles,

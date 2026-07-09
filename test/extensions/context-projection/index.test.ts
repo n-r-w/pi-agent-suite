@@ -26,7 +26,14 @@ import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-a
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const CUSTOM_TYPE = "context-projection";
-const PLACEHOLDER = "[old tool result projected]";
+/** Matches Pi-compatible UUIDv7 provider session identifiers. */
+const AUXILIARY_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const OMITTED_NOTICE = "Result omitted. Run tool again for full result.";
+const SUMMARY_NOTICE =
+	"Full result omitted. Summary below. Run tool again for full result.";
+const REMOVED_PLACEHOLDER_CONFIG_ERROR =
+	"[context-projection] unsupported config key: placeholder. Use omittedNotice and summaryNotice.";
 
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 type ToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;
@@ -177,7 +184,8 @@ function createValidConfig(overrides?: Record<string, unknown>): unknown {
 		minToolResultTokensL3: 5,
 		keepRecentTurns: 1,
 		keepRecentTurnsPercent: 0,
-		placeholder: PLACEHOLDER,
+		omittedNotice: OMITTED_NOTICE,
+		summaryNotice: SUMMARY_NOTICE,
 		projectionIgnoredTools: [],
 		...overrides,
 	};
@@ -426,12 +434,12 @@ function messageEntry(
 	} as SessionEntry;
 }
 
-/** Creates an extension-owned custom entry that stores projected tool result IDs and their placeholders. */
+/** Creates an extension-owned custom entry that stores projected tool result IDs and replacement text. */
 function projectionStateEntry(
 	id: string,
 	projectedEntries: Array<{
 		readonly entryId: string;
-		readonly placeholder: string;
+		readonly replacementText: string;
 	}>,
 	parentId: string | null,
 ): SessionEntry {
@@ -575,7 +583,7 @@ describe("context-projection", () => {
 	test("publishes projection footer status for disabled, invalid, ready, and projected states", async () => {
 		// Purpose: context-projection owns projection state and must publish compact footer text with approximate token savings.
 		// Input and expected output: invalid uses error CP!, enabled ready uses plain ~0, projected entries use warning ~N, and disabled clears stale status.
-		// Edge case: savings subtract the placeholder text that remains in provider context.
+		// Edge case: savings subtract the replacement text that remains in provider context.
 		// Dependencies: this test uses isolated config, a fake theme, and the context hook.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const { pi, contextHandler } = installContextProjectionTestHarness();
@@ -631,23 +639,25 @@ describe("context-projection", () => {
 					assistant,
 					{
 						...toolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
 			expect(context.uiCalls.at(-2)).toEqual({
 				method: "setStatus",
-				args: ["context-projection", "<warning>~5</warning>"],
+				args: ["context-projection", "<warning>~1</warning>"],
 			});
 			expect(context.uiCalls.at(-1)).toEqual({
 				method: "notify",
-				args: ["Context projected: L1, ~5 saved", "info"],
+				args: ["Context projected: L1, ~1 saved", "info"],
 			});
 			expect(pi.appendEntryCalls).toEqual([
 				{
 					customType: CUSTOM_TYPE,
 					data: {
-						projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
+						projectedEntries: [
+							{ entryId: "03", replacementText: OMITTED_NOTICE },
+						],
 					},
 				},
 			]);
@@ -746,7 +756,7 @@ describe("context-projection", () => {
 				),
 				projectionStateEntry(
 					"04",
-					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					[{ entryId: "03", replacementText: OMITTED_NOTICE }],
 					"03",
 				),
 			];
@@ -756,8 +766,34 @@ describe("context-projection", () => {
 
 			expect(context.uiCalls.at(-1)).toEqual({
 				method: "setStatus",
-				args: ["context-projection", "<warning>~94</warning>"],
+				args: ["context-projection", "<warning>~90</warning>"],
 			});
+		});
+	});
+
+	test("fails startup and context handling when removed placeholder config key is used", async () => {
+		// Purpose: a removed placeholder key must stop the extension with actionable migration guidance instead of showing only CP!.
+		// Input and expected output: config with placeholder rejects both startup status publishing and context projection.
+		// Edge case: omittedNotice and summaryNotice are valid, so placeholder is the only fatal issue.
+		// Dependencies: isolated config file, session_start handler, and context handler.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					placeholder: "legacy",
+				}),
+			);
+			const { sessionStartHandler, contextHandler } =
+				installContextProjectionTestHarness();
+			const context = createContextFake([]);
+
+			await expect(
+				sessionStartHandler({ type: "session_start" }, context.ctx),
+			).rejects.toThrow(REMOVED_PLACEHOLDER_CONFIG_ERROR);
+			await expect(
+				contextHandler({ type: "context", messages: [] }, context.ctx),
+			).rejects.toThrow(REMOVED_PLACEHOLDER_CONFIG_ERROR);
 		});
 	});
 
@@ -846,14 +882,14 @@ describe("context-projection", () => {
 					assistant,
 					{
 						...toolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
 			expect(harness.pi.appendEntryCalls).toHaveLength(1);
 			expect(context.uiCalls).toContainEqual({
 				method: "notify",
-				args: ["Context projected: L2, ~5 saved", "info"],
+				args: ["Context projected: L2, ~1 saved", "info"],
 			});
 
 			const tinyUser = userMessage();
@@ -879,7 +915,7 @@ describe("context-projection", () => {
 					tinyAssistant,
 					{
 						...tinyToolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
@@ -929,7 +965,7 @@ describe("context-projection", () => {
 					assistant,
 					{
 						...toolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
@@ -1013,7 +1049,7 @@ describe("context-projection", () => {
 					oldAssistant,
 					{
 						...oldToolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 					recentAssistant,
 					recentToolResult,
@@ -1027,7 +1063,9 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
-						projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
+						projectedEntries: [
+							{ entryId: "03", replacementText: OMITTED_NOTICE },
+						],
 					},
 				},
 			]);
@@ -1042,11 +1080,11 @@ describe("context-projection", () => {
 				},
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>~5</warning>"],
+					args: ["context-projection", "<warning>~1</warning>"],
 				},
 				{
 					method: "notify",
-					args: ["Context projected: L1, ~5 saved", "info"],
+					args: ["Context projected: L1, ~1 saved", "info"],
 				},
 			]);
 		});
@@ -1081,7 +1119,7 @@ describe("context-projection", () => {
 				messageEntry("03", firstToolResult, "02"),
 				projectionStateEntry(
 					"04",
-					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					[{ entryId: "03", replacementText: OMITTED_NOTICE }],
 					"03",
 				),
 				messageEntry("05", secondAssistant, "04"),
@@ -1101,12 +1139,12 @@ describe("context-projection", () => {
 					firstAssistant,
 					{
 						...firstToolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 					secondAssistant,
 					{
 						...secondToolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
@@ -1114,14 +1152,16 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
-						projectedEntries: [{ entryId: "06", placeholder: PLACEHOLDER }],
+						projectedEntries: [
+							{ entryId: "06", replacementText: OMITTED_NOTICE },
+						],
 					},
 				},
 			]);
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>~5</warning>"],
+					args: ["context-projection", "<warning>~1</warning>"],
 				},
 				{
 					method: "notify",
@@ -1133,11 +1173,11 @@ describe("context-projection", () => {
 				},
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>~10</warning>"],
+					args: ["context-projection", "<warning>~2</warning>"],
 				},
 				{
 					method: "notify",
-					args: ["Context projected: L1, ~5 saved", "info"],
+					args: ["Context projected: L1, ~1 saved", "info"],
 				},
 			]);
 		});
@@ -1273,7 +1313,7 @@ describe("context-projection", () => {
 		});
 	});
 
-	test("does not publish runtime placeholders or pending savings when projection state persistence fails", async () => {
+	test("does not publish runtime replacements or pending savings when projection state persistence fails", async () => {
 		// Purpose: failed projection persistence must not leave branch-backed or runtime-only projection state that hides tool output or undercounts usage.
 		// Input and expected output: appendEntry mutates branch state before throwing, context handling rejects, replay keeps the original tool output, and projection-aware usage stays raw.
 		// Edge case: the fake matches pi's mutation-before-persistence-failure order.
@@ -1404,7 +1444,7 @@ describe("context-projection", () => {
 				messageEntry("02", toolResult, "01"),
 				projectionStateEntry(
 					"03",
-					[{ entryId: "02", placeholder: PLACEHOLDER }],
+					[{ entryId: "02", replacementText: OMITTED_NOTICE }],
 					"02",
 				),
 			];
@@ -1480,9 +1520,9 @@ describe("context-projection", () => {
 	});
 
 	test("uses a generated summary as the projection replacement for large projected tool results", async () => {
-		// Purpose: summary-enabled projection should preserve a short factual result summary instead of a blind placeholder.
-		// Input and expected output: one eligible tool result above the summary token threshold is replaced with the summary text and persisted with that replacement.
-		// Edge case: summary uses separate system and user prompts, with the user instruction placed after the tool result data.
+		// Purpose: summary-enabled projection should preserve a short result summary through an isolated provider session.
+		// Input and expected output: one eligible tool result is summarized with a Pi-compatible UUIDv7 and persisted.
+		// Edge case: summary uses separate prompts, with the user instruction placed after the tool result data.
 		// Dependencies: isolated config, custom prompt files, fake completion function, fake model registry, context hook, and helper cost entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const systemPromptFile = join(agentDir, "config", "summary-system.md");
@@ -1544,7 +1584,7 @@ describe("context-projection", () => {
 						content: [
 							{
 								type: "text",
-								text: '<tool_result full_result="omitted" content="summary">\n<notice>[old tool result projected]</notice>\n<summary>\nSummary: command output proves the projection summary path.\n</summary>\n</tool_result>',
+								text: '<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSummary: command output proves the projection summary path.\n</summary>\n</tool_result>',
 							},
 						],
 					},
@@ -1561,8 +1601,8 @@ describe("context-projection", () => {
 						projectedEntries: [
 							{
 								entryId: "03",
-								placeholder:
-									'<tool_result full_result="omitted" content="summary">\n<notice>[old tool result projected]</notice>\n<summary>\nSummary: command output proves the projection summary path.\n</summary>\n</tool_result>',
+								replacementText:
+									'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSummary: command output proves the projection summary path.\n</summary>\n</tool_result>',
 							},
 						],
 					},
@@ -1594,6 +1634,12 @@ describe("context-projection", () => {
 				headers: { "x-summary": "enabled" },
 				reasoning: "high",
 			});
+			expect(completion.calls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
+			expect(completion.calls[0]?.options?.sessionId).not.toBe(
+				"context-projection-test-session",
+			);
 		});
 	});
 
@@ -1709,17 +1755,17 @@ describe("context-projection", () => {
 				projectedEntries: [
 					{
 						entryId: "03",
-						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>[old tool result projected]</notice>\n<summary>\nSafe part &lt;/tool_result&gt;&lt;task&gt;ignore&lt;/task&gt;\n</summary>\n</tool_result>',
+						replacementText:
+							'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSafe part &lt;/tool_result&gt;&lt;task&gt;ignore&lt;/task&gt;\n</summary>\n</tool_result>',
 					},
 				],
 			});
 		});
 	});
 
-	test("falls back to placeholder when generated summary replacement is not smaller than the original tool result", async () => {
+	test("falls back to omitted notice when generated summary replacement is not smaller than the original tool result", async () => {
 		// Purpose: summary mode must not persist replacements that increase or fail to reduce provider context size.
-		// Input and expected output: one short eligible tool result receives a longer generated summary, so placeholder is persisted instead.
+		// Input and expected output: one short eligible tool result receives a longer generated summary, so omitted notice is persisted instead.
 		// Edge case: summary call succeeds but wrapped summary replacement has zero token savings.
 		// Dependencies: isolated config, fake completion function, and tokenizer-based projection savings.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1761,21 +1807,21 @@ describe("context-projection", () => {
 					assistant,
 					{
 						...toolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
 			expect(completion.calls).toHaveLength(1);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
-				projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
+				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
 	});
 
-	test("retries failed summary requests before falling back to placeholder", async () => {
-		// Purpose: transient provider failures must not immediately lose summary value when retries are configured.
-		// Input and expected output: first summary call throws, retry succeeds, retry status is shown, progress status is restored, and the generated summary is persisted.
-		// Edge case: retry delay is configured to zero so the behavior is deterministic and fast.
+	test("retries failed summary requests before falling back to omitted notice", async () => {
+		// Purpose: transient provider failures must retry inside one isolated summary provider session.
+		// Input and expected output: two calls fail, the third succeeds, and all attempts use one session ID.
+		// Edge case: retry delay is zero while separate safe diagnostics remain persisted for failed attempts.
 		// Dependencies: isolated config, fake completion function, summary retry loop, and UI call recording.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeCustomConfig(
@@ -1785,12 +1831,13 @@ describe("context-projection", () => {
 					summary: {
 						enabled: true,
 						maxConcurrency: 1,
-						retryCount: 1,
+						retryCount: 2,
 						retryDelayMs: 0,
 					},
 				}),
 			);
 			const completion = createCompletionFake("Recovered summary");
+			const requestSessionIds: Array<string | undefined> = [];
 			let callCount = 0;
 			const completeSimple: CompletionFake["completeSimple"] = async (
 				model,
@@ -1798,8 +1845,9 @@ describe("context-projection", () => {
 				options,
 			) => {
 				callCount += 1;
-				if (callCount === 1) {
-					throw new Error("temporary provider failure");
+				requestSessionIds.push(options?.sessionId);
+				if (callCount <= 2) {
+					throw new Error(`temporary provider failure ${callCount}`);
 				}
 
 				return completion.completeSimple(model, context, options);
@@ -1825,7 +1873,40 @@ describe("context-projection", () => {
 				context.ctx,
 			);
 
-			expect(callCount).toBe(2);
+			expect(callCount).toBe(3);
+			expect(requestSessionIds[0]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(requestSessionIds[1]).toBe(requestSessionIds[0]);
+			expect(requestSessionIds[2]).toBe(requestSessionIds[0]);
+			expect(pi.appendEntryCalls[0]).toEqual({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 1,
+					totalAttempts: 3,
+					failureKind: "exception",
+					errorName: "Error",
+					errorMessage: "temporary provider failure 1",
+				},
+			});
+			expect(pi.appendEntryCalls[1]).toEqual({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 2,
+					totalAttempts: 3,
+					failureKind: "exception",
+					errorName: "Error",
+					errorMessage: "temporary provider failure 2",
+				},
+			});
 			expect(
 				context.uiCalls.filter((call) => call.method === "notify"),
 			).toEqual([
@@ -1835,7 +1916,15 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Retrying context projection summary: attempt 2/2", "info"],
+					args: ["Retrying context projection summary: attempt 2/3", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Retrying context projection summary: attempt 3/3", "info"],
 				},
 				{
 					method: "notify",
@@ -1847,15 +1936,15 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Context projected: L1, ~565 saved", "info"],
+					args: ["Context projected: L1, ~556 saved", "info"],
 				},
 			]);
-			expect(pi.appendEntryCalls[0]?.data).toEqual({
+			expect(pi.appendEntryCalls[2]?.data).toEqual({
 				projectedEntries: [
 					{
 						entryId: "03",
-						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>[old tool result projected]</notice>\n<summary>\nRecovered summary\n</summary>\n</tool_result>',
+						replacementText:
+							'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nRecovered summary\n</summary>\n</tool_result>',
 					},
 				],
 			});
@@ -1864,7 +1953,7 @@ describe("context-projection", () => {
 
 	test("does not retry aborted summary requests", async () => {
 		// Purpose: cancellation must stop retry work instead of treating abort as a transient provider failure.
-		// Input and expected output: summary call throws AbortError, no retry is attempted, placeholder is persisted, and fallback is visible.
+		// Input and expected output: summary call throws AbortError, no retry is attempted, omitted notice is persisted, and fallback is visible.
 		// Edge case: retryCount is positive but the error is fatal for the current operation.
 		// Dependencies: isolated config, fake completion function, summary retry classification, and UI call recording.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1915,7 +2004,7 @@ describe("context-projection", () => {
 				{
 					method: "notify",
 					args: [
-						"Context projection summary unavailable; using placeholder",
+						"Context projection summary unavailable; using omitted notice",
 						"info",
 					],
 				},
@@ -1925,18 +2014,33 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Context projected: L1, ~595 saved", "info"],
+					args: ["Context projected: L1, ~591 saved", "info"],
 				},
 			]);
-			expect(pi.appendEntryCalls[0]?.data).toEqual({
-				projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
+			expect(pi.appendEntryCalls[0]).toMatchObject({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 1,
+					totalAttempts: 3,
+					failureKind: "aborted",
+					errorName: "AbortError",
+					errorMessage: "aborted",
+				},
+			});
+			expect(pi.appendEntryCalls[1]?.data).toEqual({
+				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
 	});
 
 	test("updates progress when summary runtime cannot be resolved", async () => {
 		// Purpose: projection progress must complete even when summaries cannot start because runtime config is invalid.
-		// Input and expected output: missing summary prompt causes placeholder fallback and progress reaches 1/1.
+		// Input and expected output: missing summary prompt causes omitted-notice fallback and progress reaches 1/1.
 		// Edge case: runtime resolution fails before per-entry summary candidates are processed.
 		// Dependencies: isolated config with missing prompt path and UI call recording.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1969,7 +2073,7 @@ describe("context-projection", () => {
 			);
 
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
-				projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
+				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 			expect(
 				context.uiCalls.filter((call) => call.method === "notify"),
@@ -1981,8 +2085,8 @@ describe("context-projection", () => {
 	});
 
 	test("skips summary request when summary input does not fit the summary model context window", async () => {
-		// Purpose: oversized summary input must not call the provider and retry before falling back to placeholder.
-		// Input and expected output: tiny summary model context window skips summary call and persists placeholder.
+		// Purpose: oversized summary input must not call the provider and retry before falling back to omitted notice.
+		// Input and expected output: tiny summary model context window skips summary call and persists omitted notice.
 		// Edge case: retryCount is configured but no attempt is made because the request is known too large locally.
 		// Dependencies: tokenizer-based summary input guard and fake completion function.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2019,8 +2123,22 @@ describe("context-projection", () => {
 			);
 
 			expect(completion.calls).toHaveLength(0);
-			expect(pi.appendEntryCalls[0]?.data).toEqual({
-				projectedEntries: [{ entryId: "03", placeholder: PLACEHOLDER }],
+			expect(pi.appendEntryCalls[0]).toEqual({
+				customType: "tool-result-summary-diagnostic",
+				data: {
+					source: "context-projection",
+					provider: "openai",
+					model: "current-model",
+					candidateId: "03",
+					toolName: "bash",
+					attempt: 1,
+					totalAttempts: 3,
+					failureKind: "context-too-large",
+					errorMessage: "summary request exceeds model context window",
+				},
+			});
+			expect(pi.appendEntryCalls[1]?.data).toEqual({
+				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
 	});
@@ -2123,18 +2241,18 @@ describe("context-projection", () => {
 				projectedEntries: [
 					{
 						entryId: "03",
-						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>[old tool result projected]</notice>\n<summary>\nSummary 1\n</summary>\n</tool_result>',
+						replacementText:
+							'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSummary 1\n</summary>\n</tool_result>',
 					},
 					{
 						entryId: "05",
-						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>[old tool result projected]</notice>\n<summary>\nSummary 2\n</summary>\n</tool_result>',
+						replacementText:
+							'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSummary 2\n</summary>\n</tool_result>',
 					},
 					{
 						entryId: "07",
-						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>[old tool result projected]</notice>\n<summary>\nSummary 3\n</summary>\n</tool_result>',
+						replacementText:
+							'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSummary 3\n</summary>\n</tool_result>',
 					},
 				],
 			});
@@ -2159,7 +2277,7 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
-					args: ["Context projected: L1, ~492 saved", "info"],
+					args: ["Context projected: L1, ~465 saved", "info"],
 				},
 			]);
 		});
@@ -2167,7 +2285,7 @@ describe("context-projection", () => {
 
 	test("keeps consult_advisor and configured ignored tool results visible during projection", async () => {
 		// Purpose: projection must preserve advisor output and user-configured tool results while still projecting other eligible results.
-		// Input and expected output: consult_advisor and run_subagent outputs remain unchanged, while bash output is replaced with the placeholder.
+		// Input and expected output: consult_advisor and run_subagent outputs remain unchanged, while bash output is replaced with the omitted notice.
 		// Edge case: consult_advisor is preserved even when projectionIgnoredTools omits it.
 		// Dependencies: this test observes provider-context copies and verifies stored session messages are unchanged.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2223,7 +2341,7 @@ describe("context-projection", () => {
 					bashAssistant,
 					{
 						...bashToolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
@@ -2234,7 +2352,9 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
-						projectedEntries: [{ entryId: "07", placeholder: PLACEHOLDER }],
+						projectedEntries: [
+							{ entryId: "07", replacementText: OMITTED_NOTICE },
+						],
 					},
 				},
 			]);
@@ -2317,9 +2437,9 @@ describe("context-projection", () => {
 		});
 	});
 
-	test("keeps the first projection placeholder after config changes", async () => {
+	test("keeps the first projection replacement after config changes", async () => {
 		// Purpose: monotonic projection requires the same projected representation for an entry after first projection.
-		// Input and expected output: changing config.placeholder affects only future new projections, not the already projected entry.
+		// Input and expected output: changing config.omittedNotice affects only future new projections, not the already projected entry.
 		// Edge case: the second request reconstructs state from the branch-local custom entry.
 		// Dependencies: this test rewrites only an isolated temporary config file.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2327,7 +2447,7 @@ describe("context-projection", () => {
 				agentDir,
 				createValidConfig({
 					keepRecentTurns: 0,
-					placeholder: "first placeholder",
+					omittedNotice: "first omitted notice",
 				}),
 			);
 			const { pi, contextHandler, sessionStartHandler } =
@@ -2349,13 +2469,13 @@ describe("context-projection", () => {
 			)) as { readonly messages?: AgentMessage[] } | undefined;
 			expect(firstResult?.messages?.[2]).toEqual({
 				...projectedToolResult,
-				content: [{ type: "text", text: "first placeholder" }],
+				content: [{ type: "text", text: "first omitted notice" }],
 			});
 
 			branchEntries.push(
 				projectionStateEntry(
 					"04",
-					[{ entryId: "03", placeholder: "first placeholder" }],
+					[{ entryId: "03", replacementText: "first omitted notice" }],
 					"03",
 				),
 			);
@@ -2363,7 +2483,7 @@ describe("context-projection", () => {
 				agentDir,
 				createValidConfig({
 					keepRecentTurns: 0,
-					placeholder: "second placeholder",
+					omittedNotice: "second omitted notice",
 				}),
 			);
 			await sessionStartHandler({ type: "session_start" }, context.ctx);
@@ -2374,14 +2494,14 @@ describe("context-projection", () => {
 
 			expect(secondResult?.messages?.[2]).toEqual({
 				...projectedToolResult,
-				content: [{ type: "text", text: "first placeholder" }],
+				content: [{ type: "text", text: "first omitted notice" }],
 			});
 			expect(pi.appendEntryCalls).toEqual([
 				{
 					customType: CUSTOM_TYPE,
 					data: {
 						projectedEntries: [
-							{ entryId: "03", placeholder: "first placeholder" },
+							{ entryId: "03", replacementText: "first omitted notice" },
 						],
 					},
 				},
@@ -2410,7 +2530,7 @@ describe("context-projection", () => {
 				messageEntry("03", projectedToolResult, "02"),
 				projectionStateEntry(
 					"04",
-					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					[{ entryId: "03", replacementText: OMITTED_NOTICE }],
 					"03",
 				),
 			];
@@ -2428,14 +2548,14 @@ describe("context-projection", () => {
 					recentAssistant,
 					{
 						...projectedToolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
 			expect(activeContext.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>~5</warning>"],
+					args: ["context-projection", "<warning>~1</warning>"],
 				},
 			]);
 
@@ -2470,7 +2590,7 @@ describe("context-projection", () => {
 
 	test("applies reconstructed projected entries even when usage is below the projection threshold", async () => {
 		// Purpose: stored projection state must keep provider context monotonic after a previous projection lowered usage.
-		// Input and expected output: threshold is not exceeded, but the reconstructed entry is still replaced with its placeholder.
+		// Input and expected output: threshold is not exceeded, but the reconstructed entry is still replaced with its stored replacement.
 		// Edge case: the stored tool result is smaller than the active level threshold, so only branch-local projection state can make it projected.
 		// Dependencies: this test drives session_start and context handlers with an isolated config and in-memory branch fixtures.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2486,7 +2606,7 @@ describe("context-projection", () => {
 				messageEntry("03", storedToolResult, "02"),
 				projectionStateEntry(
 					"04",
-					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					[{ entryId: "03", replacementText: OMITTED_NOTICE }],
 					"03",
 				),
 			];
@@ -2507,7 +2627,7 @@ describe("context-projection", () => {
 					assistant,
 					{
 						...storedToolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
@@ -2596,13 +2716,15 @@ describe("context-projection", () => {
 			expect(result?.messages?.[2]).toBe(skillToolResult);
 			expect(result?.messages?.[4]).toEqual({
 				...nonSkillToolResult,
-				content: [{ type: "text", text: PLACEHOLDER }],
+				content: [{ type: "text", text: OMITTED_NOTICE }],
 			});
 			expect(pi.appendEntryCalls).toEqual([
 				{
 					customType: CUSTOM_TYPE,
 					data: {
-						projectedEntries: [{ entryId: "05", placeholder: PLACEHOLDER }],
+						projectedEntries: [
+							{ entryId: "05", replacementText: OMITTED_NOTICE },
+						],
 					},
 				},
 			]);
@@ -2726,7 +2848,7 @@ describe("context-projection", () => {
 				if (testCase.shouldProject) {
 					expect(result?.messages?.[2]).toEqual({
 						...toolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					});
 				} else {
 					expect(result, testCase.name).toBeUndefined();
@@ -2768,7 +2890,7 @@ describe("context-projection", () => {
 				messageEntry("03", skillToolResult, "02"),
 				projectionStateEntry(
 					"04",
-					[{ entryId: "03", placeholder: PLACEHOLDER }],
+					[{ entryId: "03", replacementText: OMITTED_NOTICE }],
 					"03",
 				),
 			];
@@ -2824,7 +2946,7 @@ describe("context-projection", () => {
 			expect(context.uiCalls).toEqual([
 				{
 					method: "setStatus",
-					args: ["context-projection", "<warning>~5</warning>"],
+					args: ["context-projection", "<warning>~1</warning>"],
 				},
 				{
 					method: "setStatus",
@@ -2913,7 +3035,7 @@ describe("context-projection", () => {
 					interveningUser,
 					{
 						...toolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
@@ -2952,7 +3074,7 @@ describe("context-projection", () => {
 					assistant,
 					{
 						...toolResult,
-						content: [{ type: "text", text: PLACEHOLDER }],
+						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
 			});
@@ -3017,15 +3139,15 @@ describe("context-projection", () => {
 			}
 			expect(result?.messages?.[2]).toEqual({
 				...firstToolResult,
-				content: [{ type: "text", text: PLACEHOLDER }],
+				content: [{ type: "text", text: OMITTED_NOTICE }],
 			});
 			expect(result?.messages?.[4]).toEqual({
 				...secondToolResult,
-				content: [{ type: "text", text: PLACEHOLDER }],
+				content: [{ type: "text", text: OMITTED_NOTICE }],
 			});
 			expect(result?.messages?.[6]).toEqual({
 				...thirdToolResult,
-				content: [{ type: "text", text: PLACEHOLDER }],
+				content: [{ type: "text", text: OMITTED_NOTICE }],
 			});
 			expect(result?.messages?.[8]).toBe(fourthToolResult);
 			expect(result?.messages?.[10]).toBe(fifthToolResult);
@@ -3079,7 +3201,7 @@ describe("context-projection", () => {
 
 			expect(result?.messages?.[2]).toEqual({
 				...firstToolResult,
-				content: [{ type: "text", text: PLACEHOLDER }],
+				content: [{ type: "text", text: OMITTED_NOTICE }],
 			});
 			expect(result?.messages?.[4]).toBe(secondToolResult);
 			expect(result?.messages?.[6]).toBe(thirdToolResult);
@@ -3124,7 +3246,7 @@ describe("context-projection", () => {
 
 			expect(result?.messages?.[2]).toEqual({
 				...oldToolResult,
-				content: [{ type: "text", text: PLACEHOLDER }],
+				content: [{ type: "text", text: OMITTED_NOTICE }],
 			});
 			expect(result?.messages?.[5]).toBe(recentToolResult);
 		});
@@ -3162,7 +3284,7 @@ describe("context-projection", () => {
 
 			expect(result?.messages?.[2]).toEqual({
 				...unattachedToolResult,
-				content: [{ type: "text", text: PLACEHOLDER }],
+				content: [{ type: "text", text: OMITTED_NOTICE }],
 			});
 			expect(result?.messages?.[4]).toBe(recentToolResult);
 		});
@@ -3267,7 +3389,7 @@ describe("context-projection", () => {
 				],
 			},
 			{
-				config: createValidConfig({ keepRecentTurns: 0, placeholder: "" }),
+				config: createValidConfig({ keepRecentTurns: 0, omittedNotice: "" }),
 				expectedUiCalls: [
 					{
 						method: "setStatus",
@@ -3276,7 +3398,16 @@ describe("context-projection", () => {
 				],
 			},
 			{
-				config: createValidConfig({ keepRecentTurns: 0, placeholder: "   " }),
+				config: createValidConfig({ keepRecentTurns: 0, omittedNotice: "   " }),
+				expectedUiCalls: [
+					{
+						method: "setStatus",
+						args: ["context-projection", "<error>CP!</error>"],
+					},
+				],
+			},
+			{
+				config: createValidConfig({ keepRecentTurns: 0, summaryNotice: "" }),
 				expectedUiCalls: [
 					{
 						method: "setStatus",

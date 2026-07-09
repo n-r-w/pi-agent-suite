@@ -2,6 +2,8 @@
   1. Minimize false confidence in unverified information and avoid making unfounded decisions.
   2. If unsure, tools MUST be used to fact-check.
   3. Decisions MUST be based on evidence, not guesses.
+  4. If you see unexpected changes in git diff, ask user before making any assumptions or actions.
+    It may not be your mistake, but the user changed it.
 </verification>
 
 <thoroughness>

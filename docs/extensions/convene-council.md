@@ -6,7 +6,7 @@
 
 Use it when a complex question needs two model participants to compare answers before returning a final answer.
 
-The models with the highest "thinking" level and reasoning capabilities are recommended for best results.
+The models with the highest "thinking" level and reasoning capabilities are recommended for best results. Each participant runs in an isolated child Pi session with a Pi-compatible UUIDv7 session ID.
 
 ## Configuration
 

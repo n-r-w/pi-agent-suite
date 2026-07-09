@@ -32,6 +32,26 @@ If the file is missing, the extension is enabled with default settings.
 
 The config object accepts only these keys: `enabled`, `maxDepth`, `widgetLineBudget`, and `descriptionPromptFile`.
 
+## Child session logs
+
+Each `run_subagent` call starts child `pi` with a saved JSONL session.
+
+Child sessions are stored outside the normal project session list:
+
+```text
+~/.pi/agent/agent-suite/run-subagent/sessions/
+```
+
+If `PI_AGENT_SUITE_DIR` is set, the same `run-subagent/sessions/` path is created under that suite directory.
+
+The tool result `details` includes:
+
+| Field | Meaning |
+| --- | --- |
+| `childSessionId` | Pi-compatible UUIDv7 assigned to the child session. |
+| `childSessionDir` | Directory passed to child `pi` through `--session-dir`. |
+| `childSessionPath` | JSONL session file path when the file is found after child exit. |
+
 ## Tool input
 
 When the tool is available, a model calls `run_subagent` with:

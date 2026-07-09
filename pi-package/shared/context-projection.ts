@@ -9,6 +9,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
+import {
+	parseToolResultSummaryConfig,
+	type ToolResultSummaryConfig,
+} from "./tool-result-summary";
 
 /** Suite directory owned by context-projection. */
 const CONTEXT_PROJECTION_EXTENSION_DIR = "context-projection";
@@ -49,35 +53,17 @@ const MIN_TOOL_RESULT_TOKENS_L3_CONFIG_KEY = "minToolResultTokensL3";
 /** Config key for tool names whose successful text results must stay visible. */
 const PROJECTION_IGNORED_TOOLS_CONFIG_KEY = "projectionIgnoredTools";
 
-/** Config key for the exact replacement text used in projected tool results. */
-const PLACEHOLDER_CONFIG_KEY = "placeholder";
+/** Removed config key that now fails fast with migration guidance. */
+const REMOVED_PLACEHOLDER_CONFIG_KEY = "placeholder";
+
+/** Config key for the text used when a projected tool result has no summary. */
+const OMITTED_NOTICE_CONFIG_KEY = "omittedNotice";
+
+/** Config key for the notice used when a projected tool result includes a summary. */
+const SUMMARY_NOTICE_CONFIG_KEY = "summaryNotice";
 
 /** Config key for optional summaries generated before projecting tool results. */
 const SUMMARY_CONFIG_KEY = "summary";
-
-/** Config key that enables summary generation. */
-const SUMMARY_ENABLED_CONFIG_KEY = "enabled";
-
-/** Config key for the model used by summary generation. */
-const SUMMARY_MODEL_CONFIG_KEY = "model";
-
-/** Config key for the thinking level used by summary generation. */
-const SUMMARY_THINKING_CONFIG_KEY = "thinking";
-
-/** Config key for the maximum number of concurrent summary requests. */
-const SUMMARY_MAX_CONCURRENCY_CONFIG_KEY = "maxConcurrency";
-
-/** Config key for retry attempts after the first summary request fails. */
-const SUMMARY_RETRY_COUNT_CONFIG_KEY = "retryCount";
-
-/** Config key for the pause between summary retry attempts in milliseconds. */
-const SUMMARY_RETRY_DELAY_MS_CONFIG_KEY = "retryDelayMs";
-
-/** Config key for the custom summary system prompt path. */
-const SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY = "systemPromptFile";
-
-/** Config key for the custom summary user prompt path. */
-const SUMMARY_USER_PROMPT_FILE_CONFIG_KEY = "userPromptFile";
 
 /** Advisor and council outputs must stay visible because they carry decision-critical guidance. */
 const CONSULT_ADVISOR_TOOL_NAME = "consult_advisor";
@@ -113,18 +99,13 @@ const DEFAULT_MIN_TOOL_RESULT_TOKENS_L2 = 2_000;
 /** Default third-level minimum token count for projecting a tool result. */
 const DEFAULT_MIN_TOOL_RESULT_TOKENS_L3 = 1_000;
 
-/** Default replacement text for projected old tool results. */
-const DEFAULT_PLACEHOLDER =
-	"Result omitted. Run tool again if you want to see it";
+/** Default notice for projected tool results that have no summary. */
+const DEFAULT_OMITTED_NOTICE =
+	"Result omitted. Run tool again for full result.";
 
-/** Default summary request concurrency. */
-const DEFAULT_SUMMARY_MAX_CONCURRENCY = 1;
-
-/** Default retry attempts after the first failed summary request. */
-const DEFAULT_SUMMARY_RETRY_COUNT = 1;
-
-/** Default pause between summary retry attempts. */
-const DEFAULT_SUMMARY_RETRY_DELAY_MS = 5_000;
+/** Default notice for projected tool results that include a summary. */
+const DEFAULT_SUMMARY_NOTICE =
+	"Full result omitted. Summary below. Run tool again for full result.";
 
 /** Factor used to render token usage as a percentage of the context window. */
 const PERCENT_FACTOR = 100;
@@ -133,27 +114,9 @@ const PERCENT_FACTOR = 100;
 const PROJECTION_LEVEL_ORDER_ERROR =
 	"projectionRemainingTokensL1 must be greater than or equal to projectionRemainingTokensL2, and projectionRemainingTokensL2 must be greater than or equal to projectionRemainingTokensL3";
 
-/** Thinking values accepted by context projection summary configuration. */
-const SUMMARY_THINKING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const;
-
-/** Config keys accepted by the summary config object. */
-const CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS = [
-	SUMMARY_ENABLED_CONFIG_KEY,
-	SUMMARY_MODEL_CONFIG_KEY,
-	SUMMARY_THINKING_CONFIG_KEY,
-	SUMMARY_MAX_CONCURRENCY_CONFIG_KEY,
-	SUMMARY_RETRY_COUNT_CONFIG_KEY,
-	SUMMARY_RETRY_DELAY_MS_CONFIG_KEY,
-	SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY,
-	SUMMARY_USER_PROMPT_FILE_CONFIG_KEY,
-] as const;
+/** Fatal issue reported when the removed placeholder config key is still present. */
+const REMOVED_PLACEHOLDER_CONFIG_ERROR =
+	"unsupported config key: placeholder. Use omittedNotice and summaryNotice.";
 
 /** Config keys accepted by the context projection config object. */
 const CONTEXT_PROJECTION_CONFIG_KEYS = [
@@ -167,7 +130,8 @@ const CONTEXT_PROJECTION_CONFIG_KEYS = [
 	KEEP_RECENT_TURNS_CONFIG_KEY,
 	KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY,
 	PROJECTION_IGNORED_TOOLS_CONFIG_KEY,
-	PLACEHOLDER_CONFIG_KEY,
+	OMITTED_NOTICE_CONFIG_KEY,
+	SUMMARY_NOTICE_CONFIG_KEY,
 	SUMMARY_CONFIG_KEY,
 ] as const;
 
@@ -183,8 +147,7 @@ export type ContextProjectionConfigResult =
 			readonly fatal?: boolean;
 	  };
 
-type ContextProjectionSummaryThinking =
-	(typeof SUMMARY_THINKING_VALUES)[number];
+export type ContextProjectionSummaryConfig = ToolResultSummaryConfig;
 
 export interface ProjectionLevel {
 	readonly label: "L1" | "L2" | "L3";
@@ -198,40 +161,20 @@ type ProjectionLevelTuple = readonly [
 	ProjectionLevel,
 ];
 
-interface EnabledSummaryConfigValues {
-	readonly maxConcurrency: number;
-	readonly retryCount: number;
-	readonly retryDelayMs: number;
-	readonly model?: string;
-	readonly thinking?: ContextProjectionSummaryThinking;
-	readonly systemPromptFile?: string;
-	readonly userPromptFile?: string;
-}
-
-export interface ContextProjectionSummaryConfig {
-	readonly enabled: boolean;
-	readonly model?: string;
-	readonly thinking?: ContextProjectionSummaryThinking;
-	readonly maxConcurrency: number;
-	readonly retryCount: number;
-	readonly retryDelayMs: number;
-	readonly systemPromptFile?: string;
-	readonly userPromptFile?: string;
-}
-
 export interface ContextProjectionConfig {
 	readonly enabled: true;
 	readonly projectionLevels: ProjectionLevelTuple;
 	readonly keepRecentTurns: number;
 	readonly keepRecentTurnsPercent: number;
 	readonly projectionIgnoredTools: readonly string[];
-	readonly placeholder: string;
+	readonly omittedNotice: string;
+	readonly summaryNotice: string;
 	readonly summary: ContextProjectionSummaryConfig;
 }
 
 export interface ProjectedEntryState {
 	readonly entryId: string;
-	readonly placeholder: string;
+	readonly replacementText: string;
 }
 
 interface ContextProjectionStateEntryData {
@@ -253,7 +196,7 @@ export interface ProjectionDecision {
 
 interface ProjectContextMessagesOptions {
 	readonly mappedContext: readonly MappedContextEntry[];
-	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
 	readonly replacementTextByEntryId?: ReadonlyMap<string, string>;
 	readonly config: ContextProjectionConfig;
 	readonly loadedSkillRoots: readonly string[];
@@ -264,7 +207,7 @@ interface ProjectContextMessagesOptions {
 interface ProjectionSavingsEstimateOptions {
 	readonly branchEntries: readonly SessionEntry[];
 	readonly cwd: string;
-	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
 	readonly config: ContextProjectionConfig;
 	readonly loadedSkillRoots?: readonly string[];
 }
@@ -283,7 +226,7 @@ interface ProjectMappedContextEntryOptions {
 	readonly readPathsByToolCallId: ReadonlyMap<string, string>;
 	readonly loadedSkillRoots: readonly string[];
 	readonly ignoredTools: ReadonlySet<string>;
-	readonly projectedPlaceholdersByEntryId: ReadonlyMap<string, string>;
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
 	readonly replacementTextByEntryId: ReadonlyMap<string, string> | undefined;
 	readonly config: ContextProjectionConfig;
 	readonly activeProjectionLevel: ProjectionLevel | undefined;
@@ -305,7 +248,7 @@ export interface ContextProjectionReplayOptions {
 	readonly loadedSkillRoots?: readonly string[];
 }
 
-const runtimeProjectedPlaceholdersByScope = new Map<
+const runtimeProjectedReplacementsByScope = new Map<
 	string,
 	Map<string, string>
 >();
@@ -465,9 +408,9 @@ export function estimatePendingProjectionSavings({
 	config,
 	loadedSkillRoots = [],
 }: PendingProjectionSavingsEstimateOptions): PendingProjectionSavingsEstimate {
-	const pendingPlaceholders =
-		collectPendingProjectedPlaceholders(branchEntries);
-	if (pendingPlaceholders.size === 0) {
+	const pendingReplacements =
+		collectPendingProjectedReplacements(branchEntries);
+	if (pendingReplacements.size === 0) {
 		return { savedTokens: 0, entryIds: [] };
 	}
 
@@ -475,11 +418,11 @@ export function estimatePendingProjectionSavings({
 		savedTokens: estimateProjectedSavedTokens({
 			branchEntries,
 			cwd,
-			projectedPlaceholdersByEntryId: pendingPlaceholders,
+			projectedReplacementsByEntryId: pendingReplacements,
 			config,
 			loadedSkillRoots,
 		}),
-		entryIds: [...pendingPlaceholders.keys()],
+		entryIds: [...pendingReplacements.keys()],
 	};
 }
 
@@ -526,6 +469,13 @@ function parseContextProjectionConfig(
 				key as (typeof CONTEXT_PROJECTION_CONFIG_KEYS)[number],
 			),
 	);
+	if (unsupportedKey === REMOVED_PLACEHOLDER_CONFIG_KEY) {
+		return {
+			kind: "invalid",
+			issue: REMOVED_PLACEHOLDER_CONFIG_ERROR,
+			fatal: true,
+		};
+	}
 	if (unsupportedKey !== undefined) {
 		return { kind: "invalid" };
 	}
@@ -550,7 +500,10 @@ function parseContextProjectionConfig(
 		DEFAULT_KEEP_RECENT_TURNS_PERCENT;
 	const projectionIgnoredTools =
 		config[PROJECTION_IGNORED_TOOLS_CONFIG_KEY] ?? [];
-	const placeholder = config[PLACEHOLDER_CONFIG_KEY] ?? DEFAULT_PLACEHOLDER;
+	const omittedNotice =
+		config[OMITTED_NOTICE_CONFIG_KEY] ?? DEFAULT_OMITTED_NOTICE;
+	const summaryNotice =
+		config[SUMMARY_NOTICE_CONFIG_KEY] ?? DEFAULT_SUMMARY_NOTICE;
 	const summary = parseContextProjectionSummaryConfig(
 		config[SUMMARY_CONFIG_KEY],
 	);
@@ -558,7 +511,8 @@ function parseContextProjectionConfig(
 		!isNonNegativeInteger(keepRecentTurns) ||
 		!isPercentNumber(keepRecentTurnsPercent) ||
 		!isUniqueNonEmptyStringArray(projectionIgnoredTools) ||
-		!isNonEmptyString(placeholder) ||
+		!isNonEmptyString(omittedNotice) ||
+		!isNonEmptyString(summaryNotice) ||
 		summary === undefined
 	) {
 		return { kind: "invalid" };
@@ -572,7 +526,8 @@ function parseContextProjectionConfig(
 			keepRecentTurns,
 			keepRecentTurnsPercent,
 			projectionIgnoredTools,
-			placeholder,
+			omittedNotice,
+			summaryNotice,
 			summary,
 		},
 	};
@@ -684,116 +639,7 @@ function normalizeProjectionLevelThreshold(
 function parseContextProjectionSummaryConfig(
 	config: unknown,
 ): ContextProjectionSummaryConfig | undefined {
-	if (config === undefined) {
-		return createDisabledSummaryConfig();
-	}
-	if (!isRecord(config)) {
-		return undefined;
-	}
-
-	const unsupportedKey = Object.keys(config).find(
-		(key) =>
-			!CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS.includes(
-				key as (typeof CONTEXT_PROJECTION_SUMMARY_CONFIG_KEYS)[number],
-			),
-	);
-	if (unsupportedKey !== undefined) {
-		return undefined;
-	}
-
-	const enabled = config[SUMMARY_ENABLED_CONFIG_KEY];
-	if (enabled !== undefined && typeof enabled !== "boolean") {
-		return undefined;
-	}
-	if (enabled !== true) {
-		return createDisabledSummaryConfig();
-	}
-
-	const model = config[SUMMARY_MODEL_CONFIG_KEY];
-	const thinking = config[SUMMARY_THINKING_CONFIG_KEY];
-	const maxConcurrency =
-		config[SUMMARY_MAX_CONCURRENCY_CONFIG_KEY] ??
-		DEFAULT_SUMMARY_MAX_CONCURRENCY;
-	const retryCount =
-		config[SUMMARY_RETRY_COUNT_CONFIG_KEY] ?? DEFAULT_SUMMARY_RETRY_COUNT;
-	const retryDelayMs =
-		config[SUMMARY_RETRY_DELAY_MS_CONFIG_KEY] ?? DEFAULT_SUMMARY_RETRY_DELAY_MS;
-	const systemPromptFile = config[SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY];
-	const userPromptFile = config[SUMMARY_USER_PROMPT_FILE_CONFIG_KEY];
-	const values = parseEnabledSummaryConfigValues({
-		model,
-		thinking,
-		maxConcurrency,
-		retryCount,
-		retryDelayMs,
-		systemPromptFile,
-		userPromptFile,
-	});
-	if (values === undefined) {
-		return undefined;
-	}
-
-	return {
-		enabled: true,
-		...values,
-	};
-}
-
-/** Parses enabled summary fields after defaults are applied. */
-function parseEnabledSummaryConfigValues({
-	model,
-	thinking,
-	maxConcurrency,
-	retryCount,
-	retryDelayMs,
-	systemPromptFile,
-	userPromptFile,
-}: {
-	readonly model: unknown;
-	readonly thinking: unknown;
-	readonly maxConcurrency: unknown;
-	readonly retryCount: unknown;
-	readonly retryDelayMs: unknown;
-	readonly systemPromptFile: unknown;
-	readonly userPromptFile: unknown;
-}): EnabledSummaryConfigValues | undefined {
-	if (
-		!isOptionalModelId(model) ||
-		!isOptionalSummaryThinking(thinking) ||
-		!isPositiveInteger(maxConcurrency) ||
-		!isNonNegativeInteger(retryCount) ||
-		!isNonNegativeInteger(retryDelayMs) ||
-		!isOptionalNonEmptyString(systemPromptFile) ||
-		!isOptionalNonEmptyString(userPromptFile)
-	) {
-		return undefined;
-	}
-	if (typeof systemPromptFile === "string" && !isAbsolute(systemPromptFile)) {
-		throw new Error("summary.systemPromptFile must be an absolute path");
-	}
-	if (typeof userPromptFile === "string" && !isAbsolute(userPromptFile)) {
-		throw new Error("summary.userPromptFile must be an absolute path");
-	}
-
-	return {
-		maxConcurrency,
-		retryCount,
-		retryDelayMs,
-		...(typeof model === "string" ? { model } : {}),
-		...(isSummaryThinking(thinking) ? { thinking } : {}),
-		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
-		...(typeof userPromptFile === "string" ? { userPromptFile } : {}),
-	};
-}
-
-/** Builds the default disabled summary config. */
-function createDisabledSummaryConfig(): ContextProjectionSummaryConfig {
-	return {
-		enabled: false,
-		maxConcurrency: DEFAULT_SUMMARY_MAX_CONCURRENCY,
-		retryCount: DEFAULT_SUMMARY_RETRY_COUNT,
-		retryDelayMs: DEFAULT_SUMMARY_RETRY_DELAY_MS,
-	};
+	return parseToolResultSummaryConfig(config, { defaultEnabled: false });
 }
 
 /** Returns branch context with persisted projection state applied when projection is active. */
@@ -809,17 +655,17 @@ export async function replayContextProjection({
 		return originalMessages;
 	}
 
-	const projectedPlaceholdersByEntryId = mergeProjectedPlaceholders(
-		collectProjectedPlaceholders(branchEntries),
-		getRuntimeProjectedPlaceholders(cwd),
+	const projectedReplacementsByEntryId = mergeProjectedReplacements(
+		collectProjectedReplacements(branchEntries),
+		getRuntimeProjectedReplacements(cwd),
 	);
-	if (projectedPlaceholdersByEntryId.size === 0) {
+	if (projectedReplacementsByEntryId.size === 0) {
 		return originalMessages;
 	}
 
 	const decision = projectContextMessages({
 		mappedContext,
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		config: config.config,
 		loadedSkillRoots,
 		cwd,
@@ -829,14 +675,14 @@ export async function replayContextProjection({
 }
 
 /** Collects projected entries from extension-owned custom entries on the active branch only. */
-export function collectProjectedPlaceholders(
+export function collectProjectedReplacements(
 	branchEntries: readonly SessionEntry[],
 ): Map<string, string> {
-	return collectProjectedPlaceholdersFromEntries(branchEntries);
+	return collectProjectedReplacementsFromEntries(branchEntries);
 }
 
 /** Collects projection state appended after the latest valid provider usage. */
-function collectPendingProjectedPlaceholders(
+function collectPendingProjectedReplacements(
 	branchEntries: readonly SessionEntry[],
 ): Map<string, string> {
 	const latestValidUsageIndex = findLastEntryIndex(
@@ -845,16 +691,16 @@ function collectPendingProjectedPlaceholders(
 			entry.type === "message" && hasValidAssistantContextUsage(entry.message),
 	);
 
-	return collectProjectedPlaceholdersFromEntries(
+	return collectProjectedReplacementsFromEntries(
 		branchEntries.slice(latestValidUsageIndex + 1),
 	);
 }
 
-/** Collects projection placeholders from extension-owned custom state entries. */
-function collectProjectedPlaceholdersFromEntries(
+/** Collects projection replacement text from extension-owned custom state entries. */
+function collectProjectedReplacementsFromEntries(
 	entries: readonly SessionEntry[],
 ): Map<string, string> {
-	const projectedPlaceholdersByEntryId = new Map<string, string>();
+	const projectedReplacementsByEntryId = new Map<string, string>();
 	for (const entry of entries) {
 		if (
 			entry.type !== "custom" ||
@@ -865,14 +711,14 @@ function collectProjectedPlaceholdersFromEntries(
 		}
 
 		for (const projectedEntry of entry.data.projectedEntries) {
-			projectedPlaceholdersByEntryId.set(
+			projectedReplacementsByEntryId.set(
 				projectedEntry.entryId,
-				projectedEntry.placeholder,
+				projectedEntry.replacementText,
 			);
 		}
 	}
 
-	return projectedPlaceholdersByEntryId;
+	return projectedReplacementsByEntryId;
 }
 
 /** Returns true when an assistant message contains provider usage that reflects its request. */
@@ -899,13 +745,13 @@ function estimateAssistantUsageTokens(
 }
 
 /** Publishes active in-memory projection state for other extension entry points in the same process. */
-export function publishRuntimeProjectedPlaceholders(
+export function publishRuntimeProjectedReplacements(
 	cwd: string,
-	projectedPlaceholdersByEntryId: ReadonlyMap<string, string>,
+	projectedReplacementsByEntryId: ReadonlyMap<string, string>,
 ): void {
-	runtimeProjectedPlaceholdersByScope.set(
+	runtimeProjectedReplacementsByScope.set(
 		getRuntimeProjectionScope(cwd),
-		new Map(projectedPlaceholdersByEntryId),
+		new Map(projectedReplacementsByEntryId),
 	);
 }
 
@@ -913,17 +759,17 @@ export function publishRuntimeProjectedPlaceholders(
 export function estimateProjectedSavedTokens({
 	branchEntries,
 	cwd,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	config,
 	loadedSkillRoots = [],
 }: ProjectionSavingsEstimateOptions): number {
-	if (projectedPlaceholdersByEntryId.size === 0) {
+	if (projectedReplacementsByEntryId.size === 0) {
 		return 0;
 	}
 
 	const decision = projectContextMessages({
 		mappedContext: buildContextEntryMapping(branchEntries),
-		projectedPlaceholdersByEntryId,
+		projectedReplacementsByEntryId,
 		config,
 		loadedSkillRoots,
 		cwd,
@@ -1027,7 +873,7 @@ function buildContextEntryMapping(
 /** Returns projected provider-context messages and newly persisted projection state. */
 export function projectContextMessages({
 	mappedContext,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	replacementTextByEntryId,
 	config,
 	loadedSkillRoots,
@@ -1052,7 +898,7 @@ export function projectContextMessages({
 			readPathsByToolCallId,
 			loadedSkillRoots,
 			ignoredTools,
-			projectedPlaceholdersByEntryId,
+			projectedReplacementsByEntryId,
 			replacementTextByEntryId,
 			config,
 			activeProjectionLevel,
@@ -1088,7 +934,7 @@ function projectMappedContextEntry({
 	readPathsByToolCallId,
 	loadedSkillRoots,
 	ignoredTools,
-	projectedPlaceholdersByEntryId,
+	projectedReplacementsByEntryId,
 	replacementTextByEntryId,
 	config,
 	activeProjectionLevel,
@@ -1107,7 +953,7 @@ function projectMappedContextEntry({
 		return { kind: "unchanged", message };
 	}
 
-	const alreadyProjected = projectedPlaceholdersByEntryId.has(entry.id);
+	const alreadyProjected = projectedReplacementsByEntryId.has(entry.id);
 	const newlyEligible =
 		activeProjectionLevel !== undefined &&
 		!protectedEntryIds.has(entry.id) &&
@@ -1117,21 +963,21 @@ function projectMappedContextEntry({
 		return { kind: "unchanged", message };
 	}
 
-	const placeholder = alreadyProjected
-		? (projectedPlaceholdersByEntryId.get(entry.id) ?? config.placeholder)
-		: (replacementTextByEntryId?.get(entry.id) ?? config.placeholder);
+	const replacementText = alreadyProjected
+		? (projectedReplacementsByEntryId.get(entry.id) ?? config.omittedNotice)
+		: (replacementTextByEntryId?.get(entry.id) ?? config.omittedNotice);
 	return {
 		kind: "projected",
 		message: {
 			...message,
-			content: [{ type: "text" as const, text: placeholder }],
+			content: [{ type: "text" as const, text: replacementText }],
 		},
 		projectedEntry: alreadyProjected
 			? undefined
-			: { entryId: entry.id, placeholder },
+			: { entryId: entry.id, replacementText },
 		savedTokens: calculateProjectedTokenSavings(
 			getTextToolResultText(message),
-			placeholder,
+			replacementText,
 		),
 	};
 }
@@ -1420,12 +1266,12 @@ function isProjectionStateEntryData(
 	);
 }
 
-/** Returns true when a custom-entry item identifies one projected entry and its stable placeholder. */
+/** Returns true when a custom-entry item identifies one projected entry and its stable replacement text. */
 function isProjectedEntryState(value: unknown): value is ProjectedEntryState {
 	return (
 		isRecord(value) &&
 		isNonEmptyString(value["entryId"]) &&
-		isNonEmptyString(value["placeholder"])
+		isNonEmptyString(value["replacementText"])
 	);
 }
 
@@ -1449,11 +1295,6 @@ function isNonNegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-/** Returns true when the value is a positive integer. */
-function isPositiveInteger(value: unknown): value is number {
-	return typeof value === "number" && Number.isInteger(value) && value >= 1;
-}
-
 /** Returns true when the value is a ratio from zero to one. */
 function isPercentNumber(value: unknown): value is number {
 	return typeof value === "number" && value >= 0 && value <= 1;
@@ -1462,43 +1303,6 @@ function isPercentNumber(value: unknown): value is number {
 /** Returns true when a value is a non-empty string after whitespace is ignored. */
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.trim() !== "";
-}
-
-/** Returns true when an optional string field is absent, null, or non-empty. */
-function isOptionalNonEmptyString(
-	value: unknown,
-): value is string | null | undefined {
-	return value === undefined || value === null || isNonEmptyString(value);
-}
-
-/** Returns true when an optional model ID is absent, null, or provider/model. */
-function isOptionalModelId(value: unknown): value is string | null | undefined {
-	if (value === undefined || value === null) {
-		return true;
-	}
-	if (typeof value !== "string") {
-		return false;
-	}
-
-	const separatorIndex = value.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < value.length - 1;
-}
-
-/** Returns true when an optional thinking field is absent, null, or supported. */
-function isOptionalSummaryThinking(
-	value: unknown,
-): value is ContextProjectionSummaryThinking | null | undefined {
-	return value === undefined || value === null || isSummaryThinking(value);
-}
-
-/** Returns true when a value is a supported summary thinking level. */
-function isSummaryThinking(
-	value: unknown,
-): value is ContextProjectionSummaryThinking {
-	return (
-		typeof value === "string" &&
-		(SUMMARY_THINKING_VALUES as readonly string[]).includes(value)
-	);
 }
 
 /** Returns true when a value is a duplicate-free list of non-empty tool names. */
@@ -1533,11 +1337,11 @@ function getProjectionIgnoredTools(
 	]);
 }
 
-function getRuntimeProjectedPlaceholders(
+function getRuntimeProjectedReplacements(
 	cwd: string,
 ): ReadonlyMap<string, string> {
 	return (
-		runtimeProjectedPlaceholdersByScope.get(getRuntimeProjectionScope(cwd)) ??
+		runtimeProjectedReplacementsByScope.get(getRuntimeProjectionScope(cwd)) ??
 		new Map()
 	);
 }
@@ -1550,11 +1354,11 @@ function getRuntimePendingProjectionScope(sessionId: string): string {
 	return `${getAgentDir()}\0${sessionId}`;
 }
 
-function mergeProjectedPlaceholders(
-	persistedPlaceholders: ReadonlyMap<string, string>,
-	runtimePlaceholders: ReadonlyMap<string, string>,
+function mergeProjectedReplacements(
+	persistedReplacements: ReadonlyMap<string, string>,
+	runtimeReplacements: ReadonlyMap<string, string>,
 ): Map<string, string> {
-	return new Map([...persistedPlaceholders, ...runtimePlaceholders]);
+	return new Map([...persistedReplacements, ...runtimeReplacements]);
 }
 
 /** Returns true when a runtime value is a non-array object. */
@@ -1562,14 +1366,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Returns the token count removed after the original content is replaced by placeholder text. */
+/** Returns the token count removed after the original content is replaced by projection text. */
 function calculateProjectedTokenSavings(
 	originalText: string,
-	placeholder: string,
+	replacementText: string,
 ): number {
 	return Math.max(
 		0,
 		countProjectionTextTokens(originalText) -
-			countProjectionTextTokens(placeholder),
+			countProjectionTextTokens(replacementText),
 	);
 }

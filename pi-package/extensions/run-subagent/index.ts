@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -20,7 +21,11 @@ import {
 	type MainAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
-import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
+import {
+	getSuiteExtensionDir,
+	readExtensionConfigFile,
+} from "../../shared/agent-suite-storage";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	type ChildRpcPromptCompletion,
 	type ChildRpcRuntimeFacts,
@@ -102,7 +107,6 @@ const PROMPT_COMMAND_ID = "run-subagent-prompt";
 const ABORT_COMMAND_ID = "run-subagent-abort";
 /** Valid canonical non-negative integer format for child nesting depth. */
 const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
-
 const RunSubagentParameters = Type.Object({
 	agentId: Type.String({ description: "Callable agent ID to run" }),
 	prompt: Type.String({ description: "Task prompt for the selected subagent" }),
@@ -544,6 +548,8 @@ function createRunSubagentProgress(
 	) => SubagentRunDetails;
 } {
 	let lastWidgetUpdateAt = 0;
+	const childSessionDir = resolveChildSessionDir();
+	const childSessionId = createAuxiliaryLlmSessionId();
 	const state = createSubagentProgressState({
 		agentId: plan.agent.id,
 		depth: plan.depth + 1,
@@ -554,6 +560,8 @@ function createRunSubagentProgress(
 			options.ctx,
 		),
 		runId: options.toolCallId,
+		childSessionId,
+		childSessionDir,
 	});
 
 	return {
@@ -649,6 +657,10 @@ async function runResolvedChildPi(
 			modelId: plan.modelId,
 			thinking: plan.thinking,
 			toolPolicy: plan.childTools,
+			childSessionDir:
+				progress.state.childSessionDir ?? resolveChildSessionDir(),
+			childSessionId:
+				progress.state.childSessionId ?? createAuxiliaryLlmSessionId(),
 		}),
 		cwd: options.ctx.cwd,
 		env,
@@ -676,6 +688,11 @@ async function finishRunSubagentExecution(
 	run: ChildRunResult,
 	progress: ReturnType<typeof createRunSubagentProgress>,
 ): Promise<AgentToolResult<unknown>> {
+	progress.state.childSessionPath = await findChildSessionPath(
+		progress.state.childSessionDir,
+		progress.state.childSessionId,
+	);
+
 	if (run.stderrText.length > 0) {
 		appendSubagentStderr(progress.state, run.stderrText);
 	}
@@ -954,15 +971,48 @@ function resolveChildToolPolicy(
 }
 
 /** Builds the child pi command-line arguments. */
+/** Resolves the suite-owned directory for child subagent session logs. */
+function resolveChildSessionDir(): string {
+	return join(getSuiteExtensionDir(RUN_SUBAGENT_EXTENSION_DIR), "sessions");
+}
+
+/** Finds the JSONL session file created by Pi for the assigned child session ID. */
+async function findChildSessionPath(
+	childSessionDir: string | undefined,
+	childSessionId: string | undefined,
+): Promise<string | undefined> {
+	if (childSessionDir === undefined || childSessionId === undefined) {
+		return undefined;
+	}
+
+	try {
+		const files = await readdir(childSessionDir);
+		const sessionFile = files
+			.filter((file) => file.endsWith(`_${childSessionId}.jsonl`))
+			.sort()
+			.at(-1);
+		return sessionFile === undefined
+			? undefined
+			: join(childSessionDir, sessionFile);
+	} catch {
+		return undefined;
+	}
+}
+
 function buildChildArgs(options: {
 	readonly modelId: string;
 	readonly thinking: string;
 	readonly toolPolicy: ChildToolPolicy;
+	readonly childSessionDir: string;
+	readonly childSessionId: string;
 }): string[] {
 	return [
 		"--mode",
 		"rpc",
-		"--no-session",
+		"--session-dir",
+		options.childSessionDir,
+		"--session-id",
+		options.childSessionId,
 		"--model",
 		options.modelId,
 		"--thinking",

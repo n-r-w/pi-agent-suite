@@ -31,6 +31,9 @@ import {
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+/** Matches Pi-compatible UUIDv7 provider session identifiers. */
+const AUXILIARY_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SUBAGENT_ENV_KEYS = [
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_AGENT_ID_ENV,
@@ -479,7 +482,7 @@ function createToolCallMessage(
 function createProjectionStateEntry(
 	id: string,
 	projectedEntryId: string,
-	placeholder: string,
+	replacementText: string,
 	parentId: string | null,
 ): SessionEntry {
 	return {
@@ -488,7 +491,9 @@ function createProjectionStateEntry(
 		parentId,
 		timestamp: "t",
 		customType: "context-projection",
-		data: { projectedEntries: [{ entryId: projectedEntryId, placeholder }] },
+		data: {
+			projectedEntries: [{ entryId: projectedEntryId, replacementText }],
+		},
 	} as SessionEntry;
 }
 
@@ -1000,8 +1005,8 @@ describe("consult-advisor", () => {
 	});
 
 	test("calls advisor model with prompt, sanitized transcript, tools disabled, and debug payload", async () => {
-		// Purpose: valid config must call completeSimple with advisor prompt, transcript, and tools: [].
-		// Input and expected output: pending consult_advisor tool call and result are removed from advisor context.
+		// Purpose: valid config must call completeSimple with an isolated session, advisor prompt, transcript, and no tools.
+		// Input and expected output: the request has a Pi-compatible UUIDv7 and excludes the pending advisor call.
 		// Edge case: debug payload path is resolved relative to consult-advisor.json directory.
 		// Dependencies: temp config, temp prompt, fake model registry, fake completion function, fake session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1087,6 +1092,12 @@ describe("consult-advisor", () => {
 				apiKey: "advisor-api-key",
 				headers: { "x-advisor": "enabled" },
 			});
+			expect(completion.calls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
+			expect(completion.calls[0]?.options?.sessionId).not.toBe(
+				"consult-advisor-test-session",
+			);
 			expect(completion.calls[0]?.context.systemPrompt).toBe("Advisor prompt");
 			expect(completion.calls[0]?.context.tools).toEqual([]);
 			const advisorMessages = JSON.stringify(
@@ -1105,9 +1116,9 @@ describe("consult-advisor", () => {
 	});
 
 	test("retries retryable advisor provider failures before returning the answer", async () => {
-		// Purpose: consult_advisor must own retries for transient provider failures that happen inside tool execution.
-		// Input and expected output: first provider call throws a network error, second call returns visible advisor text.
-		// Edge case: zero retry delay keeps the test deterministic and proves retryCount controls provider calls.
+		// Purpose: consult_advisor must retry transient provider failures inside one isolated provider session.
+		// Input and expected output: first provider call throws, second returns advisor text, and both use one session ID.
+		// Edge case: zero retry delay keeps the test deterministic while preserving request identity across retries.
 		// Dependencies: temp config, fake model registry, and fake completeSimple sequence.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
@@ -1131,6 +1142,11 @@ describe("consult-advisor", () => {
 				content: [{ type: "text", text: "advisor answer after retry" }],
 			});
 			expect(completion.calls).toHaveLength(2);
+			const retrySessionIds = completion.calls.map(
+				(call) => call.options?.sessionId,
+			);
+			expect(retrySessionIds[0]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(retrySessionIds[1]).toBe(retrySessionIds[0]);
 		});
 	});
 
@@ -1252,12 +1268,12 @@ describe("consult-advisor", () => {
 
 	test("replays persisted context projection state before calling the advisor", async () => {
 		// Purpose: advisor input must match the projected task state when context-projection has recorded omitted tool results.
-		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded placeholder.
+		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded replacement text.
 		// Edge case: the current pending consult_advisor call is still removed after projection replay.
 		// Dependencies: temp context-projection config, fake model registry, fake completion function, and fake session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const placeholder = "[projected old output]";
+			const replacementText = "[projected old output]";
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1290,7 +1306,7 @@ describe("consult-advisor", () => {
 						timestamp: 3,
 					},
 				},
-				createProjectionStateEntry("4", "3", placeholder, "3"),
+				createProjectionStateEntry("4", "3", replacementText, "3"),
 				{
 					type: "message",
 					id: "5",
@@ -1312,7 +1328,7 @@ describe("consult-advisor", () => {
 			const advisorMessages = JSON.stringify(
 				completion.calls[0]?.context.messages,
 			);
-			expect(advisorMessages).toContain(placeholder);
+			expect(advisorMessages).toContain(replacementText);
 			expect(advisorMessages).not.toContain("old full tool output");
 			expect(advisorMessages).not.toContain("current question");
 			expect(advisorMessages).not.toContain("call-1");
@@ -1326,7 +1342,7 @@ describe("consult-advisor", () => {
 		// Dependencies: context-projection and consult-advisor factories, fake completion function, and in-memory session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const placeholder = "[projected shared output]";
+			const replacementText = "[projected shared output]";
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1359,7 +1375,7 @@ describe("consult-advisor", () => {
 						timestamp: 3,
 					},
 				},
-				createProjectionStateEntry("4", "3", placeholder, "3"),
+				createProjectionStateEntry("4", "3", replacementText, "3"),
 			] satisfies SessionEntry[];
 			const ctx = createContext([model], branchEntries);
 			contextProjection(pi);
@@ -1393,7 +1409,7 @@ describe("consult-advisor", () => {
 			const advisorProjectedToolResult = JSON.stringify(
 				completion.calls[0]?.context.messages[2],
 			);
-			expect(mainProjectedToolResult).toContain(placeholder);
+			expect(mainProjectedToolResult).toContain(replacementText);
 			expect(advisorProjectedToolResult).toBe(mainProjectedToolResult);
 			expect(advisorProjectedToolResult).not.toContain("old full tool output");
 		});
@@ -1401,7 +1417,7 @@ describe("consult-advisor", () => {
 
 	test("uses live projection state before the persisted custom entry appears in the active branch", async () => {
 		// Purpose: advisor replay must use context-projection's runtime state from the same process, not only persisted branch entries.
-		// Input and expected output: context-projection records an omission in memory, and consult_advisor receives the placeholder without the custom state entry in branch.
+		// Input and expected output: context-projection records an omission in memory, and consult_advisor receives the replacement text without the custom state entry in branch.
 		// Edge case: projection state has been appended by the context hook but is not part of the active branch snapshot used by the advisor tool call.
 		// Dependencies: context-projection and consult-advisor factories share the same imported projection state module.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1465,7 +1481,7 @@ describe("consult-advisor", () => {
 				completion.calls[0]?.context.messages,
 			);
 			expect(advisorMessages).toContain(
-				"Result omitted. Run tool again if you want to see it",
+				"Result omitted. Run tool again for full result.",
 			);
 			expect(advisorMessages).not.toContain("old output old output");
 		});
@@ -1555,7 +1571,7 @@ describe("consult-advisor", () => {
 				'<tool_result full_result="omitted" content="summary">',
 			);
 			expect(advisorReplacement.text).toContain(
-				"<notice>Result omitted. Run tool again if you want to see it</notice>",
+				"<notice>Full result omitted. Summary below. Run tool again for full result.</notice>",
 			);
 			expect(advisorReplacement.text).toContain("Generated projection summary");
 			expect(advisorReplacement.text).not.toContain("old output old output");
@@ -1563,8 +1579,8 @@ describe("consult-advisor", () => {
 				projectedEntries: [
 					{
 						entryId: "2",
-						placeholder:
-							'<tool_result full_result="omitted" content="summary">\n<notice>Result omitted. Run tool again if you want to see it</notice>\n<summary>\nGenerated projection summary\n</summary>\n</tool_result>',
+						replacementText:
+							'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nGenerated projection summary\n</summary>\n</tool_result>',
 					},
 				],
 			});
@@ -1573,12 +1589,12 @@ describe("consult-advisor", () => {
 
 	test("does not let stored projection state hide loaded skill read results from the advisor", async () => {
 		// Purpose: advisor projection replay must preserve skill instructions even when stale projection state references a skill read result.
-		// Input and expected output: loaded skill root plus stored projection state keeps the read output visible and omits the placeholder.
+		// Input and expected output: loaded skill root plus stored projection state keeps the read output visible and omits the replacement text.
 		// Edge case: stale projection state exists for the same read result entry.
 		// Dependencies: before_agent_start hook, temp context-projection config, fake completion function, and in-memory session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const placeholder = "[projected skill output]";
+			const replacementText = "[projected skill output]";
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1611,7 +1627,7 @@ describe("consult-advisor", () => {
 							timestamp: 2,
 						},
 					},
-					createProjectionStateEntry("3", "2", placeholder, "2"),
+					createProjectionStateEntry("3", "2", replacementText, "2"),
 				],
 			);
 			consultAdvisor(pi, { completeSimple: completion.completeSimple });
@@ -1630,7 +1646,7 @@ describe("consult-advisor", () => {
 				completion.calls[0]?.context.messages,
 			);
 			expect(advisorMessages).toContain("skill instruction text");
-			expect(advisorMessages).not.toContain(placeholder);
+			expect(advisorMessages).not.toContain(replacementText);
 		});
 	});
 
@@ -2033,8 +2049,8 @@ describe("consult-advisor", () => {
 	});
 
 	test("omits reasoning when configured thinking is off", async () => {
-		// Purpose: thinking off is valid config and must not be sent as a SimpleStreamOptions reasoning value.
-		// Input and expected output: thinking off calls completeSimple with no reasoning option.
+		// Purpose: thinking off must omit reasoning while preserving the isolated provider session.
+		// Input and expected output: completeSimple receives auth and a session ID but no reasoning option.
 		// Edge case: `off` is accepted by config but not by pi-ai reasoning options.
 		// Dependencies: temp config, temp prompt, fake completion function, and fake model registry.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2052,10 +2068,14 @@ describe("consult-advisor", () => {
 
 			await executeConsult(pi, ctx, "Question");
 
-			expect(completion.calls[0]?.options).toEqual({
+			expect(completion.calls[0]?.options).toMatchObject({
 				apiKey: "advisor-api-key",
 				headers: { "x-advisor": "enabled" },
 			});
+			expect(completion.calls[0]?.options?.reasoning).toBeUndefined();
+			expect(completion.calls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
 		});
 	});
 

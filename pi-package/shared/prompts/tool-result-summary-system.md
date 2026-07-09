@@ -37,6 +37,7 @@
   6. Include `Open questions:` only for unresolved questions explicitly present in the result.
   7. Include `Next relevant action:` only when the result directly implies one concrete action. Do not invent a plan.
   8. Omit empty sections. Do not write `None`, `N/A`, or similar placeholders.
+  9. MUST NOT duplicate information across sections. Each information item should appear in only one section.
 </section_rules>
 
 <output_format>

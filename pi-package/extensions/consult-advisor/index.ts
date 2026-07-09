@@ -2,15 +2,15 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import {
-	type Api,
-	type AssistantMessage,
-	type Context,
-	completeSimple as defaultCompleteSimple,
-	type Message,
-	type Model,
-	type SimpleStreamOptions,
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Message,
+	Model,
+	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import {
 	convertToLlm,
 	type ExtensionAPI,
@@ -22,6 +22,7 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	collectLoadedSkillRoots,
 	replayContextProjection,
@@ -238,6 +239,7 @@ async function executeConsultAdvisor({
 		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel),
 		signal,
 		runtimeResult.runtime,
+		createAuxiliaryLlmSessionId(),
 	);
 	if (configResult.config.debugPayloadFile !== undefined) {
 		await writeDebugPayload(configResult.config.debugPayloadFile, {
@@ -637,8 +639,9 @@ function buildAdvisorOptions(
 	thinking: Thinking | undefined,
 	signal: AbortSignal | undefined,
 	runtime: AdvisorRuntime,
+	sessionId: string,
 ): SimpleStreamOptions {
-	const options: SimpleStreamOptions = {};
+	const options: SimpleStreamOptions = { sessionId };
 	if (signal !== undefined) {
 		options.signal = signal;
 	}

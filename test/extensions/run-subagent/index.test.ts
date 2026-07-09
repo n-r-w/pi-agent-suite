@@ -33,6 +33,9 @@ import {
 } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+/** Matches Pi-compatible UUIDv7 session identifiers. */
+const PI_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DEPTH_ENV = SUBAGENT_DEPTH_ENV;
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 
@@ -777,8 +780,8 @@ describe("run-subagent", () => {
 	});
 
 	test("starts child pi with explicit model, thinking, tools, and subagent environment", async () => {
-		// Purpose: a valid callable agent must start an isolated child pi process with explicit runtime options.
-		// Input and expected output: subagent helper resolves Helper tools, model, thinking, depth, env, prompt, and parses final assistant text.
+		// Purpose: a valid callable agent must start child Pi with a UUIDv7 session and explicit runtime options.
+		// Input and expected output: the child receives model, thinking, tools, environment, prompt, and a Pi-compatible session ID.
 		// Edge case: lowercase agentId input preserves stored agent ID casing in the child environment.
 		// Dependencies: this test uses temp agent files, fake tool registry, and fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -823,12 +826,18 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(spawn.calls).toHaveLength(1);
+			const sessionIdIndex = spawn.calls[0]?.args.indexOf("--session-id") ?? -1;
+			const childSessionId = spawn.calls[0]?.args[sessionIdIndex + 1];
+			expect(childSessionId).toMatch(PI_SESSION_ID_PATTERN);
 			expect(spawn.calls[0]).toMatchObject({
 				command: "pi",
 				args: [
 					"--mode",
 					"rpc",
-					"--no-session",
+					"--session-dir",
+					join(agentDir, "agent-suite", "run-subagent", "sessions"),
+					"--session-id",
+					expect.any(String),
 					"--model",
 					"openai/child",
 					"--thinking",
@@ -857,6 +866,15 @@ describe("run-subagent", () => {
 			expect(spawn.calls[0]?.process.stdin.ended).toBe(true);
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "done" }],
+			});
+			expect(result.details).toMatchObject({
+				childSessionId,
+				childSessionDir: join(
+					agentDir,
+					"agent-suite",
+					"run-subagent",
+					"sessions",
+				),
 			});
 			expect(
 				(result.details as { readonly fullOutputPath?: string }).fullOutputPath,
@@ -890,6 +908,50 @@ describe("run-subagent", () => {
 			expect(renderedResult?.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);
+		});
+	});
+
+	test("keeps child session id within provider prompt cache key limit", async () => {
+		// Purpose: child session persistence must use the UUIDv7 format expected by Codex subscription routing.
+		// Input and expected output: a long tool call ID still produces a Pi-compatible UUIDv7 no longer than 64 characters.
+		// Edge case: the child session ID remains independent from the parent tool call ID.
+		// Dependencies: fake child process output and the run_subagent tool execution path.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/child" },
+			});
+			const spawn = createSpawnFake(
+				rpcOutputLines({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+					},
+				}),
+			);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+			const longToolCallId = `call_${"very-long-segment_".repeat(12)}`;
+
+			const result = (await getRunSubagentTool(pi).execute(
+				longToolCallId,
+				{ agentId: "helper", prompt: "Do work" },
+				undefined,
+				undefined,
+				ctx as never,
+			)) as AgentToolResult<unknown>;
+
+			const sessionIdIndex = spawn.calls[0]?.args.indexOf("--session-id") ?? -1;
+			const sessionId = spawn.calls[0]?.args[sessionIdIndex + 1];
+			expect(sessionId).toBeString();
+			expect(sessionId?.length).toBeLessThanOrEqual(64);
+			expect(sessionId).toMatch(PI_SESSION_ID_PATTERN);
+			expect(result.details).toMatchObject({ childSessionId: sessionId });
 		});
 	});
 
@@ -1988,6 +2050,74 @@ describe("run-subagent", () => {
 			const result = await resultPromise;
 			expect(toolText(result)).toContain("retry exhausted");
 			expect(process.stdin.ended).toBe(true);
+		});
+	});
+
+	test("renders estimated child context usage for zero-usage overflow", async () => {
+		// Purpose: provider overflow errors with zero usage must not be displayed as real zero context usage.
+		// Input and expected output: child message_end reports context overflow with totalTokens 0, and run_subagent details/rendering show approximate usage.
+		// Edge case: compaction is unavailable, so the overflow message becomes the final failed child result.
+		// Dependencies: isolated model registry, fake child RPC stdout, and run_subagent result renderer.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/model-a" },
+			});
+			const spawn = createSpawnFake(
+				rpcOutputLines({
+					type: "message_end",
+					message: childAssistantMessage("", {
+						content: [],
+						stopReason: "error",
+						errorMessage:
+							"Codex error: Your input exceeds the context window of this model.",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+					}),
+				}),
+			);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project", undefined, [
+				{ ...createModel("openai", "model-a"), contextWindow: 1_000 },
+			]);
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(result.details).toMatchObject({
+				contextUsage: {
+					tokens: null,
+					estimatedTokens: 1_000,
+					contextWindow: 1_000,
+				},
+			});
+			const widgetFactory = ctx.widgets.at(-1)?.content;
+			expect(typeof widgetFactory).toBe("function");
+			const renderedWidget = (
+				widgetFactory as () => { render(width: number): string[] }
+			)()
+				.render(80)
+				.join("\n");
+			expect(renderedWidget).toContain("~/1k");
+			expect(renderedWidget).not.toContain("0/1k");
 		});
 	});
 

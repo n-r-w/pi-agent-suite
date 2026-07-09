@@ -3,8 +3,8 @@
 ## Purpose
 
 - `context-projection` reduces provider context use in long sessions.
-- It replaces old large, successful text tool results with a short placeholder.
-- It can generate summaries instead of using only the placeholder when summary mode is enabled.
+- It replaces old large, successful text tool results with a short omitted notice.
+- It can include generated summaries for projected tool results when summary mode is enabled.
 
 Projection is disabled until `enabled` is set to `true`.
 
@@ -28,7 +28,8 @@ Full config example:
   "keepRecentTurns": 10,
   "keepRecentTurnsPercent": 0.2,
   "projectionIgnoredTools": [],
-  "placeholder": "Result omitted. Run tool again if you want to see it",
+  "omittedNotice": "Result omitted. Run tool again for full result.",
+  "summaryNotice": "Full result omitted. Summary below. Run tool again for full result.",
   "summary": {
     "enabled": false,
     "model": null,
@@ -44,6 +45,8 @@ Full config example:
 
 All parameters are optional. Unknown parameters make the configuration invalid.
 
+Breaking change: `placeholder` is removed. If the config contains `placeholder`, startup fails with a message that names `omittedNotice` and `summaryNotice`.
+
 ## Parameters
 
 | Parameter | Required | Type or shape | Default | Meaning |
@@ -58,7 +61,8 @@ All parameters are optional. Unknown parameters make the configuration invalid.
 | `keepRecentTurns` | No | Non-negative integer | `10` | Minimum number of newest tool-use turns kept visible. A tool-use turn is an assistant tool call plus its matching tool results. |
 | `keepRecentTurnsPercent` | No | Number from `0` to `1` | `0.2` | Fraction of newest tool-use turns kept visible in long sessions. The extension uses the larger value from `keepRecentTurns` and this percentage. |
 | `projectionIgnoredTools` | No | Array of unique non-empty strings | `[]` | Tool names whose results stay visible. `consult_advisor` and `convene_council` always stay visible, even when omitted from this list. |
-| `placeholder` | No | Non-empty string | `Result omitted. Run tool again if you want to see it` | Text that replaces projected tool results when summary mode is disabled or a summary cannot be used. |
+| `omittedNotice` | No | Non-empty string | `Result omitted. Run tool again for full result.` | Text that replaces projected tool results when summary mode is disabled or a summary cannot be used. |
+| `summaryNotice` | No | Non-empty string | `Full result omitted. Summary below. Run tool again for full result.` | Text written in `<notice>` when a projected tool result includes a generated summary. |
 | `summary` | No | Object | Summary disabled | Configures optional generated summaries for projected tool results. |
 
 If multiple projection levels use the same remaining-token threshold, the extension uses the lowest matching `minToolResultTokens*` value for those levels.
@@ -78,12 +82,34 @@ If multiple projection levels use the same remaining-token threshold, the extens
 
 When `summary.enabled` is omitted or set to `false`, other summary values are ignored except unsupported summary keys.
 
+Each tool-result summary candidate uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session and other candidates. Retries for one candidate reuse that ID.
+
+## Summary diagnostics
+
+Each failed tool-result summary attempt appends a `tool-result-summary-diagnostic` custom entry to the JSONL session. Custom entries do not participate in model context.
+
+| Field | Meaning |
+| --- | --- |
+| `source` | Extension that requested the summary: `context-projection` or `custom-compaction`. |
+| `provider` | Summary model provider. |
+| `model` | Summary model ID. |
+| `candidateId` | Stable identifier of the tool result being summarized. |
+| `toolName` | Tool that produced the result. |
+| `attempt` | Failed attempt number, starting at `1`. |
+| `totalAttempts` | Initial attempt plus configured retries. |
+| `failureKind` | `context-too-large`, `aborted`, `provider-error`, `empty-response`, or `exception`. |
+| `errorName` | Exception name when the provider call threw. |
+| `errorCode` | String or numeric exception code when available. |
+| `errorMessage` | Single-line failure message, limited to 2,000 characters. |
+
+Diagnostic entries never contain prompts, tool-result text, authentication data, request headers, or exception stacks. A diagnostic persistence failure does not change summary retry or fallback behavior.
+
 ## Usage notes
 
 - Missing configuration keeps projection disabled.
-- Invalid configuration disables projection. Non-absolute summary prompt paths and invalid projection level ordering stop startup.
+- Most invalid configuration disables projection. Non-absolute summary prompt paths, invalid projection level ordering, and removed `placeholder` stop startup.
 - Projection only changes the provider context for the current request. It does not rewrite stored session entries.
 - Only successful text tool results can be projected.
 - Failed tool results, non-text tool results, ignored tools, tool results protected by `keepRecentTurns` or `keepRecentTurnsPercent`, and `read` results for files under loaded skill directories stay visible.
-- Use a short `placeholder`. The model only sees the current provider context, not omitted text from session history.
-- Enable `summary` when the placeholder removes information that the model still needs.
+- Keep `omittedNotice` and `summaryNotice` short because the model sees them in provider context.
+- Enable `summary` when omitted results remove information that the model still needs.

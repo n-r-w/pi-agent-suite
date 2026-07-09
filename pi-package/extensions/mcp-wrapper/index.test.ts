@@ -1131,9 +1131,22 @@ describe("mcp-wrapper extension", () => {
 		});
 
 		await runSessionStart(pi);
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		const cleanupFinished = await resolvesWithin(
+			new Promise<void>((resolve) => {
+				const poll = (): void => {
+					if (refreshCloseCalls === 1) {
+						resolve();
+						return;
+					}
+					setTimeout(poll, 0);
+				};
+				poll();
+			}),
+			100,
+		);
 
 		expect(pi.tools[0]?.name).toBe(FILES_READ_TOOL_NAME);
+		expect(cleanupFinished).toBe(true);
 		expect(refreshCloseCalls).toBe(1);
 	});
 

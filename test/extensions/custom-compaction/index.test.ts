@@ -9,9 +9,12 @@ import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-a
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+/** Matches Pi-compatible UUIDv7 provider session identifiers. */
+const AUXILIARY_SESSION_ID_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const completeSimpleMock = mock();
 
-mock.module("@earendil-works/pi-ai", () => ({
+mock.module("@earendil-works/pi-ai/compat", () => ({
 	completeSimple: completeSimpleMock,
 }));
 
@@ -35,6 +38,9 @@ interface SessionContextFake {
 		readonly hasUI?: boolean;
 		readonly ui: {
 			notify(message: string, type: string | undefined): void;
+		};
+		readonly sessionManager: {
+			getLeafId(): string | null;
 		};
 		readonly model: Model<Api> | undefined;
 		readonly modelRegistry: {
@@ -157,7 +163,11 @@ function getCompactionHandler(
 }
 
 /** Creates a fake model with the fields used by custom compaction. */
-function createModel(provider: string, id: string): TestModel {
+function createModel(
+	provider: string,
+	id: string,
+	contextWindow = 100_000,
+): TestModel {
 	return {
 		provider,
 		id,
@@ -167,7 +177,7 @@ function createModel(provider: string, id: string): TestModel {
 		name: `${provider}/${id}`,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 100_000,
+		contextWindow,
 		maxTokens: 8_192,
 	};
 }
@@ -179,6 +189,7 @@ function createSessionContextFake(options?: {
 	readonly thinkingLevel?: string;
 	readonly authFailure?: string;
 	readonly hasUI?: boolean;
+	readonly leafId?: string | null;
 }): SessionContextFake {
 	const notifications: Notification[] = [];
 	const requestedModels: Model<Api>[] = [];
@@ -191,6 +202,11 @@ function createSessionContextFake(options?: {
 			ui: {
 				notify(message: string, type: string | undefined): void {
 					notifications.push({ message, type });
+				},
+			},
+			sessionManager: {
+				getLeafId(): string | null {
+					return options?.leafId ?? null;
 				},
 			},
 			model: currentModel,
@@ -480,8 +496,8 @@ describe("custom-compaction", () => {
 	});
 
 	test("reads all prompt files and returns custom compaction with the current model and thinking level", async () => {
-		// Purpose: valid config must replace built-in compaction through a fake model call.
-		// Input and expected output: custom prompt files and current model produce a compaction result with the model summary.
+		// Purpose: valid config must replace built-in compaction through isolated history and turn-prefix sessions.
+		// Input and expected output: two summary branches return one compaction and use distinct UUIDv7 session IDs.
 		// Edge case: model and reasoning are omitted, so current session values are used.
 		// Dependencies: this test uses temp config/prompt files, fake model registry auth, and mocked completeSimple.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -536,7 +552,237 @@ describe("custom-compaction", () => {
 				reasoning: "high",
 				signal: event.signal,
 			});
+			expect(options?.sessionId).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(turnOptions?.sessionId).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(turnOptions?.sessionId).not.toBe(options?.sessionId);
 			expect(session.notifications).toEqual([]);
+		});
+	});
+
+	test("summarizes large tool results before oversized compaction summary requests", async () => {
+		// Purpose: custom compaction must isolate tool-result compression from the final compaction provider session.
+		// Input and expected output: the helper retry keeps one session ID while the final summary uses a different ID.
+		// Edge case: helper summary retries preserve matching tool-call context and separate safe diagnostics.
+		// Dependencies: mocked completeSimple, temp agent directory, fake model registry, and tokenizer-based input estimation.
+		await withIsolatedAgentDir(async (agentDir) => {
+			completeSimpleMock
+				.mockImplementationOnce(async () => {
+					throw new Error("WebSocket closed");
+				})
+				.mockResolvedValueOnce(createAssistantResponse("large tool summary"))
+				.mockResolvedValueOnce(
+					createAssistantResponse("final compact summary"),
+				);
+			const promptFiles = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, {
+				enabled: true,
+				...promptFiles,
+				summary: {
+					enabled: true,
+					model: "helper/summary",
+					thinking: "low",
+					maxConcurrency: 1,
+					retryCount: 1,
+					retryDelayMs: 0,
+				},
+			});
+			const currentModel = createModel("current", "small", 500);
+			const helperModel = createModel("helper", "summary", 100_000);
+			const pi = createExtensionApiFake("high");
+			const session = createSessionContextFake({
+				currentModel,
+				configuredModel: helperModel,
+			});
+			const rawMarker = "UNIQUE_RAW_TOOL_RESULT_MARKER";
+			const largeToolResult = `${rawMarker} ${"large output ".repeat(5_000)}`;
+			const baseEvent = createHistoryCompactionEvent();
+			const event = {
+				...baseEvent,
+				preparation: {
+					...baseEvent.preparation,
+					messagesToSummarize: [
+						{ role: "user", content: "inspect repository", timestamp: 1 },
+						{
+							role: "assistant",
+							content: [
+								{
+									type: "toolCall",
+									id: "tool-call-large",
+									name: "bash",
+									arguments: { command: "printf large-output" },
+								},
+							],
+							timestamp: 2,
+						},
+						{
+							role: "toolResult",
+							toolCallId: "tool-call-large",
+							toolName: "bash",
+							content: [{ type: "text", text: largeToolResult }],
+							isError: false,
+							timestamp: 3,
+						},
+					],
+				},
+			} as CompactEvent;
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(event, session.ctx);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "final compact summary" },
+			});
+			expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+			const requestSessionIds = completeSimpleMock.mock.calls.map(
+				(call) => call[2]?.sessionId,
+			);
+			expect(requestSessionIds[0]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(requestSessionIds[1]).toBe(requestSessionIds[0]);
+			expect(requestSessionIds[2]).toMatch(AUXILIARY_SESSION_ID_PATTERN);
+			expect(requestSessionIds[2]).not.toBe(requestSessionIds[0]);
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: "tool-result-summary-diagnostic",
+					data: {
+						source: "custom-compaction",
+						provider: "helper",
+						model: "summary",
+						candidateId: "history:2",
+						toolName: "bash",
+						attempt: 1,
+						totalAttempts: 2,
+						failureKind: "exception",
+						errorName: "Error",
+						errorMessage: "WebSocket closed",
+					},
+				},
+			]);
+			const [helperModelArg, helperContext, helperOptions] =
+				completeSimpleMock.mock.calls[1] ?? [];
+			expect(helperModelArg).toBe(helperModel);
+			expect(helperOptions).toMatchObject({ reasoning: "low" });
+			expect(getSummaryRequestText(helperContext)).toContain(
+				"printf large-output",
+			);
+			expect(getSummaryRequestText(helperContext)).toContain(rawMarker);
+			const [finalModelArg, finalContext] =
+				completeSimpleMock.mock.calls[2] ?? [];
+			expect(finalModelArg).toBe(currentModel);
+			expect(getSummaryRequestText(finalContext)).toContain(
+				"large tool summary",
+			);
+			expect(getSummaryRequestText(finalContext)).not.toContain(rawMarker);
+			expect(session.notifications).toEqual([
+				{
+					message:
+						"[custom-compaction] compressing large tool results before compaction: 0/1",
+					type: "info",
+				},
+				{
+					message:
+						"[custom-compaction] compressing bash tool result before compaction: 1/1",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] retrying tool result summary 2/2",
+					type: "info",
+				},
+				{
+					message:
+						"[custom-compaction] compressed 1/1 large tool results before compaction",
+					type: "info",
+				},
+			]);
+			expect(session.requestedModels).toEqual([currentModel, helperModel]);
+		});
+	});
+
+	test("moves overflow retry boundary after a retained assistant error", async () => {
+		// Purpose: overflow retry must not restore a context whose last message is an assistant error.
+		// Input and expected output: retained context ends with assistant error, so custom compaction summarizes that retained tail and keeps from a new non-message boundary.
+		// Edge case: the final provider overflow assistant message has empty content after an earlier retry text.
+		// Dependencies: mocked completeSimple, temp agent directory, fake ExtensionAPI appendEntry, and fake session leaf ID.
+		await withIsolatedAgentDir(async () => {
+			completeSimpleMock.mockResolvedValueOnce(
+				createAssistantResponse("overflow recovery summary"),
+			);
+			const pi = createExtensionApiFake();
+			const session = createSessionContextFake({
+				leafId: "retry-boundary-entry",
+			});
+			const event = {
+				...createHistoryCompactionEvent(),
+				reason: "overflow",
+				willRetry: true,
+				branchEntries: [
+					{
+						type: "message",
+						id: "entry-keep",
+						parentId: "before-keep",
+						timestamp: "2026-07-08T16:25:00.000Z",
+						message: {
+							role: "user",
+							content: [{ type: "text", text: "recent user request" }],
+							timestamp: 10,
+						},
+					},
+					{
+						type: "message",
+						id: "websocket-error",
+						parentId: "entry-keep",
+						timestamp: "2026-07-08T16:25:15.000Z",
+						message: {
+							role: "assistant",
+							content: [
+								{
+									type: "text",
+									text: "Repeat search by separate paths.",
+								},
+							],
+							provider: "openai-codex",
+							model: "gpt-5.5",
+							stopReason: "error",
+							errorMessage: "WebSocket closed 1012",
+							timestamp: 11,
+						},
+					},
+					{
+						type: "message",
+						id: "overflow-error",
+						parentId: "websocket-error",
+						timestamp: "2026-07-08T16:25:21.000Z",
+						message: {
+							role: "assistant",
+							content: [],
+							provider: "openai-codex",
+							model: "gpt-5.5",
+							stopReason: "error",
+							errorMessage:
+								"Codex error: Your input exceeds the context window of this model.",
+							timestamp: 12,
+						},
+					},
+				],
+			} as CompactEvent;
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(event, session.ctx);
+
+			expect(result).toMatchObject({
+				compaction: {
+					summary: "overflow recovery summary",
+					firstKeptEntryId: "retry-boundary-entry",
+				},
+			});
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: "custom-compaction-overflow-retry-boundary",
+				data: { reason: "overflow-retry-after-assistant-error" },
+			});
+			const [, context] = completeSimpleMock.mock.calls[0] ?? [];
+			expect(getSummaryRequestText(context)).toContain("recent user request");
+			expect(getSummaryRequestText(context)).toContain(
+				"Repeat search by separate paths.",
+			);
 		});
 	});
 

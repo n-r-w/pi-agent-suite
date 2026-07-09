@@ -1211,7 +1211,7 @@ describe("convene-council loop", () => {
 		});
 	});
 
-	test("removes pending council tool result and ignores projected placeholders", async () => {
+	test("removes pending council tool result and ignores projected replacements", async () => {
 		// Purpose: council participant context must use raw active-branch evidence and must not include its own pending result.
 		// Input and expected output: old raw output remains visible, projection state is ignored, and pending council result is absent.
 		// Edge case: pending tool call and tool result share the current tool call ID.
