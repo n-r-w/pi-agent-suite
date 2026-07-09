@@ -129,7 +129,11 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhig
 
 ## Changelog
 
-### v1.15.0 - 2026-07-10
+### v0.15.1 - 2026-07-10
+
+- Fixed npm publishing by using the npm version bundled with Node 24 instead of upgrading to npm 12.0.0, whose published package omits `sigstore`.
+
+### v0.15.0 - 2026-07-10
 
 - Breaking change: replaced `context-projection.placeholder` with `omittedNotice` and `summaryNotice`; stale configurations now fail startup with a direct migration error.
 - Shared tool-result summary prompts and helper logic now support `context-projection` and oversized `custom-compaction` requests.
