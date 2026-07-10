@@ -26,6 +26,33 @@ No GitHub Actions secret is required. The workflow uses OIDC trusted publishing 
 
 The workflow must not configure npm token authentication. It removes any temporary npm user config and unsets `NODE_AUTH_TOKEN` before publishing so npm uses OIDC trusted publishing.
 
+## Pi dependency updates
+
+Check the pinned and latest published versions of all Pi development packages:
+
+```bash
+make pi-versions
+```
+
+Update all Pi development packages to one explicit version:
+
+```bash
+make pi-update PI_VERSION=0.80.6
+```
+
+The update target checks that all four packages provide the requested version, writes exact versions to `package.json` and `bun.lock`, runs `bun run verify`, and prints the version of the repository-local Pi executable.
+
+Review the upstream Pi changes and the resulting repository diff before committing. The target does not update the globally installed Pi.
+
+After the repository passes its checks, update the global Pi installation separately when needed:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent@0.80.6
+pi --version
+```
+
+Restart running Pi processes after updating the global installation.
+
 ## Release flow
 
 Choose the release type:
@@ -129,7 +156,7 @@ permissions:
   id-token: write
 ```
 
-Trusted publishing requires npm CLI `11.5.1` or newer and Node.js `22.14.0` or newer. The workflow uses Node.js `24` and updates npm before publishing.
+Trusted publishing requires npm CLI `11.5.1` or newer and Node.js `22.14.0` or newer. The workflow uses Node.js `24` and its bundled npm version.
 
 The `repository.url` field in `pi-package/package.json` must match the GitHub repository configured in npm Trusted Publisher.
 

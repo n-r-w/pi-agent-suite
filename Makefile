@@ -2,8 +2,38 @@ PACKAGE_DIR := pi-package
 PACKAGE_NAME := pi-agent-suite
 VERSION := $(shell node -p "require('./$(PACKAGE_DIR)/package.json').version")
 TAG := v$(VERSION)
+PI_PACKAGES := \
+	@earendil-works/pi-agent-core \
+	@earendil-works/pi-ai \
+	@earendil-works/pi-coding-agent \
+	@earendil-works/pi-tui
 
-.PHONY: release-check release-patch release-minor release-major release-tag release-next-steps
+.PHONY: pi-versions pi-update release-check release-patch release-minor release-major release-tag release-next-steps
+
+# Reports the pinned and latest published version of every Pi development package.
+pi-versions:
+	@set -e; for package in $(PI_PACKAGES); do \
+		current=$$(node -p "require('./package.json').devDependencies['$$package']"); \
+		latest=$$(npm view "$$package" version); \
+		printf '%s: current=%s latest=%s\n' "$$package" "$$current" "$$latest"; \
+	done
+
+# Updates every Pi development package to one explicit version and validates the repository.
+pi-update:
+	@test -n "$(PI_VERSION)" || { \
+		echo "Usage: make pi-update PI_VERSION=0.80.6"; \
+		exit 1; \
+	}
+	@set -e; for package in $(PI_PACKAGES); do \
+		actual=$$(npm view "$$package@$(PI_VERSION)" version); \
+		test "$$actual" = "$(PI_VERSION)" || { \
+			echo "Package $$package does not provide version $(PI_VERSION)"; \
+			exit 1; \
+		}; \
+	done
+	bun add --dev --exact $(addsuffix @$(PI_VERSION),$(PI_PACKAGES))
+	bun run verify
+	./node_modules/.bin/pi --version
 
 release-check:
 	bun run release:check
