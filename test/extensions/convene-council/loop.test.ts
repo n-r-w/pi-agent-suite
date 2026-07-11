@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
@@ -82,10 +84,23 @@ function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Lists council context temp files that exist outside the repository. */
-function listCouncilContextTempFiles(): readonly string[] {
-	return readdirSync(tmpdir()).filter((name) =>
-		name.startsWith(COUNCIL_CONTEXT_FILE_PREFIX),
+/** Finds the context file owned by one uniquely marked council execution. */
+function findCouncilContextTempFileContaining(marker: string): string {
+	for (const name of readdirSync(tmpdir())) {
+		if (!name.startsWith(COUNCIL_CONTEXT_FILE_PREFIX)) {
+			continue;
+		}
+		const path = join(tmpdir(), name);
+		try {
+			if (readFileSync(path, "utf8").includes(marker)) {
+				return path;
+			}
+		} catch {
+			// Another process may remove its context file while this process scans the shared temp directory.
+		}
+	}
+	throw new Error(
+		"council context file with the execution marker was not found",
 	);
 }
 
@@ -823,11 +838,22 @@ describe("convene-council loop", () => {
 			const model = createModel("openai", "main-model");
 			const disposed: string[] = [];
 			const sessionDirs: string[] = [];
-			const beforeContextFiles = listCouncilContextTempFiles();
+			const contextFilePaths: string[] = [];
+			const executionMarker = randomUUID();
+			const question = "Startup failure";
+			const ctx = createContext(
+				[model],
+				[messageEntry("execution-marker", userMessage(executionMarker), null)],
+			);
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi, {
 				async createParticipantRunner(options) {
 					sessionDirs.push(options.sessionDir);
+					if (options.participantId === "llm1") {
+						contextFilePaths.push(
+							findCouncilContextTempFileContaining(executionMarker),
+						);
+					}
 					if (options.participantId === "llm2") {
 						throw new Error("llm2 startup failed");
 					}
@@ -841,9 +867,8 @@ describe("convene-council loop", () => {
 					};
 				},
 			});
-			const ctx = createContext([model]);
 
-			await expect(executeCouncil(pi, ctx, "Startup failure")).rejects.toThrow(
+			expect(executeCouncil(pi, ctx, question)).rejects.toThrow(
 				"llm2 startup failed",
 			);
 
@@ -852,7 +877,8 @@ describe("convene-council loop", () => {
 			expect(sessionDirs.every((sessionDir) => !existsSync(sessionDir))).toBe(
 				true,
 			);
-			expect(listCouncilContextTempFiles()).toEqual(beforeContextFiles);
+			expect(contextFilePaths).toHaveLength(1);
+			expect(contextFilePaths.every((path) => !existsSync(path))).toBe(true);
 		});
 	});
 

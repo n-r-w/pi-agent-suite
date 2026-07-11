@@ -119,9 +119,9 @@ const RunSubagentParameters = Type.Object({
 		minLength: 3,
 		maxLength: 60,
 		description:
-			'Unique 2–6 word name for the specific work performed by this run. Use an action and object, for example "Trace TUI redraws". For concurrent calls, distinguish each task by its focus. Do not include the agent type, generic labels, sequence numbers, or technical IDs.',
+			'Unique 2–6 word name for specific work performed by this run. MUST use action and object, for example "Trace TUI redraws". For concurrent calls, distinguish each task by its focus. MUST NOT include agent type, generic labels, sequence numbers, or technical IDs.',
 	}),
-	prompt: Type.String({ description: "Task prompt for the selected subagent" }),
+	prompt: Type.String({ description: "Task prompt for selected subagent" }),
 });
 
 interface RunSubagentParams {
