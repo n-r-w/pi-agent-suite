@@ -12,21 +12,25 @@ import {
 	CONTEXT_PROJECTION_STATUS_KEY,
 	normalizePositiveProjectionStatus,
 } from "../../shared/context-projection-status";
+import {
+	truncateTextByCodeUnits,
+	truncateTextByWidth,
+} from "../../shared/display-width";
+import { normalizeTerminalDisplayText } from "../../shared/terminal-display-text";
 
 /** Keeps recent child-run events while bounding session history growth. */
 export const MAX_SUBAGENT_PROGRESS_EVENTS = 40;
 
-/** Keeps each stored event preview bounded before terminal-width rendering. */
-const MAX_SUBAGENT_PROGRESS_TEXT_LENGTH = 240;
+/** Limits each stored event preview independently of terminal display width. */
+const MAX_SUBAGENT_PROGRESS_TEXT_CODE_UNITS = 240;
+/** Limits each stored event preview to the compact terminal column budget. */
+const MAX_SUBAGENT_PROGRESS_TEXT_COLUMNS = 240;
 
 /** Full percentage value used for context-window usage calculations. */
 const FULL_PERCENT = 100;
 
-/** Token count where compact formatting switches from raw units to thousands. */
+/** Number of tokens represented by one compact `k` unit. */
 const TOKEN_THOUSAND = 1000;
-
-/** Fraction digits used for non-integer compact token counts. */
-const TOKEN_FRACTION_DIGITS = 1;
 
 /** Defines the lifecycle states shown for one child agent process. */
 export type SubagentRunStatus = "running" | "succeeded" | "failed" | "aborted";
@@ -58,13 +62,26 @@ export interface SubagentProgressEvent {
 	readonly kind: SubagentProgressEventKind;
 	readonly title: string;
 	readonly text: string | undefined;
+	readonly toolCallId?: string | undefined;
 	readonly timestampMs: number;
+}
+
+/** Distinguishes tool lifecycle rows from assistant output and assistant failures. */
+export function isSubagentToolLifecycleEvent(
+	event: SubagentProgressEvent,
+): boolean {
+	return (
+		event.kind === "tool_call" ||
+		event.kind === "tool_result" ||
+		(event.kind === "error" && event.title !== "assistant")
+	);
 }
 
 /** Stores mutable progress while a child process is still producing events. */
 export interface SubagentProgressState {
 	readonly runId: string;
 	readonly agentId: string;
+	readonly taskName: string;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
 	readonly childSessionId: string | undefined;
@@ -86,6 +103,7 @@ export interface SubagentProgressState {
 export interface SubagentRunDetails {
 	readonly runId: string;
 	readonly agentId: string;
+	readonly taskName: string;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
 	readonly childSessionId?: string | undefined;
@@ -107,6 +125,7 @@ export interface SubagentRunDetails {
 
 interface CreateSubagentProgressStateOptions {
 	readonly agentId: string;
+	readonly taskName: string;
 	readonly depth: number;
 	readonly startedAtMs: number;
 	readonly runtime?: SubagentRuntimeDetails;
@@ -125,6 +144,7 @@ export function createSubagentProgressState(
 	return {
 		runId,
 		agentId: options.agentId,
+		taskName: options.taskName,
 		depth: options.depth,
 		runtime: options.runtime,
 		childSessionId: options.childSessionId,
@@ -160,6 +180,7 @@ export function toSubagentRunDetails(
 	return {
 		runId: state.runId,
 		agentId: state.agentId,
+		taskName: state.taskName,
 		depth: state.depth,
 		runtime: state.runtime,
 		childSessionId: state.childSessionId,
@@ -199,12 +220,31 @@ export function formatSubagentContextUsage(
 	}
 
 	if (contextUsage.estimatedTokens !== undefined) {
-		return `~/${formatTokenCount(contextUsage.estimatedTokens)}`;
+		return `~/${formatSubagentTokenCount(contextUsage.estimatedTokens)}`;
 	}
 
 	const tokensText =
-		contextUsage.tokens === null ? "?" : formatTokenCount(contextUsage.tokens);
-	return `${tokensText}/${formatTokenCount(contextUsage.contextWindow)}`;
+		contextUsage.tokens === null
+			? "?"
+			: formatSubagentTokenCount(contextUsage.tokens);
+	return `${tokensText}/${formatSubagentTokenCount(contextUsage.contextWindow)}`;
+}
+
+/** Rounds a normalized positive projection status to a whole compact `k` unit. */
+export function formatSubagentProjectionStatus(
+	status: string | undefined,
+): string | undefined {
+	if (status === undefined || !status.startsWith("~")) {
+		return undefined;
+	}
+	const usesThousands = status.endsWith("k");
+	const numericText = status.slice(1, usesThousands ? -1 : undefined);
+	const value = Number(numericText);
+	if (!Number.isFinite(value) || value <= 0) {
+		return undefined;
+	}
+	const tokens = usesThousands ? value * TOKEN_THOUSAND : value;
+	return `~${formatSubagentTokenCount(tokens)}`;
 }
 
 /** Records the child-owned positive projection status for the current run only. */
@@ -333,6 +373,7 @@ function recordToolExecutionStart(
 		kind: "tool_call",
 		title: getStringField(event, "toolName") ?? "tool",
 		text: formatEventPayload(payload.args ?? payload.input),
+		toolCallId: getStringField(event, "toolCallId"),
 		timestampMs,
 	});
 }
@@ -348,6 +389,7 @@ function recordToolExecutionEnd(
 		kind: isError === true ? "error" : "tool_result",
 		title: getStringField(event, "toolName") ?? "tool",
 		text: getToolExecutionResultText(event),
+		toolCallId: getStringField(event, "toolCallId"),
 		timestampMs,
 	});
 }
@@ -470,6 +512,7 @@ function isSubagentRunDetails(value: unknown): value is SubagentRunDetails {
 	const details = value as {
 		readonly runId?: unknown;
 		readonly agentId?: unknown;
+		readonly taskName?: unknown;
 		readonly depth?: unknown;
 		readonly status?: unknown;
 		readonly elapsedMs?: unknown;
@@ -479,6 +522,7 @@ function isSubagentRunDetails(value: unknown): value is SubagentRunDetails {
 	return (
 		typeof details.runId === "string" &&
 		typeof details.agentId === "string" &&
+		typeof details.taskName === "string" &&
 		typeof details.depth === "number" &&
 		isSubagentRunStatus(details.status) &&
 		typeof details.elapsedMs === "number" &&
@@ -633,27 +677,28 @@ function formatEventPayload(payload: unknown): string | undefined {
 
 /** Normalizes whitespace and limits event text stored in session details. */
 function normalizeEventText(text: string | undefined): string | undefined {
-	const normalizedText = text?.replace(/\s+/g, " ").trim();
-	if (!normalizedText) {
+	if (text === undefined) {
 		return undefined;
 	}
-	if (normalizedText.length <= MAX_SUBAGENT_PROGRESS_TEXT_LENGTH) {
-		return normalizedText;
+	const normalizedText = normalizeTerminalDisplayText(text);
+	if (normalizedText.length === 0) {
+		return undefined;
 	}
-
-	return `${normalizedText.slice(0, MAX_SUBAGENT_PROGRESS_TEXT_LENGTH)}…`;
+	const storageBoundText = truncateTextByCodeUnits(
+		normalizedText,
+		MAX_SUBAGENT_PROGRESS_TEXT_CODE_UNITS,
+		"…",
+	);
+	return truncateTextByWidth(
+		storageBoundText,
+		MAX_SUBAGENT_PROGRESS_TEXT_COLUMNS,
+		"…",
+	);
 }
 
-/** Formats token counts for compact terminal rows. */
-function formatTokenCount(tokens: number): string {
-	if (tokens < TOKEN_THOUSAND) {
-		return String(Math.round(tokens));
-	}
-
-	const thousands = tokens / TOKEN_THOUSAND;
-	return Number.isInteger(thousands)
-		? `${thousands}k`
-		: `${thousands.toFixed(TOKEN_FRACTION_DIGITS)}k`;
+/** Formats a token count as a whole compact `k` unit. */
+export function formatSubagentTokenCount(tokens: number): string {
+	return `${Math.round(tokens / TOKEN_THOUSAND)}k`;
 }
 
 /** Reads one object field when the source is a plain record. */

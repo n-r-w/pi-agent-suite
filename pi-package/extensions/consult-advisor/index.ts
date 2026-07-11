@@ -163,10 +163,9 @@ export default function consultAdvisor(
 		description:
 			"Ask an independent advisor a focused question. The advisor knows everything you know. " +
 			"It can't call tools, only answer questions." +
-			"MUST NOT call consult_advisor in parallel execution. " +
 			"REMEMBER: advisor is not a replacement for your own reasoning - it is a second opinion.",
 		parameters: ConsultAdvisorParameters,
-		executionMode: "parallel",
+		executionMode: "sequential",
 		renderCall: renderConsultAdvisorCall,
 		renderResult: renderConsultAdvisorResult,
 		async execute(...[toolCallId, params, signal, _onUpdate, ctx]) {

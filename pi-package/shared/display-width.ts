@@ -26,6 +26,38 @@ export function sliceTextByWidth(value: string, maxWidth: number): string {
 	return output;
 }
 
+/** Returns plain text clipped to a UTF-16 code-unit limit at grapheme boundaries. */
+function sliceTextByCodeUnits(value: string, maxCodeUnits: number): string {
+	const safeMaxCodeUnits = Math.max(0, Math.floor(maxCodeUnits));
+	if (safeMaxCodeUnits === 0) {
+		return "";
+	}
+
+	let output = "";
+	for (const { segment } of GRAPHEME_SEGMENTER.segment(value)) {
+		if (output.length + segment.length > safeMaxCodeUnits) {
+			break;
+		}
+		output += segment;
+	}
+	return output;
+}
+
+/** Returns grapheme-safe text truncated to a hard UTF-16 storage limit. */
+export function truncateTextByCodeUnits(
+	value: string,
+	maxCodeUnits: number,
+	ellipsis = "…",
+): string {
+	const safeMaxCodeUnits = Math.max(0, Math.floor(maxCodeUnits));
+	if (value.length <= safeMaxCodeUnits) {
+		return value;
+	}
+	const clippedEllipsis = sliceTextByCodeUnits(ellipsis, safeMaxCodeUnits);
+	const contentLimit = Math.max(0, safeMaxCodeUnits - clippedEllipsis.length);
+	return `${sliceTextByCodeUnits(value, contentLimit)}${clippedEllipsis}`;
+}
+
 /** Returns plain text truncated with an ellipsis without ANSI style resets. */
 export function truncateTextByWidth(
 	value: string,
