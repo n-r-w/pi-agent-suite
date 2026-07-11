@@ -6,18 +6,28 @@
  * depend only on the final visible sibling lists.
  */
 
-import type { SubagentContextUsage, SubagentRunStatus } from "./progress";
+import type {
+	SubagentContextUsage,
+	SubagentProgressEvent,
+	SubagentRunStatus,
+	SubagentRuntimeDetails,
+} from "./progress";
 
 /** Stores one node in the UI-only subagent run tree. */
 export interface SubagentWidgetNode {
 	readonly runId: string;
 	readonly agentId: string;
+	readonly taskName: string;
+	readonly instanceNumber: number;
+	readonly label: string;
 	readonly status: SubagentRunStatus;
 	readonly updatedAtMs: number;
 	readonly elapsedMs: number;
+	readonly runtime: SubagentRuntimeDetails | undefined;
 	readonly contextUsage: SubagentContextUsage | undefined;
 	readonly contextProjectionStatus: string | undefined;
 	readonly activity: string | undefined;
+	readonly events: readonly SubagentProgressEvent[];
 	readonly children: readonly SubagentWidgetNode[];
 }
 
@@ -111,6 +121,37 @@ export function selectVisibleWidgetForest(
 	};
 }
 
+/** Identifies one focused run, its direct parent, and its root-relative depth. */
+export interface FocusedSubagentWidgetRun {
+	readonly selected: SubagentWidgetNode;
+	readonly parent: SubagentWidgetNode | undefined;
+	readonly depth: number;
+}
+
+/** Finds one run without carrying an unbounded semantic path into presentation. */
+export function findFocusedSubagentWidgetRun(
+	nodes: readonly SubagentWidgetNode[],
+	runId: string,
+	parent: SubagentWidgetNode | undefined = undefined,
+	depth = 0,
+): FocusedSubagentWidgetRun | undefined {
+	for (const node of nodes) {
+		if (node.runId === runId) {
+			return { selected: node, parent, depth };
+		}
+		const nested = findFocusedSubagentWidgetRun(
+			node.children,
+			runId,
+			node,
+			depth + 1,
+		);
+		if (nested !== undefined) {
+			return nested;
+		}
+	}
+	return undefined;
+}
+
 /** Converts an allocated node to the rendering model without priority metadata. */
 function toVisibleWidgetNode(node: SelectionNode): VisibleWidgetNode {
 	return {
@@ -165,11 +206,7 @@ function selectWidgetNodes(
 		selected: new Set<SubagentWidgetNode>(),
 		bodyBudget,
 	};
-	admitCandidates(
-		roots.filter((root) => root.summary.running > 0),
-		compareCandidateRecency,
-		context,
-	);
+	// Terminal failures own attention before newer active work consumes the bounded body.
 	admitCandidates(
 		roots.filter(
 			(root) =>
@@ -178,11 +215,24 @@ function selectWidgetNodes(
 		compareTerminalCandidates,
 		context,
 	);
+	admitCandidates(
+		roots.filter((root) => root.summary.running > 0),
+		compareCandidateRecency,
+		context,
+	);
+	admitFrontierPhase(
+		context,
+		(candidate) =>
+			candidate.summary.running === 0 &&
+			candidate.terminalSeverity !== "succeeded",
+		compareTerminalCandidates,
+	);
 	admitFrontierPhase(
 		context,
 		(candidate) => candidate.summary.running > 0,
 		compareCandidateRecency,
 	);
+	// Running ancestor admission can expose a deeper failure that still owns the next row.
 	admitFrontierPhase(
 		context,
 		(candidate) =>

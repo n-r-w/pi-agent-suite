@@ -14,7 +14,7 @@ import {
 import { visibleWidth } from "@earendil-works/pi-tui";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
-import { COLLAPSED_SUBAGENT_RESULT_LINES } from "../../../pi-package/extensions/run-subagent/rendering";
+import type { SubagentRunDetails } from "../../../pi-package/extensions/run-subagent/progress";
 import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
@@ -35,6 +35,8 @@ const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 
 /** SGR reset sequence that would break parent panel styling when embedded in truncated text. */
 const SGR_RESET = `${String.fromCharCode(27)}[0m`;
+/** Supplies semantic identity to tests that exercise behavior unrelated to task naming. */
+const DEFAULT_TEST_TASK_NAME = "Execute test task";
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -53,10 +55,16 @@ interface RegisteredCommandFake {
 	readonly handler: (args: string, ctx: unknown) => Promise<void>;
 }
 
+interface RegisteredShortcutFake {
+	readonly shortcut: string;
+	readonly handler: (ctx: unknown) => Promise<void>;
+}
+
 interface ExtensionApiFake extends ExtensionAPI {
 	readonly handlers: RegisteredHandler[];
 	readonly tools: ToolDefinition[];
 	readonly commands: RegisteredCommandFake[];
+	readonly shortcuts: RegisteredShortcutFake[];
 	readonly activeToolCalls: string[][];
 	readonly setModelCalls: Model<Api>[];
 	readonly thinkingCalls: string[];
@@ -132,6 +140,7 @@ class SpawnedProcessFakeImpl
 
 interface CommandContextFake {
 	readonly cwd: string;
+	readonly mode: "tui" | "rpc" | "json" | "print";
 	readonly model: Model<Api> | undefined;
 	readonly hasUI?: boolean;
 	readonly ui: {
@@ -212,6 +221,7 @@ function createExtensionApiFake(
 	const handlers: RegisteredHandler[] = [];
 	const tools: ToolDefinition[] = [];
 	const commands: RegisteredCommandFake[] = [];
+	const shortcuts: RegisteredShortcutFake[] = [];
 	const activeToolCalls: string[][] = [];
 	const setModelCalls: Model<Api>[] = [];
 	const thinkingCalls: string[] = [];
@@ -222,6 +232,7 @@ function createExtensionApiFake(
 		handlers,
 		tools,
 		commands,
+		shortcuts,
 		activeToolCalls,
 		setModelCalls,
 		thinkingCalls,
@@ -244,7 +255,12 @@ function createExtensionApiFake(
 		): void {
 			commands.push({ name, handler: options.handler });
 		},
-		registerShortcut(): void {},
+		registerShortcut(
+			shortcut: string,
+			options: { handler: RegisteredShortcutFake["handler"] },
+		): void {
+			shortcuts.push({ shortcut, handler: options.handler });
+		},
 		appendEntry(customType: string, data: unknown): void {
 			appendEntryCalls.push({ customType, data });
 		},
@@ -288,6 +304,7 @@ function createContext(
 	models: readonly Model<Api>[] = [],
 	selected?: string,
 	hasUI?: boolean,
+	mode: CommandContextFake["mode"] = "tui",
 ): CommandContextFake & ContextObservations {
 	const notifications: ContextObservations["notifications"] = [];
 	const statuses: ContextObservations["statuses"] = [];
@@ -295,6 +312,7 @@ function createContext(
 
 	return {
 		cwd,
+		mode,
 		model,
 		notifications,
 		statuses,
@@ -579,13 +597,21 @@ function createSpawnFake(outputLines: readonly string[] = rpcOutputLines()): {
 async function executeRunSubagent(
 	pi: ExtensionApiFake,
 	ctx: CommandContextFake,
-	params: { readonly agentId: string; readonly prompt: string },
+	params: {
+		readonly agentId: string;
+		readonly taskName?: string;
+		readonly prompt: string;
+	},
+	onUpdate?: (partial: AgentToolResult<unknown>) => void,
 ): Promise<unknown> {
 	return getRunSubagentTool(pi).execute(
 		"tool-call-1",
-		params,
+		{
+			...params,
+			taskName: params.taskName ?? DEFAULT_TEST_TASK_NAME,
+		},
 		undefined,
-		undefined,
+		onUpdate,
 		ctx as never,
 	);
 }
@@ -609,10 +635,10 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("registers the unchanged public run_subagent tool schema", async () => {
-		// Purpose: the public tool contract must stay limited to agentId and prompt.
-		// Input and expected output: extension load registers one run_subagent tool with agentId and prompt parameters.
-		// Edge case: no agent files or session context are needed for registration.
+	test("registers taskName as a required bounded tool parameter", async () => {
+		// Purpose: each run must expose a short semantic task identity in the public tool contract.
+		// Input and expected output: extension load registers agentId, taskName, and prompt as required parameters with taskName length bounds.
+		// Edge case: schema validation owns only presence and character length, not semantic word-count validation.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake.
 		const pi = createExtensionApiFake();
 
@@ -623,9 +649,37 @@ describe("run-subagent", () => {
 			label: "Run subagent",
 		});
 		const parameters = getRunSubagentTool(pi).parameters as unknown as {
-			readonly properties: Record<string, unknown>;
+			readonly properties: Record<
+				string,
+				{ readonly minLength?: number; readonly maxLength?: number }
+			>;
+			readonly required: readonly string[];
 		};
-		expect(Object.keys(parameters.properties)).toEqual(["agentId", "prompt"]);
+		expect(Object.keys(parameters.properties)).toEqual([
+			"agentId",
+			"taskName",
+			"prompt",
+		]);
+		expect(parameters.required).toEqual(["agentId", "taskName", "prompt"]);
+		expect(parameters.properties["taskName"]).toMatchObject({
+			minLength: 3,
+			maxLength: 60,
+		});
+	});
+
+	test("registers the subagent browser command and shortcut", async () => {
+		// Purpose: users must be able to open the complete run list during interactive execution.
+		// Input and expected output: extension load registers /subagents and Ctrl+Shift+G once.
+		// Edge case: registration occurs before any subagent run exists.
+		// Dependencies: the in-memory ExtensionAPI fake records command and shortcut metadata.
+		const pi = createExtensionApiFake();
+
+		await runSubagent(pi);
+
+		expect(pi.commands.map((command) => command.name)).toContain("subagents");
+		expect(pi.shortcuts.map((shortcut) => shortcut.shortcut)).toContain(
+			"ctrl+shift+g",
+		);
 	});
 
 	test("uses the bundled run_subagent description when descriptionPromptFile is missing", async () => {
@@ -881,7 +935,7 @@ describe("run-subagent", () => {
 			const renderedWidget = widget.render(24);
 			expect(renderedWidget).toContain("────────────────────────");
 			expect(renderedWidget.join("\n")).toContain("Subagents: 0 running");
-			expect(renderedWidget.join("\n")).not.toContain("Helper");
+			expect(renderedWidget.join("\n")).toContain("Helper #1");
 			expect(renderedWidget.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);
@@ -933,7 +987,11 @@ describe("run-subagent", () => {
 
 			const result = (await getRunSubagentTool(pi).execute(
 				longToolCallId,
-				{ agentId: "helper", prompt: "Do work" },
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
 				undefined,
 				undefined,
 				ctx as never,
@@ -1121,9 +1179,71 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("routes live progress to the TUI widget or non-TUI updates", async () => {
+		// Purpose: interactive history receives one static runtime header while RPC parents retain every nested progress update.
+		// Input and expected output: TUI receives one initial onUpdate plus widget updates, while RPC receives all progress updates.
+		// Edge case: RPC reports hasUI true but still must not create a terminal widget.
+		// Dependencies: the fake child process emits the normal prompt response and terminal agent events.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const tuiPi = createExtensionApiFake();
+			const tuiContext = createContext("/tmp/project");
+			const tuiUpdates: AgentToolResult<unknown>[] = [];
+			await runSubagent(tuiPi, { spawnPi: createSpawnFake().spawnPi });
+
+			await executeRunSubagent(
+				tuiPi,
+				tuiContext,
+				{
+					agentId: "helper",
+					taskName: "Test TUI progress",
+					prompt: "Do work",
+				},
+				(update) => tuiUpdates.push(update),
+			);
+
+			const rpcPi = createExtensionApiFake();
+			const rpcContext = createContext(
+				"/tmp/project",
+				undefined,
+				[],
+				undefined,
+				true,
+				"rpc",
+			);
+			const rpcUpdates: AgentToolResult<unknown>[] = [];
+			await runSubagent(rpcPi, { spawnPi: createSpawnFake().spawnPi });
+
+			await executeRunSubagent(
+				rpcPi,
+				rpcContext,
+				{
+					agentId: "helper",
+					taskName: "Test RPC progress",
+					prompt: "Do work",
+				},
+				(update) => rpcUpdates.push(update),
+			);
+
+			expect(tuiUpdates).toHaveLength(1);
+			const initialTuiDetails = tuiUpdates[0]?.details as
+				| SubagentRunDetails
+				| undefined;
+			expect(initialTuiDetails?.runtime).toBeDefined();
+			expect(tuiContext.widgets.length).toBeGreaterThan(0);
+			expect(rpcUpdates.length).toBeGreaterThan(0);
+			expect(rpcContext.widgets).toEqual([]);
+		});
+	});
+
 	test("keeps widget state current when first activity arrives inside throttle window", async () => {
 		// Purpose: widget state must not stay at starting when real child activity arrives before the next repaint is allowed.
-		// Input and expected output: initial running update is followed by an assistant message in the same throttle window, and the existing widget factory renders that activity.
+		// Input and expected output: initial running update is followed by a tool call in the same throttle window, and the existing widget factory renders that activity.
 		// Edge case: no second setWidget call happens before the render inspection.
 		// Dependencies: this test uses temp agent files, a fake child process, and a fixed Date.now value.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -1159,11 +1279,10 @@ describe("run-subagent", () => {
 							process.stdout.emit(
 								"data",
 								`${JSON.stringify({
-									type: "message_end",
-									message: {
-										role: "assistant",
-										content: [{ type: "text", text: "first activity" }],
-									},
+									type: "tool_execution_start",
+									toolName: "read",
+									toolCallId: "call-1",
+									args: { path: "README.md" },
 								})}\n`,
 							);
 						});
@@ -1185,7 +1304,7 @@ describe("run-subagent", () => {
 					widgetFactory as () => { render(width: number): string[] }
 				)();
 				const renderedWidget = widget.render(120).join("\n");
-				expect(renderedWidget).toContain("· assistant");
+				expect(renderedWidget).toContain('· read {"path":"README.md"}');
 				expect(renderedWidget).not.toContain("starting");
 
 				process.stdout.emit(
@@ -1278,7 +1397,11 @@ describe("run-subagent", () => {
 
 			const resultPromise = getRunSubagentTool(pi).execute(
 				"tool-call-1",
-				{ agentId: "helper", prompt: "Do work" },
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
 				controller.signal,
 				undefined,
 				ctx as never,
@@ -1366,7 +1489,11 @@ describe("run-subagent", () => {
 
 				const resultPromise = getRunSubagentTool(pi).execute(
 					"tool-call-1",
-					{ agentId: "helper", prompt: "Do work" },
+					{
+						agentId: "helper",
+						taskName: DEFAULT_TEST_TASK_NAME,
+						prompt: "Do work",
+					},
 					controller.signal,
 					undefined,
 					ctx as never,
@@ -1463,7 +1590,11 @@ describe("run-subagent", () => {
 
 			const resultPromise = getRunSubagentTool(pi).execute(
 				"tool-call-1",
-				{ agentId: "helper", prompt: "Do work" },
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
 				controller.signal,
 				undefined,
 				ctx as never,
@@ -1542,7 +1673,11 @@ describe("run-subagent", () => {
 
 				const resultPromise = getRunSubagentTool(pi).execute(
 					"tool-call-1",
-					{ agentId: "helper", prompt: "Do work" },
+					{
+						agentId: "helper",
+						taskName: DEFAULT_TEST_TASK_NAME,
+						prompt: "Do work",
+					},
 					controller.signal,
 					undefined,
 					ctx as never,
@@ -2333,7 +2468,11 @@ describe("run-subagent", () => {
 
 			const resultPromise = getRunSubagentTool(pi).execute(
 				"tool-call-1",
-				{ agentId: "helper", prompt: "Do work" },
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
 				controller.signal,
 				undefined,
 				ctx as never,
@@ -3082,7 +3221,11 @@ describe("run-subagent", () => {
 
 				const resultPromise = getRunSubagentTool(pi).execute(
 					"tool-call-1",
-					{ agentId: "helper", prompt: "Do work" },
+					{
+						agentId: "helper",
+						taskName: DEFAULT_TEST_TASK_NAME,
+						prompt: "Do work",
+					},
 					controller.signal,
 					undefined,
 					ctx as never,
@@ -3166,7 +3309,11 @@ describe("run-subagent", () => {
 
 				const resultPromise = getRunSubagentTool(pi).execute(
 					"tool-call-1",
-					{ agentId: "helper", prompt: "Do work" },
+					{
+						agentId: "helper",
+						taskName: DEFAULT_TEST_TASK_NAME,
+						prompt: "Do work",
+					},
 					controller.signal,
 					undefined,
 					ctx as never,
@@ -3264,7 +3411,11 @@ describe("run-subagent", () => {
 
 				const resultPromise = getRunSubagentTool(pi).execute(
 					"tool-call-1",
-					{ agentId: "helper", prompt: "Do work" },
+					{
+						agentId: "helper",
+						taskName: DEFAULT_TEST_TASK_NAME,
+						prompt: "Do work",
+					},
 					controller.signal,
 					undefined,
 					ctx as never,
@@ -3327,7 +3478,11 @@ describe("run-subagent", () => {
 
 			const resultPromise = getRunSubagentTool(pi).execute(
 				"tool-call-1",
-				{ agentId: "helper", prompt: "Do work" },
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
 				controller.signal,
 				undefined,
 				ctx as never,
@@ -3866,21 +4021,21 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("renders projection-aware header and collapsed result rows", async () => {
-		// Purpose: the run_subagent header must show child projection savings before child context usage while collapsed output stays limited to progress rows.
-		// Input and expected output: contextProjectionStatus ~159.7k plus context usage renders ~160k/36k/272k in the header, and extra events render latest rows plus one hidden-line summary.
-		// Edge case: final output is already rendered as an assistant message and must not consume collapsed progress rows.
-		// Dependencies: this test uses the registered run_subagent renderer and its exported preview-count constant.
+	test("renders projection-aware header with an empty collapsed result", async () => {
+		// Purpose: the historical header must stay static during execution and add final metrics only at completion.
+		// Input and expected output: a partial result exposes model and thinking only; the final result adds projection, context, and elapsed time.
+		// Edge case: retained events produce no collapsed result rows in either phase.
+		// Dependencies: this test uses the registered run_subagent renderer and shared render state.
 		await withIsolatedEnvironment(async () => {
 			const pi = createExtensionApiFake();
 			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
 			const tool = getRunSubagentTool(pi);
-			const eventCount = COLLAPSED_SUBAGENT_RESULT_LINES + 3;
 			const result: AgentToolResult<unknown> = {
 				content: [{ type: "text", text: "done" }],
 				details: {
 					runId: "helper:1:1",
 					agentId: "SubAgentExtractor",
+					taskName: "Extract runtime facts",
 					depth: 1,
 					runtime: {
 						modelId: "openai-codex/gpt-5.5",
@@ -3900,12 +4055,14 @@ describe("run-subagent", () => {
 					stderr: "",
 					stopReason: undefined,
 					errorMessage: undefined,
-					events: Array.from({ length: eventCount }, (_, index) => ({
-						kind: "assistant",
-						title: `event-${index + 1}`,
-						text: `text-${index + 1}`,
-						timestampMs: index + 1,
-					})),
+					events: [
+						{
+							kind: "assistant",
+							title: "retained event",
+							text: "retained text",
+							timestampMs: 1,
+						},
+					],
 					omittedEventCount: 0,
 					children: [],
 				},
@@ -3916,25 +4073,48 @@ describe("run-subagent", () => {
 				bold: (text: string) => text,
 			};
 			const rendererState = {};
+			const renderResultContext = {
+				args: {
+					taskName: "Extract runtime facts",
+					prompt: "Do work",
+				},
+				state: rendererState,
+				invalidate: () => {},
+			} as never;
+			const renderCall = (): string[] | undefined =>
+				tool
+					.renderCall?.(
+						{
+							agentId: "SubAgentExtractor",
+							taskName: "Extract runtime facts",
+							prompt: "Do work",
+						},
+						theme as never,
+						{ state: rendererState } as never,
+					)
+					.render(120);
+
+			tool
+				.renderResult?.(
+					result,
+					{ expanded: false, isPartial: true },
+					theme as never,
+					renderResultContext,
+				)
+				.render(120);
+			expect(renderCall()?.[0]).toBe(
+				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium",
+			);
+
 			const rendered = tool
 				.renderResult?.(
 					result,
 					{ expanded: false, isPartial: false },
 					theme as never,
-					{
-						args: { prompt: "Do work" },
-						state: rendererState,
-						invalidate: () => {},
-					} as never,
+					renderResultContext,
 				)
 				.render(120);
-			const renderedCall = tool
-				.renderCall?.(
-					{ agentId: "SubAgentExtractor", prompt: "Do work" },
-					theme as never,
-					{ state: rendererState } as never,
-				)
-				.render(120);
+			const renderedCall = renderCall();
 
 			expect(renderedCall?.[0]).toBe(
 				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium · ~160k/36k/272k · 43.9s",
@@ -3943,25 +4123,7 @@ describe("run-subagent", () => {
 			expect(renderedCall?.every((line) => visibleWidth(line) <= 120)).toBe(
 				true,
 			);
-			expect(rendered).toHaveLength(COLLAPSED_SUBAGENT_RESULT_LINES + 1);
-			const renderedLines = rendered ?? [];
-			expect(renderedLines.some((line) => line.includes("• event-1 "))).toBe(
-				false,
-			);
-			expect(renderedLines.some((line) => line.includes("• event-4 "))).toBe(
-				true,
-			);
-			expect(
-				renderedLines.some((line) => line.includes(`• event-${eventCount} `)),
-			).toBe(true);
-			expect(renderedLines.some((line) => line.includes("Final output"))).toBe(
-				false,
-			);
-			expect(renderedLines.at(-1)).toContain("... (");
-			expect(renderedLines.at(-1)).toContain("more lines");
-			expect(renderedLines.at(-1)).toContain("total");
-			expect(renderedLines.at(-1)).toContain("to expand");
-			expect(rendered?.every((line) => visibleWidth(line) <= 120)).toBe(true);
+			expect(rendered).toEqual([]);
 		});
 	});
 
@@ -3984,7 +4146,11 @@ describe("run-subagent", () => {
 			const renderedLines =
 				tool
 					.renderCall?.(
-						{ agentId: "SubAgentExtractor", prompt },
+						{
+							agentId: "SubAgentExtractor",
+							taskName: "Render Unicode preview",
+							prompt,
+						},
 						theme as never,
 						{} as never,
 					)
@@ -3994,137 +4160,6 @@ describe("run-subagent", () => {
 			for (const line of renderedLines) {
 				expect(line).not.toContain(SGR_RESET);
 				expect(visibleWidth(line)).toBeLessThanOrEqual(72);
-			}
-		});
-	});
-
-	test("clips collapsed mixed-direction Unicode progress to one visual row", async () => {
-		// Purpose: collapsed run_subagent progress must stay on one row because the tool shell owns row layout.
-		// Input and expected output: the session-log Unicode line renders as one bounded row that uses the full available width before the ellipsis.
-		// Edge case: the string includes combining marks, emoji sequences, right-to-left scripts, and explicit right-to-left marks.
-		// Dependencies: this test uses the registered run_subagent renderer and pi-tui visible-width measurement.
-		await withIsolatedEnvironment(async () => {
-			const pi = createExtensionApiFake();
-			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
-			const tool = getRunSubagentTool(pi);
-			const theme = {
-				fg: (_color: string, text: string) => text,
-				bold: (text: string) => text,
-			};
-			const text =
-				"Unicode-test: Здравствуй, мир! Привіт, світе! こんにちは世界 🌍🚀✨ — café naïve façade coöperate; math: ∑ᵢ₌₁ⁿ xᵢ² ≈ π; symbols: ♜♞♝♛♚♟; RTL: שלום עולם / مرحبا بالعالم; combining: é å ñ; emoji ZWJ: 👨‍👩‍👧‍👦 🧑🏽‍💻 🏳️‍🌈; rare: 𐍈 𠜎 𝄞";
-			const result: AgentToolResult<unknown> = {
-				content: [{ type: "text", text }],
-				details: {
-					runId: "helper:1:1",
-					agentId: "TestAgent",
-					depth: 1,
-					runtime: {
-						modelId: "openai-codex/gpt-5.5",
-						thinking: "low",
-						contextWindow: 272000,
-					},
-					contextUsage: {
-						tokens: 8666,
-						contextWindow: 272000,
-						percent: 3.1860294117647054,
-					},
-					status: "succeeded",
-					elapsedMs: 9161,
-					exitCode: 0,
-					finalOutput: text,
-					stderr: "",
-					stopReason: "stop",
-					errorMessage: undefined,
-					events: [
-						{
-							kind: "assistant",
-							title: "assistant",
-							text,
-							timestampMs: 1,
-						},
-					],
-					omittedEventCount: 0,
-					children: [],
-				},
-			};
-			const renderWidth = 160;
-
-			const collapsedLines =
-				tool
-					.renderResult?.(
-						result,
-						{ expanded: false, isPartial: false },
-						theme as never,
-						{ args: { prompt: "Do work" } } as never,
-					)
-					.render(renderWidth) ?? [];
-
-			expect(collapsedLines).toHaveLength(1);
-			expect(collapsedLines[0]).toContain("math:");
-			expect(collapsedLines[0]).toContain("RTL:");
-			expect(collapsedLines[0]).not.toContain("coöperate; …");
-			expect(collapsedLines[0]).toEndWith("…");
-			expect(collapsedLines[0]).not.toContain(SGR_RESET);
-			expect(visibleWidth(collapsedLines[0] ?? "")).toBe(renderWidth);
-		});
-	});
-
-	test("keeps collapsed subagent result rows within visible terminal width for emoji variation sequences", async () => {
-		// Purpose: collapsed run_subagent progress rows must satisfy pi TUI width checks when event text contains grapheme clusters.
-		// Input and expected output: an assistant progress event containing `⚠️` renders at or below 80 visible columns.
-		// Edge case: truncation happens near `⚠️`, which exposes code-point-based width undercounting.
-		// Dependencies: this test uses the registered run_subagent renderer and a plain in-memory theme.
-		await withIsolatedEnvironment(async () => {
-			const pi = createExtensionApiFake();
-			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
-			const tool = getRunSubagentTool(pi);
-			const theme = {
-				fg: (_color: string, text: string) => text,
-				bold: (text: string) => text,
-			};
-			const result: AgentToolResult<unknown> = {
-				content: [{ type: "text", text: "" }],
-				details: {
-					runId: "helper:1:1",
-					agentId: "SubAgentSage",
-					depth: 1,
-					runtime: undefined,
-					contextUsage: undefined,
-					status: "running",
-					elapsedMs: 168000,
-					exitCode: undefined,
-					finalOutput: "",
-					stderr: "",
-					stopReason: undefined,
-					errorMessage: undefined,
-					events: [
-						{
-							kind: "assistant",
-							title: "assistant",
-							text: "## Findings - **⚠️ FND-01 — Major** - **Location:** `pi-package/extensions/run-subagent/widget.ts`",
-							timestampMs: 1,
-						},
-					],
-					omittedEventCount: 0,
-					children: [],
-				},
-			};
-
-			const renderedLines =
-				tool
-					.renderResult?.(
-						result,
-						{ expanded: false, isPartial: false },
-						theme as never,
-						{ args: { prompt: "Do work" } } as never,
-					)
-					.render(80) ?? [];
-
-			expect(renderedLines).not.toHaveLength(0);
-			for (const line of renderedLines) {
-				expect(line).not.toContain(SGR_RESET);
-				expect(visibleWidth(line)).toBeLessThanOrEqual(80);
 			}
 		});
 	});

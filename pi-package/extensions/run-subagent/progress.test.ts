@@ -8,12 +8,90 @@ import {
 	createSubagentWidgetFactory,
 	createSubagentWidgetState,
 	recordSubagentWidgetRun,
+	resetSubagentWidgetState,
 } from "./widget";
 
 const MAX_EXPECTED_STORED_PROGRESS_TEXT_LENGTH = 240;
 const ZERO_WIDTH_STRESS_COUNT = 10_000;
 
 describe("run-subagent progress", () => {
+	test("propagates taskName and rejects unnamed nested runs", () => {
+		// Purpose: semantic run identity must survive snapshots and remain mandatory at nested RPC boundaries.
+		// Input and expected output: a named root retains its taskName, while nested details without taskName are ignored.
+		// Edge case: the unnamed nested payload otherwise has a complete valid progress shape.
+		// Dependencies: progress snapshots and nested tool updates share SubagentRunDetails validation.
+		const state = createSubagentProgressState({
+			runId: "root",
+			agentId: "SubAgentSage",
+			taskName: "Trace TUI redraws",
+			depth: 1,
+			startedAtMs: 0,
+		} as Parameters<typeof createSubagentProgressState>[0]);
+		const unnamedNestedDetails = {
+			runId: "nested",
+			agentId: "SubAgentExtractor",
+			depth: 2,
+			runtime: undefined,
+			contextUsage: undefined,
+			contextProjectionStatus: undefined,
+			status: "running",
+			elapsedMs: 10,
+			exitCode: undefined,
+			finalOutput: "",
+			stderr: "",
+			stopReason: undefined,
+			errorMessage: undefined,
+			events: [],
+			omittedEventCount: 0,
+			children: [],
+		};
+
+		recordSubagentSessionEvent(
+			state,
+			{
+				type: "tool_execution_update",
+				toolName: "run_subagent",
+				partialResult: { details: unnamedNestedDetails },
+			},
+			10,
+		);
+		const details = toSubagentRunDetails(state, "running", 10) as unknown as {
+			readonly taskName?: string;
+			readonly children: readonly unknown[];
+		};
+
+		expect(details.taskName).toBe("Trace TUI redraws");
+		expect(details.children).toEqual([]);
+	});
+
+	test("resets widget identity and pin state for a new session", () => {
+		// Purpose: run numbering and explicit selection must not leak across Pi sessions.
+		// Input and expected output: a recorded pinned run is followed by reset, leaving roots, pin, and numbering maps empty.
+		// Edge case: both per-run and per-agent numbering structures contain assigned values.
+		// Dependencies: widget recording assigns identity before the session lifecycle clears it.
+		const progress = createSubagentProgressState({
+			runId: "root",
+			agentId: "SubAgentSage",
+			taskName: "Inspect session reset",
+			depth: 1,
+			startedAtMs: 0,
+		});
+		const state = createSubagentWidgetState();
+		recordSubagentWidgetRun(
+			state,
+			toSubagentRunDetails(progress, "running", 10),
+			10,
+		);
+		state.pinnedRunId = "root";
+
+		resetSubagentWidgetState(state);
+
+		expect(state.roots).toEqual([]);
+		expect(state.pinnedRunId).toBeUndefined();
+		expect(state.instanceNumberByRunId.size).toBe(0);
+		expect(state.nextInstanceNumberByAgentId.size).toBe(0);
+	});
+
 	test("preserves tool call IDs across interleaved same-name events", () => {
 		// Purpose: widget activity must have a stable ownership key for parallel calls to one tool.
 		// Input and expected output: grep A and grep B start before grep A completes, retaining three matching IDs.
@@ -22,6 +100,7 @@ describe("run-subagent progress", () => {
 		const state = createSubagentProgressState({
 			runId: "root",
 			agentId: "SubAgentSage",
+			taskName: "Correlate tool calls",
 			depth: 1,
 			startedAtMs: 0,
 		});
@@ -71,6 +150,7 @@ describe("run-subagent progress", () => {
 		const state = createSubagentProgressState({
 			runId: "unicode",
 			agentId: "SubAgentSage",
+			taskName: "Preserve Unicode progress",
 			depth: 1,
 			startedAtMs: 0,
 		});
@@ -108,6 +188,7 @@ describe("run-subagent progress", () => {
 		const state = createSubagentProgressState({
 			runId: "bounded",
 			agentId: "SubAgentSage",
+			taskName: "Bound progress storage",
 			depth: 1,
 			startedAtMs: 0,
 		});

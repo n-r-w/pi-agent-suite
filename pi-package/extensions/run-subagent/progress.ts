@@ -66,10 +66,22 @@ export interface SubagentProgressEvent {
 	readonly timestampMs: number;
 }
 
+/** Distinguishes tool lifecycle rows from assistant output and assistant failures. */
+export function isSubagentToolLifecycleEvent(
+	event: SubagentProgressEvent,
+): boolean {
+	return (
+		event.kind === "tool_call" ||
+		event.kind === "tool_result" ||
+		(event.kind === "error" && event.title !== "assistant")
+	);
+}
+
 /** Stores mutable progress while a child process is still producing events. */
 export interface SubagentProgressState {
 	readonly runId: string;
 	readonly agentId: string;
+	readonly taskName: string;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
 	readonly childSessionId: string | undefined;
@@ -91,6 +103,7 @@ export interface SubagentProgressState {
 export interface SubagentRunDetails {
 	readonly runId: string;
 	readonly agentId: string;
+	readonly taskName: string;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
 	readonly childSessionId?: string | undefined;
@@ -112,6 +125,7 @@ export interface SubagentRunDetails {
 
 interface CreateSubagentProgressStateOptions {
 	readonly agentId: string;
+	readonly taskName: string;
 	readonly depth: number;
 	readonly startedAtMs: number;
 	readonly runtime?: SubagentRuntimeDetails;
@@ -130,6 +144,7 @@ export function createSubagentProgressState(
 	return {
 		runId,
 		agentId: options.agentId,
+		taskName: options.taskName,
 		depth: options.depth,
 		runtime: options.runtime,
 		childSessionId: options.childSessionId,
@@ -165,6 +180,7 @@ export function toSubagentRunDetails(
 	return {
 		runId: state.runId,
 		agentId: state.agentId,
+		taskName: state.taskName,
 		depth: state.depth,
 		runtime: state.runtime,
 		childSessionId: state.childSessionId,
@@ -496,6 +512,7 @@ function isSubagentRunDetails(value: unknown): value is SubagentRunDetails {
 	const details = value as {
 		readonly runId?: unknown;
 		readonly agentId?: unknown;
+		readonly taskName?: unknown;
 		readonly depth?: unknown;
 		readonly status?: unknown;
 		readonly elapsedMs?: unknown;
@@ -505,6 +522,7 @@ function isSubagentRunDetails(value: unknown): value is SubagentRunDetails {
 	return (
 		typeof details.runId === "string" &&
 		typeof details.agentId === "string" &&
+		typeof details.taskName === "string" &&
 		typeof details.depth === "number" &&
 		isSubagentRunStatus(details.status) &&
 		typeof details.elapsedMs === "number" &&

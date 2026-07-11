@@ -3,6 +3,7 @@ import type {
 	SubagentProgressEvent,
 	SubagentRunDetails,
 	SubagentRunStatus,
+	SubagentRuntimeDetails,
 } from "../../pi-package/extensions/run-subagent/progress";
 import type { SubagentWidgetTheme } from "../../pi-package/extensions/run-subagent/widget-lines";
 
@@ -21,8 +22,10 @@ export const DEFAULT_SUBAGENT_WIDGET_WIDTH = 200;
 export interface SubagentWidgetRunFixture {
 	readonly runId: string;
 	readonly agentId?: string;
+	readonly taskName?: string;
 	readonly status?: SubagentRunStatus;
 	readonly elapsedMs?: number;
+	readonly runtime?: SubagentRuntimeDetails;
 	readonly contextUsage?: SubagentContextUsage;
 	readonly contextProjectionStatus?: string;
 	readonly events?: readonly SubagentProgressEvent[];
@@ -42,8 +45,9 @@ function createRun(
 	return {
 		runId: fixture.runId,
 		agentId: fixture.agentId ?? fixture.runId,
+		taskName: fixture.taskName ?? `Inspect ${fixture.runId}`,
 		depth,
-		runtime: undefined,
+		runtime: fixture.runtime,
 		contextUsage: fixture.contextUsage,
 		contextProjectionStatus: fixture.contextProjectionStatus,
 		status: fixture.status ?? "running",
@@ -61,21 +65,59 @@ function createRun(
 	};
 }
 
-/** Renders the passive widget through its public state and component factory. */
+interface RenderSubagentWidgetFixtureOptions {
+	readonly roots: readonly SubagentWidgetRunFixture[];
+	readonly lineBudget: number;
+	readonly width: number;
+	readonly theme: SubagentWidgetTheme | undefined;
+	readonly pinnedRunId: string | undefined;
+}
+
+/** Renders the automatic widget through its public state and component factory. */
 export function renderSubagentWidgetFixture(
 	roots: readonly SubagentWidgetRunFixture[],
 	lineBudget: number,
 	width = DEFAULT_SUBAGENT_WIDGET_WIDTH,
 	theme?: SubagentWidgetTheme,
 ): string[] {
+	return renderSubagentWidget({
+		roots,
+		lineBudget,
+		width,
+		theme,
+		pinnedRunId: undefined,
+	});
+}
+
+/** Renders one pinned run without adding pin controls to unrelated widget tests. */
+export function renderPinnedSubagentWidgetFixture(
+	roots: readonly SubagentWidgetRunFixture[],
+	pinnedRunId: string,
+	lineBudget: number,
+	width = DEFAULT_SUBAGENT_WIDGET_WIDTH,
+): string[] {
+	return renderSubagentWidget({
+		roots,
+		lineBudget,
+		width,
+		theme: undefined,
+		pinnedRunId,
+	});
+}
+
+/** Builds widget state once so automatic and pinned fixtures share numbering behavior. */
+function renderSubagentWidget(
+	options: RenderSubagentWidgetFixtureOptions,
+): string[] {
 	const state = createSubagentWidgetState();
-	for (const [index, root] of roots.entries()) {
+	for (const [index, root] of options.roots.entries()) {
 		recordSubagentWidgetRun(state, createRun(root), index + 1);
 	}
-	return createSubagentWidgetFactory(state, lineBudget)(
+	state.pinnedRunId = options.pinnedRunId;
+	return createSubagentWidgetFactory(state, options.lineBudget)(
 		undefined,
-		theme,
-	).render(width);
+		options.theme,
+	).render(options.width);
 }
 
 /** Removes the separator that Pi renders outside the configured line budget. */

@@ -4,10 +4,209 @@ import {
 	createSubagentWidgetEvent as createEvent,
 	getSubagentWidgetContentLines as getContentLines,
 	type SubagentWidgetRunFixture as RunFixture,
+	renderPinnedSubagentWidgetFixture as renderPinnedWidget,
 	renderSubagentWidgetFixture as renderWidget,
 } from "../../../test/support/subagent-widget";
 
 describe("subagent widget hierarchy", () => {
+	test("shows visible totals and the browser shortcut when runs are hidden", () => {
+		// Purpose: users must know that the bounded automatic view omits selectable runs.
+		// Input and expected output: three active roots with two body rows render one concrete row, one summary, and a 1/3 browser hint.
+		// Edge case: aggregate summary rows do not count as displayed runs.
+		// Dependencies: header metadata is derived after automatic forest selection.
+		const header = getContentLines(
+			renderWidget(
+				[{ runId: "RootA" }, { runId: "RootB" }, { runId: "RootC" }],
+				3,
+			),
+		)[0];
+
+		expect(header).toContain("1/3 shown");
+		expect(header).toContain("Ctrl+Shift+G");
+	});
+
+	test("keeps the browser shortcut visible when every run fits", () => {
+		// Purpose: users must retain direct browser access even when the current overview has no omissions.
+		// Input and expected output: two completed roots fit in the body while the header still names Ctrl+Shift+G.
+		// Edge case: displayed and total run counts are equal.
+		// Dependencies: the browser shortcut is an overview action, not only an omission warning.
+		const header = getContentLines(
+			renderWidget(
+				[
+					{ runId: "RootA", status: "succeeded" },
+					{ runId: "RootB", status: "succeeded" },
+				],
+				3,
+			),
+		)[0];
+
+		expect(header).toContain("2/2 shown");
+		expect(header).toContain("Ctrl+Shift+G");
+	});
+
+	test("shows a selected child with its parent and latest tool events", () => {
+		// Purpose: selecting a child must replace the overview with bounded run details rather than a full ancestry path.
+		// Input and expected output: two header rows leave room for the latest call and result as separate rows.
+		// Edge case: a later assistant event is excluded and every rendered row obeys the width contract.
+		// Dependencies: the presentation tree supplies the direct parent and relative nesting depth.
+		const rendered = getContentLines(
+			renderPinnedWidget(
+				[
+					{
+						runId: "architect",
+						agentId: "SubAgentArchitect",
+						taskName: "Design widget model",
+						children: [
+							{
+								runId: "sage",
+								agentId: "SubAgentSage",
+								taskName: "Review widget model",
+								elapsedMs: 85_300,
+								runtime: {
+									modelId: "openai-codex/gpt-5.6-luna",
+									thinking: "low",
+									contextWindow: 372_000,
+								},
+								contextUsage: {
+									tokens: 18_000,
+									contextWindow: 372_000,
+									percent: 4.84,
+								},
+								events: [
+									createEvent("tool_call", "read", '{"path":"old"}', 1),
+									createEvent("tool_result", "read", "old result", 2),
+									createEvent("tool_call", "bash", '{"command":"bun test"}', 3),
+									createEvent("tool_result", "bash", "27 pass", 4),
+									createEvent("assistant", "assistant", "done", 5),
+									createEvent("error", "assistant", "late failure", 6),
+								],
+							},
+						],
+					},
+				],
+				"sage",
+				4,
+				120,
+			),
+		);
+		const text = rendered.join("\n");
+
+		expect(rendered).toHaveLength(4);
+		expect(rendered[0]).toContain(
+			"Child: SubAgentSage · Review widget model · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s",
+		);
+		expect(rendered[1]).toBe(
+			"Parent: SubAgentArchitect · Design widget model · Depth 1",
+		);
+		expect(rendered[2]).toContain('→ bash {"command":"bun test"}');
+		expect(rendered[3]).toContain("← bash 27 pass");
+		expect(text).not.toContain("old result");
+		expect(text).not.toContain("assistant");
+		for (const line of rendered) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(120);
+		}
+	});
+
+	test("shows a selected root with the latest events under one header", () => {
+		// Purpose: a selected root must spend every row after its header on recent tool activity.
+		// Input and expected output: a three-line budget renders one Root header and the latest call/result pair.
+		// Edge case: older tool events are discarded by the visual line budget without a summary row.
+		// Dependencies: each retained event is one non-wrapping widget row.
+		const rendered = getContentLines(
+			renderPinnedWidget(
+				[
+					{
+						runId: "root",
+						agentId: "YandexExtractor",
+						taskName: "Delegate identity checks",
+						events: [
+							createEvent("tool_call", "grep", "old query", 1),
+							createEvent("tool_call", "read", "latest input", 2),
+							createEvent("tool_result", "read", "latest output", 3),
+						],
+					},
+				],
+				"root",
+				3,
+				80,
+			),
+		);
+		const text = rendered.join("\n");
+
+		expect(rendered).toHaveLength(3);
+		expect(rendered[0]).toContain(
+			"Root: YandexExtractor · Delegate identity checks",
+		);
+		expect(rendered[1]).toContain("→ read latest input");
+		expect(rendered[2]).toContain("← read latest output");
+		expect(text).not.toContain("old query");
+	});
+
+	test("keeps the latest tool activity after assistant completion", () => {
+		// Purpose: overview rows must describe the latest tool operation instead of generic assistant completion.
+		// Input and expected output: a tool result followed by an assistant event still renders the matching tool call.
+		// Edge case: result correlation recovers call arguments through toolCallId.
+		// Dependencies: automatic mode retains the existing priority and hierarchy selection.
+		const rendered = getContentLines(
+			renderWidget(
+				[
+					{
+						runId: "root",
+						events: [
+							createEvent("tool_call", "read", '{"path":"README.md"}', {
+								timestampMs: 1,
+								toolCallId: "call-1",
+							}),
+							createEvent("tool_result", "read", "contents", {
+								timestampMs: 2,
+								toolCallId: "call-1",
+							}),
+							createEvent("assistant", "assistant", "done", 3),
+							createEvent("error", "assistant", "late failure", 4),
+						],
+					},
+				],
+				2,
+			),
+		).join("\n");
+
+		expect(rendered).toContain('read {"path":"README.md"}');
+		expect(rendered).not.toContain("assistant completed");
+	});
+
+	test("assigns one stable same-type sequence across root and nested runs", () => {
+		// Purpose: concurrent instances of one agent type must remain distinguishable by package identity and semantic task.
+		// Input and expected output: two roots and one nested Sage run render as Sage #1, #2, and #3 with their task names.
+		// Edge case: the nested run is observed between the two roots and shares their agentId.
+		// Dependencies: the top-level widget registry assigns presentation identity while traversing recorded details.
+		const rendered = renderWidget(
+			[
+				{
+					runId: "root-a",
+					agentId: "SubAgentSage",
+					taskName: "Trace TUI redraws",
+					children: [
+						{
+							runId: "nested-a",
+							agentId: "SubAgentSage",
+							taskName: "Audit widget state",
+						},
+					],
+				},
+				{
+					runId: "root-b",
+					agentId: "SubAgentSage",
+					taskName: "Design browser navigation",
+				},
+			],
+			10,
+		).join("\n");
+
+		expect(rendered).toContain("Sage #1 · Trace TUI redraws");
+		expect(rendered).toContain("Sage #2 · Audit widget state");
+		expect(rendered).toContain("Sage #3 · Design browser navigation");
+	});
+
 	test("keeps a nested failure with its complete ancestor path", () => {
 		// Purpose: a high-priority descendant must never be rendered without every ancestor.
 		// Input and expected output: one active path and three terminal leaves fit as root, child, failed leaf, and a local summary.
@@ -230,26 +429,70 @@ describe("subagent widget hierarchy", () => {
 		expect(constrained).toContain("RootB");
 	});
 
-	test("collapses a fully successful widget to its aggregate header", () => {
-		// Purpose: completed successful history must not keep occupying the live status area.
-		// Input and expected output: two successful roots with a successful child render only the header.
-		// Edge case: header totals still include the nested child.
-		// Dependencies: the all-terminal policy is evaluated before body allocation.
+	test("shows the most recently updated completed root", () => {
+		// Purpose: automatic view must retain useful terminal context after all work finishes.
+		// Input and expected output: one body row plus the required hidden summary selects the newest of three successful roots.
+		// Edge case: the oldest root owns a successful child, and every run still contributes to header totals.
+		// Dependencies: completed root admission uses subtree updatedAtMs ordering.
 		const rendered = getContentLines(
 			renderWidget(
 				[
 					{
 						runId: "DoneRootA",
 						status: "succeeded",
+						events: [createEvent("assistant", "older", undefined, 10)],
 						children: [{ runId: "DoneChild", status: "succeeded" }],
 					},
-					{ runId: "DoneRootB", status: "succeeded" },
+					{
+						runId: "DoneRootB",
+						status: "succeeded",
+						events: [createEvent("assistant", "newer", undefined, 20)],
+					},
+					{
+						runId: "DoneRootC",
+						status: "succeeded",
+						events: [createEvent("assistant", "newest", undefined, 30)],
+					},
 				],
-				7,
+				3,
 			),
 		);
+		const text = rendered.join("\n");
 
-		expect(rendered).toEqual(["Subagents: 0 running · 0 failed · 3 done"]);
+		expect(text).toContain("DoneRootC");
+		expect(text).not.toContain("DoneRootA");
+		expect(text).not.toContain("DoneRootB");
+		expect(rendered[0]).toContain("4 done");
+	});
+
+	test("prioritizes failed work before newer running work", () => {
+		// Purpose: the smallest automatic view must reserve attention for terminal failure before active progress.
+		// Input and expected output: one failed root and two newer running roots compete for two body rows, and the failed root is shown.
+		// Edge case: recency must not override status priority while hidden work retains an aggregate row.
+		// Dependencies: root admission order defines ownership of the constrained body budget.
+		const rendered = getContentLines(
+			renderWidget(
+				[
+					{
+						runId: "FailedRoot",
+						status: "failed",
+						events: [createEvent("error", "failed", undefined, 10)],
+					},
+					{
+						runId: "RunningRootA",
+						events: [createEvent("assistant", "running", undefined, 20)],
+					},
+					{
+						runId: "RunningRootB",
+						events: [createEvent("assistant", "newest", undefined, 30)],
+					},
+				],
+				3,
+			),
+		).join("\n");
+
+		expect(rendered).toContain("FailedRoot");
+		expect(rendered).toContain("root agent");
 	});
 
 	test("keeps a terminal failure visible with its ancestor path", () => {
@@ -317,6 +560,7 @@ describe("subagent widget hierarchy", () => {
 					"DoneLeafA",
 					"RootB",
 					"FailedChildB",
+					"DoneRootC",
 				],
 			},
 			{
@@ -329,27 +573,34 @@ describe("subagent widget hierarchy", () => {
 					"DoneLeafA",
 					"RootB",
 					"FailedChildB",
+					"DoneRootC",
 				],
 			},
 			{
 				budget: 3,
 				visible: ["RootA", "RootB"],
-				hidden: ["ChildA", "GrandchildA", "DoneLeafA", "FailedChildB"],
+				hidden: [
+					"ChildA",
+					"GrandchildA",
+					"DoneLeafA",
+					"FailedChildB",
+					"DoneRootC",
+				],
 			},
 			{
 				budget: 4,
-				visible: ["RootA", "ChildA", "RootB"],
-				hidden: ["GrandchildA", "DoneLeafA", "FailedChildB"],
+				visible: ["RootA", "RootB", "FailedChildB"],
+				hidden: ["ChildA", "GrandchildA", "DoneLeafA", "DoneRootC"],
 			},
 			{
 				budget: 5,
 				visible: ["RootA", "ChildA", "RootB", "FailedChildB"],
-				hidden: ["GrandchildA", "DoneLeafA"],
+				hidden: ["GrandchildA", "DoneLeafA", "DoneRootC"],
 			},
 			{
 				budget: 6,
-				visible: ["RootA", "ChildA", "GrandchildA", "DoneLeafA", "RootB"],
-				hidden: ["FailedChildB"],
+				visible: ["RootA", "ChildA", "RootB", "FailedChildB", "DoneRootC"],
+				hidden: ["GrandchildA", "DoneLeafA"],
 			},
 			{
 				budget: 7,
@@ -361,7 +612,7 @@ describe("subagent widget hierarchy", () => {
 					"RootB",
 					"FailedChildB",
 				],
-				hidden: [],
+				hidden: ["DoneRootC"],
 			},
 		] as const;
 		for (const expectation of expectations) {
@@ -376,7 +627,6 @@ describe("subagent widget hierarchy", () => {
 			for (const hidden of expectation.hidden) {
 				expect(text).not.toContain(hidden);
 			}
-			expect(text).not.toContain("DoneRootC");
 			for (const line of rendered) {
 				expect(visibleWidth(line)).toBeLessThanOrEqual(80);
 			}
@@ -457,6 +707,7 @@ describe("subagent widget hierarchy", () => {
 								events: [createEvent("tool_call", "read", undefined, 90)],
 							},
 							{ runId: "HiddenFailed", status: "failed" },
+							{ runId: "HiddenFailedB", status: "failed" },
 							{ runId: "HiddenDone", status: "succeeded" },
 						],
 					},
@@ -482,6 +733,11 @@ describe("subagent widget hierarchy", () => {
 						events: [createEvent("error", "assistant", "failed", 80)],
 					},
 					{
+						runId: "HiddenFailedB",
+						status: "failed",
+						events: [createEvent("error", "assistant", "failed", 75)],
+					},
+					{
 						runId: "HiddenDone",
 						status: "succeeded",
 						events: [createEvent("assistant", "assistant", "done", 70)],
@@ -493,8 +749,8 @@ describe("subagent widget hierarchy", () => {
 		).join("\n");
 
 		expect(inline).toContain("3 nested: ⏳1 ✗1 ✓1");
-		expect(local).toContain("3 more: ⏳1 ✗1 ✓1");
-		expect(global).toContain("3 roots: ⏳1 ✗1 ✓1");
+		expect(local).toContain("4 more: ⏳2 ✗1 ✓1");
+		expect(global).toContain("4 roots: ⏳2 ✗1 ✓1");
 		for (const text of [inline, local, global]) {
 			for (const line of text.split("\n")) {
 				expect(visibleWidth(line)).toBeLessThanOrEqual(40);

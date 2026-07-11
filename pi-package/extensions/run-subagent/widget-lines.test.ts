@@ -217,8 +217,9 @@ describe("subagent widget compact rows", () => {
 				],
 			},
 		];
+		const narrowWidth = 87;
 		const wide = getContentLines(renderWidget(roots, 2, 200)).join("\n");
-		const narrowLines = getContentLines(renderWidget(roots, 2, 80));
+		const narrowLines = getContentLines(renderWidget(roots, 2, narrowWidth));
 		const narrowActivity = narrowLines.find((line) =>
 			line.includes("team_message_get"),
 		);
@@ -227,8 +228,8 @@ describe("subagent widget compact rows", () => {
 		expect(narrowActivity).toBeDefined();
 		expect(narrowActivity).toContain(family);
 		expect(narrowActivity).not.toContain(family.repeat(2));
-		expect(narrowActivity).toEndWith("…");
-		expect(visibleWidth(narrowActivity ?? "")).toBeLessThanOrEqual(80);
+		expect(narrowActivity).toEndWith("...");
+		expect(visibleWidth(narrowActivity ?? "")).toBeLessThanOrEqual(narrowWidth);
 	});
 
 	test("correlates parallel same-name tool results by tool call ID", () => {

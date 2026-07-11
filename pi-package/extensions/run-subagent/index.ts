@@ -66,8 +66,10 @@ import {
 	createSubagentWidgetFactory,
 	createSubagentWidgetState,
 	recordSubagentWidgetRun,
+	resetSubagentWidgetState,
 	SUBAGENT_WIDGET_KEY,
 } from "./widget";
+import { createSubagentBrowserController } from "./widget-browser";
 
 const TOOL_NAME = "run_subagent";
 const ISSUE_PREFIX = "[run-subagent]";
@@ -105,15 +107,26 @@ const ABORTED_CHILD_RPC_RUN_ERROR = "subagent execution aborted";
 const PROMPT_COMMAND_ID = "run-subagent-prompt";
 /** RPC command id used for the child abort request. */
 const ABORT_COMMAND_ID = "run-subagent-abort";
+/** Slash command that opens the complete subagent browser. */
+const SUBAGENT_BROWSER_COMMAND_ID = "subagents";
+/** Keyboard shortcut that opens the complete subagent browser. */
+const SUBAGENT_BROWSER_SHORTCUT = "ctrl+shift+g";
 /** Valid canonical non-negative integer format for child nesting depth. */
 const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
 const RunSubagentParameters = Type.Object({
 	agentId: Type.String({ description: "Callable agent ID to run" }),
+	taskName: Type.String({
+		minLength: 3,
+		maxLength: 60,
+		description:
+			'Unique 2–6 word name for the specific work performed by this run. Use an action and object, for example "Trace TUI redraws". For concurrent calls, distinguish each task by its focus. Do not include the agent type, generic labels, sequence numbers, or technical IDs.',
+	}),
 	prompt: Type.String({ description: "Task prompt for the selected subagent" }),
 });
 
 interface RunSubagentParams {
 	readonly agentId: string;
+	readonly taskName: string;
 	readonly prompt: string;
 }
 
@@ -198,6 +211,7 @@ interface ExecuteRunSubagentOptions {
 	readonly pi: ExtensionAPI;
 	readonly spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>;
 	readonly subagentWidgetState: ReturnType<typeof createSubagentWidgetState>;
+	readonly subagentBrowser: ReturnType<typeof createSubagentBrowserController>;
 	readonly toolCallId: string;
 	readonly params: RunSubagentParams;
 	readonly signal: AbortSignal | undefined;
@@ -235,7 +249,31 @@ export default async function runSubagent(
 	const description = resolveRunSubagentDescription(startupConfig);
 	const spawnPi = dependencies.spawnPi ?? defaultSpawnPi;
 	const subagentWidgetState = createSubagentWidgetState();
+	const subagentBrowser = createSubagentBrowserController(
+		subagentWidgetState,
+		startupConfig.widgetLineBudget,
+	);
 	await publishRunSubagentPromptContribution(pi);
+
+	pi.registerCommand(SUBAGENT_BROWSER_COMMAND_ID, {
+		description: "Browse and pin subagent progress",
+		handler: async (_args, ctx) => {
+			await subagentBrowser.open(ctx);
+		},
+	});
+	pi.registerShortcut(SUBAGENT_BROWSER_SHORTCUT, {
+		description: "Browse and pin subagent progress",
+		handler: async (ctx) => {
+			await subagentBrowser.open(ctx);
+		},
+	});
+	pi.on("session_start", (_event, ctx) => {
+		subagentBrowser.close();
+		resetSubagentWidgetState(subagentWidgetState);
+		if (ctx.mode === "tui" && ctx.hasUI !== false) {
+			ctx.ui.setWidget(SUBAGENT_WIDGET_KEY, undefined);
+		}
+	});
 
 	pi.registerTool({
 		name: TOOL_NAME,
@@ -248,6 +286,7 @@ export default async function runSubagent(
 				pi,
 				spawnPi,
 				subagentWidgetState,
+				subagentBrowser,
 				toolCallId,
 				params: params as RunSubagentParams,
 				signal,
@@ -548,10 +587,12 @@ function createRunSubagentProgress(
 	) => SubagentRunDetails;
 } {
 	let lastWidgetUpdateAt = 0;
+	let hasPublishedTuiHeader = false;
 	const childSessionDir = resolveChildSessionDir();
 	const childSessionId = createAuxiliaryLlmSessionId();
 	const state = createSubagentProgressState({
 		agentId: plan.agent.id,
+		taskName: options.params.taskName,
 		depth: plan.depth + 1,
 		startedAtMs: Date.now(),
 		runtime: resolveSubagentRuntimeDetails(
@@ -568,7 +609,12 @@ function createRunSubagentProgress(
 		state,
 		emit(status, exitCode, forceWidgetUpdate = false) {
 			const details = createSubagentRunDetails(state, status, exitCode);
-			reportSubagentProgress(options.onUpdate, details);
+			// TUI publishes one partial result to populate the static runtime header.
+			// Later TUI progress belongs only to the widget, while RPC keeps every update for parent propagation.
+			if (options.ctx.mode !== "tui" || !hasPublishedTuiHeader) {
+				reportSubagentProgress(options.onUpdate, details);
+				hasPublishedTuiHeader = options.ctx.mode === "tui";
+			}
 			lastWidgetUpdateAt = updateSubagentWidget({
 				options,
 				plan,
@@ -618,7 +664,8 @@ function updateSubagentWidget({
 	readonly forceWidgetUpdate: boolean;
 }): number {
 	const now = Date.now();
-	if (!(options.ctx.hasUI ?? true)) {
+	// RPC can expose dialog-capable UI but must not create terminal-only widget state.
+	if (options.ctx.mode !== "tui" || options.ctx.hasUI === false) {
 		return lastWidgetUpdateAt;
 	}
 
@@ -638,6 +685,7 @@ function updateSubagentWidget({
 			plan.config.widgetLineBudget,
 		),
 	);
+	options.subagentBrowser.refresh();
 	return now;
 }
 

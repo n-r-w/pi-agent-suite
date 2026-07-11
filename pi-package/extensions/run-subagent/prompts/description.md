@@ -8,6 +8,7 @@ RULES:
     2) Dependency map MUST list each subtask's required inputs, expected outputs, and whether those outputs can change another subtask's prompt, scope, sources, or evaluation criteria.
     3) Parallel batch is valid ONLY when every subagent can complete correctly without outputs from any other subagent in the same batch.
     4) If dependency status is unclear, MUST treat the subtasks as dependent and run them sequentially.
+    5) Each call in a parallel batch MUST use a distinct taskName that identifies its specific subtask. Distinguish names by task focus, not by sequence numbers or technical IDs.
 3. Subagents MUST NOT be used to:
     1) Load skills
     2) Reread information already extracted

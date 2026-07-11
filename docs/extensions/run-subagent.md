@@ -32,35 +32,82 @@ If the file is missing, the extension is enabled with default settings.
 
 The config object accepts only these keys: `enabled`, `maxDepth`, `widgetLineBudget`, and `descriptionPromptFile`.
 
-## Live widget
+## Live progress
 
-The widget is a passive status view. It does not accept focus or provide branch expansion controls.
+Interactive TUI mode sends one initial partial update to populate the historical call with the resolved model and thinking level. Later live progress appears only in the widget and focused browser. RPC and other non-TUI modes keep every intermediate tool update for nested progress propagation.
 
-The header counts every direct and nested run. Body rows follow these rules:
+The header counts every direct and nested run. It also shows the number of concrete displayed runs, total recorded runs, and the `Ctrl+Shift+G` browser shortcut.
 
+### Automatic view
+
+The automatic body follows these rules:
+
+- Failed and aborted work is selected before running work.
+- Running work is selected before completed work.
+- Runs within one status class are ordered by their latest update time.
 - A nested run is shown only with its complete visible ancestor path.
-- Running root branches are selected before descendant details.
-- Running descendants are selected before completed descendants.
-- Failed and aborted paths retain their ancestors when the path fits. Aggregate `failed` counts include aborted runs.
-- Completed descendants and root branches use spare lines but do not displace running or failed paths.
 - A parent with only hidden descendants shows their aggregate on the parent row.
 - A partially visible branch ends with a local omission summary.
-- Completed root branches use individual spare rows while all remaining root overflow still fits in one root-level summary. Hidden active or failed work always keeps the summary.
-- After every root branch has its own row, completed descendants under newly visible completed roots use the remaining lines.
-- A fully successful tree collapses to the aggregate header. Failed or aborted work remains visible as a path when it fits, otherwise through the required omission aggregate. With `widgetLineBudget` set to `1`, only aggregate header counts fit.
+- Hidden root branches keep a root-level summary when the line budget permits it or attention-bearing work is hidden.
+- Completed runs use remaining rows after failed, aborted, and running work.
+- With `widgetLineBudget` set to `1`, only the aggregate header fits.
 
 Connectors are derived after the visible tree is selected. A visible descendant therefore cannot retain a connector to a hidden parent or sibling.
 
-Each agent row uses one visual terminal line:
+### Selected-run view
+
+Selecting a run in the browser switches the widget from the aggregate overview to that run. Selection uses the internal `runId` and remains stable while other runs start or finish.
+
+A root run uses one header row:
+
+```text
+Root: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
+```
+
+When the line budget permits a second row, a nested run shows its direct parent and root-relative depth:
+
+```text
+Child: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
+Parent: SubAgentExtractor · Delegate catalog checks · Depth 1
+```
+
+The remaining `widgetLineBudget` rows show the latest retained tool events in chronological order. `tool_call`, `tool_result`, and tool execution `error` events each use one row. Assistant output and assistant failures are excluded. Rows do not wrap and are clipped to terminal width. The selected-run view does not scroll.
+
+Select `Automatic view` in the browser to resume aggregate selection. Starting a new Pi session clears the selected run and instance numbering.
+
+### Browser
+
+Open the complete run list with either:
+
+- `/subagents`
+- `Ctrl+Shift+G`
+
+The browser uses Pi `SelectList` behavior:
+
+- `Up` and `Down` navigate and scroll through every recorded root and nested run.
+- `Enter` shows the selected run in the widget or applies `Automatic view`.
+- `Escape` or `Ctrl+C` closes the browser without changing the current mode.
+
+Browser labels append `Root` for root runs or root-relative `Depth N` for nested runs. Nested descriptions also name the direct parent. The browser preserves selection by `runId` while live status, elapsed time, context usage, and activity descriptions change.
+
+### Run identity and row content
+
+Each run receives a stable instance number per agent type in the current session. The visible identity combines the shortened agent type, instance number, and required `taskName`, for example `Sage #2 · Review widget navigation`. `runId` remains internal.
+
+Each overview agent row uses one visual terminal line:
 
 - Elapsed time uses milliseconds below one second, then seconds, `m:ss`, or `h:mm:ss`.
 - Context usage shows rounded whole-thousand token counts such as `190k/372k`; unknown overflow usage uses `~/372k`.
 - Projection savings remain first and use the same rounding, for example `~20k/190k/372k`. Context pressure colors still use the unrounded usage percentage.
-- Tool activity shows the tool name followed by its serialized call arguments. Captured argument text is limited to 240 UTF-16 code units and 240 terminal columns, then clipped to the remaining row width with `…`. Tool result payloads are not shown; failures and empty searches use compact outcome labels. Terminal control sequences and standalone C0/C1 controls are removed. Terminal line whitespace is folded without rewriting other Unicode content.
+- Tool activity shows the most recent tool name followed by its serialized call arguments, even when a later assistant event completes the run. Captured argument text is limited to 240 UTF-16 code units and 240 terminal columns, then clipped to the remaining row width with `…`. Tool result payloads are not shown in overview rows; failures and empty searches use compact outcome labels. Terminal control sequences and standalone C0/C1 controls are removed. Terminal line whitespace is folded without rewriting other Unicode content.
 
-When a mixed omission summary does not fit in verbose form, it uses the existing status icons while preserving every non-zero count. For example, `3 nested: 1 running · 1 failed · 1 done` becomes `3 nested: ⏳1 ✗1 ✓1`.
+When a mixed omission summary does not fit in verbose form, it uses status icons while preserving every non-zero count. For example, `3 nested: 1 running · 1 failed · 1 done` becomes `3 nested: ⏳1 ✗1 ✓1`.
 
 Rows are clipped by terminal display width after grapheme-aware plain-text selection and before theme colors are applied. This preserves composed Unicode characters and prevents ANSI reset sequences from leaking into the parent widget style.
+
+## Historical tool rendering
+
+The collapsed `run_subagent` call shows `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. After execution resolves the child runtime, one partial update adds the model and thinking level to the header. The header then remains static until the final result adds context usage and elapsed time. Expanding an active call shows the complete task prompt. Expanding a completed call also shows only the final answer, failure, or abort result; it does not show the intermediate event timeline or a separate stderr section.
 
 ## Child session logs
 
@@ -89,4 +136,5 @@ When the tool is available, a model calls `run_subagent` with:
 | Name | Required | Type or shape | Meaning |
 | --- | --- | --- | --- |
 | `agentId` | Yes | String | Callable agent ID to run. |
-| `prompt` | Yes | String | Task prompt for the selected subagent. |
+| `taskName` | Yes | String with 3–60 characters | Unique 2–6 word action-and-object name for this task. Concurrent calls use distinct names based on task focus. |
+| `prompt` | Yes | String | Full task prompt for the selected subagent. |

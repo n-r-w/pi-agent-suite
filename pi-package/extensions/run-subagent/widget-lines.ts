@@ -14,10 +14,13 @@ import {
 import {
 	formatSubagentContextUsage,
 	formatSubagentProjectionStatus,
+	isSubagentToolLifecycleEvent,
 	type SubagentContextUsage,
+	type SubagentProgressEvent,
 	type SubagentRunStatus,
 } from "./progress";
 import type {
+	FocusedSubagentWidgetRun,
 	SubagentWidgetNode,
 	VisibleWidgetForest,
 	VisibleWidgetNode,
@@ -26,6 +29,8 @@ import type {
 
 /** Converts elapsed milliseconds to seconds. */
 const SECOND_MS = 1000;
+/** Keeps focused-run durations consistent with historical tool headers. */
+const FOCUSED_ELAPSED_SECONDS_FRACTION_DIGITS = 1;
 /** Defines the number of seconds in one minute. */
 const MINUTE_SECONDS = 60;
 /** Defines the number of seconds in one hour. */
@@ -75,7 +80,11 @@ export function formatWidgetPanel(
 }
 
 /** Formats the aggregate header as independently styled count segments. */
-export function formatWidgetHeader(summary: WidgetSummary): WidgetLine {
+export function formatWidgetHeader(
+	summary: WidgetSummary,
+	displayedRunCount: number,
+	totalRunCount: number,
+): WidgetLine {
 	return [
 		{ text: "Subagents: " },
 		formatSummaryCountPart(summary.running, "accent"),
@@ -83,8 +92,114 @@ export function formatWidgetHeader(summary: WidgetSummary): WidgetLine {
 		formatSummaryCountPart(summary.failed, "error"),
 		{ text: " failed · " },
 		formatSummaryCountPart(summary.done, "success"),
-		{ text: " done" },
+		{ text: ` done · ${displayedRunCount}/${totalRunCount} shown` },
+		{ text: " · Ctrl+Shift+G", color: "dim" },
 	];
+}
+
+/** Renders one selected run and the newest tool events that fit the panel. */
+export function renderFocusedSubagentWidget(
+	focused: FocusedSubagentWidgetRun,
+	lineBudget: number,
+): readonly WidgetLine[] {
+	const safeBudget = Math.max(0, Math.floor(lineBudget));
+	if (safeBudget === 0) {
+		return [];
+	}
+
+	const lines: WidgetLine[] = [formatFocusedRunHeader(focused)];
+	if (focused.parent !== undefined && lines.length < safeBudget) {
+		lines.push(formatFocusedParentHeader(focused.parent, focused.depth));
+	}
+
+	const eventBudget = safeBudget - lines.length;
+	if (eventBudget <= 0) {
+		return lines;
+	}
+	const events = focused.selected.events
+		.filter(isSubagentToolLifecycleEvent)
+		.slice(-eventBudget);
+	for (const [index, event] of events.entries()) {
+		lines.push(formatFocusedEventLine(event, index === events.length - 1));
+	}
+	return lines;
+}
+
+/** Formats the selected run without instance numbering or ancestor paths. */
+function formatFocusedRunHeader(focused: FocusedSubagentWidgetRun): WidgetLine {
+	const node = focused.selected;
+	const parts: WidgetLinePart[] = [
+		{
+			text: `${focused.parent === undefined ? "Root" : "Child"}: ${node.agentId} · ${node.taskName}`,
+		},
+	];
+	if (node.runtime !== undefined) {
+		parts.push({
+			text: ` · ${node.runtime.modelId}/${node.runtime.thinking}`,
+			color: "muted",
+		});
+	}
+	const context = formatWidgetContextUsage(node);
+	if (context !== undefined) {
+		parts.push({ text: " · " }, ...context);
+	}
+	parts.push({
+		text: ` · ${formatFocusedElapsedMs(node.elapsedMs)}`,
+		color: "dim",
+	});
+	return parts;
+}
+
+/** Formats direct parent ownership with depth relative to the root run. */
+function formatFocusedParentHeader(
+	parent: SubagentWidgetNode,
+	depth: number,
+): WidgetLine {
+	return [
+		{
+			text: `Parent: ${parent.agentId} · ${parent.taskName} · Depth ${depth}`,
+			color: "muted",
+		},
+	];
+}
+
+/** Formats one call, result, or error as one non-wrapping event row. */
+function formatFocusedEventLine(
+	event: SubagentProgressEvent,
+	isLast: boolean,
+): WidgetLine {
+	const icon = formatFocusedEventIcon(event.kind);
+	const parts: WidgetLinePart[] = [
+		{ text: `${isLast ? "└─" : "├─"} ` },
+		{ text: icon.text, color: icon.color },
+		{ text: ` ${event.title}`, color: "accent" },
+	];
+	if (event.text !== undefined) {
+		parts.push({ text: ` ${event.text}`, color: "dim" });
+	}
+	return parts;
+}
+
+/** Maps tool event kinds to the established call-direction markers. */
+function formatFocusedEventIcon(kind: SubagentProgressEvent["kind"]): {
+	readonly text: string;
+	readonly color: ThemeColor;
+} {
+	if (kind === "tool_call") {
+		return { text: "→", color: "muted" };
+	}
+	if (kind === "tool_result") {
+		return { text: "←", color: "success" };
+	}
+	return { text: "!", color: "error" };
+}
+
+/** Formats focused durations with one fractional second above one second. */
+function formatFocusedElapsedMs(elapsedMs: number): string {
+	if (elapsedMs < SECOND_MS) {
+		return `${elapsedMs}ms`;
+	}
+	return `${(elapsedMs / SECOND_MS).toFixed(FOCUSED_ELAPSED_SECONDS_FRACTION_DIGITS)}s`;
 }
 
 /** Renders selected roots and an optional final root-level omission summary. */
@@ -228,7 +343,7 @@ function formatWidgetNodeLine(
 		{ text: status.icon, color: status.color },
 	];
 	const details: WidgetLinePart[] = [
-		{ text: ` ${node.agentId} · ${formatElapsedMs(node.elapsedMs)}` },
+		{ text: ` ${node.label} · ${formatElapsedMs(node.elapsedMs)}` },
 	];
 	const context = formatWidgetContextUsage(node);
 	if (context !== undefined) {
@@ -437,7 +552,7 @@ function formatWidgetStatus(status: SubagentRunStatus): {
 }
 
 /** Formats elapsed milliseconds as seconds, m:ss, or h:mm:ss. */
-function formatElapsedMs(elapsedMs: number): string {
+export function formatElapsedMs(elapsedMs: number): string {
 	if (elapsedMs < SECOND_MS) {
 		return `${elapsedMs}ms`;
 	}
