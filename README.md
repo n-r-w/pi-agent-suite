@@ -129,6 +129,13 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhig
 
 ## Changelog
 
+### v0.16.0 - 2026-07-11
+
+- Breaking change: `run_subagent` now requires a concise, unique `taskName` for each run.
+- Added `/subagents` and `Ctrl+Shift+G` to browse runs and focus the live widget on one task.
+- Reworked subagent progress rendering for nested runs, narrow terminals, Unicode text, and terminal control sequences.
+- Refined bundled instructions for parallel subagent tasks, prompt structure, compatibility, and new document formats.
+
 ### v0.15.1 - 2026-07-10
 
 - Fixed npm publishing by using the npm version bundled with Node 24 instead of upgrading to npm 12.0.0, whose published package omits `sigstore`.
