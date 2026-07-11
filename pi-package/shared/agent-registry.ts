@@ -25,6 +25,7 @@ const THINKING_VALUES = [
 	"medium",
 	"high",
 	"xhigh",
+	"max",
 ] as const;
 
 type AgentType = (typeof AGENT_TYPES)[number];

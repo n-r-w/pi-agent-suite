@@ -876,8 +876,8 @@ describe("main-agent-selection", () => {
 
 	test("selects an agent through /agent, persists state, applies model and thinking, and publishes runtime contribution", async () => {
 		// Purpose: explicit /agent selection must apply only selected main-agent behavior and persist minimal state.
-		// Input and expected output: /agent builder selects Builder, writes the stored activeAgentId, sets model/thinking, tools, and prompt contribution.
-		// Edge case: state file must preserve stored agent ID casing and omit model, thinking level, and tools.
+		// Input and expected output: /agent builder selects Builder, writes the stored activeAgentId, and applies the model with max reasoning, tools, and prompt contribution.
+		// Edge case: the highest supported reasoning level must load while state preserves agent ID casing and omits model, thinking level, and tools.
 		// Dependencies: this test uses temp agent files, temp state, fake model calls, and runtime composition fake through ExtensionAPI.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const model = createModel("openai", "gpt-test");
@@ -885,7 +885,7 @@ describe("main-agent-selection", () => {
 				id: "Builder",
 				description: "Builds code",
 				body: "Builder system prompt",
-				model: { id: "openai/gpt-test", thinking: "high" },
+				model: { id: "openai/gpt-test", thinking: "max" },
 				tools: ["read", "write"],
 			});
 			const pi = createExtensionApiFake();
@@ -899,7 +899,7 @@ describe("main-agent-selection", () => {
 				activeAgentId: "Builder",
 			});
 			expect(pi.setModelCalls).toEqual([model]);
-			expect(pi.thinkingCalls).toEqual(["high"]);
+			expect(pi.thinkingCalls).toEqual(["max"]);
 			expect(pi.activeToolCalls).toEqual([["read", "write"]]);
 			expect(ctx.statusCalls).toEqual([]);
 			expect(ctx.notifications).toEqual([]);

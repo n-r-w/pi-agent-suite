@@ -125,7 +125,7 @@ agents:
 You are a code review agent. Check correctness, risks, and missing validation.
 ```
 
-Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ## Changelog
 
@@ -135,6 +135,7 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, and `xhig
 - Added `/subagents` and `Ctrl+Shift+G` to browse runs and focus the live widget on one task.
 - Reworked subagent progress rendering for nested runs, narrow terminals, Unicode text, and terminal control sequences.
 - Refined bundled instructions for parallel subagent tasks, prompt structure, compatibility, and new document formats.
+- Added `max` thinking level support
 
 ### v0.15.1 - 2026-07-10
 
