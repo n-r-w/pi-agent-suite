@@ -229,7 +229,6 @@ function formatSubagentRuntimeHeaderParts(
 		{ text: " · " },
 		{
 			text: `${details.runtime.modelId}/${details.runtime.thinking}`,
-			color: "muted",
 			truncate: true,
 		},
 		...(projectedContextUsage !== undefined
@@ -310,8 +309,8 @@ class RunSubagentCallHeader implements Component {
 			label: "Task:",
 			text: this.options.taskPreview,
 			width,
-			labelStyle: (value) => this.options.theme.fg("muted", value),
-			textStyle: (value) => this.options.theme.fg("dim", value),
+			labelStyle: (value) => this.options.theme.bold(value),
+			textStyle: (value) => this.options.theme.fg("muted", value),
 		});
 		const headerLine = renderFixedLine(
 			this.options.headerLine,
@@ -320,10 +319,10 @@ class RunSubagentCallHeader implements Component {
 		);
 		const nameLine = renderFixedLine(
 			[
-				{ text: "Name:", color: "muted" },
+				{ text: "Name:", bold: true },
 				{
 					text: ` ${this.options.namePreview}`,
-					color: "dim",
+					color: "muted",
 					truncate: true,
 				},
 			],
@@ -377,13 +376,11 @@ function renderFixedLine(
 			continue;
 		}
 
+		const emphasizedText = part.bold === true ? theme.bold(partText) : partText;
 		const styledText =
-			part.color !== undefined
-				? theme.fg(
-						part.color,
-						part.bold === true ? theme.bold(partText) : partText,
-					)
-				: partText;
+			part.color === undefined
+				? emphasizedText
+				: theme.fg(part.color, emphasizedText);
 		renderedLine += styledText;
 		remainingWidth -= visibleWidth(partText);
 	}

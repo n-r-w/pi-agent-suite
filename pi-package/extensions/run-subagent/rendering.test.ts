@@ -147,6 +147,47 @@ describe("run-subagent rendering", () => {
 		}
 	});
 
+	test("uses muted values with bold Name and Task labels", () => {
+		// Purpose: historical call metadata must separate labels from long values without muting the runtime model.
+		// Input and expected output: name and task values use muted text while only Name and Task labels are bold.
+		// Edge case: partial runtime state omits final context and elapsed segments.
+		// Dependencies: marker tags expose color and bold styling without relying on a terminal theme.
+		const rendered = renderRunSubagentCall(
+			{
+				agentId: "SubAgentSage",
+				taskName: "Verify panel requirements",
+				prompt: "Review the implemented panel behavior.",
+			},
+			markerTheme as never,
+			{
+				state: {
+					headerDetails: {
+						agentId: "SubAgentSage",
+						runtime: {
+							modelId: "openai-codex/gpt-5.6-sol",
+							thinking: "high",
+							contextWindow: 372_000,
+						},
+						contextUsage: undefined,
+						contextProjectionStatus: undefined,
+						elapsedMs: undefined,
+					},
+				},
+			} as never,
+		).render(WIDTH);
+
+		expect(rendered[0]).toContain("openai-codex/gpt-5.6-sol/high");
+		expect(rendered[0]).not.toContain(
+			"<muted>openai-codex/gpt-5.6-sol/high</muted>",
+		);
+		expect(rendered[1]).toBe(
+			"<bold>Name:</bold><muted> Verify panel requirements</muted>",
+		);
+		expect(rendered[2]).toBe(
+			"<bold>Task:</bold><muted> Review the implemented panel behavior.</muted>",
+		);
+	});
+
 	test("limits collapsed task rows and colors the hidden-line hint by segment", () => {
 		setKeybindings(new KeybindingsManager(keybindingsWithToolExpansion));
 		const args = {

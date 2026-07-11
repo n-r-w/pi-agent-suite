@@ -61,6 +61,7 @@ describe("subagent widget hierarchy", () => {
 								runId: "sage",
 								agentId: "SubAgentSage",
 								taskName: "Review widget model",
+								status: "succeeded",
 								elapsedMs: 85_300,
 								runtime: {
 									modelId: "openai-codex/gpt-5.6-luna",
@@ -93,7 +94,7 @@ describe("subagent widget hierarchy", () => {
 
 		expect(rendered).toHaveLength(4);
 		expect(rendered[0]).toContain(
-			"Child: SubAgentSage · Review widget model · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s",
+			"✓ Child: SubAgentSage · Review widget model · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s",
 		);
 		expect(rendered[1]).toBe(
 			"Parent: SubAgentArchitect · Design widget model · Depth 1",
@@ -135,11 +136,43 @@ describe("subagent widget hierarchy", () => {
 
 		expect(rendered).toHaveLength(3);
 		expect(rendered[0]).toContain(
-			"Root: YandexExtractor · Delegate identity checks",
+			"⏳ Root: YandexExtractor · Delegate identity checks",
 		);
 		expect(rendered[1]).toContain("→ read latest input");
 		expect(rendered[2]).toContain("← read latest output");
 		expect(text).not.toContain("old query");
+	});
+
+	test("shows every selected-run state before the root label", () => {
+		// Purpose: selected-run completion must remain visible even when no final assistant event row is shown.
+		// Input and expected output: running, succeeded, failed, and aborted roots start with their established status icons.
+		// Edge case: a one-line budget preserves the icon because it precedes all width-sensitive details.
+		// Dependencies: selected-run headers share status semantics with automatic overview rows.
+		const cases = [
+			{ status: "running", icon: "⏳" },
+			{ status: "succeeded", icon: "✓" },
+			{ status: "failed", icon: "✗" },
+			{ status: "aborted", icon: "■" },
+		] as const;
+
+		for (const item of cases) {
+			const [header] = getContentLines(
+				renderPinnedWidget(
+					[
+						{
+							runId: item.status,
+							status: item.status,
+						},
+					],
+					item.status,
+					1,
+					24,
+				),
+			);
+
+			expect(header).toStartWith(`${item.icon} Root:`);
+			expect(visibleWidth(header ?? "")).toBeLessThanOrEqual(24);
+		}
 	});
 
 	test("keeps the latest tool activity after assistant completion", () => {
@@ -172,6 +205,48 @@ describe("subagent widget hierarchy", () => {
 
 		expect(rendered).toContain('read {"path":"README.md"}');
 		expect(rendered).not.toContain("assistant completed");
+	});
+
+	test("omits the instance number for a single agent type run", () => {
+		// Purpose: a unique agent type does not need a mechanical discriminator.
+		// Input and expected output: one Sage root renders its type and task without #1.
+		// Edge case: the run still owns internal instance number 1 for future same-type runs.
+		// Dependencies: visible identity is derived from the complete session registry at render time.
+		const rendered = getContentLines(
+			renderWidget(
+				[
+					{
+						runId: "single",
+						agentId: "SubAgentSage",
+						taskName: "Inspect unique task",
+					},
+				],
+				2,
+			),
+		).join("\n");
+
+		expect(rendered).toContain("Sage · Inspect unique task");
+		expect(rendered).not.toContain("Sage #1");
+	});
+
+	test("numbers a visible run when same-type runs are hidden", () => {
+		// Purpose: identity numbering must depend on the complete session registry rather than visible rows.
+		// Input and expected output: three same-type roots exceed the body budget and the visible root retains its assigned number.
+		// Edge case: omitted summary rows do not erase the need for disambiguation.
+		// Dependencies: automatic selection and identity formatting use separate full-session state.
+		const rendered = getContentLines(
+			renderWidget(
+				[
+					{ runId: "first", agentId: "SubAgentExtractor" },
+					{ runId: "second", agentId: "SubAgentExtractor" },
+					{ runId: "third", agentId: "SubAgentExtractor" },
+				],
+				3,
+			),
+		).join("\n");
+
+		expect(rendered).toContain("Extractor #");
+		expect(rendered).not.toContain("Extractor · Inspect");
 	});
 
 	test("assigns one stable same-type sequence across root and nested runs", () => {

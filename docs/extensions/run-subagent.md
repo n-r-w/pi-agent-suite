@@ -61,17 +61,17 @@ Selecting a run in the browser switches the widget from the aggregate overview t
 A root run uses one header row:
 
 ```text
-Root: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
+✓ Root: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
 ```
 
 When the line budget permits a second row, a nested run shows its direct parent and root-relative depth:
 
 ```text
-Child: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
+✓ Child: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
 Parent: SubAgentExtractor · Delegate catalog checks · Depth 1
 ```
 
-The remaining `widgetLineBudget` rows show the latest retained tool events in chronological order. `tool_call`, `tool_result`, and tool execution `error` events each use one row. Assistant output and assistant failures are excluded. Rows do not wrap and are clipped to terminal width. The selected-run view does not scroll.
+The first selected-run row starts with the same lifecycle symbol as the overview: `⏳` running, `✓` succeeded, `✗` failed, or `■` aborted. Runtime model details and tool event payloads use the normal foreground color; status symbols, tool names, context pressure, and elapsed time retain their semantic styling. The remaining rows within `widgetLineBudget` show the latest retained tool events in chronological order without tree connectors. `tool_call`, `tool_result`, and tool execution `error` events each use one row. Assistant output and assistant failures are excluded. Rows do not wrap and are clipped to terminal width. The selected-run view does not scroll.
 
 Select `Automatic view` in the browser to resume aggregate selection. Starting a new Pi session clears the selected run and instance numbering.
 
@@ -92,7 +92,7 @@ Browser labels append `Root` for root runs or root-relative `Depth N` for nested
 
 ### Run identity and row content
 
-Each run receives a stable instance number per agent type in the current session. The visible identity combines the shortened agent type, instance number, and required `taskName`, for example `Sage #2 · Review widget navigation`. `runId` remains internal.
+Each run receives a stable instance number per agent type in the current session. The number is shown only when the session contains more than one root or nested run with the same `agentId`. A unique type renders as `Sage · Review widget navigation`; repeated types render as `Sage #2 · Review widget navigation`. Hidden and completed runs still count. `runId` remains internal.
 
 Each overview agent row uses one visual terminal line:
 
@@ -107,7 +107,7 @@ Rows are clipped by terminal display width after grapheme-aware plain-text selec
 
 ## Historical tool rendering
 
-The collapsed `run_subagent` call shows `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. After execution resolves the child runtime, one partial update adds the model and thinking level to the header. The header then remains static until the final result adds context usage and elapsed time. Expanding an active call shows the complete task prompt. Expanding a completed call also shows only the final answer, failure, or abort result; it does not show the intermediate event timeline or a separate stderr section.
+The collapsed `run_subagent` call shows `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. The `Name:` and `Task:` labels are bold; their values use the theme's `muted` color. After execution resolves the child runtime, one partial update adds the model and thinking level in the normal foreground color. The header then remains static until the final result adds context usage and elapsed time. Expanding an active call shows the complete task prompt. Expanding a completed call also shows only the final answer, failure, or abort result; it does not show the intermediate event timeline or a separate stderr section.
 
 ## Child session logs
 

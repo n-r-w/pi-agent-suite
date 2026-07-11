@@ -89,7 +89,7 @@ describe("run-subagent progress", () => {
 		expect(state.roots).toEqual([]);
 		expect(state.pinnedRunId).toBeUndefined();
 		expect(state.instanceNumberByRunId.size).toBe(0);
-		expect(state.nextInstanceNumberByAgentId.size).toBe(0);
+		expect(state.instanceCountByAgentId.size).toBe(0);
 	});
 
 	test("preserves tool call IDs across interleaved same-name events", () => {

@@ -177,6 +177,18 @@ describe("subagent widget browser", () => {
 		expect(state.pinnedRunId).toBe("run-1");
 	});
 
+	test("omits numbering for a unique agent type", () => {
+		// Purpose: browser identity must avoid redundant #1 when no same-type run needs disambiguation.
+		// Input and expected output: one Sage root uses its type, task, and Root level without a number.
+		// Edge case: Automatic view remains the first browser item.
+		// Dependencies: browser labels use the same full-session identity policy as overview rows.
+		const state = createState([createRun("single", "Inspect unique task")]);
+
+		const items = createSubagentBrowserItems(state);
+
+		expect(items[1]?.label).toBe("Sage · Inspect unique task · Root");
+	});
+
 	test("labels every run with its root-relative level", () => {
 		// Purpose: every browser item must expose hierarchy depth without rebuilding an unbounded ancestor path.
 		// Input and expected output: root labels end with Root, while the nested label ends with Depth 1 and keeps direct parent details.

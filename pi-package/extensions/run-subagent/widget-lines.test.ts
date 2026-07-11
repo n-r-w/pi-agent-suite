@@ -5,6 +5,7 @@ import {
 	DEFAULT_SUBAGENT_WIDGET_WIDTH as DEFAULT_WIDTH,
 	getSubagentWidgetContentLines as getContentLines,
 	type SubagentWidgetRunFixture as RunFixture,
+	renderStyledPinnedSubagentWidgetFixture as renderStyledPinnedWidget,
 	renderSubagentWidgetFixture as renderWidget,
 	type SubagentWidgetTheme as WidgetTheme,
 } from "../../../test/support/subagent-widget";
@@ -90,6 +91,59 @@ describe("subagent widget styling", () => {
 		expect(rendered).toContain("<success>✓</success> SucceededAgent");
 		expect(rendered).toContain("<error>✗</error> FailedAgent");
 		expect(rendered).toContain("<error>■</error> AbortedAgent");
+	});
+
+	test("keeps selected runtime and event payloads at normal brightness", () => {
+		// Purpose: selected-run details must remain readable while semantic icons and tool names keep their colors.
+		// Input and expected output: runtime metadata and call/result payloads have no muted or dim wrapper.
+		// Edge case: status, event direction, tool name, and elapsed time retain their existing semantic styles.
+		// Dependencies: marker tags expose every color assignment without relying on a terminal theme.
+		const theme: WidgetTheme = {
+			fg(color: string, text: string): string {
+				return `<${color}>${text}</${color}>`;
+			},
+		};
+		const rendered = getContentLines(
+			renderStyledPinnedWidget({
+				roots: [
+					{
+						runId: "selected",
+						agentId: "SubAgentSage",
+						taskName: "Inspect selected colors",
+						status: "succeeded",
+						runtime: {
+							modelId: "openai-codex/gpt-5.6-sol",
+							thinking: "high",
+							contextWindow: 372_000,
+						},
+						events: [
+							createEvent("tool_call", "read", '{"path":"README.md"}', 1),
+							createEvent("tool_result", "read", "file contents", 2),
+						],
+					},
+				],
+				pinnedRunId: "selected",
+				lineBudget: 3,
+				width: 160,
+				theme,
+			}),
+		).join("\n");
+
+		expect(rendered).toContain("<success>✓ </success>Root:");
+		expect(rendered).toContain("openai-codex/gpt-5.6-sol/high");
+		expect(rendered).not.toContain(
+			"<muted> · openai-codex/gpt-5.6-sol/high</muted>",
+		);
+		expect(rendered).toContain(
+			'<muted>→</muted><accent> read</accent> {"path":"README.md"}',
+		);
+		expect(rendered).toContain(
+			"<success>←</success><accent> read</accent> file contents",
+		);
+		expect(rendered).not.toContain("├─");
+		expect(rendered).not.toContain("└─");
+		expect(rendered).not.toContain('<dim> {"path":"README.md"}</dim>');
+		expect(rendered).not.toContain("<dim> file contents</dim>");
 	});
 
 	test("colors only positive aggregate header counts", () => {
@@ -200,7 +254,7 @@ describe("subagent widget compact rows", () => {
 	test("renders raw tool call arguments and clips long Unicode payloads", () => {
 		// Purpose: live activity must expose the actual tool arguments without breaking terminal width.
 		// Input and expected output: a team message lookup shows its full JSON at wide width and a clipped preview at narrow width.
-		// Edge case: clipping retains a complete family emoji grapheme before the ellipsis.
+		// Edge case: clipping retains complete family emoji graphemes before the ellipsis.
 		// Dependencies: progress capture already bounds stored payloads, while row rendering applies the current terminal width.
 		const family = "👨‍👩‍👧‍👦";
 		const payload = JSON.stringify({
@@ -227,7 +281,7 @@ describe("subagent widget compact rows", () => {
 		expect(wide).toContain(`team_message_get ${payload}`);
 		expect(narrowActivity).toBeDefined();
 		expect(narrowActivity).toContain(family);
-		expect(narrowActivity).not.toContain(family.repeat(2));
+		expect(narrowActivity).not.toContain(family.repeat(3));
 		expect(narrowActivity).toEndWith("...");
 		expect(visibleWidth(narrowActivity ?? "")).toBeLessThanOrEqual(narrowWidth);
 	});

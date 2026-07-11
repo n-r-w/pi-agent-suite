@@ -16,7 +16,10 @@ import {
 	type SubagentWidgetState,
 } from "./widget";
 import { formatElapsedMs } from "./widget-lines";
-import type { SubagentWidgetNode } from "./widget-tree";
+import {
+	formatSubagentWidgetIdentity,
+	type SubagentWidgetNode,
+} from "./widget-tree";
 
 /** Internal SelectList value that clears explicit widget ownership. */
 export const AUTOMATIC_SUBAGENT_VIEW = "__automatic_subagent_view__";
@@ -190,25 +193,38 @@ export function createSubagentBrowserItems(
 		},
 	];
 	for (const root of state.roots) {
-		appendBrowserItems(items, root, undefined, 0);
+		appendBrowserItems({ items, state, parent: undefined, depth: 0 }, root);
 	}
 	return items;
 }
 
+/** Carries branch ownership while flattening the recursive run tree. */
+interface BrowserAppendContext {
+	readonly items: SelectItem[];
+	readonly state: SubagentWidgetState;
+	readonly parent: SubagentWidgetNode | undefined;
+	readonly depth: number;
+}
+
 /** Appends one depth-first branch with a bounded root-relative level label. */
 function appendBrowserItems(
-	items: SelectItem[],
+	context: BrowserAppendContext,
 	node: SubagentWidgetNode,
-	parent: SubagentWidgetNode | undefined,
-	depth: number,
 ): void {
-	items.push({
+	const identity = formatSubagentWidgetIdentity(
+		node,
+		context.state.instanceCountByAgentId.get(node.agentId) ?? 0,
+	);
+	context.items.push({
 		value: node.runId,
-		label: `${node.label} · ${depth === 0 ? "Root" : `Depth ${depth}`}`,
-		description: formatBrowserDescription(node, parent),
+		label: `${identity} · ${context.depth === 0 ? "Root" : `Depth ${context.depth}`}`,
+		description: formatBrowserDescription(node, context.parent),
 	});
 	for (const child of node.children) {
-		appendBrowserItems(items, child, node, depth + 1);
+		appendBrowserItems(
+			{ ...context, parent: node, depth: context.depth + 1 },
+			child,
+		);
 	}
 }
 

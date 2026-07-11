@@ -59,10 +59,9 @@ export default function conveneCouncil(
 		name: TOOL_NAME,
 		label: "Convene council",
 		description:
-			"Convene a council of experts to solve a very complex problem. The Council knows everything you know. " +
-			"MUST NOT call convene_council in parallel execution.",
+			"Convene a council of experts to solve a very complex problem. The Council knows everything you know",
 		parameters: ConveneCouncilParameters,
-		executionMode: "parallel",
+		executionMode: "sequential",
 		renderCall: renderConveneCouncilCall,
 		renderResult: renderConveneCouncilResult,
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {

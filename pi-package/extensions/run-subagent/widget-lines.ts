@@ -19,12 +19,13 @@ import {
 	type SubagentProgressEvent,
 	type SubagentRunStatus,
 } from "./progress";
-import type {
-	FocusedSubagentWidgetRun,
-	SubagentWidgetNode,
-	VisibleWidgetForest,
-	VisibleWidgetNode,
-	WidgetSummary,
+import {
+	type FocusedSubagentWidgetRun,
+	formatSubagentWidgetIdentity,
+	type SubagentWidgetNode,
+	type VisibleWidgetForest,
+	type VisibleWidgetNode,
+	type WidgetSummary,
 } from "./widget-tree";
 
 /** Converts elapsed milliseconds to seconds. */
@@ -119,8 +120,8 @@ export function renderFocusedSubagentWidget(
 	const events = focused.selected.events
 		.filter(isSubagentToolLifecycleEvent)
 		.slice(-eventBudget);
-	for (const [index, event] of events.entries()) {
-		lines.push(formatFocusedEventLine(event, index === events.length - 1));
+	for (const event of events) {
+		lines.push(formatFocusedEventLine(event));
 	}
 	return lines;
 }
@@ -128,7 +129,9 @@ export function renderFocusedSubagentWidget(
 /** Formats the selected run without instance numbering or ancestor paths. */
 function formatFocusedRunHeader(focused: FocusedSubagentWidgetRun): WidgetLine {
 	const node = focused.selected;
+	const status = formatWidgetStatus(node.status);
 	const parts: WidgetLinePart[] = [
+		{ text: `${status.icon} `, color: status.color },
 		{
 			text: `${focused.parent === undefined ? "Root" : "Child"}: ${node.agentId} · ${node.taskName}`,
 		},
@@ -136,7 +139,6 @@ function formatFocusedRunHeader(focused: FocusedSubagentWidgetRun): WidgetLine {
 	if (node.runtime !== undefined) {
 		parts.push({
 			text: ` · ${node.runtime.modelId}/${node.runtime.thinking}`,
-			color: "muted",
 		});
 	}
 	const context = formatWidgetContextUsage(node);
@@ -164,18 +166,14 @@ function formatFocusedParentHeader(
 }
 
 /** Formats one call, result, or error as one non-wrapping event row. */
-function formatFocusedEventLine(
-	event: SubagentProgressEvent,
-	isLast: boolean,
-): WidgetLine {
+function formatFocusedEventLine(event: SubagentProgressEvent): WidgetLine {
 	const icon = formatFocusedEventIcon(event.kind);
 	const parts: WidgetLinePart[] = [
-		{ text: `${isLast ? "└─" : "├─"} ` },
 		{ text: icon.text, color: icon.color },
 		{ text: ` ${event.title}`, color: "accent" },
 	];
 	if (event.text !== undefined) {
-		parts.push({ text: ` ${event.text}`, color: "dim" });
+		parts.push({ text: ` ${event.text}` });
 	}
 	return parts;
 }
@@ -206,13 +204,19 @@ function formatFocusedElapsedMs(elapsedMs: number): string {
 export function renderVisibleWidgetForest(
 	forest: VisibleWidgetForest,
 	width: number,
+	instanceCountByAgentId: ReadonlyMap<string, number>,
 ): readonly WidgetLine[] {
 	const rootItemCount =
 		forest.roots.length + (forest.showGlobalSummary ? 1 : 0);
 	const lines: WidgetLine[] = [];
 	for (const [index, root] of forest.roots.entries()) {
 		lines.push(
-			...renderVisibleWidgetNode(root, "", index === rootItemCount - 1, width),
+			...renderVisibleWidgetNode(root, {
+				prefix: "",
+				isLast: index === rootItemCount - 1,
+				width,
+				instanceCountByAgentId,
+			}),
 		);
 	}
 	if (forest.showGlobalSummary) {
@@ -288,87 +292,109 @@ function formatSummaryCountPart(
 	return count > 0 ? { text: String(count), color } : { text: String(count) };
 }
 
+/** Carries immutable rendering inputs through one visible hierarchy branch. */
+interface VisibleWidgetNodeRenderContext {
+	readonly prefix: string;
+	readonly isLast: boolean;
+	readonly width: number;
+	readonly instanceCountByAgentId: ReadonlyMap<string, number>;
+}
+
+/** Groups the inputs that determine one automatic overview row. */
+interface WidgetNodeLineOptions {
+	readonly connector: string;
+	readonly node: SubagentWidgetNode;
+	readonly identity: string;
+	readonly width: number;
+	readonly inlineSummary: WidgetSummary | undefined;
+}
+
 /** Renders one branch and derives all connectors from visible siblings only. */
 function renderVisibleWidgetNode(
 	node: VisibleWidgetNode,
-	prefix: string,
-	isLast: boolean,
-	width: number,
+	context: VisibleWidgetNodeRenderContext,
 ): readonly WidgetLine[] {
-	const branch = isLast ? "└─" : "├─";
-	const childPrefix = `${prefix}${isLast ? "   " : "│  "}`;
+	const branch = context.isLast ? "└─" : "├─";
+	const childPrefix = `${context.prefix}${context.isLast ? "   " : "│  "}`;
 	const hiddenCount = countSummaryNodes(node.hiddenSummary);
 	const inlineSummary =
 		node.children.length === 0 && hiddenCount > 0
 			? node.hiddenSummary
 			: undefined;
 	const lines: WidgetLine[] = [
-		formatWidgetNodeLine(
-			`${prefix}${branch} `,
-			node.node,
-			width,
+		formatWidgetNodeLine({
+			connector: `${context.prefix}${branch} `,
+			node: node.node,
+			identity: formatSubagentWidgetIdentity(
+				node.node,
+				context.instanceCountByAgentId.get(node.node.agentId) ?? 0,
+			),
+			width: context.width,
 			inlineSummary,
-		),
+		}),
 	];
 	const hasLocalSummary = node.children.length > 0 && hiddenCount > 0;
 	const childItemCount = node.children.length + (hasLocalSummary ? 1 : 0);
 	for (const [index, child] of node.children.entries()) {
 		lines.push(
-			...renderVisibleWidgetNode(
-				child,
-				childPrefix,
-				index === childItemCount - 1,
-				width,
-			),
+			...renderVisibleWidgetNode(child, {
+				...context,
+				prefix: childPrefix,
+				isLast: index === childItemCount - 1,
+			}),
 		);
 	}
 	if (hasLocalSummary) {
 		lines.push(
-			formatOmissionLine(childPrefix, node.hiddenSummary, undefined, width),
+			formatOmissionLine(
+				childPrefix,
+				node.hiddenSummary,
+				undefined,
+				context.width,
+			),
 		);
 	}
 	return lines;
 }
 
 /** Formats one node row while reserving inline omission ownership before optional detail. */
-function formatWidgetNodeLine(
-	connector: string,
-	node: SubagentWidgetNode,
-	width: number,
-	inlineSummary: WidgetSummary | undefined,
-): WidgetLine {
-	const status = formatWidgetStatus(node.status);
+function formatWidgetNodeLine(options: WidgetNodeLineOptions): WidgetLine {
+	const status = formatWidgetStatus(options.node.status);
 	const prefix: WidgetLinePart[] = [
-		{ text: connector },
+		{ text: options.connector },
 		{ text: status.icon, color: status.color },
 	];
 	const details: WidgetLinePart[] = [
-		{ text: ` ${node.label} · ${formatElapsedMs(node.elapsedMs)}` },
+		{
+			text: ` ${options.identity} · ${formatElapsedMs(options.node.elapsedMs)}`,
+		},
 	];
-	const context = formatWidgetContextUsage(node);
+	const context = formatWidgetContextUsage(options.node);
 	if (context !== undefined) {
 		details.push({ text: " · " }, ...context);
 	}
-	if (node.activity !== undefined) {
+	if (options.node.activity !== undefined) {
 		const activityPreviewWidth = Math.max(
 			MIN_ACTIVITY_PREVIEW_WIDTH,
-			width - ACTIVITY_PREVIEW_RESERVED_WIDTH,
+			options.width - ACTIVITY_PREVIEW_RESERVED_WIDTH,
 		);
 		details.push({
-			text: ` · ${truncateTextByWidth(node.activity, activityPreviewWidth, "…")}`,
+			text: ` · ${truncateTextByWidth(options.node.activity, activityPreviewWidth, "…")}`,
 		});
 	}
-	if (inlineSummary === undefined) {
+	if (options.inlineSummary === undefined) {
 		return [...prefix, ...details];
 	}
 	return reserveInlineSummary(
 		prefix,
 		details,
 		{
-			verbose: { text: ` · ${formatInlineSummary(inlineSummary)}` },
-			compact: { text: ` · ${formatCompactInlineSummary(inlineSummary)}` },
+			verbose: { text: ` · ${formatInlineSummary(options.inlineSummary)}` },
+			compact: {
+				text: ` · ${formatCompactInlineSummary(options.inlineSummary)}`,
+			},
 		},
-		width,
+		options.width,
 	);
 }
 

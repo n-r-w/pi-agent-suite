@@ -33,14 +33,11 @@ export const SUBAGENT_WIDGET_KEY = "subagents";
 
 /** Defines the minimum width of the visual separator above the widget panel. */
 const SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH = 1;
-/** Prefix removed from conventional agent IDs in compact user-facing labels. */
-const SUBAGENT_AGENT_PREFIX = "SubAgent";
-
 /** Stores the root runs currently known by the widget. */
 export interface SubagentWidgetState {
 	readonly roots: SubagentWidgetNode[];
 	readonly instanceNumberByRunId: Map<string, number>;
-	readonly nextInstanceNumberByAgentId: Map<string, number>;
+	readonly instanceCountByAgentId: Map<string, number>;
 	pinnedRunId: string | undefined;
 }
 
@@ -49,7 +46,7 @@ export function createSubagentWidgetState(): SubagentWidgetState {
 	return {
 		roots: [],
 		instanceNumberByRunId: new Map(),
-		nextInstanceNumberByAgentId: new Map(),
+		instanceCountByAgentId: new Map(),
 		pinnedRunId: undefined,
 	};
 }
@@ -58,7 +55,7 @@ export function createSubagentWidgetState(): SubagentWidgetState {
 export function resetSubagentWidgetState(state: SubagentWidgetState): void {
 	state.roots.length = 0;
 	state.instanceNumberByRunId.clear();
-	state.nextInstanceNumberByAgentId.clear();
+	state.instanceCountByAgentId.clear();
 	state.pinnedRunId = undefined;
 }
 
@@ -123,7 +120,10 @@ function renderSubagentWidget(
 		return [header];
 	}
 
-	return [header, ...renderVisibleWidgetForest(forest, width)];
+	return [
+		header,
+		...renderVisibleWidgetForest(forest, width, state.instanceCountByAgentId),
+	];
 }
 
 /** Counts concrete rendered runs while excluding local and global aggregate rows. */
@@ -149,7 +149,6 @@ function toWidgetNode(
 		agentId,
 		taskName,
 		instanceNumber,
-		label: `${formatAgentType(agentId)} #${instanceNumber} · ${taskName}`,
 		status: details.status,
 		updatedAtMs,
 		elapsedMs: details.elapsedMs,
@@ -185,21 +184,10 @@ function resolveInstanceNumber(
 		return assigned;
 	}
 
-	const next = state.nextInstanceNumberByAgentId.get(agentId) ?? 1;
-	state.instanceNumberByRunId.set(runId, next);
-	state.nextInstanceNumberByAgentId.set(agentId, next + 1);
-	return next;
-}
-
-/** Removes the conventional prefix while preserving custom agent identifiers. */
-function formatAgentType(agentId: string): string {
-	if (
-		agentId.startsWith(SUBAGENT_AGENT_PREFIX) &&
-		agentId.length > SUBAGENT_AGENT_PREFIX.length
-	) {
-		return agentId.slice(SUBAGENT_AGENT_PREFIX.length);
-	}
-	return agentId;
+	const instanceCount = (state.instanceCountByAgentId.get(agentId) ?? 0) + 1;
+	state.instanceNumberByRunId.set(runId, instanceCount);
+	state.instanceCountByAgentId.set(agentId, instanceCount);
+	return instanceCount;
 }
 
 /** Extracts the latest tool activity while ignoring later assistant lifecycle events. */

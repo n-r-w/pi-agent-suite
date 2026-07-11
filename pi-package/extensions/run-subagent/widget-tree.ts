@@ -13,13 +13,15 @@ import type {
 	SubagentRuntimeDetails,
 } from "./progress";
 
+/** Prefix removed from conventional agent IDs in compact user-facing labels. */
+const SUBAGENT_AGENT_PREFIX = "SubAgent";
+
 /** Stores one node in the UI-only subagent run tree. */
 export interface SubagentWidgetNode {
 	readonly runId: string;
 	readonly agentId: string;
 	readonly taskName: string;
 	readonly instanceNumber: number;
-	readonly label: string;
 	readonly status: SubagentRunStatus;
 	readonly updatedAtMs: number;
 	readonly elapsedMs: number;
@@ -29,6 +31,28 @@ export interface SubagentWidgetNode {
 	readonly activity: string | undefined;
 	readonly events: readonly SubagentProgressEvent[];
 	readonly children: readonly SubagentWidgetNode[];
+}
+
+/** Formats one identity against the complete same-type session count. */
+export function formatSubagentWidgetIdentity(
+	node: SubagentWidgetNode,
+	instanceCount: number,
+): string {
+	const agentType = formatAgentType(node.agentId);
+	const numberedType =
+		instanceCount > 1 ? `${agentType} #${node.instanceNumber}` : agentType;
+	return `${numberedType} · ${node.taskName}`;
+}
+
+/** Removes the conventional prefix while preserving custom agent identifiers. */
+function formatAgentType(agentId: string): string {
+	if (
+		agentId.startsWith(SUBAGENT_AGENT_PREFIX) &&
+		agentId.length > SUBAGENT_AGENT_PREFIX.length
+	) {
+		return agentId.slice(SUBAGENT_AGENT_PREFIX.length);
+	}
+	return agentId;
 }
 
 /** Stores aggregate lifecycle counts for one complete subtree set. */

@@ -935,7 +935,7 @@ describe("run-subagent", () => {
 			const renderedWidget = widget.render(24);
 			expect(renderedWidget).toContain("────────────────────────");
 			expect(renderedWidget.join("\n")).toContain("Subagents: 0 running");
-			expect(renderedWidget.join("\n")).toContain("Helper #1");
+			expect(renderedWidget.join("\n")).toContain("Helper · Execute");
 			expect(renderedWidget.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);

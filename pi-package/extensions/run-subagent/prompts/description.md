@@ -1,9 +1,9 @@
 Run independent subagent.
-For parallel work, emit multiple run_subagent calls in the same tool call.
+For parallel work, you MUST emit multiple run_subagent calls in the same turn.
 
 RULES:
 1. Subagents SHOULD be used when they reduce context load or improve quality.
-2. Independent subagents MUST be run in parallel using parallel tool calls.
+2. Independent subagents MUST be run in parallel using parallel tool calls (in the same turn).
     1) Before proposing or launching a parallel subagent batch, MUST create a dependency map for that batch.
     2) Dependency map MUST list each subtask's required inputs, expected outputs, and whether those outputs can change another subtask's prompt, scope, sources, or evaluation criteria.
     3) Parallel batch is valid ONLY when every subagent can complete correctly without outputs from any other subagent in the same batch.

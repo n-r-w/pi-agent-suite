@@ -105,6 +105,13 @@ export function renderPinnedSubagentWidgetFixture(
 	});
 }
 
+/** Renders one pinned run with explicit styling options for color assertions. */
+export function renderStyledPinnedSubagentWidgetFixture(
+	options: RenderSubagentWidgetFixtureOptions,
+): string[] {
+	return renderSubagentWidget(options);
+}
+
 /** Builds widget state once so automatic and pinned fixtures share numbering behavior. */
 function renderSubagentWidget(
 	options: RenderSubagentWidgetFixtureOptions,
