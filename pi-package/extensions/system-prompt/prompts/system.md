@@ -13,10 +13,11 @@
 </thoroughness>
 
 <compatibility>
-MUST NOT be added without explicit user approval:
-  1. Backward compatibility
-  2. Fallback
-  3. Deprecation paths
+  1. MUST NOT be added without explicit user approval:
+    1) Backward compatibility
+    2) Fallback
+    3) Deprecation paths
+  2. MUST NOT try to fit new documents into format of existing ones in the repository. The format is determined by templates and task, NOT BY OLD DOCUMENTATION.
 </compatibility>
 
 <anti_reinventing_wheel_rules>
