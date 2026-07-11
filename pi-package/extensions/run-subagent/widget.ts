@@ -1,59 +1,35 @@
 /**
- * Subagent widget helpers.
+ * Live subagent widget state and Pi component integration.
  *
- * The widget uses a width-aware component because TUI components must never
- * return lines wider than the `render(width)` argument.
+ * The widget keeps recursive run snapshots, delegates ancestor-safe selection
+ * to the tree allocator, and delegates width-safe output to line rendering.
  */
 
-import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
-import { truncateTextByWidth } from "../../shared/display-width";
+import { normalizeTerminalDisplayText } from "../../shared/terminal-display-text";
+import type { SubagentProgressEvent, SubagentRunDetails } from "./progress";
 import {
-	formatSubagentContextUsage,
-	type SubagentContextUsage,
-	type SubagentRunDetails,
-	type SubagentRunStatus,
-} from "./progress";
+	formatWidgetHeader,
+	formatWidgetPanel,
+	renderVisibleWidgetForest,
+	type SubagentWidgetTheme,
+	type WidgetLine,
+} from "./widget-lines";
+import {
+	type SubagentWidgetNode,
+	selectVisibleWidgetForest,
+	summarizeWidgetNodes,
+} from "./widget-tree";
 
 /** Defines the widget identifier used by ctx.ui.setWidget(). */
 export const SUBAGENT_WIDGET_KEY = "subagents";
 
 /** Defines the minimum width of the visual separator above the widget panel. */
 const SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH = 1;
-const MIN_ACTIVITY_PREVIEW_LENGTH = 12;
-const ACTIVITY_PREVIEW_RESERVED_WIDTH = 32;
-const FAILED_STATUS_PRIORITY = 0;
-const ABORTED_STATUS_PRIORITY = 1;
-const RUNNING_STATUS_PRIORITY = 2;
-const COMPLETED_STATUS_PRIORITY = 3;
-const SECOND_MS = 1000;
-const CONTEXT_WARNING_USED_PERCENT = 50;
-const CONTEXT_ERROR_USED_PERCENT = 80;
-const PERCENT_FACTOR = 100;
-
-/** Stores one node in the UI-only subagent run tree. */
-export interface SubagentWidgetNode {
-	readonly runId: string;
-	readonly agentId: string;
-	readonly status: SubagentRunStatus;
-	readonly depth: number;
-	readonly updatedAtMs: number;
-	readonly elapsedMs: number;
-	readonly contextUsage: SubagentContextUsage | undefined;
-	readonly contextProjectionStatus: string | undefined;
-	readonly activity: string | undefined;
-	readonly children: readonly SubagentWidgetNode[];
-}
 
 /** Stores the root runs currently known by the widget. */
 export interface SubagentWidgetState {
 	readonly roots: SubagentWidgetNode[];
-}
-
-/** Defines the theme subset used to color widget context values. */
-interface SubagentWidgetTheme {
-	fg(color: ThemeColor, text: string): string;
 }
 
 /** Creates an empty subagent widget state for one extension runtime. */
@@ -75,11 +51,10 @@ export function recordSubagentWidgetRun(
 		state.roots[existingIndex] = node;
 		return;
 	}
-
 	state.roots.push(node);
 }
 
-/** Creates the component factory passed to ctx.ui.setWidget(). */
+/** Creates the passive component factory passed to ctx.ui.setWidget(). */
 export function createSubagentWidgetFactory(
 	state: SubagentWidgetState,
 	lineBudget: number,
@@ -90,116 +65,32 @@ export function createSubagentWidgetFactory(
 				SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH,
 				Math.floor(width),
 			);
-			const rendered = renderSubagentWidget(
-				state,
-				lineBudget,
-				safeWidth,
-				theme,
-			).lines;
-			return theme === undefined
-				? formatSubagentWidgetPanel(rendered, safeWidth)
-				: formatStyledSubagentWidgetPanel(rendered, safeWidth);
+			const lines = renderSubagentWidget(state, lineBudget, safeWidth);
+			return formatWidgetPanel(lines, safeWidth, theme);
 		},
 		invalidate(): void {},
 	});
 }
 
-/** Adds a separator and constrains every widget row to the terminal width. */
-export function formatSubagentWidgetPanel(
-	lines: readonly string[],
-	containerWidth: number,
-): string[] {
-	const safeContainerWidth = Math.max(
-		SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH,
-		Math.floor(containerWidth),
-	);
-	const constrainedLines = lines.map((line) =>
-		truncateTextByWidth(line, safeContainerWidth, "..."),
-	);
-	return ["─".repeat(safeContainerWidth), ...constrainedLines];
-}
-
-/** Adds a separator and constrains styled widget rows to the terminal width. */
-function formatStyledSubagentWidgetPanel(
-	lines: readonly string[],
-	containerWidth: number,
-): string[] {
-	const safeContainerWidth = Math.max(
-		SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH,
-		Math.floor(containerWidth),
-	);
-	const constrainedLines = lines.map((line) =>
-		truncateToWidth(line, safeContainerWidth, "..."),
-	);
-	return ["─".repeat(safeContainerWidth), ...constrainedLines];
-}
-
-/** Renders compact widget lines within the configured line budget. */
+/** Renders an ancestor-complete widget within the configured content budget. */
 function renderSubagentWidget(
 	state: SubagentWidgetState,
 	lineBudget: number,
 	width: number,
-	theme: SubagentWidgetTheme | undefined,
-): { lines: string[]; hiddenCount: number } {
+): readonly WidgetLine[] {
 	const normalizedBudget = Math.max(1, Math.floor(lineBudget));
-	const summary = summarizeSubagentTree(state.roots);
-	const header = formatSubagentWidgetHeader(summary, theme);
-	if (normalizedBudget === 1) {
-		return { lines: [header], hiddenCount: countNodes(state.roots) };
+	const summary = summarizeWidgetNodes(state.roots);
+	const header = formatWidgetHeader(summary);
+	if (
+		normalizedBudget === 1 ||
+		state.roots.length === 0 ||
+		(summary.running === 0 && summary.failed === 0)
+	) {
+		return [header];
 	}
 
-	const previewLength = Math.max(
-		MIN_ACTIVITY_PREVIEW_LENGTH,
-		width - ACTIVITY_PREVIEW_RESERVED_WIDTH,
-	);
-	const candidates = flattenTreeRows(state.roots, {
-		prefix: "",
-		orderRef: { value: 0 },
-		activityPreviewLength: previewLength,
-		theme,
-	});
-	const bodyBudget = normalizedBudget - 1;
-	const selectedRows = selectWidgetRows(candidates, bodyBudget);
-	const hiddenRows = candidates.filter(
-		(candidate) => !selectedRows.includes(candidate),
-	);
-	const lines = [header, ...selectedRows.map((row) => row.text)];
-	if (hiddenRows.length > 0) {
-		const hiddenSummary = summarizeWidgetRows(hiddenRows);
-		const hiddenText = `└─ … ${hiddenRows.length} hidden: ${hiddenSummary.done} done · ${hiddenSummary.running} running`;
-		if (lines.length >= normalizedBudget) {
-			lines[lines.length - 1] = hiddenText;
-		} else {
-			lines.push(hiddenText);
-		}
-	}
-
-	return { lines, hiddenCount: hiddenRows.length };
-}
-
-/** Formats summary counts while coloring only active non-zero values. */
-function formatSubagentWidgetHeader(
-	summary: ReturnType<typeof summarizeSubagentTree>,
-	theme: SubagentWidgetTheme | undefined,
-): string {
-	return [
-		"Subagents:",
-		`${formatSubagentSummaryCount(summary.running, "accent", theme)} running`,
-		"·",
-		`${formatSubagentSummaryCount(summary.failed, "error", theme)} failed`,
-		"·",
-		`${formatSubagentSummaryCount(summary.done, "success", theme)} done`,
-	].join(" ");
-}
-
-/** Colors a positive count and leaves zero or unthemed output plain. */
-function formatSubagentSummaryCount(
-	count: number,
-	color: ThemeColor,
-	theme: SubagentWidgetTheme | undefined,
-): string {
-	const label = String(count);
-	return theme !== undefined && count > 0 ? theme.fg(color, label) : label;
+	const forest = selectVisibleWidgetForest(state.roots, normalizedBudget - 1);
+	return [header, ...renderVisibleWidgetForest(forest, width)];
 }
 
 /** Converts serializable run details into widget tree nodes. */
@@ -210,285 +101,85 @@ function toWidgetNode(
 	const updatedAtMs = details.events.at(-1)?.timestampMs ?? nowMs;
 	return {
 		runId: details.runId,
-		agentId: details.agentId,
+		agentId: normalizeTerminalDisplayText(details.agentId),
 		status: details.status,
-		depth: details.depth,
 		updatedAtMs,
 		elapsedMs: details.elapsedMs,
 		contextUsage: details.contextUsage
 			? { ...details.contextUsage }
 			: undefined,
-		contextProjectionStatus: details.contextProjectionStatus,
+		contextProjectionStatus: normalizeOptionalDisplayText(
+			details.contextProjectionStatus,
+		),
 		activity: getCurrentActivity(details),
 		children: details.children.map((child) => toWidgetNode(child, nowMs)),
 	};
 }
 
-/** Extracts the latest visible activity without exposing nested final answers. */
+/** Extracts current activity with tool arguments while excluding tool result payloads. */
 function getCurrentActivity(details: SubagentRunDetails): string | undefined {
 	const lastEvent = details.events.at(-1);
 	if (lastEvent === undefined) {
 		return details.status === "running" ? "starting" : undefined;
 	}
-
-	return lastEvent.text
-		? `${lastEvent.title} ${lastEvent.text}`
-		: lastEvent.title;
-}
-
-/** Summarizes visible status counts and maximum tree depth. */
-function summarizeSubagentTree(nodes: readonly SubagentWidgetNode[]): {
-	running: number;
-	failed: number;
-	done: number;
-	maxDepth: number;
-} {
-	const summary = { running: 0, failed: 0, done: 0, maxDepth: 0 };
-	for (const node of nodes) {
-		if (node.status === "running") {
-			summary.running += 1;
-		} else if (node.status === "failed" || node.status === "aborted") {
-			summary.failed += 1;
-		} else {
-			summary.done += 1;
-		}
-		summary.maxDepth = Math.max(summary.maxDepth, node.depth);
-		const childSummary = summarizeSubagentTree(node.children);
-		summary.running += childSummary.running;
-		summary.failed += childSummary.failed;
-		summary.done += childSummary.done;
-		summary.maxDepth = Math.max(summary.maxDepth, childSummary.maxDepth);
+	if (lastEvent.kind === "assistant") {
+		return details.status === "running" ? "assistant" : "assistant completed";
+	}
+	if (lastEvent.kind === "tool_call") {
+		return formatToolActivity(lastEvent.title, lastEvent.text);
 	}
 
-	return summary;
-}
-
-/** Summarizes flattened rows without counting descendants twice. */
-function summarizeWidgetRows(rows: readonly WidgetRow[]): {
-	running: number;
-	failed: number;
-	done: number;
-} {
-	const summary = { running: 0, failed: 0, done: 0 };
-	for (const row of rows) {
-		if (row.node.status === "running") {
-			summary.running += 1;
-		} else if (row.node.status === "failed" || row.node.status === "aborted") {
-			summary.failed += 1;
-		} else {
-			summary.done += 1;
-		}
+	const matchingCall = findMatchingToolCall(details.events, lastEvent);
+	const toolActivity = formatToolActivity(lastEvent.title, matchingCall?.text);
+	if (lastEvent.kind === "error") {
+		return `${toolActivity} → failed`;
 	}
-
-	return summary;
-}
-
-/** Counts all nodes in the tree. */
-function countNodes(nodes: readonly SubagentWidgetNode[]): number {
-	return nodes.reduce(
-		(count, node) => count + 1 + countNodes(node.children),
-		0,
-	);
-}
-
-/** Stores one pre-rendered row with priority metadata. */
-interface WidgetRow {
-	readonly text: string;
-	readonly node: SubagentWidgetNode;
-	readonly order: number;
-}
-
-interface FlattenTreeRowsOptions {
-	readonly prefix: string;
-	readonly orderRef: { value: number };
-	readonly activityPreviewLength: number;
-	readonly theme: SubagentWidgetTheme | undefined;
-}
-
-/** Flattens the tree while preserving visible parent-child indentation. */
-function flattenTreeRows(
-	nodes: readonly SubagentWidgetNode[],
-	options: FlattenTreeRowsOptions,
-): WidgetRow[] {
-	const rows: WidgetRow[] = [];
-	for (let index = 0; index < nodes.length; index += 1) {
-		const node = nodes[index];
-		if (node === undefined) {
-			continue;
-		}
-		const isLast = index === nodes.length - 1;
-		const branch = isLast ? "└─" : "├─";
-		const childPrefix = `${options.prefix}${isLast ? "   " : "│  "}`;
-		rows.push({
-			text: `${options.prefix}${branch} ${formatWidgetNode(node, options.activityPreviewLength, options.theme)}`,
-			node,
-			order: options.orderRef.value,
-		});
-		options.orderRef.value += 1;
-		rows.push(
-			...flattenTreeRows(node.children, {
-				...options,
-				prefix: childPrefix,
-			}),
-		);
+	if (lastEvent.text?.trim().toLowerCase() === "no matches found") {
+		return `${toolActivity} → no matches`;
 	}
-
-	return rows;
+	return toolActivity;
 }
 
-/** Selects rows by status priority while keeping output order stable. */
-function selectWidgetRows(
-	rows: readonly WidgetRow[],
-	budget: number,
-): WidgetRow[] {
-	if (rows.length <= budget) {
-		return [...rows];
-	}
-
-	return [...rows]
-		.sort(
-			(left, right) =>
-				getStatusPriority(left.node.status) -
-					getStatusPriority(right.node.status) ||
-				right.node.updatedAtMs - left.node.updatedAtMs,
-		)
-		.slice(0, Math.max(0, budget - 1))
-		.sort((left, right) => left.order - right.order);
-}
-
-/** Formats one compact node row for the widget. */
-function formatWidgetNode(
-	node: SubagentWidgetNode,
-	activityPreviewLength: number,
-	theme: SubagentWidgetTheme | undefined,
-): string {
-	const contextUsage = formatWidgetContextUsage(node, theme);
-	const contextText = contextUsage ? ` · ${contextUsage}` : "";
-	const activity = node.activity
-		? ` · ${formatWidgetPreview(node.activity, activityPreviewLength)}`
-		: "";
-	return `${formatWidgetStatusIcon(node.status, theme)} ${node.agentId} ${formatElapsedMs(node.elapsedMs)}${contextText}${activity}`;
-}
-
-/** Formats child-owned projection savings next to the same child context usage. */
-function formatWidgetContextUsage(
-	node: SubagentWidgetNode,
-	theme: SubagentWidgetTheme | undefined,
-): string | undefined {
-	const contextUsage = formatSubagentContextUsage(node.contextUsage);
-	if (contextUsage === undefined) {
+/** Finds the latest call event that owns a visible tool result. */
+function findMatchingToolCall(
+	events: readonly SubagentProgressEvent[],
+	result: SubagentProgressEvent,
+): SubagentProgressEvent | undefined {
+	if (result.toolCallId === undefined) {
 		return undefined;
 	}
-
-	const styledContextUsage = styleWidgetContextUsage(
-		contextUsage,
-		node.contextUsage,
-		theme,
-	);
-	if (node.contextProjectionStatus === undefined) {
-		return styledContextUsage;
+	const resultIndex = events.lastIndexOf(result);
+	for (let index = resultIndex - 1; index >= 0; index -= 1) {
+		const event = events[index];
+		if (event?.kind === "tool_call" && event.toolCallId === result.toolCallId) {
+			return event;
+		}
 	}
-
-	const styledProjectionStatus =
-		theme === undefined
-			? node.contextProjectionStatus
-			: theme.fg("warning", node.contextProjectionStatus);
-	return `${styledProjectionStatus}/${styledContextUsage}`;
-}
-
-/** Applies the same pressure colors as the footer context segment. */
-function styleWidgetContextUsage(
-	label: string,
-	contextUsage: SubagentContextUsage | undefined,
-	theme: SubagentWidgetTheme | undefined,
-): string {
-	const color = getWidgetContextUsageColor(contextUsage);
-	return color === undefined || theme === undefined
-		? label
-		: theme.fg(color, label);
-}
-
-/** Returns context pressure color using the footer threshold contract. */
-function getWidgetContextUsageColor(
-	contextUsage: SubagentContextUsage | undefined,
-): "warning" | "error" | undefined {
-	if (contextUsage?.tokens === undefined || contextUsage.tokens === null) {
-		return undefined;
-	}
-	const usedPercent =
-		contextUsage.contextWindow > 0
-			? (contextUsage.tokens / contextUsage.contextWindow) * PERCENT_FACTOR
-			: null;
-	if (usedPercent === null) {
-		return undefined;
-	}
-	if (usedPercent >= CONTEXT_ERROR_USED_PERCENT) {
-		return "error";
-	}
-	if (usedPercent >= CONTEXT_WARNING_USED_PERCENT) {
-		return "warning";
-	}
-
 	return undefined;
 }
 
-/** Assigns lower numeric values to rows that must stay visible first. */
-function getStatusPriority(status: SubagentRunStatus): number {
-	if (status === "failed") {
-		return FAILED_STATUS_PRIORITY;
-	}
-	if (status === "aborted") {
-		return ABORTED_STATUS_PRIORITY;
-	}
-	if (status === "running") {
-		return RUNNING_STATUS_PRIORITY;
-	}
-
-	return COMPLETED_STATUS_PRIORITY;
-}
-
-/** Selects the status icon used in the widget. */
-function formatWidgetStatusIcon(
-	status: SubagentRunStatus,
-	theme: SubagentWidgetTheme | undefined,
+/** Formats a tool name with the normalized arguments captured at call start. */
+function formatToolActivity(
+	title: string,
+	payload: string | undefined,
 ): string {
-	if (status === "running") {
-		return styleWidgetStatusIcon("⏳", "accent", theme);
-	}
-	if (status === "succeeded") {
-		return styleWidgetStatusIcon("✓", "success", theme);
-	}
-	if (status === "aborted") {
-		return styleWidgetStatusIcon("■", "error", theme);
-	}
-
-	return styleWidgetStatusIcon("✗", "error", theme);
+	const normalizedTitle = normalizeTerminalDisplayText(title);
+	const toolName = normalizedTitle.startsWith("asteria_")
+		? normalizedTitle.slice("asteria_".length)
+		: normalizedTitle;
+	const argumentsText = normalizeOptionalDisplayText(payload);
+	return [toolName, argumentsText]
+		.filter((part) => part !== undefined && part !== "")
+		.join(" ");
 }
 
-/** Applies status color while preserving plain rendering without a theme. */
-function styleWidgetStatusIcon(
-	icon: string,
-	color: ThemeColor,
-	theme: SubagentWidgetTheme | undefined,
-): string {
-	return theme === undefined ? icon : theme.fg(color, icon);
-}
-
-/** Formats elapsed milliseconds into compact widget text. */
-function formatElapsedMs(elapsedMs: number): string {
-	if (elapsedMs < SECOND_MS) {
-		return `${elapsedMs}ms`;
+/** Normalizes an optional display field and drops empty results. */
+function normalizeOptionalDisplayText(
+	value: string | undefined,
+): string | undefined {
+	if (value === undefined) {
+		return undefined;
 	}
-
-	return `${Math.round(elapsedMs / SECOND_MS)}s`;
-}
-
-/** Keeps widget activity text short before width-based clipping. */
-function formatWidgetPreview(value: string, maxLength: number): string {
-	const normalizedValue = value.replace(/\s+/g, " ").trim();
-	if (normalizedValue.length <= maxLength) {
-		return normalizedValue;
-	}
-
-	return `${normalizedValue.slice(0, maxLength)}…`;
+	const normalizedValue = normalizeTerminalDisplayText(value);
+	return normalizedValue.length > 0 ? normalizedValue : undefined;
 }

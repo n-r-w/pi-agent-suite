@@ -13,14 +13,18 @@ RULES:
     2) Reread information already extracted
 4. Subagent prompt MUST be self-contained and include:
     1) Task
-    2) Scope
-    3) Constraints
-    4) Context
-    5) Acceptance criteria
-    6) Response requirements
-    7) Additional instructions
-    8) EARS format MUST be used for subagent's functional and non-functional requirements.
+    2) Scope & Out of scope
+    3) Accepted risks & Decisions
+    4) Constraints
+    5) Context
+    6) Acceptance criteria
+    7) Response requirements
+    8) Additional instructions
+5. Subagent prompt MUST NOT include:
+    1) Attempts to impose your own constraints on the agent. The agent may have different constraints, which are determined by its own rules, not yours.
+    2) Information that assumes the subagent knows anything about your work history.
+6. EARS format MUST be used for subagent's functional and non-functional requirements.
     Format: `WHILE {optional pre-condition}, WHEN {optional trigger}, THE {actor} SHALL {required behavior}`
-5. Subagent KNOWS NOTHING about your current context. ALL necessary data MUST be provided in prompt.
+7. Subagent KNOWS NOTHING about your current context. ALL necessary data MUST be provided in prompt.
     BAD: `Task: Conduct second round of research on topic X {information based on understanding of first round of research}` WHY BAD: Subagent knows nothing about first round of research.
     GOOD: `Task: Conduct research on topic X {all necessary information for research}` WHY GOOD: Subagent has all necessary information to complete task.

@@ -27,6 +27,7 @@ import {
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
 import {
 	formatSubagentContextUsage,
+	formatSubagentProjectionStatus,
 	type SubagentProgressEvent,
 	type SubagentRunDetails,
 } from "./progress";
@@ -262,7 +263,7 @@ function formatRunSubagentHeaderFingerprint(
 		details.agentId,
 		details.runtime?.modelId ?? "",
 		details.runtime?.thinking ?? "",
-		details.contextProjectionStatus ?? "",
+		formatSubagentProjectionStatus(details.contextProjectionStatus) ?? "",
 		formatSubagentContextUsage(details.contextUsage) ?? "",
 		String(details.elapsedMs),
 	].join("\u001F");
@@ -295,9 +296,12 @@ function formatSubagentRuntimeHeaderParts(
 	}
 
 	const contextUsage = formatSubagentContextUsage(details.contextUsage);
+	const projectionStatus = formatSubagentProjectionStatus(
+		details.contextProjectionStatus,
+	);
 	const projectedContextUsage =
-		contextUsage !== undefined && details.contextProjectionStatus !== undefined
-			? `${details.contextProjectionStatus}/${contextUsage}`
+		contextUsage !== undefined && projectionStatus !== undefined
+			? `${projectionStatus}/${contextUsage}`
 			: contextUsage;
 	return [
 		{ text: " · " },
