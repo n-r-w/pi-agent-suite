@@ -16,6 +16,7 @@ import {
 	countProjectionTextTokens,
 	estimateSerializedInputTokens,
 } from "./context-size";
+import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
 import {
 	buildRetryConfig,
 	createRetryableExternalError,
@@ -93,16 +94,6 @@ const SUMMARY_PROVIDER_ERROR = "summary provider returned an error";
 /** Diagnostic message for responses without visible summary text. */
 const SUMMARY_EMPTY_RESPONSE_ERROR = "summary response did not contain text";
 
-/** Thinking values accepted by tool-result summary configuration. */
-const SUMMARY_THINKING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const;
-
 /** Config keys accepted by the summary config object. */
 const TOOL_RESULT_SUMMARY_CONFIG_KEYS = [
 	SUMMARY_ENABLED_CONFIG_KEY,
@@ -116,8 +107,7 @@ const TOOL_RESULT_SUMMARY_CONFIG_KEYS = [
 ] as const;
 
 /** Runtime thinking values accepted by shared tool-result summarization. */
-export type ToolResultSummaryThinking =
-	(typeof SUMMARY_THINKING_VALUES)[number];
+export type ToolResultSummaryThinking = ReasoningLevel;
 
 /** Configuration shared by context-projection and custom-compaction helper summaries. */
 export interface ToolResultSummaryConfig {
@@ -798,7 +788,7 @@ function parseToolResultSummaryThinking(
 
 /** Checks whether a runtime value is a valid summary thinking level. */
 function isSummaryThinking(value: unknown): value is ToolResultSummaryThinking {
-	return SUMMARY_THINKING_VALUES.includes(value as ToolResultSummaryThinking);
+	return isReasoningLevel(value);
 }
 
 /** Checks whether an optional runtime value is a valid summary thinking setting. */

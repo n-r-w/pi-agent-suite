@@ -129,6 +129,9 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 ## Changelog
 
+### v0.16.1 - 2026-07-11
+- Fixed unavailability of `max` thinking level in some tools.
+
 ### v0.16.0 - 2026-07-11
 
 - Breaking change: `run_subagent` now requires a concise, unique `taskName` for each run.

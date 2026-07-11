@@ -34,6 +34,11 @@ import {
 	type ProjectContextFile,
 } from "../../shared/project-context-prompt";
 import {
+	isReasoningLevel,
+	REASONING_LEVELS,
+	type ReasoningLevel,
+} from "../../shared/reasoning-levels";
+import {
 	buildRetryConfig,
 	createRetryableExternalError,
 	type RetryConfig,
@@ -61,22 +66,13 @@ const DEFAULT_ADVISOR_PROMPT_FILE = join(
 	"advisor.md",
 );
 
-const THINKING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const;
-
 const ConsultAdvisorParameters = Type.Object({
 	question: Type.String({
 		description: "Question to ask the advisor. ENGLISH ONLY",
 	}),
 });
 
-type Thinking = (typeof THINKING_VALUES)[number];
+type Thinking = ReasoningLevel;
 
 interface ConsultAdvisorDependencies {
 	readonly completeSimple?: (
@@ -429,7 +425,7 @@ function validateAdvisorModelConfig(
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
 		return {
-			issue: `model.thinking must be one of ${THINKING_VALUES.join(", ")}`,
+			issue: `model.thinking must be one of ${REASONING_LEVELS.join(", ")}`,
 		};
 	}
 
@@ -749,10 +745,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Returns true when a runtime value is an accepted thinking value. */
 function isThinking(value: unknown): value is Thinking {
-	return (
-		typeof value === "string" &&
-		(THINKING_VALUES as readonly string[]).includes(value)
-	);
+	return isReasoningLevel(value);
 }
 
 /** Parses an unknown active thinking level into an advisor reasoning value. */

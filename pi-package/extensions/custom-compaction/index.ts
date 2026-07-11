@@ -25,6 +25,11 @@ import {
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
+	isReasoningLevel,
+	REASONING_LEVELS,
+	type ReasoningLevel,
+} from "../../shared/reasoning-levels";
+import {
 	buildRetryConfig,
 	createRetryableExternalError,
 	type RetryConfig,
@@ -109,16 +114,6 @@ const CUSTOM_COMPACTION_CONFIG_KEYS = [
 	SUMMARY_CONFIG_KEY,
 ] as const;
 
-/** Reasoning values accepted by pi configuration for custom compaction. */
-const REASONING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const;
-
 /** History summaries receive most of the reserved compaction output budget. */
 const HISTORY_SUMMARY_RESERVE_RATIO = 0.8;
 
@@ -126,7 +121,7 @@ const HISTORY_SUMMARY_RESERVE_RATIO = 0.8;
 const TURN_PREFIX_SUMMARY_RESERVE_RATIO = 0.5;
 
 type PromptFileKey = (typeof PROMPT_FILE_KEYS)[number];
-type Reasoning = (typeof REASONING_VALUES)[number];
+type Reasoning = ReasoningLevel;
 
 type ConfigReadResult =
 	| { readonly kind: "disabled" }
@@ -469,7 +464,7 @@ function validateCustomCompactionConfig(
 	const reasoning = config[REASONING_CONFIG_KEY];
 	if (reasoning !== undefined && !isReasoning(reasoning)) {
 		return {
-			issue: `${REASONING_CONFIG_KEY} must be one of ${REASONING_VALUES.join(", ")}`,
+			issue: `${REASONING_CONFIG_KEY} must be one of ${REASONING_LEVELS.join(", ")}`,
 		};
 	}
 
@@ -1347,10 +1342,7 @@ function isTextBlockRecord(value: unknown): value is TextBlockRecord {
 
 /** Returns true when a runtime value is an accepted reasoning value. */
 function isReasoning(value: unknown): value is Reasoning {
-	return (
-		typeof value === "string" &&
-		(REASONING_VALUES as readonly string[]).includes(value)
-	);
+	return isReasoningLevel(value);
 }
 
 /** Parses unknown current thinking level into a configured reasoning value. */

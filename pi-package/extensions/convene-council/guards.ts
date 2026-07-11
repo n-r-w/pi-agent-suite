@@ -1,4 +1,5 @@
-import { PARTICIPANT_IDS, THINKING_VALUES } from "./constants";
+import { isReasoningLevel } from "../../shared/reasoning-levels";
+import { PARTICIPANT_IDS } from "./constants";
 import type { ParticipantId, Thinking } from "./types";
 
 /** Returns true when model ID contains provider and model parts separated by the first slash. */
@@ -22,10 +23,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Returns true when a runtime value is an accepted thinking value. */
 export function isThinking(value: unknown): value is Thinking {
-	return (
-		typeof value === "string" &&
-		(THINKING_VALUES as readonly string[]).includes(value)
-	);
+	return isReasoningLevel(value);
 }
 
 /** Parses an unknown active thinking level into a participant reasoning value. */

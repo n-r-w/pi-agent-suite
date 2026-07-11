@@ -2102,7 +2102,7 @@ describe("consult-advisor", () => {
 			expect(ctx.notifications).toEqual([
 				{
 					message:
-						"[consult-advisor] model.thinking must be one of off, minimal, low, medium, high, xhigh",
+						"[consult-advisor] model.thinking must be one of off, minimal, low, medium, high, xhigh, max",
 					type: "warning",
 				},
 			]);

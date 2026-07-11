@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { getSuiteConfigLocation } from "../../shared/agent-suite-storage";
+import { REASONING_LEVELS } from "../../shared/reasoning-levels";
 import {
 	CONVENE_COUNCIL_EXTENSION_DIR,
 	DEFAULT_FINAL_ANSWER_PARTICIPANT,
@@ -8,7 +9,6 @@ import {
 	DEFAULT_RESPONSE_DEFECT_RETRIES,
 	ENABLED_CONFIG_KEY,
 	PARTICIPANT_IDS,
-	THINKING_VALUES,
 } from "./constants";
 import {
 	formatError,
@@ -247,7 +247,7 @@ function validateModelConfig(
 		return `${fieldPath}.id must use provider/model`;
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
-		return `${fieldPath}.thinking must be one of ${THINKING_VALUES.join(", ")}`;
+		return `${fieldPath}.thinking must be one of ${REASONING_LEVELS.join(", ")}`;
 	}
 
 	return undefined;

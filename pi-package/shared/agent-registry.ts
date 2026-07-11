@@ -5,6 +5,7 @@ import {
 	getSuiteExtensionDir,
 	isFileNotFoundError,
 } from "./agent-suite-storage";
+import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
 
 const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
 const AGENTS_DIR = "agents";
@@ -18,18 +19,8 @@ const TOP_LEVEL_KEYS = [
 ] as const;
 const MODEL_KEYS = ["id", "thinking"] as const;
 const AGENT_TYPES = ["main", "subagent", "both"] as const;
-const THINKING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const;
 
 type AgentType = (typeof AGENT_TYPES)[number];
-type ThinkingValue = (typeof THINKING_VALUES)[number];
 
 /** Validated agent definition used by agent-related extensions. */
 export interface AgentDefinition {
@@ -39,7 +30,7 @@ export interface AgentDefinition {
 	readonly prompt: string;
 	readonly model?: {
 		readonly id?: string;
-		readonly thinking?: ThinkingValue;
+		readonly thinking?: ReasoningLevel;
 	};
 	readonly tools?: readonly string[];
 	readonly agents?: readonly string[];
@@ -279,9 +270,6 @@ function formatError(error: unknown): string {
 }
 
 /** Returns true when a runtime value is a supported thinking level. */
-function isThinkingValue(value: unknown): value is ThinkingValue {
-	return (
-		typeof value === "string" &&
-		(THINKING_VALUES as readonly string[]).includes(value)
-	);
+function isThinkingValue(value: unknown): value is ReasoningLevel {
+	return isReasoningLevel(value);
 }

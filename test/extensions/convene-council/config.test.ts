@@ -109,7 +109,7 @@ describe("convene-council config", () => {
 			{
 				config: { llm1: { model: { thinking: "huge" } } },
 				error:
-					"llm1.model.thinking must be one of off, minimal, low, medium, high, xhigh",
+					"llm1.model.thinking must be one of off, minimal, low, medium, high, xhigh, max",
 			},
 			{
 				config: { participantIterationLimit: 0 },

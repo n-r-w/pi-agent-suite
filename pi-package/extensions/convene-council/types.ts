@@ -11,15 +11,12 @@ import type {
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { ProjectContextFile } from "../../shared/project-context-prompt";
-import type {
-	PARTICIPANT_IDS,
-	PARTICIPANT_STATUSES,
-	THINKING_VALUES,
-} from "./constants";
+import type { ReasoningLevel } from "../../shared/reasoning-levels";
+import type { PARTICIPANT_IDS, PARTICIPANT_STATUSES } from "./constants";
 import type { CouncilProgressReporter } from "./progress";
 
 export type { ProjectContextFile };
-export type Thinking = (typeof THINKING_VALUES)[number];
+export type Thinking = ReasoningLevel;
 export type ParticipantId = (typeof PARTICIPANT_IDS)[number];
 export type ParticipantStatus = (typeof PARTICIPANT_STATUSES)[number];
 

@@ -8,13 +8,5 @@ export const DEFAULT_FINAL_ANSWER_PARTICIPANT = "llm2";
 export const DEFAULT_RESPONSE_DEFECT_RETRIES = 1;
 export const COUNCIL_CONTEXT_TOO_LARGE_ERROR = "context is too large";
 
-export const THINKING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const;
 export const PARTICIPANT_IDS = ["llm1", "llm2"] as const;
 export const PARTICIPANT_STATUSES = ["AGREE", "DIFF", "NEED_INFO"] as const;

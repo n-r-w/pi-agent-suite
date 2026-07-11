@@ -38,6 +38,11 @@ import {
 	type ProjectContextFile,
 } from "../../shared/project-context-prompt";
 import {
+	isReasoningLevel,
+	REASONING_LEVELS,
+	type ReasoningLevel,
+} from "../../shared/reasoning-levels";
+import {
 	buildRetryConfig,
 	createRetryableExternalError,
 	type RetryConfig,
@@ -68,16 +73,7 @@ const DEFAULT_SYSTEM_PROMPT_FILE = join(
 	"system.md",
 );
 
-const THINKING_VALUES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const;
-
-type Thinking = (typeof THINKING_VALUES)[number];
+type Thinking = ReasoningLevel;
 
 type ConfigReadResult =
 	| { readonly disabled: true }
@@ -599,7 +595,7 @@ function validateModelConfig(model: unknown): string | undefined {
 		return "model.id must use provider/model";
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
-		return `model.thinking must be one of ${THINKING_VALUES.join(", ")}`;
+		return `model.thinking must be one of ${REASONING_LEVELS.join(", ")}`;
 	}
 
 	return undefined;
@@ -823,10 +819,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Returns true when a runtime value is an accepted thinking value. */
 function isThinking(value: unknown): value is Thinking {
-	return (
-		typeof value === "string" &&
-		(THINKING_VALUES as readonly string[]).includes(value)
-	);
+	return isReasoningLevel(value);
 }
 
 /** Parses an unknown active thinking level into a model reasoning value. */
