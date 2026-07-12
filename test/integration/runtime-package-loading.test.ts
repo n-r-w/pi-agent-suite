@@ -17,6 +17,26 @@ const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_TOOL_PATTERNS_ENV = "PI_SUBAGENT_TOOL_PATTERNS";
+const RUNTIME_TEST_PROVIDER_ID = "runtime-test";
+const RUNTIME_TEST_MODEL_ID = "fake";
+const RUNTIME_TEST_MODEL = `${RUNTIME_TEST_PROVIDER_ID}/${RUNTIME_TEST_MODEL_ID}`;
+const RUNTIME_TEST_PROVIDER_LINES = [
+	`\tpi.registerProvider("${RUNTIME_TEST_PROVIDER_ID}", {`,
+	'\t\tname: "Runtime Test",',
+	'\t\tbaseUrl: "http://127.0.0.1:1/v1",',
+	'\t\tapiKey: "test",',
+	'\t\tapi: "openai-completions",',
+	"\t\tmodels: [{",
+	`\t\t\tid: "${RUNTIME_TEST_MODEL_ID}",`,
+	'\t\t\tname: "Fake",',
+	"\t\t\treasoning: false,",
+	'\t\t\tinput: ["text"],',
+	"\t\t\tcost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },",
+	"\t\t\tcontextWindow: 128000,",
+	"\t\t\tmaxTokens: 4096,",
+	"\t\t}],",
+	"\t});",
+] as const;
 
 interface RuntimeDump {
 	readonly activeTools: readonly string[];
@@ -112,6 +132,7 @@ function writePromptDumpExtension(directory: string): string {
 			'import { writeFileSync } from "node:fs";',
 			"",
 			"export default function dumpPrompt(pi) {",
+			...RUNTIME_TEST_PROVIDER_LINES,
 			'\tpi.on("before_agent_start", (event) => {',
 			"\t\tconst dumpFile = process.env.PI_PROMPT_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_PROMPT_DUMP_FILE is required");',
@@ -133,6 +154,7 @@ function writeRuntimeDumpExtension(directory: string): string {
 			'import { writeFileSync } from "node:fs";',
 			"",
 			"export default function dumpRuntime(pi) {",
+			...RUNTIME_TEST_PROVIDER_LINES,
 			'\tpi.on("before_agent_start", (event) => {',
 			"\t\tconst dumpFile = process.env.PI_RUNTIME_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_RUNTIME_DUMP_FILE is required");',
@@ -183,6 +205,8 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -259,6 +283,8 @@ test("runtime child loading uses the project agent override", () => {
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -330,6 +356,8 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -393,6 +421,8 @@ test("runtime package loading exposes convene_council when enabled", () => {
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
