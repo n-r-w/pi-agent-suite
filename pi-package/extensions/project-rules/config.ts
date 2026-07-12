@@ -10,7 +10,7 @@ export const PROJECT_RULES_EXTENSION_DIR = "project-rules";
 const ENABLED_CONFIG_KEY = "enabled";
 const RULES_DIR_CONFIG_KEY = "rulesDir";
 const CONFIG_KEYS = [ENABLED_CONFIG_KEY, RULES_DIR_CONFIG_KEY] as const;
-const DEFAULT_RULES_DIR = ".pi";
+const DEFAULT_RULES_DIR = ".pi/rules";
 const PATH_PART_SEPARATOR = /[\\/]+/;
 
 interface ProjectRulesRawConfig {

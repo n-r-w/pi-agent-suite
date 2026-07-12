@@ -65,7 +65,7 @@ Recommended MCP servers:
 | Extension | Default behavior | What it does | Quick settings | Details |
 | --- | --- | --- | --- | --- |
 | `system-prompt` | Enabled | Replaces pi's base system prompt with a Markdown template and runtime variables. | `system-prompt/config.json`: `enabled`, `templateFile`. | [docs/extensions/system-prompt.md](docs/extensions/system-prompt.md) |
-| `project-rules` | Enabled | Appends recursive project Markdown rules from `.pi` to the final system prompt. | `project-rules/config.json`: `enabled`, `rulesDir`. | [docs/extensions/project-rules.md](docs/extensions/project-rules.md) |
+| `project-rules` | Enabled | Appends bounded recursive Markdown rules from `.pi/rules`; limit failures reject the section without truncation. | `project-rules/config.json`: `enabled`, `rulesDir`. | [docs/extensions/project-rules.md](docs/extensions/project-rules.md) |
 | `mcp-wrapper` | No MCP tools until configured | Registers tools from configured MCP servers, caches tool metadata, and adds `/mcp-refresh`. | `mcp-wrapper/config.json`: `settings.enabled`, `settings.timeouts`, `mcpServers`. | [docs/extensions/mcp-wrapper.md](docs/extensions/mcp-wrapper.md) |
 | `enable-tools` | Enabled | Enables configured built-in tools such as `grep`, `find`, and `ls`. | `enable-tools/config.json`: `enabled`, `include`, `exclude`. | [docs/extensions/enable-tools.md](docs/extensions/enable-tools.md) |
 | `footer` | Enabled | Shows project, quota, cost, selected agent, model, projection, MCP errors, and context usage. | `footer/config.json`: `enabled`, `showProvider`, `showModel`, `showThinkingLevel`, `showApiCost`. | [docs/extensions/footer.md](docs/extensions/footer.md) |

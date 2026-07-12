@@ -1,6 +1,6 @@
 import type { Dirent } from "node:fs";
 import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, normalize, sep } from "node:path";
 import type {
 	BuildSystemPromptOptions,
 	ExtensionAPI,
@@ -9,6 +9,21 @@ import { readProjectRulesConfig } from "./config";
 
 const ISSUE_PREFIX = "[project-rules]";
 const MARKDOWN_EXTENSION = ".md";
+const BYTES_PER_KIBIBYTE = 1024;
+const MAX_RULE_FILE_KIBIBYTES = 64;
+const MAX_RULE_FILE_COUNT = 64;
+const MAX_TOTAL_RULE_CONTENT_KIBIBYTES = 256;
+const MAX_RENDERED_PROJECT_RULES_KIBIBYTES = 320;
+const MAX_RULE_FILE_BYTES = MAX_RULE_FILE_KIBIBYTES * BYTES_PER_KIBIBYTE;
+const MAX_TOTAL_RULE_CONTENT_BYTES =
+	MAX_TOTAL_RULE_CONTENT_KIBIBYTES * BYTES_PER_KIBIBYTE;
+const MAX_RENDERED_PROJECT_RULES_LENGTH =
+	MAX_RENDERED_PROJECT_RULES_KIBIBYTES * BYTES_PER_KIBIBYTE;
+const RULE_FILE_SIZE_ISSUE = "rule file exceeds 64 KiB limit";
+const RULE_FILE_COUNT_ISSUE = "rule file count exceeds 64";
+const TOTAL_RULE_CONTENT_ISSUE = "total rule content exceeds 256 KiB limit";
+const RENDERED_PROJECT_RULES_ISSUE =
+	"rendered project rules exceed 320 KiB limit";
 
 interface SessionContextLike {
 	readonly hasUI?: boolean;
@@ -27,8 +42,17 @@ interface ProjectRule {
 	readonly content: string;
 }
 
+interface RuleLoadBudget {
+	candidateCount: number;
+	totalContentBytes: number;
+}
+
 type ProjectRulesReadResult =
 	| { readonly kind: "valid"; readonly rules: readonly ProjectRule[] }
+	| { readonly kind: "invalid"; readonly issue: string };
+
+type MissingDirectoryStatus =
+	| { readonly kind: "missing" }
 	| { readonly kind: "invalid"; readonly issue: string };
 
 /** Appends project-local Markdown rules after the base system prompt is assembled. */
@@ -56,8 +80,19 @@ export default function projectRules(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
+		let renderedRules: string;
+		try {
+			renderedRules = renderProjectRules(rulesResult.rules);
+		} catch (error) {
+			reportIssue(
+				ctx as SessionContextLike,
+				error instanceof Error ? error.message : RENDERED_PROJECT_RULES_ISSUE,
+			);
+			return undefined;
+		}
+
 		return {
-			systemPrompt: `${typedEvent.systemPrompt}\n\n${renderProjectRules(rulesResult.rules)}`,
+			systemPrompt: `${typedEvent.systemPrompt}\n\n${renderedRules}`,
 		};
 	});
 }
@@ -70,8 +105,9 @@ async function readProjectRules(
 	const rootDir = join(cwd, rulesDir);
 	const visitedRealDirs = new Set<string>();
 	const rules: ProjectRule[] = [];
+	const budget: RuleLoadBudget = { candidateCount: 0, totalContentBytes: 0 };
 
-	const rootStatus = await resolveDirectoryStatus(rootDir);
+	const rootStatus = await resolveDirectoryStatus(rootDir, cwd, rulesDir);
 	if (rootStatus.kind === "missing") {
 		return { kind: "valid", rules: [] };
 	}
@@ -84,6 +120,7 @@ async function readProjectRules(
 		visibleDir: toPromptPath(rulesDir),
 		visitedRealDirs,
 		rules,
+		budget,
 	});
 	if (walkResult.kind === "invalid") {
 		return walkResult;
@@ -98,6 +135,8 @@ async function readProjectRules(
 /** Distinguishes absent default rules from unreadable or non-directory entry points. */
 async function resolveDirectoryStatus(
 	directory: string,
+	cwd: string,
+	rulesDir: string,
 ): Promise<
 	| { readonly kind: "valid" }
 	| { readonly kind: "missing" }
@@ -120,25 +159,32 @@ async function resolveDirectoryStatus(
 			};
 		}
 
-		return inspectMissingDirectoryPath(directory);
+		return inspectMissingDirectoryPath(cwd, rulesDir);
 	}
 }
 
-/** Separates an absent rulesDir from a broken symlink at the rulesDir path. */
+/** Separates an absent rulesDir from a broken symlink in its project-relative path. */
 async function inspectMissingDirectoryPath(
-	directory: string,
-): Promise<
-	| { readonly kind: "missing" }
-	| { readonly kind: "invalid"; readonly issue: string }
-> {
+	cwd: string,
+	rulesDir: string,
+): Promise<MissingDirectoryStatus> {
+	return inspectMissingPathComponents(cwd, normalize(rulesDir).split(sep));
+}
+
+/** Inspects configured path components in order so an absent parent stops probing. */
+async function inspectMissingPathComponents(
+	parentPath: string,
+	components: readonly string[],
+): Promise<MissingDirectoryStatus> {
+	const [component, ...remainingComponents] = components;
+	if (component === undefined) {
+		return { kind: "missing" };
+	}
+
+	const currentPath = join(parentPath, component);
+	let linkStat: Awaited<ReturnType<typeof lstat>>;
 	try {
-		const linkStat = await lstat(directory);
-		return {
-			kind: "invalid",
-			issue: linkStat.isSymbolicLink()
-				? "rulesDir symlink target does not exist"
-				: "rulesDir could not be inspected",
-		};
+		linkStat = await lstat(currentPath);
 	} catch (error) {
 		if (isFileNotFoundError(error)) {
 			return { kind: "missing" };
@@ -149,6 +195,21 @@ async function inspectMissingDirectoryPath(
 			issue: `failed to inspect rulesDir: ${formatError(error)}`,
 		};
 	}
+
+	if (linkStat.isSymbolicLink()) {
+		try {
+			await stat(currentPath);
+		} catch (error) {
+			return {
+				kind: "invalid",
+				issue: isFileNotFoundError(error)
+					? "rulesDir symlink target does not exist"
+					: `failed to inspect rulesDir: ${formatError(error)}`,
+			};
+		}
+	}
+
+	return inspectMissingPathComponents(currentPath, remainingComponents);
 }
 
 /** Recursively walks directories and records non-empty Markdown files by visible path. */
@@ -157,6 +218,7 @@ async function walkRulesDirectory(options: {
 	readonly visibleDir: string;
 	readonly visitedRealDirs: Set<string>;
 	readonly rules: ProjectRule[];
+	readonly budget: RuleLoadBudget;
 }): Promise<
 	| { readonly kind: "valid" }
 	| { readonly kind: "invalid"; readonly issue: string }
@@ -214,6 +276,7 @@ async function processDirectoryEntry(
 	options: {
 		readonly visitedRealDirs: Set<string>;
 		readonly rules: ProjectRule[];
+		readonly budget: RuleLoadBudget;
 	},
 ): Promise<
 	| { readonly kind: "valid" }
@@ -235,11 +298,20 @@ async function processDirectoryEntry(
 			visibleDir: visiblePath,
 			visitedRealDirs: options.visitedRealDirs,
 			rules: options.rules,
+			budget: options.budget,
 		});
 	}
 
 	if (!entryStat.isFile() || !visiblePath.endsWith(MARKDOWN_EXTENSION)) {
 		return { kind: "valid" };
+	}
+
+	options.budget.candidateCount += 1;
+	if (options.budget.candidateCount > MAX_RULE_FILE_COUNT) {
+		return { kind: "invalid", issue: RULE_FILE_COUNT_ISSUE };
+	}
+	if (entryStat.size > MAX_RULE_FILE_BYTES) {
+		return { kind: "invalid", issue: RULE_FILE_SIZE_ISSUE };
 	}
 
 	let content: string;
@@ -251,6 +323,14 @@ async function processDirectoryEntry(
 			issue: `failed to read rule file: ${formatError(error)}`,
 		};
 	}
+	const contentBytes = Buffer.byteLength(content, "utf8");
+	if (contentBytes > MAX_RULE_FILE_BYTES) {
+		return { kind: "invalid", issue: RULE_FILE_SIZE_ISSUE };
+	}
+	options.budget.totalContentBytes += contentBytes;
+	if (options.budget.totalContentBytes > MAX_TOTAL_RULE_CONTENT_BYTES) {
+		return { kind: "invalid", issue: TOTAL_RULE_CONTENT_ISSUE };
+	}
 	if (content.trim().length === 0) {
 		return { kind: "valid" };
 	}
@@ -260,8 +340,8 @@ async function processDirectoryEntry(
 }
 
 /** Renders a stable XML-like block without changing rule file contents. */
-function renderProjectRules(rules: readonly ProjectRule[]): string {
-	return [
+export function renderProjectRules(rules: readonly ProjectRule[]): string {
+	const rendered = [
 		"<project_rules>",
 		...rules.flatMap((rule) => [
 			`  <project_rule path="${escapeAttribute(rule.path)}">`,
@@ -270,6 +350,11 @@ function renderProjectRules(rules: readonly ProjectRule[]): string {
 		]),
 		"</project_rules>",
 	].join("\n");
+	if (rendered.length > MAX_RENDERED_PROJECT_RULES_LENGTH) {
+		throw new Error(RENDERED_PROJECT_RULES_ISSUE);
+	}
+
+	return rendered;
 }
 
 /** Normalizes visible paths to prompt-friendly slash separators. */

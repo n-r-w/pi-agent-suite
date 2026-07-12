@@ -7,10 +7,14 @@ import type {
 	ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
-import projectRules from "./index";
+import projectRules, { renderProjectRules } from "./index";
 
 const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 const tempDirs: string[] = [];
+
+const KIBIBYTE = 1024;
+const MAX_RULE_FILE_BYTES = 64 * KIBIBYTE;
+const MAX_RENDERED_PROJECT_RULES_LENGTH = 320 * KIBIBYTE;
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -65,7 +69,7 @@ describe("project-rules", () => {
 		// Dependencies: this test uses temporary project files and in-memory lifecycle fakes.
 		await withIsolatedSuiteDir(async () => {
 			const projectDir = await createTempDir("project-rules-project-");
-			const rulesDir = join(projectDir, ".pi");
+			const rulesDir = join(projectDir, ".pi", "rules");
 			await mkdir(join(rulesDir, "nested"), { recursive: true });
 			await writeFile(join(rulesDir, "z.md"), "Z rule");
 			await writeFile(join(rulesDir, "nested", "a.md"), "A rule");
@@ -88,14 +92,119 @@ describe("project-rules", () => {
 					"Original pi prompt",
 					"",
 					"<project_rules>",
-					'  <project_rule path=".pi/nested/a.md">',
+					'  <project_rule path=".pi/rules/nested/a.md">',
 					"A rule",
 					"  </project_rule>",
-					'  <project_rule path=".pi/z.md">',
+					'  <project_rule path=".pi/rules/z.md">',
 					"Z rule",
 					"  </project_rule>",
 					"</project_rules>",
 				].join("\n"),
+			);
+		});
+	});
+
+	test("ignores Markdown under .pi outside the default rules directory", async () => {
+		await withIsolatedSuiteDir(async () => {
+			const projectDir = await createTempDir("project-rules-outside-");
+			await mkdir(join(projectDir, ".pi"));
+			await writeFile(join(projectDir, ".pi", "outside.md"), "Outside marker");
+
+			const prompt = await renderPrompt(projectDir);
+
+			expect(prompt).toBe("Original pi prompt");
+			expect(prompt).not.toContain("Outside marker");
+		});
+	});
+
+	test("accepts 65,536-byte files and rejects 65,537-byte files", async () => {
+		await expectBoundary({
+			fileSizes: [MAX_RULE_FILE_BYTES],
+			expectedIssue: undefined,
+		});
+		await expectBoundary({
+			fileSizes: [MAX_RULE_FILE_BYTES + 1],
+			expectedIssue: "rule file exceeds 64 KiB limit",
+		});
+	});
+
+	test("accepts 64 candidates and rejects 65 candidates including empty files", async () => {
+		await expectBoundary({
+			fileSizes: Array(64).fill(0),
+			expectedIssue: undefined,
+		});
+		await expectBoundary({
+			fileSizes: Array(65).fill(0),
+			expectedIssue: "rule file count exceeds 64",
+		});
+	});
+
+	test("accepts 262,144 aggregate bytes and rejects 262,145 bytes", async () => {
+		await expectBoundary({
+			fileSizes: Array(4).fill(MAX_RULE_FILE_BYTES),
+			expectedIssue: undefined,
+		});
+		await expectBoundary({
+			fileSizes: [
+				MAX_RULE_FILE_BYTES,
+				MAX_RULE_FILE_BYTES,
+				MAX_RULE_FILE_BYTES,
+				MAX_RULE_FILE_BYTES,
+				1,
+			],
+			expectedIssue: "total rule content exceeds 256 KiB limit",
+		});
+	});
+
+	test("accepts a 327,680-character rendered section and rejects 327,681", () => {
+		const emptyLength = renderProjectRules([
+			{ path: "x.md", content: "" },
+		]).length;
+		expect(
+			renderProjectRules([
+				{
+					path: "x.md",
+					content: "x".repeat(MAX_RENDERED_PROJECT_RULES_LENGTH - emptyLength),
+				},
+			]),
+		).toHaveLength(MAX_RENDERED_PROJECT_RULES_LENGTH);
+		expect(() =>
+			renderProjectRules([
+				{
+					path: "x.md",
+					content: "x".repeat(
+						MAX_RENDERED_PROJECT_RULES_LENGTH - emptyLength + 1,
+					),
+				},
+			]),
+		).toThrow("rendered project rules exceed 320 KiB limit");
+	});
+
+	test("reports one fixed safe warning and leaves the prompt unchanged", async () => {
+		await withIsolatedSuiteDir(async () => {
+			const projectDir = await createTempDir("project-rules-safe-warning-");
+			const rulesDir = join(projectDir, ".pi", "rules");
+			await mkdir(rulesDir, { recursive: true });
+			await writeFile(
+				join(rulesDir, "unique-path-marker.md"),
+				"unique-content-marker".repeat(4_000),
+			);
+			const context = createContextFake(projectDir);
+
+			expect(await renderPrompt(projectDir, context)).toBe(
+				"Original pi prompt",
+			);
+			expect(context.notifications).toEqual([
+				{
+					message: "[project-rules] rule file exceeds 64 KiB limit",
+					type: "warning",
+				},
+			]);
+			expect(context.notifications[0]?.message).not.toContain(
+				"unique-path-marker",
+			);
+			expect(context.notifications[0]?.message).not.toContain(
+				"unique-content-marker",
 			);
 		});
 	});
@@ -119,7 +228,8 @@ describe("project-rules", () => {
 				join(externalDir, "shared-dir", "nested.md"),
 				"Linked dir rule",
 			);
-			await symlink(realRulesDir, join(projectDir, ".pi"), "dir");
+			await mkdir(join(projectDir, ".pi"));
+			await symlink(realRulesDir, join(projectDir, ".pi", "rules"), "dir");
 			await symlink(
 				join(externalDir, "shared-source.txt"),
 				join(realRulesDir, "shared.md"),
@@ -141,11 +251,11 @@ describe("project-rules", () => {
 				context.ctx,
 			);
 
-			expect(prompt).toContain('path=".pi/root.md"');
+			expect(prompt).toContain('path=".pi/rules/root.md"');
 			expect(prompt).toContain("Root rule");
-			expect(prompt).toContain('path=".pi/shared-dir/nested.md"');
+			expect(prompt).toContain('path=".pi/rules/shared-dir/nested.md"');
 			expect(prompt).toContain("Linked dir rule");
-			expect(prompt).toContain('path=".pi/shared.md"');
+			expect(prompt).toContain('path=".pi/rules/shared.md"');
 			expect(prompt).toContain("Linked file rule");
 			expect(prompt.match(/Root rule/g)).toHaveLength(1);
 		});
@@ -159,15 +269,15 @@ describe("project-rules", () => {
 		await withIsolatedSuiteDir(async () => {
 			const projectDir = await createTempDir("project-rules-repeat-project-");
 			const sharedDir = await createTempDir("project-rules-repeat-shared-");
-			await mkdir(join(projectDir, ".pi"));
+			await mkdir(join(projectDir, ".pi", "rules"), { recursive: true });
 			await writeFile(join(sharedDir, "rule.md"), "Shared rule");
-			await symlink(sharedDir, join(projectDir, ".pi", "a"), "dir");
-			await symlink(sharedDir, join(projectDir, ".pi", "b"), "dir");
+			await symlink(sharedDir, join(projectDir, ".pi", "rules", "a"), "dir");
+			await symlink(sharedDir, join(projectDir, ".pi", "rules", "b"), "dir");
 
 			const prompt = await renderPrompt(projectDir);
 
-			expect(prompt).toContain('path=".pi/a/rule.md"');
-			expect(prompt).not.toContain('path=".pi/b/rule.md"');
+			expect(prompt).toContain('path=".pi/rules/a/rule.md"');
+			expect(prompt).not.toContain('path=".pi/rules/b/rule.md"');
 			expect(prompt.match(/Shared rule/g)).toHaveLength(1);
 		});
 	});
@@ -187,20 +297,79 @@ describe("project-rules", () => {
 			expect(await renderPrompt(missingProjectDir)).toBe("Original pi prompt");
 
 			const emptyProjectDir = await createTempDir("project-rules-empty-");
-			await mkdir(join(emptyProjectDir, ".pi"));
-			await writeFile(join(emptyProjectDir, ".pi", "empty.md"), "\n\t ");
+			await mkdir(join(emptyProjectDir, ".pi", "rules"), { recursive: true });
+			await writeFile(
+				join(emptyProjectDir, ".pi", "rules", "empty.md"),
+				"\n\t ",
+			);
 			expect(await renderPrompt(emptyProjectDir)).toBe("Original pi prompt");
+		});
+	});
+
+	test("warns when the default rulesDir is missing through a broken ancestor symlink", async () => {
+		await withIsolatedSuiteDir(async () => {
+			const projectDir = await createTempDir(
+				"project-rules-broken-default-ancestor-",
+			);
+			await symlink(join(projectDir, "missing-pi"), join(projectDir, ".pi"));
+			const context = createContextFake(projectDir);
+
+			expect(await renderPrompt(projectDir, context)).toBe(
+				"Original pi prompt",
+			);
+			expect(context.notifications).toHaveLength(1);
+		});
+	});
+
+	test("warns when a configured nested rulesDir is missing through a broken ancestor symlink", async () => {
+		await withIsolatedSuiteDir(async (suiteDir) => {
+			const projectDir = await createTempDir(
+				"project-rules-broken-nested-ancestor-",
+			);
+			await mkdir(join(projectDir, "config"));
+			await symlink(
+				join(projectDir, "missing-rules"),
+				join(projectDir, "config", "rules"),
+			);
+			await writeProjectRulesConfig(suiteDir, {
+				rulesDir: "config/rules/nested",
+			});
+			const context = createContextFake(projectDir);
+
+			expect(await renderPrompt(projectDir, context)).toBe(
+				"Original pi prompt",
+			);
+			expect(context.notifications).toHaveLength(1);
+		});
+	});
+
+	test("keeps an ordinarily missing configured rulesDir ancestor silent", async () => {
+		await withIsolatedSuiteDir(async (suiteDir) => {
+			const projectDir = await createTempDir("project-rules-missing-ancestor-");
+			await writeProjectRulesConfig(suiteDir, {
+				rulesDir: "config/rules/nested",
+			});
+			const context = createContextFake(projectDir);
+
+			expect(await renderPrompt(projectDir, context)).toBe(
+				"Original pi prompt",
+			);
+			expect(context.notifications).toHaveLength(0);
 		});
 	});
 
 	test("fails the whole section and warns when rulesDir itself is a broken symlink", async () => {
 		// Purpose: a broken rulesDir symlink must not silently disable project rules.
-		// Input and expected output: .pi points to a missing directory, so the prompt is unchanged and one warning is emitted.
-		// Edge case: a genuinely missing .pi directory remains a no-op in a separate test.
+		// Input and expected output: .pi/rules points to a missing directory, so the prompt is unchanged and one warning is emitted.
+		// Edge case: a genuinely missing .pi/rules directory remains a no-op in a separate test.
 		// Dependencies: this test uses a filesystem symlink in a temporary project directory.
 		await withIsolatedSuiteDir(async () => {
 			const projectDir = await createTempDir("project-rules-broken-root-");
-			await symlink(join(projectDir, "missing-rules"), join(projectDir, ".pi"));
+			await mkdir(join(projectDir, ".pi"));
+			await symlink(
+				join(projectDir, "missing-rules"),
+				join(projectDir, ".pi", "rules"),
+			);
 			const context = createContextFake(projectDir);
 
 			expect(await renderPrompt(projectDir, context)).toBe(
@@ -230,14 +399,16 @@ describe("project-rules", () => {
 			const brokenSymlinkProjectDir = await createTempDir(
 				"project-rules-broken-symlink-",
 			);
-			await mkdir(join(brokenSymlinkProjectDir, ".pi"));
+			await mkdir(join(brokenSymlinkProjectDir, ".pi", "rules"), {
+				recursive: true,
+			});
 			await writeFile(
-				join(brokenSymlinkProjectDir, ".pi", "valid.md"),
+				join(brokenSymlinkProjectDir, ".pi", "rules", "valid.md"),
 				"Valid",
 			);
 			await symlink(
 				join(brokenSymlinkProjectDir, "missing.md"),
-				join(brokenSymlinkProjectDir, ".pi", "broken.md"),
+				join(brokenSymlinkProjectDir, ".pi", "rules", "broken.md"),
 			);
 			const brokenSymlinkContext = createContextFake(brokenSymlinkProjectDir);
 			expect(
@@ -247,6 +418,42 @@ describe("project-rules", () => {
 		});
 	});
 });
+
+async function expectBoundary(options: {
+	readonly fileSizes: readonly number[];
+	readonly expectedIssue: string | undefined;
+}): Promise<void> {
+	await withIsolatedSuiteDir(async () => {
+		const projectDir = await createTempDir("project-rules-boundary-");
+		const rulesDir = join(projectDir, ".pi", "rules");
+		await mkdir(rulesDir, { recursive: true });
+		await Promise.all(
+			options.fileSizes.map((size, index) =>
+				writeFile(
+					join(rulesDir, `${index.toString().padStart(2, "0")}.md`),
+					"x".repeat(size),
+				),
+			),
+		);
+		const context = createContextFake(projectDir);
+		const prompt = await renderPrompt(projectDir, context);
+
+		if (options.expectedIssue === undefined) {
+			expect(context.notifications).toHaveLength(0);
+			if (options.fileSizes.some((size) => size > 0)) {
+				expect(prompt).toContain("<project_rules>");
+			} else {
+				expect(prompt).toBe("Original pi prompt");
+			}
+			return;
+		}
+
+		expect(prompt).toBe("Original pi prompt");
+		expect(context.notifications).toEqual([
+			{ message: `[project-rules] ${options.expectedIssue}`, type: "warning" },
+		]);
+	});
+}
 
 function createExtensionApiFake(): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
