@@ -31,8 +31,7 @@
   ## Constraints & Preferences
   - [Any constraints, preferences, or requirements mentioned by user]
   - [Or "(none)" if none were mentioned]
-
-  ## Progress
+ ## Progress
   ### Done
   - [x] [Completed tasks/changes]
 
@@ -41,6 +40,10 @@
 
   ### Collaboration Desk
   - [Current status of collaboration desk: desks, topics, messages, review status, or "(none)".]
+
+  ### Subagents History <!-- Only subagents whose work may need to be continued (e.g., coder subagent who may need to fix their code after review, etc.) -->
+  - [Session Number] [Subagent ID] [Task Name (up to 6 words)] [VERY brief summary of work done (up to 20 words)]
+  - ...
 
   ### Assumptions
   - [Current assumptions, if any]
@@ -59,6 +62,6 @@
 
   ## Critical Context
   - [Any data, examples, or references needed to continue]
-  - [Or "(none)" if not applicable]
   - [Skill reload bullet when summarized messages include `SKILL.md` paths]
+  - [Or "(none)" if not applicable]
 </output_format>

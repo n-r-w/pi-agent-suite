@@ -111,7 +111,7 @@ The collapsed `run_subagent` call shows `Name` from `taskName` and a wrapped `Ta
 
 ## Child session logs
 
-Each `run_subagent` call starts child `pi` with a saved JSONL session.
+A new `run_subagent` call starts child `pi` with a saved JSONL session. A call with `resumeSession` continues the saved session at its active leaf.
 
 Child sessions are stored outside the normal project session list:
 
@@ -125,6 +125,7 @@ The tool result `details` includes:
 
 | Field | Meaning |
 | --- | --- |
+| `sessionId` | Short positive integer used by `resumeSession` within the owning main-agent session. |
 | `childSessionId` | Pi-compatible UUIDv7 assigned to the child session. |
 | `childSessionDir` | Directory passed to child `pi` through `--session-dir`. |
 | `childSessionPath` | JSONL session file path when the file is found after child exit. |
@@ -137,4 +138,36 @@ When the tool is available, a model calls `run_subagent` with:
 | --- | --- | --- | --- |
 | `agentId` | Yes | String | Callable agent ID to run. |
 | `taskName` | Yes | String with 3–60 characters | Unique 2–6 word action-and-object name for this task. Concurrent calls use distinct names based on task focus. |
-| `prompt` | Yes | String | Full task prompt for the selected subagent. |
+| `prompt` | Yes | String | Full task prompt for a new session, or new requirements and review findings for a resumed session. |
+| `resumeSession` | No | Positive integer | Short session ID returned by an earlier call in the current main-agent session. |
+
+## Session continuation
+
+Every child run that starts returns its short ID before the child response:
+
+```text
+Subagent session: 1
+
+<child response>
+```
+
+Use the returned number to send follow-up work to the same conversation:
+
+```json
+{
+  "agentId": "SubAgentCoderMiddle",
+  "taskName": "Repair review findings",
+  "prompt": "Apply the reviewer findings and rerun the affected checks.",
+  "resumeSession": 1
+}
+```
+
+Continuation follows these rules:
+
+- `agentId` and the working directory must match the original run.
+- The saved JSONL file must still exist and pass Pi session validation.
+- One main-agent runtime cannot start two child processes for the same session concurrently.
+- Missing, conflicting, foreign, or active session IDs fail without starting a new session.
+- A resumed run uses the current model, thinking level, tools, and instructions configured for the same agent.
+
+The numeric-to-UUID mapping is persisted as a Pi custom session entry. Custom entries do not participate in LLM context. Provider adapters build model-facing tool results from `content`, which contains the short numeric ID but not the mapping.

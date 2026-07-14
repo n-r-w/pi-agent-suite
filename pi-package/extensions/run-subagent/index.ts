@@ -63,6 +63,11 @@ import {
 } from "./progress";
 import { renderRunSubagentCall, renderRunSubagentResult } from "./rendering";
 import {
+	SUBAGENT_SESSION_CUSTOM_TYPE,
+	type SubagentSessionReference,
+	SubagentSessionRegistry,
+} from "./session-registry";
+import {
 	createSubagentWidgetFactory,
 	createSubagentWidgetState,
 	recordSubagentWidgetRun,
@@ -122,12 +127,20 @@ const RunSubagentParameters = Type.Object({
 			'Unique 2–6 word name for specific work performed by this run. MUST use action and object, for example "Trace TUI redraws". For concurrent calls, distinguish each task by its focus. MUST NOT include agent type, generic labels, sequence numbers, or technical IDs.',
 	}),
 	prompt: Type.String({ description: "Task prompt for selected subagent" }),
+	resumeSession: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			description:
+				"Session ID returned by an earlier run_subagent call to continue that child conversation",
+		}),
+	),
 });
 
 interface RunSubagentParams {
 	readonly agentId: string;
 	readonly taskName: string;
 	readonly prompt: string;
+	readonly resumeSession?: number;
 }
 
 interface RunSubagentConfig {
@@ -210,6 +223,7 @@ interface ChildFinalOutputState {
 interface ExecuteRunSubagentOptions {
 	readonly pi: ExtensionAPI;
 	readonly spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>;
+	readonly sessionRegistry: SubagentSessionRegistry;
 	readonly subagentWidgetState: ReturnType<typeof createSubagentWidgetState>;
 	readonly subagentBrowser: ReturnType<typeof createSubagentBrowserController>;
 	readonly toolCallId: string;
@@ -226,6 +240,21 @@ interface ResolvedRunSubagentExecution {
 	readonly modelId: string;
 	readonly childTools: ChildToolPolicy;
 	readonly thinking: string;
+}
+
+type ChildSessionLaunch =
+	| {
+			readonly kind: "new";
+			readonly reference: SubagentSessionReference;
+	  }
+	| {
+			readonly kind: "resume";
+			readonly reference: SubagentSessionReference;
+			readonly childSessionPath: string;
+	  };
+
+interface RunSubagentResultDetails extends SubagentRunDetails {
+	readonly sessionId: number;
 }
 
 interface BuildRunSubagentPromptOptions {
@@ -253,6 +282,7 @@ export default async function runSubagent(
 		subagentWidgetState,
 		startupConfig.widgetLineBudget,
 	);
+	const sessionRegistry = new SubagentSessionRegistry();
 	await publishRunSubagentPromptContribution(pi);
 
 	pi.registerCommand(SUBAGENT_BROWSER_COMMAND_ID, {
@@ -270,6 +300,7 @@ export default async function runSubagent(
 	pi.on("session_start", (_event, ctx) => {
 		subagentBrowser.close();
 		resetSubagentWidgetState(subagentWidgetState);
+		sessionRegistry.restore(ctx.sessionManager.getEntries());
 		if (ctx.mode === "tui" && ctx.hasUI !== false) {
 			ctx.ui.setWidget(SUBAGENT_WIDGET_KEY, undefined);
 		}
@@ -285,6 +316,7 @@ export default async function runSubagent(
 			return executeRunSubagent({
 				pi,
 				spawnPi,
+				sessionRegistry,
 				subagentWidgetState,
 				subagentBrowser,
 				toolCallId,
@@ -475,10 +507,114 @@ async function executeRunSubagent(
 		return resolution.result;
 	}
 
-	const progress = createRunSubagentProgress(options, resolution.plan);
-	progress.emit("running", undefined, true);
-	const run = await runResolvedChildPi(options, resolution.plan, progress);
-	return finishRunSubagentExecution(run, progress);
+	const sessionResolution = await prepareChildSession(options, resolution.plan);
+	if ("result" in sessionResolution) {
+		return sessionResolution.result;
+	}
+
+	const { session } = sessionResolution;
+	try {
+		const progress = createRunSubagentProgress(
+			options,
+			resolution.plan,
+			session,
+		);
+		progress.emit("running", undefined, true);
+		const run = await runResolvedChildPi(
+			options,
+			resolution.plan,
+			progress,
+			session,
+		);
+		return finishRunSubagentExecution(run, progress, session);
+	} finally {
+		options.sessionRegistry.release(session.reference.sessionId);
+	}
+}
+
+/** Resolves or creates the child session before any process can write its JSONL file. */
+async function prepareChildSession(
+	options: ExecuteRunSubagentOptions,
+	plan: ResolvedRunSubagentExecution,
+): Promise<
+	| { readonly session: ChildSessionLaunch }
+	| { readonly result: AgentToolResult<unknown> }
+> {
+	const requestedSessionId = options.params.resumeSession;
+	return requestedSessionId === undefined
+		? createNewChildSession(options, plan)
+		: prepareResumedChildSession(options, plan, requestedSessionId);
+}
+
+/** Allocates and persists a short alias before starting a new child conversation. */
+function createNewChildSession(
+	options: ExecuteRunSubagentOptions,
+	plan: ResolvedRunSubagentExecution,
+): { readonly session: ChildSessionLaunch } {
+	const reference = options.sessionRegistry.create({
+		childSessionId: createAuxiliaryLlmSessionId(),
+		childSessionDir: resolveChildSessionDir(),
+		agentId: plan.agent.id,
+		cwd: options.ctx.cwd,
+	});
+	// Custom entries persist the UUID mapping without placing it in LLM context.
+	options.pi.appendEntry(SUBAGENT_SESSION_CUSTOM_TYPE, reference);
+	options.sessionRegistry.acquire(reference.sessionId);
+	return { session: { kind: "new", reference } };
+}
+
+/** Validates ownership and acquires one saved child session for continuation. */
+async function prepareResumedChildSession(
+	options: ExecuteRunSubagentOptions,
+	plan: ResolvedRunSubagentExecution,
+	requestedSessionId: number,
+): Promise<
+	| { readonly session: ChildSessionLaunch }
+	| { readonly result: AgentToolResult<unknown> }
+> {
+	const reference = options.sessionRegistry.get(requestedSessionId);
+	if (reference === undefined) {
+		return {
+			result: errorResult(
+				`subagent session ${requestedSessionId} was not found`,
+			),
+		};
+	}
+	if (reference.agentId !== plan.agent.id) {
+		return {
+			result: errorResult(
+				`subagent session ${requestedSessionId} belongs to agent ${reference.agentId}, not ${plan.agent.id}`,
+			),
+		};
+	}
+	if (reference.cwd !== options.ctx.cwd) {
+		return {
+			result: errorResult(
+				`subagent session ${requestedSessionId} belongs to working directory ${reference.cwd}`,
+			),
+		};
+	}
+	if (!options.sessionRegistry.acquire(reference.sessionId)) {
+		return {
+			result: errorResult(
+				`subagent session ${requestedSessionId} is already running`,
+			),
+		};
+	}
+
+	const childSessionPath = await findChildSessionPath(
+		reference.childSessionDir,
+		reference.childSessionId,
+	);
+	if (childSessionPath === undefined) {
+		options.sessionRegistry.release(reference.sessionId);
+		return {
+			result: errorResult(
+				`subagent session ${requestedSessionId} file was not found`,
+			),
+		};
+	}
+	return { session: { kind: "resume", reference, childSessionPath } };
 }
 
 /** Resolves all fail-closed checks before spawning the child pi process. */
@@ -578,6 +714,7 @@ async function resolveCallableAgent(
 function createRunSubagentProgress(
 	options: ExecuteRunSubagentOptions,
 	plan: ResolvedRunSubagentExecution,
+	session: ChildSessionLaunch,
 ): {
 	readonly state: ReturnType<typeof createSubagentProgressState>;
 	readonly emit: (
@@ -588,8 +725,6 @@ function createRunSubagentProgress(
 } {
 	let lastWidgetUpdateAt = 0;
 	let hasPublishedTuiHeader = false;
-	const childSessionDir = resolveChildSessionDir();
-	const childSessionId = createAuxiliaryLlmSessionId();
 	const state = createSubagentProgressState({
 		agentId: plan.agent.id,
 		taskName: options.params.taskName,
@@ -601,8 +736,8 @@ function createRunSubagentProgress(
 			options.ctx,
 		),
 		runId: options.toolCallId,
-		childSessionId,
-		childSessionDir,
+		childSessionId: session.reference.childSessionId,
+		childSessionDir: session.reference.childSessionDir,
 	});
 
 	return {
@@ -694,6 +829,7 @@ async function runResolvedChildPi(
 	options: ExecuteRunSubagentOptions,
 	plan: ResolvedRunSubagentExecution,
 	progress: ReturnType<typeof createRunSubagentProgress>,
+	session: ChildSessionLaunch,
 ): Promise<ChildRunResult> {
 	const env = createChildEnvironment({
 		[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
@@ -705,10 +841,7 @@ async function runResolvedChildPi(
 			modelId: plan.modelId,
 			thinking: plan.thinking,
 			toolPolicy: plan.childTools,
-			childSessionDir:
-				progress.state.childSessionDir ?? resolveChildSessionDir(),
-			childSessionId:
-				progress.state.childSessionId ?? createAuxiliaryLlmSessionId(),
+			session,
 		}),
 		cwd: options.ctx.cwd,
 		env,
@@ -735,6 +868,7 @@ async function runResolvedChildPi(
 async function finishRunSubagentExecution(
 	run: ChildRunResult,
 	progress: ReturnType<typeof createRunSubagentProgress>,
+	session: ChildSessionLaunch,
 ): Promise<AgentToolResult<unknown>> {
 	progress.state.childSessionPath = await findChildSessionPath(
 		progress.state.childSessionDir,
@@ -746,7 +880,10 @@ async function finishRunSubagentExecution(
 	}
 
 	if (run.status === "aborted") {
-		const details = progress.emit("aborted", run.exitCode, true);
+		const details = withSessionId(
+			progress.emit("aborted", run.exitCode, true),
+			session,
+		);
 		return errorResult(
 			run.errorMessage ?? ABORTED_CHILD_RPC_RUN_ERROR,
 			details,
@@ -754,12 +891,18 @@ async function finishRunSubagentExecution(
 	}
 
 	if (run.streamedTextExceededLimit) {
-		const details = progress.emit("failed", run.exitCode, true);
+		const details = withSessionId(
+			progress.emit("failed", run.exitCode, true),
+			session,
+		);
 		return errorResult(OVERSIZED_CHILD_FINAL_RESPONSE_ERROR, details);
 	}
 
 	if (run.status === "failed" || run.exitCode !== 0) {
-		const details = progress.emit("failed", run.exitCode, true);
+		const details = withSessionId(
+			progress.emit("failed", run.exitCode, true),
+			session,
+		);
 		return errorResult(
 			run.errorMessage ||
 				run.stderrText ||
@@ -768,7 +911,10 @@ async function finishRunSubagentExecution(
 		);
 	}
 
-	const details = progress.emit("succeeded", run.exitCode, true);
+	const details = withSessionId(
+		progress.emit("succeeded", run.exitCode, true),
+		session,
+	);
 	if (run.stdoutText.length === 0 && run.stdoutLineExceededLimit) {
 		return errorResult(OVERSIZED_CHILD_JSON_EVENT_ERROR, details);
 	}
@@ -778,7 +924,9 @@ async function finishRunSubagentExecution(
 		"pi-run-subagent-",
 	);
 	return {
-		content: [{ type: "text", text: output.content }],
+		content: [
+			{ type: "text", text: formatSessionOutput(details, output.content) },
+		],
 		details:
 			output.details === undefined
 				? details
@@ -1051,16 +1199,26 @@ function buildChildArgs(options: {
 	readonly modelId: string;
 	readonly thinking: string;
 	readonly toolPolicy: ChildToolPolicy;
-	readonly childSessionDir: string;
-	readonly childSessionId: string;
+	readonly session: ChildSessionLaunch;
 }): string[] {
+	const sessionArgs =
+		options.session.kind === "new"
+			? [
+					"--session-dir",
+					options.session.reference.childSessionDir,
+					"--session-id",
+					options.session.reference.childSessionId,
+				]
+			: [
+					"--session-dir",
+					options.session.reference.childSessionDir,
+					"--session",
+					options.session.childSessionPath,
+				];
 	return [
 		"--mode",
 		"rpc",
-		"--session-dir",
-		options.childSessionDir,
-		"--session-id",
-		options.childSessionId,
+		...sessionArgs,
 		"--model",
 		options.modelId,
 		"--thinking",
@@ -1711,12 +1869,39 @@ function extractAssistantText(
 	return undefined;
 }
 
-/** Creates a standard error result for failed tool execution. */
+/** Adds the public short alias to final details without exposing the UUID in text. */
+function withSessionId(
+	details: SubagentRunDetails,
+	session: ChildSessionLaunch,
+): RunSubagentResultDetails {
+	return { ...details, sessionId: session.reference.sessionId };
+}
+
+/** Prefixes final child output with the alias needed for later continuation. */
+function formatSessionOutput(
+	details: RunSubagentResultDetails,
+	message: string,
+): string {
+	return `Subagent session: ${details.sessionId}\n\n${message}`;
+}
+
+/** Creates a text tool result and includes a session alias when execution started. */
 function errorResult(
 	message: string,
-	details?: SubagentRunDetails,
+	details?: RunSubagentResultDetails,
 ): AgentToolResult<unknown> {
-	return { content: [{ type: "text", text: message }], details };
+	return {
+		content: [
+			{
+				type: "text",
+				text:
+					details === undefined
+						? message
+						: formatSessionOutput(details, message),
+			},
+		],
+		details,
+	};
 }
 
 /** Reports an issue scoped only to run-subagent. */

@@ -45,6 +45,10 @@
   ### Collaboration Desk
   - [Current status of collaboration desk: desks, topics, messages, review status, or "(none)".]
 
+  ### Subagents History <!-- Only subagents whose work may need to be continued (e.g., coder subagent who may need to fix their code after review, etc.) -->
+  - [Session Number] [Subagent ID] [Task Name (up to 6 words)] [VERY brief summary of work done (up to 20 words)]
+  - ...
+
   ### Assumptions
   - [Current assumptions. Remove assumptions confirmed or disproven by facts.]
 
@@ -63,4 +67,5 @@
   ## Critical Context
   - [Preserve important context. Add new context when needed.]
   - [Preserve or add the skill reload bullet when `SKILL.md` paths appear in the previous summary, new summarized messages, or `<read-files>`.]
+  - [Or "(none)" if not applicable]
 </output_format>

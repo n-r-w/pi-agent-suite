@@ -152,6 +152,9 @@ interface CommandContextFake {
 	readonly modelRegistry: {
 		find(provider: string, modelId: string): Model<Api> | undefined;
 	};
+	readonly sessionManager: {
+		getEntries(): readonly unknown[];
+	};
 }
 
 interface ContextObservations {
@@ -305,6 +308,7 @@ function createContext(
 	selected?: string,
 	hasUI?: boolean,
 	mode: CommandContextFake["mode"] = "tui",
+	sessionEntries: readonly unknown[] = [],
 ): CommandContextFake & ContextObservations {
 	const notifications: ContextObservations["notifications"] = [];
 	const statuses: ContextObservations["statuses"] = [];
@@ -340,6 +344,11 @@ function createContext(
 				);
 			},
 		},
+		sessionManager: {
+			getEntries(): readonly unknown[] {
+				return sessionEntries;
+			},
+		},
 	};
 }
 
@@ -356,6 +365,24 @@ function createModel(provider: string, id: string): Model<Api> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 100_000,
 		maxTokens: 8_192,
+	};
+}
+
+/** Creates a persisted child-session reference that stays outside LLM context. */
+function persistedSubagentSession(data: {
+	readonly sessionId: number;
+	readonly childSessionId: string;
+	readonly childSessionDir: string;
+	readonly agentId: string;
+	readonly cwd: string;
+}): unknown {
+	return {
+		type: "custom",
+		id: `session-${data.sessionId}`,
+		parentId: null,
+		timestamp: "2026-07-14T00:00:00.000Z",
+		customType: "run-subagent-session",
+		data,
 	};
 }
 
@@ -463,6 +490,20 @@ function getBeforeAgentStartHandler(
 	return handler as (event: unknown, ctx: unknown) => unknown;
 }
 
+/** Runs registered session-start handlers to restore session-scoped extension state. */
+async function runSessionStartHandlers(
+	pi: ExtensionApiFake,
+	ctx: CommandContextFake,
+): Promise<void> {
+	for (const item of pi.handlers.filter(
+		(handler) => handler.eventName === "session_start",
+	)) {
+		if (typeof item.handler === "function") {
+			await item.handler({ type: "session_start", reason: "startup" }, ctx);
+		}
+	}
+}
+
 /** Runs before_agent_start handlers in registration order like pi does for one agent turn. */
 async function runBeforeAgentStartHandlers(
 	pi: ExtensionApiFake,
@@ -554,6 +595,11 @@ function toolText(result: AgentToolResult<unknown>): string {
 	return result.content[0]?.type === "text" ? result.content[0].text : "";
 }
 
+/** Formats the public tool text returned after a child session starts. */
+function sessionToolText(text: string, sessionId = 1): string {
+	return `Subagent session: ${sessionId}\n\n${text}`;
+}
+
 /** Writes Pi settings into the isolated agent directory used by child processes. */
 async function writePiSettings(
 	agentDir: string,
@@ -601,6 +647,7 @@ async function executeRunSubagent(
 		readonly agentId: string;
 		readonly taskName?: string;
 		readonly prompt: string;
+		readonly resumeSession?: number;
 	},
 	onUpdate?: (partial: AgentToolResult<unknown>) => void,
 ): Promise<unknown> {
@@ -651,7 +698,11 @@ describe("run-subagent", () => {
 		const parameters = getRunSubagentTool(pi).parameters as unknown as {
 			readonly properties: Record<
 				string,
-				{ readonly minLength?: number; readonly maxLength?: number }
+				{
+					readonly minLength?: number;
+					readonly maxLength?: number;
+					readonly minimum?: number;
+				}
 			>;
 			readonly required: readonly string[];
 		};
@@ -659,11 +710,15 @@ describe("run-subagent", () => {
 			"agentId",
 			"taskName",
 			"prompt",
+			"resumeSession",
 		]);
 		expect(parameters.required).toEqual(["agentId", "taskName", "prompt"]);
 		expect(parameters.properties["taskName"]).toMatchObject({
 			minLength: 3,
 			maxLength: 60,
+		});
+		expect(parameters.properties["resumeSession"]).toMatchObject({
+			minimum: 1,
 		});
 	});
 
@@ -913,16 +968,28 @@ describe("run-subagent", () => {
 			]);
 			expect(spawn.calls[0]?.process.stdin.ended).toBe(true);
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "done" }],
+				content: [{ type: "text", text: "Subagent session: 1\n\ndone" }],
 			});
+			const childSessionDir = join(
+				agentDir,
+				"agent-suite",
+				"run-subagent",
+				"sessions",
+			);
 			expect(result.details).toMatchObject({
+				sessionId: 1,
 				childSessionId,
-				childSessionDir: join(
-					agentDir,
-					"agent-suite",
-					"run-subagent",
-					"sessions",
-				),
+				childSessionDir,
+			});
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: "run-subagent-session",
+				data: {
+					sessionId: 1,
+					childSessionId,
+					childSessionDir,
+					agentId: "Helper",
+					cwd: "/tmp/project",
+				},
 			});
 			expect(
 				(result.details as { readonly fullOutputPath?: string }).fullOutputPath,
@@ -955,6 +1022,308 @@ describe("run-subagent", () => {
 			expect(renderedResult?.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);
+		});
+	});
+
+	test("resumes a saved child session by its short numeric id", async () => {
+		// Purpose: review follow-up work must continue the original child conversation instead of creating a fresh session.
+		// Input and expected output: resumeSession 1 resolves the first child UUID and starts Pi with --session and the exact JSONL path.
+		// Edge case: the resumed run keeps the same public session id and does not append a second mapping entry.
+		// Dependencies: this test uses a temporary child session file, one callable agent, and fake RPC output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/child", thinking: "low" },
+			});
+			const spawn = createSpawnFake(
+				rpcOutputLines({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+					},
+				}),
+			);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await executeRunSubagent(pi, ctx, {
+				agentId: "Helper",
+				prompt: "Implement the change",
+			});
+			const sessionIdIndex = spawn.calls[0]?.args.indexOf("--session-id") ?? -1;
+			const childSessionId = spawn.calls[0]?.args[sessionIdIndex + 1];
+			const childSessionDir = join(
+				agentDir,
+				"agent-suite",
+				"run-subagent",
+				"sessions",
+			);
+			const childSessionPath = join(
+				childSessionDir,
+				`2026-07-14T00-00-00_${childSessionId}.jsonl`,
+			);
+			await mkdir(childSessionDir, { recursive: true });
+			await writeFile(childSessionPath, "{}\n");
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "Helper",
+				taskName: "Repair review findings",
+				prompt: "Apply the reviewer findings",
+				resumeSession: 1,
+			})) as AgentToolResult<unknown>;
+
+			expect(spawn.calls).toHaveLength(2);
+			expect(spawn.calls[1]?.args).toEqual([
+				"--mode",
+				"rpc",
+				"--session-dir",
+				childSessionDir,
+				"--session",
+				childSessionPath,
+				"--model",
+				"openai/child",
+				"--thinking",
+				"low",
+			]);
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "Subagent session: 1\n\ndone" }],
+				details: { sessionId: 1, childSessionId, childSessionPath },
+			});
+			expect(pi.appendEntryCalls).toHaveLength(1);
+		});
+	});
+
+	test("restores short session ids after the main session restarts", async () => {
+		// Purpose: the main agent must resume child sessions after Pi reloads persisted extension state.
+		// Input and expected output: session_start restores alias 4, resume opens its JSONL file, and the next new run receives alias 5.
+		// Edge case: gaps below the largest persisted alias are not reused.
+		// Dependencies: this test uses one CustomEntry, a temporary JSONL file, and fake RPC output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/child", thinking: "low" },
+			});
+			const childSessionDir = join(
+				agentDir,
+				"agent-suite",
+				"run-subagent",
+				"sessions",
+			);
+			const childSessionId = "019f0000-0000-7000-8000-000000000004";
+			const childSessionPath = join(
+				childSessionDir,
+				`2026-07-14T00-00-00_${childSessionId}.jsonl`,
+			);
+			await mkdir(childSessionDir, { recursive: true });
+			await writeFile(childSessionPath, "{}\n");
+			const ctx = createContext(
+				"/tmp/project",
+				createModel("openai", "parent"),
+				[],
+				undefined,
+				undefined,
+				"tui",
+				[
+					persistedSubagentSession({
+						sessionId: 4,
+						childSessionId,
+						childSessionDir,
+						agentId: "Helper",
+						cwd: "/tmp/project",
+					}),
+				],
+			);
+			const spawn = createSpawnFake(
+				rpcOutputLines({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+					},
+				}),
+			);
+			const pi = createExtensionApiFake();
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+			await runSessionStartHandlers(pi, ctx);
+
+			const resumed = (await executeRunSubagent(pi, ctx, {
+				agentId: "Helper",
+				prompt: "Continue the work",
+				resumeSession: 4,
+			})) as AgentToolResult<unknown>;
+			const created = (await executeRunSubagent(pi, ctx, {
+				agentId: "Helper",
+				prompt: "Start independent work",
+			})) as AgentToolResult<unknown>;
+
+			expect(spawn.calls[0]?.args).toContain("--session");
+			expect(spawn.calls[0]?.args).toContain(childSessionPath);
+			expect(resumed.details).toMatchObject({ sessionId: 4, childSessionId });
+			expect(created.details).toMatchObject({ sessionId: 5 });
+			expect(pi.appendEntryCalls).toHaveLength(1);
+			expect(pi.appendEntryCalls[0]?.data).toMatchObject({ sessionId: 5 });
+		});
+	});
+
+	test("rejects unknown and foreign short session ids", async () => {
+		// Purpose: numeric aliases must not cross agent or working-directory ownership boundaries.
+		// Input and expected output: unknown, different-agent, and different-cwd requests fail before spawning Pi.
+		// Edge case: ownership checks run before looking for the child JSONL file.
+		// Dependencies: this test restores one valid CustomEntry and two callable agents.
+		await withIsolatedEnvironment(async (agentDir) => {
+			for (const id of ["Helper", "Other"] as const) {
+				await writeAgent(agentDir, {
+					id,
+					type: "subagent",
+					description: id,
+					body: `${id} prompt`,
+					model: { id: "openai/child" },
+				});
+			}
+			const entry = persistedSubagentSession({
+				sessionId: 4,
+				childSessionId: "019f0000-0000-7000-8000-000000000004",
+				childSessionDir: join(agentDir, "sessions"),
+				agentId: "Helper",
+				cwd: "/tmp/project",
+			});
+			const ctx = createContext(
+				"/tmp/project",
+				createModel("openai", "parent"),
+				[],
+				undefined,
+				undefined,
+				"tui",
+				[entry],
+			);
+			const spawn = createSpawnFake();
+			const pi = createExtensionApiFake();
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+			await runSessionStartHandlers(pi, ctx);
+
+			const unknown = (await executeRunSubagent(pi, ctx, {
+				agentId: "Helper",
+				prompt: "Continue",
+				resumeSession: 9,
+			})) as AgentToolResult<unknown>;
+			const foreignAgent = (await executeRunSubagent(pi, ctx, {
+				agentId: "Other",
+				prompt: "Continue",
+				resumeSession: 4,
+			})) as AgentToolResult<unknown>;
+			const foreignCwd = (await executeRunSubagent(
+				pi,
+				createContext("/tmp/other"),
+				{
+					agentId: "Helper",
+					prompt: "Continue",
+					resumeSession: 4,
+				},
+			)) as AgentToolResult<unknown>;
+
+			expect(toolText(unknown)).toBe("subagent session 9 was not found");
+			expect(toolText(foreignAgent)).toContain(
+				"belongs to agent Helper, not Other",
+			);
+			expect(toolText(foreignCwd)).toContain(
+				"belongs to working directory /tmp/project",
+			);
+			expect(spawn.calls).toHaveLength(0);
+		});
+	});
+
+	test("rejects concurrent writes to the same resumed session", async () => {
+		// Purpose: only one child process may append to a child JSONL session at a time.
+		// Input and expected output: a second resume request fails while the first process is still active.
+		// Edge case: the alias was restored from the main session rather than allocated in this process.
+		// Dependencies: this test controls one fake child process and a temporary saved session file.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/child" },
+			});
+			const childSessionDir = join(agentDir, "sessions");
+			const childSessionId = "019f0000-0000-7000-8000-000000000001";
+			const childSessionPath = join(
+				childSessionDir,
+				`2026-07-14T00-00-00_${childSessionId}.jsonl`,
+			);
+			await mkdir(childSessionDir, { recursive: true });
+			await writeFile(childSessionPath, "{}\n");
+			const ctx = createContext(
+				"/tmp/project",
+				createModel("openai", "parent"),
+				[],
+				undefined,
+				undefined,
+				"tui",
+				[
+					persistedSubagentSession({
+						sessionId: 1,
+						childSessionId,
+						childSessionDir,
+						agentId: "Helper",
+						cwd: "/tmp/project",
+					}),
+				],
+			);
+			const processes: SpawnedProcessFake[] = [];
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const pi = createExtensionApiFake();
+			await runSubagent(pi, {
+				spawnPi() {
+					const process = new SpawnedProcessFakeImpl();
+					processes.push(process);
+					resolveProcess(process);
+					return process;
+				},
+			});
+			await runSessionStartHandlers(pi, ctx);
+
+			const firstResult = executeRunSubagent(pi, ctx, {
+				agentId: "Helper",
+				prompt: "Continue first",
+				resumeSession: 1,
+			});
+			const process = await processReady;
+			const secondResult = (await executeRunSubagent(pi, ctx, {
+				agentId: "Helper",
+				prompt: "Continue second",
+				resumeSession: 1,
+			})) as AgentToolResult<unknown>;
+
+			expect(toolText(secondResult)).toBe(
+				"subagent session 1 is already running",
+			);
+			expect(processes).toHaveLength(1);
+
+			for (const line of rpcOutputLines({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+				},
+			})) {
+				process.stdout.emit("data", `${line}\n`);
+			}
+			process.emit("close", 0);
+			await expect(firstResult).resolves.toMatchObject({
+				details: { sessionId: 1 },
+			});
 		});
 	});
 
@@ -1351,7 +1720,7 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("prompt rejected");
+			expect(content).toBe(sessionToolText("prompt rejected"));
 			expect(spawn.calls[0]?.process.stdin.ended).toBe(true);
 		});
 	});
@@ -1416,7 +1785,7 @@ describe("run-subagent", () => {
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 			const writes = process.stdin.writes.map((line) => JSON.parse(line));
 
-			expect(content).toBe("prompt rejected");
+			expect(content).toBe(sessionToolText("prompt rejected"));
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"failed",
 			);
@@ -1515,7 +1884,7 @@ describe("run-subagent", () => {
 					result.content[0]?.type === "text" ? result.content[0].text : "";
 				const writes = process.stdin.writes.map((line) => JSON.parse(line));
 
-				expect(content).toBe("prompt rejected");
+				expect(content).toBe(sessionToolText("prompt rejected"));
 				expect((result.details as { readonly status?: string }).status).toBe(
 					"failed",
 				);
@@ -1745,7 +2114,9 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("subagent exited before completing the task");
+			expect(content).toBe(
+				sessionToolText("subagent exited before completing the task"),
+			);
 		});
 	});
 
@@ -1781,7 +2152,9 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("subagent completed without a final answer");
+			expect(content).toBe(
+				sessionToolText("subagent completed without a final answer"),
+			);
 		});
 	});
 
@@ -1827,9 +2200,13 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "second answer" }],
+				content: [{ type: "text", text: sessionToolText("second answer") }],
 			});
-			expect(pi.appendEntryCalls).toEqual([
+			expect(
+				pi.appendEntryCalls.filter(
+					(entry) => entry.customType === HELPER_API_COST_CUSTOM_TYPE,
+				),
+			).toEqual([
 				{
 					customType: HELPER_API_COST_CUSTOM_TYPE,
 					data: { source: "run-subagent", cost: 0.11 },
@@ -1911,7 +2288,7 @@ describe("run-subagent", () => {
 			process.emit("close", 0);
 
 			const result = await resultPromise;
-			expect(toolText(result)).toBe("retry success");
+			expect(toolText(result)).toBe(sessionToolText("retry success"));
 			expect(process.stdin.ended).toBe(true);
 		});
 	});
@@ -2130,7 +2507,7 @@ describe("run-subagent", () => {
 			process.emit("close", 0);
 
 			const result = await resultPromise;
-			expect(toolText(result)).toBe("after compaction");
+			expect(toolText(result)).toBe(sessionToolText("after compaction"));
 			expect(process.stdin.ended).toBe(true);
 		});
 	});
@@ -2280,7 +2657,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "done after prompt" }],
+				content: [{ type: "text", text: sessionToolText("done after prompt") }],
 			});
 		});
 	});
@@ -2423,7 +2800,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "completed answer" }],
+				content: [{ type: "text", text: sessionToolText("completed answer") }],
 			});
 		});
 	});
@@ -2486,7 +2863,7 @@ describe("run-subagent", () => {
 			const writes = process.stdin.writes.map((line) => JSON.parse(line));
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "completed answer" }],
+				content: [{ type: "text", text: sessionToolText("completed answer") }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -2549,7 +2926,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "completed answer" }],
+				content: [{ type: "text", text: sessionToolText("completed answer") }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -2614,7 +2991,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: finalAnswer }],
+				content: [{ type: "text", text: sessionToolText(finalAnswer) }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -2691,7 +3068,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: finalAnswer }],
+				content: [{ type: "text", text: sessionToolText(finalAnswer) }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -2751,7 +3128,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: streamedAnswer }],
+				content: [{ type: "text", text: sessionToolText(streamedAnswer) }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -2814,7 +3191,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: streamedAnswer }],
+				content: [{ type: "text", text: sessionToolText(streamedAnswer) }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -2877,7 +3254,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: streamedAnswer }],
+				content: [{ type: "text", text: sessionToolText(streamedAnswer) }],
 			});
 			expect(
 				(result.details as { readonly finalOutput?: string }).finalOutput,
@@ -2953,7 +3330,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "fresh answer" }],
+				content: [{ type: "text", text: sessionToolText("fresh answer") }],
 			});
 		});
 	});
@@ -3009,7 +3386,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "completed answer" }],
+				content: [{ type: "text", text: sessionToolText("completed answer") }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -3064,7 +3441,9 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("subagent completed without a final answer");
+			expect(content).toBe(
+				sessionToolText("subagent completed without a final answer"),
+			);
 		});
 	});
 
@@ -3111,7 +3490,9 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("subagent completed without a final answer");
+			expect(content).toBe(
+				sessionToolText("subagent completed without a final answer"),
+			);
 		});
 	});
 
@@ -3153,7 +3534,9 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("subagent exited before completing the task");
+			expect(content).toBe(
+				sessionToolText("subagent exited before completing the task"),
+			);
 		});
 	});
 
@@ -3552,7 +3935,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: "done 🙂" }],
+				content: [{ type: "text", text: sessionToolText("done 🙂") }],
 			});
 		});
 	});
@@ -3593,7 +3976,7 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe(stderrText);
+			expect(content).toBe(sessionToolText(stderrText));
 		});
 	});
 
@@ -3826,7 +4209,7 @@ describe("run-subagent", () => {
 			})) as AgentToolResult<unknown>;
 
 			expect(result).toMatchObject({
-				content: [{ type: "text", text: streamedAnswer }],
+				content: [{ type: "text", text: sessionToolText(streamedAnswer) }],
 			});
 			expect((result.details as { readonly status?: string }).status).toBe(
 				"succeeded",
@@ -3889,7 +4272,9 @@ describe("run-subagent", () => {
 			const content =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
-			expect(content).toBe("subagent completed without a final answer");
+			expect(content).toBe(
+				sessionToolText("subagent completed without a final answer"),
+			);
 		});
 	});
 
@@ -3951,7 +4336,9 @@ describe("run-subagent", () => {
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
 			expect(content).toBe(
-				"child pi final response exceeded 100 MiB memory limit",
+				sessionToolText(
+					"child pi final response exceeded 100 MiB memory limit",
+				),
 			);
 		});
 	});
