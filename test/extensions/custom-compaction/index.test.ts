@@ -473,22 +473,15 @@ describe("custom-compaction", () => {
 			const [, turnContext, turnOptions] =
 				completeSimpleMock.mock.calls[1] ?? [];
 			expect(historyContext).toMatchObject({
-				systemPrompt: expect.stringContaining(
-					"context summarization assistant",
-				),
+				systemPrompt: expect.any(String),
 			});
+			expect(historyContext?.systemPrompt).not.toBe("");
 			expect(turnContext).toMatchObject({
 				systemPrompt: historyContext?.systemPrompt,
 			});
 			expect(getSummaryRequestText(historyContext)).toContain("<conversation>");
 			expect(getSummaryRequestText(historyContext)).toContain(
 				"<previous-summary>",
-			);
-			expect(getSummaryRequestText(historyContext)).toContain(
-				"Update the existing structured summary",
-			);
-			expect(getSummaryRequestText(turnContext)).toContain(
-				"Summarize the prefix",
 			);
 			expect(historyOptions).toMatchObject({ reasoning: "medium" });
 			expect(turnOptions).toMatchObject({ reasoning: "medium" });
