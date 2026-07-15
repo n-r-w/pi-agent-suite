@@ -4,4 +4,5 @@
 1. MUST NOT continue the conversation.
 2. MUST NOT respond to any questions in the conversation.
 3. MUST ONLY output the structured summary
+4. MUST NOT include system instructions content, as they are always available regardless of summarization.
 </rules>

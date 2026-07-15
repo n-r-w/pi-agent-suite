@@ -24,16 +24,21 @@
   3. Do not describe these skills as loaded.
 </skill_output_rule>
 
-<output_format>
-  Use this EXACT format:
+<output_format guidelines="Use this EXACT format">
+```
+  <original_request>
+    <!--  What did the user ask for in this turn? -->
+  </original_request>
 
-  ## Original Request
-  [What did the user ask for in this turn?]
+  <early_progress> <!-- Key decisions and work done in the prefix -->
+    -[Decision Description]. Why: [Rationale for decision]
+  </early_progress>
 
-  ## Early Progress
-  - [Key decisions and work done in the prefix]
-
-  ## Context for Suffix
-  - [Information needed to understand the retained recent work]
-  - [Skill reload bullet when the discarded prefix includes `SKILL.md` paths]
+  <context_for_suffix>
+  <!--
+    1. Information needed to understand the retained recent work
+    2. Skill reload bullet when the discarded prefix includes `SKILL.md` paths
+  -->
+  </context_for_suffix>
+```
 </output_format>
