@@ -1246,7 +1246,7 @@ describe("run-subagent", () => {
 
 	test("resumes a saved child session by its short numeric id", async () => {
 		// Purpose: review follow-up work must continue the original child conversation instead of creating a fresh session.
-		// Input and expected output: resumeSession 1 resolves the first child UUID and starts Pi with --session and the exact JSONL path.
+		// Input and expected output: resumeSession 1 immediately renders the persisted agent, resolves the first child UUID, and starts Pi with the exact JSONL path.
 		// Edge case: the resumed run keeps the same public session id, selects the persisted agent among multiple callable agents, and appends no second mapping.
 		// Dependencies: this test uses a temporary child session file, two callable agents, and fake RPC output.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -1295,6 +1295,23 @@ describe("run-subagent", () => {
 			);
 			await mkdir(childSessionDir, { recursive: true });
 			await writeFile(childSessionPath, "{}\n");
+			const theme = {
+				fg: (_color: string, text: string) => text,
+				bold: (text: string) => text,
+			};
+			const initialResumeHeader = getResumeSubagentTool(pi)
+				.renderCall?.(
+					{
+						resumeSession: 1,
+						taskName: "Repair review findings",
+						prompt: "Apply the reviewer findings",
+					},
+					theme as never,
+					{ state: {} } as never,
+				)
+				.render(120)[0];
+
+			expect(initialResumeHeader).toBe("resume_subagent Helper · #1");
 
 			const resumeUpdates: AgentToolResult<unknown>[] = [];
 			const result = (await executeResumeSubagent(

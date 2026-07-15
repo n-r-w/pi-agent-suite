@@ -66,7 +66,7 @@ interface RunSubagentRenderContext {
 /** Supplies shared call rendering with tool-specific initial identity. */
 interface RenderSubagentCallOptions {
 	readonly toolName: "run_subagent" | "resume_subagent";
-	readonly initialAgentId: string;
+	readonly initialAgentId: string | undefined;
 	readonly initialSessionId: number | undefined;
 	readonly args: { readonly taskName: string; readonly prompt?: string };
 	readonly theme: Theme;
@@ -76,7 +76,7 @@ interface RenderSubagentCallOptions {
 /** Supplies one width-bounded header without merging public tool semantics. */
 interface FormatSubagentToolHeaderOptions {
 	readonly toolName: "run_subagent" | "resume_subagent";
-	readonly agentId: string;
+	readonly agentId: string | undefined;
 	readonly details: RunSubagentHeaderDetails | undefined;
 	readonly sessionId: number | undefined;
 }
@@ -109,11 +109,12 @@ export function renderResumeSubagentCall(
 		readonly prompt?: string;
 	},
 	theme: Theme,
-	context: RunSubagentRenderContext = {},
+	context: RunSubagentRenderContext,
+	initialAgentId: string | undefined,
 ): Component {
 	return renderSubagentCall({
 		toolName: "resume_subagent",
-		initialAgentId: "...",
+		initialAgentId,
 		initialSessionId: args.resumeSession,
 		args,
 		theme,
@@ -255,13 +256,24 @@ function formatSubagentToolHeaderLine(
 	const sessionParts = formatSessionHeaderParts(options.sessionId);
 	const reservedSessionWidth = measureFixedLineParts(sessionParts);
 	return [
-		{ text: `${options.toolName} `, color: "toolTitle", bold: true },
 		{
-			text: options.agentId,
-			color: "accent",
-			truncate: true,
-			reserveAfterWidth: reservedSessionWidth,
+			text:
+				options.agentId === undefined
+					? options.toolName
+					: `${options.toolName} `,
+			color: "toolTitle",
+			bold: true,
 		},
+		...(options.agentId === undefined
+			? []
+			: ([
+					{
+						text: options.agentId,
+						color: "accent",
+						truncate: true,
+						reserveAfterWidth: reservedSessionWidth,
+					},
+				] satisfies FixedLinePart[])),
 		...(options.details === undefined
 			? sessionParts
 			: formatSubagentRuntimeHeaderParts(options.details, sessionParts)),

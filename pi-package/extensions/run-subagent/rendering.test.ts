@@ -157,9 +157,9 @@ describe("run-subagent rendering", () => {
 
 	test("renders resume tool identity before and after runtime resolution", () => {
 		// Purpose: the dedicated resume tool name must carry continuation semantics without a second marker.
-		// Input and expected output: resume arguments and resolved details render the requested session with runtime, context, and elapsed time.
-		// Edge case: a long runtime still reserves enough width for the session identifier without exceeding the component width.
-		// Dependencies: renderCall reads raw arguments first and shares resolved header state with partial updates.
+		// Input and expected output: a known session immediately renders its persisted agent, while resolved details add runtime, context, and elapsed time.
+		// Edge case: an unknown session renders its number without an agent placeholder, and a long runtime preserves the number within component width.
+		// Dependencies: registration resolves the initial agent from the session registry before partial updates arrive.
 		const args = {
 			resumeSession: 7,
 			taskName: "Continue widget analysis",
@@ -169,6 +169,13 @@ describe("run-subagent rendering", () => {
 			args,
 			plainTheme as never,
 			{},
+			"SubAgentSage",
+		).render(WIDTH)[0];
+		const unknown = renderResumeSubagentCall(
+			{ ...args, resumeSession: 404 },
+			plainTheme as never,
+			{},
+			undefined,
 		).render(WIDTH)[0];
 		const resolvedContext = {
 			state: {
@@ -194,6 +201,7 @@ describe("run-subagent rendering", () => {
 			args,
 			plainTheme as never,
 			resolvedContext,
+			"SubAgentSage",
 		).render(120)[0];
 		const narrowContext = {
 			state: {
@@ -211,9 +219,11 @@ describe("run-subagent rendering", () => {
 			args,
 			plainTheme as never,
 			narrowContext,
+			"SubAgentSage",
 		).render(42)[0];
 
-		expect(immediate).toContain("resume_subagent ... · #7");
+		expect(immediate).toBe("resume_subagent SubAgentSage · #7");
+		expect(unknown).toBe("resume_subagent · #404");
 		expect(resolved).toContain(
 			"resume_subagent SubAgentSage · openai-codex/gpt-5.6-sol/medium · #7 · 43k/372k · 16.0s",
 		);

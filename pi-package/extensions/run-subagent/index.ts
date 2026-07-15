@@ -440,7 +440,13 @@ function registerSubagentTools(options: RegisterSubagentToolsOptions): void {
 				onUpdate,
 				ctx,
 			}),
-		renderCall: renderResumeSubagentCall,
+		renderCall: (args, theme, context) =>
+			renderResumeSubagentCall(
+				args,
+				theme,
+				context,
+				options.sessionRegistry.get(args.resumeSession)?.agentId,
+			),
 		renderResult: renderRunSubagentResult,
 	});
 }
