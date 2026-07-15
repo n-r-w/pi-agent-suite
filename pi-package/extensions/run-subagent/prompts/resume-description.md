@@ -1,7 +1,8 @@
-Continue an existing `run_subagent` child session.
-For parallel work, you MUST emit multiple `resume_subagent` calls in same turn.
+**TOOL DESCRIPTION:**
+1. Continue an existing `run_subagent` child session.
+2. For parallel work, you MUST emit multiple `resume_subagent` calls in same turn.
 
-RULES:
+**RULES:**
 1. Use `resume_subagent` only for follow-up work that MUST retain child conversation.
 2. Provide `resumeSession` returned by earlier invocation.
 3. New prompt MUST follow same rules as `run_subagent` except:
@@ -11,4 +12,4 @@ RULES:
 5. Persisted session selects original agent.
 6. Use `run_subagent` instead when work requires different agent or independent conversation.
 
-CRITICAL: Same `resumeSession` MUST NOT be invoked concurrently.
+**CRITICAL:** Same `resumeSession` MUST NOT be invoked concurrently.
