@@ -8,7 +8,11 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { SubagentRunDetails, SubagentRunStatus } from "./progress.ts";
-import { renderRunSubagentCall, renderRunSubagentResult } from "./rendering.ts";
+import {
+	renderResumeSubagentCall,
+	renderRunSubagentCall,
+	renderRunSubagentResult,
+} from "./rendering.ts";
 
 const WIDTH = 72;
 const HIDDEN_LINE_HINT =
@@ -35,13 +39,17 @@ const keybindingsWithToolExpansion: KeybindingDefinitions = {
 /** Creates final details with retained progress that historical rendering must ignore. */
 function createDetails(status: SubagentRunStatus): SubagentRunDetails {
 	return {
+		formatVersion: 1,
 		runId: "run-1",
+		childSessionId: "session-1",
 		agentId: "SubAgentSage",
 		taskName: "Design widget navigation",
+		sessionId: 1,
 		depth: 1,
 		runtime: undefined,
 		contextUsage: undefined,
 		contextProjectionStatus: undefined,
+		isResume: false,
 		status,
 		elapsedMs: 1000,
 		exitCode: status === "succeeded" ? 0 : 1,
@@ -147,6 +155,72 @@ describe("run-subagent rendering", () => {
 		}
 	});
 
+	test("renders resume tool identity before and after runtime resolution", () => {
+		// Purpose: the dedicated resume tool name must carry continuation semantics without a second marker.
+		// Input and expected output: resume arguments and resolved details render the requested session with runtime, context, and elapsed time.
+		// Edge case: a long runtime still reserves enough width for the session identifier without exceeding the component width.
+		// Dependencies: renderCall reads raw arguments first and shares resolved header state with partial updates.
+		const args = {
+			resumeSession: 7,
+			taskName: "Continue widget analysis",
+			prompt: "Continue the analysis.",
+		};
+		const immediate = renderResumeSubagentCall(
+			args,
+			plainTheme as never,
+			{},
+		).render(WIDTH)[0];
+		const resolvedContext = {
+			state: {
+				headerDetails: {
+					agentId: "SubAgentSage",
+					sessionId: 7,
+					runtime: {
+						modelId: "openai-codex/gpt-5.6-sol",
+						thinking: "medium",
+						contextWindow: 372_000,
+					},
+					contextUsage: {
+						tokens: 43_000,
+						contextWindow: 372_000,
+						percent: 11.56,
+					},
+					contextProjectionStatus: undefined,
+					elapsedMs: 16_000,
+				},
+			},
+		};
+		const resolved = renderResumeSubagentCall(
+			args,
+			plainTheme as never,
+			resolvedContext,
+		).render(120)[0];
+		const narrowContext = {
+			state: {
+				headerDetails: {
+					...resolvedContext.state.headerDetails,
+					agentId: "SubAgentWithAnExtremelyLongIdentifier",
+					runtime: {
+						...resolvedContext.state.headerDetails.runtime,
+						modelId: "openai-codex/gpt-5.6-sol-with-long-name",
+					},
+				},
+			},
+		};
+		const narrow = renderResumeSubagentCall(
+			args,
+			plainTheme as never,
+			narrowContext,
+		).render(42)[0];
+
+		expect(immediate).toContain("resume_subagent ... · #7");
+		expect(resolved).toContain(
+			"resume_subagent SubAgentSage · openai-codex/gpt-5.6-sol/medium · #7 · 43k/372k · 16.0s",
+		);
+		expect(narrow).toContain("#7");
+		expect(visibleWidth(narrow ?? "")).toBeLessThanOrEqual(42);
+	});
+
 	test("uses muted values with bold Name and Task labels", () => {
 		// Purpose: historical call metadata must separate labels from long values without muting the runtime model.
 		// Input and expected output: name and task values use muted text while only Name and Task labels are bold.
@@ -163,6 +237,7 @@ describe("run-subagent rendering", () => {
 				state: {
 					headerDetails: {
 						agentId: "SubAgentSage",
+						sessionId: 1,
 						runtime: {
 							modelId: "openai-codex/gpt-5.6-sol",
 							thinking: "high",

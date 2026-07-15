@@ -80,7 +80,7 @@ describe("subagent widget styling", () => {
 			),
 		).join("\n");
 
-		expect(rendered).toContain("<accent>⏳</accent> LowAgent");
+		expect(rendered).toContain("<accent>➜</accent> LowAgent");
 		expect(rendered).toContain("LowAgent · 1s · 100k/372k");
 		expect(rendered).not.toContain("<warning>100k/372k</warning>");
 		expect(rendered).toContain(
@@ -94,7 +94,7 @@ describe("subagent widget styling", () => {
 	});
 
 	test("keeps selected runtime and event payloads at normal brightness", () => {
-		// Purpose: selected-run details must remain readable while semantic icons and tool names keep their colors.
+		// Purpose: selected-session details must remain readable while semantic icons and tool names keep their colors.
 		// Input and expected output: runtime metadata and call/result payloads have no muted or dim wrapper.
 		// Edge case: status, event direction, tool name, and elapsed time retain their existing semantic styles.
 		// Dependencies: marker tags expose every color assignment without relying on a terminal theme.
@@ -122,7 +122,7 @@ describe("subagent widget styling", () => {
 						],
 					},
 				],
-				pinnedRunId: "selected",
+				pinnedChildSessionId: "selected",
 				lineBudget: 3,
 				width: 160,
 				theme,
@@ -148,7 +148,7 @@ describe("subagent widget styling", () => {
 
 	test("colors only positive aggregate header counts", () => {
 		// Purpose: the header must emphasize active non-zero counts without coloring labels or zeroes.
-		// Input and expected output: one failed and one completed run color their numbers while zero running stays plain.
+		// Input and expected output: one failed and one completed session color their numbers while zero running stays plain.
 		// Edge case: the all-terminal failure view still uses the same aggregate header contract.
 		// Dependencies: the theme records semantic color names as readable tags.
 		const theme: WidgetTheme = {

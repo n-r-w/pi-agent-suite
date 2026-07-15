@@ -9,10 +9,10 @@ import {
 } from "../../../test/support/subagent-widget";
 
 describe("subagent widget hierarchy", () => {
-	test("shows visible totals and the browser shortcut when runs are hidden", () => {
-		// Purpose: users must know that the bounded automatic view omits selectable runs.
+	test("shows visible totals and the browser shortcut when sessions are hidden", () => {
+		// Purpose: users must know that the bounded automatic view omits selectable sessions.
 		// Input and expected output: three active roots with two body rows render one concrete row, one summary, and a 1/3 browser hint.
-		// Edge case: aggregate summary rows do not count as displayed runs.
+		// Edge case: aggregate summary rows do not count as displayed sessions.
 		// Dependencies: header metadata is derived after automatic forest selection.
 		const header = getContentLines(
 			renderWidget(
@@ -25,10 +25,10 @@ describe("subagent widget hierarchy", () => {
 		expect(header).toContain("Ctrl+Shift+G");
 	});
 
-	test("keeps the browser shortcut visible when every run fits", () => {
+	test("keeps the browser shortcut visible when every session fits", () => {
 		// Purpose: users must retain direct browser access even when the current overview has no omissions.
 		// Input and expected output: two completed roots fit in the body while the header still names Ctrl+Shift+G.
-		// Edge case: displayed and total run counts are equal.
+		// Edge case: displayed and total session counts are equal.
 		// Dependencies: the browser shortcut is an overview action, not only an omission warning.
 		const header = getContentLines(
 			renderWidget(
@@ -94,10 +94,10 @@ describe("subagent widget hierarchy", () => {
 
 		expect(rendered).toHaveLength(4);
 		expect(rendered[0]).toContain(
-			"✓ Child: SubAgentSage · Review widget model · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s",
+			"✓ Child: SubAgentSage #1 · Review widget model · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s",
 		);
 		expect(rendered[1]).toBe(
-			"Parent: SubAgentArchitect · Design widget model · Depth 1",
+			"Parent: SubAgentArchitect #1 · Design widget model · Depth 1",
 		);
 		expect(rendered[2]).toContain('→ bash {"command":"bun test"}');
 		expect(rendered[3]).toContain("← bash 27 pass");
@@ -136,23 +136,24 @@ describe("subagent widget hierarchy", () => {
 
 		expect(rendered).toHaveLength(3);
 		expect(rendered[0]).toContain(
-			"⏳ Root: YandexExtractor · Delegate identity checks",
+			"➜ Root: YandexExtractor #1 · Delegate identity checks",
 		);
 		expect(rendered[1]).toContain("→ read latest input");
 		expect(rendered[2]).toContain("← read latest output");
 		expect(text).not.toContain("old query");
 	});
 
-	test("shows every selected-run state before the root label", () => {
-		// Purpose: selected-run completion must remain visible even when no final assistant event row is shown.
-		// Input and expected output: running, succeeded, failed, and aborted roots start with their established status icons.
+	test("shows every selected-session state before the root label", () => {
+		// Purpose: selected-session completion must remain visible even when no final assistant event row is shown.
+		// Input and expected output: new and resumed running roots use invocation icons while terminal roots use final status icons.
 		// Edge case: a one-line budget preserves the icon because it precedes all width-sensitive details.
-		// Dependencies: selected-run headers share status semantics with automatic overview rows.
+		// Dependencies: selected-session headers share status semantics with automatic overview rows.
 		const cases = [
-			{ status: "running", icon: "⏳" },
-			{ status: "succeeded", icon: "✓" },
-			{ status: "failed", icon: "✗" },
-			{ status: "aborted", icon: "■" },
+			{ status: "running", isResume: false, icon: "➜" },
+			{ status: "running", isResume: true, icon: "⇆" },
+			{ status: "succeeded", isResume: true, icon: "✓" },
+			{ status: "failed", isResume: true, icon: "✗" },
+			{ status: "aborted", isResume: true, icon: "■" },
 		] as const;
 
 		for (const item of cases) {
@@ -160,11 +161,12 @@ describe("subagent widget hierarchy", () => {
 				renderPinnedWidget(
 					[
 						{
-							runId: item.status,
+							runId: `${item.status}-${item.isResume}`,
 							status: item.status,
+							isResume: item.isResume,
 						},
 					],
-					item.status,
+					`${item.status}-${item.isResume}`,
 					1,
 					24,
 				),
@@ -207,11 +209,11 @@ describe("subagent widget hierarchy", () => {
 		expect(rendered).not.toContain("assistant completed");
 	});
 
-	test("omits the instance number for a single agent type run", () => {
-		// Purpose: a unique agent type does not need a mechanical discriminator.
-		// Input and expected output: one Sage root renders its type and task without #1.
-		// Edge case: the run still owns internal instance number 1 for future same-type runs.
-		// Dependencies: visible identity is derived from the complete session registry at render time.
+	test("shows the local session number for a unique agent run", () => {
+		// Purpose: every started invocation must expose the short session label used for continuation.
+		// Input and expected output: one Sage root renders #1 between its type and task.
+		// Edge case: no second same-agent invocation is needed to make the label visible.
+		// Dependencies: visible identity comes from persisted session metadata.
 		const rendered = getContentLines(
 			renderWidget(
 				[
@@ -225,15 +227,14 @@ describe("subagent widget hierarchy", () => {
 			),
 		).join("\n");
 
-		expect(rendered).toContain("Sage · Inspect unique task");
-		expect(rendered).not.toContain("Sage #1");
+		expect(rendered).toContain("Sage #1 · Inspect unique task");
 	});
 
-	test("numbers a visible run when same-type runs are hidden", () => {
-		// Purpose: identity numbering must depend on the complete session registry rather than visible rows.
-		// Input and expected output: three same-type roots exceed the body budget and the visible root retains its assigned number.
-		// Edge case: omitted summary rows do not erase the need for disambiguation.
-		// Dependencies: automatic selection and identity formatting use separate full-session state.
+	test("keeps session labels when other sessions are hidden", () => {
+		// Purpose: automatic selection must not remove the stable continuation label from a visible row.
+		// Input and expected output: three roots exceed the body budget and the selected row still includes its #N session label.
+		// Edge case: omission summary rows do not replace the visible invocation identity.
+		// Dependencies: automatic selection and identity formatting use the persisted sessionId independently.
 		const rendered = getContentLines(
 			renderWidget(
 				[
@@ -249,17 +250,62 @@ describe("subagent widget hierarchy", () => {
 		expect(rendered).not.toContain("Extractor · Inspect");
 	});
 
-	test("assigns one stable same-type sequence across root and nested runs", () => {
-		// Purpose: concurrent instances of one agent type must remain distinguishable by package identity and semantic task.
-		// Input and expected output: two roots and one nested Sage run render as Sage #1, #2, and #3 with their task names.
-		// Edge case: the nested run is observed between the two roots and shares their agentId.
-		// Dependencies: the top-level widget registry assigns presentation identity while traversing recorded details.
+	test("returns a resumed child session to running without adding a row", () => {
+		// Purpose: one widget row represents the long-lived child session rather than each tool invocation.
+		// Input and expected output: a completed root with one child is resumed under a new runId; the root returns to running and its completed child remains.
+		// Edge case: the latest task and continuation icon replace the prior root presentation while the session count stays two nodes.
+		// Dependencies: root and child merging use childSessionId recursively.
+		const childSessionId = "019f0000-0000-7000-8000-000000000002";
+		const roots: RunFixture[] = [
+			{
+				runId: "initial",
+				agentId: "SubAgentExtractor",
+				taskName: "Collect validation evidence",
+				sessionId: 2,
+				childSessionId,
+				status: "succeeded",
+				children: [
+					{
+						runId: "nested",
+						agentId: "SubAgentCritic",
+						taskName: "Review validation evidence",
+						sessionId: 1,
+						childSessionId: "019f0000-0000-7000-8000-000000000003",
+						status: "succeeded",
+					},
+				],
+			},
+			{
+				runId: "continued",
+				agentId: "SubAgentExtractor",
+				taskName: "Verify project quality gates",
+				sessionId: 2,
+				childSessionId,
+				isResume: true,
+			},
+		];
+		const automatic = getContentLines(renderWidget(roots, 3, 120)).join("\n");
+
+		expect(automatic).toContain("1 running · 0 failed · 1 done · 2/2 shown");
+		expect(automatic).not.toContain("Collect validation evidence");
+		expect(automatic).toContain(
+			"⇆ Extractor #2 · Verify project quality gates",
+		);
+		expect(automatic).toContain("Critic #1 · Review validation evidence");
+	});
+
+	test("uses local numbers across root and nested sessions", () => {
+		// Purpose: widget identity must use persisted local session labels instead of a computed same-agent sequence.
+		// Input and expected output: a root and its nested session may both show #1, while another root keeps its own #2.
+		// Edge case: duplicate local numbers do not merge distinct runId values or hierarchy branches.
+		// Dependencies: each owning Pi runtime allocates its own numeric session namespace.
 		const rendered = renderWidget(
 			[
 				{
 					runId: "root-a",
 					agentId: "SubAgentSage",
 					taskName: "Trace TUI redraws",
+					sessionId: 1,
 					children: [
 						{
 							runId: "nested-a",
@@ -272,14 +318,15 @@ describe("subagent widget hierarchy", () => {
 					runId: "root-b",
 					agentId: "SubAgentSage",
 					taskName: "Design browser navigation",
+					sessionId: 2,
 				},
 			],
 			10,
 		).join("\n");
 
 		expect(rendered).toContain("Sage #1 · Trace TUI redraws");
-		expect(rendered).toContain("Sage #2 · Audit widget state");
-		expect(rendered).toContain("Sage #3 · Design browser navigation");
+		expect(rendered).toContain("Sage #1 · Audit widget state");
+		expect(rendered).toContain("Sage #2 · Design browser navigation");
 	});
 
 	test("keeps a nested failure with its complete ancestor path", () => {
@@ -507,7 +554,7 @@ describe("subagent widget hierarchy", () => {
 	test("shows the most recently updated completed root", () => {
 		// Purpose: automatic view must retain useful terminal context after all work finishes.
 		// Input and expected output: one body row plus the required hidden summary selects the newest of three successful roots.
-		// Edge case: the oldest root owns a successful child, and every run still contributes to header totals.
+		// Edge case: the oldest root owns a successful child, and every session still contributes to header totals.
 		// Dependencies: completed root admission uses subtree updatedAtMs ordering.
 		const rendered = getContentLines(
 			renderWidget(

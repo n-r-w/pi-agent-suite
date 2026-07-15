@@ -37,7 +37,6 @@
 			"./extensions/context-projection/index.ts",
 			"./extensions/completion-sound/index.ts",
 			"./extensions/cmux/index.ts",
-			"./extensions/url-scheme/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
 			"./extensions/structured-prompt/index.ts",

@@ -18,6 +18,9 @@ import {
 } from "../../shared/display-width";
 import { normalizeTerminalDisplayText } from "../../shared/terminal-display-text";
 
+/** Identifies the persisted widget details format understood by this extension version. */
+export const SUBAGENT_WIDGET_FORMAT_VERSION = 1;
+
 /** Keeps recent child-run events while bounding session history growth. */
 export const MAX_SUBAGENT_PROGRESS_EVENTS = 40;
 
@@ -82,10 +85,12 @@ export interface SubagentProgressState {
 	readonly runId: string;
 	readonly agentId: string;
 	readonly taskName: string;
+	readonly sessionId: number;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
-	readonly childSessionId: string | undefined;
+	readonly childSessionId: string;
 	readonly childSessionDir: string | undefined;
+	readonly isResume: boolean;
 	childSessionPath: string | undefined;
 	contextUsage: SubagentContextUsage | undefined;
 	contextProjectionStatus: string | undefined;
@@ -101,14 +106,17 @@ export interface SubagentProgressState {
 
 /** Stores serializable progress details used by partial and final tool rendering. */
 export interface SubagentRunDetails {
+	readonly formatVersion: typeof SUBAGENT_WIDGET_FORMAT_VERSION;
 	readonly runId: string;
 	readonly agentId: string;
 	readonly taskName: string;
+	readonly sessionId: number;
 	readonly depth: number;
 	readonly runtime: SubagentRuntimeDetails | undefined;
-	readonly childSessionId?: string | undefined;
+	readonly childSessionId: string;
 	readonly childSessionDir?: string | undefined;
 	readonly childSessionPath?: string | undefined;
+	readonly isResume: boolean;
 	readonly contextUsage: SubagentContextUsage | undefined;
 	readonly contextProjectionStatus: string | undefined;
 	readonly status: SubagentRunStatus;
@@ -126,12 +134,14 @@ export interface SubagentRunDetails {
 interface CreateSubagentProgressStateOptions {
 	readonly agentId: string;
 	readonly taskName: string;
+	readonly sessionId: number;
 	readonly depth: number;
 	readonly startedAtMs: number;
 	readonly runtime?: SubagentRuntimeDetails;
 	readonly runId?: string;
-	readonly childSessionId?: string;
+	readonly childSessionId: string;
 	readonly childSessionDir?: string;
+	readonly isResume: boolean;
 }
 
 /** Creates mutable progress state for one child run. */
@@ -145,10 +155,12 @@ export function createSubagentProgressState(
 		runId,
 		agentId: options.agentId,
 		taskName: options.taskName,
+		sessionId: options.sessionId,
 		depth: options.depth,
 		runtime: options.runtime,
 		childSessionId: options.childSessionId,
 		childSessionDir: options.childSessionDir,
+		isResume: options.isResume,
 		childSessionPath: undefined,
 		contextUsage: options.runtime
 			? {
@@ -178,14 +190,17 @@ export function toSubagentRunDetails(
 	exitCode?: number,
 ): SubagentRunDetails {
 	return {
+		formatVersion: SUBAGENT_WIDGET_FORMAT_VERSION,
 		runId: state.runId,
 		agentId: state.agentId,
 		taskName: state.taskName,
+		sessionId: state.sessionId,
 		depth: state.depth,
 		runtime: state.runtime,
 		childSessionId: state.childSessionId,
 		childSessionDir: state.childSessionDir,
 		childSessionPath: state.childSessionPath,
+		isResume: state.isResume,
 		contextUsage: state.contextUsage ? { ...state.contextUsage } : undefined,
 		contextProjectionStatus: state.contextProjectionStatus,
 		status,
@@ -394,12 +409,13 @@ function recordToolExecutionEnd(
 	});
 }
 
-/** Records nested run progress when a child itself calls run_subagent. */
+/** Records nested progress when a child calls either delegation tool. */
 function recordNestedSubagentUpdate(
 	state: SubagentProgressState,
 	event: Record<string, unknown>,
 ): boolean {
-	if (getStringField(event, "toolName") !== "run_subagent") {
+	const toolName = getStringField(event, "toolName");
+	if (!isSubagentToolName(toolName)) {
 		return false;
 	}
 
@@ -420,7 +436,8 @@ function recordNestedSubagentEnd(
 	event: Record<string, unknown>,
 	timestampMs: number,
 ): boolean {
-	if (getStringField(event, "toolName") !== "run_subagent") {
+	const toolName = getStringField(event, "toolName");
+	if (!isSubagentToolName(toolName)) {
 		return false;
 	}
 
@@ -440,28 +457,63 @@ function recordNestedSubagentEnd(
 			(event as { readonly isError?: unknown }).isError === true
 				? "error"
 				: "tool_result",
-		title: "run_subagent",
+		title: toolName,
 		text: resultText,
 		timestampMs,
 	});
 	return true;
 }
 
-/** Replaces one nested run while keeping sibling ordering stable. */
+/** Identifies both public tools at the nested child-event boundary. */
+function isSubagentToolName(
+	toolName: string | undefined,
+): toolName is "run_subagent" | "resume_subagent" {
+	return toolName === "run_subagent" || toolName === "resume_subagent";
+}
+
+/** Replaces one nested logical session while keeping sibling ordering stable. */
 function upsertChildRunDetails(
 	state: SubagentProgressState,
 	details: SubagentRunDetails,
 ): void {
 	const existingIndex = state.children.findIndex(
-		(child) => child.runId === details.runId,
+		(child) => child.childSessionId === details.childSessionId,
 	);
 	const clonedDetails = cloneSubagentRunDetails(details);
 	if (existingIndex >= 0) {
-		state.children[existingIndex] = clonedDetails;
+		const existing = state.children[existingIndex];
+		if (existing !== undefined) {
+			state.children[existingIndex] = mergeSubagentRunDetails(
+				existing,
+				clonedDetails,
+			);
+		}
 		return;
 	}
 
 	state.children.push(clonedDetails);
+}
+
+/** Preserves completed descendants omitted by a later resume snapshot. */
+function mergeSubagentRunDetails(
+	previous: SubagentRunDetails,
+	latest: SubagentRunDetails,
+): SubagentRunDetails {
+	const children = previous.children.map(cloneSubagentRunDetails);
+	for (const child of latest.children) {
+		const existingIndex = children.findIndex(
+			(existing) => existing.childSessionId === child.childSessionId,
+		);
+		if (existingIndex < 0) {
+			children.push(cloneSubagentRunDetails(child));
+			continue;
+		}
+		const existing = children[existingIndex];
+		if (existing !== undefined) {
+			children[existingIndex] = mergeSubagentRunDetails(existing, child);
+		}
+	}
+	return { ...cloneSubagentRunDetails(latest), children };
 }
 
 /** Extracts nested run details from the child tool result shape. */
@@ -503,31 +555,151 @@ function cloneSubagentRunDetails(
 	};
 }
 
-/** Validates nested run details before using child process JSON events. */
-function isSubagentRunDetails(value: unknown): value is SubagentRunDetails {
+/** Validates persisted or nested run details before presentation code uses them. */
+export function isSubagentRunDetails(
+	value: unknown,
+): value is SubagentRunDetails {
 	if (!isPlainRecord(value)) {
 		return false;
 	}
 
-	const details = value as {
-		readonly runId?: unknown;
-		readonly agentId?: unknown;
-		readonly taskName?: unknown;
-		readonly depth?: unknown;
-		readonly status?: unknown;
-		readonly elapsedMs?: unknown;
-		readonly events?: unknown;
-		readonly children?: unknown;
-	};
+	const {
+		formatVersion,
+		runId,
+		agentId,
+		taskName,
+		sessionId,
+		depth,
+		runtime,
+		childSessionId,
+		childSessionDir,
+		childSessionPath,
+		isResume,
+		contextUsage,
+		contextProjectionStatus,
+		status,
+		elapsedMs,
+		exitCode,
+		finalOutput,
+		stderr,
+		stopReason,
+		errorMessage,
+		events,
+		omittedEventCount,
+		children,
+	} = value;
 	return (
-		typeof details.runId === "string" &&
-		typeof details.agentId === "string" &&
-		typeof details.taskName === "string" &&
-		typeof details.depth === "number" &&
-		isSubagentRunStatus(details.status) &&
-		typeof details.elapsedMs === "number" &&
-		Array.isArray(details.events) &&
-		Array.isArray(details.children)
+		formatVersion === SUBAGENT_WIDGET_FORMAT_VERSION &&
+		isNonEmptyString(runId) &&
+		isNonEmptyString(agentId) &&
+		isNonEmptyString(taskName) &&
+		isPositiveSafeInteger(sessionId) &&
+		isNonNegativeSafeInteger(depth) &&
+		isOptionalRuntimeDetails(runtime) &&
+		isNonEmptyString(childSessionId) &&
+		isOptionalString(childSessionDir) &&
+		isOptionalString(childSessionPath) &&
+		typeof isResume === "boolean" &&
+		isOptionalContextUsage(contextUsage) &&
+		isOptionalString(contextProjectionStatus) &&
+		isSubagentRunStatus(status) &&
+		isNonNegativeFiniteNumber(elapsedMs) &&
+		isOptionalFiniteNumber(exitCode) &&
+		typeof finalOutput === "string" &&
+		typeof stderr === "string" &&
+		isOptionalString(stopReason) &&
+		isOptionalString(errorMessage) &&
+		Array.isArray(events) &&
+		events.every(isSubagentProgressEvent) &&
+		isNonNegativeSafeInteger(omittedEventCount) &&
+		Array.isArray(children) &&
+		children.every(isSubagentRunDetails)
+	);
+}
+
+/** Validates one persisted progress event before it reaches terminal rendering. */
+function isSubagentProgressEvent(
+	value: unknown,
+): value is SubagentProgressEvent {
+	if (!isPlainRecord(value)) {
+		return false;
+	}
+	const { kind, title, text, toolCallId, timestampMs } = value;
+	return (
+		(kind === "assistant" ||
+			kind === "tool_call" ||
+			kind === "tool_result" ||
+			kind === "error") &&
+		typeof title === "string" &&
+		isOptionalString(text) &&
+		isOptionalString(toolCallId) &&
+		isNonNegativeFiniteNumber(timestampMs)
+	);
+}
+
+/** Validates optional runtime metadata embedded in persisted details. */
+function isOptionalRuntimeDetails(value: unknown): boolean {
+	if (value === undefined) {
+		return true;
+	}
+	if (!isPlainRecord(value)) {
+		return false;
+	}
+	const { modelId, thinking, contextWindow } = value;
+	return (
+		isNonEmptyString(modelId) &&
+		isNonEmptyString(thinking) &&
+		isPositiveSafeInteger(contextWindow)
+	);
+}
+
+/** Validates optional context usage embedded in persisted details. */
+function isOptionalContextUsage(value: unknown): boolean {
+	if (value === undefined) {
+		return true;
+	}
+	if (!isPlainRecord(value)) {
+		return false;
+	}
+	const { tokens, estimatedTokens, contextWindow, percent } = value;
+	return (
+		(tokens === null || isNonNegativeFiniteNumber(tokens)) &&
+		(estimatedTokens === undefined ||
+			isNonNegativeFiniteNumber(estimatedTokens)) &&
+		isPositiveSafeInteger(contextWindow) &&
+		(percent === null || isNonNegativeFiniteNumber(percent))
+	);
+}
+
+/** Narrows non-empty persisted identifiers and labels. */
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
+/** Narrows optional persisted strings without accepting null. */
+function isOptionalString(value: unknown): value is string | undefined {
+	return value === undefined || typeof value === "string";
+}
+
+/** Narrows positive integer identifiers. */
+function isPositiveSafeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/** Narrows non-negative integer counters and depths. */
+function isNonNegativeSafeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Narrows finite elapsed time and usage values. */
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/** Narrows optional finite process exit codes. */
+function isOptionalFiniteNumber(value: unknown): value is number | undefined {
+	return (
+		value === undefined || (typeof value === "number" && Number.isFinite(value))
 	);
 }
 

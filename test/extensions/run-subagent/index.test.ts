@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { validateToolArguments } from "@earendil-works/pi-ai/compat";
 import {
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
@@ -15,6 +16,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import runSubagent from "../../../pi-package/extensions/run-subagent/index";
 import type { SubagentRunDetails } from "../../../pi-package/extensions/run-subagent/progress";
+import { AGENT_SUITE_DIR_ENV } from "../../../pi-package/shared/agent-suite-storage";
 import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
@@ -154,6 +156,7 @@ interface CommandContextFake {
 	};
 	readonly sessionManager: {
 		getEntries(): readonly unknown[];
+		getBranch(): readonly unknown[];
 	};
 }
 
@@ -179,11 +182,13 @@ async function withIsolatedEnvironment<T>(
 	childAgentId?: string,
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
+	const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const previousDepth = process.env[DEPTH_ENV];
 	const previousChildAgentId = process.env[SUBAGENT_AGENT_ID_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-run-subagent-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
+	process.env[AGENT_SUITE_DIR_ENV] = join(agentDir, "agent-suite");
 	if (depth === undefined) {
 		delete process.env[DEPTH_ENV];
 	} else {
@@ -202,6 +207,11 @@ async function withIsolatedEnvironment<T>(
 			delete process.env[AGENT_DIR_ENV];
 		} else {
 			process.env[AGENT_DIR_ENV] = previousAgentDir;
+		}
+		if (previousSuiteDir === undefined) {
+			delete process.env[AGENT_SUITE_DIR_ENV];
+		} else {
+			process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
 		}
 		if (previousDepth === undefined) {
 			delete process.env[DEPTH_ENV];
@@ -309,6 +319,7 @@ function createContext(
 	hasUI?: boolean,
 	mode: CommandContextFake["mode"] = "tui",
 	sessionEntries: readonly unknown[] = [],
+	branchEntries: readonly unknown[] = sessionEntries,
 ): CommandContextFake & ContextObservations {
 	const notifications: ContextObservations["notifications"] = [];
 	const statuses: ContextObservations["statuses"] = [];
@@ -348,6 +359,9 @@ function createContext(
 			getEntries(): readonly unknown[] {
 				return sessionEntries;
 			},
+			getBranch(): readonly unknown[] {
+				return branchEntries;
+			},
 		},
 	};
 }
@@ -383,6 +397,100 @@ function persistedSubagentSession(data: {
 		timestamp: "2026-07-14T00:00:00.000Z",
 		customType: "run-subagent-session",
 		data,
+	};
+}
+
+/** Creates persisted terminal details for widget restoration tests. */
+function persistedSubagentRunDetails(options: {
+	readonly formatVersion?: number;
+	readonly runId: string;
+	readonly childSessionId: string;
+	readonly sessionId: number;
+	readonly taskName: string;
+	readonly status?: "running" | "succeeded" | "failed" | "aborted";
+	readonly isResume?: boolean;
+	readonly children?: readonly unknown[];
+}): unknown {
+	return {
+		formatVersion: options.formatVersion ?? 1,
+		runId: options.runId,
+		agentId: "SubAgentSage",
+		taskName: options.taskName,
+		sessionId: options.sessionId,
+		isResume: options.isResume ?? false,
+		depth: 1,
+		runtime: undefined,
+		childSessionId: options.childSessionId,
+		childSessionDir: "/tmp/sessions",
+		childSessionPath: `/tmp/sessions/${options.childSessionId}.jsonl`,
+		contextUsage: undefined,
+		contextProjectionStatus: undefined,
+		status: options.status ?? "succeeded",
+		elapsedMs: 1000,
+		exitCode: 0,
+		finalOutput: "done",
+		stderr: "",
+		stopReason: "stop",
+		errorMessage: undefined,
+		events: [],
+		omittedEventCount: 0,
+		children: options.children ?? [],
+	};
+}
+
+/** Wraps one persisted tool result on the current main-session branch. */
+function persistedSubagentToolResult(
+	toolName: "run_subagent" | "resume_subagent",
+	details: unknown,
+): unknown {
+	return {
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolCallId: `result-${toolName}`,
+			toolName,
+			content: [{ type: "text", text: "done" }],
+			details,
+			isError: false,
+			timestamp: 1,
+		},
+	};
+}
+
+/** Creates one versioned invocation-start record without a matching final result. */
+function persistedSubagentStart(options: {
+	readonly formatVersion?: number;
+	readonly runId: string;
+	readonly childSessionId: string;
+	readonly sessionId: number;
+	readonly taskName: string;
+	readonly isResume: boolean;
+}): unknown {
+	return {
+		type: "custom",
+		customType: "run-subagent-widget-start",
+		data: {
+			formatVersion: options.formatVersion ?? 1,
+			runId: options.runId,
+			childSessionId: options.childSessionId,
+			sessionId: options.sessionId,
+			agentId: "SubAgentSage",
+			taskName: options.taskName,
+			isResume: options.isResume,
+			startedAtMs: 1000,
+		},
+	};
+}
+
+/** Creates one versioned browser-pin record. */
+function persistedSubagentPin(
+	childSessionId: string | undefined,
+	formatVersion = 1,
+): unknown {
+	return {
+		type: "custom",
+		customType: "run-subagent-widget-pin",
+		data: { formatVersion, childSessionId: childSessionId ?? null },
 	};
 }
 
@@ -466,14 +574,27 @@ function selectedAgentStateFileName(cwd: string): string {
 	return `${createHash("sha256").update(cwd).digest(SELECTED_AGENT_STATE_HASH_ENCODING)}.json`;
 }
 
-/** Returns the registered run_subagent tool from the fake API. */
-function getRunSubagentTool(pi: ExtensionApiFake): ToolDefinition {
-	const tool = pi.tools.find((candidate) => candidate.name === "run_subagent");
+/** Returns one registered subagent tool from the fake API. */
+function getSubagentTool(
+	pi: ExtensionApiFake,
+	name: "run_subagent" | "resume_subagent",
+): ToolDefinition {
+	const tool = pi.tools.find((candidate) => candidate.name === name);
 	if (tool === undefined) {
-		throw new Error("expected run_subagent tool to be registered");
+		throw new Error(`expected ${name} tool to be registered`);
 	}
 
 	return tool;
+}
+
+/** Returns the registered new-session tool. */
+function getRunSubagentTool(pi: ExtensionApiFake): ToolDefinition {
+	return getSubagentTool(pi, "run_subagent");
+}
+
+/** Returns the registered continuation tool. */
+function getResumeSubagentTool(pi: ExtensionApiFake): ToolDefinition {
+	return getSubagentTool(pi, "resume_subagent");
 }
 
 /** Returns the before-agent-start handler registered by runtime composition. */
@@ -639,7 +760,7 @@ function createSpawnFake(outputLines: readonly string[] = rpcOutputLines()): {
 	};
 }
 
-/** Executes the registered run_subagent tool through the fake ExtensionAPI. */
+/** Executes the registered new-session tool through the fake ExtensionAPI. */
 async function executeRunSubagent(
 	pi: ExtensionApiFake,
 	ctx: CommandContextFake,
@@ -647,12 +768,34 @@ async function executeRunSubagent(
 		readonly agentId: string;
 		readonly taskName?: string;
 		readonly prompt: string;
-		readonly resumeSession?: number;
 	},
 	onUpdate?: (partial: AgentToolResult<unknown>) => void,
 ): Promise<unknown> {
 	return getRunSubagentTool(pi).execute(
 		"tool-call-1",
+		{
+			...params,
+			taskName: params.taskName ?? DEFAULT_TEST_TASK_NAME,
+		},
+		undefined,
+		onUpdate,
+		ctx as never,
+	);
+}
+
+/** Executes the registered continuation tool through the fake ExtensionAPI. */
+async function executeResumeSubagent(
+	pi: ExtensionApiFake,
+	ctx: CommandContextFake,
+	params: {
+		readonly resumeSession: number;
+		readonly taskName?: string;
+		readonly prompt: string;
+	},
+	onUpdate?: (partial: AgentToolResult<unknown>) => void,
+): Promise<unknown> {
+	return getResumeSubagentTool(pi).execute(
+		"tool-call-resume-1",
 		{
 			...params,
 			taskName: params.taskName ?? DEFAULT_TEST_TASK_NAME,
@@ -679,51 +822,113 @@ describe("run-subagent", () => {
 			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
 
 			expect(pi.tools.map((tool) => tool.name)).not.toContain("run_subagent");
+			expect(pi.tools.map((tool) => tool.name)).not.toContain(
+				"resume_subagent",
+			);
 		});
 	});
 
-	test("registers taskName as a required bounded tool parameter", async () => {
-		// Purpose: each run must expose a short semantic task identity in the public tool contract.
-		// Input and expected output: extension load registers agentId, taskName, and prompt as required parameters with taskName length bounds.
-		// Edge case: schema validation owns only presence and character length, not semantic word-count validation.
-		// Dependencies: this test uses only an in-memory ExtensionAPI fake.
+	test("registers two strict provider-visible parameter contracts", async () => {
+		// Purpose: every calling model must receive one flat closed schema for each operation.
+		// Input and expected output: each tool accepts only its own required identifier and rejects the other identifier, unknown fields, and invalid sessions.
+		// Edge case: taskName bounds remain identical in both root object schemas without anyOf.
+		// Dependencies: the test uses Pi's production validateToolArguments boundary with both registered schemas.
 		const pi = createExtensionApiFake();
-
 		await runSubagent(pi);
+		const runTool = getRunSubagentTool(pi);
+		const resumeTool = getResumeSubagentTool(pi);
+		const validate = (
+			tool: ToolDefinition,
+			argumentsValue: Record<string, unknown>,
+		): unknown =>
+			validateToolArguments(tool as never, {
+				type: "toolCall",
+				id: "schema-call",
+				name: tool.name,
+				arguments: argumentsValue,
+			});
 
-		expect(getRunSubagentTool(pi)).toMatchObject({
-			name: "run_subagent",
-			label: "Run subagent",
-		});
-		const parameters = getRunSubagentTool(pi).parameters as unknown as {
-			readonly properties: Record<
-				string,
-				{
-					readonly minLength?: number;
-					readonly maxLength?: number;
-					readonly minimum?: number;
-				}
-			>;
-			readonly required: readonly string[];
-		};
-		expect(Object.keys(parameters.properties)).toEqual([
-			"agentId",
-			"taskName",
-			"prompt",
-			"resumeSession",
-		]);
-		expect(parameters.required).toEqual(["agentId", "taskName", "prompt"]);
-		expect(parameters.properties["taskName"]).toMatchObject({
-			minLength: 3,
-			maxLength: 60,
-		});
-		expect(parameters.properties["resumeSession"]).toMatchObject({
-			minimum: 1,
-		});
+		expect(() =>
+			validate(runTool, {
+				agentId: "Helper",
+				taskName: "Inspect runtime behavior",
+				prompt: "Inspect the runtime.",
+			}),
+		).not.toThrow();
+		expect(() =>
+			validate(resumeTool, {
+				resumeSession: 1,
+				taskName: "Continue runtime analysis",
+				prompt: "Continue the analysis.",
+			}),
+		).not.toThrow();
+		expect(() =>
+			validate(runTool, {
+				resumeSession: 1,
+				taskName: "Continue runtime analysis",
+				prompt: "Continue the analysis.",
+			}),
+		).toThrow();
+		expect(() =>
+			validate(resumeTool, {
+				agentId: "Helper",
+				taskName: "Inspect runtime behavior",
+				prompt: "Inspect the runtime.",
+			}),
+		).toThrow();
+		expect(() =>
+			validate(runTool, {
+				agentId: "Helper",
+				taskName: "Inspect runtime behavior",
+				prompt: "Inspect the runtime.",
+				extra: true,
+			}),
+		).toThrow();
+		expect(() =>
+			validate(resumeTool, {
+				resumeSession: 0,
+				taskName: "Continue runtime analysis",
+				prompt: "Continue the analysis.",
+			}),
+		).toThrow();
+
+		const schemas = [
+			{
+				tool: runTool,
+				required: ["agentId", "taskName", "prompt"],
+				properties: ["agentId", "taskName", "prompt"],
+			},
+			{
+				tool: resumeTool,
+				required: ["resumeSession", "taskName", "prompt"],
+				properties: ["resumeSession", "taskName", "prompt"],
+			},
+		] as const;
+		for (const schemaCase of schemas) {
+			const parameters = schemaCase.tool.parameters as unknown as {
+				readonly additionalProperties: boolean;
+				readonly anyOf?: unknown;
+				readonly properties: Record<
+					string,
+					{ readonly minLength?: number; readonly maxLength?: number }
+				>;
+				readonly required: readonly string[];
+			};
+			expect(parameters.additionalProperties).toBe(false);
+			expect(parameters.anyOf).toBeUndefined();
+			expect(Object.keys(parameters.properties)).toEqual([
+				...schemaCase.properties,
+			]);
+			expect(parameters.required).toEqual([...schemaCase.required]);
+			expect(parameters.properties["taskName"]).toMatchObject({
+				minLength: 3,
+				maxLength: 60,
+			});
+		}
 	});
 
 	test("registers the subagent browser command and shortcut", async () => {
-		// Purpose: users must be able to open the complete run list during interactive execution.
+		// Purpose: users must be able to open the complete session list during interactive execution.
 		// Input and expected output: extension load registers /subagents and Ctrl+Shift+G once.
 		// Edge case: registration occurs before any subagent run exists.
 		// Dependencies: the in-memory ExtensionAPI fake records command and shortcut metadata.
@@ -737,99 +942,107 @@ describe("run-subagent", () => {
 		);
 	});
 
-	test("uses the bundled run_subagent description when descriptionPromptFile is missing", async () => {
-		// Purpose: missing descriptionPromptFile must keep the bundled tool description active.
-		// Input and expected output: default extension load registers run_subagent with a non-empty description.
-		// Edge case: the test does not depend on the bundled prompt wording.
+	test("uses separate bundled descriptions when custom files are missing", async () => {
+		// Purpose: both public tools must provide model-facing guidance without custom configuration.
+		// Input and expected output: default extension load registers two non-empty descriptions, and the run-only description does not advertise continuation.
+		// Edge case: tool identifiers define the capability boundary without asserting mutable prose.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake.
 		const pi = createExtensionApiFake();
 
 		await runSubagent(pi);
 
 		expect(getRunSubagentTool(pi).description.trim().length).toBeGreaterThan(0);
+		expect(getResumeSubagentTool(pi).description.trim().length).toBeGreaterThan(
+			0,
+		);
+		expect(getRunSubagentTool(pi).description).not.toContain("resume_subagent");
+		expect(getResumeSubagentTool(pi).description).toContain("resume_subagent");
 	});
 
-	test("uses a configured absolute descriptionPromptFile for run_subagent description", async () => {
-		// Purpose: a custom description prompt file must replace the bundled tool description.
-		// Input and expected output: an absolute prompt path registers run_subagent with the trimmed file content.
-		// Edge case: surrounding whitespace is removed from the custom prompt.
-		// Dependencies: this test uses a temporary prompt file and in-memory ExtensionAPI fake.
+	test("uses independently configured absolute description files", async () => {
+		// Purpose: each public tool must own its model-facing description source.
+		// Input and expected output: two absolute prompt paths replace only their matching bundled descriptions.
+		// Edge case: surrounding whitespace is removed from both custom prompts.
+		// Dependencies: this test uses temporary prompt files and the in-memory ExtensionAPI fake.
 		await withIsolatedEnvironment(async (agentDir) => {
-			const promptFile = join(agentDir, "custom-description.md");
-			await writeFile(promptFile, "\nCustom run_subagent description\n\n");
+			const runPromptFile = join(agentDir, "run-description.md");
+			const resumePromptFile = join(agentDir, "resume-description.md");
+			await writeFile(runPromptFile, "\nCustom run description\n\n");
+			await writeFile(resumePromptFile, "\nCustom resume description\n\n");
 			await writeRunSubagentConfig(
 				agentDir,
-				JSON.stringify({ descriptionPromptFile: promptFile }),
+				JSON.stringify({
+					runDescriptionPromptFile: runPromptFile,
+					resumeDescriptionPromptFile: resumePromptFile,
+				}),
 			);
 			const pi = createExtensionApiFake();
 
 			await runSubagent(pi);
 
-			expect(getRunSubagentTool(pi).description).toBe(
-				"Custom run_subagent description",
+			expect(getRunSubagentTool(pi).description).toBe("Custom run description");
+			expect(getResumeSubagentTool(pi).description).toBe(
+				"Custom resume description",
 			);
 		});
 	});
 
-	test("rejects a relative descriptionPromptFile", async () => {
-		// Purpose: custom prompt file paths must follow the project absolute-path standard.
-		// Input and expected output: a relative descriptionPromptFile rejects extension startup.
+	test("rejects relative tool-description paths", async () => {
+		// Purpose: both custom prompt file paths must follow the project absolute-path standard.
+		// Input and expected output: each relative description path rejects extension startup with its field name.
 		// Edge case: no prompt file is read after path validation fails.
-		// Dependencies: this test uses an isolated agent directory and in-memory ExtensionAPI fake.
-		await withIsolatedEnvironment(async (agentDir) => {
-			await writeRunSubagentConfig(
-				agentDir,
-				JSON.stringify({ descriptionPromptFile: "description.md" }),
-			);
+		// Dependencies: this test uses isolated agent directories and the in-memory ExtensionAPI fake.
+		for (const field of [
+			"runDescriptionPromptFile",
+			"resumeDescriptionPromptFile",
+		] as const) {
+			await withIsolatedEnvironment(async (agentDir) => {
+				await writeRunSubagentConfig(
+					agentDir,
+					JSON.stringify({ [field]: "description.md" }),
+				);
 
-			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
-				"[run-subagent] descriptionPromptFile must be an absolute path",
-			);
-		});
+				await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+					`[run-subagent] ${field} must be an absolute path`,
+				);
+			});
+		}
 	});
 
-	test("rejects a tilde descriptionPromptFile", async () => {
+	test("rejects a tilde runDescriptionPromptFile", async () => {
 		// Purpose: custom prompt file paths must not use shell-specific expansion.
-		// Input and expected output: a tilde descriptionPromptFile rejects extension startup.
+		// Input and expected output: a tilde runDescriptionPromptFile rejects extension startup.
 		// Edge case: the path is treated as non-absolute instead of expanded.
 		// Dependencies: this test uses an isolated agent directory and in-memory ExtensionAPI fake.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeRunSubagentConfig(
 				agentDir,
-				JSON.stringify({ descriptionPromptFile: "~/description.md" }),
+				JSON.stringify({ runDescriptionPromptFile: "~/description.md" }),
 			);
 
 			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
-				"[run-subagent] descriptionPromptFile must be an absolute path",
+				"[run-subagent] runDescriptionPromptFile must be an absolute path",
 			);
 		});
 	});
 
-	test("rejects empty and non-string descriptionPromptFile values", async () => {
-		// Purpose: descriptionPromptFile must be absent or a non-empty absolute path string.
+	test("rejects empty and non-string runDescriptionPromptFile values", async () => {
+		// Purpose: runDescriptionPromptFile must be absent or a non-empty absolute path string.
 		// Input and expected output: empty and non-string values reject extension startup.
 		// Edge case: invalid values must not fall back to the bundled description.
 		// Dependencies: this test uses isolated agent directories and in-memory ExtensionAPI fake.
-		await withIsolatedEnvironment(async (agentDir) => {
-			await writeRunSubagentConfig(
-				agentDir,
-				JSON.stringify({ descriptionPromptFile: "" }),
-			);
+		for (const value of ["", 42] as const) {
+			await withIsolatedEnvironment(async (agentDir) => {
+				await writeRunSubagentConfig(
+					agentDir,
+					JSON.stringify({ runDescriptionPromptFile: value }),
+				);
 
-			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
-				"[run-subagent] descriptionPromptFile must be a non-empty string",
-			);
-		});
-		await withIsolatedEnvironment(async (agentDir) => {
-			await writeRunSubagentConfig(
-				agentDir,
-				JSON.stringify({ descriptionPromptFile: 42 }),
-			);
-
-			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
-				"[run-subagent] descriptionPromptFile must be a non-empty string",
-			);
-		});
+				await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
+					"[run-subagent] runDescriptionPromptFile must be a non-empty string",
+				);
+			});
+		}
 	});
 
 	test("rejects unreadable and empty configured description prompts", async () => {
@@ -840,7 +1053,9 @@ describe("run-subagent", () => {
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeRunSubagentConfig(
 				agentDir,
-				JSON.stringify({ descriptionPromptFile: join(agentDir, "missing.md") }),
+				JSON.stringify({
+					runDescriptionPromptFile: join(agentDir, "missing.md"),
+				}),
 			);
 
 			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
@@ -852,7 +1067,7 @@ describe("run-subagent", () => {
 			await writeFile(promptFile, "\n\t ");
 			await writeRunSubagentConfig(
 				agentDir,
-				JSON.stringify({ descriptionPromptFile: promptFile }),
+				JSON.stringify({ runDescriptionPromptFile: promptFile }),
 			);
 
 			await expect(runSubagent(createExtensionApiFake())).rejects.toThrow(
@@ -861,9 +1076,9 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("does not validate descriptionPromptFile when run-subagent is disabled", async () => {
+	test("does not validate tool-description paths when run-subagent is disabled", async () => {
 		// Purpose: disabled run-subagent config must not validate unused prompt paths.
-		// Input and expected output: enabled false with an invalid path registers no run_subagent tool and does not throw.
+		// Input and expected output: enabled false with invalid paths registers neither subagent tool and does not throw.
 		// Edge case: disabled config keeps its existing early-return behavior.
 		// Dependencies: this test uses an isolated agent directory and in-memory ExtensionAPI fake.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -871,7 +1086,8 @@ describe("run-subagent", () => {
 				agentDir,
 				JSON.stringify({
 					enabled: false,
-					descriptionPromptFile: "description.md",
+					runDescriptionPromptFile: "run.md",
+					resumeDescriptionPromptFile: "resume.md",
 				}),
 			);
 			const pi = createExtensionApiFake();
@@ -879,6 +1095,9 @@ describe("run-subagent", () => {
 			await runSubagent(pi);
 
 			expect(pi.tools.map((tool) => tool.name)).not.toContain("run_subagent");
+			expect(pi.tools.map((tool) => tool.name)).not.toContain(
+				"resume_subagent",
+			);
 		});
 	});
 
@@ -1002,7 +1221,7 @@ describe("run-subagent", () => {
 			const renderedWidget = widget.render(24);
 			expect(renderedWidget).toContain("────────────────────────");
 			expect(renderedWidget.join("\n")).toContain("Subagents: 0 running");
-			expect(renderedWidget.join("\n")).toContain("Helper · Execute");
+			expect(renderedWidget.join("\n")).toContain("Helper #1 · Exec");
 			expect(renderedWidget.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);
@@ -1028,8 +1247,8 @@ describe("run-subagent", () => {
 	test("resumes a saved child session by its short numeric id", async () => {
 		// Purpose: review follow-up work must continue the original child conversation instead of creating a fresh session.
 		// Input and expected output: resumeSession 1 resolves the first child UUID and starts Pi with --session and the exact JSONL path.
-		// Edge case: the resumed run keeps the same public session id and does not append a second mapping entry.
-		// Dependencies: this test uses a temporary child session file, one callable agent, and fake RPC output.
+		// Edge case: the resumed run keeps the same public session id, selects the persisted agent among multiple callable agents, and appends no second mapping.
+		// Dependencies: this test uses a temporary child session file, two callable agents, and fake RPC output.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
 				id: "Helper",
@@ -1037,6 +1256,13 @@ describe("run-subagent", () => {
 				description: "Helper",
 				body: "Helper prompt",
 				model: { id: "openai/child", thinking: "low" },
+			});
+			await writeAgent(agentDir, {
+				id: "Other",
+				type: "subagent",
+				description: "Other",
+				body: "Other prompt",
+				model: { id: "openai/other", thinking: "high" },
 			});
 			const spawn = createSpawnFake(
 				rpcOutputLines({
@@ -1070,13 +1296,22 @@ describe("run-subagent", () => {
 			await mkdir(childSessionDir, { recursive: true });
 			await writeFile(childSessionPath, "{}\n");
 
-			const result = (await executeRunSubagent(pi, ctx, {
-				agentId: "Helper",
-				taskName: "Repair review findings",
-				prompt: "Apply the reviewer findings",
-				resumeSession: 1,
-			})) as AgentToolResult<unknown>;
+			const resumeUpdates: AgentToolResult<unknown>[] = [];
+			const result = (await executeResumeSubagent(
+				pi,
+				ctx,
+				{
+					taskName: "Repair review findings",
+					prompt: "Apply the reviewer findings",
+					resumeSession: 1,
+				},
+				(update) => resumeUpdates.push(update),
+			)) as AgentToolResult<unknown>;
 
+			expect(resumeUpdates[0]?.details).toMatchObject({
+				sessionId: 1,
+				isResume: true,
+			});
 			expect(spawn.calls).toHaveLength(2);
 			expect(spawn.calls[1]?.args).toEqual([
 				"--mode",
@@ -1092,9 +1327,25 @@ describe("run-subagent", () => {
 			]);
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "Subagent session: 1\n\ndone" }],
-				details: { sessionId: 1, childSessionId, childSessionPath },
+				details: {
+					sessionId: 1,
+					childSessionId,
+					childSessionPath,
+					agentId: "Helper",
+					taskName: "Repair review findings",
+					isResume: true,
+				},
 			});
-			expect(pi.appendEntryCalls).toHaveLength(1);
+			expect(
+				pi.appendEntryCalls.filter(
+					(entry) => entry.customType === "run-subagent-session",
+				),
+			).toHaveLength(1);
+			expect(
+				pi.appendEntryCalls.filter(
+					(entry) => entry.customType === "run-subagent-widget-start",
+				),
+			).toHaveLength(2);
 		});
 	});
 
@@ -1154,8 +1405,7 @@ describe("run-subagent", () => {
 			await runSubagent(pi, { spawnPi: spawn.spawnPi });
 			await runSessionStartHandlers(pi, ctx);
 
-			const resumed = (await executeRunSubagent(pi, ctx, {
-				agentId: "Helper",
+			const resumed = (await executeResumeSubagent(pi, ctx, {
 				prompt: "Continue the work",
 				resumeSession: 4,
 			})) as AgentToolResult<unknown>;
@@ -1168,26 +1418,302 @@ describe("run-subagent", () => {
 			expect(spawn.calls[0]?.args).toContain(childSessionPath);
 			expect(resumed.details).toMatchObject({ sessionId: 4, childSessionId });
 			expect(created.details).toMatchObject({ sessionId: 5 });
-			expect(pi.appendEntryCalls).toHaveLength(1);
-			expect(pi.appendEntryCalls[0]?.data).toMatchObject({ sessionId: 5 });
+			const sessionEntries = pi.appendEntryCalls.filter(
+				(entry) => entry.customType === "run-subagent-session",
+			);
+			expect(sessionEntries).toHaveLength(1);
+			expect(sessionEntries[0]?.data).toMatchObject({ sessionId: 5 });
+			expect(
+				pi.appendEntryCalls.filter(
+					(entry) => entry.customType === "run-subagent-widget-start",
+				),
+			).toHaveLength(2);
 		});
 	});
 
-	test("rejects unknown and foreign short session ids", async () => {
-		// Purpose: numeric aliases must not cross agent or working-directory ownership boundaries.
-		// Input and expected output: unknown, different-agent, and different-cwd requests fail before spawning Pi.
-		// Edge case: ownership checks run before looking for the child JSONL file.
-		// Dependencies: this test restores one valid CustomEntry and two callable agents.
+	test("restores logical widget sessions from the current branch", async () => {
+		// Purpose: reopening a main session must rebuild one row per child session from persisted terminal results.
+		// Input and expected output: a completed root with one descendant followed by a resumed terminal result becomes one updated root and retains the descendant.
+		// Edge case: a no-details failure between terminal snapshots is ignored, and the resumed result has a new runId while omitting the completed descendant.
+		// Dependencies: only current-branch tool results participate in widget reconstruction.
+		await withIsolatedEnvironment(async () => {
+			const childSessionId = "019f0000-0000-7000-8000-000000000010";
+			const nestedSessionId = "019f0000-0000-7000-8000-000000000011";
+			const initial = persistedSubagentRunDetails({
+				runId: "initial-run",
+				childSessionId,
+				sessionId: 2,
+				taskName: "Collect validation evidence",
+				children: [
+					persistedSubagentRunDetails({
+						runId: "nested-run",
+						childSessionId: nestedSessionId,
+						sessionId: 1,
+						taskName: "Review validation evidence",
+					}),
+				],
+			});
+			const resumed = persistedSubagentRunDetails({
+				runId: "resumed-run",
+				childSessionId,
+				sessionId: 2,
+				taskName: "Verify project quality gates",
+				isResume: true,
+			});
+			const ctx = createContext(
+				"/tmp/project",
+				undefined,
+				[],
+				undefined,
+				undefined,
+				"tui",
+				[],
+				[
+					persistedSubagentToolResult("run_subagent", initial),
+					persistedSubagentToolResult("run_subagent", undefined),
+					persistedSubagentToolResult("resume_subagent", resumed),
+				],
+			);
+			const pi = createExtensionApiFake();
+			await runSubagent(pi);
+
+			await runSessionStartHandlers(pi, ctx);
+
+			const widgetFactory = ctx.widgets.at(-1)?.content;
+			expect(typeof widgetFactory).toBe("function");
+			const rendered = (
+				widgetFactory as () => { render(width: number): string[] }
+			)()
+				.render(160)
+				.join("\n");
+			expect(rendered).toContain("0 running · 0 failed · 2 done · 2/2 shown");
+			expect(rendered).toContain("✓ Sage #2 · Verify project quality gates");
+			expect(rendered).toContain("Sage #1 · Review validation evidence");
+			expect(rendered).not.toContain("Collect validation evidence");
+		});
+	});
+
+	test("restores unmatched invocation starts as aborted", async () => {
+		// Purpose: a crash after launch must leave a visible terminal row instead of disappearing after restart.
+		// Input and expected output: one valid start record without a terminal tool result restores as an aborted resumed session.
+		// Edge case: the persisted start timestamp is older than the current extension runtime.
+		// Dependencies: start records are UI-only CustomEntry values outside LLM context.
+		await withIsolatedEnvironment(async () => {
+			const ctx = createContext(
+				"/tmp/project",
+				undefined,
+				[],
+				undefined,
+				undefined,
+				"tui",
+				[],
+				[
+					persistedSubagentStart({
+						runId: "interrupted-run",
+						childSessionId: "019f0000-0000-7000-8000-000000000012",
+						sessionId: 7,
+						taskName: "Continue interrupted review",
+						isResume: true,
+					}),
+				],
+			);
+			const pi = createExtensionApiFake();
+			await runSubagent(pi);
+
+			await runSessionStartHandlers(pi, ctx);
+
+			const widgetFactory = ctx.widgets.at(-1)?.content;
+			expect(typeof widgetFactory).toBe("function");
+			const rendered = (
+				widgetFactory as () => { render(width: number): string[] }
+			)()
+				.render(120)
+				.join("\n");
+			expect(rendered).toContain("■ Sage #7 · Continue interrupted review");
+		});
+	});
+
+	test("keeps a pin on the logical session across resume restoration", async () => {
+		// Purpose: a browser pin must follow the logical child session when a later resume changes its invocation runId.
+		// Input and expected output: an initial result, pin record, and resumed result restore the resumed session in focused mode.
+		// Edge case: pin persistence precedes the resumed terminal result in branch order.
+		// Dependencies: widget and browser identity use childSessionId rather than runId.
+		await withIsolatedEnvironment(async () => {
+			const childSessionId = "019f0000-0000-7000-8000-000000000013";
+			const ctx = createContext(
+				"/tmp/project",
+				undefined,
+				[],
+				undefined,
+				undefined,
+				"tui",
+				[],
+				[
+					persistedSubagentToolResult(
+						"run_subagent",
+						persistedSubagentRunDetails({
+							runId: "initial-run",
+							childSessionId,
+							sessionId: 3,
+							taskName: "Inspect initial state",
+						}),
+					),
+					persistedSubagentPin(childSessionId),
+					persistedSubagentToolResult(
+						"resume_subagent",
+						persistedSubagentRunDetails({
+							runId: "resumed-run",
+							childSessionId,
+							sessionId: 3,
+							taskName: "Inspect resumed state",
+							isResume: true,
+						}),
+					),
+				],
+			);
+			const pi = createExtensionApiFake();
+			await runSubagent(pi);
+
+			await runSessionStartHandlers(pi, ctx);
+
+			const widgetFactory = ctx.widgets.at(-1)?.content;
+			expect(typeof widgetFactory).toBe("function");
+			const rendered = (
+				widgetFactory as () => { render(width: number): string[] }
+			)()
+				.render(120)
+				.join("\n");
+			expect(rendered).toContain(
+				"Root: SubAgentSage #3 · Inspect resumed state",
+			);
+			expect(rendered).not.toContain("Subagents:");
+			expect(rendered).not.toContain("Inspect initial state");
+		});
+	});
+
+	test("resets only affected widget recovery state for invalid records", async () => {
+		// Purpose: malformed or unknown persisted UI formats must not fail startup or preserve stale presentation state.
+		// Input and expected output: unknown terminal details and a malformed start clear prior runs, a later valid start rebuilds one aborted row, and an unknown pin version leaves automatic mode.
+		// Edge case: valid records after the reset boundary remain recoverable.
+		// Dependencies: session registry restoration remains independent from widget reconstruction.
 		await withIsolatedEnvironment(async (agentDir) => {
-			for (const id of ["Helper", "Other"] as const) {
-				await writeAgent(agentDir, {
-					id,
-					type: "subagent",
-					description: id,
-					body: `${id} prompt`,
-					model: { id: "openai/child" },
-				});
-			}
+			await writeAgent(agentDir, {
+				id: "SubAgentSage",
+				type: "subagent",
+				description: "Sage",
+				body: "Sage prompt",
+			});
+			const childSessionId = "019f0000-0000-7000-8000-000000000014";
+			const childSessionDir = join(agentDir, "sessions");
+			const childSessionPath = join(
+				childSessionDir,
+				`2026-07-14T00-00-00_${childSessionId}.jsonl`,
+			);
+			await mkdir(childSessionDir, { recursive: true });
+			await writeFile(childSessionPath, "persisted child session\n");
+			const originalChildSession = await readFile(childSessionPath, "utf8");
+			const sessionEntry = persistedSubagentSession({
+				sessionId: 9,
+				childSessionId,
+				childSessionDir,
+				agentId: "SubAgentSage",
+				cwd: "/tmp/project",
+			});
+			const ctx = createContext(
+				"/tmp/project",
+				undefined,
+				[],
+				undefined,
+				undefined,
+				"tui",
+				[sessionEntry],
+				[
+					persistedSubagentToolResult(
+						"run_subagent",
+						persistedSubagentRunDetails({
+							runId: "stale-run",
+							childSessionId: "019f0000-0000-7000-8000-000000000015",
+							sessionId: 1,
+							taskName: "Stale recovered work",
+						}),
+					),
+					persistedSubagentPin("019f0000-0000-7000-8000-000000000015"),
+					persistedSubagentToolResult(
+						"run_subagent",
+						persistedSubagentRunDetails({
+							formatVersion: 99,
+							runId: "invalid-run",
+							childSessionId: "019f0000-0000-7000-8000-000000000016",
+							sessionId: 2,
+							taskName: "Invalid recovered work",
+						}),
+					),
+					{
+						type: "custom",
+						customType: "run-subagent-widget-start",
+						data: { formatVersion: 1 },
+					},
+					persistedSubagentStart({
+						runId: "fresh-run",
+						childSessionId: "019f0000-0000-7000-8000-000000000017",
+						sessionId: 4,
+						taskName: "Fresh recovered work",
+						isResume: false,
+					}),
+					persistedSubagentPin("019f0000-0000-7000-8000-000000000017", 99),
+				],
+			);
+			const spawn = createSpawnFake(
+				rpcOutputLines({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "continued" }],
+					},
+				}),
+			);
+			const pi = createExtensionApiFake();
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await expect(runSessionStartHandlers(pi, ctx)).resolves.toBeUndefined();
+
+			const widgetFactory = ctx.widgets.at(-1)?.content;
+			expect(typeof widgetFactory).toBe("function");
+			const rendered = (
+				widgetFactory as () => { render(width: number): string[] }
+			)()
+				.render(120)
+				.join("\n");
+			expect(rendered).toContain("Subagents:");
+			expect(rendered).toContain("■ Sage #4 · Fresh recovered work");
+			expect(rendered).not.toContain("Stale recovered work");
+			expect(rendered).not.toContain("Invalid recovered work");
+
+			const resumed = (await executeResumeSubagent(pi, ctx, {
+				resumeSession: 9,
+				prompt: "Continue registered work",
+			})) as AgentToolResult<unknown>;
+			expect(toolText(resumed)).toBe("Subagent session: 9\n\ncontinued");
+			expect(spawn.calls[0]?.args).toContain(childSessionPath);
+			expect(await readFile(childSessionPath, "utf8")).toBe(
+				originalChildSession,
+			);
+		});
+	});
+
+	test("rejects unknown and foreign-working-directory session ids", async () => {
+		// Purpose: numeric aliases must resolve within the owning main session and working directory.
+		// Input and expected output: unknown and different-cwd requests fail before spawning Pi.
+		// Edge case: ownership checks run before looking for the child JSONL file.
+		// Dependencies: this test restores one valid CustomEntry and its persisted agent identity.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+				model: { id: "openai/child" },
+			});
 			const entry = persistedSubagentSession({
 				sessionId: 4,
 				childSessionId: "019f0000-0000-7000-8000-000000000004",
@@ -1209,30 +1735,20 @@ describe("run-subagent", () => {
 			await runSubagent(pi, { spawnPi: spawn.spawnPi });
 			await runSessionStartHandlers(pi, ctx);
 
-			const unknown = (await executeRunSubagent(pi, ctx, {
-				agentId: "Helper",
+			const unknown = (await executeResumeSubagent(pi, ctx, {
 				prompt: "Continue",
 				resumeSession: 9,
 			})) as AgentToolResult<unknown>;
-			const foreignAgent = (await executeRunSubagent(pi, ctx, {
-				agentId: "Other",
-				prompt: "Continue",
-				resumeSession: 4,
-			})) as AgentToolResult<unknown>;
-			const foreignCwd = (await executeRunSubagent(
+			const foreignCwd = (await executeResumeSubagent(
 				pi,
 				createContext("/tmp/other"),
 				{
-					agentId: "Helper",
 					prompt: "Continue",
 					resumeSession: 4,
 				},
 			)) as AgentToolResult<unknown>;
 
 			expect(toolText(unknown)).toBe("subagent session 9 was not found");
-			expect(toolText(foreignAgent)).toContain(
-				"belongs to agent Helper, not Other",
-			);
 			expect(toolText(foreignCwd)).toContain(
 				"belongs to working directory /tmp/project",
 			);
@@ -1294,14 +1810,12 @@ describe("run-subagent", () => {
 			});
 			await runSessionStartHandlers(pi, ctx);
 
-			const firstResult = executeRunSubagent(pi, ctx, {
-				agentId: "Helper",
+			const firstResult = executeResumeSubagent(pi, ctx, {
 				prompt: "Continue first",
 				resumeSession: 1,
 			});
 			const process = await processReady;
-			const secondResult = (await executeRunSubagent(pi, ctx, {
-				agentId: "Helper",
+			const secondResult = (await executeResumeSubagent(pi, ctx, {
 				prompt: "Continue second",
 				resumeSession: 1,
 			})) as AgentToolResult<unknown>;
@@ -1603,6 +2117,10 @@ describe("run-subagent", () => {
 			const initialTuiDetails = tuiUpdates[0]?.details as
 				| SubagentRunDetails
 				| undefined;
+			expect(initialTuiDetails).toMatchObject({
+				sessionId: 1,
+				isResume: false,
+			});
 			expect(initialTuiDetails?.runtime).toBeDefined();
 			expect(tuiContext.widgets.length).toBeGreaterThan(0);
 			expect(rpcUpdates.length).toBeGreaterThan(0);
@@ -4420,9 +4938,12 @@ describe("run-subagent", () => {
 			const result: AgentToolResult<unknown> = {
 				content: [{ type: "text", text: "done" }],
 				details: {
+					formatVersion: 1,
 					runId: "helper:1:1",
+					childSessionId: "019f0000-0000-7000-8000-000000000003",
 					agentId: "SubAgentExtractor",
 					taskName: "Extract runtime facts",
+					sessionId: 3,
 					depth: 1,
 					runtime: {
 						modelId: "openai-codex/gpt-5.5",
@@ -4435,6 +4956,7 @@ describe("run-subagent", () => {
 						percent: 13.125,
 					},
 					contextProjectionStatus: "~159.7k",
+					isResume: false,
 					status: "succeeded",
 					elapsedMs: 43900,
 					exitCode: 0,
@@ -4490,7 +5012,7 @@ describe("run-subagent", () => {
 				)
 				.render(120);
 			expect(renderCall()?.[0]).toBe(
-				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium",
+				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium · #3",
 			);
 
 			const rendered = tool
@@ -4504,7 +5026,7 @@ describe("run-subagent", () => {
 			const renderedCall = renderCall();
 
 			expect(renderedCall?.[0]).toBe(
-				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium · ~160k/36k/272k · 43.9s",
+				"run_subagent SubAgentExtractor · openai-codex/gpt-5.5/medium · #3 · ~160k/36k/272k · 43.9s",
 			);
 			expect(renderedCall?.[0]).not.toContain("✓");
 			expect(renderedCall?.every((line) => visibleWidth(line) <= 120)).toBe(
@@ -4595,7 +5117,8 @@ describe("run-subagent", () => {
 					description: "Helper",
 					body: "Helper prompt",
 				});
-				const pi = createExtensionApiFake();
+				const pi = createExtensionApiFake(["run_subagent", "resume_subagent"]);
+				pi.setActiveTools(["run_subagent", "resume_subagent"]);
 				const ctx = createContext("/tmp/project");
 
 				await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
@@ -4849,7 +5372,7 @@ describe("run-subagent", () => {
 				agents: ["subagentextractor"],
 			});
 			await writeSelectedAgentState(agentDir, "/tmp/project", "TestAgent");
-			const pi = createExtensionApiFake(["run_subagent"]);
+			const pi = createExtensionApiFake(["run_subagent", "resume_subagent"]);
 			const ctx = createContext("/tmp/project");
 			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
 			mainAgentSelection(pi);
@@ -4873,11 +5396,177 @@ describe("run-subagent", () => {
 			expect(result.systemPrompt).toContain("Base");
 			expect(result.systemPrompt).toContain("Test agent prompt");
 			expect(result.systemPrompt).toContain("run_subagent");
+			expect(result.systemPrompt).not.toContain("resume_subagent");
+			expect(pi.getActiveTools()).toEqual(["run_subagent"]);
 			expect(result.systemPrompt).toContain("SubAgentExtractor");
 			expect(result.systemPrompt).toContain("Extractor");
 			expect(result.systemPrompt).not.toContain("SubAgentCoder");
 			expect(result.systemPrompt).not.toContain("SubAgentSage");
 			expect(result.systemPrompt).not.toContain("TestAgent");
+		});
+	});
+
+	test("aligns callable-agent guidance with the final active tool set", async () => {
+		// Purpose: system guidance must describe only delegation tools that remain active after runtime filtering.
+		// Input and expected output: neither, run-only, both, and resume-only active sets produce matching tools and guidance.
+		// Edge case: resume_subagent without the master run_subagent is removed and contributes no prompt.
+		// Dependencies: runtime composition filters active tools before building the dynamic prompt.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper agent",
+				body: "Helper prompt",
+			});
+			const cases = [
+				{
+					initialTools: ["read"],
+					expectedTools: ["read"],
+					expectRunGuidance: false,
+					expectResumeGuidance: false,
+				},
+				{
+					initialTools: ["run_subagent"],
+					expectedTools: ["run_subagent"],
+					expectRunGuidance: true,
+					expectResumeGuidance: false,
+				},
+				{
+					initialTools: ["run_subagent", "resume_subagent"],
+					expectedTools: ["run_subagent", "resume_subagent"],
+					expectRunGuidance: true,
+					expectResumeGuidance: true,
+				},
+				{
+					initialTools: ["resume_subagent"],
+					expectedTools: [],
+					expectRunGuidance: false,
+					expectResumeGuidance: false,
+				},
+			] as const;
+
+			for (const item of cases) {
+				const pi = createExtensionApiFake([
+					"read",
+					"run_subagent",
+					"resume_subagent",
+				]);
+				pi.setActiveTools([...item.initialTools]);
+				await runSubagent(pi);
+
+				const result = await getBeforeAgentStartHandler(pi)(
+					{ systemPrompt: "Base" },
+					createContext("/tmp/project"),
+				);
+				const systemPrompt = isPromptResult(result) ? result.systemPrompt : "";
+
+				expect(pi.getActiveTools()).toEqual([...item.expectedTools]);
+				expect(
+					systemPrompt.includes(
+						"Use run_subagent with agentId to start an independent child session.",
+					),
+				).toBe(item.expectRunGuidance);
+				expect(
+					systemPrompt.includes(
+						"Use resume_subagent with resumeSession to continue an existing child session.",
+					),
+				).toBe(item.expectResumeGuidance);
+				expect(systemPrompt.includes("Helper agent")).toBe(
+					item.expectRunGuidance,
+				);
+			}
+		});
+	});
+
+	test("keeps both subagent tools when both are explicitly allowed", async () => {
+		// Purpose: explicit policy must expose continuation without widening any narrower allowlist.
+		// Input and expected output: a main agent that lists both tools keeps both active and receives guidance for each operation.
+		// Edge case: the selected agent and callable-agent guidance are restored through session_start composition.
+		// Dependencies: main-agent-selection owns the explicit tool list before the removal-only subagent filter runs.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "main",
+				type: "main",
+				description: "Main agent",
+				body: "Main prompt",
+				tools: ["run_subagent", "resume_subagent"],
+				agents: ["helper"],
+			});
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper agent",
+				body: "Helper prompt",
+			});
+			await writeSelectedAgentState(agentDir, "/tmp/project", "main");
+			const pi = createExtensionApiFake(["run_subagent", "resume_subagent"]);
+			const ctx = createContext("/tmp/project");
+			mainAgentSelection(pi);
+			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
+			await runSessionStartHandlers(pi, ctx);
+
+			const result = await runBeforeAgentStartHandlers(
+				pi,
+				{ systemPrompt: "Base" },
+				ctx,
+			);
+
+			if (!isPromptResult(result)) {
+				throw new Error("before_agent_start did not return a system prompt");
+			}
+			expect(pi.getActiveTools()).toEqual(["run_subagent", "resume_subagent"]);
+			expect(result.systemPrompt).toContain("Use run_subagent with agentId");
+			expect(result.systemPrompt).toContain(
+				"Use resume_subagent with resumeSession",
+			);
+			expect(result.systemPrompt).toContain("Helper agent");
+		});
+	});
+
+	test("removes resume_subagent when run_subagent is not allowed", async () => {
+		// Purpose: run_subagent must remain the master capability for all delegation.
+		// Input and expected output: a resume-only main-agent allowlist produces no active subagent tools or callable-agent guidance.
+		// Edge case: resume_subagent exists in the global tool registry and is explicitly listed by the selected agent.
+		// Dependencies: runtime composition applies selected-agent policy before the run-subagent removal-only filter.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "main",
+				type: "main",
+				description: "Main agent",
+				body: "Main prompt",
+				tools: ["resume_subagent", "read"],
+				agents: ["helper"],
+			});
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper agent",
+				body: "Helper prompt",
+			});
+			await writeSelectedAgentState(agentDir, "/tmp/project", "main");
+			const pi = createExtensionApiFake([
+				"run_subagent",
+				"resume_subagent",
+				"read",
+			]);
+			const ctx = createContext("/tmp/project");
+			mainAgentSelection(pi);
+			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
+			await runSessionStartHandlers(pi, ctx);
+
+			const result = await runBeforeAgentStartHandlers(
+				pi,
+				{ systemPrompt: "Base" },
+				ctx,
+			);
+
+			if (!isPromptResult(result)) {
+				throw new Error("before_agent_start did not return a system prompt");
+			}
+			expect(pi.getActiveTools()).toEqual(["read"]);
+			expect(result.systemPrompt).not.toContain("run_subagent");
+			expect(result.systemPrompt).not.toContain("resume_subagent");
+			expect(result.systemPrompt).not.toContain("Helper agent");
 		});
 	});
 
@@ -4965,10 +5654,10 @@ describe("run-subagent", () => {
 		}
 	});
 
-	test("hides run_subagent tool and prompt when current subagent depth reaches maxDepth", async () => {
-		// Purpose: an agent at maxDepth must not see or receive run_subagent in its effective tool policy or prompt.
-		// Input and expected output: depth 1 with maxDepth 1 keeps the selected main prompt, removes run_subagent, and omits callable-agent guidance.
-		// Edge case: session_start restores run_subagent before composition, so the depth filter must run after restoration.
+	test("hides both subagent tools and prompt when current depth reaches maxDepth", async () => {
+		// Purpose: an agent at maxDepth must not see either delegation tool or callable-agent guidance.
+		// Input and expected output: depth 1 with maxDepth 1 keeps the selected main prompt, removes both tools, and omits callable-agent guidance.
+		// Edge case: session_start restores both tools before composition, so the depth filter must run after restoration.
 		// Dependencies: this test uses temp agent files, selected-agent state, main-agent-selection, and run-subagent composition.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -4976,7 +5665,7 @@ describe("run-subagent", () => {
 				type: "main",
 				description: "Main agent",
 				body: "Main prompt",
-				tools: ["run_subagent", "read"],
+				tools: ["run_subagent", "resume_subagent", "read"],
 				agents: ["helper"],
 			});
 			await writeAgent(agentDir, {
@@ -4986,7 +5675,11 @@ describe("run-subagent", () => {
 				body: "Helper prompt",
 			});
 			await writeSelectedAgentState(agentDir, "/tmp/project", "main");
-			const pi = createExtensionApiFake(["run_subagent", "read"]);
+			const pi = createExtensionApiFake([
+				"run_subagent",
+				"resume_subagent",
+				"read",
+			]);
 			const ctx = createContext("/tmp/project");
 			mainAgentSelection(pi);
 			await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
@@ -5010,6 +5703,7 @@ describe("run-subagent", () => {
 			expect(result.systemPrompt).toContain("Base");
 			expect(result.systemPrompt).toContain("Main prompt");
 			expect(result.systemPrompt).not.toContain("run_subagent");
+			expect(result.systemPrompt).not.toContain("resume_subagent");
 			expect(result.systemPrompt).not.toContain("helper");
 			expect(pi.getActiveTools()).toEqual(["read"]);
 		}, "1");

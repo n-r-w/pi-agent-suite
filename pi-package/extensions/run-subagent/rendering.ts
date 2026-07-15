@@ -28,6 +28,7 @@ import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
 import {
 	formatSubagentContextUsage,
 	formatSubagentProjectionStatus,
+	isSubagentRunDetails,
 	type SubagentRunDetails,
 } from "./progress";
 
@@ -47,6 +48,7 @@ interface RunSubagentRenderState {
 /** Keeps child runtime metadata compact enough for the first tool row. */
 interface RunSubagentHeaderDetails {
 	readonly agentId: string;
+	readonly sessionId: number;
 	readonly runtime: SubagentRunDetails["runtime"];
 	readonly contextUsage: SubagentRunDetails["contextUsage"];
 	readonly contextProjectionStatus: SubagentRunDetails["contextProjectionStatus"];
@@ -61,29 +63,82 @@ interface RunSubagentRenderContext {
 	readonly invalidate?: () => void;
 }
 
-/** Renders the visible header for a run_subagent tool call. */
+/** Supplies shared call rendering with tool-specific initial identity. */
+interface RenderSubagentCallOptions {
+	readonly toolName: "run_subagent" | "resume_subagent";
+	readonly initialAgentId: string;
+	readonly initialSessionId: number | undefined;
+	readonly args: { readonly taskName: string; readonly prompt?: string };
+	readonly theme: Theme;
+	readonly context: RunSubagentRenderContext;
+}
+
+/** Supplies one width-bounded header without merging public tool semantics. */
+interface FormatSubagentToolHeaderOptions {
+	readonly toolName: "run_subagent" | "resume_subagent";
+	readonly agentId: string;
+	readonly details: RunSubagentHeaderDetails | undefined;
+	readonly sessionId: number | undefined;
+}
+
+/** Renders the visible header for a new run_subagent session. */
 export function renderRunSubagentCall(
 	args: {
-		readonly agentId?: string;
+		readonly agentId: string;
 		readonly taskName: string;
 		readonly prompt?: string;
 	},
 	theme: Theme,
 	context: RunSubagentRenderContext = {},
 ): Component {
-	const agentId =
-		context.state?.headerDetails?.agentId ?? args.agentId ?? "...";
-	const namePreview = normalizePreviewText(args.taskName);
-	const promptPreview = args.prompt ? normalizePreviewText(args.prompt) : "...";
+	return renderSubagentCall({
+		toolName: "run_subagent",
+		initialAgentId: args.agentId,
+		initialSessionId: undefined,
+		args,
+		theme,
+		context,
+	});
+}
+
+/** Renders the visible header for a resume_subagent continuation. */
+export function renderResumeSubagentCall(
+	args: {
+		readonly resumeSession: number;
+		readonly taskName: string;
+		readonly prompt?: string;
+	},
+	theme: Theme,
+	context: RunSubagentRenderContext = {},
+): Component {
+	return renderSubagentCall({
+		toolName: "resume_subagent",
+		initialAgentId: "...",
+		initialSessionId: args.resumeSession,
+		args,
+		theme,
+		context,
+	});
+}
+
+/** Builds one shared historical component while preserving tool-specific identity. */
+function renderSubagentCall(options: RenderSubagentCallOptions): Component {
+	const details = options.context.state?.headerDetails;
+	const namePreview = normalizePreviewText(options.args.taskName);
+	const promptPreview = options.args.prompt
+		? normalizePreviewText(options.args.prompt)
+		: "...";
 	return new RunSubagentCallHeader({
-		headerLine: formatRunSubagentToolHeaderLine(
-			agentId,
-			context.state?.headerDetails,
-		),
+		headerLine: formatSubagentToolHeaderLine({
+			toolName: options.toolName,
+			agentId: details?.agentId ?? options.initialAgentId,
+			details,
+			sessionId: details?.sessionId ?? options.initialSessionId,
+		}),
 		namePreview,
 		taskPreview: promptPreview,
-		theme,
-		expanded: context.expanded === true,
+		theme: options.theme,
+		expanded: options.context.expanded === true,
 	});
 }
 
@@ -158,6 +213,7 @@ function updateRunSubagentHeaderDetails(
 
 	const headerDetails: RunSubagentHeaderDetails = {
 		agentId: details.agentId,
+		sessionId: details.sessionId,
 		runtime: details.runtime,
 		contextUsage: isPartial ? undefined : details.contextUsage,
 		contextProjectionStatus: isPartial
@@ -183,6 +239,7 @@ function formatRunSubagentHeaderFingerprint(
 ): string {
 	return [
 		details.agentId,
+		String(details.sessionId),
 		details.runtime?.modelId ?? "",
 		details.runtime?.thinking ?? "",
 		formatSubagentProjectionStatus(details.contextProjectionStatus) ?? "",
@@ -192,19 +249,30 @@ function formatRunSubagentHeaderFingerprint(
 }
 
 /** Formats the tool-call header so result body can focus on progress events. */
-function formatRunSubagentToolHeaderLine(
-	agentId: string,
-	details: RunSubagentHeaderDetails | undefined,
+function formatSubagentToolHeaderLine(
+	options: FormatSubagentToolHeaderOptions,
 ): FixedLinePart[] {
+	const sessionParts = formatSessionHeaderParts(options.sessionId);
+	const reservedSessionWidth = measureFixedLineParts(sessionParts);
 	return [
-		{ text: "run_subagent ", color: "toolTitle", bold: true },
-		{ text: agentId, color: "accent" },
-		...(details === undefined ? [] : formatSubagentRuntimeHeaderParts(details)),
-		...(details?.elapsedMs === undefined
+		{ text: `${options.toolName} `, color: "toolTitle", bold: true },
+		{
+			text: options.agentId,
+			color: "accent",
+			truncate: true,
+			reserveAfterWidth: reservedSessionWidth,
+		},
+		...(options.details === undefined
+			? sessionParts
+			: formatSubagentRuntimeHeaderParts(options.details, sessionParts)),
+		...(options.details?.elapsedMs === undefined
 			? []
 			: ([
 					{ text: " · " },
-					{ text: formatElapsedMs(details.elapsedMs), color: "dim" },
+					{
+						text: formatElapsedMs(options.details.elapsedMs),
+						color: "dim",
+					},
 				] satisfies FixedLinePart[])),
 	];
 }
@@ -212,9 +280,10 @@ function formatRunSubagentToolHeaderLine(
 /** Formats runtime metadata as parts for ANSI-safe clipping. */
 function formatSubagentRuntimeHeaderParts(
 	details: RunSubagentHeaderDetails,
+	sessionParts: readonly FixedLinePart[],
 ): FixedLinePart[] {
 	if (details.runtime === undefined) {
-		return [];
+		return [...sessionParts];
 	}
 
 	const contextUsage = formatSubagentContextUsage(details.contextUsage);
@@ -226,11 +295,13 @@ function formatSubagentRuntimeHeaderParts(
 			? `${projectionStatus}/${contextUsage}`
 			: contextUsage;
 	return [
-		{ text: " · " },
 		{
-			text: `${details.runtime.modelId}/${details.runtime.thinking}`,
+			text: ` · ${details.runtime.modelId}/${details.runtime.thinking}`,
 			truncate: true,
+			minimumWidth: 4,
+			reserveAfterWidth: measureFixedLineParts(sessionParts),
 		},
+		...sessionParts,
 		...(projectedContextUsage !== undefined
 			? ([
 					{ text: " · " },
@@ -238,6 +309,18 @@ function formatSubagentRuntimeHeaderParts(
 				] satisfies FixedLinePart[])
 			: []),
 	];
+}
+
+/** Formats the stable local session label for either public subagent tool. */
+function formatSessionHeaderParts(
+	sessionId: number | undefined,
+): FixedLinePart[] {
+	return sessionId === undefined ? [] : [{ text: ` · #${sessionId}` }];
+}
+
+/** Measures plain fixed-line parts before the width-prioritized header is rendered. */
+function measureFixedLineParts(parts: readonly FixedLinePart[]): number {
+	return parts.reduce((total, part) => total + visibleWidth(part.text), 0);
 }
 
 /** Formats the collapsed expansion hint with Pi's current keybinding. */
@@ -288,6 +371,8 @@ interface FixedLinePart {
 	readonly color?: ThemeColor;
 	readonly bold?: boolean;
 	readonly truncate?: boolean;
+	readonly minimumWidth?: number;
+	readonly reserveAfterWidth?: number;
 }
 
 /** Groups immutable inputs for one historical call component. */
@@ -368,9 +453,16 @@ function renderFixedLine(
 			break;
 		}
 
+		const partWidth = Math.max(
+			0,
+			remainingWidth - (part.reserveAfterWidth ?? 0),
+		);
+		if (part.minimumWidth !== undefined && partWidth < part.minimumWidth) {
+			continue;
+		}
 		const partText =
 			part.truncate === true
-				? truncateTextByWidth(part.text, remainingWidth, "…")
+				? truncateTextByWidth(part.text, partWidth, "…")
 				: sliceTextByWidth(part.text, remainingWidth);
 		if (partText.length === 0) {
 			continue;
@@ -392,23 +484,4 @@ function renderFixedLine(
 function getResultText(result: AgentToolResult<unknown>): string | undefined {
 	const part = result.content[0];
 	return part?.type === "text" ? part.text : undefined;
-}
-
-/** Validates details before custom rendering uses the subagent progress shape. */
-function isSubagentRunDetails(value: unknown): value is SubagentRunDetails {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return false;
-	}
-
-	const details = value as Partial<SubagentRunDetails>;
-	return (
-		typeof details.runId === "string" &&
-		typeof details.agentId === "string" &&
-		typeof details.taskName === "string" &&
-		typeof details.depth === "number" &&
-		typeof details.status === "string" &&
-		typeof details.elapsedMs === "number" &&
-		Array.isArray(details.events) &&
-		Array.isArray(details.children)
-	);
 }

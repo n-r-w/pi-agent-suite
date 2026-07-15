@@ -23,11 +23,14 @@ export interface SubagentWidgetRunFixture {
 	readonly runId: string;
 	readonly agentId?: string;
 	readonly taskName?: string;
+	readonly sessionId?: number;
+	readonly childSessionId?: string;
 	readonly status?: SubagentRunStatus;
 	readonly elapsedMs?: number;
 	readonly runtime?: SubagentRuntimeDetails;
 	readonly contextUsage?: SubagentContextUsage;
 	readonly contextProjectionStatus?: string;
+	readonly isResume?: boolean;
 	readonly events?: readonly SubagentProgressEvent[];
 	readonly children?: readonly SubagentWidgetRunFixture[];
 }
@@ -43,13 +46,17 @@ function createRun(
 	depth = 1,
 ): SubagentRunDetails {
 	return {
+		formatVersion: 1,
 		runId: fixture.runId,
 		agentId: fixture.agentId ?? fixture.runId,
 		taskName: fixture.taskName ?? `Inspect ${fixture.runId}`,
+		sessionId: fixture.sessionId ?? 1,
+		childSessionId: fixture.childSessionId ?? fixture.runId,
 		depth,
 		runtime: fixture.runtime,
 		contextUsage: fixture.contextUsage,
 		contextProjectionStatus: fixture.contextProjectionStatus,
+		isResume: fixture.isResume ?? false,
 		status: fixture.status ?? "running",
 		elapsedMs: fixture.elapsedMs ?? DEFAULT_SUBAGENT_ELAPSED_MS,
 		exitCode: undefined,
@@ -70,7 +77,7 @@ interface RenderSubagentWidgetFixtureOptions {
 	readonly lineBudget: number;
 	readonly width: number;
 	readonly theme: SubagentWidgetTheme | undefined;
-	readonly pinnedRunId: string | undefined;
+	readonly pinnedChildSessionId: string | undefined;
 }
 
 /** Renders the automatic widget through its public state and component factory. */
@@ -85,14 +92,14 @@ export function renderSubagentWidgetFixture(
 		lineBudget,
 		width,
 		theme,
-		pinnedRunId: undefined,
+		pinnedChildSessionId: undefined,
 	});
 }
 
-/** Renders one pinned run without adding pin controls to unrelated widget tests. */
+/** Renders one pinned session without adding pin controls to unrelated tests. */
 export function renderPinnedSubagentWidgetFixture(
 	roots: readonly SubagentWidgetRunFixture[],
-	pinnedRunId: string,
+	pinnedChildSessionId: string,
 	lineBudget: number,
 	width = DEFAULT_SUBAGENT_WIDGET_WIDTH,
 ): string[] {
@@ -101,18 +108,18 @@ export function renderPinnedSubagentWidgetFixture(
 		lineBudget,
 		width,
 		theme: undefined,
-		pinnedRunId,
+		pinnedChildSessionId,
 	});
 }
 
-/** Renders one pinned run with explicit styling options for color assertions. */
+/** Renders one pinned session with explicit styling for color assertions. */
 export function renderStyledPinnedSubagentWidgetFixture(
 	options: RenderSubagentWidgetFixtureOptions,
 ): string[] {
 	return renderSubagentWidget(options);
 }
 
-/** Builds widget state once so automatic and pinned fixtures share numbering behavior. */
+/** Builds widget state once so automatic and pinned fixtures share session labels. */
 function renderSubagentWidget(
 	options: RenderSubagentWidgetFixtureOptions,
 ): string[] {
@@ -120,7 +127,7 @@ function renderSubagentWidget(
 	for (const [index, root] of options.roots.entries()) {
 		recordSubagentWidgetRun(state, createRun(root), index + 1);
 	}
-	state.pinnedRunId = options.pinnedRunId;
+	state.pinnedChildSessionId = options.pinnedChildSessionId;
 	return createSubagentWidgetFactory(state, options.lineBudget)(
 		undefined,
 		options.theme,

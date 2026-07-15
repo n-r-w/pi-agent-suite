@@ -1,7 +1,7 @@
 /**
  * Live subagent widget state and Pi component integration.
  *
- * The widget keeps recursive run snapshots, delegates ancestor-safe selection
+ * The widget keeps recursive logical-session snapshots, delegates ancestor-safe selection
  * to the tree allocator, and delegates width-safe output to line rendering.
  */
 
@@ -21,7 +21,7 @@ import {
 	type WidgetLine,
 } from "./widget-lines";
 import {
-	findFocusedSubagentWidgetRun,
+	findFocusedSubagentWidgetSession,
 	type SubagentWidgetNode,
 	selectVisibleWidgetForest,
 	summarizeWidgetNodes,
@@ -33,44 +33,41 @@ export const SUBAGENT_WIDGET_KEY = "subagents";
 
 /** Defines the minimum width of the visual separator above the widget panel. */
 const SUBAGENT_WIDGET_SEPARATOR_MIN_WIDTH = 1;
-/** Stores the root runs currently known by the widget. */
+/** Stores the root child sessions currently known by the widget. */
 export interface SubagentWidgetState {
 	readonly roots: SubagentWidgetNode[];
-	readonly instanceNumberByRunId: Map<string, number>;
-	readonly instanceCountByAgentId: Map<string, number>;
-	pinnedRunId: string | undefined;
+	pinnedChildSessionId: string | undefined;
 }
 
 /** Creates an empty subagent widget state for one extension runtime. */
 export function createSubagentWidgetState(): SubagentWidgetState {
 	return {
 		roots: [],
-		instanceNumberByRunId: new Map(),
-		instanceCountByAgentId: new Map(),
-		pinnedRunId: undefined,
+		pinnedChildSessionId: undefined,
 	};
 }
 
-/** Resets run identity and view ownership when Pi starts another session. */
+/** Resets logical-session presentation and view ownership for another main session. */
 export function resetSubagentWidgetState(state: SubagentWidgetState): void {
 	state.roots.length = 0;
-	state.instanceNumberByRunId.clear();
-	state.instanceCountByAgentId.clear();
-	state.pinnedRunId = undefined;
+	state.pinnedChildSessionId = undefined;
 }
 
-/** Updates the UI-only tree with a direct subagent run and its nested runs. */
+/** Updates the UI-only tree with one direct child session and its descendants. */
 export function recordSubagentWidgetRun(
 	state: SubagentWidgetState,
 	details: SubagentRunDetails,
 	nowMs: number,
 ): void {
-	const node = toWidgetNode(state, details, nowMs);
+	const node = toWidgetNode(details, nowMs);
 	const existingIndex = state.roots.findIndex(
-		(root) => root.runId === node.runId,
+		(root) => root.childSessionId === node.childSessionId,
 	);
 	if (existingIndex >= 0) {
-		state.roots[existingIndex] = node;
+		const existing = state.roots[existingIndex];
+		if (existing !== undefined) {
+			state.roots[existingIndex] = mergeWidgetNodes(existing, node);
+		}
 		return;
 	}
 	state.roots.push(node);
@@ -94,17 +91,17 @@ export function createSubagentWidgetFactory(
 	});
 }
 
-/** Renders either the automatic hierarchy or one explicitly selected run. */
+/** Renders either the automatic hierarchy or one explicitly selected child session. */
 function renderSubagentWidget(
 	state: SubagentWidgetState,
 	lineBudget: number,
 	width: number,
 ): readonly WidgetLine[] {
 	const normalizedBudget = Math.max(1, Math.floor(lineBudget));
-	if (state.pinnedRunId !== undefined) {
-		const focused = findFocusedSubagentWidgetRun(
+	if (state.pinnedChildSessionId !== undefined) {
+		const focused = findFocusedSubagentWidgetSession(
 			state.roots,
-			state.pinnedRunId,
+			state.pinnedChildSessionId,
 		);
 		if (focused !== undefined) {
 			return renderFocusedSubagentWidget(focused, normalizedBudget);
@@ -112,21 +109,22 @@ function renderSubagentWidget(
 	}
 
 	const summary = summarizeWidgetNodes(state.roots);
-	const totalRunCount = summary.running + summary.failed + summary.done;
+	const totalSessionCount = summary.running + summary.failed + summary.done;
 	const forest = selectVisibleWidgetForest(state.roots, normalizedBudget - 1);
-	const displayedRunCount = countVisibleWidgetNodes(forest.roots);
-	const header = formatWidgetHeader(summary, displayedRunCount, totalRunCount);
+	const displayedSessionCount = countVisibleWidgetNodes(forest.roots);
+	const header = formatWidgetHeader(
+		summary,
+		displayedSessionCount,
+		totalSessionCount,
+	);
 	if (normalizedBudget === 1 || state.roots.length === 0) {
 		return [header];
 	}
 
-	return [
-		header,
-		...renderVisibleWidgetForest(forest, width, state.instanceCountByAgentId),
-	];
+	return [header, ...renderVisibleWidgetForest(forest, width)];
 }
 
-/** Counts concrete rendered runs while excluding local and global aggregate rows. */
+/** Counts concrete rendered sessions while excluding aggregate rows. */
 function countVisibleWidgetNodes(nodes: readonly VisibleWidgetNode[]): number {
 	return nodes.reduce(
 		(total, node) => total + 1 + countVisibleWidgetNodes(node.children),
@@ -134,21 +132,21 @@ function countVisibleWidgetNodes(nodes: readonly VisibleWidgetNode[]): number {
 	);
 }
 
-/** Converts serializable run details into widget tree nodes. */
+/** Converts serializable invocation details into logical widget nodes. */
 function toWidgetNode(
-	state: SubagentWidgetState,
 	details: SubagentRunDetails,
 	nowMs: number,
 ): SubagentWidgetNode {
 	const updatedAtMs = details.events.at(-1)?.timestampMs ?? nowMs;
 	const agentId = normalizeTerminalDisplayText(details.agentId);
 	const taskName = normalizeTerminalDisplayText(details.taskName);
-	const instanceNumber = resolveInstanceNumber(state, details.runId, agentId);
 	return {
 		runId: details.runId,
+		childSessionId: details.childSessionId,
 		agentId,
 		taskName,
-		instanceNumber,
+		sessionId: details.sessionId,
+		isResume: details.isResume,
 		status: details.status,
 		updatedAtMs,
 		elapsedMs: details.elapsedMs,
@@ -167,27 +165,30 @@ function toWidgetNode(
 		),
 		activity: getCurrentActivity(details),
 		events: details.events.map((event) => ({ ...event })),
-		children: details.children.map((child) =>
-			toWidgetNode(state, child, nowMs),
-		),
+		children: details.children.map((child) => toWidgetNode(child, nowMs)),
 	};
 }
 
-/** Assigns one immutable display sequence across all roots and nested process updates. */
-function resolveInstanceNumber(
-	state: SubagentWidgetState,
-	runId: string,
-	agentId: string,
-): number {
-	const assigned = state.instanceNumberByRunId.get(runId);
-	if (assigned !== undefined) {
-		return assigned;
+/** Applies the latest invocation snapshot while preserving descendants absent from it. */
+function mergeWidgetNodes(
+	previous: SubagentWidgetNode,
+	latest: SubagentWidgetNode,
+): SubagentWidgetNode {
+	const children = [...previous.children];
+	for (const child of latest.children) {
+		const existingIndex = children.findIndex(
+			(existing) => existing.childSessionId === child.childSessionId,
+		);
+		if (existingIndex < 0) {
+			children.push(child);
+			continue;
+		}
+		const existing = children[existingIndex];
+		if (existing !== undefined) {
+			children[existingIndex] = mergeWidgetNodes(existing, child);
+		}
 	}
-
-	const instanceCount = (state.instanceCountByAgentId.get(agentId) ?? 0) + 1;
-	state.instanceNumberByRunId.set(runId, instanceCount);
-	state.instanceCountByAgentId.set(agentId, instanceCount);
-	return instanceCount;
+	return { ...latest, children };
 }
 
 /** Extracts the latest tool activity while ignoring later assistant lifecycle events. */

@@ -24,16 +24,23 @@ describe("run-subagent progress", () => {
 			runId: "root",
 			agentId: "SubAgentSage",
 			taskName: "Trace TUI redraws",
+			sessionId: 1,
+			isResume: false,
 			depth: 1,
 			startedAtMs: 0,
-		} as Parameters<typeof createSubagentProgressState>[0]);
+			childSessionId: "root-session",
+		});
 		const unnamedNestedDetails = {
+			formatVersion: 1,
 			runId: "nested",
 			agentId: "SubAgentExtractor",
+			sessionId: 1,
 			depth: 2,
 			runtime: undefined,
 			contextUsage: undefined,
 			contextProjectionStatus: undefined,
+			isResume: false,
+			childSessionId: "nested-session",
 			status: "running",
 			elapsedMs: 10,
 			exitCode: undefined,
@@ -64,17 +71,116 @@ describe("run-subagent progress", () => {
 		expect(details.children).toEqual([]);
 	});
 
-	test("resets widget identity and pin state for a new session", () => {
-		// Purpose: run numbering and explicit selection must not leak across Pi sessions.
-		// Input and expected output: a recorded pinned run is followed by reset, leaving roots, pin, and numbering maps empty.
-		// Edge case: both per-run and per-agent numbering structures contain assigned values.
-		// Dependencies: widget recording assigns identity before the session lifecycle clears it.
+	test("accepts resumed identity through the nested RPC boundary", () => {
+		// Purpose: a parent widget must retain continuation metadata streamed by a nested subagent tool call.
+		// Input and expected output: valid resumed child details survive validation, cloning, and widget rendering with ⇆ and #3.
+		// Edge case: the nested run uses a local session number independent of its parent runId.
+		// Dependencies: tool_execution_update uses the same runtime validator as nested final tool results.
+		const state = createSubagentProgressState({
+			runId: "root",
+			agentId: "SubAgentSage",
+			taskName: "Review nested progress",
+			sessionId: 1,
+			isResume: false,
+			depth: 1,
+			startedAtMs: 0,
+			childSessionId: "root-session",
+		});
+		const nestedDetails = {
+			formatVersion: 1,
+			runId: "nested-resume",
+			agentId: "SubAgentExtractor",
+			taskName: "Continue nested extraction",
+			sessionId: 3,
+			isResume: true,
+			depth: 2,
+			runtime: undefined,
+			childSessionId: "019f0000-0000-7000-8000-000000000003",
+			contextUsage: undefined,
+			contextProjectionStatus: undefined,
+			status: "running",
+			elapsedMs: 10,
+			exitCode: undefined,
+			finalOutput: "",
+			stderr: "",
+			stopReason: undefined,
+			errorMessage: undefined,
+			events: [],
+			omittedEventCount: 0,
+			children: [],
+		};
+		recordSubagentSessionEvent(
+			state,
+			{
+				type: "tool_execution_update",
+				toolName: "resume_subagent",
+				partialResult: { details: nestedDetails },
+			},
+			10,
+		);
+		const details = toSubagentRunDetails(state, "running", 10);
+		const widgetState = createSubagentWidgetState();
+		recordSubagentWidgetRun(widgetState, details, 10);
+		const rendered = createSubagentWidgetFactory(widgetState, 3)()
+			.render(120)
+			.join("\n");
+
+		expect(details.children[0]).toMatchObject({
+			runId: "nested-resume",
+			sessionId: 3,
+			isResume: true,
+			childSessionId: "019f0000-0000-7000-8000-000000000003",
+		});
+		expect(rendered).toContain("⇆ Extractor #3 · Continue nested extraction");
+	});
+
+	test("preserves resumed session identity through progress and widget snapshots", () => {
+		// Purpose: presentation layers must distinguish a resumed invocation while retaining its stable child-session relationship.
+		// Input and expected output: resumed progress produces isResume true and the same childSessionId in details and the widget node.
+		// Edge case: runId remains invocation-specific and is not replaced by childSessionId.
+		// Dependencies: progress snapshots feed widget conversion without another identity lookup.
+		const state = createSubagentProgressState({
+			runId: "resume-run",
+			agentId: "SubAgentSage",
+			taskName: "Continue TUI analysis",
+			depth: 1,
+			startedAtMs: 0,
+			sessionId: 2,
+			childSessionId: "019f0000-0000-7000-8000-000000000001",
+			isResume: true,
+		});
+		const details = toSubagentRunDetails(state, "running", 10);
+		const widgetState = createSubagentWidgetState();
+		recordSubagentWidgetRun(widgetState, details, 10);
+		const widgetNode = widgetState.roots[0];
+
+		expect(details).toMatchObject({
+			runId: "resume-run",
+			sessionId: 2,
+			childSessionId: "019f0000-0000-7000-8000-000000000001",
+			isResume: true,
+		});
+		expect(widgetNode).toMatchObject({
+			runId: "resume-run",
+			sessionId: 2,
+			isResume: true,
+		});
+	});
+
+	test("resets widget sessions and pin state for a new main session", () => {
+		// Purpose: recorded widget sessions and explicit selection must not leak across main sessions.
+		// Input and expected output: a recorded pinned session is followed by reset, leaving roots and pin state empty.
+		// Edge case: the reset follows a fully recorded widget node.
+		// Dependencies: widget recording stores invocation state before the session lifecycle clears it.
 		const progress = createSubagentProgressState({
 			runId: "root",
 			agentId: "SubAgentSage",
 			taskName: "Inspect session reset",
+			sessionId: 1,
+			isResume: false,
 			depth: 1,
 			startedAtMs: 0,
+			childSessionId: "root-session",
 		});
 		const state = createSubagentWidgetState();
 		recordSubagentWidgetRun(
@@ -82,14 +188,12 @@ describe("run-subagent progress", () => {
 			toSubagentRunDetails(progress, "running", 10),
 			10,
 		);
-		state.pinnedRunId = "root";
+		state.pinnedChildSessionId = "root-session";
 
 		resetSubagentWidgetState(state);
 
 		expect(state.roots).toEqual([]);
-		expect(state.pinnedRunId).toBeUndefined();
-		expect(state.instanceNumberByRunId.size).toBe(0);
-		expect(state.instanceCountByAgentId.size).toBe(0);
+		expect(state.pinnedChildSessionId).toBeUndefined();
 	});
 
 	test("preserves tool call IDs across interleaved same-name events", () => {
@@ -101,8 +205,11 @@ describe("run-subagent progress", () => {
 			runId: "root",
 			agentId: "SubAgentSage",
 			taskName: "Correlate tool calls",
+			sessionId: 1,
+			isResume: false,
 			depth: 1,
 			startedAtMs: 0,
+			childSessionId: "root-session",
 		});
 		recordSubagentSessionEvent(
 			state,
@@ -151,8 +258,11 @@ describe("run-subagent progress", () => {
 			runId: "unicode",
 			agentId: "SubAgentSage",
 			taskName: "Preserve Unicode progress",
+			sessionId: 1,
+			isResume: false,
 			depth: 1,
 			startedAtMs: 0,
+			childSessionId: "unicode-session",
 		});
 		const path = "A\u00a0B\u2003C\u202fD/👩🏽‍💻é\n\u2067עברית\u2069";
 		recordSubagentSessionEvent(
@@ -189,8 +299,11 @@ describe("run-subagent progress", () => {
 			runId: "bounded",
 			agentId: "SubAgentSage",
 			taskName: "Bound progress storage",
+			sessionId: 1,
+			isResume: false,
 			depth: 1,
 			startedAtMs: 0,
+			childSessionId: "bounded-session",
 		});
 		recordSubagentSessionEvent(
 			state,

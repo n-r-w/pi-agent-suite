@@ -17,6 +17,7 @@ import {
 } from "./widget";
 import { formatElapsedMs } from "./widget-lines";
 import {
+	formatSubagentInvocationIdentity,
 	formatSubagentWidgetIdentity,
 	type SubagentWidgetNode,
 } from "./widget-tree";
@@ -40,7 +41,7 @@ export interface SubagentBrowserTheme {
 export interface SubagentBrowserListOptions {
 	readonly state: SubagentWidgetState;
 	readonly theme: SubagentBrowserTheme;
-	readonly onSelect: (runId: string | undefined) => void;
+	readonly onSelect: (childSessionId: string | undefined) => void;
 	readonly onCancel: () => void;
 	readonly requestRender: () => void;
 }
@@ -55,7 +56,7 @@ interface SubagentBrowserController {
 /** Distinguishes explicit automatic selection from cancellation without state changes. */
 type SubagentBrowserSelection =
 	| { readonly kind: "automatic" }
-	| { readonly kind: "run"; readonly runId: string }
+	| { readonly kind: "session"; readonly childSessionId: string }
 	| { readonly kind: "cancel" };
 
 /** Retains only the live list and its idempotent dialog completion action. */
@@ -72,9 +73,10 @@ class SubagentBrowserControllerImpl implements SubagentBrowserController {
 	public constructor(
 		private readonly state: SubagentWidgetState,
 		private readonly lineBudget: number,
+		private readonly onPinChange: (childSessionId: string | undefined) => void,
 	) {}
 
-	/** Opens the focused list and applies only explicit run or Automatic selection. */
+	/** Opens the focused list and applies only explicit session or Automatic selection. */
 	public async open(ctx: ExtensionContext): Promise<void> {
 		if (
 			ctx.mode !== "tui" ||
@@ -106,8 +108,9 @@ class SubagentBrowserControllerImpl implements SubagentBrowserController {
 			return;
 		}
 
-		this.state.pinnedRunId =
-			selection.kind === "run" ? selection.runId : undefined;
+		this.state.pinnedChildSessionId =
+			selection.kind === "session" ? selection.childSessionId : undefined;
+		this.onPinChange(this.state.pinnedChildSessionId);
 		ctx.ui.setWidget(
 			SUBAGENT_WIDGET_KEY,
 			createSubagentWidgetFactory(this.state, this.lineBudget),
@@ -144,11 +147,11 @@ class SubagentBrowserControllerImpl implements SubagentBrowserController {
 				const list = new SubagentBrowserList({
 					state: this.state,
 					theme,
-					onSelect: (runId) =>
+					onSelect: (childSessionId) =>
 						finish(
-							runId === undefined
+							childSessionId === undefined
 								? { kind: "automatic" }
-								: { kind: "run", runId },
+								: { kind: "session", childSessionId },
 						),
 					onCancel: () => finish({ kind: "cancel" }),
 					requestRender: () => tui.requestRender(),
@@ -177,8 +180,9 @@ class SubagentBrowserControllerImpl implements SubagentBrowserController {
 export function createSubagentBrowserController(
 	state: SubagentWidgetState,
 	lineBudget: number,
+	onPinChange: (childSessionId: string | undefined) => void,
 ): SubagentBrowserController {
-	return new SubagentBrowserControllerImpl(state, lineBudget);
+	return new SubagentBrowserControllerImpl(state, lineBudget, onPinChange);
 }
 
 /** Builds the stable flattened item list shown by the focused browser. */
@@ -193,15 +197,14 @@ export function createSubagentBrowserItems(
 		},
 	];
 	for (const root of state.roots) {
-		appendBrowserItems({ items, state, parent: undefined, depth: 0 }, root);
+		appendBrowserItems({ items, parent: undefined, depth: 0 }, root);
 	}
 	return items;
 }
 
-/** Carries branch ownership while flattening the recursive run tree. */
+/** Carries branch ownership while flattening the logical-session tree. */
 interface BrowserAppendContext {
 	readonly items: SelectItem[];
-	readonly state: SubagentWidgetState;
 	readonly parent: SubagentWidgetNode | undefined;
 	readonly depth: number;
 }
@@ -211,12 +214,9 @@ function appendBrowserItems(
 	context: BrowserAppendContext,
 	node: SubagentWidgetNode,
 ): void {
-	const identity = formatSubagentWidgetIdentity(
-		node,
-		context.state.instanceCountByAgentId.get(node.agentId) ?? 0,
-	);
+	const identity = formatSubagentWidgetIdentity(node);
 	context.items.push({
-		value: node.runId,
+		value: node.childSessionId,
 		label: `${identity} · ${context.depth === 0 ? "Root" : `Depth ${context.depth}`}`,
 		description: formatBrowserDescription(node, context.parent),
 	});
@@ -235,7 +235,9 @@ function formatBrowserDescription(
 ): string {
 	const parts = [formatBrowserStatus(node), formatElapsedMs(node.elapsedMs)];
 	if (parent !== undefined) {
-		parts.push(`Parent: ${parent.agentId} · ${parent.taskName}`);
+		parts.push(
+			`Parent: ${formatSubagentInvocationIdentity(parent.agentId, parent.sessionId, parent.taskName)}`,
+		);
 	}
 	const projection = formatSubagentProjectionStatus(
 		node.contextProjectionStatus,
@@ -261,23 +263,24 @@ function formatBrowserStatus(node: SubagentWidgetNode): string {
 	return node.status;
 }
 
-/** Owns SelectList recreation while retaining selection by semantic run identity. */
+/** Owns SelectList recreation while retaining selection by child-session identity. */
 export class SubagentBrowserList implements Component {
 	private items: SelectItem[];
 	private itemsFingerprint: string;
 	private selectedValue: string;
 	private selectList: SelectList;
 
-	/** Creates the browser with the pinned run selected, or Automatic view by default. */
+	/** Creates the browser with the pinned session selected, or Automatic view by default. */
 	public constructor(private readonly options: SubagentBrowserListOptions) {
 		this.items = createSubagentBrowserItems(options.state);
 		this.itemsFingerprint = fingerprintItems(this.items);
-		this.selectedValue = options.state.pinnedRunId ?? AUTOMATIC_SUBAGENT_VIEW;
+		this.selectedValue =
+			options.state.pinnedChildSessionId ?? AUTOMATIC_SUBAGENT_VIEW;
 		this.selectList = this.createSelectList(this.items);
 		this.restoreSelection();
 	}
 
-	/** Refreshes live descriptions without changing the selected run. */
+	/** Refreshes live descriptions without changing the selected session. */
 	public refresh(): void {
 		const items = createSubagentBrowserItems(this.options.state);
 		const fingerprint = fingerprintItems(items);
@@ -356,7 +359,7 @@ export class SubagentBrowserList implements Component {
 		return selectList;
 	}
 
-	/** Restores selection by runId and returns to Automatic view when a run vanished. */
+	/** Restores selection by child session and returns to Automatic view when it vanished. */
 	private restoreSelection(): void {
 		const selectedIndex = this.items.findIndex(
 			(item) => item.value === this.selectedValue,

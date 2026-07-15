@@ -61,7 +61,11 @@ import {
 	type SubagentRunStatus,
 	toSubagentRunDetails,
 } from "./progress";
-import { renderRunSubagentCall, renderRunSubagentResult } from "./rendering";
+import {
+	renderResumeSubagentCall,
+	renderRunSubagentCall,
+	renderRunSubagentResult,
+} from "./rendering";
 import {
 	SUBAGENT_SESSION_CUSTOM_TYPE,
 	type SubagentSessionReference,
@@ -71,19 +75,28 @@ import {
 	createSubagentWidgetFactory,
 	createSubagentWidgetState,
 	recordSubagentWidgetRun,
-	resetSubagentWidgetState,
 	SUBAGENT_WIDGET_KEY,
 } from "./widget";
 import { createSubagentBrowserController } from "./widget-browser";
+import {
+	createSubagentWidgetPinData,
+	createSubagentWidgetStartData,
+	restoreSubagentWidgetState,
+	SUBAGENT_WIDGET_PIN_CUSTOM_TYPE,
+	SUBAGENT_WIDGET_START_CUSTOM_TYPE,
+} from "./widget-persistence";
 
-const TOOL_NAME = "run_subagent";
+const RUN_TOOL_NAME = "run_subagent";
+const RESUME_TOOL_NAME = "resume_subagent";
 const ISSUE_PREFIX = "[run-subagent]";
 const RUN_SUBAGENT_EXTENSION_DIR = "run-subagent";
 const RUN_SUBAGENT_LEGACY_CONFIG_FILE = "run-subagent.json";
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "prompts");
 const RUN_SUBAGENT_DESCRIPTION = readPromptFile("description.md");
+const RESUME_SUBAGENT_DESCRIPTION = readPromptFile("resume-description.md");
 const ENABLED_CONFIG_KEY = "enabled";
-const DESCRIPTION_PROMPT_FILE_CONFIG_KEY = "descriptionPromptFile";
+const RUN_DESCRIPTION_PROMPT_FILE_CONFIG_KEY = "runDescriptionPromptFile";
+const RESUME_DESCRIPTION_PROMPT_FILE_CONFIG_KEY = "resumeDescriptionPromptFile";
 /** Default maximum child-subagent nesting depth when config omits maxDepth. */
 const DEFAULT_MAX_DEPTH = 1;
 /** Default number of lines kept in the live subagent widget. */
@@ -118,43 +131,75 @@ const SUBAGENT_BROWSER_COMMAND_ID = "subagents";
 const SUBAGENT_BROWSER_SHORTCUT = "ctrl+shift+g";
 /** Valid canonical non-negative integer format for child nesting depth. */
 const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
-const RunSubagentParameters = Type.Object({
-	agentId: Type.String({ description: "Callable agent ID to run" }),
-	taskName: Type.String({
-		minLength: 3,
-		maxLength: 60,
-		description:
-			'Unique 2–6 word name for specific work performed by this run. MUST use action and object, for example "Trace TUI redraws". For concurrent calls, distinguish each task by its focus. MUST NOT include agent type, generic labels, sequence numbers, or technical IDs.',
-	}),
-	prompt: Type.String({ description: "Task prompt for selected subagent" }),
-	resumeSession: Type.Optional(
-		Type.Integer({
+/** Keeps task identity constraints identical across new and resumed schema branches. */
+const RunSubagentTaskNameParameter = Type.String({
+	minLength: 3,
+	maxLength: 60,
+	description:
+		'Unique 2–6 word name for specific work performed by this run. MUST use action and object, for example "Trace TUI redraws". For concurrent calls, distinguish each task by its focus. MUST NOT include agent type, generic labels, sequence numbers, or technical IDs.',
+});
+/** Keeps the delegated prompt contract identical across both invocation modes. */
+const RunSubagentPromptParameter = Type.String({
+	description: "Task prompt for selected subagent",
+});
+/** Declares the complete provider-visible contract for a new child session. */
+const RunSubagentParameters = Type.Object(
+	{
+		agentId: Type.String({
+			description: "Callable agent ID for a new child session",
+		}),
+		taskName: RunSubagentTaskNameParameter,
+		prompt: RunSubagentPromptParameter,
+	},
+	{ additionalProperties: false },
+);
+/** Declares the complete provider-visible contract for continuation. */
+const ResumeSubagentParameters = Type.Object(
+	{
+		resumeSession: Type.Integer({
 			minimum: 1,
 			description:
-				"Session ID returned by an earlier run_subagent call to continue that child conversation",
+				"Session ID returned by an earlier run_subagent or resume_subagent invocation",
 		}),
-	),
-});
+		taskName: RunSubagentTaskNameParameter,
+		prompt: RunSubagentPromptParameter,
+	},
+	{ additionalProperties: false },
+);
 
-interface RunSubagentParams {
-	readonly agentId: string;
-	readonly taskName: string;
-	readonly prompt: string;
-	readonly resumeSession?: number;
-}
+type RunSubagentParams =
+	| {
+			readonly kind: "new";
+			readonly agentId: string;
+			readonly taskName: string;
+			readonly prompt: string;
+	  }
+	| {
+			readonly kind: "resume";
+			readonly resumeSession: number;
+			readonly taskName: string;
+			readonly prompt: string;
+	  };
 
 interface RunSubagentConfig {
 	readonly enabled: boolean;
 	readonly maxDepth: number;
 	readonly widgetLineBudget: number;
-	readonly descriptionPromptFile?: string;
-	readonly descriptionPromptFileIssue?: string;
+	readonly runDescriptionPromptFile?: string;
+	readonly resumeDescriptionPromptFile?: string;
+	readonly descriptionPromptIssue?: string;
 	readonly issue?: string;
 }
 
 type DescriptionPromptFileValidation =
-	| { readonly valid: true; readonly descriptionPromptFile?: string }
+	| { readonly valid: true; readonly path?: string }
 	| { readonly valid: false; readonly issue: string };
+
+/** Groups independently validated description paths before runtime config assembly. */
+interface DescriptionPromptFiles {
+	readonly runDescriptionPromptFile?: string;
+	readonly resumeDescriptionPromptFile?: string;
+}
 
 interface RunSubagentContext extends ExtensionContext {
 	readonly model: Model<Api> | undefined;
@@ -194,6 +239,25 @@ interface RunSubagentDependencies {
 		args: string[],
 		options: SpawnOptions,
 	) => SpawnedProcess;
+}
+
+/** Shares execution dependencies while keeping both public tool schemas separate. */
+interface RegisterSubagentToolsOptions {
+	readonly pi: ExtensionAPI;
+	readonly spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>;
+	readonly sessionRegistry: SubagentSessionRegistry;
+	readonly subagentWidgetState: ReturnType<typeof createSubagentWidgetState>;
+	readonly subagentBrowser: ReturnType<typeof createSubagentBrowserController>;
+	readonly descriptions: { readonly run: string; readonly resume: string };
+}
+
+/** Normalizes Pi tool callbacks before they enter the shared executor. */
+interface SubagentToolExecutionInput {
+	readonly toolCallId: string;
+	readonly params: RunSubagentParams;
+	readonly signal: AbortSignal | undefined;
+	readonly onUpdate: ((partial: AgentToolResult<unknown>) => void) | undefined;
+	readonly ctx: ExtensionContext;
 }
 
 interface ChildToolPolicy {
@@ -253,12 +317,9 @@ type ChildSessionLaunch =
 			readonly childSessionPath: string;
 	  };
 
-interface RunSubagentResultDetails extends SubagentRunDetails {
-	readonly sessionId: number;
-}
-
+/** Supplies final active tools so generated guidance cannot advertise filtered capabilities. */
 interface BuildRunSubagentPromptOptions {
-	readonly pi: ExtensionAPI;
+	readonly activeToolNames: readonly string[];
 	readonly callableAgents: readonly AgentDefinition[];
 	readonly mainAgent: MainAgentRuntimeInfo | undefined;
 	readonly childAgentId: string | undefined;
@@ -275,12 +336,18 @@ export default async function runSubagent(
 		return;
 	}
 
-	const description = resolveRunSubagentDescription(startupConfig);
+	const descriptions = resolveSubagentToolDescriptions(startupConfig);
 	const spawnPi = dependencies.spawnPi ?? defaultSpawnPi;
 	const subagentWidgetState = createSubagentWidgetState();
 	const subagentBrowser = createSubagentBrowserController(
 		subagentWidgetState,
 		startupConfig.widgetLineBudget,
+		(childSessionId) => {
+			pi.appendEntry(
+				SUBAGENT_WIDGET_PIN_CUSTOM_TYPE,
+				createSubagentWidgetPinData(childSessionId),
+			);
+		},
 	);
 	const sessionRegistry = new SubagentSessionRegistry();
 	await publishRunSubagentPromptContribution(pi);
@@ -299,34 +366,81 @@ export default async function runSubagent(
 	});
 	pi.on("session_start", (_event, ctx) => {
 		subagentBrowser.close();
-		resetSubagentWidgetState(subagentWidgetState);
 		sessionRegistry.restore(ctx.sessionManager.getEntries());
+		restoreSubagentWidgetState(
+			subagentWidgetState,
+			ctx.sessionManager.getBranch(),
+			Date.now(),
+		);
 		if (ctx.mode === "tui" && ctx.hasUI !== false) {
-			ctx.ui.setWidget(SUBAGENT_WIDGET_KEY, undefined);
+			ctx.ui.setWidget(
+				SUBAGENT_WIDGET_KEY,
+				subagentWidgetState.roots.length === 0
+					? undefined
+					: createSubagentWidgetFactory(
+							subagentWidgetState,
+							startupConfig.widgetLineBudget,
+						),
+			);
 		}
 	});
 
-	pi.registerTool({
-		name: TOOL_NAME,
+	registerSubagentTools({
+		pi,
+		spawnPi,
+		sessionRegistry,
+		subagentWidgetState,
+		subagentBrowser,
+		descriptions,
+	});
+}
+
+/** Registers strict new and resume boundaries backed by one shared executor. */
+function registerSubagentTools(options: RegisterSubagentToolsOptions): void {
+	const execute = (
+		input: SubagentToolExecutionInput,
+	): Promise<AgentToolResult<unknown>> =>
+		executeRunSubagent({
+			...options,
+			toolCallId: input.toolCallId,
+			params: input.params,
+			signal: input.signal,
+			onUpdate: input.onUpdate,
+			ctx: input.ctx as RunSubagentContext,
+		});
+
+	options.pi.registerTool({
+		name: RUN_TOOL_NAME,
 		label: "Run subagent",
-		description,
+		description: options.descriptions.run,
 		parameters: RunSubagentParameters,
 		executionMode: "parallel",
-		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
-			return executeRunSubagent({
-				pi,
-				spawnPi,
-				sessionRegistry,
-				subagentWidgetState,
-				subagentBrowser,
+		execute: (...[toolCallId, params, signal, onUpdate, ctx]) =>
+			execute({
 				toolCallId,
-				params: params as RunSubagentParams,
+				params: { kind: "new", ...params },
 				signal,
 				onUpdate,
-				ctx: ctx as RunSubagentContext,
-			});
-		},
+				ctx,
+			}),
 		renderCall: renderRunSubagentCall,
+		renderResult: renderRunSubagentResult,
+	});
+	options.pi.registerTool({
+		name: RESUME_TOOL_NAME,
+		label: "Resume subagent",
+		description: options.descriptions.resume,
+		parameters: ResumeSubagentParameters,
+		executionMode: "parallel",
+		execute: (...[toolCallId, params, signal, onUpdate, ctx]) =>
+			execute({
+				toolCallId,
+				params: { kind: "resume", ...params },
+				signal,
+				onUpdate,
+				ctx,
+			}),
+		renderCall: renderResumeSubagentCall,
 		renderResult: renderRunSubagentResult,
 	});
 }
@@ -341,29 +455,30 @@ async function publishRunSubagentPromptContribution(
 		callableAgentIds: callableAgents.map((agent) => agent.id),
 	});
 	composition.setRunSubagentContribution({
-		buildPrompt: async () =>
+		buildPrompt: async (activeToolNames) =>
 			buildRunSubagentPrompt({
-				pi,
+				activeToolNames,
 				callableAgents,
 				mainAgent: composition.getMainAgentContribution()?.agent,
 				childAgentId: readSubagentAgentId(),
 				isDepthAvailable: await isRunSubagentDepthAvailable(),
 			}),
 	});
-	composition.setRunSubagentActiveToolFilter(filterRunSubagentByDepth);
+	composition.setRunSubagentActiveToolFilter(filterSubagentTools);
 }
 
-/** Removes run_subagent from active tools when this process is already at the configured subagent depth limit. */
-async function filterRunSubagentByDepth(
+/** Enforces the run master gate and removes both delegation tools at the depth limit. */
+async function filterSubagentTools(
 	toolNames: readonly string[],
 ): Promise<readonly string[]> {
-	if (!toolNames.includes(TOOL_NAME)) {
-		return toolNames;
-	}
-
-	return (await isRunSubagentDepthAvailable())
+	const runAllowed = toolNames.includes(RUN_TOOL_NAME);
+	const depthAvailable = runAllowed && (await isRunSubagentDepthAvailable());
+	return depthAvailable
 		? toolNames
-		: toolNames.filter((toolName) => toolName !== TOOL_NAME);
+		: toolNames.filter(
+				(toolName) =>
+					toolName !== RUN_TOOL_NAME && toolName !== RESUME_TOOL_NAME,
+			);
 }
 
 /** Checks whether the current process may expose another run_subagent call. */
@@ -380,7 +495,7 @@ async function isRunSubagentDepthAvailable(): Promise<boolean> {
 
 /** Builds the prompt section that exposes the callable agents available to the current effective agent. */
 function buildRunSubagentPrompt({
-	pi,
+	activeToolNames,
 	callableAgents,
 	mainAgent,
 	childAgentId,
@@ -408,23 +523,22 @@ function buildRunSubagentPrompt({
 		}
 	}
 
-	const isAllowedForEffectiveAgent = isRunSubagentAllowedForEffectiveAgent(
-		pi,
-		effectiveAgent,
-	);
-	if (!isDepthAvailable || !isAllowedForEffectiveAgent) {
+	const toolAvailability = resolveSubagentToolAvailability(activeToolNames);
+	if (!isDepthAvailable || !toolAvailability.run) {
 		const prompt = prompts.length > 0 ? prompts.join("\n\n") : undefined;
 		writeRuntimeDiagnostic("run-subagent.prompt.build.skipped", {
 			mainAgentId: mainAgent?.id ?? null,
 			isDepthAvailable,
-			isAllowedForEffectiveAgent,
+			isAllowedForEffectiveAgent: toolAvailability.run,
 			promptLength: prompt?.length ?? 0,
 		});
 		return prompt;
 	}
 
 	const filteredAgents = filterCallableAgents(callableAgents, effectiveAgent);
-	prompts.push(formatCallableAgentsPrompt(filteredAgents));
+	prompts.push(
+		formatCallableAgentsPrompt(filteredAgents, toolAvailability.resume),
+	);
 	const prompt = prompts.join("\n\n");
 	writeRuntimeDiagnostic("run-subagent.prompt.build.applied", {
 		mainAgentId: mainAgent?.id ?? null,
@@ -462,23 +576,22 @@ function filterCallableAgents(
 	);
 }
 
-/** Checks whether the effective agent can call run_subagent under its tool allowlist. */
-function isRunSubagentAllowedForEffectiveAgent(
-	pi: ExtensionAPI,
-	effectiveAgent: MainAgentRuntimeInfo | AgentDefinition | undefined,
-): boolean {
-	if (effectiveAgent?.tools === undefined) {
-		return true;
-	}
-
-	const availableToolNames = pi.getAllTools().map((tool) => tool.name);
-	const resolved = resolveToolPolicy(effectiveAgent.tools, availableToolNames);
-	return !("issue" in resolved) && resolved.tools.includes(TOOL_NAME);
+/** Resolves prompt guidance from tools that remain active after runtime filtering. */
+function resolveSubagentToolAvailability(activeToolNames: readonly string[]): {
+	readonly run: boolean;
+	readonly resume: boolean;
+} {
+	const run = activeToolNames.includes(RUN_TOOL_NAME);
+	return {
+		run,
+		resume: run && activeToolNames.includes(RESUME_TOOL_NAME),
+	};
 }
 
 /** Formats callable agent ids and descriptions for the parent model context. */
 function formatCallableAgentsPrompt(
 	callableAgents: readonly AgentDefinition[],
+	canResume: boolean,
 ): string {
 	const rows =
 		callableAgents.length > 0
@@ -493,8 +606,13 @@ function formatCallableAgentsPrompt(
 	return [
 		"Callable agents available through run_subagent:",
 		rows,
-		"Use run_subagent with agentId and prompt.",
-		"For parallel execution, emit multiple run_subagent in the single tool call.",
+		"Use run_subagent with agentId to start an independent child session.",
+		...(canResume
+			? [
+					"Use resume_subagent with resumeSession to continue an existing child session.",
+				]
+			: []),
+		"For parallel execution, emit multiple independent subagent tool calls in the same turn.",
 	].join("\n");
 }
 
@@ -502,55 +620,31 @@ function formatCallableAgentsPrompt(
 async function executeRunSubagent(
 	options: ExecuteRunSubagentOptions,
 ): Promise<AgentToolResult<unknown>> {
-	const resolution = await resolveRunSubagentExecution(options);
-	if ("result" in resolution) {
-		return resolution.result;
+	const preparation = await prepareRunSubagentExecution(options);
+	if ("result" in preparation) {
+		return preparation.result;
 	}
 
-	const sessionResolution = await prepareChildSession(options, resolution.plan);
-	if ("result" in sessionResolution) {
-		return sessionResolution.result;
-	}
-
-	const { session } = sessionResolution;
+	const { plan, session } = preparation;
 	try {
-		const progress = createRunSubagentProgress(
-			options,
-			resolution.plan,
-			session,
+		const progress = createRunSubagentProgress(options, plan, session);
+		const runningDetails = progress.emit("running", undefined, true);
+		options.pi.appendEntry(
+			SUBAGENT_WIDGET_START_CUSTOM_TYPE,
+			createSubagentWidgetStartData(runningDetails, progress.state.startedAtMs),
 		);
-		progress.emit("running", undefined, true);
-		const run = await runResolvedChildPi(
-			options,
-			resolution.plan,
-			progress,
-			session,
-		);
-		return finishRunSubagentExecution(run, progress, session);
+		const run = await runResolvedChildPi(options, plan, progress, session);
+		return finishRunSubagentExecution(run, progress);
 	} finally {
 		options.sessionRegistry.release(session.reference.sessionId);
 	}
-}
-
-/** Resolves or creates the child session before any process can write its JSONL file. */
-async function prepareChildSession(
-	options: ExecuteRunSubagentOptions,
-	plan: ResolvedRunSubagentExecution,
-): Promise<
-	| { readonly session: ChildSessionLaunch }
-	| { readonly result: AgentToolResult<unknown> }
-> {
-	const requestedSessionId = options.params.resumeSession;
-	return requestedSessionId === undefined
-		? createNewChildSession(options, plan)
-		: prepareResumedChildSession(options, plan, requestedSessionId);
 }
 
 /** Allocates and persists a short alias before starting a new child conversation. */
 function createNewChildSession(
 	options: ExecuteRunSubagentOptions,
 	plan: ResolvedRunSubagentExecution,
-): { readonly session: ChildSessionLaunch } {
+): ChildSessionLaunch {
 	const reference = options.sessionRegistry.create({
 		childSessionId: createAuxiliaryLlmSessionId(),
 		childSessionDir: resolveChildSessionDir(),
@@ -560,16 +654,21 @@ function createNewChildSession(
 	// Custom entries persist the UUID mapping without placing it in LLM context.
 	options.pi.appendEntry(SUBAGENT_SESSION_CUSTOM_TYPE, reference);
 	options.sessionRegistry.acquire(reference.sessionId);
-	return { session: { kind: "new", reference } };
+	return { kind: "new", reference };
 }
 
-/** Validates ownership and acquires one saved child session for continuation. */
-async function prepareResumedChildSession(
+/** Resolves saved ownership and the exact JSONL path without acquiring the write lock. */
+async function resolveResumedChildSession(
 	options: ExecuteRunSubagentOptions,
-	plan: ResolvedRunSubagentExecution,
 	requestedSessionId: number,
 ): Promise<
-	| { readonly session: ChildSessionLaunch }
+	| {
+			readonly agentId: string;
+			readonly session: Extract<
+				ChildSessionLaunch,
+				{ readonly kind: "resume" }
+			>;
+	  }
 	| { readonly result: AgentToolResult<unknown> }
 > {
 	const reference = options.sessionRegistry.get(requestedSessionId);
@@ -580,24 +679,10 @@ async function prepareResumedChildSession(
 			),
 		};
 	}
-	if (reference.agentId !== plan.agent.id) {
-		return {
-			result: errorResult(
-				`subagent session ${requestedSessionId} belongs to agent ${reference.agentId}, not ${plan.agent.id}`,
-			),
-		};
-	}
 	if (reference.cwd !== options.ctx.cwd) {
 		return {
 			result: errorResult(
 				`subagent session ${requestedSessionId} belongs to working directory ${reference.cwd}`,
-			),
-		};
-	}
-	if (!options.sessionRegistry.acquire(reference.sessionId)) {
-		return {
-			result: errorResult(
-				`subagent session ${requestedSessionId} is already running`,
 			),
 		};
 	}
@@ -607,28 +692,31 @@ async function prepareResumedChildSession(
 		reference.childSessionId,
 	);
 	if (childSessionPath === undefined) {
-		options.sessionRegistry.release(reference.sessionId);
 		return {
 			result: errorResult(
 				`subagent session ${requestedSessionId} file was not found`,
 			),
 		};
 	}
-	return { session: { kind: "resume", reference, childSessionPath } };
+	return {
+		agentId: reference.agentId,
+		session: { kind: "resume", reference, childSessionPath },
+	};
 }
 
-/** Resolves all fail-closed checks before spawning the child pi process. */
-async function resolveRunSubagentExecution({
-	pi,
-	params,
-	ctx,
-}: ExecuteRunSubagentOptions): Promise<
-	| { readonly plan: ResolvedRunSubagentExecution }
+/** Resolves the persisted agent before runtime policy and acquires the session only after all fail-closed checks pass. */
+async function prepareRunSubagentExecution(
+	options: ExecuteRunSubagentOptions,
+): Promise<
+	| {
+			readonly plan: ResolvedRunSubagentExecution;
+			readonly session: ChildSessionLaunch;
+	  }
 	| { readonly result: AgentToolResult<unknown> }
 > {
 	const config = await readRunSubagentConfig();
 	if (config.issue !== undefined) {
-		reportIssue(ctx, config.issue);
+		reportIssue(options.ctx, config.issue);
 	}
 
 	const depthResult = resolveNextSubagentDepth(config);
@@ -636,13 +724,54 @@ async function resolveRunSubagentExecution({
 		return depthResult;
 	}
 
-	const agentResult = await resolveCallableAgent(pi, params);
+	const requestedAgent =
+		options.params.kind === "new"
+			? { agentId: options.params.agentId }
+			: await resolveResumedChildSession(options, options.params.resumeSession);
+	if ("result" in requestedAgent) {
+		return requestedAgent;
+	}
+	const resumed = "session" in requestedAgent ? requestedAgent : undefined;
+	const planResult = await resolveRunSubagentPlan(
+		options,
+		config,
+		depthResult.depth,
+		requestedAgent.agentId,
+	);
+	if ("result" in planResult) {
+		return planResult;
+	}
+	const { plan } = planResult;
+	if (resumed === undefined) {
+		return { plan, session: createNewChildSession(options, plan) };
+	}
+	if (!options.sessionRegistry.acquire(resumed.session.reference.sessionId)) {
+		return {
+			result: errorResult(
+				`subagent session ${resumed.session.reference.sessionId} is already running`,
+			),
+		};
+	}
+	return { plan, session: resumed.session };
+}
+
+/** Applies the current callable-agent, model, thinking, and tool policy to one effective agent ID. */
+async function resolveRunSubagentPlan(
+	options: ExecuteRunSubagentOptions,
+	config: RunSubagentConfig,
+	depth: number,
+	agentId: string,
+): Promise<
+	| { readonly plan: ResolvedRunSubagentExecution }
+	| { readonly result: AgentToolResult<unknown> }
+> {
+	const agentResult = await resolveCallableAgent(options.pi, agentId);
 	if ("result" in agentResult) {
 		return agentResult;
 	}
 
 	const { agent } = agentResult;
-	const modelId = resolveChildModelId(agent, ctx.model);
+	const modelId = resolveChildModelId(agent, options.ctx.model);
 	if (modelId === undefined) {
 		return {
 			result: errorResult(
@@ -651,7 +780,7 @@ async function resolveRunSubagentExecution({
 		};
 	}
 
-	const childTools = resolveChildToolPolicy(pi, agent);
+	const childTools = resolveChildToolPolicy(options.pi, agent);
 	if ("issue" in childTools) {
 		return { result: errorResult(childTools.issue) };
 	}
@@ -659,11 +788,11 @@ async function resolveRunSubagentExecution({
 	return {
 		plan: {
 			config,
-			depth: depthResult.depth,
+			depth,
 			agent,
 			modelId,
 			childTools,
-			thinking: agent.model?.thinking ?? pi.getThinkingLevel(),
+			thinking: agent.model?.thinking ?? options.pi.getThinkingLevel(),
 		},
 	};
 }
@@ -690,7 +819,7 @@ function resolveNextSubagentDepth(
 /** Resolves the requested callable agent after applying the effective allowlist. */
 async function resolveCallableAgent(
 	pi: ExtensionAPI,
-	params: RunSubagentParams,
+	agentId: string,
 ): Promise<
 	| { readonly agent: AgentDefinition }
 	| { readonly result: AgentToolResult<unknown> }
@@ -703,10 +832,10 @@ async function resolveCallableAgent(
 	);
 	const allowedAgents = filterCallableAgents(agents, effectiveAgent);
 	const agent = allowedAgents.find((candidate) =>
-		agentIdMatches(candidate.id, params.agentId),
+		agentIdMatches(candidate.id, agentId),
 	);
 	return agent === undefined
-		? { result: errorResult(`agent ${params.agentId} was not found`) }
+		? { result: errorResult(`agent ${agentId} was not found`) }
 		: { agent };
 }
 
@@ -728,6 +857,7 @@ function createRunSubagentProgress(
 	const state = createSubagentProgressState({
 		agentId: plan.agent.id,
 		taskName: options.params.taskName,
+		sessionId: session.reference.sessionId,
 		depth: plan.depth + 1,
 		startedAtMs: Date.now(),
 		runtime: resolveSubagentRuntimeDetails(
@@ -738,6 +868,7 @@ function createRunSubagentProgress(
 		runId: options.toolCallId,
 		childSessionId: session.reference.childSessionId,
 		childSessionDir: session.reference.childSessionDir,
+		isResume: session.kind === "resume",
 	});
 
 	return {
@@ -868,7 +999,6 @@ async function runResolvedChildPi(
 async function finishRunSubagentExecution(
 	run: ChildRunResult,
 	progress: ReturnType<typeof createRunSubagentProgress>,
-	session: ChildSessionLaunch,
 ): Promise<AgentToolResult<unknown>> {
 	progress.state.childSessionPath = await findChildSessionPath(
 		progress.state.childSessionDir,
@@ -880,10 +1010,7 @@ async function finishRunSubagentExecution(
 	}
 
 	if (run.status === "aborted") {
-		const details = withSessionId(
-			progress.emit("aborted", run.exitCode, true),
-			session,
-		);
+		const details = progress.emit("aborted", run.exitCode, true);
 		return errorResult(
 			run.errorMessage ?? ABORTED_CHILD_RPC_RUN_ERROR,
 			details,
@@ -891,18 +1018,12 @@ async function finishRunSubagentExecution(
 	}
 
 	if (run.streamedTextExceededLimit) {
-		const details = withSessionId(
-			progress.emit("failed", run.exitCode, true),
-			session,
-		);
+		const details = progress.emit("failed", run.exitCode, true);
 		return errorResult(OVERSIZED_CHILD_FINAL_RESPONSE_ERROR, details);
 	}
 
 	if (run.status === "failed" || run.exitCode !== 0) {
-		const details = withSessionId(
-			progress.emit("failed", run.exitCode, true),
-			session,
-		);
+		const details = progress.emit("failed", run.exitCode, true);
 		return errorResult(
 			run.errorMessage ||
 				run.stderrText ||
@@ -911,10 +1032,7 @@ async function finishRunSubagentExecution(
 		);
 	}
 
-	const details = withSessionId(
-		progress.emit("succeeded", run.exitCode, true),
-		session,
-	);
+	const details = progress.emit("succeeded", run.exitCode, true);
 	if (run.stdoutText.length === 0 && run.stdoutLineExceededLimit) {
 		return errorResult(OVERSIZED_CHILD_JSON_EVENT_ERROR, details);
 	}
@@ -976,13 +1094,20 @@ function parseRunSubagentConfig(value: unknown): RunSubagentConfig {
 			ENABLED_CONFIG_KEY,
 			"maxDepth",
 			"widgetLineBudget",
-			DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
+			RUN_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
+			RESUME_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
 		])
 	) {
 		return invalidConfig("config contains unsupported keys");
 	}
 
-	const { enabled, maxDepth, widgetLineBudget, descriptionPromptFile } = value;
+	const {
+		enabled,
+		maxDepth,
+		widgetLineBudget,
+		runDescriptionPromptFile,
+		resumeDescriptionPromptFile,
+	} = value;
 	if (enabled !== undefined && typeof enabled !== "boolean") {
 		return invalidConfig(`${ENABLED_CONFIG_KEY} must be a boolean`);
 	}
@@ -1013,32 +1138,53 @@ function parseRunSubagentConfig(value: unknown): RunSubagentConfig {
 			"widgetLineBudget must be an integer greater than or equal to 1",
 		);
 	}
-	const descriptionPromptFileValidation = validateDescriptionPromptFile(
-		descriptionPromptFile,
+	const descriptionFiles = parseDescriptionPromptFiles(
+		runDescriptionPromptFile,
+		resumeDescriptionPromptFile,
 	);
-	if (!descriptionPromptFileValidation.valid) {
-		return invalidDescriptionPromptConfig(
-			descriptionPromptFileValidation.issue,
-		);
+	if ("issue" in descriptionFiles) {
+		return invalidDescriptionPromptConfig(descriptionFiles.issue);
 	}
 
-	const config = {
+	return {
 		enabled: true,
 		maxDepth: maxDepth ?? DEFAULT_MAX_DEPTH,
 		widgetLineBudget: widgetLineBudget ?? DEFAULT_WIDGET_LINE_BUDGET,
+		...descriptionFiles,
 	};
-	return descriptionPromptFileValidation.descriptionPromptFile === undefined
-		? config
-		: {
-				...config,
-				descriptionPromptFile:
-					descriptionPromptFileValidation.descriptionPromptFile,
-			};
+}
+
+/** Parses independent custom description paths without weakening either field. */
+function parseDescriptionPromptFiles(
+	runValue: unknown,
+	resumeValue: unknown,
+): DescriptionPromptFiles | { readonly issue: string } {
+	const run = validateDescriptionPromptFile(
+		runValue,
+		RUN_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
+	);
+	if (!run.valid) {
+		return { issue: run.issue };
+	}
+	const resume = validateDescriptionPromptFile(
+		resumeValue,
+		RESUME_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
+	);
+	if (!resume.valid) {
+		return { issue: resume.issue };
+	}
+	return {
+		...(run.path === undefined ? {} : { runDescriptionPromptFile: run.path }),
+		...(resume.path === undefined
+			? {}
+			: { resumeDescriptionPromptFile: resume.path }),
+	};
 }
 
 /** Validates the optional custom description prompt path. */
 function validateDescriptionPromptFile(
 	value: unknown,
+	configKey: string,
 ): DescriptionPromptFileValidation {
 	if (value === undefined) {
 		return { valid: true };
@@ -1046,24 +1192,24 @@ function validateDescriptionPromptFile(
 	if (typeof value !== "string" || value.trim().length === 0) {
 		return {
 			valid: false,
-			issue: "descriptionPromptFile must be a non-empty string",
+			issue: `${configKey} must be a non-empty string`,
 		};
 	}
 	if (!isAbsolute(value)) {
 		return {
 			valid: false,
-			issue: "descriptionPromptFile must be an absolute path",
+			issue: `${configKey} must be an absolute path`,
 		};
 	}
 
-	return { valid: true, descriptionPromptFile: value };
+	return { valid: true, path: value };
 }
 
 /** Marks description prompt config errors that block tool registration. */
 function invalidDescriptionPromptConfig(issue: string): RunSubagentConfig {
 	return {
 		...invalidConfig(issue),
-		descriptionPromptFileIssue: issue,
+		descriptionPromptIssue: issue,
 	};
 }
 
@@ -1869,17 +2015,9 @@ function extractAssistantText(
 	return undefined;
 }
 
-/** Adds the public short alias to final details without exposing the UUID in text. */
-function withSessionId(
-	details: SubagentRunDetails,
-	session: ChildSessionLaunch,
-): RunSubagentResultDetails {
-	return { ...details, sessionId: session.reference.sessionId };
-}
-
 /** Prefixes final child output with the alias needed for later continuation. */
 function formatSessionOutput(
-	details: RunSubagentResultDetails,
+	details: SubagentRunDetails,
 	message: string,
 ): string {
 	return `Subagent session: ${details.sessionId}\n\n${message}`;
@@ -1888,7 +2026,7 @@ function formatSessionOutput(
 /** Creates a text tool result and includes a session alias when execution started. */
 function errorResult(
 	message: string,
-	details?: RunSubagentResultDetails,
+	details?: SubagentRunDetails,
 ): AgentToolResult<unknown> {
 	return {
 		content: [
@@ -1913,16 +2051,24 @@ function reportIssue(ctx: RunSubagentContext, issue: string): void {
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
 }
 
-/** Resolves the model-facing run_subagent tool description. */
-function resolveRunSubagentDescription(config: RunSubagentConfig): string {
-	if (config.descriptionPromptFileIssue !== undefined) {
-		throw new Error(`${ISSUE_PREFIX} ${config.descriptionPromptFileIssue}`);
+/** Resolves independent model-facing descriptions for both delegation tools. */
+function resolveSubagentToolDescriptions(config: RunSubagentConfig): {
+	readonly run: string;
+	readonly resume: string;
+} {
+	if (config.descriptionPromptIssue !== undefined) {
+		throw new Error(`${ISSUE_PREFIX} ${config.descriptionPromptIssue}`);
 	}
-	if (config.descriptionPromptFile === undefined) {
-		return RUN_SUBAGENT_DESCRIPTION;
-	}
-
-	return readDescriptionPromptFile(config.descriptionPromptFile);
+	return {
+		run:
+			config.runDescriptionPromptFile === undefined
+				? RUN_SUBAGENT_DESCRIPTION
+				: readDescriptionPromptFile(config.runDescriptionPromptFile),
+		resume:
+			config.resumeDescriptionPromptFile === undefined
+				? RESUME_SUBAGENT_DESCRIPTION
+				: readDescriptionPromptFile(config.resumeDescriptionPromptFile),
+	};
 }
 
 /** Reads a configured custom description prompt and rejects unusable content. */

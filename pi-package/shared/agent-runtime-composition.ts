@@ -13,9 +13,12 @@ export interface MainAgentContribution {
 	readonly agent?: MainAgentRuntimeInfo;
 }
 
+/** Defines static or dynamic guidance built after runtime tool filtering. */
 interface PromptContribution {
 	readonly prompt?: string;
-	readonly buildPrompt?: () => Promise<string | undefined> | string | undefined;
+	readonly buildPrompt?: (
+		activeToolNames: readonly string[],
+	) => Promise<string | undefined> | string | undefined;
 	readonly requiredToolName?: string;
 }
 
@@ -274,7 +277,7 @@ async function resolvePromptContribution(
 		}
 	}
 
-	return contribution?.buildPrompt?.() ?? contribution?.prompt;
+	return contribution?.buildPrompt?.(activeToolNames) ?? contribution?.prompt;
 }
 
 /** Compares ordered tool-name lists to avoid redundant active-tool writes. */

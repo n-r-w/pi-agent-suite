@@ -16,12 +16,14 @@ import type {
 /** Prefix removed from conventional agent IDs in compact user-facing labels. */
 const SUBAGENT_AGENT_PREFIX = "SubAgent";
 
-/** Stores one node in the UI-only subagent run tree. */
+/** Stores one logical child session in the UI-only widget tree. */
 export interface SubagentWidgetNode {
 	readonly runId: string;
+	readonly childSessionId: string;
 	readonly agentId: string;
 	readonly taskName: string;
-	readonly instanceNumber: number;
+	readonly sessionId: number;
+	readonly isResume: boolean;
 	readonly status: SubagentRunStatus;
 	readonly updatedAtMs: number;
 	readonly elapsedMs: number;
@@ -33,15 +35,22 @@ export interface SubagentWidgetNode {
 	readonly children: readonly SubagentWidgetNode[];
 }
 
-/** Formats one identity against the complete same-type session count. */
-export function formatSubagentWidgetIdentity(
-	node: SubagentWidgetNode,
-	instanceCount: number,
+/** Formats one widget identity with its stable local child-session number. */
+export function formatSubagentWidgetIdentity(node: SubagentWidgetNode): string {
+	return formatSubagentInvocationIdentity(
+		formatAgentType(node.agentId),
+		node.sessionId,
+		node.taskName,
+	);
+}
+
+/** Formats one invocation identity consistently across overview, focused, and browser views. */
+export function formatSubagentInvocationIdentity(
+	agentLabel: string,
+	sessionId: number,
+	taskName: string,
 ): string {
-	const agentType = formatAgentType(node.agentId);
-	const numberedType =
-		instanceCount > 1 ? `${agentType} #${node.instanceNumber}` : agentType;
-	return `${numberedType} · ${node.taskName}`;
+	return `${agentLabel} #${sessionId} · ${taskName}`;
 }
 
 /** Removes the conventional prefix while preserving custom agent identifiers. */
@@ -145,27 +154,27 @@ export function selectVisibleWidgetForest(
 	};
 }
 
-/** Identifies one focused run, its direct parent, and its root-relative depth. */
-export interface FocusedSubagentWidgetRun {
+/** Identifies one focused child session, its direct parent, and its root-relative depth. */
+export interface FocusedSubagentWidgetSession {
 	readonly selected: SubagentWidgetNode;
 	readonly parent: SubagentWidgetNode | undefined;
 	readonly depth: number;
 }
 
-/** Finds one run without carrying an unbounded semantic path into presentation. */
-export function findFocusedSubagentWidgetRun(
+/** Finds one logical child session without carrying an unbounded semantic path into presentation. */
+export function findFocusedSubagentWidgetSession(
 	nodes: readonly SubagentWidgetNode[],
-	runId: string,
+	childSessionId: string,
 	parent: SubagentWidgetNode | undefined = undefined,
 	depth = 0,
-): FocusedSubagentWidgetRun | undefined {
+): FocusedSubagentWidgetSession | undefined {
 	for (const node of nodes) {
-		if (node.runId === runId) {
+		if (node.childSessionId === childSessionId) {
 			return { selected: node, parent, depth };
 		}
-		const nested = findFocusedSubagentWidgetRun(
+		const nested = findFocusedSubagentWidgetSession(
 			node.children,
-			runId,
+			childSessionId,
 			node,
 			depth + 1,
 		);
@@ -456,7 +465,7 @@ function addWidgetSummaries(
 	};
 }
 
-/** Maps one run status to the aggregate header categories. */
+/** Maps one child-session status to the aggregate header categories. */
 function summarizeNodeStatus(status: SubagentRunStatus): WidgetSummary {
 	if (status === "running") {
 		return { running: 1, failed: 0, done: 0 };

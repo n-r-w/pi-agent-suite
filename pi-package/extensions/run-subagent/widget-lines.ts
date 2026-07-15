@@ -20,7 +20,8 @@ import {
 	type SubagentRunStatus,
 } from "./progress";
 import {
-	type FocusedSubagentWidgetRun,
+	type FocusedSubagentWidgetSession,
+	formatSubagentInvocationIdentity,
 	formatSubagentWidgetIdentity,
 	type SubagentWidgetNode,
 	type VisibleWidgetForest,
@@ -83,8 +84,8 @@ export function formatWidgetPanel(
 /** Formats the aggregate header as independently styled count segments. */
 export function formatWidgetHeader(
 	summary: WidgetSummary,
-	displayedRunCount: number,
-	totalRunCount: number,
+	displayedSessionCount: number,
+	totalSessionCount: number,
 ): WidgetLine {
 	return [
 		{ text: "Subagents: " },
@@ -93,14 +94,14 @@ export function formatWidgetHeader(
 		formatSummaryCountPart(summary.failed, "error"),
 		{ text: " failed · " },
 		formatSummaryCountPart(summary.done, "success"),
-		{ text: ` done · ${displayedRunCount}/${totalRunCount} shown` },
+		{ text: ` done · ${displayedSessionCount}/${totalSessionCount} shown` },
 		{ text: " · Ctrl+Shift+G", color: "dim" },
 	];
 }
 
-/** Renders one selected run and the newest tool events that fit the panel. */
+/** Renders one selected child session and the newest tool events that fit. */
 export function renderFocusedSubagentWidget(
-	focused: FocusedSubagentWidgetRun,
+	focused: FocusedSubagentWidgetSession,
 	lineBudget: number,
 ): readonly WidgetLine[] {
 	const safeBudget = Math.max(0, Math.floor(lineBudget));
@@ -108,7 +109,7 @@ export function renderFocusedSubagentWidget(
 		return [];
 	}
 
-	const lines: WidgetLine[] = [formatFocusedRunHeader(focused)];
+	const lines: WidgetLine[] = [formatFocusedSessionHeader(focused)];
 	if (focused.parent !== undefined && lines.length < safeBudget) {
 		lines.push(formatFocusedParentHeader(focused.parent, focused.depth));
 	}
@@ -126,14 +127,16 @@ export function renderFocusedSubagentWidget(
 	return lines;
 }
 
-/** Formats the selected run without instance numbering or ancestor paths. */
-function formatFocusedRunHeader(focused: FocusedSubagentWidgetRun): WidgetLine {
+/** Formats the selected logical session without an unbounded ancestor path. */
+function formatFocusedSessionHeader(
+	focused: FocusedSubagentWidgetSession,
+): WidgetLine {
 	const node = focused.selected;
-	const status = formatWidgetStatus(node.status);
+	const status = formatWidgetStatus(node.status, node.isResume);
 	const parts: WidgetLinePart[] = [
 		{ text: `${status.icon} `, color: status.color },
 		{
-			text: `${focused.parent === undefined ? "Root" : "Child"}: ${node.agentId} · ${node.taskName}`,
+			text: `${focused.parent === undefined ? "Root" : "Child"}: ${formatSubagentInvocationIdentity(node.agentId, node.sessionId, node.taskName)}`,
 		},
 	];
 	if (node.runtime !== undefined) {
@@ -152,14 +155,14 @@ function formatFocusedRunHeader(focused: FocusedSubagentWidgetRun): WidgetLine {
 	return parts;
 }
 
-/** Formats direct parent ownership with depth relative to the root run. */
+/** Formats direct parent ownership with depth relative to the root session. */
 function formatFocusedParentHeader(
 	parent: SubagentWidgetNode,
 	depth: number,
 ): WidgetLine {
 	return [
 		{
-			text: `Parent: ${parent.agentId} · ${parent.taskName} · Depth ${depth}`,
+			text: `Parent: ${formatSubagentInvocationIdentity(parent.agentId, parent.sessionId, parent.taskName)} · Depth ${depth}`,
 			color: "muted",
 		},
 	];
@@ -204,7 +207,6 @@ function formatFocusedElapsedMs(elapsedMs: number): string {
 export function renderVisibleWidgetForest(
 	forest: VisibleWidgetForest,
 	width: number,
-	instanceCountByAgentId: ReadonlyMap<string, number>,
 ): readonly WidgetLine[] {
 	const rootItemCount =
 		forest.roots.length + (forest.showGlobalSummary ? 1 : 0);
@@ -215,7 +217,6 @@ export function renderVisibleWidgetForest(
 				prefix: "",
 				isLast: index === rootItemCount - 1,
 				width,
-				instanceCountByAgentId,
 			}),
 		);
 	}
@@ -297,7 +298,6 @@ interface VisibleWidgetNodeRenderContext {
 	readonly prefix: string;
 	readonly isLast: boolean;
 	readonly width: number;
-	readonly instanceCountByAgentId: ReadonlyMap<string, number>;
 }
 
 /** Groups the inputs that determine one automatic overview row. */
@@ -325,10 +325,7 @@ function renderVisibleWidgetNode(
 		formatWidgetNodeLine({
 			connector: `${context.prefix}${branch} `,
 			node: node.node,
-			identity: formatSubagentWidgetIdentity(
-				node.node,
-				context.instanceCountByAgentId.get(node.node.agentId) ?? 0,
-			),
+			identity: formatSubagentWidgetIdentity(node.node),
 			width: context.width,
 			inlineSummary,
 		}),
@@ -359,7 +356,7 @@ function renderVisibleWidgetNode(
 
 /** Formats one node row while reserving inline omission ownership before optional detail. */
 function formatWidgetNodeLine(options: WidgetNodeLineOptions): WidgetLine {
-	const status = formatWidgetStatus(options.node.status);
+	const status = formatWidgetStatus(options.node.status, options.node.isResume);
 	const prefix: WidgetLinePart[] = [
 		{ text: options.connector },
 		{ text: status.icon, color: status.color },
@@ -560,13 +557,16 @@ function getSummaryStatusSegments(summary: WidgetSummary): string[] {
 	return segments;
 }
 
-/** Selects the status icon and its theme color. */
-function formatWidgetStatus(status: SubagentRunStatus): {
+/** Selects an invocation icon while running and a lifecycle icon after completion. */
+function formatWidgetStatus(
+	status: SubagentRunStatus,
+	isResume: boolean,
+): {
 	readonly icon: string;
 	readonly color: ThemeColor;
 } {
 	if (status === "running") {
-		return { icon: "⏳", color: "accent" };
+		return { icon: isResume ? "⇆" : "➜", color: "accent" };
 	}
 	if (status === "succeeded") {
 		return { icon: "✓", color: "success" };

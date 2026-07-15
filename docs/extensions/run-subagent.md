@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`run-subagent` adds the `run_subagent` tool. The tool lets the active agent delegate a task to a configured callable agent.
+`run-subagent` adds two tools. `run_subagent` starts an independent child session with a configured callable agent. `resume_subagent` continues a saved child session with the original agent.
 
 ## Configuration file
 
@@ -17,7 +17,8 @@ If the file is missing, the extension is enabled with default settings.
   "enabled": true,
   "maxDepth": 1,
   "widgetLineBudget": 7,
-  "descriptionPromptFile": "/absolute/path/to/run-subagent-description.md"
+  "runDescriptionPromptFile": "/absolute/path/to/run-subagent-description.md",
+  "resumeDescriptionPromptFile": "/absolute/path/to/resume-subagent-description.md"
 }
 ```
 
@@ -25,18 +26,19 @@ If the file is missing, the extension is enabled with default settings.
 
 | Name | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `enabled` | No | Boolean | `true` | Enables or disables `run_subagent`. Set to `false` to prevent tool registration. |
-| `maxDepth` | No | Integer greater than or equal to `0` | `1` | Limits nested subagent calls. `0` prevents this extension from exposing `run_subagent` in the active tool list. |
+| `enabled` | No | Boolean | `true` | Enables or disables both subagent tools. Set to `false` to prevent their registration. |
+| `maxDepth` | No | Integer greater than or equal to `0` | `1` | Limits nested subagent calls. `0` removes both tools from the active tool list. |
 | `widgetLineBudget` | No | Integer greater than or equal to `1` | `7` | Limits the live widget to this many content lines, including its header, agent rows, and omission summaries. The separator above the widget is not counted. |
-| `descriptionPromptFile` | No | Non-empty absolute file path string | Bundled tool description | Replaces the `run_subagent` tool description with the trimmed contents of the file. The file must be readable and must not be empty after trimming whitespace. |
+| `runDescriptionPromptFile` | No | Non-empty absolute file path string | Bundled `run_subagent` description | Replaces the `run_subagent` description with the trimmed file contents. |
+| `resumeDescriptionPromptFile` | No | Non-empty absolute file path string | Bundled `resume_subagent` description | Replaces the `resume_subagent` description with the trimmed file contents. |
 
-The config object accepts only these keys: `enabled`, `maxDepth`, `widgetLineBudget`, and `descriptionPromptFile`.
+Configured description files must be readable and non-empty after trimming whitespace. The config object accepts only `enabled`, `maxDepth`, `widgetLineBudget`, `runDescriptionPromptFile`, and `resumeDescriptionPromptFile`.
 
 ## Live progress
 
 Interactive TUI mode sends one initial partial update to populate the historical call with the resolved model and thinking level. Later live progress appears only in the widget and focused browser. RPC and other non-TUI modes keep every intermediate tool update for nested progress propagation.
 
-The header counts every direct and nested run. It also shows the number of concrete displayed runs, total recorded runs, and the `Ctrl+Shift+G` browser shortcut.
+The header counts every direct and nested logical child session. It also shows the number of concrete displayed sessions, total recorded sessions, and the `Ctrl+Shift+G` browser shortcut.
 
 ### Automatic view
 
@@ -44,55 +46,55 @@ The automatic body follows these rules:
 
 - Failed and aborted work is selected before running work.
 - Running work is selected before completed work.
-- Runs within one status class are ordered by their latest update time.
-- A nested run is shown only with its complete visible ancestor path.
+- Sessions within one status class are ordered by their latest update time.
+- A nested session is shown only with its complete visible ancestor path.
 - A parent with only hidden descendants shows their aggregate on the parent row.
 - A partially visible branch ends with a local omission summary.
 - Hidden root branches keep a root-level summary when the line budget permits it or attention-bearing work is hidden.
-- Completed runs use remaining rows after failed, aborted, and running work.
+- Completed sessions use remaining rows after failed, aborted, and running work.
 - With `widgetLineBudget` set to `1`, only the aggregate header fits.
 
 Connectors are derived after the visible tree is selected. A visible descendant therefore cannot retain a connector to a hidden parent or sibling.
 
-### Selected-run view
+### Selected-session view
 
-Selecting a run in the browser switches the widget from the aggregate overview to that run. Selection uses the internal `runId` and remains stable while other runs start or finish.
+Selecting a child session in the browser switches the widget from the aggregate overview to that session. Selection uses the internal `childSessionId`, so it remains stable while other sessions start or finish and while the selected session is resumed.
 
-A root run uses one header row:
-
-```text
-✓ Root: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
-```
-
-When the line budget permits a second row, a nested run shows its direct parent and root-relative depth:
+A root session uses one header row:
 
 ```text
-✓ Child: YandexExtractor · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
-Parent: SubAgentExtractor · Delegate catalog checks · Depth 1
+✓ Root: YandexExtractor #2 · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
 ```
 
-The first selected-run row starts with the same lifecycle symbol as the overview: `⏳` running, `✓` succeeded, `✗` failed, or `■` aborted. Runtime model details and tool event payloads use the normal foreground color; status symbols, tool names, context pressure, and elapsed time retain their semantic styling. The remaining rows within `widgetLineBudget` show the latest retained tool events in chronological order without tree connectors. `tool_call`, `tool_result`, and tool execution `error` events each use one row. Assistant output and assistant failures are excluded. Rows do not wrap and are clipped to terminal width. The selected-run view does not scroll.
+When the line budget permits a second row, a nested session shows its direct parent and root-relative depth:
 
-Select `Automatic view` in the browser to resume aggregate selection. Starting a new Pi session clears the selected run and instance numbering.
+```text
+✓ Child: YandexExtractor #1 · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
+Parent: SubAgentExtractor #2 · Delegate catalog checks · Depth 1
+```
+
+The first selected-session row starts with the same symbol as the overview: `➜` for a running new session, `⇆` for a running continuation, `✓` for success, `✗` for failure, or `■` for an abort. A terminal symbol replaces the running invocation symbol when work ends. Runtime model details and tool event payloads use the normal foreground color; status symbols, tool names, context pressure, and elapsed time retain their semantic styling. The remaining rows within `widgetLineBudget` show the latest retained tool events in chronological order without tree connectors. `tool_call`, `tool_result`, and tool execution `error` events each use one row. Assistant output and assistant failures are excluded. Rows do not wrap and are clipped to terminal width. The selected-session view does not scroll.
+
+Select `Automatic view` in the browser to resume aggregate selection. The selected logical session is stored with the current main session and restored when that session reopens.
 
 ### Browser
 
-Open the complete run list with either:
+Open the complete session list with either:
 
 - `/subagents`
 - `Ctrl+Shift+G`
 
 The browser uses Pi `SelectList` behavior:
 
-- `Up` and `Down` navigate and scroll through every recorded root and nested run.
-- `Enter` shows the selected run in the widget or applies `Automatic view`.
+- `Up` and `Down` navigate and scroll through every recorded root and nested child session.
+- `Enter` shows the selected child session in the widget or applies `Automatic view`.
 - `Escape` or `Ctrl+C` closes the browser without changing the current mode.
 
-Browser labels append `Root` for root runs or root-relative `Depth N` for nested runs. Nested descriptions also name the direct parent. The browser preserves selection by `runId` while live status, elapsed time, context usage, and activity descriptions change.
+Browser labels append `Root` for root sessions or root-relative `Depth N` for nested sessions. Nested descriptions also name the direct parent. The browser preserves selection by `childSessionId` while the invocation `runId`, live status, elapsed time, context usage, and activity descriptions change.
 
-### Run identity and row content
+### Session identity and row content
 
-Each run receives a stable instance number per agent type in the current session. The number is shown only when the session contains more than one root or nested run with the same `agentId`. A unique type renders as `Sage · Review widget navigation`; repeated types render as `Sage #2 · Review widget navigation`. Hidden and completed runs still count. `runId` remains internal.
+Each logical child session shows the short numeric `sessionId` used for continuation. A running new session renders as `➜ Sage #2 · Review widget navigation`. Resuming it updates the same row, returns it to `running`, replaces its task and invocation state, and uses the continuation symbol, for example `⇆ Sage #2 · Verify project quality gates`. Completed descendants absent from the latest resume snapshot remain attached to the session. `childSessionId` is the internal logical-row identity, while `runId` identifies the latest invocation. Numeric session IDs are local to the owning Pi session, so separate nested branches may display the same number.
 
 Each overview agent row uses one visual terminal line:
 
@@ -107,11 +109,11 @@ Rows are clipped by terminal display width after grapheme-aware plain-text selec
 
 ## Historical tool rendering
 
-The collapsed `run_subagent` call shows `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. The `Name:` and `Task:` labels are bold; their values use the theme's `muted` color. After execution resolves the child runtime, one partial update adds the model and thinking level in the normal foreground color. The header then remains static until the final result adds context usage and elapsed time. Expanding an active call shows the complete task prompt. Expanding a completed call also shows only the final answer, failure, or abort result; it does not show the intermediate event timeline or a separate stderr section.
+Collapsed calls show `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. The `Name:` and `Task:` labels are bold; their values use the theme's `muted` color. After a new session is allocated, the `run_subagent` header adds `#N`. A `resume_subagent` call immediately shows its requested `#N`; after runtime resolution the header uses the persisted agent and places `#N` after the model and thinking level. The final result adds context usage and elapsed time. Expanding an active call shows the complete task prompt. Expanding a completed call shows only the final answer, failure, or abort result; it does not show the intermediate event timeline or a separate stderr section.
 
 ## Child session logs
 
-A new `run_subagent` call starts child `pi` with a saved JSONL session. A call with `resumeSession` continues the saved session at its active leaf.
+A `run_subagent` call starts child `pi` with a saved JSONL session. A `resume_subagent` call continues the saved session at its active leaf.
 
 Child sessions are stored outside the normal project session list:
 
@@ -125,21 +127,39 @@ The tool result `details` includes:
 
 | Field | Meaning |
 | --- | --- |
-| `sessionId` | Short positive integer used by `resumeSession` within the owning main-agent session. |
+| `formatVersion` | Persisted widget-details format version. |
+| `sessionId` | Short positive integer used by `resumeSession` and displayed as `#N` within the owning session. |
+| `isResume` | `true` for `resume_subagent` invocations and `false` for new sessions. |
 | `childSessionId` | Pi-compatible UUIDv7 assigned to the child session. |
 | `childSessionDir` | Directory passed to child `pi` through `--session-dir`. |
 | `childSessionPath` | JSONL session file path when the file is found after child exit. |
 
 ## Tool input
 
-When the tool is available, a model calls `run_subagent` with:
+`run_subagent` starts a new session:
 
 | Name | Required | Type or shape | Meaning |
 | --- | --- | --- | --- |
 | `agentId` | Yes | String | Callable agent ID to run. |
-| `taskName` | Yes | String with 3–60 characters | Unique 2–6 word action-and-object name for this task. Concurrent calls use distinct names based on task focus. |
-| `prompt` | Yes | String | Full task prompt for a new session, or new requirements and review findings for a resumed session. |
-| `resumeSession` | No | Positive integer | Short session ID returned by an earlier call in the current main-agent session. |
+| `taskName` | Yes | String with 3–60 characters | Unique 2–6 word action-and-object name for this invocation. Concurrent calls use distinct names based on task focus. |
+| `prompt` | Yes | String | Complete task prompt for an independent child conversation. |
+
+`resume_subagent` continues an existing session:
+
+| Name | Required | Type or shape | Meaning |
+| --- | --- | --- | --- |
+| `resumeSession` | Yes | Positive integer | Short session ID returned by an earlier invocation in the current owning session. |
+| `taskName` | Yes | String with 3–60 characters | New action-and-object name for this follow-up invocation. |
+| `prompt` | Yes | String | Changed requirements, review findings, decisions, and acceptance criteria needed for the follow-up. |
+
+Both tools expose closed root object schemas with `additionalProperties: false`. Calling models receive all required properties without a root union.
+
+### Tool availability
+
+- Agent tool lists must explicitly allow `resume_subagent`; allowing `run_subagent` does not add it automatically.
+- `run_subagent` is the master capability. If it is not active, `resume_subagent` is removed even when listed.
+- Reaching `maxDepth` removes both tools and their callable-agent guidance.
+- Setting `enabled` to `false` prevents both tools from being registered.
 
 ## Session continuation
 
@@ -151,23 +171,25 @@ Subagent session: 1
 <child response>
 ```
 
-Use the returned number to send follow-up work to the same conversation:
+Use `resume_subagent` with the returned number to send follow-up work to the same conversation:
 
 ```json
 {
-  "agentId": "SubAgentCoderMiddle",
+  "resumeSession": 1,
   "taskName": "Repair review findings",
-  "prompt": "Apply the reviewer findings and rerun the affected checks.",
-  "resumeSession": 1
+  "prompt": "Apply the reviewer findings and rerun the affected checks."
 }
 ```
 
 Continuation follows these rules:
 
-- `agentId` and the working directory must match the original run.
+- The saved mapping supplies the original `agentId`; callers cannot replace it during continuation.
+- The working directory must match the original run.
 - The saved JSONL file must still exist and pass Pi session validation.
 - One main-agent runtime cannot start two child processes for the same session concurrently.
 - Missing, conflicting, foreign, or active session IDs fail without starting a new session.
 - A resumed run uses the current model, thinking level, tools, and instructions configured for the same agent.
 
-The numeric-to-UUID mapping is persisted as a Pi custom session entry. Custom entries do not participate in LLM context. Provider adapters build model-facing tool results from `content`, which contains the short numeric ID but not the mapping.
+The numeric alias, child UUID, child session directory, `agentId`, and working directory are persisted as a Pi custom session entry. The current main-session branch also retains versioned invocation-start and browser-selection entries. Terminal tool-result details rebuild completed widget state; a start without a later terminal result reopens as `aborted`. Unknown or malformed widget records reset only the affected reconstructed widget or selection state. They do not invalidate the child-session registry or modify child JSONL files.
+
+Custom entries do not participate in LLM context. Provider adapters build model-facing tool results from `content`, which contains the short numeric ID but not the UUID, directory, or registry mapping.

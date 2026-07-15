@@ -24,20 +24,27 @@ const plainTheme = {
 	bold: (text: string): string => text,
 };
 
-/** Creates one recursive run snapshot for browser ordering and refresh tests. */
+/** Creates one invocation snapshot with independent logical-session identity. */
 function createRun(
 	runId: string,
 	taskName: string,
 	children: readonly SubagentRunDetails[] = [],
+	isResume = false,
+	sessionId = 1,
+	childSessionId = `session-${runId}`,
 ): SubagentRunDetails {
 	return {
+		formatVersion: 1,
 		runId,
+		childSessionId,
 		agentId: "SubAgentSage",
 		taskName,
+		sessionId,
 		depth: 1,
 		runtime: undefined,
 		contextUsage: undefined,
 		contextProjectionStatus: undefined,
+		isResume,
 		status: "running",
 		elapsedMs: 1000,
 		exitCode: undefined,
@@ -65,9 +72,9 @@ describe("subagent widget browser", () => {
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 	});
 
-	test("pins the selected run and redraws the widget", async () => {
+	test("pins the selected session and redraws the widget", async () => {
 		// Purpose: a browser selection must become the persistent widget view immediately.
-		// Input and expected output: two Down inputs select run-2, Enter pins it, and setWidget receives a refreshed factory.
+		// Input and expected output: two Down inputs select session-run-2, Enter pins it, and setWidget receives a refreshed factory.
 		// Edge case: Automatic view occupies the first SelectList item.
 		// Dependencies: ctx.ui.custom supplies focus and completion while the controller owns pin state.
 		const state = createState([
@@ -75,6 +82,7 @@ describe("subagent widget browser", () => {
 			createRun("run-2", "Inspect second area"),
 		]);
 		const widgetUpdates: unknown[] = [];
+		const pinChanges: Array<string | undefined> = [];
 		let renderRequests = 0;
 		const context = {
 			mode: "tui",
@@ -112,22 +120,25 @@ describe("subagent widget browser", () => {
 				notify(): void {},
 			},
 		};
-		const controller = createSubagentBrowserController(state, 4);
+		const controller = createSubagentBrowserController(state, 4, (sessionId) =>
+			pinChanges.push(sessionId),
+		);
 
 		await controller.open(context as never);
 
-		expect(state.pinnedRunId).toBe("run-2");
+		expect(state.pinnedChildSessionId).toBe("session-run-2");
+		expect(pinChanges).toEqual(["session-run-2"]);
 		expect(widgetUpdates).toHaveLength(1);
 		expect(renderRequests).toBeGreaterThan(0);
 	});
 
 	test("refreshes and closes an active browser without changing the pin", async () => {
 		// Purpose: throttled progress and session replacement must control the focused browser lifecycle safely.
-		// Input and expected output: an appended run triggers a render request, then close resolves the dialog without changing run-1 pinning.
+		// Input and expected output: an appended session triggers a render request, then close resolves the dialog without changing session-run-1 pinning.
 		// Edge case: the custom dialog remains pending until the controller closes it.
 		// Dependencies: the controller retains only the active component and its done callback.
 		const state = createState([createRun("run-1", "Inspect first area")]);
-		state.pinnedRunId = "run-1";
+		state.pinnedChildSessionId = "session-run-1";
 		let focusedComponent: { handleInput(data: string): void } | undefined;
 		let renderRequests = 0;
 		const context = {
@@ -159,7 +170,7 @@ describe("subagent widget browser", () => {
 				notify(): void {},
 			},
 		};
-		const controller = createSubagentBrowserController(state, 4);
+		const controller = createSubagentBrowserController(state, 4, () => {});
 		const opened = controller.open(context as never);
 		await Promise.resolve();
 		expect(focusedComponent).toBeDefined();
@@ -174,52 +185,86 @@ describe("subagent widget browser", () => {
 		await opened;
 
 		expect(renderRequests).toBeGreaterThan(0);
-		expect(state.pinnedRunId).toBe("run-1");
+		expect(state.pinnedChildSessionId).toBe("session-run-1");
 	});
 
-	test("omits numbering for a unique agent type", () => {
-		// Purpose: browser identity must avoid redundant #1 when no same-type run needs disambiguation.
-		// Input and expected output: one Sage root uses its type, task, and Root level without a number.
+	test("shows the local number for a unique child session", () => {
+		// Purpose: browser identity must expose the same continuation label as the widget.
+		// Input and expected output: one Sage root uses #1, its task, and the Root level.
 		// Edge case: Automatic view remains the first browser item.
-		// Dependencies: browser labels use the same full-session identity policy as overview rows.
+		// Dependencies: browser labels reuse the persisted session identity from overview rows.
 		const state = createState([createRun("single", "Inspect unique task")]);
 
 		const items = createSubagentBrowserItems(state);
 
-		expect(items[1]?.label).toBe("Sage · Inspect unique task · Root");
+		expect(items[1]?.label).toBe("Sage #1 · Inspect unique task · Root");
 	});
 
-	test("labels every run with its root-relative level", () => {
+	test("keeps one browser item for a resumed logical session", () => {
+		// Purpose: the browser must represent logical child sessions rather than individual tool invocations.
+		// Input and expected output: a resumed snapshot replaces the initial label while retaining #2 and the latest task.
+		// Edge case: the resumed invocation has a new runId but the same childSessionId.
+		// Dependencies: browser labels flatten the childSessionId-keyed widget tree.
+		const childSessionId = "019f0000-0000-7000-8000-000000000001";
+		const state = createState([
+			createRun(
+				"initial",
+				"Collect validation evidence",
+				[],
+				false,
+				2,
+				childSessionId,
+			),
+			createRun(
+				"continued",
+				"Verify project quality gates",
+				[],
+				true,
+				2,
+				childSessionId,
+			),
+		]);
+
+		const items = createSubagentBrowserItems(state);
+
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({
+			value: childSessionId,
+			label: "Sage #2 · Verify project quality gates · Root",
+		});
+	});
+
+	test("labels every session with its root-relative level", () => {
 		// Purpose: every browser item must expose hierarchy depth without rebuilding an unbounded ancestor path.
 		// Input and expected output: root labels end with Root, while the nested label ends with Depth 1 and keeps direct parent details.
-		// Edge case: every run shares the same agent type and therefore depends on instance numbers and task names.
+		// Edge case: every session shares the same agent type and depends on local session numbers and task names.
 		// Dependencies: widget recording assigns presentation identity before browser flattening.
-		const nested = createRun("nested", "Review widget model");
+		const nested = createRun("nested", "Review widget model", [], false, 1);
 		const state = createState([
-			createRun("root-a", "Design widget model", [nested]),
-			createRun("root-b", "Test widget model"),
+			createRun("root-a", "Design widget model", [nested], false, 1),
+			createRun("root-b", "Test widget model", [], false, 2),
 		]);
 
 		const items = createSubagentBrowserItems(state);
 
 		expect(items.map((item) => item.value)).toEqual([
 			AUTOMATIC_SUBAGENT_VIEW,
-			"root-a",
-			"nested",
-			"root-b",
+			"session-root-a",
+			"session-nested",
+			"session-root-b",
 		]);
 		expect(items[1]?.label).toBe("Sage #1 · Design widget model · Root");
-		expect(items[2]?.label).toBe("Sage #2 · Review widget model · Depth 1");
+		expect(items[2]?.label).toBe("Sage #1 · Review widget model · Depth 1");
 		expect(items[2]?.description).toContain(
-			"Parent: SubAgentSage · Design widget model",
+			"Parent: SubAgentSage #1 · Design widget model",
 		);
-		expect(items[3]?.label).toBe("Sage #3 · Test widget model · Root");
+		expect(items[3]?.label).toBe("Sage #2 · Test widget model · Root");
 		expect(items[3]?.description).not.toContain("Parent:");
 	});
 
-	test("reaches every run through repeated Down navigation", () => {
-		// Purpose: the bounded SelectList must make every recorded run reachable without PageDown support.
-		// Input and expected output: twelve Down inputs from Automatic view select the twelfth run, then Enter returns its runId.
+	test("reaches every session through repeated Down navigation", () => {
+		// Purpose: the bounded SelectList must make every recorded session reachable without PageDown support.
+		// Input and expected output: twelve Down inputs from Automatic view select the twelfth session, then Enter returns its childSessionId.
 		// Edge case: the target is below the visible SelectList window.
 		// Dependencies: SelectList owns scrolling and standard key matching.
 		const state = createState(
@@ -231,7 +276,7 @@ describe("subagent widget browser", () => {
 		const browser = new SubagentBrowserList({
 			state,
 			theme: plainTheme,
-			onSelect: (runId) => selected.push(runId),
+			onSelect: (childSessionId) => selected.push(childSessionId),
 			onCancel(): void {},
 			requestRender(): void {},
 		});
@@ -241,13 +286,13 @@ describe("subagent widget browser", () => {
 		}
 		browser.handleInput(ENTER);
 
-		expect(selected).toEqual(["run-12"]);
+		expect(selected).toEqual(["session-run-12"]);
 	});
 
-	test("retains selection by runId when live data changes", () => {
+	test("retains selection by child session when live data changes", () => {
 		// Purpose: browser refresh must not move the user's selection when progress updates recreate SelectList.
-		// Input and expected output: run-2 is selected, run-3 is appended, refresh occurs, and Enter still returns run-2.
-		// Edge case: insertion changes the item fingerprint while preserving the selected run.
+		// Input and expected output: session-run-2 is selected, run-3 is appended, refresh occurs, and Enter still returns the same child session.
+		// Edge case: insertion changes the item fingerprint while preserving the selected child session.
 		// Dependencies: the component reads the current SelectList item before rebuilding it.
 		const state = createState([
 			createRun("run-1", "Inspect first area"),
@@ -258,7 +303,7 @@ describe("subagent widget browser", () => {
 		const browser = new SubagentBrowserList({
 			state,
 			theme: plainTheme,
-			onSelect: (runId) => selected.push(runId),
+			onSelect: (childSessionId) => selected.push(childSessionId),
 			onCancel(): void {},
 			requestRender: () => {
 				renderRequests += 1;
@@ -271,7 +316,7 @@ describe("subagent widget browser", () => {
 		browser.refresh();
 		browser.handleInput(ENTER);
 
-		expect(selected).toEqual(["run-2"]);
+		expect(selected).toEqual(["session-run-2"]);
 		expect(renderRequests).toBeGreaterThan(0);
 	});
 });
