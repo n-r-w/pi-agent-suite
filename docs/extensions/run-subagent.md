@@ -109,7 +109,7 @@ Rows are clipped by terminal display width after grapheme-aware plain-text selec
 
 ## Historical tool rendering
 
-Collapsed calls show `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. The `Name:` and `Task:` labels are bold; their values use the theme's `muted` color. After a new session is allocated, the `run_subagent` header adds `#N`. A `resume_subagent` call immediately shows the persisted agent and requested `#N`; an unknown session shows only `#N` until execution reports the session error. Runtime resolution adds the model and thinking level, while the final result adds context usage and elapsed time. Expanding an active call shows the complete task prompt. Expanding a completed call shows only the final answer, failure, or abort result; it does not show the intermediate event timeline or a separate stderr section.
+Collapsed calls show `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. The `Name:` and `Task:` labels are bold; their values use the theme's `muted` color. After a new session is allocated, the `run_subagent` header adds `#N`. A `resume_subagent` call immediately shows the persisted agent and requested `#N`; an unknown session shows only `#N` until execution reports the session error. Runtime resolution adds the model and thinking level, while the final result adds context usage and elapsed time. Expanded calls retain the header and `Name`, omit the `Task` preview, and show the complete prompt once under `Prompt`. Completed calls also show the final answer, failure, or abort result. Expanded calls do not show the intermediate event timeline or a separate stderr section.
 
 ## Child session logs
 

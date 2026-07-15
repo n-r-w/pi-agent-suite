@@ -298,26 +298,37 @@ describe("run-subagent rendering", () => {
 		}
 	});
 
-	test("shows all wrapped task rows when the tool call is expanded", () => {
+	test("shows the prompt preview only when the tool call is collapsed", () => {
+		// Purpose: expansion must replace the compact task preview with the formatted prompt instead of duplicating it.
+		// Input and expected output: the collapsed call contains Task and the prompt, while the combined expanded view contains the prompt once in the result.
+		// Edge case: the expanded call must retain its tool and Name rows without retaining any task preview text.
+		// Dependencies: Pi renders the call and result components together with the same expansion state.
+		const prompt = "Design a navigable widget.";
 		const args = {
 			agentId: "SubAgentSage",
-			taskName: "Inspect expanded preview",
-			prompt: "0123456789 ".repeat(40),
+			taskName: "Design widget navigation",
+			prompt,
 		};
-		const collapsedLines = renderRunSubagentCall(
+		const collapsedCall = renderRunSubagentCall(
 			args,
 			plainTheme as never,
 			{},
 		).render(WIDTH);
-		const expandedLines = renderRunSubagentCall(
+		const expandedCall = renderRunSubagentCall(
 			args,
 			plainTheme as never,
 			{ expanded: true } as never,
 		).render(WIDTH);
+		const expandedView = [
+			...expandedCall,
+			...renderResult("succeeded", true),
+		].join("\n");
 
-		expect(expandedLines.length).toBeGreaterThan(collapsedLines.length);
-		expect(expandedLines.join("\n")).not.toContain("to expand");
-		for (const line of expandedLines) {
+		expect(collapsedCall.join("\n")).toContain(`Task: ${prompt}`);
+		expect(expandedCall.join("\n")).not.toContain("Task:");
+		expect(expandedCall.join("\n")).not.toContain(prompt);
+		expect(expandedView.split(prompt)).toHaveLength(2);
+		for (const line of expandedCall) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);
 		}
 	});

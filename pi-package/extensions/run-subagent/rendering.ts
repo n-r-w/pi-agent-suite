@@ -400,15 +400,8 @@ interface RunSubagentCallHeaderOptions {
 class RunSubagentCallHeader implements Component {
 	public constructor(private readonly options: RunSubagentCallHeaderOptions) {}
 
-	/** Renders the compact runtime header and wraps the task text below it. */
+	/** Renders the common header and adds a bounded task preview only when collapsed. */
 	public render(width: number): string[] {
-		const taskLines = renderLabeledWrappedText({
-			label: "Task:",
-			text: this.options.taskPreview,
-			width,
-			labelStyle: (value) => this.options.theme.bold(value),
-			textStyle: (value) => this.options.theme.fg("muted", value),
-		});
 		const headerLine = renderFixedLine(
 			this.options.headerLine,
 			width,
@@ -427,9 +420,16 @@ class RunSubagentCallHeader implements Component {
 			this.options.theme,
 		);
 		if (this.options.expanded) {
-			return [headerLine, nameLine, ...taskLines];
+			return [headerLine, nameLine];
 		}
 
+		const taskLines = renderLabeledWrappedText({
+			label: "Task:",
+			text: this.options.taskPreview,
+			width,
+			labelStyle: (value) => this.options.theme.bold(value),
+			textStyle: (value) => this.options.theme.fg("muted", value),
+		});
 		const previewLines = taskLines.slice(0, RUN_SUBAGENT_TASK_PREVIEW_LINES);
 		const hiddenLineCount = taskLines.length - previewLines.length;
 		if (hiddenLineCount <= 0) {
