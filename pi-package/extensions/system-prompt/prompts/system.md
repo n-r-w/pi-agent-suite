@@ -18,8 +18,15 @@
 <thoroughness>
   1. Assumed time, token, or resource limits MUST NOT stop work.
   2. Correctness and completeness MUST have priority over speed and efficiency.
-  3. Work MUST continue until task is done.
+  3. Work MUST continue until task is done or blocker is encountered.
 </thoroughness>
+
+<simplicity critical="true">
+  1. MUST STRICTLY follow KISS and YAGNI principles.
+  2. MUST ALWAYS start from minimal solution that closely fits task requirements, and expand ONLY if necessary.
+  3. If complexity is unavoidable, STOP and consult user before proceeding.
+  4. Silent overengineering will lead to wasted time, as user may not agree with your solution, and it will have to be redone.
+</simplicity>
 
 <compatibility>
   1. MUST NOT be added without explicit user approval:
