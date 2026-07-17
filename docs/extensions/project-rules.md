@@ -25,7 +25,7 @@ $PI_AGENT_SUITE_DIR/project-rules/config.json
 ```json
 {
   "enabled": true,
-  "rulesDir": ".pi"
+  "rulesDir": ".pi/rules"
 }
 ```
 
@@ -40,7 +40,7 @@ $PI_AGENT_SUITE_DIR/project-rules/config.json
 - `rulesDir`
   - Required: no.
   - Type: string.
-  - Default: `.pi`.
+  - Default: `.pi/rules`.
   - Meaning: path to the directory that contains project rule files.
   - The path is resolved relative to pi's current working directory.
   - The value must be a non-empty relative path.
@@ -50,7 +50,11 @@ Only `enabled` and `rulesDir` are allowed in the config file.
 
 ## Rule files
 
+Place default project rules under `<cwd>/.pi/rules`.
+
 - The extension reads non-empty `*.md` files under `rulesDir` recursively.
 - Files that are empty or contain only whitespace are ignored.
 - A missing `rulesDir` directory adds no project rules.
+- Paths inside `~/.pi`, the active pi agent directory, or the active agent-suite directory are never loaded.
+- The global-storage exclusion also applies to configured `rulesDir` values and symbolic-link targets.
 - Invalid configuration or rule loading failure leaves the system prompt unchanged and reports a warning.

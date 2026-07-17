@@ -34,6 +34,12 @@ If the file is missing, the extension is enabled with default settings.
 
 Configured description files must be readable and non-empty after trimming whitespace. The config object accepts only `enabled`, `maxDepth`, `widgetLineBudget`, `runDescriptionPromptFile`, and `resumeDescriptionPromptFile`.
 
+## Agent definitions
+
+Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended by `<cwd>/.pi/agents`.
+
+`run-subagent` rebuilds the registry for the current working directory when it creates callable-agent guidance and when it validates a tool call. A project override therefore supplies the child prompt, model, thinking level, tools, and callable subagents. Resumed sessions keep their original agent ID but use its current definition for the same working directory.
+
 ## Live progress
 
 Interactive TUI mode sends one initial partial update to populate the historical call with the resolved model and thinking level. Later live progress appears only in the widget and focused browser. RPC and other non-TUI modes keep every intermediate tool update for nested progress propagation.

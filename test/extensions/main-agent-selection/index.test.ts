@@ -271,6 +271,14 @@ async function writeSuiteAgent(
 	);
 }
 
+/** Writes one agent Markdown file into a project's local registry. */
+async function writeProjectAgent(
+	projectDir: string,
+	agent: AgentFixture,
+): Promise<void> {
+	await writeAgentToDirectory(join(projectDir, ".pi", "agents"), agent);
+}
+
 /** Writes one agent Markdown file into a caller-selected directory. */
 async function writeAgentToDirectory(
 	agentsDir: string,
@@ -855,6 +863,45 @@ describe("main-agent-selection", () => {
 			);
 			expect(result).toEqual({
 				systemPrompt: "Base prompt\n\nSuite prompt",
+			});
+		});
+	});
+
+	test("uses the current project's main-agent override", async () => {
+		// Purpose: main-agent selection must resolve project-local definitions against the command cwd.
+		// Input and expected output: local builder replaces global Builder case-insensitively and contributes the local prompt.
+		// Edge case: the stored local ID casing differs from the explicit command argument and global file.
+		// Dependencies: this test uses isolated suite and project agent files plus runtime composition fakes.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const projectDir = join(agentDir, "project");
+			await mkdir(projectDir);
+			await writeSuiteAgent(agentDir, {
+				id: "Builder",
+				description: "Global builder",
+				body: "Global builder prompt",
+			});
+			await writeProjectAgent(projectDir, {
+				id: "builder",
+				description: "Project builder",
+				body: "Project builder prompt",
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext(projectDir);
+			mainAgentSelection(pi);
+
+			await getCommand(pi, "agent").handler("BUILDER", ctx);
+			const result = await getBeforeAgentStartHandler(pi)(
+				{ type: "before_agent_start", systemPrompt: "Base prompt" },
+				ctx,
+			);
+
+			expect(ctx.notifications).toEqual([]);
+			expect(await readOnlySuiteStateFile(agentDir)).toEqual({
+				cwd: projectDir,
+				activeAgentId: "builder",
+			});
+			expect(result).toEqual({
+				systemPrompt: "Base prompt\n\nProject builder prompt",
 			});
 		});
 	});
@@ -2101,7 +2148,7 @@ describe("main-agent-selection", () => {
 		// Edge case: the raw cwd would be too long for an encodeURIComponent-based filename.
 		// Dependencies: this test writes only isolated selected-agent state files and temp agent definitions.
 		await withIsolatedAgentDir(async (agentDir) => {
-			const longProjectDir = join(tmpdir(), "p".repeat(260));
+			const longProjectDir = join(tmpdir(), "p".repeat(140), "q".repeat(140));
 			await writeAgent(agentDir, {
 				id: "builder",
 				description: "Builds code",

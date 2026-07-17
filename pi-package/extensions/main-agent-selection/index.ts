@@ -15,9 +15,9 @@ import {
 	SelectList,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { agentIdMatches } from "../../shared/agent-id";
 import {
 	type AgentDefinition,
-	agentIdMatches,
 	loadAgentDefinitions,
 } from "../../shared/agent-registry";
 import {
@@ -464,7 +464,7 @@ async function restoreSessionReplacementMainAgent(
 	}
 
 	const activeAgentId = handoff.activeAgentId;
-	const agents = await loadSelectableAgents();
+	const agents = await loadSelectableAgents(mainContext.cwd);
 	const agent = agents.find((candidate) =>
 		agentIdMatches(candidate.id, activeAgentId),
 	);
@@ -579,7 +579,7 @@ async function restoreSelectedMainAgent(
 ): Promise<void> {
 	const composition = getAgentRuntimeComposition(pi);
 	const normalizedCwd = normalizeCwd(mainContext.cwd);
-	const agents = await loadSelectableAgents();
+	const agents = await loadSelectableAgents(mainContext.cwd);
 	const state = await readSelectedAgentState(normalizedCwd);
 	writeRuntimeDiagnostic("main-agent-selection.restore.state-read", {
 		cwd: normalizedCwd,
@@ -627,7 +627,7 @@ async function selectMainAgent(
 	ctx: MainAgentContext,
 	explicitAgentId: string | undefined,
 ): Promise<void> {
-	const agents = await loadSelectableAgents();
+	const agents = await loadSelectableAgents(ctx.cwd);
 	const selectedAgentId =
 		explicitAgentId ?? (await promptForAgent(pi, ctx, agents));
 	if (selectedAgentId === undefined) {
@@ -662,9 +662,9 @@ async function selectMainAgent(
 	});
 }
 
-/** Loads agents that can be used as top-level main agents. */
-async function loadSelectableAgents(): Promise<AgentDefinition[]> {
-	const agents = await loadAgentDefinitions();
+/** Loads agents that can be used as top-level main agents for the active project registry. */
+async function loadSelectableAgents(cwd: string): Promise<AgentDefinition[]> {
+	const agents = await loadAgentDefinitions(cwd);
 	return agents.filter(
 		(agent) => agent.type === "main" || agent.type === "both",
 	);

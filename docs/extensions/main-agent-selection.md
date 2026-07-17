@@ -26,7 +26,17 @@ Full example:
 
 ## Agent definitions
 
-Agent files are Markdown files in `~/.pi/agent/agent-suite/agent-selection/agents/*.md`.
+Global agent files are Markdown files in `~/.pi/agent/agent-suite/agent-selection/agents/*.md`. A project can add or replace agents with `<cwd>/.pi/agents/*.md`.
+
+The registry follows these rules:
+
+- Both directories use the same file format and support `main`, `subagent`, and `both`.
+- Agent IDs and project overrides are matched case-insensitively.
+- A project file replaces the matching global file before its contents are parsed.
+- An invalid project file makes that agent unavailable instead of exposing the global definition.
+- Multiple project files with the same case-insensitive ID make only that ID unavailable.
+- Agent directories are flat. Nested files are not loaded.
+- A missing project agent directory leaves the global registry unchanged.
 
 Full example:
 

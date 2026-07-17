@@ -21,9 +21,9 @@ afterEach(async () => {
 });
 
 describe("project-rules config", () => {
-	test("uses enabled true and .pi rules directory when config is missing", async () => {
-		// Purpose: project rules must work without setup by reading the default repository rules directory.
-		// Input and expected output: no config file returns enabled true and rulesDir .pi.
+	test("uses enabled true and .pi/rules when config is missing", async () => {
+		// Purpose: project rules must work without setup while staying isolated from other .pi resources.
+		// Input and expected output: no config file returns enabled true and rulesDir .pi/rules.
 		// Edge case: the suite config directory is absent.
 		// Dependencies: this test uses only temporary suite storage.
 		await withIsolatedSuiteDir(async () => {
@@ -31,7 +31,7 @@ describe("project-rules config", () => {
 
 			expect(result).toEqual({
 				kind: "valid",
-				config: { enabled: true, rulesDir: ".pi" },
+				config: { enabled: true, rulesDir: ".pi/rules" },
 			});
 		});
 	});
@@ -43,11 +43,11 @@ describe("project-rules config", () => {
 		// Dependencies: this test exercises the pure parser only.
 		expect(parseProjectRulesConfig({})).toEqual({
 			kind: "valid",
-			config: { enabled: true, rulesDir: ".pi" },
+			config: { enabled: true, rulesDir: ".pi/rules" },
 		});
 		expect(parseProjectRulesConfig({ enabled: false })).toEqual({
 			kind: "valid",
-			config: { enabled: false, rulesDir: ".pi" },
+			config: { enabled: false, rulesDir: ".pi/rules" },
 		});
 		expect(parseProjectRulesConfig({ rulesDir: "rules" })).toEqual({
 			kind: "valid",

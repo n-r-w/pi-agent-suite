@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { type AgentFileSource, selectAgentFiles } from "./agent-file-overlay";
 import {
 	getSuiteExtensionDir,
 	isFileNotFoundError,
@@ -9,6 +10,7 @@ import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
 
 const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
 const AGENTS_DIR = "agents";
+const PROJECT_RESOURCES_DIR = ".pi";
 const AGENT_FILE_EXTENSION = ".md";
 const TOP_LEVEL_KEYS = [
 	"description",
@@ -21,6 +23,18 @@ const MODEL_KEYS = ["id", "thinking"] as const;
 const AGENT_TYPES = ["main", "subagent", "both"] as const;
 
 type AgentType = (typeof AGENT_TYPES)[number];
+type AgentSource = "suite" | "legacy" | "project";
+
+interface AgentDirectory {
+	readonly path: string;
+	readonly entries: readonly string[];
+	readonly source: AgentSource;
+}
+
+interface AgentFile {
+	readonly directory: AgentDirectory;
+	readonly entry: string;
+}
 
 /** Validated agent definition used by agent-related extensions. */
 export interface AgentDefinition {
@@ -36,43 +50,24 @@ export interface AgentDefinition {
 	readonly agents?: readonly string[];
 }
 
-/** Normalizes an agent ID for case-insensitive matching while preserving the stored ID for runtime state. */
-export function toAgentIdMatchKey(agentId: string): string {
-	return agentId.toLowerCase();
-}
-
-/** Compares agent IDs without requiring callers to know the stored ID casing. */
-export function agentIdMatches(left: string, right: string): boolean {
-	return toAgentIdMatchKey(left) === toAgentIdMatchKey(right);
-}
-
-/** Loads valid agent definitions from the isolated pi agent directory. */
-export async function loadAgentDefinitions(): Promise<AgentDefinition[]> {
-	const agentsDir = await resolveAgentsDir();
-	if (agentsDir === undefined) {
-		return [];
-	}
-
-	const agentEntries = [...agentsDir.entries]
-		.sort()
-		.filter((entry) => entry.endsWith(AGENT_FILE_EXTENSION));
-	const agents = await Promise.all(
-		agentEntries.map((entry) =>
-			readAgentDefinition(agentsDir.path, entry, agentsDir.source),
-		),
+/** Loads the global registry overlaid by valid project-owned agent file identities for one working directory. */
+export async function loadAgentDefinitions(
+	cwd: string,
+): Promise<AgentDefinition[]> {
+	const [globalDirectory, projectDirectory] = await Promise.all([
+		resolveGlobalAgentsDir(),
+		resolveProjectAgentsDir(cwd),
+	]);
+	const agentFiles = resolveSelectedAgentFiles(
+		globalDirectory,
+		projectDirectory,
 	);
+	const agents = await Promise.all(agentFiles.map(readAgentDefinition));
 	return agents.filter((agent) => agent !== undefined);
 }
 
-/** Resolves suite-owned agent definitions and falls back to the legacy directory only when the suite directory is absent. */
-async function resolveAgentsDir(): Promise<
-	| {
-			readonly path: string;
-			readonly entries: readonly string[];
-			readonly source: "suite" | "legacy";
-	  }
-	| undefined
-> {
+/** Resolves suite-owned agent definitions and uses the legacy directory only when suite storage is absent. */
+async function resolveGlobalAgentsDir(): Promise<AgentDirectory | undefined> {
 	const suiteAgentsDir = join(
 		getSuiteExtensionDir(AGENT_SELECTION_EXTENSION_DIR),
 		AGENTS_DIR,
@@ -103,26 +98,79 @@ async function resolveAgentsDir(): Promise<
 	}
 }
 
-/** Reads and parses one agent definition while isolating malformed files. */
+/** Resolves the optional project registry without treating an unreadable path as an empty registry. */
+async function resolveProjectAgentsDir(
+	cwd: string,
+): Promise<AgentDirectory | undefined> {
+	const projectAgentsDir = join(cwd, PROJECT_RESOURCES_DIR, AGENTS_DIR);
+	try {
+		return {
+			path: projectAgentsDir,
+			entries: await readdir(projectAgentsDir),
+			source: "project",
+		};
+	} catch (error) {
+		if (isFileNotFoundError(error)) {
+			return undefined;
+		}
+		throw new Error(
+			`failed to read project agents directory: ${formatError(error)}`,
+		);
+	}
+}
+
+/** Binds pure overlay selections back to their filesystem directories. */
+function resolveSelectedAgentFiles(
+	globalDirectory: AgentDirectory | undefined,
+	projectDirectory: AgentDirectory | undefined,
+): AgentFile[] {
+	const selectedFiles = selectAgentFiles(
+		globalDirectory?.entries,
+		projectDirectory?.entries,
+	);
+	return selectedFiles.map((selectedFile) => ({
+		directory: resolveSelectedAgentDirectory(
+			selectedFile.source,
+			globalDirectory,
+			projectDirectory,
+		),
+		entry: selectedFile.entry,
+	}));
+}
+
+/** Resolves the directory guaranteed by the entries supplied to the pure overlay selector. */
+function resolveSelectedAgentDirectory(
+	source: AgentFileSource,
+	globalDirectory: AgentDirectory | undefined,
+	projectDirectory: AgentDirectory | undefined,
+): AgentDirectory {
+	if (source === "global" && globalDirectory !== undefined) {
+		return globalDirectory;
+	}
+	if (source === "project" && projectDirectory !== undefined) {
+		return projectDirectory;
+	}
+	throw new Error(`selected ${source} agent file has no source directory`);
+}
+
+/** Reads and parses one selected agent definition while isolating malformed project and legacy files. */
 async function readAgentDefinition(
-	agentsDir: string,
-	entry: string,
-	source: "suite" | "legacy",
+	file: AgentFile,
 ): Promise<AgentDefinition | undefined> {
 	let content: string;
 	try {
-		content = await readFile(join(agentsDir, entry), "utf8");
+		content = await readFile(join(file.directory.path, file.entry), "utf8");
 	} catch (error) {
-		if (source === "suite") {
+		if (file.directory.source === "suite") {
 			throw new Error(
-				`failed to read suite agent definition ${entry}: ${formatError(error)}`,
+				`failed to read suite agent definition ${file.entry}: ${formatError(error)}`,
 			);
 		}
 		return undefined;
 	}
 
 	try {
-		return parseAgentDefinition(entry, content);
+		return parseAgentDefinition(file.entry, content);
 	} catch {
 		return undefined;
 	}

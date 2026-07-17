@@ -317,17 +317,20 @@ async function emitContextFiles(
 		if (typeof handler !== "function") {
 			continue;
 		}
-		await handler({
-			systemPrompt: "Base",
-			systemPromptOptions: {
-				contextFiles: [
-					{
-						path: "/tmp/project/AGENTS.md",
-						content: "Project rule: use the project validation scripts.",
-					},
-				],
+		await handler(
+			{
+				systemPrompt: "Base",
+				systemPromptOptions: {
+					contextFiles: [
+						{
+							path: "/tmp/project/AGENTS.md",
+							content: "Project rule: use the project validation scripts.",
+						},
+					],
+				},
 			},
-		});
+			{ cwd: "/tmp/project" },
+		);
 	}
 }
 

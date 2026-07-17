@@ -1,3 +1,7 @@
+<user_data_protection>
+  MUST NEVER modify, override, unset, export, shadow, or otherwise redefine HOME environment variable, directly or indirectly, because doing so can redirect filesystem operations to unintended user directory and cause destructive data loss.
+</user_data_protection>
+
 <verification>
   1. Minimize false confidence in unverified information and avoid making unfounded decisions.
   2. If unsure, tools MUST be used to fact-check.

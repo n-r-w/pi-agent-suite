@@ -64,7 +64,7 @@ Recommended MCP servers:
 | Extension | Default behavior | What it does | Quick settings | Details |
 | --- | --- | --- | --- | --- |
 | `system-prompt` | Enabled | Replaces pi's base system prompt with a Markdown template and runtime variables. | `system-prompt/config.json`: `enabled`, `templateFile`. | [docs/extensions/system-prompt.md](docs/extensions/system-prompt.md) |
-| `project-rules` | Enabled | Appends recursive project Markdown rules from `.pi` to the final system prompt. | `project-rules/config.json`: `enabled`, `rulesDir`. | [docs/extensions/project-rules.md](docs/extensions/project-rules.md) |
+| `project-rules` | Enabled | Appends recursive project Markdown rules from `.pi/rules`; global `~/.pi` storage is excluded. | `project-rules/config.json`: `enabled`, `rulesDir`. | [docs/extensions/project-rules.md](docs/extensions/project-rules.md) |
 | `mcp-wrapper` | No MCP tools until configured | Registers tools from configured MCP servers, caches tool metadata, and adds `/mcp-refresh`. | `mcp-wrapper/config.json`: `settings.enabled`, `settings.timeouts`, `mcpServers`. | [docs/extensions/mcp-wrapper.md](docs/extensions/mcp-wrapper.md) |
 | `enable-tools` | Enabled | Enables configured built-in tools such as `grep`, `find`, and `ls`. | `enable-tools/config.json`: `enabled`, `include`, `exclude`. | [docs/extensions/enable-tools.md](docs/extensions/enable-tools.md) |
 | `footer` | Enabled | Shows project, quota, cost, selected agent, model, projection, MCP errors, and context usage. | `footer/config.json`: `enabled`, `showProvider`, `showModel`, `showThinkingLevel`, `showApiCost`. | [docs/extensions/footer.md](docs/extensions/footer.md) |
@@ -86,11 +86,19 @@ Recommended MCP servers:
 
 Agent files define reusable work modes and subagents for `main-agent-selection` and `run-subagent`.
 
-Default location:
+Global location:
 
 ```text
 ~/.pi/agent/agent-suite/agent-selection/agents/
 ```
+
+Project extension and overrides:
+
+```text
+<project>/.pi/agents/
+```
+
+Project agent IDs replace matching global IDs case-insensitively. Invalid or ambiguous project definitions make only the matching ID unavailable.
 
 Basic rules:
 
@@ -126,6 +134,16 @@ You are a code review agent. Check correctness, risks, and missing validation.
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ## Changelog
+
+### v0.18.0 - 2026-07-17
+
+- Added project-local agent definitions under `<project>/.pi/agents` for `main-agent-selection` and `run-subagent`; project definitions extend the global registry and replace matching IDs case-insensitively.
+- Rebuilt callable-agent guidance and tool-call validation for the active working directory, so project overrides supply child prompts, models, thinking levels, tools, and callable subagents.
+- Invalid or case-insensitively ambiguous project agent definitions now suppress only the matching global agent ID; unrelated agents remain available.
+- Breaking change: changed the default `project-rules` directory from `.pi` to `.pi/rules`.
+- Prevented `project-rules` from loading files in global Pi storage, including configured paths and symbolic-link targets.
+- Refined bundled prompts to prohibit changing `HOME` and to prevent parallel code changes from interfering in the same project.
+- Updated Pi dependencies from `0.80.7` to `0.80.10`.
 
 ### v0.17.0 - 2026-07-15
 

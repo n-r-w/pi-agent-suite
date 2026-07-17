@@ -6,6 +6,11 @@ import type {
 	ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { readProjectRulesConfig } from "./config";
+import {
+	createProjectRulesPathPolicy,
+	isProjectRulesPathForbidden,
+	type ProjectRulesPathPolicy,
+} from "./path-policy";
 
 const ISSUE_PREFIX = "[project-rules]";
 const MARKDOWN_EXTENSION = ".md";
@@ -44,9 +49,11 @@ export default function projectRules(pi: ExtensionAPI): void {
 		}
 
 		const typedEvent = event as BeforeAgentStartEventLike;
+		const pathPolicy = await createProjectRulesPathPolicy();
 		const rulesResult = await readProjectRules(
 			typedEvent.systemPromptOptions.cwd,
 			configResult.config.rulesDir,
+			pathPolicy,
 		);
 		if (rulesResult.kind === "invalid") {
 			reportIssue(ctx as SessionContextLike, rulesResult.issue);
@@ -66,8 +73,13 @@ export default function projectRules(pi: ExtensionAPI): void {
 async function readProjectRules(
 	cwd: string,
 	rulesDir: string,
+	pathPolicy: ProjectRulesPathPolicy,
 ): Promise<ProjectRulesReadResult> {
 	const rootDir = join(cwd, rulesDir);
+	if (isProjectRulesPathForbidden(rootDir, pathPolicy)) {
+		return { kind: "valid", rules: [] };
+	}
+
 	const visitedRealDirs = new Set<string>();
 	const rules: ProjectRule[] = [];
 
@@ -84,6 +96,7 @@ async function readProjectRules(
 		visibleDir: toPromptPath(rulesDir),
 		visitedRealDirs,
 		rules,
+		pathPolicy,
 	});
 	if (walkResult.kind === "invalid") {
 		return walkResult;
@@ -157,6 +170,7 @@ async function walkRulesDirectory(options: {
 	readonly visibleDir: string;
 	readonly visitedRealDirs: Set<string>;
 	readonly rules: ProjectRule[];
+	readonly pathPolicy: ProjectRulesPathPolicy;
 }): Promise<
 	| { readonly kind: "valid" }
 	| { readonly kind: "invalid"; readonly issue: string }
@@ -169,6 +183,9 @@ async function walkRulesDirectory(options: {
 			kind: "invalid",
 			issue: `failed to resolve directory: ${formatError(error)}`,
 		};
+	}
+	if (isProjectRulesPathForbidden(realDir, options.pathPolicy)) {
+		return { kind: "valid" };
 	}
 	if (options.visitedRealDirs.has(realDir)) {
 		return { kind: "valid" };
@@ -214,6 +231,7 @@ async function processDirectoryEntry(
 	options: {
 		readonly visitedRealDirs: Set<string>;
 		readonly rules: ProjectRule[];
+		readonly pathPolicy: ProjectRulesPathPolicy;
 	},
 ): Promise<
 	| { readonly kind: "valid" }
@@ -235,6 +253,7 @@ async function processDirectoryEntry(
 			visibleDir: visiblePath,
 			visitedRealDirs: options.visitedRealDirs,
 			rules: options.rules,
+			pathPolicy: options.pathPolicy,
 		});
 	}
 
@@ -242,9 +261,22 @@ async function processDirectoryEntry(
 		return { kind: "valid" };
 	}
 
+	let realFile: string;
+	try {
+		realFile = await realpath(actualPath);
+	} catch (error) {
+		return {
+			kind: "invalid",
+			issue: `failed to resolve rule file: ${formatError(error)}`,
+		};
+	}
+	if (isProjectRulesPathForbidden(realFile, options.pathPolicy)) {
+		return { kind: "valid" };
+	}
+
 	let content: string;
 	try {
-		content = await readFile(actualPath, "utf8");
+		content = await readFile(realFile, "utf8");
 	} catch (error) {
 		return {
 			kind: "invalid",

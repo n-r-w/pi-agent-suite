@@ -160,6 +160,16 @@ interface CommandContextFake {
 	};
 }
 
+interface AgentFixture {
+	readonly id: string;
+	readonly type: "main" | "subagent" | "both";
+	readonly description: string;
+	readonly body: string;
+	readonly model?: { readonly id?: string; readonly thinking?: string };
+	readonly tools?: readonly string[];
+	readonly agents?: readonly string[];
+}
+
 interface ContextObservations {
 	readonly notifications: Array<{
 		readonly message: string;
@@ -494,20 +504,28 @@ function persistedSubagentPin(
 	};
 }
 
-/** Writes one Markdown agent definition into the isolated agent registry. */
+/** Writes one Markdown agent definition into the isolated global registry. */
 async function writeAgent(
 	agentDir: string,
-	agent: {
-		readonly id: string;
-		readonly type: "main" | "subagent" | "both";
-		readonly description: string;
-		readonly body: string;
-		readonly model?: { readonly id?: string; readonly thinking?: string };
-		readonly tools?: readonly string[];
-		readonly agents?: readonly string[];
-	},
+	agent: AgentFixture,
 ): Promise<void> {
-	await mkdir(join(agentDir, "agents"), { recursive: true });
+	await writeAgentToDirectory(join(agentDir, "agents"), agent);
+}
+
+/** Writes one Markdown agent definition into a project's local registry. */
+async function writeProjectAgent(
+	projectDir: string,
+	agent: AgentFixture,
+): Promise<void> {
+	await writeAgentToDirectory(join(projectDir, ".pi", "agents"), agent);
+}
+
+/** Writes one Markdown agent definition into the selected registry directory. */
+async function writeAgentToDirectory(
+	agentsDir: string,
+	agent: AgentFixture,
+): Promise<void> {
+	await mkdir(agentsDir, { recursive: true });
 	const lines = [
 		"---",
 		`description: ${JSON.stringify(agent.description)}`,
@@ -543,7 +561,7 @@ async function writeAgent(
 		}
 	}
 	lines.push("---", agent.body);
-	await writeFile(join(agentDir, "agents", `${agent.id}.md`), lines.join("\n"));
+	await writeFile(join(agentsDir, `${agent.id}.md`), lines.join("\n"));
 }
 
 /** Writes run-subagent configuration into the isolated config directory. */
@@ -1241,6 +1259,77 @@ describe("run-subagent", () => {
 			expect(renderedResult?.every((line) => visibleWidth(line) <= 24)).toBe(
 				true,
 			);
+		});
+	});
+
+	test("uses the current project's agent override for prompt guidance and child execution", async () => {
+		// Purpose: prompt guidance and run_subagent execution must resolve one project-local agent definition for the active cwd.
+		// Input and expected output: local helper replaces global Helper in the prompt and supplies the child model, tools, and stored ID.
+		// Edge case: the override and requested ID use different casing.
+		// Dependencies: this test uses isolated global and project agent files plus fake child RPC output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			const projectDir = join(agentDir, "project");
+			await mkdir(projectDir);
+			await writeAgent(agentDir, {
+				id: "Helper",
+				type: "subagent",
+				description: "Global helper",
+				body: "Global helper prompt",
+				model: { id: "openai/global", thinking: "low" },
+				tools: ["read"],
+			});
+			await writeProjectAgent(projectDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Project helper",
+				body: "Project helper prompt",
+				model: { id: "openai/project", thinking: "high" },
+				tools: ["bash"],
+			});
+			const spawn = createSpawnFake(
+				rpcOutputLines({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+					},
+				}),
+			);
+			const pi = createExtensionApiFake([
+				"run_subagent",
+				"resume_subagent",
+				"read",
+				"bash",
+			]);
+			pi.setActiveTools(["run_subagent", "resume_subagent", "read", "bash"]);
+			const ctx = createContext(projectDir);
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const promptResult = await runBeforeAgentStartHandlers(
+				pi,
+				{ systemPrompt: "Base" },
+				ctx,
+			);
+			const result = await executeRunSubagent(pi, ctx, {
+				agentId: "HELPER",
+				prompt: "Do work",
+			});
+
+			expect(isPromptResult(promptResult)).toBe(true);
+			expect(
+				(promptResult as { readonly systemPrompt: string }).systemPrompt,
+			).toContain("Project helper");
+			expect(
+				(promptResult as { readonly systemPrompt: string }).systemPrompt,
+			).not.toContain("Global helper");
+			expect(spawn.calls[0]?.args).toContain("openai/project");
+			expect(spawn.calls[0]?.args).toContain("high");
+			expect(spawn.calls[0]?.args).toContain("bash");
+			expect(spawn.calls[0]?.args).not.toContain("read");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_AGENT_ID_ENV]).toBe("helper");
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: "Subagent session: 1\n\ndone" }],
+			});
 		});
 	});
 

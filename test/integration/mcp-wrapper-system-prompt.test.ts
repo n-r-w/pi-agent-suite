@@ -183,8 +183,11 @@ describe("mcp-wrapper and system-prompt integration", () => {
 				join(suiteDir, "system-prompt", "config.json"),
 				JSON.stringify({ templateFile }),
 			);
-			await mkdir(join(projectDir, ".pi"));
-			await writeFile(join(projectDir, ".pi", "rules.md"), "Project rule");
+			await mkdir(join(projectDir, ".pi", "rules"), { recursive: true });
+			await writeFile(
+				join(projectDir, ".pi", "rules", "project.md"),
+				"Project rule",
+			);
 
 			const pi = createExtensionApiFake();
 			const manager = {
@@ -237,7 +240,7 @@ describe("mcp-wrapper and system-prompt integration", () => {
 			).toBe(`Suite template for ${projectDir}
 
 <project_rules>
-  <project_rule path=".pi/rules.md">
+  <project_rule path=".pi/rules/project.md">
 Project rule
   </project_rule>
 </project_rules>

@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -28,6 +29,17 @@ function writeAgent(agentDir: string, fileName: string, content: string): void {
 		join(agentDir, "agent-suite", "agent-selection", "agents", fileName),
 		content,
 	);
+}
+
+/** Writes one markdown agent definition into a project's local agent directory. */
+function writeProjectAgent(
+	projectDir: string,
+	fileName: string,
+	content: string,
+): void {
+	const agentsDir = join(projectDir, ".pi", "agents");
+	mkdirSync(agentsDir, { recursive: true });
+	writeFileSync(join(agentsDir, fileName), content);
 }
 
 /** Returns the hash-based selected-agent state file name for one normalized working directory. */
@@ -140,9 +152,12 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 	// Input and expected output: selected TestAgent allows only SubAgentExtractor, so the final prompt lists only SubAgentExtractor.
 	// Edge case: pi loads package entries separately; disconnected shared state would expose SubAgentCoder and TestAgent too.
 	// Dependencies: this integration check uses the local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
-	const cwd = process.cwd();
+	const repositoryDir = process.cwd();
+	const projectDir = realpathSync(
+		mkdtempSync(join(tmpdir(), "pi-runtime-package-project-")),
+	);
 	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-package-debug-"));
-	const agentDir = createIsolatedAgentDir(cwd);
+	const agentDir = createIsolatedAgentDir(projectDir);
 	const poisonedSuiteDir = mkdtempSync(
 		join(tmpdir(), "pi-runtime-poison-suite-"),
 	);
@@ -168,13 +183,13 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 				"--no-extensions",
 				"-p",
 				"-e",
-				join(cwd, "pi-package"),
+				join(repositoryDir, "pi-package"),
 				"-e",
 				debugExtensionPath,
 				"debug prompt dump",
 			],
 			{
-				cwd,
+				cwd: projectDir,
 				encoding: "utf8",
 				env: childEnv,
 				timeout: 30_000,
@@ -196,7 +211,74 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 			process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
 		}
 		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(projectDir, { recursive: true, force: true });
 		rmSync(poisonedSuiteDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+	}
+});
+
+test("runtime child loading uses the project agent override", () => {
+	// Purpose: real child Pi loading must resolve the selected subagent from the project registry for its cwd.
+	// Input and expected output: project SubAgentExtractor replaces the global definition and contributes only the project prompt.
+	// Edge case: the child agent ID keeps the global casing while override matching remains case-insensitive.
+	// Dependencies: local pi CLI, isolated global and project agent files, and a debug extension that exits before model access.
+	const repositoryDir = process.cwd();
+	const projectDir = realpathSync(
+		mkdtempSync(join(tmpdir(), "pi-runtime-project-agents-")),
+	);
+	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-project-dump-"));
+	const agentDir = createIsolatedAgentDir(projectDir);
+	const promptDumpFile = join(scratchDir, "system-prompt.txt");
+	const debugExtensionPath = writePromptDumpExtension(scratchDir);
+	writeProjectAgent(
+		projectDir,
+		"subagentextractor.md",
+		[
+			"---",
+			"description: Project extractor",
+			"type: subagent",
+			"---",
+			"PROJECT_AGENT_BODY",
+		].join("\n"),
+	);
+	const childEnv: Record<string, string | undefined> = {
+		...process.env,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+		PI_PROMPT_DUMP_FILE: promptDumpFile,
+		[SUBAGENT_AGENT_ID_ENV]: "SubAgentExtractor",
+		[SUBAGENT_DEPTH_ENV]: "1",
+		[SUBAGENT_TOOLS_ENV]: "read",
+	};
+
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"-p",
+				"-e",
+				join(repositoryDir, "pi-package"),
+				"-e",
+				debugExtensionPath,
+				"debug project agent override",
+			],
+			{
+				cwd: projectDir,
+				encoding: "utf8",
+				env: childEnv,
+				timeout: 30_000,
+			},
+		);
+
+		expect(result.status).toBe(23);
+		const prompt = readFileSync(promptDumpFile, "utf8");
+		expect(prompt).toContain("PROJECT_AGENT_BODY");
+		expect(prompt).not.toContain("Extractor prompt");
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(projectDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });
 	}
 });
@@ -206,9 +288,12 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 	// Input and expected output: suite config points system-prompt to a temp Markdown template, and selected TestAgent still appears later.
 	// Edge case: the extension must be registered before the shared runtime composition handler is created by agent-related extensions.
 	// Dependencies: local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
-	const cwd = process.cwd();
+	const repositoryDir = process.cwd();
+	const projectDir = realpathSync(
+		mkdtempSync(join(tmpdir(), "pi-runtime-system-project-")),
+	);
 	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-system-prompt-"));
-	const agentDir = createIsolatedAgentDir(cwd);
+	const agentDir = createIsolatedAgentDir(projectDir);
 	const promptDumpFile = join(scratchDir, "system-prompt.txt");
 	const debugExtensionPath = writePromptDumpExtension(scratchDir);
 	const customTemplateFile = join(scratchDir, "system.md");
@@ -241,13 +326,13 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 				"--no-extensions",
 				"-p",
 				"-e",
-				join(cwd, "pi-package"),
+				join(repositoryDir, "pi-package"),
 				"-e",
 				debugExtensionPath,
 				"debug system prompt package order",
 			],
 			{
-				cwd,
+				cwd: projectDir,
 				encoding: "utf8",
 				env: childEnv,
 				timeout: 30_000,
@@ -261,6 +346,7 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 		expect(prompt).not.toContain("{{unknown-from-test}}");
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(projectDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });
 	}
 });
@@ -270,7 +356,10 @@ test("runtime package loading exposes convene_council when enabled", () => {
 	// Input and expected output: enabled config exposes the tool when all tools are active.
 	// Edge case: this test uses no selected main-agent allowlist that could hide the tool.
 	// Dependencies: local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
-	const cwd = process.cwd();
+	const repositoryDir = process.cwd();
+	const projectDir = realpathSync(
+		mkdtempSync(join(tmpdir(), "pi-runtime-council-project-")),
+	);
 	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-council-debug-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-runtime-council-agent-"));
 	const runtimeDumpFile = join(scratchDir, "runtime.json");
@@ -300,12 +389,12 @@ test("runtime package loading exposes convene_council when enabled", () => {
 				"--no-extensions",
 				"-p",
 				"-e",
-				join(cwd, "pi-package"),
+				join(repositoryDir, "pi-package"),
 				"-e",
 				debugExtensionPath,
 				"debug runtime dump",
 			],
-			{ cwd, encoding: "utf8", env: childEnv, timeout: 30_000 },
+			{ cwd: projectDir, encoding: "utf8", env: childEnv, timeout: 30_000 },
 		);
 
 		expect(result.status).toBe(23);
@@ -315,6 +404,7 @@ test("runtime package loading exposes convene_council when enabled", () => {
 		expect(runtime.tools).toContain("convene_council");
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(projectDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });
 	}
 });

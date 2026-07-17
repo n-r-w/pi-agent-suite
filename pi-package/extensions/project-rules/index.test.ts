@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type {
 	BuildSystemPromptOptions,
 	ExtensionAPI,
@@ -9,6 +9,8 @@ import type {
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import projectRules from "./index";
 
+const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const previousAgentDir = process.env[AGENT_DIR_ENV];
 const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 const tempDirs: string[] = [];
 
@@ -46,6 +48,11 @@ interface BeforeAgentStartEventFake {
 }
 
 afterEach(async () => {
+	if (previousAgentDir === undefined) {
+		delete process.env[AGENT_DIR_ENV];
+	} else {
+		process.env[AGENT_DIR_ENV] = previousAgentDir;
+	}
 	if (previousAgentSuiteDir === undefined) {
 		delete process.env[AGENT_SUITE_DIR_ENV];
 	} else {
@@ -58,20 +65,23 @@ afterEach(async () => {
 });
 
 describe("project-rules", () => {
-	test("appends recursive non-empty Markdown rules in deterministic visible-path order", async () => {
-		// Purpose: project rule files must become a separate prompt section after the existing system prompt.
-		// Input and expected output: direct and nested Markdown files are sorted by their visible path and appended.
-		// Edge case: empty, whitespace-only, and non-Markdown files do not create project_rule blocks.
+	test("appends recursive non-empty Markdown rules from .pi/rules in deterministic visible-path order", async () => {
+		// Purpose: project rule files must become a separate prompt section without treating project agents as rules.
+		// Input and expected output: direct and nested rule files are sorted and appended, while .pi/agents is excluded.
+		// Edge case: empty, whitespace-only, non-Markdown, and agent files do not create project_rule blocks.
 		// Dependencies: this test uses temporary project files and in-memory lifecycle fakes.
 		await withIsolatedSuiteDir(async () => {
 			const projectDir = await createTempDir("project-rules-project-");
-			const rulesDir = join(projectDir, ".pi");
+			const rulesDir = join(projectDir, ".pi", "rules");
+			const agentsDir = join(projectDir, ".pi", "agents");
 			await mkdir(join(rulesDir, "nested"), { recursive: true });
+			await mkdir(agentsDir, { recursive: true });
 			await writeFile(join(rulesDir, "z.md"), "Z rule");
 			await writeFile(join(rulesDir, "nested", "a.md"), "A rule");
 			await writeFile(join(rulesDir, "empty.md"), "");
 			await writeFile(join(rulesDir, "space.md"), "  \n\t");
 			await writeFile(join(rulesDir, "note.txt"), "Ignored");
+			await writeFile(join(agentsDir, "helper.md"), "Agent prompt");
 			const pi = createExtensionApiFake();
 			const context = createContextFake(projectDir);
 
@@ -88,15 +98,62 @@ describe("project-rules", () => {
 					"Original pi prompt",
 					"",
 					"<project_rules>",
-					'  <project_rule path=".pi/nested/a.md">',
+					'  <project_rule path=".pi/rules/nested/a.md">',
 					"A rule",
 					"  </project_rule>",
-					'  <project_rule path=".pi/z.md">',
+					'  <project_rule path=".pi/rules/z.md">',
 					"Z rule",
 					"  </project_rule>",
 					"</project_rules>",
 				].join("\n"),
 			);
+		});
+	});
+
+	test("ignores a rulesDir that resolves to active global pi storage", async () => {
+		// Purpose: explicit configuration must not expose global pi state as project instructions.
+		// Input and expected output: rulesDir points directly to the active agent directory and contributes no prompt content.
+		// Edge case: the forbidden root contains a valid non-empty Markdown file.
+		// Dependencies: this test uses temporary agent and suite directories without changing HOME.
+		await withIsolatedSuiteDir(async (suiteDir) => {
+			const agentDir = await createTempDir("project-rules-global-agent-");
+			process.env[AGENT_DIR_ENV] = agentDir;
+			await writeFile(join(agentDir, "private.md"), "Private global state");
+			await writeProjectRulesConfig(suiteDir, {
+				rulesDir: basename(agentDir),
+			});
+
+			const prompt = await renderPrompt(dirname(agentDir));
+
+			expect(prompt).toBe("Original pi prompt");
+		});
+	});
+
+	test("skips rule symlinks into active global pi storage", async () => {
+		// Purpose: project symlinks must not bypass the global-storage exclusion boundary.
+		// Input and expected output: one local rule is appended while file and directory links into agent and suite storage are ignored.
+		// Edge case: both a direct file target and a recursive directory target contain valid Markdown.
+		// Dependencies: this test uses temporary project, agent, and suite directories.
+		await withIsolatedSuiteDir(async (suiteDir) => {
+			const projectDir = await createTempDir("project-rules-policy-project-");
+			const agentDir = await createTempDir("project-rules-policy-agent-");
+			process.env[AGENT_DIR_ENV] = agentDir;
+			const rulesDir = join(projectDir, ".pi", "rules");
+			await mkdir(rulesDir, { recursive: true });
+			await writeFile(join(rulesDir, "local.md"), "Local project rule");
+			await writeFile(join(agentDir, "private.md"), "Private agent state");
+			await writeFile(join(suiteDir, "private.md"), "Private suite state");
+			await symlink(
+				join(agentDir, "private.md"),
+				join(rulesDir, "agent-private.md"),
+			);
+			await symlink(suiteDir, join(rulesDir, "suite-storage"), "dir");
+
+			const prompt = await renderPrompt(projectDir);
+
+			expect(prompt).toContain("Local project rule");
+			expect(prompt).not.toContain("Private agent state");
+			expect(prompt).not.toContain("Private suite state");
 		});
 	});
 
@@ -119,7 +176,8 @@ describe("project-rules", () => {
 				join(externalDir, "shared-dir", "nested.md"),
 				"Linked dir rule",
 			);
-			await symlink(realRulesDir, join(projectDir, ".pi"), "dir");
+			await mkdir(join(projectDir, ".pi"));
+			await symlink(realRulesDir, join(projectDir, ".pi", "rules"), "dir");
 			await symlink(
 				join(externalDir, "shared-source.txt"),
 				join(realRulesDir, "shared.md"),
@@ -141,11 +199,11 @@ describe("project-rules", () => {
 				context.ctx,
 			);
 
-			expect(prompt).toContain('path=".pi/root.md"');
+			expect(prompt).toContain('path=".pi/rules/root.md"');
 			expect(prompt).toContain("Root rule");
-			expect(prompt).toContain('path=".pi/shared-dir/nested.md"');
+			expect(prompt).toContain('path=".pi/rules/shared-dir/nested.md"');
 			expect(prompt).toContain("Linked dir rule");
-			expect(prompt).toContain('path=".pi/shared.md"');
+			expect(prompt).toContain('path=".pi/rules/shared.md"');
 			expect(prompt).toContain("Linked file rule");
 			expect(prompt.match(/Root rule/g)).toHaveLength(1);
 		});
@@ -159,15 +217,15 @@ describe("project-rules", () => {
 		await withIsolatedSuiteDir(async () => {
 			const projectDir = await createTempDir("project-rules-repeat-project-");
 			const sharedDir = await createTempDir("project-rules-repeat-shared-");
-			await mkdir(join(projectDir, ".pi"));
+			await mkdir(join(projectDir, ".pi", "rules"), { recursive: true });
 			await writeFile(join(sharedDir, "rule.md"), "Shared rule");
-			await symlink(sharedDir, join(projectDir, ".pi", "a"), "dir");
-			await symlink(sharedDir, join(projectDir, ".pi", "b"), "dir");
+			await symlink(sharedDir, join(projectDir, ".pi", "rules", "a"), "dir");
+			await symlink(sharedDir, join(projectDir, ".pi", "rules", "b"), "dir");
 
 			const prompt = await renderPrompt(projectDir);
 
-			expect(prompt).toContain('path=".pi/a/rule.md"');
-			expect(prompt).not.toContain('path=".pi/b/rule.md"');
+			expect(prompt).toContain('path=".pi/rules/a/rule.md"');
+			expect(prompt).not.toContain('path=".pi/rules/b/rule.md"');
 			expect(prompt.match(/Shared rule/g)).toHaveLength(1);
 		});
 	});
@@ -187,20 +245,29 @@ describe("project-rules", () => {
 			expect(await renderPrompt(missingProjectDir)).toBe("Original pi prompt");
 
 			const emptyProjectDir = await createTempDir("project-rules-empty-");
-			await mkdir(join(emptyProjectDir, ".pi"));
-			await writeFile(join(emptyProjectDir, ".pi", "empty.md"), "\n\t ");
+			await mkdir(join(emptyProjectDir, ".pi", "rules"), {
+				recursive: true,
+			});
+			await writeFile(
+				join(emptyProjectDir, ".pi", "rules", "empty.md"),
+				"\n\t ",
+			);
 			expect(await renderPrompt(emptyProjectDir)).toBe("Original pi prompt");
 		});
 	});
 
 	test("fails the whole section and warns when rulesDir itself is a broken symlink", async () => {
 		// Purpose: a broken rulesDir symlink must not silently disable project rules.
-		// Input and expected output: .pi points to a missing directory, so the prompt is unchanged and one warning is emitted.
-		// Edge case: a genuinely missing .pi directory remains a no-op in a separate test.
+		// Input and expected output: .pi/rules points to a missing directory, so the prompt is unchanged and one warning is emitted.
+		// Edge case: a genuinely missing .pi/rules directory remains a no-op in a separate test.
 		// Dependencies: this test uses a filesystem symlink in a temporary project directory.
 		await withIsolatedSuiteDir(async () => {
 			const projectDir = await createTempDir("project-rules-broken-root-");
-			await symlink(join(projectDir, "missing-rules"), join(projectDir, ".pi"));
+			await mkdir(join(projectDir, ".pi"));
+			await symlink(
+				join(projectDir, "missing-rules"),
+				join(projectDir, ".pi", "rules"),
+			);
 			const context = createContextFake(projectDir);
 
 			expect(await renderPrompt(projectDir, context)).toBe(
@@ -230,14 +297,16 @@ describe("project-rules", () => {
 			const brokenSymlinkProjectDir = await createTempDir(
 				"project-rules-broken-symlink-",
 			);
-			await mkdir(join(brokenSymlinkProjectDir, ".pi"));
+			await mkdir(join(brokenSymlinkProjectDir, ".pi", "rules"), {
+				recursive: true,
+			});
 			await writeFile(
-				join(brokenSymlinkProjectDir, ".pi", "valid.md"),
+				join(brokenSymlinkProjectDir, ".pi", "rules", "valid.md"),
 				"Valid",
 			);
 			await symlink(
 				join(brokenSymlinkProjectDir, "missing.md"),
-				join(brokenSymlinkProjectDir, ".pi", "broken.md"),
+				join(brokenSymlinkProjectDir, ".pi", "rules", "broken.md"),
 			);
 			const brokenSymlinkContext = createContextFake(brokenSymlinkProjectDir);
 			expect(

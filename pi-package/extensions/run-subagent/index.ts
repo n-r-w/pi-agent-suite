@@ -10,11 +10,10 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { agentIdMatches, toAgentIdMatchKey } from "../../shared/agent-id";
 import {
 	type AgentDefinition,
-	agentIdMatches,
 	loadAgentDefinitions,
-	toAgentIdMatchKey,
 } from "../../shared/agent-registry";
 import {
 	getAgentRuntimeComposition,
@@ -350,7 +349,7 @@ export default async function runSubagent(
 		},
 	);
 	const sessionRegistry = new SubagentSessionRegistry();
-	await publishRunSubagentPromptContribution(pi);
+	publishRunSubagentPromptContribution(pi);
 
 	pi.registerCommand(SUBAGENT_BROWSER_COMMAND_ID, {
 		description: "Browse and pin subagent progress",
@@ -452,23 +451,23 @@ function registerSubagentTools(options: RegisterSubagentToolsOptions): void {
 }
 
 /** Publishes callable-agent guidance and child prompt through runtime composition. */
-async function publishRunSubagentPromptContribution(
-	pi: ExtensionAPI,
-): Promise<void> {
+function publishRunSubagentPromptContribution(pi: ExtensionAPI): void {
 	const composition = getAgentRuntimeComposition(pi);
-	const callableAgents = await loadCallableAgents();
-	writeRuntimeDiagnostic("run-subagent.prompt-contribution.published", {
-		callableAgentIds: callableAgents.map((agent) => agent.id),
-	});
 	composition.setRunSubagentContribution({
-		buildPrompt: async (activeToolNames) =>
-			buildRunSubagentPrompt({
+		buildPrompt: async (activeToolNames, cwd) => {
+			const callableAgents = await loadCallableAgents(cwd);
+			writeRuntimeDiagnostic("run-subagent.prompt-contribution.built", {
+				cwd,
+				callableAgentIds: callableAgents.map((agent) => agent.id),
+			});
+			return buildRunSubagentPrompt({
 				activeToolNames,
 				callableAgents,
 				mainAgent: composition.getMainAgentContribution()?.agent,
 				childAgentId: readSubagentAgentId(),
 				isDepthAvailable: await isRunSubagentDepthAvailable(),
-			}),
+			});
+		},
 	});
 	composition.setRunSubagentActiveToolFilter(filterSubagentTools);
 }
@@ -771,7 +770,11 @@ async function resolveRunSubagentPlan(
 	| { readonly plan: ResolvedRunSubagentExecution }
 	| { readonly result: AgentToolResult<unknown> }
 > {
-	const agentResult = await resolveCallableAgent(options.pi, agentId);
+	const agentResult = await resolveCallableAgent(
+		options.pi,
+		options.ctx.cwd,
+		agentId,
+	);
 	if ("result" in agentResult) {
 		return agentResult;
 	}
@@ -825,12 +828,13 @@ function resolveNextSubagentDepth(
 /** Resolves the requested callable agent after applying the effective allowlist. */
 async function resolveCallableAgent(
 	pi: ExtensionAPI,
+	cwd: string,
 	agentId: string,
 ): Promise<
 	| { readonly agent: AgentDefinition }
 	| { readonly result: AgentToolResult<unknown> }
 > {
-	const agents = await loadCallableAgents();
+	const agents = await loadCallableAgents(cwd);
 	const effectiveAgent = resolveEffectiveAgentPolicy(
 		agents,
 		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent,
@@ -1229,9 +1233,9 @@ function invalidConfig(issue: string): RunSubagentConfig {
 	};
 }
 
-/** Loads agents callable by run_subagent. */
-async function loadCallableAgents(): Promise<AgentDefinition[]> {
-	const agents = await loadAgentDefinitions();
+/** Loads agents callable by run_subagent for the active project registry. */
+async function loadCallableAgents(cwd: string): Promise<AgentDefinition[]> {
+	const agents = await loadAgentDefinitions(cwd);
 	return agents.filter(
 		(agent) => agent.type === "subagent" || agent.type === "both",
 	);

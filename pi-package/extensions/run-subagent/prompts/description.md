@@ -11,6 +11,7 @@
     3) Parallel batch is valid ONLY when every subagent can complete correctly without outputs from any other subagent in same batch.
     4) If dependency status is unclear, MUST treat subtasks as dependent and run them sequentially.
     5) Each call in a parallel batch MUST use a distinct taskName that identifies its specific subtask. Distinguish names by task focus, not by sequence numbers or technical IDs.
+    6) Keep in mind that code changes for same project cannot be parallelized even if they affect different files, as during build and linting subagents will interfere with each other.
 
 **PROMPT FORMATION ALGORITHM:**
 1. Define subagent's goal.

@@ -18,6 +18,7 @@ interface PromptContribution {
 	readonly prompt?: string;
 	readonly buildPrompt?: (
 		activeToolNames: readonly string[],
+		cwd: string,
 	) => Promise<string | undefined> | string | undefined;
 	readonly requiredToolName?: string;
 }
@@ -131,18 +132,22 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 				activeToolsBeforeFilter: this.pi.getActiveTools(),
 			});
 			const activeToolNames = await this.resolveActiveToolNames(ctx);
+			const { cwd } = ctx;
 			const mainAgentPrompt = this.mainAgentContribution?.prompt;
 			const runSubagentPrompt = await resolvePromptContribution(
 				this.runSubagentContribution,
 				activeToolNames,
+				cwd,
 			);
 			const consultAdvisorPrompt = await resolvePromptContribution(
 				this.consultAdvisorContribution,
 				activeToolNames,
+				cwd,
 			);
 			const conveneCouncilPrompt = await resolvePromptContribution(
 				this.conveneCouncilContribution,
 				activeToolNames,
+				cwd,
 			);
 			const contributionPrompts = [
 				mainAgentPrompt,
@@ -267,6 +272,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 async function resolvePromptContribution(
 	contribution: PromptContribution | undefined,
 	activeToolNames: readonly string[],
+	cwd: string,
 ): Promise<string | undefined> {
 	if (contribution?.requiredToolName !== undefined) {
 		const isToolActive = activeToolNames.includes(
@@ -277,7 +283,9 @@ async function resolvePromptContribution(
 		}
 	}
 
-	return contribution?.buildPrompt?.(activeToolNames) ?? contribution?.prompt;
+	return (
+		contribution?.buildPrompt?.(activeToolNames, cwd) ?? contribution?.prompt
+	);
 }
 
 /** Compares ordered tool-name lists to avoid redundant active-tool writes. */
