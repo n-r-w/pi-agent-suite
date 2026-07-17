@@ -40,6 +40,12 @@ Callable agents come from the shared agent registry documented in [main-agent-se
 
 `run-subagent` rebuilds the registry for the current working directory when it creates callable-agent guidance and when it validates a tool call. A project override therefore supplies the child prompt, model, thinking level, tools, and callable subagents. Resumed sessions keep their original agent ID but use its current definition for the same working directory.
 
+## Authentication startup recovery
+
+Before allocating a new child session, `run-subagent` resolves the selected model credentials through the parent model registry. A parent authentication failure returns immediately without starting child `pi`.
+
+A fresh child can temporarily miss OAuth credentials when another Pi process holds the shared `auth.json` lock during token refresh. After successful parent authentication, `run-subagent` retries only the matching `No API key found for <provider>` startup failure. Recovery requires an exit code of zero, no child output or execution events, and no child session file. The original attempt and up to three retries use the same numeric session ID and child UUID. Exponential randomized delays reduce repeated lock contention across concurrent Pi processes. Cancellation, resumed sessions, failures after session creation, and other errors are not retried.
+
 ## Live progress
 
 Interactive TUI mode sends one initial partial update to populate the historical call with the resolved model and thinking level. Later live progress appears only in the widget and focused browser. RPC and other non-TUI modes keep every intermediate tool update for nested progress propagation.

@@ -39,6 +39,7 @@ import {
 	CHILD_RPC_SKIPPED_TEXT_PART_TYPE as SKIPPED_TEXT_PART_TYPE,
 } from "../../shared/child-rpc-stream";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
+import { withRetry } from "../../shared/retry";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -120,6 +121,12 @@ const MISSING_CHILD_FINAL_ANSWER_ERROR =
 	"subagent completed without a final answer";
 /** Error returned when parent abort cancels an incomplete child run. */
 const ABORTED_CHILD_RPC_RUN_ERROR = "subagent execution aborted";
+/** Maximum retries for an auth failure that occurs only in a fresh child process. */
+const CHILD_AUTH_STARTUP_RETRIES = 3;
+/** Minimum backoff before a child auth startup retry. */
+const CHILD_AUTH_RETRY_BASE_DELAY_MS = 200;
+/** Random range added to the retry base so separate Pi processes diverge. */
+const CHILD_AUTH_RETRY_JITTER_MS = 200;
 /** RPC command id used for the child prompt request. */
 const PROMPT_COMMAND_ID = "run-subagent-prompt";
 /** RPC command id used for the child abort request. */
@@ -303,6 +310,18 @@ interface ResolvedRunSubagentExecution {
 	readonly modelId: string;
 	readonly childTools: ChildToolPolicy;
 	readonly thinking: string;
+	readonly childAuthPreflightSucceeded: boolean;
+}
+
+/** Carries the failed child result through retry backoff without losing diagnostics. */
+class RetryableChildAuthStartupError extends Error {
+	readonly run: ChildRunResult;
+
+	constructor(run: ChildRunResult) {
+		super(run.errorMessage ?? "child auth startup failed");
+		this.name = "RetryableChildAuthStartupError";
+		this.run = run;
+	}
 }
 
 type ChildSessionLaunch =
@@ -638,7 +657,12 @@ async function executeRunSubagent(
 			SUBAGENT_WIDGET_START_CUSTOM_TYPE,
 			createSubagentWidgetStartData(runningDetails, progress.state.startedAtMs),
 		);
-		const run = await runResolvedChildPi(options, plan, progress, session);
+		const run = await runResolvedChildPiWithAuthRetry(
+			options,
+			plan,
+			progress,
+			session,
+		);
 		return finishRunSubagentExecution(run, progress);
 	} finally {
 		options.sessionRegistry.release(session.reference.sessionId);
@@ -789,6 +813,11 @@ async function resolveRunSubagentPlan(
 		};
 	}
 
+	const authPreflight = await preflightChildModelAuth(options.ctx, modelId);
+	if ("result" in authPreflight) {
+		return authPreflight;
+	}
+
 	const childTools = resolveChildToolPolicy(options.pi, agent);
 	if ("issue" in childTools) {
 		return { result: errorResult(childTools.issue) };
@@ -802,6 +831,7 @@ async function resolveRunSubagentPlan(
 			modelId,
 			childTools,
 			thinking: agent.model?.thinking ?? options.pi.getThinkingLevel(),
+			childAuthPreflightSucceeded: authPreflight.succeeded,
 		},
 	};
 }
@@ -963,6 +993,113 @@ function updateSubagentWidget({
 	);
 	options.subagentBrowser.refresh();
 	return now;
+}
+
+/** Re-resolves child credentials in the stable parent runtime before process startup. */
+async function preflightChildModelAuth(
+	ctx: RunSubagentContext,
+	modelId: string,
+): Promise<
+	| { readonly succeeded: boolean }
+	| { readonly result: AgentToolResult<unknown> }
+> {
+	const model = findConfiguredChildModel(modelId, ctx);
+	if (model === undefined) {
+		return { succeeded: false };
+	}
+
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	return auth.ok ? { succeeded: true } : { result: errorResult(auth.error) };
+}
+
+/** Retries a verified child-only auth miss before the child creates durable state. */
+async function runResolvedChildPiWithAuthRetry(
+	options: ExecuteRunSubagentOptions,
+	plan: ResolvedRunSubagentExecution,
+	progress: ReturnType<typeof createRunSubagentProgress>,
+	session: ChildSessionLaunch,
+): Promise<ChildRunResult> {
+	if (options.signal?.aborted) {
+		return runResolvedChildPi(options, plan, progress, session);
+	}
+
+	let lastRun: ChildRunResult | undefined;
+	let waitingForAuthRetry = false;
+	try {
+		return await withRetry(
+			async () => {
+				waitingForAuthRetry = false;
+				const run = await runResolvedChildPi(options, plan, progress, session);
+				lastRun = run;
+				if (
+					await isRetryableChildAuthStartupFailure(run, plan, progress, session)
+				) {
+					waitingForAuthRetry = true;
+					throw new RetryableChildAuthStartupError(run);
+				}
+				return run;
+			},
+			{
+				retry: {
+					enabled: true,
+					maxRetries: CHILD_AUTH_STARTUP_RETRIES,
+					baseDelayMs:
+						CHILD_AUTH_RETRY_BASE_DELAY_MS +
+						Math.floor(Math.random() * CHILD_AUTH_RETRY_JITTER_MS),
+				},
+				factor: 2,
+				signal: options.signal,
+				shouldRetry: (error) => error instanceof RetryableChildAuthStartupError,
+			},
+		);
+	} catch (error) {
+		if (options.signal?.aborted && lastRun !== undefined) {
+			return waitingForAuthRetry
+				? {
+						...lastRun,
+						status: "aborted",
+						errorMessage: ABORTED_CHILD_RPC_RUN_ERROR,
+					}
+				: lastRun;
+		}
+		if (error instanceof RetryableChildAuthStartupError) {
+			return error.run;
+		}
+		throw error;
+	}
+}
+
+/** Limits retries to the exact pre-session auth race observed in child Pi. */
+async function isRetryableChildAuthStartupFailure(
+	run: ChildRunResult,
+	plan: ResolvedRunSubagentExecution,
+	progress: ReturnType<typeof createRunSubagentProgress>,
+	session: ChildSessionLaunch,
+): Promise<boolean> {
+	if (
+		!plan.childAuthPreflightSucceeded ||
+		session.kind !== "new" ||
+		run.status !== "failed" ||
+		run.exitCode !== 0 ||
+		run.stdoutText.length > 0 ||
+		progress.state.events.length > 0
+	) {
+		return false;
+	}
+
+	const provider = plan.modelId.split("/", 1)[0];
+	if (
+		provider === undefined ||
+		!run.errorMessage?.startsWith(`No API key found for ${provider}.`)
+	) {
+		return false;
+	}
+
+	const childSessionPath = await findChildSessionPath(
+		session.reference.childSessionDir,
+		session.reference.childSessionId,
+	);
+	return childSessionPath === undefined;
 }
 
 /** Runs the child process and records RPC session progress events. */
@@ -1256,18 +1393,25 @@ function resolveChildModelId(
 	return `${currentModel.provider}/${currentModel.id}`;
 }
 
+/** Resolves a provider-qualified child model through the parent registry. */
+function findConfiguredChildModel(
+	modelId: string,
+	ctx: RunSubagentContext,
+): Model<Api> | undefined {
+	const [provider, ...modelParts] = modelId.split("/");
+	const modelName = modelParts.join("/");
+	return provider !== undefined && modelName.length > 0
+		? ctx.modelRegistry.find(provider, modelName)
+		: undefined;
+}
+
 /** Builds runtime metadata shown in subagent progress UI. */
 function resolveSubagentRuntimeDetails(
 	modelId: string,
 	thinking: string,
 	ctx: RunSubagentContext,
 ): { modelId: string; thinking: string; contextWindow: number } {
-	const [provider, ...modelParts] = modelId.split("/");
-	const modelName = modelParts.join("/");
-	const configuredModel =
-		provider !== undefined && modelName.length > 0
-			? ctx.modelRegistry.find(provider, modelName)
-			: undefined;
+	const configuredModel = findConfiguredChildModel(modelId, ctx);
 	return {
 		modelId,
 		thinking,

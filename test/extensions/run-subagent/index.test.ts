@@ -39,6 +39,8 @@ const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 const SGR_RESET = `${String.fromCharCode(27)}[0m`;
 /** Supplies semantic identity to tests that exercise behavior unrelated to task naming. */
 const DEFAULT_TEST_TASK_NAME = "Execute test task";
+/** Matches the child Pi startup failure that is retryable after parent auth succeeds. */
+const NO_OPENAI_API_KEY_ERROR = `No API key found for openai.\n\nUse /login to log into a provider via OAuth or API key.`;
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -140,6 +142,10 @@ class SpawnedProcessFakeImpl
 	}
 }
 
+type ModelAuthResult =
+	| { readonly ok: true; readonly apiKey?: string }
+	| { readonly ok: false; readonly error: string };
+
 interface CommandContextFake {
 	readonly cwd: string;
 	readonly mode: "tui" | "rpc" | "json" | "print";
@@ -153,6 +159,7 @@ interface CommandContextFake {
 	};
 	readonly modelRegistry: {
 		find(provider: string, modelId: string): Model<Api> | undefined;
+		getApiKeyAndHeaders(model: Model<Api>): Promise<ModelAuthResult>;
 	};
 	readonly sessionManager: {
 		getEntries(): readonly unknown[];
@@ -330,6 +337,7 @@ function createContext(
 	mode: CommandContextFake["mode"] = "tui",
 	sessionEntries: readonly unknown[] = [],
 	branchEntries: readonly unknown[] = sessionEntries,
+	authResult: ModelAuthResult = { ok: true, apiKey: "test-key" },
 ): CommandContextFake & ContextObservations {
 	const notifications: ContextObservations["notifications"] = [];
 	const statuses: ContextObservations["statuses"] = [];
@@ -359,10 +367,13 @@ function createContext(
 		},
 		modelRegistry: {
 			find(provider: string, modelId: string): Model<Api> | undefined {
-				return models.find(
+				return [model, ...models].find(
 					(candidate) =>
-						candidate.provider === provider && candidate.id === modelId,
+						candidate?.provider === provider && candidate.id === modelId,
 				);
+			},
+			async getApiKeyAndHeaders(): Promise<ModelAuthResult> {
+				return authResult;
 			},
 		},
 		sessionManager: {
@@ -374,6 +385,24 @@ function createContext(
 			},
 		},
 	};
+}
+
+/** Creates a context whose model-auth preflight returns the requested result. */
+function createContextWithAuthResult(
+	cwd: string,
+	authResult: ModelAuthResult,
+): CommandContextFake & ContextObservations {
+	return createContext(
+		cwd,
+		createModel("openai", "parent"),
+		[],
+		undefined,
+		undefined,
+		"tui",
+		[],
+		[],
+		authResult,
+	);
 }
 
 /** Creates a model fixture with the fields needed by extension APIs. */
@@ -745,6 +774,41 @@ async function writePiSettings(
 	settings: Record<string, unknown>,
 ): Promise<void> {
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings));
+}
+
+/** Creates a fake that emits a distinct RPC transcript for each child attempt. */
+function createSequentialSpawnFake(
+	outputBatches: readonly (readonly string[])[],
+): {
+	readonly calls: SpawnCall[];
+	readonly spawnPi: (
+		command: string,
+		args: string[],
+		options: SpawnCall["options"],
+	) => SpawnedProcessFake;
+} {
+	const calls: SpawnCall[] = [];
+
+	return {
+		calls,
+		spawnPi(
+			command: string,
+			args: string[],
+			options: SpawnCall["options"],
+		): SpawnedProcessFake {
+			const process = new SpawnedProcessFakeImpl();
+			const outputLines =
+				outputBatches[calls.length] ?? outputBatches.at(-1) ?? [];
+			calls.push({ command, args, options, process });
+			queueMicrotask(() => {
+				for (const line of outputLines) {
+					process.stdout.emit("data", `${line}\n`);
+				}
+				process.emit("close", 0);
+			});
+			return process;
+		},
+	};
 }
 
 /** Creates a fake child process that can emit RPC output and close. */
@@ -2346,6 +2410,260 @@ describe("run-subagent", () => {
 
 			expect(content).toBe(sessionToolText("prompt rejected"));
 			expect(spawn.calls[0]?.process.stdin.ended).toBe(true);
+		});
+	});
+
+	test("retries a child startup auth race after parent auth succeeds", async () => {
+		// Purpose: a child-only auth miss must recover after the parent resolves the same model credentials.
+		// Input and expected output: the first child rejects auth, the second completes, and both attempts keep one session id.
+		// Edge case: the failed child exits cleanly without creating execution events.
+		// Dependencies: this test uses parent auth preflight and distinct fake RPC transcripts per attempt.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const authFailure = JSON.stringify({
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: false,
+				error: NO_OPENAI_API_KEY_ERROR,
+			});
+			const spawn = createSequentialSpawnFake([
+				[authFailure],
+				rpcOutputLines({
+					type: "message_end",
+					message: childAssistantMessage("Recovered"),
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+			const sessionIds = spawn.calls.map((call) => {
+				const index = call.args.indexOf("--session-id");
+				return call.args[index + 1];
+			});
+
+			expect(content).toBe(sessionToolText("Recovered"));
+			expect(spawn.calls).toHaveLength(2);
+			expect(new Set(sessionIds).size).toBe(1);
+		});
+	});
+
+	test("stops after three retries when the child auth race persists", async () => {
+		// Purpose: transient auth recovery must remain bounded when every child startup misses credentials.
+		// Input and expected output: four identical startup failures return the final auth error.
+		// Edge case: all child processes exit with code zero and no execution events.
+		// Dependencies: this test uses a successful parent preflight and a repeating fake transcript.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const authFailure = JSON.stringify({
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: false,
+				error: NO_OPENAI_API_KEY_ERROR,
+			});
+			const spawn = createSequentialSpawnFake([[authFailure]]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(sessionToolText(NO_OPENAI_API_KEY_ERROR));
+			expect(spawn.calls).toHaveLength(4);
+		});
+	});
+
+	test("does not start a child when parent model auth preflight fails", async () => {
+		// Purpose: a real parent auth failure must not be classified as a transient child startup race.
+		// Input and expected output: parent preflight rejects credentials and no child process starts.
+		// Edge case: the failure uses the same wording that is retryable only after successful preflight.
+		// Dependencies: this test uses an auth-aware context fake and no child RPC output.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContextWithAuthResult("/tmp/project", {
+				ok: false,
+				error: NO_OPENAI_API_KEY_ERROR,
+			});
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(NO_OPENAI_API_KEY_ERROR);
+			expect(spawn.calls).toHaveLength(0);
+		});
+	});
+
+	test("does not retry a non-auth child startup failure", async () => {
+		// Purpose: recovery must not repeat unrelated prompt or transport failures.
+		// Input and expected output: child rejects the prompt for another reason and runs once.
+		// Edge case: parent model auth preflight succeeds before the unrelated failure.
+		// Dependencies: this test uses a fake child RPC process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: "prompt rejected",
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(sessionToolText("prompt rejected"));
+			expect(spawn.calls).toHaveLength(1);
+		});
+	});
+
+	test("cancels child auth retries while waiting between attempts", async () => {
+		// Purpose: parent cancellation must stop pending auth recovery without spawning another child.
+		// Input and expected output: first startup misses auth, parent aborts during backoff, and result is aborted.
+		// Edge case: no child process is active when cancellation arrives.
+		// Dependencies: this test uses AbortController and a captured first child process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			let resolveProcess: (process: SpawnedProcessFake) => void = () => {};
+			const processReady = new Promise<SpawnedProcessFake>((resolve) => {
+				resolveProcess = resolve;
+			});
+			const controller = new AbortController();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			let spawnCount = 0;
+			await runSubagent(pi, {
+				spawnPi() {
+					spawnCount += 1;
+					const process = new SpawnedProcessFakeImpl();
+					resolveProcess(process);
+					return process;
+				},
+			});
+
+			const resultPromise = getRunSubagentTool(pi).execute(
+				"tool-call-1",
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
+				controller.signal,
+				undefined,
+				ctx as never,
+			) as unknown as Promise<AgentToolResult<unknown>>;
+			const process = await processReady;
+			process.stdout.emit(
+				"data",
+				`${JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: NO_OPENAI_API_KEY_ERROR,
+				})}\n`,
+			);
+			process.emit("close", 0);
+			await new Promise((resolve) => queueMicrotask(resolve));
+			controller.abort();
+
+			const result = await resultPromise;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(sessionToolText("subagent execution aborted"));
+			expect(spawnCount).toBe(1);
+		});
+	});
+
+	test("preserves child abort handling when the parent signal is already aborted", async () => {
+		// Purpose: auth retry orchestration must preserve the existing child RPC abort result.
+		// Input and expected output: an already-aborted signal starts one child and returns the bounded abort error.
+		// Edge case: cancellation exists before p-retry receives the operation.
+		// Dependencies: this test uses AbortController and the normal fake child process lifecycle.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const controller = new AbortController();
+			controller.abort();
+			const spawn = createSpawnFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await getRunSubagentTool(pi).execute(
+				"tool-call-1",
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
+				controller.signal,
+				undefined,
+				ctx as never,
+			)) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(content).toBe(sessionToolText("subagent execution aborted"));
+			expect(spawn.calls).toHaveLength(1);
 		});
 	});
 
