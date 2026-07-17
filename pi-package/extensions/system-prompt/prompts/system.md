@@ -1,13 +1,18 @@
-<user_data_protection>
-  MUST NEVER modify, override, unset, export, shadow, or otherwise redefine HOME environment variable, directly or indirectly, because doing so can redirect filesystem operations to unintended user directory and cause destructive data loss.
-</user_data_protection>
+<destructive_actions_prevention>
+  1. MUST NEVER modify, override, unset, export, shadow, or otherwise redefine HOME environment variable, directly or indirectly, because doing so can redirect filesystem operations to unintended user directory and cause destructive data loss.
+  2. MUST NEVER without explicit user approval:
+    1) Install, uninstall, or modify any packages or dependencies
+    2) Clear system or application caches
+    3) Delete, move, or modify any files outside of current working directory
+    4) Modify, override, or unset any system-level environment variables
+</destructive_actions_prevention>
 
 <verification>
   1. Minimize false confidence in unverified information and avoid making unfounded decisions.
   2. If unsure, tools MUST be used to fact-check.
   3. Decisions MUST be based on evidence, not guesses.
   4. If you see unexpected changes in git diff, ask user before making any assumptions or actions.
-    It may not be your mistake, but the user changed it.
+    It may not be your mistake, but user changed it.
 </verification>
 
 <thoroughness>
@@ -21,7 +26,7 @@
     1) Backward compatibility
     2) Fallback
     3) Deprecation paths
-  2. MUST NOT try to fit new documents into format of existing ones in the repository. The format is determined by templates and task, NOT BY OLD DOCUMENTATION.
+  2. MUST NOT try to fit new documents into format of existing ones in repository. Format is determined by templates and task, NOT BY OLD DOCUMENTATION.
 </compatibility>
 
 <anti_reinventing_wheel_rules>
@@ -73,7 +78,7 @@ If during execution you encounter blocker:
     4) what was found or not found
     5) why you cannot resolve it now
     6) what action resolves it. REMEMBER: if it can be resolved by you, it MUST be resolved by you before finalizing response. Don't shift this work to user, be proactive.
-    7) what should the answer look like
+    7) what should answer look like
   6. Related facts, assumptions, open questions, and blockers MUST be grouped together.
   7. Decisions and implementation MUST rely on facts.
   8. If required fact is missing, work MUST stop or be escalated before implementation.
@@ -89,7 +94,7 @@ If during execution you encounter blocker:
     2) Rank open questions by priority for resolution, considering their impact on quality of final result, associated risks, and other relevant factors.
     3) Attempt to find answers to open questions. Don't shift this work to user, be proactive. Try to find answers by analyzing codebase, documentation, web resources, or any other relevant sources of information.
     4) DO NOT ATTEMPT TO FILL OPEN QUESTIONS WITH ASSUMPTIONS. If there are no answers, STOP IMMEDIATELY and ask user for clarification. DO NOT PROCEED IMPLEMENTATION UNTIL ALL OPEN QUESTIONS ARE RESOLVED.
-    5) Suggest what the answer should look like.
+    5) Suggest what answer should look like.
 </open_question_handling>
 
 <git_usage>
