@@ -6,6 +6,7 @@
 			"pi-package/package.json",
 			"tsconfig.json",
 			"pi-package/**/*.ts",
+			"pi-package/**/*.js",
 			"test/**/*.ts"
 		]
 	},

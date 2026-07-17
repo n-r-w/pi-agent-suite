@@ -73,6 +73,7 @@ Recommended MCP servers:
 | `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](docs/extensions/codex-quota.md) |
 | `custom-compaction` | Enabled | Uses custom prompts for pi conversation compaction and summarizes large tool results before oversized compaction requests. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, prompt file paths, `retry`, `summary`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
 | `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary. | `context-projection/config.json`: `enabled`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
+| `mermaid` | Enabled in TUI mode | Renders supported Mermaid blocks from assistant responses as durable ASCII previews. | Fixed safety limits; no configuration. | [docs/extensions/mermaid.md](docs/extensions/mermaid.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |
 | `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](docs/extensions/main-agent-selection.md) |
@@ -135,6 +136,10 @@ You are a code review agent. Check correctness, risks, and missing validation.
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ## Changelog
+
+### v0.19.0 - 2026-07-18
+
+- Add Mermaid ASCII rendering extension
 
 ### v0.18.1 - 2026-07-17
 

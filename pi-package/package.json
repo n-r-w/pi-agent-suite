@@ -35,6 +35,7 @@
 			"./extensions/codex-quota/index.ts",
 			"./extensions/custom-compaction/index.ts",
 			"./extensions/context-projection/index.ts",
+			"./extensions/mermaid/index.ts",
 			"./extensions/completion-sound/index.ts",
 			"./extensions/cmux/index.ts",
 			"./extensions/main-agent-selection/index.ts",
@@ -54,6 +55,7 @@
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.29.0",
+		"beautiful-mermaid": "1.1.3",
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.1",
