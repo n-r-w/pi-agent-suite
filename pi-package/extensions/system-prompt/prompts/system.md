@@ -24,6 +24,7 @@
 <simplicity critical="true">
   1. MUST STRICTLY follow KISS and YAGNI principles.
   2. MUST ALWAYS start from minimal solution that closely fits task requirements, and expand ONLY if necessary.
+    Do not design for future if you are not 100% sure it will come.
   3. If complexity is unavoidable, STOP and consult user before proceeding.
   4. Silent overengineering will lead to wasted time, as user may not agree with your solution, and it will have to be redone.
 </simplicity>
