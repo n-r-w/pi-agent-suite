@@ -143,6 +143,7 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 - Breaking change: changed the default `project-rules` directory from `.pi` to `.pi/rules`.
 - Prevented `project-rules` from loading files in global Pi storage, including configured paths and symbolic-link targets.
 - Refined bundled prompts to prohibit changing `HOME` and to prevent parallel code changes from interfering in the same project.
+- Added authentication startup recovery with retry logic
 - Updated Pi dependencies from `0.80.7` to `0.80.10`.
 
 ### v0.17.0 - 2026-07-15
