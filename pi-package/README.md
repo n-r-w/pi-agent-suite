@@ -136,6 +136,10 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 ## Changelog
 
+### v0.18.1 - 2026-07-17
+
+- Resolve child tool policies against their runtime catalog
+
 ### v0.18.0 - 2026-07-17
 
 - Added project-local agent definitions under `<project>/.pi/agents` for `main-agent-selection` and `run-subagent`; project definitions extend the global registry and replace matching IDs case-insensitively.
