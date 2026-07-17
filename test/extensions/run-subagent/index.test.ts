@@ -25,7 +25,7 @@ import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-a
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
-	SUBAGENT_TOOLS_ENV,
+	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -202,6 +202,7 @@ async function withIsolatedEnvironment<T>(
 	const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 	const previousDepth = process.env[DEPTH_ENV];
 	const previousChildAgentId = process.env[SUBAGENT_AGENT_ID_ENV];
+	const previousToolPatterns = process.env[SUBAGENT_TOOL_PATTERNS_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-run-subagent-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
@@ -216,6 +217,7 @@ async function withIsolatedEnvironment<T>(
 	} else {
 		process.env[SUBAGENT_AGENT_ID_ENV] = childAgentId;
 	}
+	delete process.env[SUBAGENT_TOOL_PATTERNS_ENV];
 
 	try {
 		return await action(agentDir);
@@ -239,6 +241,11 @@ async function withIsolatedEnvironment<T>(
 			delete process.env[SUBAGENT_AGENT_ID_ENV];
 		} else {
 			process.env[SUBAGENT_AGENT_ID_ENV] = previousChildAgentId;
+		}
+		if (previousToolPatterns === undefined) {
+			delete process.env[SUBAGENT_TOOL_PATTERNS_ENV];
+		} else {
+			process.env[SUBAGENT_TOOL_PATTERNS_ENV] = previousToolPatterns;
 		}
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -1184,8 +1191,8 @@ describe("run-subagent", () => {
 	});
 
 	test("starts child pi with explicit model, thinking, tools, and subagent environment", async () => {
-		// Purpose: a valid callable agent must start child Pi with a UUIDv7 session and explicit runtime options.
-		// Input and expected output: the child receives model, thinking, tools, environment, prompt, and a Pi-compatible session ID.
+		// Purpose: a valid callable agent must start unrestricted child Pi and transport its tool patterns independently of the caller catalog.
+		// Input and expected output: a caller without read or grep starts the child without tool CLI flags and passes the definition patterns as JSON.
 		// Edge case: lowercase agentId input preserves stored agent ID casing in the child environment.
 		// Dependencies: this test uses temp agent files, fake tool registry, and fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -1220,7 +1227,7 @@ describe("run-subagent", () => {
 					},
 				),
 			);
-			const pi = createExtensionApiFake(["read", "grep", "write"]);
+			const pi = createExtensionApiFake(["write"]);
 			const ctx = createContext("/tmp/project");
 			await runSubagent(pi, { spawnPi: spawn.spawnPi });
 
@@ -1246,8 +1253,6 @@ describe("run-subagent", () => {
 					"openai/child",
 					"--thinking",
 					"low",
-					"--tools",
-					"read,grep",
 				],
 				options: {
 					cwd: "/tmp/project",
@@ -1259,7 +1264,9 @@ describe("run-subagent", () => {
 			);
 			expect(spawn.calls[0]?.options.env[SUBAGENT_AGENT_ID_ENV]).toBe("Helper");
 			expect(spawn.calls[0]?.options.env[SUBAGENT_DEPTH_ENV]).toBe("1");
-			expect(spawn.calls[0]?.options.env[SUBAGENT_TOOLS_ENV]).toBe("read,grep");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_TOOL_PATTERNS_ENV]).toBe(
+				JSON.stringify(["read", "grep*"]),
+			);
 			expect(spawn.calls[0]?.process.stdin.writes).toEqual([
 				`${JSON.stringify({
 					id: "run-subagent-prompt",
@@ -1328,7 +1335,7 @@ describe("run-subagent", () => {
 
 	test("uses the current project's agent override for prompt guidance and child execution", async () => {
 		// Purpose: prompt guidance and run_subagent execution must resolve one project-local agent definition for the active cwd.
-		// Input and expected output: local helper replaces global Helper in the prompt and supplies the child model, tools, and stored ID.
+		// Input and expected output: local helper replaces global Helper and supplies the child model, transported tool patterns, and stored ID.
 		// Edge case: the override and requested ID use different casing.
 		// Dependencies: this test uses isolated global and project agent files plus fake child RPC output.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -1388,9 +1395,12 @@ describe("run-subagent", () => {
 			).not.toContain("Global helper");
 			expect(spawn.calls[0]?.args).toContain("openai/project");
 			expect(spawn.calls[0]?.args).toContain("high");
-			expect(spawn.calls[0]?.args).toContain("bash");
-			expect(spawn.calls[0]?.args).not.toContain("read");
+			expect(spawn.calls[0]?.args).not.toContain("--tools");
+			expect(spawn.calls[0]?.args).not.toContain("--no-tools");
 			expect(spawn.calls[0]?.options.env[SUBAGENT_AGENT_ID_ENV]).toBe("helper");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_TOOL_PATTERNS_ENV]).toBe(
+				JSON.stringify(["bash"]),
+			);
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "Subagent session: 1\n\ndone" }],
 			});
@@ -1398,9 +1408,9 @@ describe("run-subagent", () => {
 	});
 
 	test("resumes a saved child session by its short numeric id", async () => {
-		// Purpose: review follow-up work must continue the original child conversation instead of creating a fresh session.
-		// Input and expected output: resumeSession 1 immediately renders the persisted agent, resolves the first child UUID, and starts Pi with the exact JSONL path.
-		// Edge case: the resumed run keeps the same public session id, selects the persisted agent among multiple callable agents, and appends no second mapping.
+		// Purpose: review follow-up work must continue the original conversation using the current agent-definition snapshot.
+		// Input and expected output: resumeSession 1 starts Pi with the existing JSONL path and transports newly configured grep* patterns.
+		// Edge case: the caller catalog lacks grep, while the resumed run keeps the same public session ID and appends no second mapping.
 		// Dependencies: this test uses a temporary child session file, two callable agents, and fake RPC output.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -1466,6 +1476,14 @@ describe("run-subagent", () => {
 
 			expect(initialResumeHeader).toBe("resume_subagent Helper · #1");
 
+			await writeAgent(agentDir, {
+				id: "Helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Updated helper prompt",
+				model: { id: "openai/child", thinking: "low" },
+				tools: ["grep*"],
+			});
 			const resumeUpdates: AgentToolResult<unknown>[] = [];
 			const result = (await executeResumeSubagent(
 				pi,
@@ -1495,6 +1513,9 @@ describe("run-subagent", () => {
 				"--thinking",
 				"low",
 			]);
+			expect(spawn.calls[1]?.options.env[SUBAGENT_TOOL_PATTERNS_ENV]).toBe(
+				JSON.stringify(["grep*"]),
+			);
 			expect(result).toMatchObject({
 				content: [{ type: "text", text: "Subagent session: 1\n\ndone" }],
 				details: {
@@ -3059,6 +3080,44 @@ describe("run-subagent", () => {
 			expect(content).toBe(
 				sessionToolText("subagent exited before completing the task"),
 			);
+		});
+	});
+
+	test("terminates a child after a tool-policy startup extension error", async () => {
+		// Purpose: child policy validation errors must fail the parent tool call before buffered prompt work can continue.
+		// Input and expected output: a policy-specific session_start extension_error marks the run failed and sends SIGTERM.
+		// Edge case: the extension error arrives before any prompt response or agent event.
+		// Dependencies: this test uses fake Pi RPC output and the child-process termination boundary.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const policyError =
+				"run-subagent child tool policy: tool pattern yandex_* did not match any available tool";
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					type: "extension_error",
+					event: "session_start",
+					extensionPath: "/package/extensions/run-subagent/index.ts",
+					error: policyError,
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const content =
+				result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(spawn.calls[0]?.process.killedSignals).toContain("SIGTERM");
+			expect(content).toBe(sessionToolText(policyError));
 		});
 	});
 
@@ -5497,9 +5556,9 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("uses --no-tools for an explicit empty tools list", async () => {
-		// Purpose: an explicit empty child tool list must disable tools in the child process.
-		// Input and expected output: empty tools frontmatter produces --no-tools and empty PI_SUBAGENT_TOOLS.
+	test("transports an explicit empty tools list without pruning the catalog", async () => {
+		// Purpose: an explicit empty child tool list must disable active tools without pruning the child catalog.
+		// Input and expected output: empty tools frontmatter produces no tool CLI flags and transports JSON [].
 		// Edge case: empty array is different from missing tools.
 		// Dependencies: this test uses temp agent files and fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
@@ -5520,11 +5579,11 @@ describe("run-subagent", () => {
 				prompt: "Do work",
 			});
 
-			expect(spawn.calls[0]?.args).toContain("--no-tools");
+			expect(spawn.calls[0]?.args).not.toContain("--no-tools");
 			expect(spawn.calls[0]?.args).not.toContain("--tools");
-			const { PI_SUBAGENT_TOOLS: childTools } =
-				spawn.calls[0]?.options.env ?? {};
-			expect(childTools).toBe("");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_TOOL_PATTERNS_ENV]).toBe(
+				"[]",
+			);
 		});
 	});
 
@@ -5565,11 +5624,11 @@ describe("run-subagent", () => {
 		);
 	});
 
-	test("keeps child CLI tool policy when selected main-agent state exists", async () => {
-		// Purpose: a child subagent process must keep the tools passed by run_subagent instead of restoring parent main-agent tools.
-		// Input and expected output: persisted TestAgent enables only run_subagent, child SubAgentExtractor is active through PI_SUBAGENT_AGENT_ID, and session_start must not call setActiveTools(["run_subagent"]).
-		// Edge case: the same cwd has a persisted main-agent state, which is valid for the parent process but stale inside the child process.
-		// Dependencies: this test uses temp agent files, temp selected-agent state, main-agent-selection, and run-subagent composition.
+	test("resolves child tool patterns when selected main-agent state exists", async () => {
+		// Purpose: a child process must resolve transported patterns against its own catalog instead of restoring parent main-agent tools.
+		// Input and expected output: patterns ["read", "ba*"] activate read and bash while stale parent selection remains ignored.
+		// Edge case: the same cwd has persisted parent state and a disjoint main-agent tool set.
+		// Dependencies: this test uses environment transport, temp selected-agent state, main-agent-selection, and run-subagent composition.
 		await withIsolatedEnvironment(
 			async (agentDir) => {
 				const cwd = "/tmp/project";
@@ -5591,6 +5650,10 @@ describe("run-subagent", () => {
 				await writeSelectedAgentState(agentDir, cwd, "TestAgent");
 				const pi = createExtensionApiFake(["run_subagent", "read", "bash"]);
 				const ctx = createContext(cwd);
+				process.env[SUBAGENT_TOOL_PATTERNS_ENV] = JSON.stringify([
+					"read",
+					"ba*",
+				]);
 
 				mainAgentSelection(pi);
 				await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
@@ -5602,7 +5665,7 @@ describe("run-subagent", () => {
 					}
 				}
 
-				expect(pi.activeToolCalls).toEqual([]);
+				expect(pi.activeToolCalls).toEqual([["read", "bash"]]);
 				const promptResult = await runBeforeAgentStartHandlers(
 					pi,
 					{ systemPrompt: "Base" },
@@ -5612,21 +5675,84 @@ describe("run-subagent", () => {
 				expect(
 					(promptResult as { readonly systemPrompt: string }).systemPrompt,
 				).toContain("Extractor prompt");
-				expect(pi.activeToolCalls).toEqual([]);
+				expect(pi.activeToolCalls).toEqual([["read", "bash"]]);
 			},
 			"0",
 			"SubAgentExtractor",
 		);
 	});
 
-	test("omits child tool flags and PI_SUBAGENT_TOOLS when tools are missing", async () => {
-		// Purpose: missing tools must let child pi use its default tool state.
-		// Input and expected output: no tools frontmatter produces no --tools, no --no-tools, and no PI_SUBAGENT_TOOLS.
-		// Edge case: stale parent PI_SUBAGENT_TOOLS must not leak into the child process.
+	test("applies an explicit empty child tool policy", async () => {
+		// Purpose: an explicit empty definition must disable every active child tool without pruning the catalog.
+		// Input and expected output: JSON [] in the child policy environment produces one setActiveTools([]) call.
+		// Edge case: an explicit empty policy differs from an absent policy, which preserves Pi defaults.
+		// Dependencies: this test uses the session_start boundary and a fake child tool catalog.
+		await withIsolatedEnvironment(
+			async () => {
+				process.env[SUBAGENT_TOOL_PATTERNS_ENV] = "[]";
+				const pi = createExtensionApiFake(["read", "bash"]);
+				await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
+
+				await runSessionStartHandlers(pi, createContext("/tmp/project"));
+
+				expect(pi.activeToolCalls).toEqual([[]]);
+			},
+			"0",
+			"Helper",
+		);
+	});
+
+	test("fails closed on malformed child tool-pattern transport", async () => {
+		// Purpose: malformed process-boundary data must not leave default child tools active.
+		// Input and expected output: non-JSON transport clears active tools and rejects session startup with a policy error.
+		// Edge case: diagnostics must not include the malformed raw value.
+		// Dependencies: this test uses the session_start boundary and environment parsing.
+		await withIsolatedEnvironment(
+			async () => {
+				process.env[SUBAGENT_TOOL_PATTERNS_ENV] = "not-json";
+				const pi = createExtensionApiFake(["read"]);
+				await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
+
+				await expect(
+					runSessionStartHandlers(pi, createContext("/tmp/project")),
+				).rejects.toThrow("child tool policy environment is invalid");
+				expect(pi.activeToolCalls).toEqual([[]]);
+			},
+			"0",
+			"Helper",
+		);
+	});
+
+	test("fails closed when a child tool pattern has no catalog match", async () => {
+		// Purpose: unknown child tool patterns must fail explicitly against the child catalog.
+		// Input and expected output: yandex_* with only read available clears active tools and rejects startup.
+		// Edge case: the exact unmatched pattern remains visible in the actionable error.
+		// Dependencies: this test uses the shared wildcard resolver at the child session_start boundary.
+		await withIsolatedEnvironment(
+			async () => {
+				process.env[SUBAGENT_TOOL_PATTERNS_ENV] = JSON.stringify(["yandex_*"]);
+				const pi = createExtensionApiFake(["read"]);
+				await runSubagent(pi, { spawnPi: createSpawnFake().spawnPi });
+
+				await expect(
+					runSessionStartHandlers(pi, createContext("/tmp/project")),
+				).rejects.toThrow(
+					"tool pattern yandex_* did not match any available tool",
+				);
+				expect(pi.activeToolCalls).toEqual([[]]);
+			},
+			"0",
+			"Helper",
+		);
+	});
+
+	test("omits child tool flags and patterns when tools are missing", async () => {
+		// Purpose: missing tools must let child Pi use its default active-tool state.
+		// Input and expected output: no tools frontmatter produces no tool CLI flags or child tool-pattern environment value.
+		// Edge case: a stale parent tool-pattern value must not leak into the child process.
 		// Dependencies: this test uses temp agent files and fake child process output.
 		await withIsolatedEnvironment(async (agentDir) => {
-			const previousTools = process.env[SUBAGENT_TOOLS_ENV];
-			process.env[SUBAGENT_TOOLS_ENV] = "stale";
+			process.env[SUBAGENT_TOOL_PATTERNS_ENV] = "stale-patterns";
 			try {
 				await writeAgent(agentDir, {
 					id: "helper",
@@ -5646,15 +5772,11 @@ describe("run-subagent", () => {
 
 				expect(spawn.calls[0]?.args).not.toContain("--tools");
 				expect(spawn.calls[0]?.args).not.toContain("--no-tools");
-				expect("PI_SUBAGENT_TOOLS" in (spawn.calls[0]?.options.env ?? {})).toBe(
-					false,
-				);
+				expect(
+					SUBAGENT_TOOL_PATTERNS_ENV in (spawn.calls[0]?.options.env ?? {}),
+				).toBe(false);
 			} finally {
-				if (previousTools === undefined) {
-					delete process.env[SUBAGENT_TOOLS_ENV];
-				} else {
-					process.env[SUBAGENT_TOOLS_ENV] = previousTools;
-				}
+				delete process.env[SUBAGENT_TOOL_PATTERNS_ENV];
 			}
 		});
 	});
@@ -5735,10 +5857,10 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("rejects full wildcard tool patterns", async () => {
-		// Purpose: full wildcard must not grant every tool to child agents.
-		// Input and expected output: tools ["**"] rejects execution and does not spawn.
-		// Edge case: all-wildcard patterns differ from narrower wildcard patterns such as grep*.
+	test("transports full wildcard patterns for child-side rejection", async () => {
+		// Purpose: the parent must not validate a child policy against its restricted catalog.
+		// Input and expected output: tools ["**"] starts unrestricted child Pi and transports the pattern unchanged.
+		// Edge case: the child session_start boundary remains responsible for rejecting the unsafe full wildcard.
 		// Dependencies: this test uses temp agent files and fake child process.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -5758,7 +5880,12 @@ describe("run-subagent", () => {
 				prompt: "Do work",
 			});
 
-			expect(spawn.calls).toEqual([]);
+			expect(spawn.calls).toHaveLength(1);
+			expect(spawn.calls[0]?.args).not.toContain("--tools");
+			expect(spawn.calls[0]?.args).not.toContain("--no-tools");
+			expect(spawn.calls[0]?.options.env[SUBAGENT_TOOL_PATTERNS_ENV]).toBe(
+				JSON.stringify(["**"]),
+			);
 			expect(result).toMatchObject({ content: [{ type: "text" }] });
 		});
 	});

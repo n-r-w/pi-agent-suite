@@ -38,7 +38,7 @@ Configured description files must be readable and non-empty after trimming white
 
 Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended by `<cwd>/.pi/agents`.
 
-`run-subagent` rebuilds the registry for the current working directory when it creates callable-agent guidance and when it validates a tool call. A project override therefore supplies the child prompt, model, thinking level, tools, and callable subagents. Resumed sessions keep their original agent ID but use its current definition for the same working directory.
+`run-subagent` rebuilds the registry for the current working directory when it creates callable-agent guidance and when it validates a tool call. A project override therefore supplies the child prompt, model, thinking level, tools, and callable subagents. Each child resolves its own `tools` patterns against its complete runtime tool catalog, independently of the caller's catalog. Resumed sessions keep their original agent ID but use its current definition for the same working directory.
 
 ## Authentication startup recovery
 
@@ -171,6 +171,7 @@ Both tools expose closed root object schemas with `additionalProperties: false`.
 - Agent tool lists must explicitly allow `resume_subagent`; allowing `run_subagent` does not add it automatically.
 - `run_subagent` is the master capability. If it is not active, `resume_subagent` is removed even when listed.
 - Reaching `maxDepth` removes both tools and their callable-agent guidance.
+- Removing delegation tools does not change any other tool selected by the child definition.
 - Setting `enabled` to `false` prevents both tools from being registered.
 
 ## Session continuation
@@ -201,6 +202,7 @@ Continuation follows these rules:
 - One main-agent runtime cannot start two child processes for the same session concurrently.
 - Missing, conflicting, foreign, or active session IDs fail without starting a new session.
 - A resumed run uses the current model, thinking level, tools, and instructions configured for the same agent.
+- The resumed child resolves the current tool patterns against its own runtime catalog, not the resuming caller's catalog.
 
 The numeric alias, child UUID, child session directory, `agentId`, and working directory are persisted as a Pi custom session entry. The current main-session branch also retains versioned invocation-start and browser-selection entries. Terminal tool-result details rebuild completed widget state; a start without a later terminal result reopens as `aborted`. Unknown or malformed widget records reset only the affected reconstructed widget or selection state. They do not invalidate the child-session registry or modify child JSONL files.
 

@@ -26,7 +26,7 @@ import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-a
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
-	SUBAGENT_TOOLS_ENV,
+	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../../pi-package/shared/subagent-environment";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -37,7 +37,7 @@ const AUXILIARY_SESSION_ID_PATTERN =
 const SUBAGENT_ENV_KEYS = [
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_AGENT_ID_ENV,
-	SUBAGENT_TOOLS_ENV,
+	SUBAGENT_TOOL_PATTERNS_ENV,
 ] as const;
 
 /** SGR reset sequence that would break parent panel styling when embedded in truncated text. */
@@ -1842,7 +1842,7 @@ describe("consult-advisor", () => {
 		);
 		process.env[SUBAGENT_DEPTH_ENV] = "1";
 		process.env[SUBAGENT_AGENT_ID_ENV] = "SubAgentSage";
-		process.env[SUBAGENT_TOOLS_ENV] = "read,bash";
+		process.env[SUBAGENT_TOOL_PATTERNS_ENV] = JSON.stringify(["read", "bash"]);
 		try {
 			await withIsolatedAgentDir(async (agentDir) => {
 				await writeAgent(agentDir, "main", "main", "Main prompt", [

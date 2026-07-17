@@ -108,6 +108,7 @@ Basic rules:
 - The Markdown text after the settings block is the agent prompt.
 - `type` can be `main`, `subagent`, or `both`.
 - `tools` can list exact tool names or narrow wildcard patterns. Full wildcard `*` is not allowed.
+- Each child resolves `tools` against its own runtime catalog, independently of its caller's tools.
 - `agents` limits which subagents agent may call.
 
 Example:

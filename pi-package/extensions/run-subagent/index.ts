@@ -43,7 +43,7 @@ import { withRetry } from "../../shared/retry";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
-	SUBAGENT_TOOLS_ENV,
+	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../shared/subagent-environment";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 import { resolveToolPolicy } from "../../shared/tool-policy";
@@ -51,6 +51,7 @@ import {
 	createChildEnvironment,
 	readSubagentAgentId,
 	readSubagentDepth,
+	readSubagentToolPatterns,
 } from "./environment";
 import {
 	appendSubagentStderr,
@@ -89,6 +90,8 @@ import {
 const RUN_TOOL_NAME = "run_subagent";
 const RESUME_TOOL_NAME = "resume_subagent";
 const ISSUE_PREFIX = "[run-subagent]";
+/** Stable marker used to fail a parent run on child policy initialization errors. */
+const CHILD_TOOL_POLICY_ERROR_PREFIX = "run-subagent child tool policy:";
 const RUN_SUBAGENT_EXTENSION_DIR = "run-subagent";
 const RUN_SUBAGENT_LEGACY_CONFIG_FILE = "run-subagent.json";
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "prompts");
@@ -266,11 +269,6 @@ interface SubagentToolExecutionInput {
 	readonly ctx: ExtensionContext;
 }
 
-interface ChildToolPolicy {
-	readonly args: string[];
-	readonly env: Record<string, string>;
-}
-
 type ChildRunStatus = "succeeded" | "failed" | "aborted";
 
 interface ChildRunResult {
@@ -308,7 +306,6 @@ interface ResolvedRunSubagentExecution {
 	readonly depth: number;
 	readonly agent: AgentDefinition;
 	readonly modelId: string;
-	readonly childTools: ChildToolPolicy;
 	readonly thinking: string;
 	readonly childAuthPreflightSucceeded: boolean;
 }
@@ -383,6 +380,7 @@ export default async function runSubagent(
 		},
 	});
 	pi.on("session_start", (_event, ctx) => {
+		applyChildToolPolicy(pi);
 		subagentBrowser.close();
 		sessionRegistry.restore(ctx.sessionManager.getEntries());
 		restoreSubagentWidgetState(
@@ -467,6 +465,33 @@ function registerSubagentTools(options: RegisterSubagentToolsOptions): void {
 			),
 		renderResult: renderRunSubagentResult,
 	});
+}
+
+/** Applies the selected definition's patterns against the complete child runtime catalog. */
+function applyChildToolPolicy(pi: ExtensionAPI): void {
+	const configuredPatterns = readSubagentToolPatterns();
+	if ("issue" in configuredPatterns) {
+		failChildToolPolicy(pi, configuredPatterns.issue);
+	}
+	if (configuredPatterns.patterns === undefined) {
+		return;
+	}
+
+	const availableToolNames = pi.getAllTools().map((tool) => tool.name);
+	const resolvedPolicy = resolveToolPolicy(
+		configuredPatterns.patterns,
+		availableToolNames,
+	);
+	if ("issue" in resolvedPolicy) {
+		failChildToolPolicy(pi, resolvedPolicy.issue);
+	}
+	pi.setActiveTools([...resolvedPolicy.tools]);
+}
+
+/** Removes all active tools before reporting an invalid child policy. */
+function failChildToolPolicy(pi: ExtensionAPI, issue: string): never {
+	pi.setActiveTools([]);
+	throw new Error(`${CHILD_TOOL_POLICY_ERROR_PREFIX} ${issue}`);
 }
 
 /** Publishes callable-agent guidance and child prompt through runtime composition. */
@@ -818,18 +843,12 @@ async function resolveRunSubagentPlan(
 		return authPreflight;
 	}
 
-	const childTools = resolveChildToolPolicy(options.pi, agent);
-	if ("issue" in childTools) {
-		return { result: errorResult(childTools.issue) };
-	}
-
 	return {
 		plan: {
 			config,
 			depth,
 			agent,
 			modelId,
-			childTools,
 			thinking: agent.model?.thinking ?? options.pi.getThinkingLevel(),
 			childAuthPreflightSucceeded: authPreflight.succeeded,
 		},
@@ -1112,13 +1131,12 @@ async function runResolvedChildPi(
 	const env = createChildEnvironment({
 		[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
 		[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
-		...plan.childTools.env,
+		...serializeChildToolPatterns(plan.agent.tools),
 	});
 	return runChildPi(options.spawnPi, {
 		args: buildChildArgs({
 			modelId: plan.modelId,
 			thinking: plan.thinking,
-			toolPolicy: plan.childTools,
 			session,
 		}),
 		cwd: options.ctx.cwd,
@@ -1441,29 +1459,13 @@ function formatElapsedMs(elapsedMs: number): string {
 	return `${(elapsedMs / SECOND_MS).toFixed(ELAPSED_SECONDS_FRACTION_DIGITS)}s`;
 }
 
-/** Resolves child tool flags and environment from the callable agent tool policy. */
-function resolveChildToolPolicy(
-	pi: ExtensionAPI,
-	agent: AgentDefinition,
-): ChildToolPolicy | { readonly issue: string } {
-	if (agent.tools === undefined) {
-		return { args: [], env: {} };
-	}
-	if (agent.tools.length === 0) {
-		return { args: ["--no-tools"], env: { [SUBAGENT_TOOLS_ENV]: "" } };
-	}
-
-	const availableToolNames = pi.getAllTools().map((tool) => tool.name);
-	const resolved = resolveToolPolicy(agent.tools, availableToolNames);
-	if ("issue" in resolved) {
-		return resolved;
-	}
-
-	const toolsValue = resolved.tools.join(",");
-	return {
-		args: ["--tools", toolsValue],
-		env: { [SUBAGENT_TOOLS_ENV]: toolsValue },
-	};
+/** Serializes the selected definition snapshot without resolving it against the caller catalog. */
+function serializeChildToolPatterns(
+	patterns: readonly string[] | undefined,
+): Record<string, string> {
+	return patterns === undefined
+		? {}
+		: { [SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify(patterns) };
 }
 
 /** Builds the child pi command-line arguments. */
@@ -1498,7 +1500,6 @@ async function findChildSessionPath(
 function buildChildArgs(options: {
 	readonly modelId: string;
 	readonly thinking: string;
-	readonly toolPolicy: ChildToolPolicy;
 	readonly session: ChildSessionLaunch;
 }): string[] {
 	const sessionArgs =
@@ -1523,7 +1524,6 @@ function buildChildArgs(options: {
 		options.modelId,
 		"--thinking",
 		options.thinking,
-		...options.toolPolicy.args,
 	];
 }
 
@@ -1560,6 +1560,8 @@ async function runChildPi(
 				recordCost: options.recordCost,
 				writeRpcCommand,
 				closeStdin,
+				terminateForPolicyError: (error) =>
+					terminateChildRpcRun(child, rpcState, error),
 			});
 		const finish = (code: number | null) =>
 			finishChildRpcRun({
@@ -1676,7 +1678,26 @@ function abortChildRpcRun(
 	scheduleChildTerminationFallback(child, state);
 }
 
-/** Schedules idempotent child termination fallback for aborted or failed runs. */
+/** Immediately terminates a child that could otherwise run with an invalid active-tool policy. */
+function terminateChildRpcRun(
+	child: SpawnedProcess,
+	state: ChildRpcState,
+	error: string,
+): void {
+	if (state.resolved) {
+		return;
+	}
+	state.fatalError ??= error;
+	closeChildStdin(child, state);
+	child.kill("SIGTERM");
+	if (state.abortKillTimer === undefined) {
+		state.abortKillTimer = setTimeout(() => {
+			child.kill("SIGKILL");
+		}, CHILD_ABORT_KILL_TIMEOUT_MS);
+	}
+}
+
+/** Schedules normal abort escalation after the RPC grace period. */
 function scheduleChildTerminationFallback(
 	child: SpawnedProcess,
 	state: ChildRpcState,
@@ -1889,9 +1910,15 @@ function handleChildRpcMessage(options: {
 	readonly recordCost: (message: { readonly usage?: unknown }) => void;
 	readonly writeRpcCommand: (command: Record<string, unknown>) => void;
 	readonly closeStdin: () => void;
+	readonly terminateForPolicyError: (error: string) => void;
 }): void {
 	const { message, rpcState } = options;
 	if (!isRecord(message)) {
+		return;
+	}
+	const policyError = resolveChildToolPolicyStartupError(message);
+	if (policyError !== undefined) {
+		options.terminateForPolicyError(policyError);
 		return;
 	}
 	if (message["type"] === "response") {
@@ -1904,6 +1931,19 @@ function handleChildRpcMessage(options: {
 		return;
 	}
 	handleChildRpcSessionEvent(message, options);
+}
+
+/** Extracts only run-subagent's stable child-policy startup failure signal. */
+function resolveChildToolPolicyStartupError(
+	message: Record<string, unknown>,
+): string | undefined {
+	const error = message["error"];
+	return message["type"] === "extension_error" &&
+		message["event"] === "session_start" &&
+		typeof error === "string" &&
+		error.startsWith(`${CHILD_TOOL_POLICY_ERROR_PREFIX} `)
+		? error
+		: undefined;
 }
 
 /** Handles RPC command responses without exposing them as progress events. */

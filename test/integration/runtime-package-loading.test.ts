@@ -16,9 +16,10 @@ const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
-const SUBAGENT_TOOLS_ENV = "PI_SUBAGENT_TOOLS";
+const SUBAGENT_TOOL_PATTERNS_ENV = "PI_SUBAGENT_TOOL_PATTERNS";
 
 interface RuntimeDump {
+	readonly activeTools: readonly string[];
 	readonly tools: readonly string[];
 	readonly systemPrompt: string;
 }
@@ -136,6 +137,7 @@ function writeRuntimeDumpExtension(directory: string): string {
 			"\t\tconst dumpFile = process.env.PI_RUNTIME_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_RUNTIME_DUMP_FILE is required");',
 			"\t\twriteFileSync(dumpFile, JSON.stringify({",
+			"\t\t\tactiveTools: pi.getActiveTools(),",
 			"\t\t\ttools: pi.getAllTools().map((tool) => tool.name),",
 			"\t\t\tsystemPrompt: event.systemPrompt,",
 			"\t\t}, null, 2));",
@@ -173,7 +175,7 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 	};
 	delete childEnv[SUBAGENT_AGENT_ID_ENV];
 	delete childEnv[SUBAGENT_DEPTH_ENV];
-	delete childEnv[SUBAGENT_TOOLS_ENV];
+	delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
 
 	try {
 		const result = spawnSync(
@@ -218,18 +220,18 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 });
 
 test("runtime child loading uses the project agent override", () => {
-	// Purpose: real child Pi loading must resolve the selected subagent from the project registry for its cwd.
-	// Input and expected output: project SubAgentExtractor replaces the global definition and contributes only the project prompt.
-	// Edge case: the child agent ID keeps the global casing while override matching remains case-insensitive.
-	// Dependencies: local pi CLI, isolated global and project agent files, and a debug extension that exits before model access.
+	// Purpose: real child Pi must preserve its full catalog while applying only its independently transported active-tool policy.
+	// Input and expected output: project SubAgentExtractor contributes its prompt, the catalog retains bash, and active tools equal read.
+	// Edge case: the child agent ID keeps global casing while the project override and tool policy remain independent of caller tools.
+	// Dependencies: local Pi CLI, isolated agent files, package lifecycle handlers, and a debug extension that exits before model access.
 	const repositoryDir = process.cwd();
 	const projectDir = realpathSync(
 		mkdtempSync(join(tmpdir(), "pi-runtime-project-agents-")),
 	);
 	const scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-project-dump-"));
 	const agentDir = createIsolatedAgentDir(projectDir);
-	const promptDumpFile = join(scratchDir, "system-prompt.txt");
-	const debugExtensionPath = writePromptDumpExtension(scratchDir);
+	const runtimeDumpFile = join(scratchDir, "runtime.json");
+	const debugExtensionPath = writeRuntimeDumpExtension(scratchDir);
 	writeProjectAgent(
 		projectDir,
 		"subagentextractor.md",
@@ -245,10 +247,10 @@ test("runtime child loading uses the project agent override", () => {
 		...process.env,
 		PI_CODING_AGENT_DIR: agentDir,
 		PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
-		PI_PROMPT_DUMP_FILE: promptDumpFile,
+		PI_RUNTIME_DUMP_FILE: runtimeDumpFile,
 		[SUBAGENT_AGENT_ID_ENV]: "SubAgentExtractor",
 		[SUBAGENT_DEPTH_ENV]: "1",
-		[SUBAGENT_TOOLS_ENV]: "read",
+		[SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify(["read"]),
 	};
 
 	try {
@@ -273,9 +275,13 @@ test("runtime child loading uses the project agent override", () => {
 		);
 
 		expect(result.status).toBe(23);
-		const prompt = readFileSync(promptDumpFile, "utf8");
-		expect(prompt).toContain("PROJECT_AGENT_BODY");
-		expect(prompt).not.toContain("Extractor prompt");
+		const runtime = JSON.parse(
+			readFileSync(runtimeDumpFile, "utf8"),
+		) as RuntimeDump;
+		expect(runtime.systemPrompt).toContain("PROJECT_AGENT_BODY");
+		expect(runtime.systemPrompt).not.toContain("Extractor prompt");
+		expect(runtime.tools).toContain("bash");
+		expect(runtime.activeTools).toEqual(["read"]);
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(projectDir, { recursive: true, force: true });
@@ -316,7 +322,7 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 	};
 	delete childEnv[SUBAGENT_AGENT_ID_ENV];
 	delete childEnv[SUBAGENT_DEPTH_ENV];
-	delete childEnv[SUBAGENT_TOOLS_ENV];
+	delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
 
 	try {
 		const result = spawnSync(
@@ -372,7 +378,7 @@ test("runtime package loading exposes convene_council when enabled", () => {
 	};
 	delete childEnv[SUBAGENT_AGENT_ID_ENV];
 	delete childEnv[SUBAGENT_DEPTH_ENV];
-	delete childEnv[SUBAGENT_TOOLS_ENV];
+	delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
 
 	try {
 		const configDir = join(agentDir, "agent-suite", "convene-council");
