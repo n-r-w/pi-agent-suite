@@ -72,6 +72,7 @@ import {
 	type SubagentSessionReference,
 	SubagentSessionRegistry,
 } from "./session-registry";
+import { ChildStartupGate } from "./startup-gate";
 import {
 	createSubagentWidgetFactory,
 	createSubagentWidgetState,
@@ -254,6 +255,7 @@ interface RunSubagentDependencies {
 interface RegisterSubagentToolsOptions {
 	readonly pi: ExtensionAPI;
 	readonly spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>;
+	readonly startupGate: ChildStartupGate;
 	readonly sessionRegistry: SubagentSessionRegistry;
 	readonly subagentWidgetState: ReturnType<typeof createSubagentWidgetState>;
 	readonly subagentBrowser: ReturnType<typeof createSubagentBrowserController>;
@@ -281,6 +283,19 @@ interface ChildRunResult {
 	readonly streamedTextExceededLimit: boolean;
 }
 
+/** Builds an aborted result when cancellation removes a child before process startup. */
+function createAbortedChildRunResult(): ChildRunResult {
+	return {
+		exitCode: 0,
+		status: "aborted",
+		errorMessage: ABORTED_CHILD_RPC_RUN_ERROR,
+		stdoutText: "",
+		stderrText: "",
+		stdoutLineExceededLimit: false,
+		streamedTextExceededLimit: false,
+	};
+}
+
 interface ChildFinalOutputState {
 	streamedText: string;
 	streamedTextBytes: number;
@@ -291,6 +306,7 @@ interface ChildFinalOutputState {
 interface ExecuteRunSubagentOptions {
 	readonly pi: ExtensionAPI;
 	readonly spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>;
+	readonly startupGate: ChildStartupGate;
 	readonly sessionRegistry: SubagentSessionRegistry;
 	readonly subagentWidgetState: ReturnType<typeof createSubagentWidgetState>;
 	readonly subagentBrowser: ReturnType<typeof createSubagentBrowserController>;
@@ -353,6 +369,7 @@ export default async function runSubagent(
 
 	const descriptions = resolveSubagentToolDescriptions(startupConfig);
 	const spawnPi = dependencies.spawnPi ?? defaultSpawnPi;
+	const startupGate = new ChildStartupGate();
 	const subagentWidgetState = createSubagentWidgetState();
 	const subagentBrowser = createSubagentBrowserController(
 		subagentWidgetState,
@@ -404,6 +421,7 @@ export default async function runSubagent(
 	registerSubagentTools({
 		pi,
 		spawnPi,
+		startupGate,
 		sessionRegistry,
 		subagentWidgetState,
 		subagentBrowser,
@@ -1128,36 +1146,46 @@ async function runResolvedChildPi(
 	progress: ReturnType<typeof createRunSubagentProgress>,
 	session: ChildSessionLaunch,
 ): Promise<ChildRunResult> {
+	const releaseStartup = await options.startupGate.acquire(options.signal);
+	if (releaseStartup === undefined) {
+		return createAbortedChildRunResult();
+	}
+
 	const env = createChildEnvironment({
 		[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
 		[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
 		...serializeChildToolPatterns(plan.agent.tools),
 	});
-	return runChildPi(options.spawnPi, {
-		args: buildChildArgs({
-			modelId: plan.modelId,
-			thinking: plan.thinking,
-			session,
-		}),
-		cwd: options.ctx.cwd,
-		env,
-		runtimeFacts: resolveChildRpcRuntimeFacts({
-			modelId: plan.modelId,
-			modelRegistry: options.ctx.modelRegistry,
+	try {
+		return await runChildPi(options.spawnPi, {
+			args: buildChildArgs({
+				modelId: plan.modelId,
+				thinking: plan.thinking,
+				session,
+			}),
 			cwd: options.ctx.cwd,
 			env,
-		}),
-		signal: options.signal,
-		prompt: options.params.prompt,
-		onSessionEvent(event) {
-			if (recordSubagentSessionEvent(progress.state, event, Date.now())) {
-				progress.emit("running");
-			}
-		},
-		recordCost(message) {
-			recordHelperApiCost(options.pi, "run-subagent", message);
-		},
-	});
+			runtimeFacts: resolveChildRpcRuntimeFacts({
+				modelId: plan.modelId,
+				modelRegistry: options.ctx.modelRegistry,
+				cwd: options.ctx.cwd,
+				env,
+			}),
+			signal: options.signal,
+			prompt: options.params.prompt,
+			onPromptPreflightComplete: releaseStartup,
+			onSessionEvent(event) {
+				if (recordSubagentSessionEvent(progress.state, event, Date.now())) {
+					progress.emit("running");
+				}
+			},
+			recordCost(message) {
+				recordHelperApiCost(options.pi, "run-subagent", message);
+			},
+		});
+	} finally {
+		releaseStartup();
+	}
 }
 
 /** Converts the child process result into the final tool output. */
@@ -1537,6 +1565,7 @@ async function runChildPi(
 		readonly runtimeFacts: ChildRpcRuntimeFacts;
 		readonly signal: AbortSignal | undefined;
 		readonly prompt: string;
+		readonly onPromptPreflightComplete: () => void;
 		readonly onSessionEvent: (event: unknown) => void;
 		readonly recordCost: (message: { readonly usage?: unknown }) => void;
 	},
@@ -1560,6 +1589,7 @@ async function runChildPi(
 				recordCost: options.recordCost,
 				writeRpcCommand,
 				closeStdin,
+				onPromptPreflightComplete: options.onPromptPreflightComplete,
 				terminateForPolicyError: (error) =>
 					terminateChildRpcRun(child, rpcState, error),
 			});
@@ -1910,6 +1940,7 @@ function handleChildRpcMessage(options: {
 	readonly recordCost: (message: { readonly usage?: unknown }) => void;
 	readonly writeRpcCommand: (command: Record<string, unknown>) => void;
 	readonly closeStdin: () => void;
+	readonly onPromptPreflightComplete: () => void;
 	readonly terminateForPolicyError: (error: string) => void;
 }): void {
 	const { message, rpcState } = options;
@@ -1922,7 +1953,12 @@ function handleChildRpcMessage(options: {
 		return;
 	}
 	if (message["type"] === "response") {
-		handleChildRpcResponse(message, rpcState, options.closeStdin);
+		handleChildRpcResponse(
+			message,
+			rpcState,
+			options.closeStdin,
+			options.onPromptPreflightComplete,
+		);
 		return;
 	}
 	if (message["type"] === "extension_ui_request") {
@@ -1951,8 +1987,13 @@ function handleChildRpcResponse(
 	message: Record<string, unknown>,
 	state: ChildRpcState,
 	closeStdin: () => void,
+	onPromptPreflightComplete: () => void,
 ): void {
-	if (message["command"] !== "prompt" || message["success"] !== false) {
+	if (message["id"] !== PROMPT_COMMAND_ID || message["command"] !== "prompt") {
+		return;
+	}
+	onPromptPreflightComplete();
+	if (message["success"] !== false) {
 		return;
 	}
 	state.fatalError =

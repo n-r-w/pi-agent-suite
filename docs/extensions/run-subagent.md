@@ -44,7 +44,9 @@ Callable agents come from the shared agent registry documented in [main-agent-se
 
 Before allocating a new child session, `run-subagent` resolves the selected model credentials through the parent model registry. A parent authentication failure returns immediately without starting child `pi`.
 
-A fresh child can temporarily miss OAuth credentials when another Pi process holds the shared `auth.json` lock during token refresh. After successful parent authentication, `run-subagent` retries only the matching `No API key found for <provider>` startup failure. Recovery requires an exit code of zero, no child output or execution events, and no child session file. The original attempt and up to three retries use the same numeric session ID and child UUID. Exponential randomized delays reduce repeated lock contention across concurrent Pi processes. Cancellation, resumed sessions, failures after session creation, and other errors are not retried.
+Concurrent child calls share one FIFO startup gate. The gate allows one child Pi process at a time to start and complete prompt preflight, including credential loading. A successful prompt response releases the gate while the child continues its full run, so agent execution remains parallel. Prompt rejection, process exit, and spawn failure also release the gate. Cancellation before process creation removes the call from the queue without starting Pi; cancellation after process creation uses the child RPC abort path.
+
+A fresh child can still temporarily miss OAuth credentials when an independent Pi process holds the shared `auth.json` lock. After successful parent authentication, `run-subagent` retries only the matching `No API key found for <provider>` startup failure. Every retry re-enters the startup gate. Recovery requires an exit code of zero, no child output or execution events, and no child session file. The original attempt and up to three retries use the same numeric session ID and child UUID. Exponential randomized delays reduce repeated lock contention with external Pi processes. Resumed sessions, failures after session creation, and other errors are not retried.
 
 ## Live progress
 

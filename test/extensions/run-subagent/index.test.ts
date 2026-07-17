@@ -765,6 +765,19 @@ function emitChildRpc(
 	process.stdout.emit("data", `${JSON.stringify(message)}\n`);
 }
 
+/** Completes one child after prompt preflight so concurrency tests stay focused on startup ordering. */
+function completeChildRpcRun(
+	process: SpawnedProcessFake,
+	finalText: string,
+): void {
+	emitChildRpc(process, {
+		type: "message_end",
+		message: childAssistantMessage(finalText),
+	});
+	emitChildRpc(process, { type: "agent_end", messages: [] });
+	process.emit("close", 0);
+}
+
 /** Extracts the first text block from a tool result fixture. */
 function toolText(result: AgentToolResult<unknown>): string {
 	return result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -818,6 +831,71 @@ function createSequentialSpawnFake(
 	};
 }
 
+/** Creates manually controlled child processes and exposes each recorded spawn call. */
+function createControlledSpawnFake(): {
+	readonly calls: SpawnCall[];
+	readonly spawnPi: (
+		command: string,
+		args: string[],
+		options: SpawnCall["options"],
+	) => SpawnedProcessFake;
+	readonly waitForCall: (index: number) => Promise<SpawnCall>;
+} {
+	const calls: SpawnCall[] = [];
+	const waiters = new Map<number, (call: SpawnCall) => void>();
+
+	return {
+		calls,
+		spawnPi(
+			command: string,
+			args: string[],
+			options: SpawnCall["options"],
+		): SpawnedProcessFake {
+			const process = new SpawnedProcessFakeImpl();
+			const call = { command, args, options, process };
+			calls.push(call);
+			const callIndex = calls.length - 1;
+			const resolveCall = waiters.get(callIndex);
+			waiters.delete(callIndex);
+			resolveCall?.(call);
+			return process;
+		},
+		waitForCall(index: number): Promise<SpawnCall> {
+			const call = calls[index];
+			if (call !== undefined) {
+				return Promise.resolve(call);
+			}
+			return new Promise((resolve) => {
+				waiters.set(index, resolve);
+			});
+		},
+	};
+}
+
+/** Loads run-subagent with the common callable agent used by startup behavior tests. */
+async function createStartupTestHarness(
+	agentDir: string,
+	spawnPi: (
+		command: string,
+		args: string[],
+		options: SpawnCall["options"],
+	) => SpawnedProcessFake,
+): Promise<{
+	readonly pi: ExtensionApiFake;
+	readonly ctx: CommandContextFake;
+}> {
+	await writeAgent(agentDir, {
+		id: "helper",
+		type: "subagent",
+		description: "Helper",
+		body: "Helper prompt",
+	});
+	const pi = createExtensionApiFake();
+	const ctx = createContext("/tmp/project");
+	await runSubagent(pi, { spawnPi });
+	return { pi, ctx };
+}
+
 /** Creates a fake child process that can emit RPC output and close. */
 function createSpawnFake(outputLines: readonly string[] = rpcOutputLines()): {
 	readonly calls: SpawnCall[];
@@ -859,6 +937,7 @@ async function executeRunSubagent(
 		readonly prompt: string;
 	},
 	onUpdate?: (partial: AgentToolResult<unknown>) => void,
+	signal?: AbortSignal,
 ): Promise<unknown> {
 	return getRunSubagentTool(pi).execute(
 		"tool-call-1",
@@ -866,7 +945,7 @@ async function executeRunSubagent(
 			...params,
 			taskName: params.taskName ?? DEFAULT_TEST_TASK_NAME,
 		},
-		undefined,
+		signal,
 		onUpdate,
 		ctx as never,
 	);
@@ -2434,6 +2513,281 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("serializes child startup only until prompt preflight succeeds", async () => {
+		// Purpose: concurrent subagents must not contend for startup auth while their full executions remain parallel.
+		// Input and expected output: the second child waits for the first prompt success, then starts before the first child completes.
+		// Edge case: both child executions remain active after the startup gate advances.
+		// Dependencies: this test uses controlled fake child processes and concurrent tool execution.
+		await withIsolatedEnvironment(async (agentDir) => {
+			const spawn = createControlledSpawnFake();
+			const { pi, ctx } = await createStartupTestHarness(
+				agentDir,
+				spawn.spawnPi,
+			);
+
+			const firstResult = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Run first child",
+				prompt: "Do first work",
+			});
+			const firstCall = await spawn.waitForCall(0);
+			const secondResult = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Run second child",
+				prompt: "Do second work",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(spawn.calls).toHaveLength(1);
+			emitChildRpc(firstCall.process, {
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: true,
+			});
+			const secondCall = await spawn.waitForCall(1);
+			expect(spawn.calls).toHaveLength(2);
+			expect(firstCall.process.stdin.ended).toBe(false);
+
+			emitChildRpc(secondCall.process, {
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: true,
+			});
+			completeChildRpcRun(firstCall.process, "First complete");
+			completeChildRpcRun(secondCall.process, "Second complete");
+
+			expect(
+				toolText((await firstResult) as AgentToolResult<unknown>),
+			).toContain("First complete");
+			expect(
+				toolText((await secondResult) as AgentToolResult<unknown>),
+			).toContain("Second complete");
+		});
+	});
+
+	test("removes a cancelled child from the startup queue", async () => {
+		// Purpose: cancelling a queued child must not spawn it or block later child startup.
+		// Input and expected output: the second child is cancelled while the first owns startup, then the first releases normally.
+		// Edge case: cancellation happens before the queued child creates any process or session file.
+		// Dependencies: this test uses AbortController and one controlled fake child process.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createControlledSpawnFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const firstResult = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Run gate owner",
+				prompt: "Hold startup",
+			});
+			const firstCall = await spawn.waitForCall(0);
+			const controller = new AbortController();
+			const cancelledResult = executeRunSubagent(
+				pi,
+				ctx,
+				{
+					agentId: "helper",
+					taskName: "Cancel queued child",
+					prompt: "Do not start",
+				},
+				undefined,
+				controller.signal,
+			);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			controller.abort();
+
+			expect(
+				toolText((await cancelledResult) as AgentToolResult<unknown>),
+			).toContain("subagent execution aborted");
+			expect(spawn.calls).toHaveLength(1);
+
+			emitChildRpc(firstCall.process, {
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: true,
+			});
+			completeChildRpcRun(firstCall.process, "Owner complete");
+			await firstResult;
+		});
+	});
+
+	test("advances the startup queue after prompt preflight rejection", async () => {
+		// Purpose: a rejected prompt preflight must release startup ownership before the failed process exits.
+		// Input and expected output: the second child starts after the first prompt rejection and completes normally.
+		// Edge case: the rejected child remains alive briefly after its stdin closes.
+		// Dependencies: this test uses controlled fake child processes and concurrent tool execution.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createControlledSpawnFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const rejectedResult = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Reject child preflight",
+				prompt: "Reject this work",
+			});
+			const rejectedCall = await spawn.waitForCall(0);
+			const successfulResult = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Run next child",
+				prompt: "Do next work",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(spawn.calls).toHaveLength(1);
+
+			emitChildRpc(rejectedCall.process, {
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: false,
+				error: "prompt rejected",
+			});
+			const successfulCall = await spawn.waitForCall(1);
+			expect(spawn.calls).toHaveLength(2);
+			expect(rejectedCall.process.stdin.ended).toBe(true);
+			rejectedCall.process.emit("close", 0);
+
+			emitChildRpc(successfulCall.process, {
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: true,
+			});
+			completeChildRpcRun(successfulCall.process, "Next complete");
+
+			expect(
+				toolText((await rejectedResult) as AgentToolResult<unknown>),
+			).toContain("prompt rejected");
+			expect(
+				toolText((await successfulResult) as AgentToolResult<unknown>),
+			).toContain("Next complete");
+		});
+	});
+
+	test("advances the startup queue when a child exits before preflight", async () => {
+		// Purpose: a child that exits without an RPC response must not leave startup ownership locked.
+		// Input and expected output: the second child starts after the first process closes and completes normally.
+		// Edge case: the first child produces no stdout, session events, or prompt response.
+		// Dependencies: this test uses controlled fake child processes and concurrent tool execution.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createControlledSpawnFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const exitedResult = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Exit during startup",
+				prompt: "Exit before preflight",
+			});
+			const exitedCall = await spawn.waitForCall(0);
+			const successfulResult = executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Run after exit",
+				prompt: "Do work after exit",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(spawn.calls).toHaveLength(1);
+
+			exitedCall.process.emit("close", 1);
+			const successfulCall = await spawn.waitForCall(1);
+			emitChildRpc(successfulCall.process, {
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: true,
+			});
+			completeChildRpcRun(successfulCall.process, "Recovered after exit");
+
+			await exitedResult;
+			expect(
+				toolText((await successfulResult) as AgentToolResult<unknown>),
+			).toContain("Recovered after exit");
+		});
+	});
+
+	test("releases startup ownership when spawning child pi throws", async () => {
+		// Purpose: a synchronous spawn failure must not poison later subagent startup.
+		// Input and expected output: the first call rejects and the next call starts and completes normally.
+		// Edge case: the failure occurs before child process handlers or prompt RPC are installed.
+		// Dependencies: this test uses a spawn fake that throws only on its first call.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const successfulOutput = rpcOutputLines({
+				type: "message_end",
+				message: childAssistantMessage("Recovered after spawn failure"),
+			});
+			let spawnCount = 0;
+			const spawnPi = (
+				_command: string,
+				_args: string[],
+				_options: SpawnCall["options"],
+			): SpawnedProcessFake => {
+				spawnCount += 1;
+				if (spawnCount === 1) {
+					throw new Error("spawn failed");
+				}
+				const process = new SpawnedProcessFakeImpl();
+				queueMicrotask(() => {
+					for (const line of successfulOutput) {
+						process.stdout.emit("data", `${line}\n`);
+					}
+					process.emit("close", 0);
+				});
+				return process;
+			};
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi });
+
+			await expect(
+				executeRunSubagent(pi, ctx, {
+					agentId: "helper",
+					taskName: "Fail child spawn",
+					prompt: "Fail to start",
+				}),
+			).rejects.toThrow("spawn failed");
+			const recoveredResult = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				taskName: "Recover child spawn",
+				prompt: "Start after failure",
+			})) as AgentToolResult<unknown>;
+
+			expect(spawnCount).toBe(2);
+			expect(toolText(recoveredResult)).toContain(
+				"Recovered after spawn failure",
+			);
+		});
+	});
+
 	test("retries a child startup auth race after parent auth succeeds", async () => {
 		// Purpose: a child-only auth miss must recover after the parent resolves the same model credentials.
 		// Input and expected output: the first child rejects auth, the second completes, and both attempts keep one session id.
@@ -2650,11 +3004,11 @@ describe("run-subagent", () => {
 		});
 	});
 
-	test("preserves child abort handling when the parent signal is already aborted", async () => {
-		// Purpose: auth retry orchestration must preserve the existing child RPC abort result.
-		// Input and expected output: an already-aborted signal starts one child and returns the bounded abort error.
-		// Edge case: cancellation exists before p-retry receives the operation.
-		// Dependencies: this test uses AbortController and the normal fake child process lifecycle.
+	test("does not start child pi when the parent signal is already aborted", async () => {
+		// Purpose: cancellation before startup must not create a child process with no work to perform.
+		// Input and expected output: an already-aborted signal returns the bounded abort error without spawning Pi.
+		// Edge case: cancellation exists before authentication retry orchestration starts.
+		// Dependencies: this test uses AbortController and a spawn fake that records process creation.
 		await withIsolatedEnvironment(async (agentDir) => {
 			await writeAgent(agentDir, {
 				id: "helper",
@@ -2684,7 +3038,7 @@ describe("run-subagent", () => {
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
 			expect(content).toBe(sessionToolText("subagent execution aborted"));
-			expect(spawn.calls).toHaveLength(1);
+			expect(spawn.calls).toHaveLength(0);
 		});
 	});
 

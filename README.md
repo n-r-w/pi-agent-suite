@@ -140,6 +140,7 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 ### v0.19.0 - 2026-07-18
 
 - Add Mermaid ASCII rendering extension
+- Prevent false `openai-codex` authentication failures by serializing child Pi startup through prompt preflight while keeping agent execution parallel
 
 ### v0.18.1 - 2026-07-17
 
