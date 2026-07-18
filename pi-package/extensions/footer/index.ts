@@ -6,7 +6,7 @@ import {
 	type SessionEntry,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	getAgentRuntimeComposition,
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
@@ -27,11 +27,22 @@ import { sumHelperApiCost } from "../../shared/helper-api-cost";
 /** Footer label shown when no main-agent runtime contribution is active. */
 const NO_AGENT_LABEL = "No agent";
 
+/** Legacy status key superseded by the main-agent runtime contribution. */
+const LEGACY_AGENT_STATUS_KEY = "agent";
+
 /** Status key used by the Codex quota extension for quota text. */
 const CODEX_QUOTA_STATUS_KEY = "codex-quota";
 
 /** Status key used by the context-projection extension for provider-context projection state. */
 const CONTEXT_PROJECTION_STATUS_KEY = "context-projection";
+
+/** Status keys already represented by dedicated primary-line segments. */
+const PRIMARY_LINE_STATUS_KEYS = new Set([
+	LEGACY_AGENT_STATUS_KEY,
+	CODEX_FAST_STATUS_KEY,
+	CODEX_QUOTA_STATUS_KEY,
+	CONTEXT_PROJECTION_STATUS_KEY,
+]);
 
 /** Suite directory owned only by this extension. */
 const FOOTER_EXTENSION_DIR = "footer";
@@ -54,13 +65,26 @@ const SHOW_THINKING_LEVEL_CONFIG_KEY = "showThinkingLevel";
 /** Config key that controls API cost visibility in the footer. */
 const SHOW_API_COST_CONFIG_KEY = "showApiCost";
 
-/** Config keys accepted by the footer config object. */
-const FOOTER_CONFIG_KEYS = [
-	ENABLED_CONFIG_KEY,
+/** Config key that controls git branch visibility in the project segment. */
+const SHOW_GIT_BRANCH_CONFIG_KEY = "showGitBranch";
+
+/** Config key that controls the line for statuses without a primary-line representation. */
+const SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY = "showAdditionalStatusLine";
+
+/** Optional boolean keys that control individual footer display areas. */
+const FOOTER_DISPLAY_CONFIG_KEYS = [
 	SHOW_PROVIDER_CONFIG_KEY,
 	SHOW_MODEL_CONFIG_KEY,
 	SHOW_THINKING_LEVEL_CONFIG_KEY,
 	SHOW_API_COST_CONFIG_KEY,
+	SHOW_GIT_BRANCH_CONFIG_KEY,
+	SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY,
+] as const;
+
+/** Config keys accepted by the footer config object. */
+const FOOTER_CONFIG_KEYS = [
+	ENABLED_CONFIG_KEY,
+	...FOOTER_DISPLAY_CONFIG_KEYS,
 ] as const;
 
 /** Separator between footer segments in the current minimal renderer. */
@@ -87,21 +111,10 @@ const API_COST_DECIMAL_PLACES = 3;
 /** Matches MCP status keys that pi exposes for MCP server state. */
 const MCP_STATUS_KEY_PATTERN = /^mcp(?:-|$)/i;
 
-/** Words that mark an MCP status as needing user-visible attention. */
-const MCP_ERROR_KEYWORDS = [
-	"error",
-	"failed",
-	"failure",
-	"timed out",
-	"timeout",
-	"denied",
-	"unavailable",
-	"needs-auth",
-];
-
-/** Footer data provided by pi to expose extension statuses during rendering. */
+/** Footer data provided by pi for runtime values owned by the interactive host. */
 interface FooterData {
 	getExtensionStatuses(): ReadonlyMap<string, string>;
+	getGitBranch(): string | null;
 }
 
 /** TUI surface used by the footer to request render after external footer data changes. */
@@ -142,6 +155,8 @@ interface FooterConfig {
 	readonly showModel: boolean;
 	readonly showThinkingLevel: boolean;
 	readonly showApiCost: boolean;
+	readonly showGitBranch: boolean;
+	readonly showAdditionalStatusLine: boolean;
 }
 
 interface FooterCompactionSettings {
@@ -252,28 +267,31 @@ function truncateMiddleToWidth(label: string, width: number): string {
 	return `${sliceTextByWidth(label, leftWidth)}${ellipsis}${sliceTextSuffixByWidth(label, rightWidth)}`;
 }
 
-/** Builds a project label without branch text so the footer keeps space for runtime state. */
+/** Builds a width-bounded project label with an optional git branch suffix. */
 function formatProjectLabel(
 	projectName: string,
+	gitBranch: string | undefined,
 	width: number,
 ): string | undefined {
 	if (width <= 0) {
 		return undefined;
 	}
 
-	return truncateMiddleToWidth(projectName, width);
+	const label = gitBranch ? `${projectName}(${gitBranch})` : projectName;
+	return truncateMiddleToWidth(label, width);
 }
 
-/** Builds the project segment from the session working directory. */
+/** Builds the project segment from the session working directory and optional branch. */
 function buildProjectSegment(
 	state: FooterSessionState,
+	gitBranch: string | undefined,
 	width: number,
 ): string | undefined {
 	if (!state.projectName) {
 		return undefined;
 	}
 
-	return formatProjectLabel(state.projectName, width);
+	return formatProjectLabel(state.projectName, gitBranch, width);
 }
 
 /** Builds the thinking-level label with colors for exceptional thinking levels. */
@@ -394,11 +412,14 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
-/** Detects whether an MCP status reports a problem instead of healthy server state. */
-function isMcpErrorStatus(text: string): boolean {
-	const plainText = text.toLowerCase();
+/** Identifies an MCP wrapper status that belongs on the primary footer line. */
+function isPrimaryLineMcpStatus(key: string): boolean {
+	return MCP_STATUS_KEY_PATTERN.test(key);
+}
 
-	return MCP_ERROR_KEYWORDS.some((keyword) => plainText.includes(keyword));
+/** Identifies extension status entries already represented on the primary line. */
+function isStatusConsumedByPrimaryLine(key: string): boolean {
+	return PRIMARY_LINE_STATUS_KEYS.has(key) || isPrimaryLineMcpStatus(key);
 }
 
 /** Reads session-owned state at render time so footer output follows active session changes. */
@@ -471,16 +492,31 @@ function buildMcpStatusSegments(footerData: FooterData): string[] {
 
 	for (const [key, value] of footerData.getExtensionStatuses().entries()) {
 		const sanitizedValue = sanitizeStatusText(value);
-		if (
-			sanitizedValue &&
-			MCP_STATUS_KEY_PATTERN.test(key) &&
-			isMcpErrorStatus(sanitizedValue)
-		) {
+		if (sanitizedValue && isPrimaryLineMcpStatus(key)) {
 			segments.push(sanitizedValue);
 		}
 	}
 
 	return segments;
+}
+
+/** Builds one line from statuses that have no representation on the primary line. */
+function buildAdditionalStatusLine(
+	footerData: FooterData,
+	width: number,
+): string | undefined {
+	const statuses = [...footerData.getExtensionStatuses().entries()]
+		.sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+		.map(([key, value]) => [key, sanitizeStatusText(value)] as const)
+		.filter(
+			([key, value]) => value.length > 0 && !isStatusConsumedByPrimaryLine(key),
+		)
+		.map(([, value]) => value);
+	if (statuses.length === 0) {
+		return undefined;
+	}
+
+	return truncateToWidth(statuses.join(" "), width) || undefined;
 }
 
 /** Calculates the remaining width that the project segment may use without hiding runtime status segments. */
@@ -548,16 +584,24 @@ function renderFooterLines({
 	].filter((part): part is string => Boolean(part));
 	const projectSegment = buildProjectSegment(
 		sessionState,
+		config.showGitBranch ? (footerData.getGitBranch() ?? undefined) : undefined,
 		calculateProjectSegmentWidth(width, prioritySegments),
 	);
 	const parts = [projectSegment, ...prioritySegments].filter(
 		(part): part is string => Boolean(part),
 	);
-	if (parts.length === 0) {
-		return [];
+	const lines =
+		parts.length === 0
+			? []
+			: [truncateTextByWidth(parts.join(SEGMENT_SEPARATOR), width)];
+	const additionalStatusLine = config.showAdditionalStatusLine
+		? buildAdditionalStatusLine(footerData, width)
+		: undefined;
+	if (additionalStatusLine) {
+		lines.push(additionalStatusLine);
 	}
 
-	return [truncateTextByWidth(parts.join(SEGMENT_SEPARATOR), width)];
+	return lines;
 }
 
 interface CreateFooterComponentOptions {
@@ -702,26 +746,10 @@ function parseFooterConfig(config: unknown): FooterConfigResult {
 		return { kind: "disabled" };
 	}
 
-	const showProvider = config[SHOW_PROVIDER_CONFIG_KEY];
-	if (showProvider !== undefined && typeof showProvider !== "boolean") {
-		return { kind: "invalid" };
-	}
-
-	const showModel = config[SHOW_MODEL_CONFIG_KEY];
-	if (showModel !== undefined && typeof showModel !== "boolean") {
-		return { kind: "invalid" };
-	}
-
-	const showThinkingLevel = config[SHOW_THINKING_LEVEL_CONFIG_KEY];
-	if (
-		showThinkingLevel !== undefined &&
-		typeof showThinkingLevel !== "boolean"
-	) {
-		return { kind: "invalid" };
-	}
-
-	const showApiCost = config[SHOW_API_COST_CONFIG_KEY];
-	if (showApiCost !== undefined && typeof showApiCost !== "boolean") {
+	const invalidDisplayValue = FOOTER_DISPLAY_CONFIG_KEYS.some(
+		(key) => config[key] !== undefined && typeof config[key] !== "boolean",
+	);
+	if (invalidDisplayValue) {
 		return { kind: "invalid" };
 	}
 
@@ -735,6 +763,9 @@ function buildFooterConfig(config: Record<string, unknown>): FooterConfig {
 		showModel: config[SHOW_MODEL_CONFIG_KEY] !== false,
 		showThinkingLevel: config[SHOW_THINKING_LEVEL_CONFIG_KEY] !== false,
 		showApiCost: config[SHOW_API_COST_CONFIG_KEY] !== false,
+		showGitBranch: config[SHOW_GIT_BRANCH_CONFIG_KEY] === true,
+		showAdditionalStatusLine:
+			config[SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY] !== false,
 	};
 }
 

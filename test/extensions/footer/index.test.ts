@@ -76,6 +76,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 
 interface FooterDataFake {
 	getExtensionStatuses(): ReadonlyMap<string, string>;
+	getGitBranch(): string | null;
 }
 
 interface TuiFake {
@@ -319,10 +320,14 @@ function createTuiFake(): TuiFake {
 /** Creates the footer data fake needed to expose extension statuses. */
 function createFooterDataFake(
 	statuses: ReadonlyMap<string, string> = new Map(),
+	gitBranch: string | null = null,
 ): FooterDataFake {
 	return {
 		getExtensionStatuses() {
 			return statuses;
+		},
+		getGitBranch() {
+			return gitBranch;
 		},
 	};
 }
@@ -580,21 +585,45 @@ describe("footer", () => {
 		);
 	});
 
-	test("renders project name without a branch suffix", async () => {
-		// Purpose: the footer must show the project directory label without branch noise.
-		// Input and expected output: project `pi-harness` renders without `(main)` or branch text.
-		// Edge case: session data still comes from the same footer data callback used by other statuses.
+	test("hides the git branch by default", async () => {
+		// Purpose: the footer must preserve the compact project label unless branch display is enabled.
+		// Input and expected output: project `pi-harness` with branch `main` renders without `(main)`.
+		// Edge case: branch data is available from Pi even though the default configuration hides it.
 		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
 		const { footerRenderer } = await installFooterTestHarness();
 		const footerComponent = createFooterComponent(
 			footerRenderer,
-			createFooterDataFake(),
+			createFooterDataFake(new Map(), "main"),
 		);
 
 		const renderedText = footerComponent.render(120).join("\n");
 
 		expect(renderedText).toContain("pi-harness");
 		expect(renderedText).not.toContain("(main)");
+	});
+
+	test("shows the git branch and can disable the additional status line", async () => {
+		// Purpose: both new footer settings must control their display areas independently.
+		// Input and expected output: enabled branch display adds `(main)` without a preceding space, while a disabled additional line hides an unknown status.
+		// Edge case: disabling the additional line must not disable or remove the primary footer line.
+		// Dependencies: this test uses isolated configuration and in-memory footer data.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeFooterConfig(agentDir, {
+				showGitBranch: true,
+				showAdditionalStatusLine: false,
+			});
+			const { footerRenderer } = await installFooterTestHarness();
+			const footerComponent = createFooterComponent(
+				footerRenderer,
+				createFooterDataFake(new Map([["review", "2 findings"]]), "main"),
+			);
+
+			const renderedLines = footerComponent.render(120);
+
+			expect(renderedLines).toHaveLength(1);
+			expect(renderedLines[0]).toContain("pi-harness(main)");
+			expect(renderedLines[0]).not.toContain("2 findings");
+		});
 	});
 
 	test("renders repository name when session starts from a nested working directory", async () => {
@@ -854,13 +883,17 @@ describe("footer", () => {
 		});
 	});
 
-	test("does not install footer when showApiCost config is invalid", async () => {
-		// Purpose: footer config validation must reject invalid showApiCost values instead of ignoring a malformed user setting.
-		// Input and expected output: string showApiCost leaves the session without a custom footer renderer.
+	test.each([
+		["showApiCost", "yes"],
+		["showGitBranch", "yes"],
+		["showAdditionalStatusLine", 1],
+	])("does not install footer when %s config is invalid", async (key, value) => {
+		// Purpose: footer config validation must reject non-boolean display settings.
+		// Input and expected output: one invalid display value leaves the session without a custom footer renderer.
 		// Edge case: all other config fields are omitted and would otherwise use defaults.
-		// Dependencies: this test uses an isolated footer config file.
+		// Dependencies: this test uses an isolated footer config file for each table row.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writeFooterConfig(agentDir, { showApiCost: "yes" });
+			await writeFooterConfig(agentDir, { [key]: value });
 			const pi = createExtensionApiFake();
 			const ctx = createSessionContextFake();
 			footer(pi);
@@ -1078,25 +1111,100 @@ describe("footer", () => {
 		expect(tui.requestRenderCalls).toHaveLength(1);
 	});
 
-	test("renders only MCP statuses that mean an error", async () => {
-		// The footer must suppress healthy MCP statuses and show only MCP statuses that need user action.
+	test("renders only unconsumed extension statuses on the additional line", async () => {
+		// Purpose: the default additional line must expose unknown statuses without changing or duplicating the primary line.
+		// Input and expected output: suite-owned statuses stay on line one, while unknown statuses appear on line two sorted by key.
+		// Edge case: an MCP failure without English error keywords remains primary, and publication order differs from key order.
+		// Dependencies: this test uses runtime agent composition and in-memory footer status data.
+		const { pi, footerRenderer } = await installFooterTestHarness();
+		getAgentRuntimeComposition(pi).setMainAgentContribution({
+			prompt: "Architect prompt",
+			agent: { id: "Architect" },
+		});
+		const primaryStatuses = new Map([
+			["agent", "Legacy agent"],
+			["codex-fast", "enabled"],
+			["codex-quota", "41%/5d7h"],
+			["context-projection", "~0"],
+			[
+				"mcp-files",
+				"files: MCP tool name must contain ASCII letters or digits",
+			],
+			["mcp-github", "github error: token denied"],
+		]);
+		const primaryOnlyComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(primaryStatuses),
+		);
+		const additionalStatusComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(
+				new Map([
+					...primaryStatuses,
+					["z-review", "2 findings"],
+					["a-build", "Build ready"],
+				]),
+			),
+		);
+
+		const primaryOnlyLines = primaryOnlyComponent.render(200).map(stripAnsi);
+		const renderedLines = additionalStatusComponent.render(200).map(stripAnsi);
+
+		expect(primaryOnlyLines).toHaveLength(1);
+		expect(renderedLines).toHaveLength(2);
+		expect(renderedLines[0]).toBe(primaryOnlyLines[0]);
+		expect(renderedLines[0]).toContain(
+			"files: MCP tool name must contain ASCII letters or digits",
+		);
+		expect(renderedLines[1]).toBe("Build ready 2 findings");
+		expect(renderedLines.join("\n")).not.toContain("Legacy agent");
+		expect(renderedLines.join("\n")).not.toContain("enabled");
+	});
+
+	test("truncates styled additional statuses without breaking ANSI sequences", async () => {
+		// Purpose: the additional line must use Pi's ANSI-aware width truncation for styled extension text.
+		// Input and expected output: a true-color long status at width five renders two visible text cells plus an ellipsis.
+		// Edge case: truncation must not cut inside the leading true-color SGR sequence.
+		// Dependencies: this test uses a real terminal SGR sequence and Pi's visible-width implementation.
+		const { footerRenderer } = await installFooterTestHarness();
+		const red = `${String.fromCharCode(27)}[38;2;255;0;0m`;
+		const footerComponent = createFooterComponent(
+			footerRenderer,
+			createFooterDataFake(
+				new Map([["review", `${red}Long status text${SGR_RESET}`]]),
+			),
+		);
+
+		const renderedLines = footerComponent.render(5);
+		const visibleAdditionalStatus = renderedLines[1]
+			?.replaceAll(red, "")
+			.replaceAll(SGR_RESET, "");
+
+		expect(renderedLines).toHaveLength(2);
+		expect(visibleAdditionalStatus).toBe("Lo...");
+		expect(visibleWidth(renderedLines[1] ?? "")).toBeLessThanOrEqual(5);
+	});
+
+	test("omits the additional line when no unconsumed status has text", async () => {
+		// Purpose: the default additional-line setting must not create a blank footer row.
+		// Input and expected output: consumed statuses and a whitespace-only unknown status produce exactly one line.
+		// Edge case: sanitization removes all visible text from a present status-map entry.
+		// Dependencies: this test uses only in-memory footer status data.
 		const { footerRenderer } = await installFooterTestHarness();
 		const footerComponent = createFooterComponent(
 			footerRenderer,
 			createFooterDataFake(
 				new Map([
-					["mcp", "connected"],
-					["mcp-github", "github error: token denied"],
-					["mcp-files", "files available"],
+					["codex-quota", "41%/5d7h"],
+					["context-projection", "~0"],
+					["review", " \n\t "],
 				]),
 			),
 		);
 
-		const renderedText = footerComponent.render(120).join("\n");
+		const renderedLines = footerComponent.render(120);
 
-		expect(renderedText).toContain("github error: token denied");
-		expect(renderedText).not.toContain("connected");
-		expect(renderedText).not.toContain("files available");
+		expect(renderedLines).toHaveLength(1);
 	});
 
 	test("keeps compact context projection statuses within terminal width", async () => {
@@ -1123,30 +1231,41 @@ describe("footer", () => {
 	});
 
 	test("keeps rendered footer lines within terminal width", async () => {
-		// The footer must not overflow the terminal because pi renders it inside the fixed-width session UI.
-		const { footerRenderer } = await installFooterTestHarness();
-		const footerComponent = createFooterComponent(
-			footerRenderer,
-			createFooterDataFake(
-				new Map([
-					["agent", "SubAgentSageWithVeryLongDisplayName"],
-					[
-						"codex-quota",
-						"Codex quota status with a very long reset explanation",
-					],
-					[
-						"mcp-github",
-						"github error with a very long diagnostic message that must be trimmed",
-					],
-				]),
-			),
-		);
+		// Purpose: branch and additional-status text must not overflow Pi's fixed-width session UI.
+		// Input and expected output: long project, branch, primary statuses, and unknown status produce two width-bounded lines.
+		// Edge case: both the primary project label and the additional line require truncation.
+		// Dependencies: this test uses isolated configuration and in-memory footer status data.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeFooterConfig(agentDir, { showGitBranch: true });
+			const { footerRenderer } = await installFooterTestHarness();
+			const footerComponent = createFooterComponent(
+				footerRenderer,
+				createFooterDataFake(
+					new Map([
+						["agent", "SubAgentSageWithVeryLongDisplayName"],
+						[
+							"codex-quota",
+							"Codex quota status with a very long reset explanation",
+						],
+						[
+							"mcp-github",
+							"github error with a very long diagnostic message that must be trimmed",
+						],
+						[
+							"review",
+							"Review status with a very long diagnostic message that must be trimmed",
+						],
+					]),
+					"feature/footer-with-a-very-long-branch-name",
+				),
+			);
 
-		const renderedLines = footerComponent.render(40);
+			const renderedLines = footerComponent.render(40);
 
-		expect(renderedLines).not.toHaveLength(0);
-		for (const line of renderedLines) {
-			expect(visibleWidth(line)).toBeLessThanOrEqual(40);
-		}
+			expect(renderedLines).toHaveLength(2);
+			for (const line of renderedLines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+			}
+		});
 	});
 });
