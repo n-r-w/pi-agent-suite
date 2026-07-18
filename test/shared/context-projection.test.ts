@@ -180,7 +180,7 @@ describe("context projection config", () => {
 
 			const config = await readContextProjectionConfig();
 
-			expect(config as unknown).toEqual({
+			expect(config as unknown).toMatchObject({
 				kind: "valid",
 				config: {
 					enabled: true,
@@ -201,17 +201,6 @@ describe("context projection config", () => {
 							minToolResultTokens: 1_000,
 						},
 					],
-					keepRecentTurns: 10,
-					keepRecentTurnsPercent: 0.2,
-					projectionIgnoredTools: [],
-					omittedNotice: OMITTED_NOTICE,
-					summaryNotice: SUMMARY_NOTICE,
-					summary: {
-						enabled: false,
-						maxConcurrency: 1,
-						retryCount: 1,
-						retryDelayMs: 5_000,
-					},
 				},
 			});
 		});

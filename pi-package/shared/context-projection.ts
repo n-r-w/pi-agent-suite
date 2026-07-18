@@ -105,7 +105,7 @@ const DEFAULT_OMITTED_NOTICE =
 
 /** Default notice for projected tool results that include a summary. */
 const DEFAULT_SUMMARY_NOTICE =
-	"Full result omitted. Summary below. Run tool again for full result.";
+	"Full result omitted. Summary below. Run tool again for full result. MUST NOT rely on summary when making critical decisions.";
 
 /** Factor used to render token usage as a percentage of the context window. */
 const PERCENT_FACTOR = 100;
