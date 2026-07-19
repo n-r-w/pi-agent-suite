@@ -20,11 +20,23 @@ const TOOL_TOKEN_RESERVE = 8;
 /** Image reserve aligned with Pi's compaction estimate: about 1200 tokens per image. */
 const IMAGE_TOKEN_RESERVE = 1_200;
 
-const TOKENIZERS = {
-	cl100k_base: new Tiktoken(cl100kBase),
-	o200k_base: new Tiktoken(o200kBase),
-	r50k_base: new Tiktoken(r50kBase),
+/** Tokenizer encodings available for context-size estimates. */
+const SUPPORTED_ENCODINGS = ["cl100k_base", "o200k_base", "r50k_base"] as const;
+
+/** Rank data used to construct each supported tokenizer on first use. */
+const TOKENIZER_RANKS = {
+	cl100k_base: cl100kBase,
+	o200k_base: o200kBase,
+	r50k_base: r50kBase,
 } as const;
+
+type SupportedEncoding = (typeof SUPPORTED_ENCODINGS)[number];
+
+/**
+ * Tokenizers stay uninitialized during extension loading because constructing every
+ * encoding before the first TUI render caused a significant pi startup delay.
+ */
+const tokenizers = new Map<SupportedEncoding, Tiktoken>();
 
 const OPENAI_FAMILY_PROVIDERS = new Set([
 	"azure-openai-responses",
@@ -34,8 +46,6 @@ const OPENAI_FAMILY_PROVIDERS = new Set([
 
 const MODERN_OPENAI_MODEL_PATTERN =
 	/(?:^|[/_-])(chatgpt-4o|gpt-4\.1|gpt-4o|gpt-5|o[134])(?:$|[._/-])/;
-
-type SupportedEncoding = keyof typeof TOKENIZERS;
 
 /** Returns a tokenizer-based estimate for model-visible context input. */
 export function estimateSerializedInputTokens(
@@ -69,7 +79,7 @@ export function takeTextTokenPrefix(
 		return "";
 	}
 	const encoding = getTextEncoding(text, modelId, provider);
-	const tokenizer = TOKENIZERS[encoding];
+	const tokenizer = getTokenizer(encoding);
 	const tokens = tokenizer.encode(text, [], []);
 	for (
 		let tokenCount = Math.min(maxTokens, tokens.length);
@@ -192,7 +202,7 @@ function getTextEncoding(
 	if (knownEncoding !== undefined) {
 		return knownEncoding;
 	}
-	return (Object.keys(TOKENIZERS) as SupportedEncoding[]).reduce(
+	return SUPPORTED_ENCODINGS.reduce(
 		(selected, candidate) =>
 			countTokens(text, candidate) > countTokens(text, selected)
 				? candidate
@@ -218,9 +228,24 @@ function getKnownEncoding(
 	}
 }
 
+/**
+ * Creates one tokenizer on demand so startup does not pay for token counting until
+ * an extension actually needs it, then reuses the instance for later calls.
+ */
+function getTokenizer(encoding: SupportedEncoding): Tiktoken {
+	const cached = tokenizers.get(encoding);
+	if (cached !== undefined) {
+		return cached;
+	}
+
+	const tokenizer = new Tiktoken(TOKENIZER_RANKS[encoding]);
+	tokenizers.set(encoding, tokenizer);
+	return tokenizer;
+}
+
 /** Counts text tokens while treating special-token-looking text as normal user text. */
 function countTokens(text: string, encoding: SupportedEncoding): number {
-	return TOKENIZERS[encoding].encode(text, [], []).length;
+	return getTokenizer(encoding).encode(text, [], []).length;
 }
 
 /** Returns true when this module loaded the tokenizer rank for an encoding. */
