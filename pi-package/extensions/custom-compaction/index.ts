@@ -174,9 +174,7 @@ async function handleSessionBeforeCompact(
 			retry: resolved.config.retry,
 			signal: event.signal,
 			createRequestId: createAuxiliaryLlmSessionId,
-			onProgress: (progress) => {
-				reportProgress(session, progress);
-			},
+			onProgress: (progress) => reportProgress(session, progress),
 			complete: (request) =>
 				executeCompletion(
 					pi,
@@ -446,10 +444,10 @@ function splitModelId(
 }
 
 /** Maps typed engine progress to informational Pi UI notifications. */
-function reportProgress(
+async function reportProgress(
 	session: CustomCompactionSession,
 	event: AdaptiveCompactionProgressEvent,
-): void {
+): Promise<void> {
 	if (session.hasUI === false) {
 		return;
 	}
@@ -469,6 +467,10 @@ function reportProgress(
 			break;
 	}
 	session.ui.notify(`${ISSUE_PREFIX} ${message}`, "info");
+	if (event.type === "start") {
+		// Pi can repaint the published start state before synchronous token planning begins.
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
 }
 
 /** Reports an exact warning only when Pi has an interactive UI. */

@@ -133,6 +133,7 @@ function createSessionFake(options?: {
 	readonly configuredModel?: Model<Api>;
 	readonly hasUI?: boolean;
 	readonly authFailure?: string;
+	readonly onNotify?: (notification: Notification) => void;
 }): SessionFake {
 	const notifications: Notification[] = [];
 	const requestedModels: Model<Api>[] = [];
@@ -145,7 +146,9 @@ function createSessionFake(options?: {
 			...(options?.hasUI === undefined ? {} : { hasUI: options.hasUI }),
 			ui: {
 				notify(message: string, type: string | undefined): void {
-					notifications.push({ message, type });
+					const notification = { message, type };
+					notifications.push(notification);
+					options?.onNotify?.(notification);
 				},
 			},
 			model: currentModel,
@@ -400,6 +403,45 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 			]);
+		});
+	});
+
+	test("yields one macrotask after publishing start progress", async () => {
+		// Purpose: Pi must receive the start message before synchronous adaptive planning can occupy the event loop.
+		// Input and expected output: a timer queued by the start notification runs before the first model completion.
+		// Edge case: the direct path otherwise reaches completion without an asynchronous planning boundary.
+		// Dependencies: fake Pi UI notification, one deterministic timer gate, and mocked completion.
+		await withIsolatedAgentDir(async () => {
+			let macrotaskYielded = false;
+			let yieldedBeforeCompletion = false;
+			completeSimpleMock.mockImplementation(async () => {
+				yieldedBeforeCompletion = macrotaskYielded;
+				return createAssistantResponse("yielded summary");
+			});
+			const pi = createExtensionApiFake();
+			const session = createSessionFake({
+				onNotify: (notification) => {
+					if (
+						notification.message ===
+						"[custom-compaction] adaptive compaction started"
+					) {
+						setTimeout(() => {
+							macrotaskYielded = true;
+						}, 0);
+					}
+				},
+			});
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "yielded summary" },
+			});
+			expect(yieldedBeforeCompletion).toBeTrue();
 		});
 	});
 

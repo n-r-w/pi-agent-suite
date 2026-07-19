@@ -116,6 +116,54 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 }
 
 describe("adaptiveCompactHistory", () => {
+	/** Proves planning cannot start until asynchronous start progress delivery completes. */
+	test("awaits start progress before token budgeting", async () => {
+		// Purpose: the engine must let an injected progress consumer finish before synchronous planning.
+		// Input and expected output: a blocked start handler keeps a known budget failure unsettled until released.
+		// Edge case: the budget is invalid, so any early planning would reject immediately without a model request.
+		// Dependencies: an in-memory progress gate and the deterministic final-budget validation path.
+		let releaseStart: (() => void) | undefined;
+		const startGate = new Promise<void>((resolve) => {
+			releaseStart = resolve;
+		});
+		const { options, requests } = createOptions({
+			currentProjectedMainMessages: [userMessage("current")],
+			projectedRetainedMessages: [userMessage("retained ".repeat(500))],
+			mainModel: {
+				id: "gpt-5",
+				provider: "openai",
+				contextWindow: 1_000,
+				maxTokens: 128,
+			},
+			mainModelReserveTokens: 512,
+			safetyMarginTokens: 64,
+			onProgress: (event) => (event.type === "start" ? startGate : undefined),
+		});
+		let settled = false;
+
+		// ACT: Start compaction while progress delivery remains blocked.
+		const compaction = adaptiveCompactHistory(options);
+		const settlement = compaction.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+		await Promise.resolve();
+
+		// ASSERT: Planning remains pending until the handler releases the start event.
+		expect(settled).toBeFalse();
+		expect(requests).toHaveLength(0);
+		if (releaseStart === undefined) {
+			throw new Error("expected the start progress handler to run");
+		}
+		releaseStart();
+		await expect(compaction).rejects.toThrow("final summary budget");
+		await settlement;
+	});
+
 	/** Proves direct compaction preserves Pi's three-part source order and skips reductions. */
 	test("uses one final request when the ordered source fits", async () => {
 		// ARRANGE: The default fixture leaves ample space in both model windows.
@@ -214,7 +262,10 @@ describe("adaptiveCompactHistory", () => {
 	test("splits one oversized block at useful boundaries and preserves fragment order", async () => {
 		// ARRANGE: Paragraph-rich input cannot fit as one reduction request.
 		let fragmentNumber = 0;
-		const { options, progressEvents, requests } = createOptions({
+		let progressDeliveryActive = false;
+		let progressDeliveryOverlapped = false;
+		const deliveredProgressEvents: AdaptiveCompactionProgressEvent[] = [];
+		const { options, requests } = createOptions({
 			preparation: {
 				messagesToSummarize: [
 					userMessage(
@@ -232,6 +283,18 @@ describe("adaptiveCompactHistory", () => {
 				provider: "openai",
 				contextWindow: 900,
 				maxTokens: 80,
+			},
+			onProgress: async (event) => {
+				deliveredProgressEvents.push(event);
+				if (event.type !== "operation" || event.operation !== "fragment") {
+					return;
+				}
+				if (progressDeliveryActive) {
+					progressDeliveryOverlapped = true;
+				}
+				progressDeliveryActive = true;
+				await Promise.resolve();
+				progressDeliveryActive = false;
 			},
 			complete: async (request) => {
 				requests.push(request);
@@ -288,10 +351,11 @@ describe("adaptiveCompactHistory", () => {
 			requests.length,
 		);
 		expect(
-			progressEvents.filter(
+			deliveredProgressEvents.filter(
 				(event) => event.type === "operation" && event.operation === "fragment",
 			),
 		).toHaveLength(fragmentRequests.length);
+		expect(progressDeliveryOverlapped).toBeFalse();
 	});
 
 	/** Proves dense oversized text falls back to selected-model token prefixes. */
@@ -667,10 +731,36 @@ describe("adaptiveCompactHistory", () => {
 		expect(requests).toHaveLength(0);
 	});
 
-	/** Proves the common bounded-node budget is mandatory even when direct source text is small. */
-	test("fails before model requests when the summarization model has no common node budget", async () => {
-		// ARRANGE: Request framing and safety margin leave no room for bounded reduction nodes.
+	/** Proves direct summarization does not depend on hierarchical reduction feasibility. */
+	test("skips the common node budget when the direct final request fits", async () => {
+		// Purpose: direct compaction must not calculate or require a hierarchical summary-node budget.
+		// Input and expected output: a direct-fit source completes once although merge framing leaves no positive node budget.
+		// Edge case: oversized reduction framing makes the common-node invariants impossible.
+		// Dependencies: deterministic request estimates and the injected completion fake only.
 		const { options, requests } = createOptions({
+			reductionPrompt: "reduction framing ".repeat(5_000),
+		});
+
+		// ACT: Compact through the complete direct final request.
+		const summary = await adaptiveCompactHistory(options);
+
+		// ASSERT: The direct request succeeds without entering hierarchical planning.
+		expect(summary).toBe("final-summary");
+		expect(requests.map((request) => request.operation)).toEqual(["final"]);
+	});
+
+	/** Proves adaptive work still requires a feasible common summary-node budget. */
+	test("requires the common node budget when the direct final request does not fit", async () => {
+		// Purpose: preliminary and hierarchical work must remain guarded by the shared node-size invariants.
+		// Input and expected output: an oversized direct source with no feasible node budget fails before completion.
+		// Edge case: final-summary budgeting remains positive while common-node feasibility is impossible.
+		// Dependencies: deterministic request estimates; no model response or timing behavior is involved.
+		const { options, requests } = createOptions({
+			preparation: {
+				messagesToSummarize: [userMessage("history ".repeat(500))],
+				turnPrefixMessages: [],
+				tokensBefore: 5_000,
+			},
 			summarizationModel: {
 				id: "gpt-5",
 				provider: "openai",
@@ -680,7 +770,7 @@ describe("adaptiveCompactHistory", () => {
 			safetyMarginTokens: 64,
 		});
 
-		// ACT and ASSERT: Node-budget validation fails before the otherwise direct completion.
+		// ACT and ASSERT: Adaptive planning rejects the impossible common budget before any operation.
 		await expect(adaptiveCompactHistory(options)).rejects.toThrow(
 			"common summary-node budget",
 		);

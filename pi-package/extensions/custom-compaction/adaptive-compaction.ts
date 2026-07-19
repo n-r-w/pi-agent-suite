@@ -88,7 +88,9 @@ export interface AdaptiveCompactionOptions {
 	readonly retry: RetryConfig;
 	readonly signal: AbortSignal;
 	readonly createRequestId: () => string;
-	readonly onProgress?: (event: AdaptiveCompactionProgressEvent) => void;
+	readonly onProgress?: (
+		event: AdaptiveCompactionProgressEvent,
+	) => void | Promise<void>;
 	readonly complete: (
 		request: AdaptiveCompactionRequest,
 	) => Promise<AssistantMessage>;
@@ -116,10 +118,14 @@ const MERGE_VARIABLE_TOKEN_PARTS = 3;
 /** Conservative marker value reserved while the final fragment count is unknown. */
 const FRAGMENT_MARKER_LIMIT = 999_999;
 
-/** Budgets proven positive before the first external completion request. */
-interface CompactionBudgets {
+/** Direct-path budgets proven positive before the final request fit decision. */
+interface FinalSummaryBudget {
 	readonly currentMainInputTokens: number;
 	readonly finalSummaryTokens: number;
+}
+
+/** Adaptive-path budgets proven positive before hierarchical reduction starts. */
+interface CompactionBudgets extends FinalSummaryBudget {
 	readonly summaryNodeTokens: number;
 }
 
@@ -136,29 +142,41 @@ export async function adaptiveCompactHistory(
 	options: AdaptiveCompactionOptions,
 ): Promise<string> {
 	let logicalRequestCount = 0;
-	const emitProgress = (event: AdaptiveCompactionProgressEvent): void => {
+	const emitProgress = async (
+		event: AdaptiveCompactionProgressEvent,
+	): Promise<void> => {
 		if (event.type === "operation") {
 			logicalRequestCount += 1;
 		}
-		options.onProgress?.(event);
+		await options.onProgress?.(event);
 	};
 	const runtimeOptions: AdaptiveCompactionOptions = {
 		...options,
 		onProgress: emitProgress,
 	};
-	emitProgress({ type: "start" });
+	await emitProgress({ type: "start" });
 	validateOptions(runtimeOptions);
 	const items = buildSummarySource(runtimeOptions.preparation);
 	if (items.length === 0) {
 		throw new Error("adaptive compaction summary source is empty");
 	}
-	const budgets = calculateBudgets(runtimeOptions, items);
+	const finalBudget = calculateFinalSummaryBudget(runtimeOptions);
 
 	// Direct final summarization is preferred because it avoids every lossy reduction step.
 	let summary: string;
-	if (doesFinalRequestFit(items, budgets.finalSummaryTokens, runtimeOptions)) {
-		summary = await executeFinalSummary(items, budgets, runtimeOptions);
+	if (
+		doesFinalRequestFit(items, finalBudget.finalSummaryTokens, runtimeOptions)
+	) {
+		summary = await executeFinalSummary(items, finalBudget, runtimeOptions);
 	} else {
+		const budgets: CompactionBudgets = {
+			...finalBudget,
+			summaryNodeTokens: calculateCommonNodeBudget(
+				runtimeOptions,
+				items,
+				finalBudget.finalSummaryTokens,
+			),
+		};
 		await normalizeOldestPreviousSummary(items, budgets, runtimeOptions);
 		const reducedItems = await reduceUntilFinalFits(
 			items,
@@ -167,7 +185,10 @@ export async function adaptiveCompactHistory(
 		);
 		summary = await executeFinalSummary(reducedItems, budgets, runtimeOptions);
 	}
-	emitProgress({ type: "complete", completedRequests: logicalRequestCount });
+	await emitProgress({
+		type: "complete",
+		completedRequests: logicalRequestCount,
+	});
 	return summary;
 }
 
@@ -334,11 +355,10 @@ function validateOptions(options: AdaptiveCompactionOptions): void {
 	}
 }
 
-/** Calculates final-summary and common-node budgets from both complete request shapes. */
-function calculateBudgets(
+/** Calculates only the budgets required to decide and execute the direct path. */
+function calculateFinalSummaryBudget(
 	options: AdaptiveCompactionOptions,
-	items: readonly SourceItem[],
-): CompactionBudgets {
+): FinalSummaryBudget {
 	const currentMainInputTokens = estimateMainInput(
 		options.currentProjectedMainMessages,
 		options,
@@ -358,7 +378,15 @@ function calculateBudgets(
 	if (finalSummaryTokens <= 0) {
 		throw new Error("adaptive compaction has no positive final summary budget");
 	}
+	return { currentMainInputTokens, finalSummaryTokens };
+}
 
+/** Calculates the common node budget only after the complete direct request does not fit. */
+function calculateCommonNodeBudget(
+	options: AdaptiveCompactionOptions,
+	items: readonly SourceItem[],
+	finalSummaryTokens: number,
+): number {
 	// Two bounded inputs plus one equally bounded output must fit every merge request.
 	const emptyMergeInputTokens = estimateSummaryInput(
 		buildSummaryContext(
@@ -391,8 +419,7 @@ function calculateBudgets(
 			"adaptive compaction has no positive common summary-node budget",
 		);
 	}
-
-	return { currentMainInputTokens, finalSummaryTokens, summaryNodeTokens };
+	return summaryNodeTokens;
 }
 
 /** Finds the largest monotonic node cap whose dry-run reduction reaches a final-fit suffix. */
@@ -657,7 +684,7 @@ function doesFinalRequestFit(
 /** Executes the final request and validates the actual prospective next main request. */
 async function executeFinalSummary(
 	items: readonly SourceItem[],
-	budgets: CompactionBudgets,
+	budgets: FinalSummaryBudget,
 	options: AdaptiveCompactionOptions,
 ): Promise<string> {
 	const context = buildSummaryContext(items, options.finalPrompt, options);
@@ -868,9 +895,11 @@ async function summarizeOversizedBlock(
 	return withRetry(
 		async () => {
 			if (!operationsStarted) {
-				for (let index = 0; index < requestIds.length; index += 1) {
-					options.onProgress?.({ type: "operation", operation: "fragment" });
-				}
+				await emitRepeatedProgress(
+					options,
+					{ type: "operation", operation: "fragment" },
+					requestIds.length,
+				);
 				operationsStarted = true;
 			}
 			const results = await Promise.allSettled(
@@ -1178,7 +1207,7 @@ async function executeSingleRequest({
 	return withRetry(
 		async () => {
 			if (!operationStarted) {
-				options.onProgress?.({ type: "operation", operation });
+				await options.onProgress?.({ type: "operation", operation });
 				operationStarted = true;
 			}
 			const response = await options.complete({
@@ -1213,22 +1242,37 @@ function buildProgressRetryOptions(
 		retry: options.retry,
 		signal: options.signal,
 		shouldRetry,
-		onFailedAttempt: (context) => {
+		onFailedAttempt: async (context) => {
 			if (context.retriesLeft <= 0 || !shouldRetry(context.error)) {
 				return;
 			}
-			for (let index = 0; index < logicalRequestCount; index += 1) {
-				options.onProgress?.({
+			await emitRepeatedProgress(
+				options,
+				{
 					type: "retry",
 					operation,
 					nextAttempt: context.attemptNumber + 1,
 					totalAttempts: options.retry.enabled
 						? options.retry.maxRetries + 1
 						: 1,
-				});
-			}
+				},
+				logicalRequestCount,
+			);
 		},
 	};
+}
+
+/** Delivers repeated logical-request progress sequentially through one injected handler. */
+async function emitRepeatedProgress(
+	options: AdaptiveCompactionOptions,
+	event: AdaptiveCompactionProgressEvent,
+	remaining: number,
+): Promise<void> {
+	if (remaining <= 0) {
+		return;
+	}
+	await options.onProgress?.(event);
+	await emitRepeatedProgress(options, event, remaining - 1);
 }
 
 /** Extracts complete non-empty text while mapping provider responses into retry defects. */
