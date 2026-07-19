@@ -34,6 +34,7 @@
   2. Do not attempt to capture every edge case or implementation detail during design phase, because some assumptions will inevitably be wrong.
   3. Over-specifying uncertain decisions can create inconsistencies and implementation errors.
   4. Leave non-essential details to implementation phase.
+  5. KISS and YAGNI principles apply here as well.
 </overspecification_risk>
 
 <compatibility>
