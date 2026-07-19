@@ -31,6 +31,7 @@ import {
 	type ReasoningLevel,
 } from "../../shared/reasoning-levels";
 import {
+	type AdaptiveCompactionProgressEvent,
 	type AdaptiveCompactionRequest,
 	adaptiveCompactHistory,
 } from "./adaptive-compaction";
@@ -173,6 +174,9 @@ async function handleSessionBeforeCompact(
 			retry: resolved.config.retry,
 			signal: event.signal,
 			createRequestId: createAuxiliaryLlmSessionId,
+			onProgress: (progress) => {
+				reportProgress(session, progress);
+			},
 			complete: (request) =>
 				executeCompletion(
 					pi,
@@ -439,6 +443,32 @@ function splitModelId(
 		provider: value.slice(0, separator),
 		modelId: value.slice(separator + 1),
 	};
+}
+
+/** Maps typed engine progress to informational Pi UI notifications. */
+function reportProgress(
+	session: CustomCompactionSession,
+	event: AdaptiveCompactionProgressEvent,
+): void {
+	if (session.hasUI === false) {
+		return;
+	}
+	let message: string;
+	switch (event.type) {
+		case "start":
+			message = "adaptive compaction started";
+			break;
+		case "operation":
+			message = `adaptive compaction operation: ${event.operation}`;
+			break;
+		case "retry":
+			message = `retrying ${event.operation}: attempt ${event.nextAttempt}/${event.totalAttempts}`;
+			break;
+		case "complete":
+			message = `adaptive compaction completed: ${event.completedRequests} model requests`;
+			break;
+	}
+	session.ui.notify(`${ISSUE_PREFIX} ${message}`, "info");
 }
 
 /** Reports an exact warning only when Pi has an interactive UI. */

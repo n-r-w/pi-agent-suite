@@ -20,6 +20,7 @@ import {
 	isAbortError,
 	isRetryableExternalError,
 	type RetryConfig,
+	type WithRetryOptions,
 	withRetry,
 } from "../../shared/retry";
 
@@ -30,6 +31,21 @@ export type AdaptiveCompactionOperation =
 	| "merge"
 	| "normalization"
 	| "preliminary";
+
+/** Progress emitted by the functional core without depending on Pi UI contracts. */
+export type AdaptiveCompactionProgressEvent =
+	| { readonly type: "start" }
+	| {
+			readonly type: "operation";
+			readonly operation: AdaptiveCompactionOperation;
+	  }
+	| {
+			readonly type: "retry";
+			readonly operation: AdaptiveCompactionOperation;
+			readonly nextAttempt: number;
+			readonly totalAttempts: number;
+	  }
+	| { readonly type: "complete"; readonly completedRequests: number };
 
 /** Completion request produced by the adaptive compaction functional core. */
 export interface AdaptiveCompactionRequest {
@@ -72,6 +88,7 @@ export interface AdaptiveCompactionOptions {
 	readonly retry: RetryConfig;
 	readonly signal: AbortSignal;
 	readonly createRequestId: () => string;
+	readonly onProgress?: (event: AdaptiveCompactionProgressEvent) => void;
 	readonly complete: (
 		request: AdaptiveCompactionRequest,
 	) => Promise<AssistantMessage>;
@@ -118,21 +135,40 @@ class AdaptiveCompactionResponseError extends Error {
 export async function adaptiveCompactHistory(
 	options: AdaptiveCompactionOptions,
 ): Promise<string> {
-	validateOptions(options);
-	const items = buildSummarySource(options.preparation);
+	let logicalRequestCount = 0;
+	const emitProgress = (event: AdaptiveCompactionProgressEvent): void => {
+		if (event.type === "operation") {
+			logicalRequestCount += 1;
+		}
+		options.onProgress?.(event);
+	};
+	const runtimeOptions: AdaptiveCompactionOptions = {
+		...options,
+		onProgress: emitProgress,
+	};
+	emitProgress({ type: "start" });
+	validateOptions(runtimeOptions);
+	const items = buildSummarySource(runtimeOptions.preparation);
 	if (items.length === 0) {
 		throw new Error("adaptive compaction summary source is empty");
 	}
-	const budgets = calculateBudgets(options, items);
+	const budgets = calculateBudgets(runtimeOptions, items);
 
 	// Direct final summarization is preferred because it avoids every lossy reduction step.
-	if (doesFinalRequestFit(items, budgets.finalSummaryTokens, options)) {
-		return executeFinalSummary(items, budgets, options);
+	let summary: string;
+	if (doesFinalRequestFit(items, budgets.finalSummaryTokens, runtimeOptions)) {
+		summary = await executeFinalSummary(items, budgets, runtimeOptions);
+	} else {
+		await normalizeOldestPreviousSummary(items, budgets, runtimeOptions);
+		const reducedItems = await reduceUntilFinalFits(
+			items,
+			budgets,
+			runtimeOptions,
+		);
+		summary = await executeFinalSummary(reducedItems, budgets, runtimeOptions);
 	}
-
-	await normalizeOldestPreviousSummary(items, budgets, options);
-	const reducedItems = await reduceUntilFinalFits(items, budgets, options);
-	return executeFinalSummary(reducedItems, budgets, options);
+	emitProgress({ type: "complete", completedRequests: logicalRequestCount });
+	return summary;
 }
 
 /** Normalizes the oldest previous summary before any original history reduction. */
@@ -828,41 +864,52 @@ async function summarizeOversizedBlock(
 ): Promise<SummaryNode[]> {
 	const fragments = splitOversizedText(block, summaryNodeTokens, options);
 	const requestIds = fragments.map(() => options.createRequestId());
-	return withRetry(async () => {
-		const results = await Promise.allSettled(
-			fragments.map((fragment, index) =>
-				summarizeFragment({
-					block,
-					fragment,
-					index,
-					total: fragments.length,
-					requestId: requestIds[index] as string,
-					summaryNodeTokens,
-					options,
-				}),
-			),
-		);
-		const failedResult = results.find(
-			(result): result is PromiseRejectedResult => result.status === "rejected",
-		);
-		if (failedResult !== undefined) {
-			throw failedResult.reason instanceof Error
-				? failedResult.reason
-				: new Error(String(failedResult.reason));
-		}
-		const summaries = results.map(
-			(result) => (result as PromiseFulfilledResult<SummaryNode>).value,
-		);
-		if (
-			countSummaryTextTokens(renderSourceItems(summaries)) >=
-			countSummaryTextTokens(block.text)
-		) {
-			throw new AdaptiveCompactionResponseError(
-				"combined fragment summaries are not smaller than their source block",
+	let operationsStarted = false;
+	return withRetry(
+		async () => {
+			if (!operationsStarted) {
+				for (let index = 0; index < requestIds.length; index += 1) {
+					options.onProgress?.({ type: "operation", operation: "fragment" });
+				}
+				operationsStarted = true;
+			}
+			const results = await Promise.allSettled(
+				fragments.map((fragment, index) =>
+					summarizeFragment({
+						block,
+						fragment,
+						index,
+						total: fragments.length,
+						requestId: requestIds[index] as string,
+						summaryNodeTokens,
+						options,
+					}),
+				),
 			);
-		}
-		return summaries;
-	}, buildRetryOptions(options));
+			const failedResult = results.find(
+				(result): result is PromiseRejectedResult =>
+					result.status === "rejected",
+			);
+			if (failedResult !== undefined) {
+				throw failedResult.reason instanceof Error
+					? failedResult.reason
+					: new Error(String(failedResult.reason));
+			}
+			const summaries = results.map(
+				(result) => (result as PromiseFulfilledResult<SummaryNode>).value,
+			);
+			if (
+				countSummaryTextTokens(renderSourceItems(summaries)) >=
+				countSummaryTextTokens(block.text)
+			) {
+				throw new AdaptiveCompactionResponseError(
+					"combined fragment summaries are not smaller than their source block",
+				);
+			}
+			return summaries;
+		},
+		buildProgressRetryOptions(options, "fragment", requestIds.length),
+	);
 }
 
 interface SummarizeFragmentOptions {
@@ -1127,36 +1174,60 @@ async function executeSingleRequest({
 	validate,
 }: ExecuteSingleRequestOptions): Promise<string> {
 	const requestId = options.createRequestId();
-	return withRetry(async () => {
-		const response = await options.complete({
-			operation,
-			context,
-			maxTokens,
-			requestId,
-			signal: options.signal,
-		});
-		const summary = extractValidResponse(response, operation);
-		const issue = validate(summary);
-		if (issue !== undefined) {
-			throw new AdaptiveCompactionResponseError(issue);
-		}
-		return summary;
-	}, buildRetryOptions(options));
+	let operationStarted = false;
+	return withRetry(
+		async () => {
+			if (!operationStarted) {
+				options.onProgress?.({ type: "operation", operation });
+				operationStarted = true;
+			}
+			const response = await options.complete({
+				operation,
+				context,
+				maxTokens,
+				requestId,
+				signal: options.signal,
+			});
+			const summary = extractValidResponse(response, operation);
+			const issue = validate(summary);
+			if (issue !== undefined) {
+				throw new AdaptiveCompactionResponseError(issue);
+			}
+			return summary;
+		},
+		buildProgressRetryOptions(options, operation),
+	);
 }
 
-/** Applies one retry policy to response defects and existing transient external failures. */
-function buildRetryOptions(options: AdaptiveCompactionOptions): {
-	readonly retry: RetryConfig;
-	readonly signal: AbortSignal;
-	readonly shouldRetry: (error: Error) => boolean;
-} {
+/** Applies retry policy and reports only retries that remain scheduled. */
+function buildProgressRetryOptions(
+	options: AdaptiveCompactionOptions,
+	operation: AdaptiveCompactionOperation,
+	logicalRequestCount = 1,
+): WithRetryOptions {
+	const shouldRetry = (error: Error): boolean =>
+		!isAbortError(error) &&
+		(error instanceof AdaptiveCompactionResponseError ||
+			isRetryableExternalError(error));
 	return {
 		retry: options.retry,
 		signal: options.signal,
-		shouldRetry: (error) =>
-			!isAbortError(error) &&
-			(error instanceof AdaptiveCompactionResponseError ||
-				isRetryableExternalError(error)),
+		shouldRetry,
+		onFailedAttempt: (context) => {
+			if (context.retriesLeft <= 0 || !shouldRetry(context.error)) {
+				return;
+			}
+			for (let index = 0; index < logicalRequestCount; index += 1) {
+				options.onProgress?.({
+					type: "retry",
+					operation,
+					nextAttempt: context.attemptNumber + 1,
+					totalAttempts: options.retry.enabled
+						? options.retry.maxRetries + 1
+						: 1,
+				});
+			}
+		},
 	};
 }
 

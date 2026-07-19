@@ -8,6 +8,7 @@ import {
 } from "../../shared/context-size";
 import {
 	type AdaptiveCompactionOptions,
+	type AdaptiveCompactionProgressEvent,
 	type AdaptiveCompactionRequest,
 	adaptiveCompactHistory,
 } from "./adaptive-compaction";
@@ -62,8 +63,10 @@ function requestText(request: AdaptiveCompactionRequest): string {
 /** Builds an isolated engine fixture with deterministic completion and request IDs. */
 function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 	readonly options: AdaptiveCompactionOptions;
+	readonly progressEvents: AdaptiveCompactionProgressEvent[];
 	readonly requests: AdaptiveCompactionRequest[];
 } {
+	const progressEvents: AdaptiveCompactionProgressEvent[] = [];
 	const requests: AdaptiveCompactionRequest[] = [];
 	let requestId = 0;
 	const options: AdaptiveCompactionOptions = {
@@ -100,20 +103,23 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 			requestId += 1;
 			return `request-${requestId}`;
 		},
+		onProgress: (event) => {
+			progressEvents.push(event);
+		},
 		complete: async (request) => {
 			requests.push(request);
 			return response("final-summary");
 		},
 		...overrides,
 	};
-	return { options, requests };
+	return { options, progressEvents, requests };
 }
 
 describe("adaptiveCompactHistory", () => {
 	/** Proves direct compaction preserves Pi's three-part source order and skips reductions. */
 	test("uses one final request when the ordered source fits", async () => {
 		// ARRANGE: The default fixture leaves ample space in both model windows.
-		const { options, requests } = createOptions();
+		const { options, progressEvents, requests } = createOptions();
 
 		// ACT: Compact the Pi preparation source.
 		const summary = await adaptiveCompactHistory(options);
@@ -132,6 +138,11 @@ describe("adaptiveCompactHistory", () => {
 		expect(text.indexOf("history-message")).toBeLessThan(
 			text.indexOf("turn-prefix-message"),
 		);
+		expect(progressEvents).toEqual([
+			{ type: "start" },
+			{ type: "operation", operation: "final" },
+			{ type: "complete", completedRequests: 1 },
+		]);
 	});
 
 	/** Proves adaptive ranges consume the largest fitting original prefix without recursive summary input. */
@@ -139,7 +150,7 @@ describe("adaptiveCompactHistory", () => {
 		// ARRANGE: Twenty original blocks need preliminary ranges and hierarchical node consolidation.
 		const preliminarySources: string[] = [];
 		let preliminaryCount = 0;
-		const { options, requests } = createOptions({
+		const { options, progressEvents, requests } = createOptions({
 			preparation: {
 				messagesToSummarize: Array.from({ length: 20 }, (_, index) =>
 					userMessage(`BLOCK_${index}_${"old ".repeat(170)}`, index),
@@ -187,13 +198,23 @@ describe("adaptiveCompactHistory", () => {
 				.some((request) => request.operation === "merge"),
 		).toBeTrue();
 		expect(requests.at(-1)?.operation).toBe("final");
+		const operationEvents = progressEvents.filter(
+			(event) => event.type === "operation",
+		);
+		expect(new Set(operationEvents.map((event) => event.operation))).toEqual(
+			new Set(["preliminary", "merge", "final"]),
+		);
+		expect(progressEvents.at(-1)).toEqual({
+			type: "complete",
+			completedRequests: operationEvents.length,
+		});
 	});
 
 	/** Proves one oversized serialized block uses ordered fragments with stable block identity. */
 	test("splits one oversized block at useful boundaries and preserves fragment order", async () => {
 		// ARRANGE: Paragraph-rich input cannot fit as one reduction request.
 		let fragmentNumber = 0;
-		const { options, requests } = createOptions({
+		const { options, progressEvents, requests } = createOptions({
 			preparation: {
 				messagesToSummarize: [
 					userMessage(
@@ -266,6 +287,11 @@ describe("adaptiveCompactHistory", () => {
 		expect(new Set(requests.map((request) => request.requestId)).size).toBe(
 			requests.length,
 		);
+		expect(
+			progressEvents.filter(
+				(event) => event.type === "operation" && event.operation === "fragment",
+			),
+		).toHaveLength(fragmentRequests.length);
 	});
 
 	/** Proves dense oversized text falls back to selected-model token prefixes. */
@@ -369,7 +395,7 @@ describe("adaptiveCompactHistory", () => {
 	/** Proves oversized previous summaries are bounded before original history reductions begin. */
 	test("normalizes an oversized previous summary before original history", async () => {
 		// ARRANGE: Previous summary and original history together exceed the final request window.
-		const { options, requests } = createOptions({
+		const { options, progressEvents, requests } = createOptions({
 			preparation: {
 				previousSummary: `PREVIOUS_${"state ".repeat(360)}`,
 				messagesToSummarize: [
@@ -427,13 +453,19 @@ describe("adaptiveCompactHistory", () => {
 		if (preliminaryIndex >= 0) {
 			expect(normalizationEndIndex).toBeLessThan(preliminaryIndex);
 		}
+		expect(
+			progressEvents.some(
+				(event) =>
+					event.type === "operation" && event.operation === "normalization",
+			),
+		).toBeTrue();
 	});
 
 	/** Proves response defects use the configured retry count and one logical request ID. */
 	test("retries empty and output-limit responses without accepting partial results", async () => {
 		// ARRANGE: Two defective final responses precede one complete response.
 		let attempt = 0;
-		const { options, requests } = createOptions({
+		const { options, progressEvents, requests } = createOptions({
 			complete: async (request) => {
 				requests.push(request);
 				attempt += 1;
@@ -456,6 +488,23 @@ describe("adaptiveCompactHistory", () => {
 		expect(new Set(requests.map((request) => request.requestId))).toEqual(
 			new Set(["request-1"]),
 		);
+		expect(progressEvents).toEqual([
+			{ type: "start" },
+			{ type: "operation", operation: "final" },
+			{
+				type: "retry",
+				operation: "final",
+				nextAttempt: 2,
+				totalAttempts: 3,
+			},
+			{
+				type: "retry",
+				operation: "final",
+				nextAttempt: 3,
+				totalAttempts: 3,
+			},
+			{ type: "complete", completedRequests: 1 },
+		]);
 	});
 
 	/** Proves aborted completion responses stop immediately instead of consuming retry attempts. */
@@ -478,8 +527,9 @@ describe("adaptiveCompactHistory", () => {
 		// ARRANGE: Fragment one fails immediately while sibling requests remain active briefly.
 		const activeRequestIds = new Set<string>();
 		const attemptByRequestId = new Map<string, number>();
+		const fragmentRequestIds = new Set<string>();
 		let overlapped = false;
-		const { options } = createOptions({
+		const { options, progressEvents } = createOptions({
 			preparation: {
 				messagesToSummarize: [
 					userMessage(
@@ -499,6 +549,9 @@ describe("adaptiveCompactHistory", () => {
 				maxTokens: 80,
 			},
 			complete: async (request) => {
+				if (request.operation === "fragment") {
+					fragmentRequestIds.add(request.requestId);
+				}
 				const attempt = (attemptByRequestId.get(request.requestId) ?? 0) + 1;
 				attemptByRequestId.set(request.requestId, attempt);
 				if (activeRequestIds.has(request.requestId)) {
@@ -531,6 +584,32 @@ describe("adaptiveCompactHistory", () => {
 		// ASSERT: No logical fragment request has two attempts active at once.
 		expect(summary).toBe("fragment-final");
 		expect(overlapped).toBeFalse();
+		expect(
+			progressEvents.filter(
+				(event) => event.type === "operation" && event.operation === "fragment",
+			),
+		).toHaveLength(fragmentRequestIds.size);
+		const fragmentRetryEvents = progressEvents.filter(
+			(
+				event,
+			): event is Extract<
+				AdaptiveCompactionProgressEvent,
+				{ readonly type: "retry" }
+			> => event.type === "retry" && event.operation === "fragment",
+		);
+		expect(fragmentRetryEvents).toHaveLength(fragmentRequestIds.size);
+		expect(
+			fragmentRetryEvents.every(
+				(event) => event.nextAttempt === 2 && event.totalAttempts === 3,
+			),
+		).toBeTrue();
+		const operationCount = progressEvents.filter(
+			(event) => event.type === "operation",
+		).length;
+		expect(progressEvents.at(-1)).toEqual({
+			type: "complete",
+			completedRequests: operationCount,
+		});
 	});
 
 	/** Proves actual final output is rechecked against the main request replacement limits. */

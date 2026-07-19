@@ -385,6 +385,45 @@ describe("custom-compaction", () => {
 					data: { source: "custom-compaction", cost: 0.6 },
 				},
 			]);
+			expect(session.notifications).toEqual([
+				{
+					message: "[custom-compaction] adaptive compaction started",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] adaptive compaction operation: final",
+					type: "info",
+				},
+				{
+					message:
+						"[custom-compaction] adaptive compaction completed: 1 model requests",
+					type: "info",
+				},
+			]);
+		});
+	});
+
+	test("emits no adaptive progress without Pi UI", async () => {
+		// Purpose: headless compaction must not emit informational progress notifications.
+		// Input and expected output: successful direct compaction with hasUI false returns a result and no notifications.
+		// Edge case: model completion still runs normally without UI.
+		// Dependencies: isolated config, fake headless Pi context, and mocked completion.
+		await withIsolatedAgentDir(async () => {
+			completeSimpleMock.mockResolvedValue(
+				createAssistantResponse("headless summary"),
+			);
+			const pi = createExtensionApiFake();
+			const session = createSessionFake({ hasUI: false });
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "headless summary" },
+			});
 			expect(session.notifications).toEqual([]);
 		});
 	});
@@ -514,7 +553,25 @@ describe("custom-compaction", () => {
 				session.ctx,
 			);
 
-			expect(session.notifications).toEqual([]);
+			expect(session.notifications).toEqual([
+				{
+					message: "[custom-compaction] adaptive compaction started",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] adaptive compaction operation: final",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] retrying final: attempt 2/2",
+					type: "info",
+				},
+				{
+					message:
+						"[custom-compaction] adaptive compaction completed: 1 model requests",
+					type: "info",
+				},
+			]);
 			expect(result).toMatchObject({
 				compaction: { summary: "retried summary" },
 			});
@@ -551,6 +608,18 @@ describe("custom-compaction", () => {
 			expect(result).toBeUndefined();
 			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
 			expect(session.notifications).toEqual([
+				{
+					message: "[custom-compaction] adaptive compaction started",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] adaptive compaction operation: final",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] retrying final: attempt 2/2",
+					type: "info",
+				},
 				{
 					message:
 						"[custom-compaction] final response reached its output limit",
