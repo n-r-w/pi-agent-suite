@@ -1,6 +1,41 @@
 # Pi Agent Suite
 
-Pi Agent Suite adds pi extensions for agent profiles, subagents, advisor tools, context management, notifications, MCP tools, and prompt helpers.
+Pi Agent Suite helps you handle complex software tasks without turning one model conversation into a bottleneck. It lets you work through specialized agents, delegate focused tasks, request independent review, and keep long-running sessions useful as context grows.
+
+## Core ideas
+
+### Agent system
+
+Choose a main agent that matches the job. It can complete the task directly, delegate focused work to specialized subagents, ask an independent advisor, or convene a two-model council. The main agent remains responsible for combining the results into one coherent answer.
+
+Create reusable specialists for different kinds of work, then extend or replace them for a specific project. Delegated tasks can run independently, and saved subagent work can be continued later instead of started again.
+
+Learn more: [main-agent-selection](docs/extensions/main-agent-selection.md), [run-subagent](docs/extensions/run-subagent.md), [consult-advisor](docs/extensions/consult-advisor.md), and [convene-council](docs/extensions/convene-council.md).
+
+### Long-context management
+
+Long software tasks accumulate tool output, decisions, and intermediate work. Pi Agent Suite uses two complementary mechanisms to keep the model focused and let the same session continue for longer.
+
+| Mechanism | When it helps | What you get |
+| --- | --- | --- |
+| Context projection | While a session is growing | Bulky old tool results become concise summaries, leaving more room for current work. |
+| Custom compaction | Near the context limit or after overflow | Earlier work is condensed while recent task context is retained, so the session can continue. |
+
+Projection reduces noise and postpones compaction. Compaction restores working space when the context limit is reached. Together they reduce overflow interruptions and the need to restart work in a new session.
+
+#### Why custom compaction instead of pi's standard compaction?
+
+Standard pi compaction prepares a fixed summarization request and reduces each large tool result to its first 2,000 characters. If the remaining history is still too large for the summarization model, compaction itself can fail or lose useful information from later parts of those results.
+
+Custom compaction keeps pi's selected recent context, but changes how older history is processed:
+
+- semantic projection summaries replace arbitrary tool-result prefixes when available;
+- oversized history is reduced in bounded stages until the summarization request fits;
+- the resulting summary is checked against the next main-model request and its response reserve.
+
+The result is the same automatic compaction workflow, but it can recover from histories that standard compaction cannot summarize safely.
+
+Learn more: [context-projection](docs/extensions/context-projection.md) and [custom-compaction](docs/extensions/custom-compaction.md).
 
 ## Quick start
 
@@ -71,7 +106,7 @@ Recommended MCP servers:
 | `codex-fast` | Disabled | Toggles fast mode for supported OpenAI Codex requests and marks the footer model with `-F`. | State: `codex-fast/state.json`. Toggle with `/fast` or `Ctrl+Alt+F`. | [docs/extensions/codex-fast.md](docs/extensions/codex-fast.md) |
 | `codex-verbosity` | Disabled | Adds `text.verbosity` to OpenAI Codex requests. | `codex-verbosity/config.json`: `enabled`, `verbosity` (`low`, `medium`, `high`). | [docs/extensions/codex-verbosity.md](docs/extensions/codex-verbosity.md) |
 | `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](docs/extensions/codex-quota.md) |
-| `custom-compaction` | Enabled | Adaptively summarizes persisted history while preserving Pi's retained suffix and checking summarization and next-request budgets. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, final prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
+| `custom-compaction` | Enabled | Replaces fixed-request pi compaction with bounded adaptive summarization that can reduce oversized history before the final summary. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, final prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
 | `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary; requires valid enabled custom compaction. | `context-projection/config.json`: `enabled`, `projectCompactionSource`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
 | `mermaid` | Enabled in TUI mode | Renders supported Mermaid blocks from assistant responses as durable ASCII previews. | Fixed safety limits; no configuration. | [docs/extensions/mermaid.md](docs/extensions/mermaid.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
