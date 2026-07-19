@@ -195,6 +195,7 @@ describe("context projection config", () => {
 				kind: "valid",
 				config: {
 					enabled: true,
+					projectCompactionSource: true,
 					projectionLevels: [
 						{
 							label: "L1",
@@ -213,6 +214,24 @@ describe("context projection config", () => {
 						},
 					],
 				},
+			});
+		});
+	});
+
+	test("allows forced compaction-source projection to be disabled", async () => {
+		// Purpose: users must be able to retain Pi's standard tool-result truncation during compaction.
+		// Input and expected output: an explicit false value is preserved in normalized configuration.
+		// Edge case: all other projection fields use defaults.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				projectCompactionSource: false,
+			});
+
+			expect(await readContextProjectionConfig()).toMatchObject({
+				kind: "valid",
+				config: { projectCompactionSource: false },
 			});
 		});
 	});

@@ -36,6 +36,9 @@ const PROJECTION_REMAINING_TOKENS_L2_CONFIG_KEY = "projectionRemainingTokensL2";
 /** Config key for the third remaining-token threshold that enables projection. */
 const PROJECTION_REMAINING_TOKENS_L3_CONFIG_KEY = "projectionRemainingTokensL3";
 
+/** Config key that enables best-effort projection of the complete compaction source. */
+const PROJECT_COMPACTION_SOURCE_CONFIG_KEY = "projectCompactionSource";
+
 /** Config key for the minimum number of newest tool-use turns kept unprojected. */
 const KEEP_RECENT_TURNS_CONFIG_KEY = "keepRecentTurns";
 
@@ -85,6 +88,9 @@ const DEFAULT_PROJECTION_REMAINING_TOKENS_L2 = 50_000;
 /** Default third remaining-token threshold for explicit projection enablement. */
 const DEFAULT_PROJECTION_REMAINING_TOKENS_L3 = 30_000;
 
+/** Compaction projects every eligible discarded result by default. */
+const DEFAULT_PROJECT_COMPACTION_SOURCE = true;
+
 /** Default newest tool-use turns kept visible before projection. */
 const DEFAULT_KEEP_RECENT_TURNS = 10;
 
@@ -128,6 +134,7 @@ const CONTEXT_PROJECTION_CONFIG_KEYS = [
 	MIN_TOOL_RESULT_TOKENS_L2_CONFIG_KEY,
 	PROJECTION_REMAINING_TOKENS_L3_CONFIG_KEY,
 	MIN_TOOL_RESULT_TOKENS_L3_CONFIG_KEY,
+	PROJECT_COMPACTION_SOURCE_CONFIG_KEY,
 	KEEP_RECENT_TURNS_CONFIG_KEY,
 	KEEP_RECENT_TURNS_PERCENT_CONFIG_KEY,
 	PROJECTION_IGNORED_TOOLS_CONFIG_KEY,
@@ -164,6 +171,7 @@ type ProjectionLevelTuple = readonly [
 
 export interface ContextProjectionConfig {
 	readonly enabled: true;
+	readonly projectCompactionSource: boolean;
 	readonly projectionLevels: ProjectionLevelTuple;
 	readonly keepRecentTurns: number;
 	readonly keepRecentTurnsPercent: number;
@@ -491,21 +499,9 @@ function parseContextProjectionConfig(
 		return { kind: "invalid" };
 	}
 
-	const unsupportedKey = Object.keys(config).find(
-		(key) =>
-			!CONTEXT_PROJECTION_CONFIG_KEYS.includes(
-				key as (typeof CONTEXT_PROJECTION_CONFIG_KEYS)[number],
-			),
-	);
-	if (unsupportedKey === REMOVED_PLACEHOLDER_CONFIG_KEY) {
-		return {
-			kind: "invalid",
-			issue: REMOVED_PLACEHOLDER_CONFIG_ERROR,
-			fatal: true,
-		};
-	}
-	if (unsupportedKey !== undefined) {
-		return { kind: "invalid" };
+	const unsupportedKeyResult = validateContextProjectionConfigKeys(config);
+	if (unsupportedKeyResult !== undefined) {
+		return unsupportedKeyResult;
 	}
 
 	const enabled = config[ENABLED_CONFIG_KEY];
@@ -521,6 +517,9 @@ function parseContextProjectionConfig(
 		return { kind: "disabled" };
 	}
 
+	const projectCompactionSource =
+		config[PROJECT_COMPACTION_SOURCE_CONFIG_KEY] ??
+		DEFAULT_PROJECT_COMPACTION_SOURCE;
 	const keepRecentTurns =
 		config[KEEP_RECENT_TURNS_CONFIG_KEY] ?? DEFAULT_KEEP_RECENT_TURNS;
 	const keepRecentTurnsPercent =
@@ -536,6 +535,7 @@ function parseContextProjectionConfig(
 		config[SUMMARY_CONFIG_KEY],
 	);
 	if (
+		typeof projectCompactionSource !== "boolean" ||
 		!isNonNegativeInteger(keepRecentTurns) ||
 		!isPercentNumber(keepRecentTurnsPercent) ||
 		!isUniqueNonEmptyStringArray(projectionIgnoredTools) ||
@@ -550,6 +550,7 @@ function parseContextProjectionConfig(
 		kind: "valid",
 		config: {
 			enabled: true,
+			projectCompactionSource,
 			projectionLevels,
 			keepRecentTurns,
 			keepRecentTurnsPercent,
@@ -559,6 +560,26 @@ function parseContextProjectionConfig(
 			summary,
 		},
 	};
+}
+
+/** Rejects unknown keys and preserves migration guidance for removed placeholders. */
+function validateContextProjectionConfigKeys(
+	config: Record<string, unknown>,
+): ContextProjectionConfigResult | undefined {
+	const unsupportedKey = Object.keys(config).find(
+		(key) =>
+			!CONTEXT_PROJECTION_CONFIG_KEYS.includes(
+				key as (typeof CONTEXT_PROJECTION_CONFIG_KEYS)[number],
+			),
+	);
+	if (unsupportedKey === REMOVED_PLACEHOLDER_CONFIG_KEY) {
+		return {
+			kind: "invalid",
+			issue: REMOVED_PLACEHOLDER_CONFIG_ERROR,
+			fatal: true,
+		};
+	}
+	return unsupportedKey === undefined ? undefined : { kind: "invalid" };
 }
 
 /** Parses and normalizes the three projection trigger levels. */
@@ -880,7 +901,7 @@ export function mapEventMessagesToBranchEntries(
 }
 
 /** Builds the same branch message sequence that pi uses, but keeps the source entry beside each message. */
-function buildContextEntryMapping(
+export function buildContextEntryMapping(
 	branchEntries: readonly SessionEntry[],
 ): MappedContextEntry[] {
 	const mappedEntries: MappedContextEntry[] = [];

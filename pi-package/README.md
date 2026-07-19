@@ -51,7 +51,7 @@ Add optional extensions only when you need their specific behavior:
 - Use `codex-fast` when you want to toggle Codex fast mode with `/fast` or `Ctrl+Alt+F`.
 - Enable `codex-verbosity` when you want to control Codex answer detail.
 - Configure `mcp-wrapper` when you want MCP server tools inside pi.
-- Enable `context-projection`. Use summary mode with a fast model in `summary.model` (e.g. `gpt-5.4-mini`, `gpt-5.3-codex-spark`).
+- Enable `context-projection`. Use summary mode with a fast model in `summary.model` (e.g. `gpt-5.4-mini`, `gpt-5.3-codex-spark`). By default, missing L3 summaries are generated before custom compaction.
 - Enable `convene-council`. Do not rely on current session model defaults. Configure `llm1` and `llm2` with the most capable available models and set `model.thinking` to `high` or `xhigh`. Use two different models when possible.
 
 Recommended MCP servers:
@@ -72,7 +72,7 @@ Recommended MCP servers:
 | `codex-verbosity` | Disabled | Adds `text.verbosity` to OpenAI Codex requests. | `codex-verbosity/config.json`: `enabled`, `verbosity` (`low`, `medium`, `high`). | [docs/extensions/codex-verbosity.md](docs/extensions/codex-verbosity.md) |
 | `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](docs/extensions/codex-quota.md) |
 | `custom-compaction` | Enabled | Adaptively summarizes persisted history while preserving Pi's retained suffix and checking summarization and next-request budgets. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, final prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
-| `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary; requires valid enabled custom compaction. | `context-projection/config.json`: `enabled`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
+| `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary; requires valid enabled custom compaction. | `context-projection/config.json`: `enabled`, `projectCompactionSource`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
 | `mermaid` | Enabled in TUI mode | Renders supported Mermaid blocks from assistant responses as durable ASCII previews. | Fixed safety limits; no configuration. | [docs/extensions/mermaid.md](docs/extensions/mermaid.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |

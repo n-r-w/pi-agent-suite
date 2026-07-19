@@ -12,6 +12,7 @@ export const TOOL_RESULT_SUMMARY_DIAGNOSTIC_CUSTOM_TYPE =
 /** Extensions that use the shared tool-result summary mechanism. */
 export const TOOL_RESULT_SUMMARY_DIAGNOSTIC_SOURCES = [
 	"context-projection",
+	"custom-compaction",
 ] as const;
 
 /** Extension that initiated a failed tool-result summary attempt. */

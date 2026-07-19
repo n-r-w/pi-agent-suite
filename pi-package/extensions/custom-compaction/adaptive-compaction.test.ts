@@ -21,6 +21,22 @@ function userMessage(text: string, timestamp = 0): AgentMessage {
 	return { role: "user", content: text, timestamp };
 }
 
+/** Creates one successful text tool result for summary-source projection tests. */
+function toolResultMessage(
+	toolCallId: string,
+	text: string,
+	timestamp: number,
+): AgentMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "read",
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp,
+	};
+}
+
 /** Creates a successful Pi assistant response without model, auth, or network access. */
 function response(
 	text: string,
@@ -93,6 +109,7 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 		},
 		currentProjectedMainMessages: [userMessage("x".repeat(6_000))],
 		projectedRetainedMessages: [userMessage("retained-message")],
+		projectedToolResultSummaries: new Map(),
 		finalSummarySuffix: "",
 		mainSystemPrompt: "MAIN_SYSTEM",
 		activeTools: [],
@@ -166,6 +183,48 @@ describe("adaptiveCompactHistory", () => {
 	});
 
 	/** Proves direct compaction preserves Pi's three-part source order and skips reductions. */
+	test("uses full projection summaries and keeps Pi truncation for other tool results", async () => {
+		// Purpose: projection summaries must replace arbitrary tool-result prefixes in the durable summary source.
+		// Input and expected output: one projected result keeps its tail while one unprojected result loses its tail through Pi serialization.
+		// Edge case: the projection summary exceeds Pi's 2,000-character tool-result cap.
+		// Dependencies: injected projection map and completion request capture.
+		const projectedTail = "PROJECTED_SUMMARY_TAIL";
+		const rawProjectedTail = "RAW_PROJECTED_TAIL";
+		const unprojectedTail = "UNPROJECTED_RAW_TAIL";
+		const projectionSummary = `${"projected ".repeat(300)}${projectedTail}`;
+		const projectedRaw = `${"raw projected ".repeat(300)}${rawProjectedTail}`;
+		const unprojectedRaw = `${"raw unprojected ".repeat(300)}${unprojectedTail}`;
+		const { options, requests } = createOptions({
+			preparation: {
+				messagesToSummarize: [
+					userMessage("inspect results", 1),
+					toolResultMessage("projected-call", projectedRaw, 2),
+					toolResultMessage("unprojected-call", unprojectedRaw, 3),
+				],
+				turnPrefixMessages: [],
+				tokensBefore: 5_000,
+			},
+			projectedToolResultSummaries: new Map([
+				["projected-call", projectionSummary],
+			]),
+			summarizationModel: {
+				id: "gpt-5",
+				provider: "openai",
+				contextWindow: 16_384,
+				maxTokens: 512,
+			},
+		});
+
+		await adaptiveCompactHistory(options);
+
+		const finalRequest = requests.at(-1);
+		expect(finalRequest).toBeDefined();
+		const text = requestText(finalRequest as AdaptiveCompactionRequest);
+		expect(text).toContain(projectedTail);
+		expect(text).not.toContain(rawProjectedTail);
+		expect(text).not.toContain(unprojectedTail);
+	});
+
 	test("uses one final request when the ordered source fits", async () => {
 		// ARRANGE: The default fixture leaves ample space in both model windows.
 		const { options, progressEvents, requests } = createOptions();

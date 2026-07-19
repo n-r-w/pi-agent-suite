@@ -94,6 +94,7 @@ export interface AdaptiveCompactionOptions {
 	readonly mainModel: AdaptiveCompactionModel;
 	readonly currentProjectedMainMessages: readonly AgentMessage[];
 	readonly projectedRetainedMessages: readonly AgentMessage[];
+	readonly projectedToolResultSummaries: ReadonlyMap<string, string>;
 	readonly finalSummarySuffix: string;
 	readonly mainSystemPrompt: string;
 	readonly activeTools: NonNullable<Context["tools"]>;
@@ -129,7 +130,10 @@ export async function adaptiveCompactHistory(
 	};
 	await emitProgress({ type: "start" });
 	validateOptions(runtimeOptions);
-	const items = buildSummarySource(runtimeOptions.preparation);
+	const items = buildSummarySource(
+		runtimeOptions.preparation,
+		runtimeOptions.projectedToolResultSummaries,
+	);
 	if (items.length === 0) {
 		throw new Error("adaptive compaction summary source is empty");
 	}

@@ -63,7 +63,9 @@ messagesToSummarize
 turnPrefixMessages
 ```
 
-The extension uses Pi's `serializeConversation` output. It does not summarize `turnPrefixMessages` separately and does not use temporary `context-projection` replacements as durable summary input.
+The extension uses Pi's `serializeConversation` output for messages without projection summaries. Pi limits each such serialized `toolResult` to 2,000 characters. Existing and forced `context-projection` summaries replace eligible tool results in the discarded range and remain complete instead of passing through this character limit. Omission-only replacements never enter the durable summary source.
+
+The extension does not summarize `turnPrefixMessages` separately. They remain at the end of the same chronological summary source.
 
 Pi's `firstKeptEntryId` remains unchanged. The retained suffix is never moved into the summary source, and the extension returns Pi's original file-operation details.
 
@@ -76,7 +78,7 @@ Before any model request, the extension calculates:
 - the maximum final summary size allowed by the prospective next main-model request;
 - one common intermediate summary-node limit that permits pairwise merges and the final summarization request.
 
-The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, deterministic file-operation sections, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing only.
+The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, deterministic file-operation sections, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing. Generated summary replacements are also reused in the discarded summary range.
 
 The final main-model request must fit its model window and must not be larger than the projected request representation it replaces. When no positive final or intermediate budget exists, custom compaction fails before issuing a model request.
 
@@ -100,6 +102,7 @@ The bundled `compaction-reduction.md` defines intermediate reduction behavior an
 
 Interactive Pi sessions receive informational messages for:
 
+- forced compaction-source projection progress and retries;
 - adaptive compaction start;
 - the number of original blocks in each preliminary range;
 - oversized-block fragment count and each fragment position;
@@ -109,7 +112,7 @@ Interactive Pi sessions receive informational messages for:
 - retry attempt numbers;
 - successful outcome details.
 
-The successful outcome states whether the direct or adaptive path ran and reports applicable counts for reduced blocks, preliminary ranges, oversized blocks, fragments, normalizations, merges, logical model requests, and retries.
+The successful outcome states whether the direct or adaptive path ran and reports applicable counts for projected tool results, reduced blocks, preliminary ranges, oversized blocks, fragments, normalizations, merges, logical model requests, and retries.
 
 A logical model request is counted once even when it is retried. Retries are reported separately. Start and outcome notifications yield one event-loop turn so Pi can repaint them before synchronous planning or lifecycle completion continues. Non-interactive runs emit no progress notifications.
 
@@ -136,6 +139,8 @@ After retries are exhausted, the extension shows the completed-work counts, exac
 
 ## Relationship to context projection
 
-`context-projection` reduces ordinary provider requests but does not rewrite persisted history. Adaptive compaction summarizes the original persisted history while using recorded projection replacements only to size the fixed retained suffix.
+`context-projection` reduces ordinary provider requests but does not rewrite persisted history. Adaptive compaction reuses generated projection summaries for tool results in Pi's discarded range. When `projectCompactionSource` is enabled, it first generates missing summaries for results that reach `minToolResultTokensL3`. Results without a usable summary retain Pi's standard serialization.
+
+Forced source projection is best effort and ephemeral. A failed candidate falls back independently, and successful compaction removes the summarized source entries. The fixed retained suffix continues to use replayed provider-visible projection only for request budgeting.
 
 Enabled `context-projection` requires a valid custom-compaction configuration that is not explicitly disabled. It never enables custom compaction automatically. See `docs/extensions/context-projection.md`.

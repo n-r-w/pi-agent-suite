@@ -359,6 +359,7 @@ export async function summarizeToolResultCandidateWithRetries({
 	completeSimple,
 	config,
 	recordCost,
+	onRequest,
 	onAttemptFailure,
 	onRetryAttempt,
 	onRetryScheduled,
@@ -369,6 +370,7 @@ export async function summarizeToolResultCandidateWithRetries({
 	readonly completeSimple: ToolResultSummaryCompleteSimple;
 	readonly config: ToolResultSummaryConfig;
 	readonly recordCost: (message: LlmAssistantMessage) => void;
+	readonly onRequest?: () => void | Promise<void>;
 	readonly onAttemptFailure: (
 		candidate: ToolResultSummaryCandidate,
 		failure: ToolResultSummaryAttemptFailure,
@@ -379,7 +381,7 @@ export async function summarizeToolResultCandidateWithRetries({
 	readonly onRetryScheduled?: (
 		nextAttempt: number,
 		totalAttempts: number,
-	) => void;
+	) => void | Promise<void>;
 }): Promise<string | undefined> {
 	const totalAttempts = config.retryCount + 1;
 	let attempt = 0;
@@ -397,6 +399,7 @@ export async function summarizeToolResultCandidateWithRetries({
 					sessionId,
 					completeSimple,
 					recordCost,
+					...(onRequest === undefined ? {} : { onRequest }),
 				});
 				if (result.kind === "success") {
 					return result.summary;
@@ -421,9 +424,9 @@ export async function summarizeToolResultCandidateWithRetries({
 				),
 				signal: runtimeConfig.options.signal,
 				factor: 1,
-				onFailedAttempt: ({ attemptNumber, retriesLeft }) => {
+				onFailedAttempt: async ({ attemptNumber, retriesLeft }) => {
 					if (retriesLeft > 0) {
-						onRetryScheduled?.(attemptNumber + 1, totalAttempts);
+						await onRetryScheduled?.(attemptNumber + 1, totalAttempts);
 					}
 				},
 			},
@@ -609,12 +612,14 @@ async function summarizeToolResultCandidate({
 	sessionId,
 	completeSimple,
 	recordCost,
+	onRequest,
 }: {
 	readonly candidate: ToolResultSummaryCandidate;
 	readonly runtimeConfig: ToolResultSummaryRuntimeConfig;
 	readonly sessionId: string;
 	readonly completeSimple: ToolResultSummaryCompleteSimple;
 	readonly recordCost: (message: LlmAssistantMessage) => void;
+	readonly onRequest?: () => void | Promise<void>;
 }): Promise<SummaryAttemptResult> {
 	const context = buildSummaryContext(candidate, runtimeConfig);
 	if (!doesContextFitModel(context, runtimeConfig.model)) {
@@ -634,6 +639,7 @@ async function summarizeToolResultCandidate({
 	}
 
 	try {
+		await onRequest?.();
 		const response = await completeSimple(runtimeConfig.model, context, {
 			...runtimeConfig.options,
 			sessionId,

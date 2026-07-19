@@ -205,6 +205,84 @@ function messageEntry(
 	};
 }
 
+/** Creates a compaction event whose discarded range contains one large tool result. */
+function createProjectionCompactionEvent(
+	signal = new AbortController().signal,
+): Record<string, unknown> {
+	const user = {
+		role: "user",
+		content: "inspect the large result",
+		timestamp: 1,
+	};
+	const assistant = {
+		role: "assistant",
+		content: [
+			{
+				type: "toolCall",
+				id: "large-call",
+				name: "bash",
+				arguments: { command: "large-output" },
+			},
+		],
+		provider: "current",
+		model: "model",
+		api: "fake-api",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: 2,
+	};
+	const toolResult = {
+		role: "toolResult",
+		toolCallId: "large-call",
+		toolName: "bash",
+		content: [
+			{
+				type: "text",
+				text: `${"large raw output ".repeat(400)}RAW_RESULT_TAIL`,
+			},
+		],
+		isError: false,
+		timestamp: 3,
+	};
+	const retained = { role: "user", content: "retained task", timestamp: 4 };
+	return {
+		type: "session_before_compact",
+		preparation: {
+			firstKeptEntryId: "entry-keep",
+			messagesToSummarize: [user, assistant, toolResult],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 20_000,
+			fileOps: {
+				read: new Set<string>(),
+				written: new Set<string>(),
+				edited: new Set<string>(),
+			},
+			settings: {
+				enabled: true,
+				reserveTokens: 1_000,
+				keepRecentTokens: 2_000,
+			},
+		},
+		branchEntries: [
+			messageEntry("entry-user", null, user),
+			messageEntry("entry-assistant", "entry-user", assistant),
+			messageEntry("entry-result", "entry-assistant", toolResult),
+			messageEntry("entry-keep", "entry-result", retained),
+		],
+		reason: "threshold",
+		willRetry: false,
+		signal,
+	};
+}
+
 /** Creates a compaction event with a large replaceable prefix and fixed suffix. */
 function createCompactionEvent(
 	signal = new AbortController().signal,
@@ -356,6 +434,16 @@ async function writeConfig(agentDir: string, config: unknown): Promise<void> {
 	await writeFile(join(configDir, "config.json"), JSON.stringify(config));
 }
 
+/** Writes context-projection configuration in the isolated suite directory. */
+async function writeProjectionConfig(
+	agentDir: string,
+	config: unknown,
+): Promise<void> {
+	const configDir = join(agentDir, "agent-suite", "context-projection");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(join(configDir, "config.json"), JSON.stringify(config));
+}
+
 /** Writes the three configurable compaction prompts. */
 async function writePromptFiles(dir: string): Promise<PromptFiles> {
 	await mkdir(dir, { recursive: true });
@@ -375,6 +463,168 @@ afterEach(() => {
 });
 
 describe("custom-compaction", () => {
+	test("projects every eligible unprojected tool result in the compaction source", async () => {
+		// Purpose: recent or newly added results in Pi's discarded range must not fall back to arbitrary prefix truncation.
+		// Input and expected output: enabled forced projection summarizes one large result before the direct compaction request.
+		// Edge case: the generated projection summary exceeds Pi's 2,000-character result cap and must remain complete.
+		// Dependencies: isolated projection config, fake session, and ordered completion responses.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				minToolResultTokensL3: 1,
+				projectCompactionSource: true,
+				summary: {
+					enabled: true,
+					maxConcurrency: 1,
+					retryCount: 0,
+					retryDelayMs: 0,
+				},
+			});
+			const projectionTail = "FORCED_PROJECTION_TAIL";
+			completeSimpleMock
+				.mockResolvedValueOnce(
+					createAssistantResponse(
+						`${"projected result ".repeat(300)}${projectionTail}`,
+					),
+				)
+				.mockResolvedValueOnce(createAssistantResponse("adaptive summary"));
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "adaptive summary" },
+			});
+			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+			const [, compactionContext] = completeSimpleMock.mock.calls[1] ?? [];
+			const compactionText = requestText(compactionContext);
+			expect(compactionText).toContain(projectionTail);
+			expect(compactionText).not.toContain("RAW_RESULT_TAIL");
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: "custom-compaction-outcome",
+				data: {
+					kind: "success",
+					message:
+						"compaction completed: direct summary, 1/1 tool results projected, 2 model requests",
+				},
+			});
+		});
+	});
+
+	test("uses Pi truncation when compaction-source projection is disabled", async () => {
+		// Purpose: the opt-out must preserve the previously agreed Pi fallback behavior.
+		// Input and expected output: explicit false skips helper projection and runs only direct compaction.
+		// Edge case: the result remains larger than the L3 threshold.
+		// Dependencies: isolated projection config and completion request capture.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				minToolResultTokensL3: 1,
+				projectCompactionSource: false,
+				summary: { enabled: true },
+			});
+			completeSimpleMock.mockResolvedValue(
+				createAssistantResponse("adaptive summary"),
+			);
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "adaptive summary" },
+			});
+			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+			const [, compactionContext] = completeSimpleMock.mock.calls[0] ?? [];
+			expect(requestText(compactionContext)).not.toContain("RAW_RESULT_TAIL");
+		});
+	});
+
+	test("falls back to Pi truncation when forced projection fails", async () => {
+		// Purpose: one failed helper summary must not block durable compaction.
+		// Input and expected output: an output-limit response is rejected, then direct compaction succeeds with Pi serialization.
+		// Edge case: projection retry count is zero.
+		// Dependencies: isolated projection config and ordered completion responses.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				minToolResultTokensL3: 1,
+				projectCompactionSource: true,
+				summary: {
+					enabled: true,
+					maxConcurrency: 1,
+					retryCount: 0,
+					retryDelayMs: 0,
+				},
+			});
+			completeSimpleMock
+				.mockResolvedValueOnce(
+					createAssistantResponse("incomplete", { stopReason: "length" }),
+				)
+				.mockResolvedValueOnce(createAssistantResponse("adaptive summary"));
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "adaptive summary" },
+			});
+			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+			const [, compactionContext] = completeSimpleMock.mock.calls[1] ?? [];
+			expect(requestText(compactionContext)).not.toContain("RAW_RESULT_TAIL");
+		});
+	});
+
+	test("stops before final compaction when forced projection is cancelled", async () => {
+		// Purpose: cancellation during forced projection must not start the durable summary request.
+		// Input and expected output: the helper response arrives after abort and the compaction handler returns no custom result.
+		// Edge case: the helper provider itself returns a successful response after cancellation.
+		// Dependencies: isolated projection config and one controlled abort signal.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				minToolResultTokensL3: 1,
+				projectCompactionSource: true,
+				summary: {
+					enabled: true,
+					maxConcurrency: 1,
+					retryCount: 0,
+					retryDelayMs: 0,
+				},
+			});
+			const controller = new AbortController();
+			completeSimpleMock.mockImplementationOnce(async () => {
+				controller.abort();
+				return createAssistantResponse("projection summary");
+			});
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(controller.signal),
+				session.ctx,
+			);
+
+			expect(result).toBeUndefined();
+			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		});
+	});
+
 	test("returns one adaptive result with Pi's fixed boundary and file details", async () => {
 		// Purpose: the entry shell must use one direct final request and preserve Pi lifecycle state.
 		// Input and expected output: default config plus one small response returns the original boundary, file details, and chronological source.
@@ -441,7 +691,7 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] creating final summary",
+					message: "[custom-compaction] creating final summary...",
 					type: "info",
 				},
 				{
@@ -700,7 +950,7 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] creating final summary",
+					message: "[custom-compaction] creating final summary...",
 					type: "info",
 				},
 				{
@@ -758,7 +1008,7 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] creating final summary",
+					message: "[custom-compaction] creating final summary...",
 					type: "info",
 				},
 				{

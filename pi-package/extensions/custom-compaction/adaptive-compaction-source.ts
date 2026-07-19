@@ -33,6 +33,7 @@ export type SourceItem = OriginalBlock | SummaryNode;
 /** Converts Pi preparation groups into previous-summary, history, then turn-prefix items. */
 export function buildSummarySource(
 	preparation: AdaptiveCompactionPreparation,
+	projectedToolResultSummaries: ReadonlyMap<string, string>,
 ): SourceItem[] {
 	const source: SourceItem[] = [];
 	if (preparation.previousSummary !== undefined) {
@@ -46,10 +47,12 @@ export function buildSummarySource(
 		...serializeMessageBlocks(
 			preparation.messagesToSummarize,
 			"messagesToSummarize",
+			projectedToolResultSummaries,
 		),
 		...serializeMessageBlocks(
 			preparation.turnPrefixMessages,
 			"turnPrefixMessages",
+			projectedToolResultSummaries,
 		),
 	);
 	return source;
@@ -59,6 +62,7 @@ export function buildSummarySource(
 function serializeMessageBlocks(
 	messages: readonly AgentMessage[],
 	sourceName: "messagesToSummarize" | "turnPrefixMessages",
+	projectedToolResultSummaries: ReadonlyMap<string, string>,
 ): OriginalBlock[] {
 	const blocks: AgentMessage[][] = [];
 	let currentTurn: AgentMessage[] | undefined;
@@ -91,11 +95,54 @@ function serializeMessageBlocks(
 	}
 
 	return blocks.flatMap((block, index) => {
-		const text = serializeConversation(convertToLlm(block));
+		const text = serializeMessageBlock(block, projectedToolResultSummaries);
 		return text.length === 0
 			? []
 			: [{ kind: "original", id: `${sourceName}:${index}`, text }];
 	});
+}
+
+/** Preserves complete projection summaries while delegating all other text to Pi. */
+function serializeMessageBlock(
+	messages: readonly AgentMessage[],
+	projectedToolResultSummaries: ReadonlyMap<string, string>,
+): string {
+	if (
+		!messages.some(
+			(message) =>
+				message.role === "toolResult" &&
+				projectedToolResultSummaries.has(message.toolCallId),
+		)
+	) {
+		return serializeConversation(convertToLlm([...messages]));
+	}
+
+	const parts: string[] = [];
+	let pendingMessages: AgentMessage[] = [];
+	const flushPendingMessages = (): void => {
+		if (pendingMessages.length === 0) {
+			return;
+		}
+		const text = serializeConversation(convertToLlm(pendingMessages));
+		if (text.length > 0) {
+			parts.push(text);
+		}
+		pendingMessages = [];
+	};
+	for (const message of messages) {
+		const projectionSummary =
+			message.role === "toolResult"
+				? projectedToolResultSummaries.get(message.toolCallId)
+				: undefined;
+		if (projectionSummary === undefined) {
+			pendingMessages.push(message);
+			continue;
+		}
+		flushPendingMessages();
+		parts.push(`[Tool result]: ${projectionSummary}`);
+	}
+	flushPendingMessages();
+	return parts.join("\n\n");
 }
 
 /** Builds the one-message summarization context shared by all operation kinds. */

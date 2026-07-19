@@ -6,8 +6,6 @@ import type {
 	ExtensionContext,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { escapeUTF8 } from "entities";
-import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	addPendingProjectionSavings,
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
@@ -31,13 +29,11 @@ import {
 	resetPendingProjectionSavings,
 	setPendingProjectionSavings,
 } from "../../shared/context-projection";
-import { countProjectionTextTokens } from "../../shared/context-size";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
+import { createToolResultProjectionSummaries } from "../../shared/tool-result-projection";
 import {
 	collectToolResultSummaryCandidates,
-	mapWithConcurrency,
 	resolveToolResultSummaryRuntimeConfig,
-	summarizeToolResultCandidateWithRetries,
 	type ToolResultSummaryCandidate,
 	type ToolResultSummaryCompleteSimple,
 } from "../../shared/tool-result-summary";
@@ -498,70 +494,35 @@ async function createSummaryReplacementsByEntryId({
 		"context-projection",
 		runtimeConfig.model,
 	);
-	const summaries = await mapWithConcurrency(
+	return createToolResultProjectionSummaries({
 		candidates,
-		config.summary.maxConcurrency,
-		async (candidate) => {
-			const summary = await summarizeToolResultCandidateWithRetries({
-				candidate,
-				runtimeConfig,
-				sessionId: createAuxiliaryLlmSessionId(),
-				completeSimple,
-				config: config.summary,
-				onAttemptFailure: recordAttemptFailure,
-				onRetryAttempt: () => {
-					progress.notifyCurrent();
-				},
-				onRetryScheduled: (nextAttempt, totalAttempts) => {
-					progress.notifyRetry(nextAttempt, totalAttempts);
-				},
-				recordCost: (message) => {
-					recordHelperApiCost(pi, "context-projection", message);
-				},
-			});
-			if (summary === undefined) {
-				progress.notifySummaryUnavailable();
-			}
-			progress.advance();
-			return summary;
+		runtimeConfig,
+		completeSimple,
+		config: config.summary,
+		summaryNotice: config.summaryNotice,
+		callbacks: {
+			onAttemptFailure: recordAttemptFailure,
+			onRetryAttempt: () => {
+				progress.notifyCurrent();
+			},
+			onRetryScheduled: (nextAttempt, totalAttempts) => {
+				progress.notifyRetry(nextAttempt, totalAttempts);
+			},
+			onCandidateComplete: (summaryCreated) => {
+				if (!summaryCreated) {
+					progress.notifySummaryUnavailable();
+				}
+				progress.advance();
+			},
+			onSummaryNotSmaller: () => {
+				progress.notifySummaryNotSmaller();
+				progress.notifyCurrent();
+			},
+			recordCost: (message) => {
+				recordHelperApiCost(pi, "context-projection", message);
+			},
 		},
-	);
-	return createUsableSummaryReplacements(
-		candidates,
-		summaries,
-		config.summaryNotice,
-		progress,
-	);
-}
-
-/** Keeps generated summaries only when their replacement reduces the original result size. */
-function createUsableSummaryReplacements(
-	candidates: readonly ToolResultSummaryCandidate[],
-	summaries: readonly (string | undefined)[],
-	summaryNotice: string,
-	progress: ProjectionProgressReporter,
-): Map<string, string> {
-	const replacementsByEntryId = new Map<string, string>();
-	for (let index = 0; index < candidates.length; index += 1) {
-		const candidate = candidates[index];
-		const summary = summaries[index];
-		if (candidate === undefined || summary === undefined) {
-			continue;
-		}
-
-		const replacement = wrapSummaryReplacement(summary, summaryNotice);
-		if (
-			countProjectionTextTokens(replacement) >=
-			countProjectionTextTokens(candidate.text)
-		) {
-			progress.notifySummaryNotSmaller();
-			progress.notifyCurrent();
-			continue;
-		}
-
-		replacementsByEntryId.set(candidate.id, replacement);
-	}
-	return replacementsByEntryId;
+	});
 }
 
 /** Collects summary candidates for new projections and advances progress for entries skipped before provider calls. */
@@ -592,14 +553,6 @@ function collectNewProjectionSummaryCandidates({
 	}
 
 	return candidates;
-}
-
-/** Marks generated summaries as omitted full tool results in the final projected context. */
-function wrapSummaryReplacement(
-	summary: string,
-	summaryNotice: string,
-): string {
-	return `<tool_result full_result="omitted" content="summary">\n<notice>${escapeUTF8(summaryNotice)}</notice>\n<summary>\n${escapeUTF8(summary)}\n</summary>\n</tool_result>`;
 }
 
 function createContextProjectionChangeResult({

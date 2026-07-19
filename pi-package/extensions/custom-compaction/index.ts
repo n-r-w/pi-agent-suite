@@ -37,6 +37,10 @@ import {
 	type AdaptiveCompactionRequest,
 	adaptiveCompactHistory,
 } from "./adaptive-compaction";
+import {
+	type CompactionSourceProjectionProgressEvent,
+	projectCompactionSource,
+} from "./compaction-source-projection";
 
 /** Suite directory owned by custom-compaction configuration. */
 const CUSTOM_COMPACTION_EXTENSION_DIR = "custom-compaction";
@@ -106,6 +110,7 @@ interface ResolvedCompactionRequest {
 interface ProjectedCompactionContexts {
 	readonly currentProjectedMainMessages: readonly AgentMessage[];
 	readonly projectedRetainedMessages: readonly AgentMessage[];
+	readonly projectedToolResultSummaries: ReadonlyMap<string, string>;
 }
 
 /** Minimal UI and model registry contract consumed from Pi context. */
@@ -137,6 +142,8 @@ interface CompactionFileLists {
 /** Attempt statistics used to explain adaptive work and native fallback. */
 interface CompactionProgressStats {
 	adaptive: boolean;
+	sourceProjectionCandidates: number;
+	projectedToolResults: number;
 	preliminaryRanges: number;
 	historyBlocks: number;
 	oversizedBlocks: number;
@@ -147,11 +154,16 @@ interface CompactionProgressStats {
 	retries: number;
 }
 
+/** Progress emitted by source projection or the adaptive compaction engine. */
+type CompactionProgressEvent =
+	| AdaptiveCompactionProgressEvent
+	| CompactionSourceProjectionProgressEvent;
+
 /** Reports engine progress and retains statistics when an attempt fails. */
 interface CompactionProgressReporter {
 	readonly stats: CompactionProgressStats;
 	readonly outcomeMessage: string | undefined;
-	report(event: AdaptiveCompactionProgressEvent): Promise<void>;
+	report(event: CompactionProgressEvent): Promise<void>;
 	reportFailure(error: unknown): Promise<void>;
 }
 
@@ -199,11 +211,7 @@ async function handleSessionBeforeCompact(
 		return undefined;
 	}
 	if (ctx.model === undefined) {
-		const message = await reportStandardFallback(
-			session,
-			"current main model is unavailable",
-		);
-		persistOutcome(pi, session, "fallback", message);
+		await reportUnavailableMainModel(pi, session);
 		return undefined;
 	}
 
@@ -211,8 +219,12 @@ async function handleSessionBeforeCompact(
 	const finalSummarySuffix = formatFileOperations(files);
 	const progress = createProgressReporter(session);
 	try {
-		const { currentProjectedMainMessages, projectedRetainedMessages } =
-			await resolveProjectedContexts(event, ctx);
+		const projectedContexts = await resolveProjectedContexts(
+			pi,
+			event,
+			ctx,
+			progress,
+		);
 		const baseCompletionOptions = buildCompletionOptions(
 			resolved.runtime,
 			resolved.auth,
@@ -224,8 +236,7 @@ async function handleSessionBeforeCompact(
 			reductionPrompt: resolved.prompts.reductionPrompt,
 			summarizationModel: resolved.runtime.model,
 			mainModel: ctx.model,
-			currentProjectedMainMessages,
-			projectedRetainedMessages,
+			...projectedContexts,
 			finalSummarySuffix,
 			mainSystemPrompt: ctx.getSystemPrompt(),
 			activeTools: collectActiveTools(pi),
@@ -259,10 +270,24 @@ async function handleSessionBeforeCompact(
 	}
 }
 
+/** Reports the pre-request fallback used when Pi has no active main model. */
+async function reportUnavailableMainModel(
+	pi: ExtensionAPI,
+	session: CustomCompactionSession,
+): Promise<void> {
+	const message = await reportStandardFallback(
+		session,
+		"current main model is unavailable",
+	);
+	persistOutcome(pi, session, "fallback", message);
+}
+
 /** Replays existing projection for the current context and fixed retained suffix. */
 async function resolveProjectedContexts(
+	pi: ExtensionAPI,
 	event: SessionBeforeCompactEvent,
 	ctx: ExtensionContext,
+	progress: CompactionProgressReporter,
 ): Promise<ProjectedCompactionContexts> {
 	const [currentProjectedMainMessages, projectedRetainedMessages] =
 		await Promise.all([
@@ -276,7 +301,21 @@ async function resolveProjectedContexts(
 				cwd: ctx.cwd,
 			}),
 		]);
-	return { currentProjectedMainMessages, projectedRetainedMessages };
+	const projectedToolResultSummaries = await projectCompactionSource({
+		pi,
+		event,
+		ctx,
+		currentProjectedMainMessages,
+		currentThinking: pi.getThinkingLevel(),
+		completeSimple,
+		onProgress: progress.report,
+	});
+	event.signal.throwIfAborted();
+	return {
+		currentProjectedMainMessages,
+		projectedRetainedMessages,
+		projectedToolResultSummaries,
+	};
 }
 
 /** Resolves validated config, prompts, model, reasoning, and authentication. */
@@ -554,6 +593,8 @@ function createProgressReporter(
 	let outcomeMessage: string | undefined;
 	const stats: CompactionProgressStats = {
 		adaptive: false,
+		sourceProjectionCandidates: 0,
+		projectedToolResults: 0,
 		preliminaryRanges: 0,
 		historyBlocks: 0,
 		oversizedBlocks: 0,
@@ -588,8 +629,25 @@ function createProgressReporter(
 /** Updates cumulative attempt statistics from one typed engine event. */
 function recordProgress(
 	stats: CompactionProgressStats,
-	event: AdaptiveCompactionProgressEvent,
+	event: CompactionProgressEvent,
 ): void {
+	if (event.type === "source-projection-request") {
+		stats.modelRequests += 1;
+		return;
+	}
+	if (event.type === "source-projection") {
+		if (event.completed === 0) {
+			stats.sourceProjectionCandidates += event.total;
+		}
+		if (event.projected !== undefined) {
+			stats.projectedToolResults += event.projected;
+		}
+		return;
+	}
+	if (event.type === "source-projection-retry") {
+		stats.retries += 1;
+		return;
+	}
 	if (event.type === "split") {
 		stats.adaptive = true;
 		stats.oversizedBlocks += 1;
@@ -628,15 +686,19 @@ function recordProgress(
 /** Maps typed engine progress to concrete informational Pi UI messages. */
 async function reportProgress(
 	session: CustomCompactionSession,
-	event: AdaptiveCompactionProgressEvent,
+	event: CompactionProgressEvent,
 	stats: CompactionProgressStats,
 ): Promise<void> {
-	if (session.hasUI === false) {
+	if (session.hasUI === false || event.type === "source-projection-request") {
 		return;
 	}
 	const message = formatProgressMessage(event, stats);
 	session.ui.notify(`${ISSUE_PREFIX} ${message}`, "info");
-	if (event.type === "start" || event.type === "complete") {
+	if (
+		event.type === "start" ||
+		event.type === "complete" ||
+		(event.type === "source-projection" && event.completed === 0)
+	) {
 		// Pi repaints start and outcome states before synchronous work or lifecycle completion replaces them.
 		await yieldToEventLoop();
 	}
@@ -644,10 +706,19 @@ async function reportProgress(
 
 /** Formats one progress event without exposing conversation or provider content. */
 function formatProgressMessage(
-	event: AdaptiveCompactionProgressEvent,
+	event: CompactionProgressEvent,
 	stats: CompactionProgressStats,
 ): string {
 	switch (event.type) {
+		case "source-projection-request":
+			return "creating compaction-source projection";
+		case "source-projection":
+			if (event.projected !== undefined) {
+				return `compaction-source projection completed: ${event.projected}/${event.total} tool results projected`;
+			}
+			return `projecting compaction source: ${event.completed}/${event.total} tool results`;
+		case "source-projection-retry":
+			return `retrying compaction-source projection: attempt ${event.nextAttempt}/${event.totalAttempts}`;
 		case "start":
 			return "adaptive compaction started";
 		case "split":
@@ -670,13 +741,13 @@ function formatOperationMessage(
 ): string {
 	switch (event.operation) {
 		case "final":
-			return "creating final summary";
+			return "creating final summary...";
 		case "preliminary":
-			return `summarizing ${event.sourceBlocks ?? 0} oldest history blocks`;
+			return `summarizing ${event.sourceBlocks ?? 0} oldest history blocks...`;
 		case "fragment":
-			return `summarizing fragment ${event.fragmentIndex ?? 0}/${event.totalFragments ?? 0}`;
+			return `summarizing fragment ${event.fragmentIndex ?? 0}/${event.totalFragments ?? 0}...`;
 		case "normalization":
-			return "normalizing oversized previous summary";
+			return "normalizing oversized previous summary...";
 		case "merge":
 			return "merging 2 adjacent summary nodes";
 	}
@@ -708,6 +779,11 @@ function formatCompletionMessage(stats: CompactionProgressStats): string {
 /** Returns cumulative work details shared by success and failure messages. */
 function formatAttemptDetails(stats: CompactionProgressStats): string[] {
 	const details: string[] = [];
+	if (stats.sourceProjectionCandidates > 0) {
+		details.push(
+			`${stats.projectedToolResults}/${stats.sourceProjectionCandidates} tool results projected`,
+		);
+	}
 	if (stats.preliminaryRanges > 0) {
 		details.push(
 			`${formatCount(stats.historyBlocks, "history block")} reduced in ${formatCount(stats.preliminaryRanges, "range")}`,
