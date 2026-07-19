@@ -2,17 +2,19 @@
 
 ## Purpose
 
-`custom-compaction` replaces pi's default conversation compaction with a configurable summary step. It can use the current session model or a configured model, the current thinking level or a configured reasoning level, and optional custom prompt files.
+`custom-compaction` replaces Pi's default compaction request with fixed-boundary adaptive history summarization. It preserves Pi's retained suffix, builds a durable summary from the original chronological summary range, and checks both the summarization-model request and the next main-model request before returning a custom result.
+
+The extension uses the current session model and thinking level by default. A separate compaction model, reasoning level, final prompts, and retry policy are configurable.
 
 ## Configuration file
 
-Default config file:
+Primary file:
 
 ```text
 ~/.pi/agent/agent-suite/custom-compaction/config.json
 ```
 
-If the config file is missing, the extension stays enabled and uses its defaults.
+Missing configuration keeps custom compaction enabled with defaults. The extension does not read older custom-compaction config locations.
 
 ## Full configuration example
 
@@ -22,63 +24,97 @@ If the config file is missing, the extension stays enabled and uses its defaults
   "systemPromptFile": "/absolute/path/to/compaction-system.md",
   "historyPromptFile": "/absolute/path/to/compaction.md",
   "updatePromptFile": "/absolute/path/to/compaction-update.md",
-  "turnPrefixPromptFile": "/absolute/path/to/compaction-turn-prefix.md",
   "model": "provider/model",
   "reasoning": "medium",
   "retry": {
     "enabled": true,
     "maxRetries": 3,
     "baseDelayMs": 2000
-  },
-  "summary": {
-    "enabled": true,
-    "model": null,
-    "thinking": null,
-    "maxConcurrency": 1,
-    "retryCount": 1,
-    "retryDelayMs": 5000,
-    "systemPromptFile": null,
-    "userPromptFile": null
   }
 }
 ```
 
+Unknown parameters make the configuration invalid.
+
+Breaking change: `summary` and `turnPrefixPromptFile` are removed. Adaptive compaction handles oversized history at the conversation level and includes the turn prefix in the chronological final summary source.
+
 ## Parameters
-
-| Parameter | Required | Type or shape | Default | Description |
-| --- | --- | --- | --- | --- |
-| `enabled` | No | Boolean | `true` | Enables custom compaction. Set to `false` to disable this extension. |
-| `systemPromptFile` | No | Non-empty absolute path string | Built-in system prompt | Prompt file used as the system prompt for compaction. |
-| `historyPromptFile` | No | Non-empty absolute path string | Built-in history prompt | Prompt file used when there is no previous summary. |
-| `updatePromptFile` | No | Non-empty absolute path string | Built-in update prompt | Prompt file used when a previous summary exists. |
-| `turnPrefixPromptFile` | No | Non-empty absolute path string | Built-in turn-prefix prompt | Prompt file used when compaction needs a summary for the start of a turn. |
-| `model` | No | String in `provider/model` format | Current session model | Model used for compaction. Both `provider` and `model` must be present. |
-| `reasoning` | No | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | Current thinking level when it uses one of the allowed values | Reasoning level used for compaction model calls. |
-| `retry` | No | Object | `{ "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }` | Retry settings for transient compaction model failures. |
-| `retry.enabled` | No | Boolean | `true` | Enables retry for transient compaction model failures. |
-| `retry.maxRetries` | No | Non-negative integer | `3` | Maximum number of retry attempts. |
-| `retry.baseDelayMs` | No | Non-negative integer | `2000` | Base delay between retry attempts in milliseconds. |
-| `summary` | No | Object | Enabled | Configures helper summaries for large `toolResult` messages when the compaction request does not fit the selected compaction model. |
-
-## Tool result summary parameters
-
-`custom-compaction` uses the same `summary` object shape as `context-projection`.
-
-Helper summaries run only when the normal compaction summary input is too large. A large `toolResult` is a successful text tool result with at least 4,000 estimated tokens.
-
-Every helper and final compaction request uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session. Retries reuse the ID for one logical request. Concurrent history and turn-prefix summaries, separate tool-result candidates, and the final compaction summary use distinct IDs.
 
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `summary.enabled` | No | Boolean | `true` | Enables helper summaries for large tool results before final compaction. |
-| `summary.model` | No | `null` or string in `provider/model` format | Selected compaction model | Model used for helper summaries. `null` has the same effect as omitting the parameter. |
-| `summary.thinking` | No | `null`, `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Selected compaction reasoning | Thinking level used for helper summary requests. `null` has the same effect as omitting the parameter. |
-| `summary.maxConcurrency` | No | Positive integer | `1` | Maximum number of helper summary requests that can run at the same time. |
-| `summary.retryCount` | No | Non-negative integer | `1` | Number of retry attempts after the first helper summary request fails. |
-| `summary.retryDelayMs` | No | Non-negative integer | `5000` | Delay between helper summary retry attempts, in milliseconds. |
-| `summary.systemPromptFile` | No | `null` or absolute file path | Shared tool-result summary system prompt | Custom system prompt file for helper summary generation. |
-| `summary.userPromptFile` | No | `null` or absolute file path | Shared tool-result summary user prompt | Custom user prompt file appended after the tool result text. |
+| `enabled` | No | Boolean | `true` | Enables adaptive custom compaction. `false` lets Pi use standard compaction. |
+| `systemPromptFile` | No | Non-empty absolute path | Bundled system prompt | System prompt used for all adaptive compaction model calls. |
+| `historyPromptFile` | No | Non-empty absolute path | Bundled history prompt | Final prompt used when no previous compaction summary exists. |
+| `updatePromptFile` | No | Non-empty absolute path | Bundled update prompt | Final prompt used when a previous compaction summary exists. |
+| `model` | No | String in `provider/model` format | Current main model | Model used for direct, preliminary, fragment, normalization, merge, and final requests. Model IDs may contain additional slashes after the provider. |
+| `reasoning` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current thinking level | Reasoning level used for adaptive compaction requests. |
+| `retry` | No | Object | `{ "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }` | Retry settings for provider failures and invalid summarization responses. |
+| `retry.enabled` | No | Boolean | `true` | Enables retry. |
+| `retry.maxRetries` | No | Non-negative integer | `3` | Number of retries after the first request. |
+| `retry.baseDelayMs` | No | Non-negative integer | `2000` | Initial retry delay in milliseconds. Later retry delays use the shared exponential policy. |
 
-## Helper summary diagnostics
+## Summary source and retained suffix
 
-Each failed helper summary attempt appends the shared `tool-result-summary-diagnostic` custom entry with `source` set to `custom-compaction`. See [context-projection summary diagnostics](context-projection.md#summary-diagnostics) for the entry fields and data-exclusion rules.
+The durable summary source always preserves this order:
+
+```text
+previousSummary
+messagesToSummarize
+turnPrefixMessages
+```
+
+The extension uses Pi's `serializeConversation` output. It does not summarize `turnPrefixMessages` separately and does not use temporary `context-projection` replacements as durable summary input.
+
+Pi's `firstKeptEntryId` remains unchanged. The retained suffix is never moved into the summary source, and the extension returns Pi's original file-operation details.
+
+## Request budgets
+
+Before any model request, the extension calculates:
+
+- the maximum final summary size allowed by the prospective next main-model request;
+- one common intermediate summary-node limit that permits pairwise merges and the final summarization request.
+
+The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing only.
+
+The final main-model request must fit its model window and must not be larger than the projected request representation it replaces. When no positive final or intermediate budget exists, custom compaction fails before issuing a model request.
+
+## Adaptive reduction
+
+When the complete final summarization request fits, the extension sends one direct final request.
+
+Otherwise it:
+
+1. Summarizes the largest fitting contiguous original prefix from oldest to newest.
+2. Splits one oversized serialized block at paragraph, line, smaller text, or token boundaries.
+3. Normalizes an oversized `previousSummary` to the common node limit.
+4. Merges adjacent summary nodes only while the final request still does not fit.
+5. Sends one final request after the ordered reduced source fits.
+
+Preliminary original ranges are independent: an earlier intermediate summary is not included when summarizing a later original range. Every preliminary, fragment, normalization, and merge result must be smaller than its source and respect the common node limit.
+
+The bundled `compaction-reduction.md` defines intermediate reduction behavior and is not configurable. `historyPromptFile` and `updatePromptFile` remain the configurable final prompts.
+
+## Response handling
+
+Each logical request uses a Pi-compatible UUIDv7 provider session ID. Retries for that request reuse the ID; separate operations use separate IDs.
+
+The extension rejects:
+
+- provider error responses;
+- aborted or unsupported stop reasons;
+- output-limit truncation;
+- empty text;
+- non-reducing intermediate results;
+- fragment sets that are not smaller than their source block;
+- summaries that exceed their node or final budget;
+- final summaries that make the prospective main-model request too large.
+
+Rejected responses use the configured retry policy. No partial summary is persisted.
+
+After retries are exhausted, the extension shows the exact reason through Pi UI when UI is available and returns no custom result. Pi then runs standard compaction. Non-interactive runs have no separate custom-compaction warning.
+
+## Relationship to context projection
+
+`context-projection` reduces ordinary provider requests but does not rewrite persisted history. Adaptive compaction summarizes the original persisted history while using recorded projection replacements only to size the fixed retained suffix.
+
+Enabled `context-projection` requires a valid custom-compaction configuration that is not explicitly disabled. It never enables custom compaction automatically. See `docs/extensions/context-projection.md`.

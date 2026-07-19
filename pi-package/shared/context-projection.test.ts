@@ -13,9 +13,10 @@ import {
 	projectContextMessages,
 	readContextProjectionConfig,
 	replayContextProjection,
+	replayRetainedContextProjection,
 	resetPendingProjectionSavings,
 	setPendingProjectionSavings,
-} from "../../pi-package/shared/context-projection";
+} from "./context-projection";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -83,6 +84,16 @@ async function writeProjectionConfig(
 		join(agentDir, "config", "context-projection.json"),
 		JSON.stringify(config),
 	);
+}
+
+/** Writes custom-compaction config into the isolated agent directory. */
+async function writeCustomCompactionConfig(
+	agentDir: string,
+	config: unknown,
+): Promise<void> {
+	const configDir = join(agentDir, "agent-suite", "custom-compaction");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(join(configDir, "config.json"), JSON.stringify(config));
 }
 
 /** Creates a session message entry for projection replay tests. */
@@ -247,10 +258,10 @@ describe("context projection config", () => {
 	});
 
 	test("keeps disabled config disabled when unrelated fields are invalid", async () => {
-		// Purpose: disabled projection must not fail startup because of invalid fields that are ignored while disabled.
-		// Input and expected output: invalid summary, notice, and recent-turn values still return disabled when projection levels are ordered.
+		// Purpose: disabled projection must not fail startup because of invalid fields or extension dependencies that are ignored while disabled.
+		// Input and expected output: invalid projection fields and invalid custom-compaction config still return disabled.
 		// Edge case: projection level order is still validated before returning disabled.
-		// Dependencies: isolated config file and shared config reader.
+		// Dependencies: isolated config files and shared config reader.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, {
 				enabled: false,
@@ -261,9 +272,42 @@ describe("context projection config", () => {
 					systemPromptFile: "relative.md",
 				},
 			});
+			await writeCustomCompactionConfig(agentDir, { enabled: "invalid" });
 
 			expect(await readContextProjectionConfig()).toEqual({ kind: "disabled" });
 		});
+	});
+
+	test("requires valid enabled custom compaction when projection is enabled", async () => {
+		// Purpose: projection must not hide persisted history from the main model unless adaptive compaction owns durable history reduction.
+		// Input and expected output: disabled and invalid custom-compaction configs produce fatal dependency errors.
+		// Edge case: a missing custom-compaction config remains enabled through its documented defaults and is covered by the defaults test.
+		// Dependencies: isolated config files and both shared config readers.
+		const cases = [
+			{
+				customCompaction: { enabled: false },
+				expectedIssue:
+					"custom-compaction must be enabled when context-projection is enabled",
+			},
+			{
+				customCompaction: { enabled: "invalid" },
+				expectedIssue:
+					"custom-compaction configuration is invalid: enabled must be a boolean",
+			},
+		] as const;
+
+		for (const testCase of cases) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, { enabled: true });
+				await writeCustomCompactionConfig(agentDir, testCase.customCompaction);
+
+				expect(await readContextProjectionConfig()).toEqual({
+					kind: "invalid",
+					issue: testCase.expectedIssue,
+					fatal: true,
+				});
+			});
+		}
 	});
 
 	test("normalizes equal projection thresholds to the lowest matching tool-result threshold", async () => {
@@ -523,6 +567,39 @@ describe("context projection replay", () => {
 
 			expect(JSON.stringify(messages)).not.toContain("old output");
 			expect(JSON.stringify(messages)).toContain(OMITTED_NOTICE);
+		});
+	});
+
+	test("replays only the fixed retained suffix", async () => {
+		// Purpose: compaction budgeting must use existing projection replacements without including Pi's fixed summary range.
+		// Input and expected output: a replacement recorded before firstKeptEntryId applies to a retained tool result, while older messages are absent.
+		// Edge case: projection state entries may precede the retained suffix even when their target is retained.
+		// Dependencies: isolated configs and in-memory session entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: true });
+			const branchEntries = [
+				messageEntry("01", userMessage("old request"), null),
+				messageEntry("02", userMessage("retained request"), "01"),
+				messageEntry("03", assistantMessage("call-retained"), "02"),
+				messageEntry(
+					"04",
+					toolResultMessage("call-retained", "retained output"),
+					"03",
+				),
+				projectionStateEntry("05", "04", OMITTED_NOTICE, "04"),
+			];
+
+			const retained = await replayRetainedContextProjection({
+				branchEntries,
+				firstKeptEntryId: "02",
+				cwd: "/tmp/project",
+			});
+			const serialized = JSON.stringify(retained);
+
+			expect(serialized).not.toContain("old request");
+			expect(serialized).toContain("retained request");
+			expect(serialized).not.toContain("retained output");
+			expect(serialized).toContain(OMITTED_NOTICE);
 		});
 	});
 

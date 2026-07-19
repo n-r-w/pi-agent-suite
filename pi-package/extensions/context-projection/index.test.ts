@@ -14,14 +14,14 @@ import type {
 	ExtensionAPI,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import {
 	addPendingProjectionSavings,
 	getProjectionAwareContextUsage,
 	replayContextProjection,
 	resetPendingProjectionSavings,
-} from "../../../pi-package/shared/context-projection";
-import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
+} from "../../shared/context-projection";
+import { HELPER_API_COST_CUSTOM_TYPE } from "../../shared/helper-api-cost";
+import contextProjection from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";

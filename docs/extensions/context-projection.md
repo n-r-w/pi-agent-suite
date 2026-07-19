@@ -47,6 +47,8 @@ All parameters are optional. Unknown parameters make the configuration invalid.
 
 Breaking change: `placeholder` is removed. If the config contains `placeholder`, startup fails with a message that names `omittedNotice` and `summaryNotice`.
 
+Enabled projection requires `custom-compaction` to resolve to a valid configuration with `enabled` not set to `false`. Missing custom-compaction configuration satisfies this requirement because custom compaction is enabled by default. An explicitly disabled or invalid custom-compaction configuration stops projection with an exact configuration error. `context-projection` never edits or automatically enables custom compaction.
+
 ## Parameters
 
 | Parameter | Required | Type or shape | Default | Meaning |
@@ -90,7 +92,7 @@ Each failed tool-result summary attempt appends a `tool-result-summary-diagnosti
 
 | Field | Meaning |
 | --- | --- |
-| `source` | Extension that requested the summary: `context-projection` or `custom-compaction`. |
+| `source` | Extension that requested the summary: `context-projection`. |
 | `provider` | Summary model provider. |
 | `model` | Summary model ID. |
 | `candidateId` | Stable identifier of the tool result being summarized. |
@@ -107,8 +109,9 @@ Diagnostic entries never contain prompts, tool-result text, authentication data,
 ## Usage notes
 
 - Missing configuration keeps projection disabled.
-- Most invalid configuration disables projection. Non-absolute summary prompt paths, invalid projection level ordering, and removed `placeholder` stop startup.
-- Projection only changes the provider context for the current request. It does not rewrite stored session entries.
+- Most invalid projection settings disable projection. Non-absolute summary prompt paths, invalid projection level ordering, removed `placeholder`, and an invalid or disabled `custom-compaction` dependency stop startup.
+- Projection only changes the provider context for the current request. It does not rewrite stored session messages.
+- Adaptive compaction replays recorded replacements only when calculating the provider-visible size of Pi's fixed retained suffix. Durable summaries use original history.
 - Only successful text tool results can be projected.
 - Failed tool results, non-text tool results, ignored tools, tool results protected by `keepRecentTurns` or `keepRecentTurnsPercent`, and `read` results for files under loaded skill directories stay visible.
 - Keep `omittedNotice` and `summaryNotice` short because the model sees them in provider context.

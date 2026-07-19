@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
+import { readCustomCompactionConfig } from "./custom-compaction-config";
 import {
 	parseToolResultSummaryConfig,
 	type ToolResultSummaryConfig,
@@ -248,6 +249,12 @@ export interface ContextProjectionReplayOptions {
 	readonly loadedSkillRoots?: readonly string[];
 }
 
+/** Input needed to replay recorded projection for Pi's fixed retained suffix. */
+export interface RetainedContextProjectionReplayOptions
+	extends ContextProjectionReplayOptions {
+	readonly firstKeptEntryId: string;
+}
+
 const runtimeProjectedReplacementsByScope = new Map<
 	string,
 	Map<string, string>
@@ -441,8 +448,29 @@ export async function readContextProjectionConfig(): Promise<ContextProjectionCo
 
 	try {
 		const config: unknown = JSON.parse(configFile.file.content);
+		const projectionConfig = parseContextProjectionConfig(config);
+		if (projectionConfig.kind !== "valid") {
+			return projectionConfig;
+		}
 
-		return parseContextProjectionConfig(config);
+		const customCompactionConfig = await readCustomCompactionConfig();
+		if (customCompactionConfig.kind === "disabled") {
+			return {
+				kind: "invalid",
+				issue:
+					"custom-compaction must be enabled when context-projection is enabled",
+				fatal: true,
+			};
+		}
+		if (customCompactionConfig.kind === "invalid") {
+			return {
+				kind: "invalid",
+				issue: `custom-compaction configuration is invalid: ${customCompactionConfig.issue}`,
+				fatal: true,
+			};
+		}
+
+		return projectionConfig;
 	} catch (error) {
 		if (
 			error instanceof Error &&
@@ -640,6 +668,48 @@ function parseContextProjectionSummaryConfig(
 	config: unknown,
 ): ContextProjectionSummaryConfig | undefined {
 	return parseToolResultSummaryConfig(config, { defaultEnabled: false });
+}
+
+/** Replays recorded projection only for entries in Pi's fixed retained suffix. */
+export async function replayRetainedContextProjection({
+	branchEntries,
+	firstKeptEntryId,
+	cwd,
+	loadedSkillRoots = [],
+}: RetainedContextProjectionReplayOptions): Promise<AgentMessage[]> {
+	const firstKeptIndex = branchEntries.findIndex(
+		(entry) => entry.id === firstKeptEntryId,
+	);
+	if (firstKeptIndex < 0) {
+		return [];
+	}
+
+	const mappedContext = buildContextEntryMapping(
+		branchEntries.slice(firstKeptIndex),
+	);
+	const originalMessages = mappedContext.map(({ message }) => message);
+	const config = await readContextProjectionConfig();
+	if (config.kind !== "valid") {
+		return originalMessages;
+	}
+
+	const projectedReplacementsByEntryId = mergeProjectedReplacements(
+		collectProjectedReplacements(branchEntries),
+		getRuntimeProjectedReplacements(cwd),
+	);
+	if (projectedReplacementsByEntryId.size === 0) {
+		return originalMessages;
+	}
+
+	const decision = projectContextMessages({
+		mappedContext,
+		projectedReplacementsByEntryId,
+		config: config.config,
+		loadedSkillRoots,
+		cwd,
+		activeProjectionLevel: undefined,
+	});
+	return decision.changed ? decision.messages : originalMessages;
 }
 
 /** Returns branch context with persisted projection state applied when projection is active. */

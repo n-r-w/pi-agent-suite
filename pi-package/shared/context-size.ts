@@ -49,6 +49,41 @@ export function estimateSerializedInputTokens(
 	);
 }
 
+/** Returns a tokenizer-based estimate for standalone model-visible text. */
+export function estimateTextTokens(
+	text: string,
+	modelId: string | undefined,
+	provider: string | undefined,
+): number {
+	return countTextTokens(text, modelId, provider);
+}
+
+/** Returns a selected-tokenizer prefix containing at most the requested token count. */
+export function takeTextTokenPrefix(
+	text: string,
+	maxTokens: number,
+	modelId: string | undefined,
+	provider: string | undefined,
+): string {
+	if (!Number.isInteger(maxTokens) || maxTokens <= 0 || text.length === 0) {
+		return "";
+	}
+	const encoding = getTextEncoding(text, modelId, provider);
+	const tokenizer = TOKENIZERS[encoding];
+	const tokens = tokenizer.encode(text, [], []);
+	for (
+		let tokenCount = Math.min(maxTokens, tokens.length);
+		tokenCount > 0;
+		tokenCount -= 1
+	) {
+		const prefix = tokenizer.decode(tokens.slice(0, tokenCount));
+		if (text.startsWith(prefix)) {
+			return prefix;
+		}
+	}
+	return "";
+}
+
 /** Returns a tokenizer-based count for model-visible text with the default projection encoding. */
 export function countProjectionTextTokens(text: string): number {
 	return countTokens(text, "o200k_base");
@@ -144,6 +179,25 @@ function countTextTokens(
 		countTokens(text, "o200k_base"),
 		countTokens(text, "cl100k_base"),
 		countTokens(text, "r50k_base"),
+	);
+}
+
+/** Selects the known model encoding or the most conservative loaded encoding for this text. */
+function getTextEncoding(
+	text: string,
+	modelId: string | undefined,
+	provider: string | undefined,
+): SupportedEncoding {
+	const knownEncoding = getKnownEncoding(modelId, provider);
+	if (knownEncoding !== undefined) {
+		return knownEncoding;
+	}
+	return (Object.keys(TOKENIZERS) as SupportedEncoding[]).reduce(
+		(selected, candidate) =>
+			countTokens(text, candidate) > countTokens(text, selected)
+				? candidate
+				: selected,
+		"o200k_base",
 	);
 }
 

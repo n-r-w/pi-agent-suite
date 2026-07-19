@@ -72,6 +72,31 @@ export function getLegacyConfigLocation(
 	};
 }
 
+/** Reads one config file only from the suite-owned extension directory. */
+export async function readSuiteConfigFile(extensionDir: string): Promise<
+	| { readonly kind: "found"; readonly file: StorageFileReadResult }
+	| { readonly kind: "missing" }
+	| {
+			readonly kind: "read-error";
+			readonly location: ExtensionConfigLocation;
+			readonly error: unknown;
+	  }
+> {
+	return readFileIfPresent(getSuiteConfigLocation(extensionDir));
+}
+
+/** Synchronously reads one config file only from the suite-owned extension directory. */
+export function readSuiteConfigFileSync(extensionDir: string):
+	| { readonly kind: "found"; readonly file: StorageFileReadResult }
+	| { readonly kind: "missing" }
+	| {
+			readonly kind: "read-error";
+			readonly location: ExtensionConfigLocation;
+			readonly error: unknown;
+	  } {
+	return readFileIfPresentSync(getSuiteConfigLocation(extensionDir));
+}
+
 /** Reads suite config first and legacy config only when the suite config is absent. */
 export async function readExtensionConfigFile(options: {
 	readonly extensionDir: string;
@@ -85,8 +110,7 @@ export async function readExtensionConfigFile(options: {
 			readonly error: unknown;
 	  }
 > {
-	const suiteLocation = getSuiteConfigLocation(options.extensionDir);
-	const suiteRead = await readFileIfPresent(suiteLocation);
+	const suiteRead = await readSuiteConfigFile(options.extensionDir);
 	if (suiteRead.kind !== "missing") {
 		return suiteRead;
 	}
@@ -108,8 +132,7 @@ export function readExtensionConfigFileSync(options: {
 			readonly location: ExtensionConfigLocation;
 			readonly error: unknown;
 	  } {
-	const suiteLocation = getSuiteConfigLocation(options.extensionDir);
-	const suiteRead = readFileIfPresentSync(suiteLocation);
+	const suiteRead = readSuiteConfigFileSync(options.extensionDir);
 	if (suiteRead.kind !== "missing") {
 		return suiteRead;
 	}
