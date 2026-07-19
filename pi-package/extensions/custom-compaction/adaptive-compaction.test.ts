@@ -93,6 +93,7 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 		},
 		currentProjectedMainMessages: [userMessage("x".repeat(6_000))],
 		projectedRetainedMessages: [userMessage("retained-message")],
+		finalSummarySuffix: "",
 		mainSystemPrompt: "MAIN_SYSTEM",
 		activeTools: [],
 		mainModelReserveTokens: 512,
@@ -350,11 +351,22 @@ describe("adaptiveCompactHistory", () => {
 		expect(new Set(requests.map((request) => request.requestId)).size).toBe(
 			requests.length,
 		);
+		expect(deliveredProgressEvents).toContainEqual({
+			type: "split",
+			fragments: fragmentRequests.length,
+		});
 		expect(
 			deliveredProgressEvents.filter(
 				(event) => event.type === "operation" && event.operation === "fragment",
 			),
-		).toHaveLength(fragmentRequests.length);
+		).toEqual(
+			fragmentRequests.map((_, index) => ({
+				type: "operation",
+				operation: "fragment",
+				fragmentIndex: index + 1,
+				totalFragments: fragmentRequests.length,
+			})),
+		);
 		expect(progressDeliveryOverlapped).toBeFalse();
 	});
 
@@ -697,6 +709,22 @@ describe("adaptiveCompactHistory", () => {
 			"final summary",
 		);
 		expect(requests).toHaveLength(3);
+	});
+
+	/** Proves deterministic file-operation tags reserve main-model space before completion. */
+	test("includes the final summary suffix in prospective main-request budgeting", async () => {
+		// Purpose: file-operation tags appended after completion must not bypass the next-request size invariant.
+		// Input and expected output: a suffix larger than the remaining main window rejects before model requests.
+		// Edge case: the same history fits when the suffix is empty in the direct-path test.
+		// Dependencies: tokenizer-based prospective request estimation only.
+		const { options, requests } = createOptions({
+			finalSummarySuffix: `<read-files>\n${"large/path.ts\n".repeat(2_000)}</read-files>`,
+		});
+
+		await expect(adaptiveCompactHistory(options)).rejects.toThrow(
+			"no positive final summary budget",
+		);
+		expect(requests).toHaveLength(0);
 	});
 
 	/** Proves the final budget includes complete main-request inputs and fails before completion. */

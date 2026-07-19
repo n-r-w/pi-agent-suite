@@ -38,7 +38,11 @@ export type AdaptiveCompactionProgressEvent =
 	| {
 			readonly type: "operation";
 			readonly operation: AdaptiveCompactionOperation;
+			readonly sourceBlocks?: number;
+			readonly fragmentIndex?: number;
+			readonly totalFragments?: number;
 	  }
+	| { readonly type: "split"; readonly fragments: number }
 	| {
 			readonly type: "retry";
 			readonly operation: AdaptiveCompactionOperation;
@@ -81,6 +85,7 @@ export interface AdaptiveCompactionOptions {
 	readonly mainModel: AdaptiveCompactionModel;
 	readonly currentProjectedMainMessages: readonly AgentMessage[];
 	readonly projectedRetainedMessages: readonly AgentMessage[];
+	readonly finalSummarySuffix: string;
 	readonly mainSystemPrompt: string;
 	readonly activeTools: NonNullable<Context["tools"]>;
 	readonly mainModelReserveTokens: number;
@@ -690,6 +695,7 @@ async function executeFinalSummary(
 	const context = buildSummaryContext(items, options.finalPrompt, options);
 	return executeSingleRequest({
 		operation: "final",
+		progressEvent: { type: "operation", operation: "final" },
 		context,
 		maxTokens: budgets.finalSummaryTokens,
 		options,
@@ -858,6 +864,14 @@ async function summarizeReducingSource(
 	);
 	return executeSingleRequest({
 		operation,
+		progressEvent:
+			operation === "preliminary"
+				? {
+						type: "operation",
+						operation,
+						sourceBlocks: source.length,
+					}
+				: { type: "operation", operation },
 		context: buildSummaryContext(source, options.reductionPrompt, options),
 		maxTokens: summaryNodeTokens,
 		options,
@@ -895,11 +909,11 @@ async function summarizeOversizedBlock(
 	return withRetry(
 		async () => {
 			if (!operationsStarted) {
-				await emitRepeatedProgress(
-					options,
-					{ type: "operation", operation: "fragment" },
-					requestIds.length,
-				);
+				await options.onProgress?.({
+					type: "split",
+					fragments: requestIds.length,
+				});
+				await emitFragmentProgress(options, 0, requestIds.length);
 				operationsStarted = true;
 			}
 			const results = await Promise.allSettled(
@@ -1188,6 +1202,10 @@ async function mergeSummaryNodes(
 
 interface ExecuteSingleRequestOptions {
 	readonly operation: AdaptiveCompactionOperation;
+	readonly progressEvent: Extract<
+		AdaptiveCompactionProgressEvent,
+		{ readonly type: "operation" }
+	>;
 	readonly context: Context;
 	readonly maxTokens: number;
 	readonly options: AdaptiveCompactionOptions;
@@ -1197,6 +1215,7 @@ interface ExecuteSingleRequestOptions {
 /** Executes one logical request with one isolated ID shared only by its retries. */
 async function executeSingleRequest({
 	operation,
+	progressEvent,
 	context,
 	maxTokens,
 	options,
@@ -1207,7 +1226,7 @@ async function executeSingleRequest({
 	return withRetry(
 		async () => {
 			if (!operationStarted) {
-				await options.onProgress?.({ type: "operation", operation });
+				await options.onProgress?.(progressEvent);
 				operationStarted = true;
 			}
 			const response = await options.complete({
@@ -1260,6 +1279,24 @@ function buildProgressRetryOptions(
 			);
 		},
 	};
+}
+
+/** Delivers ordered fragment progress without overlapping asynchronous handlers. */
+async function emitFragmentProgress(
+	options: AdaptiveCompactionOptions,
+	index: number,
+	total: number,
+): Promise<void> {
+	if (index >= total) {
+		return;
+	}
+	await options.onProgress?.({
+		type: "operation",
+		operation: "fragment",
+		fragmentIndex: index + 1,
+		totalFragments: total,
+	});
+	await emitFragmentProgress(options, index + 1, total);
 }
 
 /** Delivers repeated logical-request progress sequentially through one injected handler. */
@@ -1348,7 +1385,7 @@ function estimateProspectiveMainInput(
 ): number {
 	const summaryMessage: AgentMessage = {
 		role: "compactionSummary",
-		summary,
+		summary: `${summary}${options.finalSummarySuffix}`,
 		tokensBefore: options.preparation.tokensBefore,
 		timestamp: 0,
 	};

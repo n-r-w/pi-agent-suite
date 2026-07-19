@@ -32,8 +32,14 @@ interface Notification {
 	readonly type: string | undefined;
 }
 
+interface RegisteredEntryRenderer {
+	readonly customType: string;
+	readonly renderer: unknown;
+}
+
 interface ExtensionApiFake extends ExtensionAPI {
 	readonly handlers: RegisteredHandler[];
+	readonly entryRenderers: RegisteredEntryRenderer[];
 	readonly appendEntryCalls: Array<{ customType: string; data: unknown }>;
 }
 
@@ -105,15 +111,20 @@ function createModel(
 /** Creates the ExtensionAPI fake used to capture lifecycle registration and costs. */
 function createExtensionApiFake(thinkingLevel = "high"): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
+	const entryRenderers: RegisteredEntryRenderer[] = [];
 	const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
 	return {
 		handlers,
+		entryRenderers,
 		appendEntryCalls,
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
 		},
 		appendEntry(customType: string, data: unknown): void {
 			appendEntryCalls.push({ customType, data });
+		},
+		registerEntryRenderer(customType: string, renderer: unknown): void {
+			entryRenderers.push({ customType, renderer });
 		},
 		getThinkingLevel(): string {
 			return thinkingLevel;
@@ -258,6 +269,30 @@ function getCompactionHandler(
 	) => Promise<unknown> | unknown;
 }
 
+/** Renders one persisted outcome through the registered entry renderer. */
+function renderOutcomeEntry(pi: ExtensionApiFake, data: unknown): string {
+	const renderer = pi.entryRenderers.find(
+		(entry) => entry.customType === "custom-compaction-outcome",
+	)?.renderer;
+	if (typeof renderer !== "function") {
+		throw new Error("expected custom-compaction outcome renderer");
+	}
+	const component: unknown = renderer(
+		{ customType: "custom-compaction-outcome", data },
+		{ expanded: false },
+		{ fg: (_color: string, text: string) => text },
+	);
+	if (
+		typeof component !== "object" ||
+		component === null ||
+		!("render" in component) ||
+		typeof component.render !== "function"
+	) {
+		throw new Error("expected renderable outcome component");
+	}
+	return component.render(100).join("\n");
+}
+
 /** Creates one provider response for summary requests. */
 function createAssistantResponse(
 	text: string,
@@ -360,7 +395,8 @@ describe("custom-compaction", () => {
 
 			expect(result).toEqual({
 				compaction: {
-					summary: "adaptive summary",
+					summary:
+						"adaptive summary\n\n<read-files>\na.ts\n</read-files>\n\n<modified-files>\nb.ts\n</modified-files>",
 					firstKeptEntryId: "entry-keep",
 					tokensBefore: 1_234,
 					details: {
@@ -387,22 +423,53 @@ describe("custom-compaction", () => {
 					customType: HELPER_API_COST_CUSTOM_TYPE,
 					data: { source: "custom-compaction", cost: 0.6 },
 				},
+				{
+					customType: "custom-compaction-outcome",
+					data: {
+						kind: "success",
+						message: "compaction completed: direct summary, 1 model request",
+					},
+				},
 			]);
+			expect(pi.entryRenderers).toHaveLength(1);
+			expect(pi.entryRenderers[0]?.customType).toBe(
+				"custom-compaction-outcome",
+			);
 			expect(session.notifications).toEqual([
 				{
 					message: "[custom-compaction] adaptive compaction started",
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] adaptive compaction operation: final",
+					message: "[custom-compaction] creating final summary",
 					type: "info",
 				},
 				{
 					message:
-						"[custom-compaction] adaptive compaction completed: 1 model requests",
+						"[custom-compaction] compaction completed: direct summary, 1 model request",
 					type: "info",
 				},
 			]);
+		});
+	});
+
+	test("renders persisted outcomes without adding model context", async () => {
+		// Purpose: terminal custom-compaction outcomes must survive transcript redraw as TUI-only entries.
+		// Input and expected output: one persisted success entry renders its exact user-visible message.
+		// Edge case: rendering occurs after a fresh extension instance registers the renderer.
+		// Dependencies: in-memory ExtensionAPI fake and Pi Text component contract.
+		await withIsolatedAgentDir(async () => {
+			const pi = createExtensionApiFake();
+			customCompaction(pi);
+
+			const rendered = renderOutcomeEntry(pi, {
+				kind: "success",
+				message: "compaction completed: direct summary, 1 model request",
+			});
+
+			expect(rendered).toContain(
+				"[custom-compaction] compaction completed: direct summary, 1 model request",
+			);
 		});
 	});
 
@@ -439,9 +506,37 @@ describe("custom-compaction", () => {
 			);
 
 			expect(result).toMatchObject({
-				compaction: { summary: "yielded summary" },
+				compaction: { summary: expect.stringContaining("yielded summary") },
 			});
 			expect(yieldedBeforeCompletion).toBeTrue();
+		});
+	});
+
+	test("yields one macrotask after publishing the outcome", async () => {
+		// Purpose: Pi must render the informative outcome before its standard compaction completion replaces custom notifications.
+		// Input and expected output: a timer queued by the completion notification runs before the handler resolves.
+		// Edge case: the direct model request completes immediately.
+		// Dependencies: fake Pi UI notification, one deterministic timer marker, and mocked completion.
+		await withIsolatedAgentDir(async () => {
+			let outcomeRendered = false;
+			completeSimpleMock.mockResolvedValue(
+				createAssistantResponse("outcome summary"),
+			);
+			const pi = createExtensionApiFake();
+			const session = createSessionFake({
+				onNotify: (notification) => {
+					if (notification.message.includes("compaction completed:")) {
+						setTimeout(() => {
+							outcomeRendered = true;
+						}, 0);
+					}
+				},
+			});
+			customCompaction(pi);
+
+			await getCompactionHandler(pi)(createCompactionEvent(), session.ctx);
+
+			expect(outcomeRendered).toBeTrue();
 		});
 	});
 
@@ -464,7 +559,7 @@ describe("custom-compaction", () => {
 			);
 
 			expect(result).toMatchObject({
-				compaction: { summary: "headless summary" },
+				compaction: { summary: expect.stringContaining("headless summary") },
 			});
 			expect(session.notifications).toEqual([]);
 		});
@@ -497,7 +592,11 @@ describe("custom-compaction", () => {
 			);
 
 			expect(result).toMatchObject({
-				compaction: { summary: "configured summary" },
+				compaction: {
+					summary: expect.stringContaining(
+						"configured summary\n\n<read-files>\na.ts\n</read-files>",
+					),
+				},
 			});
 			expect(session.requestedModels).toEqual([configuredModel]);
 			const [model, context, options] = completeSimpleMock.mock.calls[0] ?? [];
@@ -601,21 +700,25 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] adaptive compaction operation: final",
+					message: "[custom-compaction] creating final summary",
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] retrying final: attempt 2/2",
+					message: "[custom-compaction] retrying final summary: attempt 2/2",
 					type: "info",
 				},
 				{
 					message:
-						"[custom-compaction] adaptive compaction completed: 1 model requests",
+						"[custom-compaction] compaction completed: direct summary, 1 model request, 1 retry",
 					type: "info",
 				},
 			]);
 			expect(result).toMatchObject({
-				compaction: { summary: "retried summary" },
+				compaction: {
+					summary: expect.stringContaining(
+						"retried summary\n\n<read-files>\na.ts\n</read-files>",
+					),
+				},
 			});
 			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
 			const firstOptions = completeSimpleMock.mock.calls[0]?.[2];
@@ -655,19 +758,27 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] adaptive compaction operation: final",
+					message: "[custom-compaction] creating final summary",
 					type: "info",
 				},
 				{
-					message: "[custom-compaction] retrying final: attempt 2/2",
+					message: "[custom-compaction] retrying final summary: attempt 2/2",
 					type: "info",
 				},
 				{
 					message:
-						"[custom-compaction] final response reached its output limit",
+						"[custom-compaction] adaptive compaction failed after 1 model request and 1 retry: final response reached its output limit; using standard compaction",
 					type: "warning",
 				},
 			]);
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: "custom-compaction-outcome",
+				data: {
+					kind: "fallback",
+					message:
+						"adaptive compaction failed after 1 model request and 1 retry: final response reached its output limit; using standard compaction",
+				},
+			});
 		});
 	});
 

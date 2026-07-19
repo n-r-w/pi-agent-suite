@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
@@ -15,6 +16,7 @@ import type {
 	ExtensionContext,
 	SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { readSuiteConfigFileSync } from "../../shared/agent-suite-storage";
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
@@ -63,6 +65,12 @@ const DEFAULT_PROMPT_FILES = {
 /** Prefix for user-visible custom-compaction diagnostics. */
 const ISSUE_PREFIX = "[custom-compaction]";
 
+/** TUI-only session entry that preserves the terminal compaction outcome. */
+const CUSTOM_COMPACTION_OUTCOME_ENTRY = "custom-compaction-outcome";
+
+/** Maximum persisted outcome length accepted by the TUI renderer. */
+const OUTCOME_MESSAGE_LIMIT = 2_000;
+
 /** Extra local margin kept beyond provider request framing estimates. */
 const ADAPTIVE_SAFETY_MARGIN_TOKENS = 256;
 
@@ -94,6 +102,12 @@ interface ResolvedCompactionRequest {
 	readonly auth: ModelAuth;
 }
 
+/** Projected current context and Pi's fixed retained suffix used for budgeting. */
+interface ProjectedCompactionContexts {
+	readonly currentProjectedMainMessages: readonly AgentMessage[];
+	readonly projectedRetainedMessages: readonly AgentMessage[];
+}
+
 /** Minimal UI and model registry contract consumed from Pi context. */
 interface CustomCompactionSession {
 	readonly hasUI?: boolean;
@@ -114,9 +128,56 @@ interface CustomCompactionSession {
 	};
 }
 
+/** Deterministic file lists appended to both summary text and result details. */
+interface CompactionFileLists {
+	readonly readFiles: readonly string[];
+	readonly modifiedFiles: readonly string[];
+}
+
+/** Attempt statistics used to explain adaptive work and native fallback. */
+interface CompactionProgressStats {
+	adaptive: boolean;
+	preliminaryRanges: number;
+	historyBlocks: number;
+	oversizedBlocks: number;
+	fragments: number;
+	normalizations: number;
+	merges: number;
+	modelRequests: number;
+	retries: number;
+}
+
+/** Reports engine progress and retains statistics when an attempt fails. */
+interface CompactionProgressReporter {
+	readonly stats: CompactionProgressStats;
+	readonly outcomeMessage: string | undefined;
+	report(event: AdaptiveCompactionProgressEvent): Promise<void>;
+	reportFailure(error: unknown): Promise<void>;
+}
+
+/** Validated payload stored for one permanent TUI-only compaction outcome. */
+interface CompactionOutcomeEntryData {
+	readonly kind: "success" | "fallback";
+	readonly message: string;
+}
+
 /** Registers adaptive compaction for Pi's pre-compaction lifecycle event. */
 export default function customCompaction(pi: ExtensionAPI): void {
 	assertConfiguredPromptPathsAreAbsolute();
+	pi.registerEntryRenderer(
+		CUSTOM_COMPACTION_OUTCOME_ENTRY,
+		(entry, _options, theme) => {
+			const outcome = parseOutcomeEntryData(entry.data);
+			const text =
+				outcome === undefined
+					? theme.fg("warning", `${ISSUE_PREFIX} invalid outcome entry`)
+					: theme.fg(
+							outcome.kind === "success" ? "success" : "warning",
+							`${ISSUE_PREFIX} ${outcome.message}`,
+						);
+			return new Text(text, 0, 0);
+		},
+	);
 	pi.on("session_before_compact", (event, ctx) =>
 		handleSessionBeforeCompact(pi, event, ctx),
 	);
@@ -130,6 +191,7 @@ async function handleSessionBeforeCompact(
 ): Promise<{ readonly compaction: CompactionResult } | undefined> {
 	const session = ctx as unknown as CustomCompactionSession;
 	const resolved = await resolveCompactionRequest(
+		pi,
 		session,
 		pi.getThinkingLevel(),
 	);
@@ -137,23 +199,20 @@ async function handleSessionBeforeCompact(
 		return undefined;
 	}
 	if (ctx.model === undefined) {
-		reportIssue(session, "current main model is unavailable");
+		const message = await reportStandardFallback(
+			session,
+			"current main model is unavailable",
+		);
+		persistOutcome(pi, session, "fallback", message);
 		return undefined;
 	}
 
+	const files = computeFileLists(event.preparation.fileOps);
+	const finalSummarySuffix = formatFileOperations(files);
+	const progress = createProgressReporter(session);
 	try {
-		const [currentProjectedMainMessages, projectedRetainedMessages] =
-			await Promise.all([
-				replayContextProjection({
-					branchEntries: event.branchEntries,
-					cwd: ctx.cwd,
-				}),
-				replayRetainedContextProjection({
-					branchEntries: event.branchEntries,
-					firstKeptEntryId: event.preparation.firstKeptEntryId,
-					cwd: ctx.cwd,
-				}),
-			]);
+		const { currentProjectedMainMessages, projectedRetainedMessages } =
+			await resolveProjectedContexts(event, ctx);
 		const baseCompletionOptions = buildCompletionOptions(
 			resolved.runtime,
 			resolved.auth,
@@ -167,6 +226,7 @@ async function handleSessionBeforeCompact(
 			mainModel: ctx.model,
 			currentProjectedMainMessages,
 			projectedRetainedMessages,
+			finalSummarySuffix,
 			mainSystemPrompt: ctx.getSystemPrompt(),
 			activeTools: collectActiveTools(pi),
 			mainModelReserveTokens: event.preparation.settings.reserveTokens,
@@ -174,7 +234,7 @@ async function handleSessionBeforeCompact(
 			retry: resolved.config.retry,
 			signal: event.signal,
 			createRequestId: createAuxiliaryLlmSessionId,
-			onProgress: (progress) => reportProgress(session, progress),
+			onProgress: progress.report,
 			complete: (request) =>
 				executeCompletion(
 					pi,
@@ -184,15 +244,44 @@ async function handleSessionBeforeCompact(
 				),
 		});
 
-		return { compaction: buildCompactionResult(event, summary) };
+		persistOutcome(pi, session, "success", progress.outcomeMessage);
+		return {
+			compaction: buildCompactionResult(
+				event,
+				`${summary}${finalSummarySuffix}`,
+				files,
+			),
+		};
 	} catch (error) {
-		reportIssue(session, formatError(error));
+		await progress.reportFailure(error);
+		persistOutcome(pi, session, "fallback", progress.outcomeMessage);
 		return undefined;
 	}
 }
 
+/** Replays existing projection for the current context and fixed retained suffix. */
+async function resolveProjectedContexts(
+	event: SessionBeforeCompactEvent,
+	ctx: ExtensionContext,
+): Promise<ProjectedCompactionContexts> {
+	const [currentProjectedMainMessages, projectedRetainedMessages] =
+		await Promise.all([
+			replayContextProjection({
+				branchEntries: event.branchEntries,
+				cwd: ctx.cwd,
+			}),
+			replayRetainedContextProjection({
+				branchEntries: event.branchEntries,
+				firstKeptEntryId: event.preparation.firstKeptEntryId,
+				cwd: ctx.cwd,
+			}),
+		]);
+	return { currentProjectedMainMessages, projectedRetainedMessages };
+}
+
 /** Resolves validated config, prompts, model, reasoning, and authentication. */
 async function resolveCompactionRequest(
+	pi: ExtensionAPI,
 	session: CustomCompactionSession,
 	currentThinkingLevel: unknown,
 ): Promise<ResolvedCompactionRequest | undefined> {
@@ -201,13 +290,13 @@ async function resolveCompactionRequest(
 		return undefined;
 	}
 	if (configResult.kind === "invalid") {
-		reportIssue(session, configResult.issue);
+		await reportAndPersistFallback(pi, session, configResult.issue);
 		return undefined;
 	}
 
 	const prompts = await readPromptFiles(configResult.config);
 	if (typeof prompts === "string") {
-		reportIssue(session, prompts);
+		await reportAndPersistFallback(pi, session, prompts);
 		return undefined;
 	}
 
@@ -217,13 +306,17 @@ async function resolveCompactionRequest(
 		currentThinkingLevel,
 	);
 	if (typeof runtime === "string") {
-		reportIssue(session, runtime);
+		await reportAndPersistFallback(pi, session, runtime);
 		return undefined;
 	}
 
 	const auth = await session.modelRegistry.getApiKeyAndHeaders(runtime.model);
 	if (!auth.ok) {
-		reportIssue(session, `failed to resolve model auth: ${auth.error}`);
+		await reportAndPersistFallback(
+			pi,
+			session,
+			`failed to resolve model auth: ${auth.error}`,
+		);
 		return undefined;
 	}
 
@@ -376,11 +469,8 @@ function collectActiveTools(pi: ExtensionAPI): NonNullable<Context["tools"]> {
 function buildCompactionResult(
 	event: SessionBeforeCompactEvent,
 	summary: string,
-): CompactionResult<{
-	readonly readFiles: readonly string[];
-	readonly modifiedFiles: readonly string[];
-}> {
-	const files = computeFileLists(event.preparation.fileOps);
+	files: CompactionFileLists,
+): CompactionResult<CompactionFileLists> {
 	return {
 		summary,
 		firstKeptEntryId: event.preparation.firstKeptEntryId,
@@ -394,7 +484,7 @@ function computeFileLists(fileOps: {
 	readonly read: Set<string>;
 	readonly written: Set<string>;
 	readonly edited: Set<string>;
-}): { readonly readFiles: string[]; readonly modifiedFiles: string[] } {
+}): CompactionFileLists {
 	const modifiedFiles = [
 		...new Set([...fileOps.written, ...fileOps.edited]),
 	].sort();
@@ -403,6 +493,20 @@ function computeFileLists(fileOps: {
 		.filter((path) => !modified.has(path))
 		.sort();
 	return { readFiles, modifiedFiles };
+}
+
+/** Appends deterministic file context using Pi's standard summary tag format. */
+function formatFileOperations(files: CompactionFileLists): string {
+	const sections: string[] = [];
+	if (files.readFiles.length > 0) {
+		sections.push(`<read-files>\n${files.readFiles.join("\n")}\n</read-files>`);
+	}
+	if (files.modifiedFiles.length > 0) {
+		sections.push(
+			`<modified-files>\n${files.modifiedFiles.join("\n")}\n</modified-files>`,
+		);
+	}
+	return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
 }
 
 /** Rejects configured relative prompt paths during extension loading. */
@@ -443,42 +547,286 @@ function splitModelId(
 	};
 }
 
-/** Maps typed engine progress to informational Pi UI notifications. */
+/** Creates one progress reporter that survives failed adaptive attempts. */
+function createProgressReporter(
+	session: CustomCompactionSession,
+): CompactionProgressReporter {
+	let outcomeMessage: string | undefined;
+	const stats: CompactionProgressStats = {
+		adaptive: false,
+		preliminaryRanges: 0,
+		historyBlocks: 0,
+		oversizedBlocks: 0,
+		fragments: 0,
+		normalizations: 0,
+		merges: 0,
+		modelRequests: 0,
+		retries: 0,
+	};
+	return {
+		stats,
+		get outcomeMessage(): string | undefined {
+			return outcomeMessage;
+		},
+		async report(event): Promise<void> {
+			recordProgress(stats, event);
+			if (event.type === "complete") {
+				outcomeMessage = formatCompletionMessage(stats);
+			}
+			await reportProgress(session, event, stats);
+		},
+		async reportFailure(error): Promise<void> {
+			outcomeMessage = await reportStandardFallback(
+				session,
+				formatError(error),
+				stats,
+			);
+		},
+	};
+}
+
+/** Updates cumulative attempt statistics from one typed engine event. */
+function recordProgress(
+	stats: CompactionProgressStats,
+	event: AdaptiveCompactionProgressEvent,
+): void {
+	if (event.type === "split") {
+		stats.adaptive = true;
+		stats.oversizedBlocks += 1;
+		stats.fragments += event.fragments;
+		return;
+	}
+	if (event.type === "retry") {
+		stats.retries += 1;
+		return;
+	}
+	if (event.type !== "operation") {
+		return;
+	}
+
+	stats.modelRequests += 1;
+	if (event.operation === "final") {
+		return;
+	}
+	stats.adaptive = true;
+	switch (event.operation) {
+		case "preliminary":
+			stats.preliminaryRanges += 1;
+			stats.historyBlocks += event.sourceBlocks ?? 0;
+			break;
+		case "normalization":
+			stats.normalizations += 1;
+			break;
+		case "merge":
+			stats.merges += 1;
+			break;
+		case "fragment":
+			break;
+	}
+}
+
+/** Maps typed engine progress to concrete informational Pi UI messages. */
 async function reportProgress(
 	session: CustomCompactionSession,
 	event: AdaptiveCompactionProgressEvent,
+	stats: CompactionProgressStats,
 ): Promise<void> {
 	if (session.hasUI === false) {
 		return;
 	}
-	let message: string;
-	switch (event.type) {
-		case "start":
-			message = "adaptive compaction started";
-			break;
-		case "operation":
-			message = `adaptive compaction operation: ${event.operation}`;
-			break;
-		case "retry":
-			message = `retrying ${event.operation}: attempt ${event.nextAttempt}/${event.totalAttempts}`;
-			break;
-		case "complete":
-			message = `adaptive compaction completed: ${event.completedRequests} model requests`;
-			break;
-	}
+	const message = formatProgressMessage(event, stats);
 	session.ui.notify(`${ISSUE_PREFIX} ${message}`, "info");
-	if (event.type === "start") {
-		// Pi can repaint the published start state before synchronous token planning begins.
-		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	if (event.type === "start" || event.type === "complete") {
+		// Pi repaints start and outcome states before synchronous work or lifecycle completion replaces them.
+		await yieldToEventLoop();
 	}
 }
 
-/** Reports an exact warning only when Pi has an interactive UI. */
-function reportIssue(session: CustomCompactionSession, issue: string): void {
+/** Formats one progress event without exposing conversation or provider content. */
+function formatProgressMessage(
+	event: AdaptiveCompactionProgressEvent,
+	stats: CompactionProgressStats,
+): string {
+	switch (event.type) {
+		case "start":
+			return "adaptive compaction started";
+		case "split":
+			return `splitting oversized history block into ${event.fragments} fragments`;
+		case "operation":
+			return formatOperationMessage(event);
+		case "retry":
+			return `retrying ${formatOperationLabel(event.operation)}: attempt ${event.nextAttempt}/${event.totalAttempts}`;
+		case "complete":
+			return formatCompletionMessage(stats);
+	}
+}
+
+/** Formats the current logical model operation with useful range details. */
+function formatOperationMessage(
+	event: Extract<
+		AdaptiveCompactionProgressEvent,
+		{ readonly type: "operation" }
+	>,
+): string {
+	switch (event.operation) {
+		case "final":
+			return "creating final summary";
+		case "preliminary":
+			return `summarizing ${event.sourceBlocks ?? 0} oldest history blocks`;
+		case "fragment":
+			return `summarizing fragment ${event.fragmentIndex ?? 0}/${event.totalFragments ?? 0}`;
+		case "normalization":
+			return "normalizing oversized previous summary";
+		case "merge":
+			return "merging 2 adjacent summary nodes";
+	}
+}
+
+/** Formats an operation name for retry messages. */
+function formatOperationLabel(operation: string): string {
+	switch (operation) {
+		case "final":
+			return "final summary";
+		case "preliminary":
+			return "history range summary";
+		case "fragment":
+			return "fragment summary";
+		case "normalization":
+			return "previous summary normalization";
+		case "merge":
+			return "summary merge";
+		default:
+			return operation;
+	}
+}
+
+/** Summarizes the successful strategy, reduction work, retries, and preserved files. */
+function formatCompletionMessage(stats: CompactionProgressStats): string {
+	return `compaction completed: ${stats.adaptive ? "adaptive" : "direct"} summary, ${formatAttemptDetails(stats).join(", ")}`;
+}
+
+/** Returns cumulative work details shared by success and failure messages. */
+function formatAttemptDetails(stats: CompactionProgressStats): string[] {
+	const details: string[] = [];
+	if (stats.preliminaryRanges > 0) {
+		details.push(
+			`${formatCount(stats.historyBlocks, "history block")} reduced in ${formatCount(stats.preliminaryRanges, "range")}`,
+		);
+	}
+	if (stats.oversizedBlocks > 0) {
+		details.push(
+			`${formatCount(stats.oversizedBlocks, "block")} split into ${formatCount(stats.fragments, "fragment")}`,
+		);
+	}
+	if (stats.normalizations > 0) {
+		details.push("previous summary normalized");
+	}
+	if (stats.merges > 0) {
+		details.push(formatCount(stats.merges, "merge"));
+	}
+	details.push(formatCount(stats.modelRequests, "model request"));
+	if (stats.retries > 0) {
+		details.push(formatCount(stats.retries, "retry", "retries"));
+	}
+	return details;
+}
+
+/** Reports a visible failure and the imminent standard-compaction fallback. */
+async function reportStandardFallback(
+	session: CustomCompactionSession,
+	issue: string,
+	stats?: CompactionProgressStats,
+): Promise<string | undefined> {
 	if (session.hasUI === false) {
+		return undefined;
+	}
+	const progress =
+		stats === undefined || stats.modelRequests === 0
+			? "before model requests"
+			: `after ${joinWithAnd(formatAttemptDetails(stats))}`;
+	const message = `adaptive compaction failed ${progress}: ${issue}; using standard compaction`;
+	session.ui.notify(`${ISSUE_PREFIX} ${message}`, "warning");
+	await yieldToEventLoop();
+	return message;
+}
+
+/** Reports and persists a fallback that occurs before engine progress starts. */
+async function reportAndPersistFallback(
+	pi: ExtensionAPI,
+	session: CustomCompactionSession,
+	issue: string,
+): Promise<void> {
+	const message = await reportStandardFallback(session, issue);
+	persistOutcome(pi, session, "fallback", message);
+}
+
+/** Persists one terminal TUI outcome without changing compaction behavior on failure. */
+function persistOutcome(
+	pi: ExtensionAPI,
+	session: CustomCompactionSession,
+	kind: CompactionOutcomeEntryData["kind"],
+	message: string | undefined,
+): void {
+	if (session.hasUI === false || message === undefined) {
 		return;
 	}
-	session.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
+	const normalizedMessage = message.replace(/\s+/g, " ").trim();
+	if (normalizedMessage.length === 0) {
+		return;
+	}
+	try {
+		pi.appendEntry(CUSTOM_COMPACTION_OUTCOME_ENTRY, {
+			kind,
+			message: normalizedMessage.slice(0, OUTCOME_MESSAGE_LIMIT),
+		});
+	} catch (error) {
+		session.ui.notify(
+			`${ISSUE_PREFIX} failed to persist compaction outcome: ${formatError(error)}`,
+			"warning",
+		);
+	}
+}
+
+/** Validates persisted entry data before rendering untrusted session content. */
+function parseOutcomeEntryData(
+	value: unknown,
+): CompactionOutcomeEntryData | undefined {
+	if (!isRecord(value)) {
+		return undefined;
+	}
+	const kind = value["kind"];
+	const message = value["message"];
+	if (
+		(kind !== "success" && kind !== "fallback") ||
+		typeof message !== "string" ||
+		message.length === 0 ||
+		message.length > OUTCOME_MESSAGE_LIMIT
+	) {
+		return undefined;
+	}
+	return { kind, message };
+}
+
+/** Formats an integer with a singular or plural noun. */
+function formatCount(
+	count: number,
+	singular: string,
+	plural = `${singular}s`,
+): string {
+	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+/** Joins detail clauses with an explicit final conjunction. */
+function joinWithAnd(parts: readonly string[]): string {
+	if (parts.length <= 1) {
+		return parts[0] ?? "0 model requests";
+	}
+	return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+/** Gives Pi one macrotask turn to repaint a published notification. */
+async function yieldToEventLoop(): Promise<void> {
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 /** Returns whether unknown JSON is a non-array object. */

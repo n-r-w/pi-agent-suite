@@ -67,6 +67,8 @@ The extension uses Pi's `serializeConversation` output. It does not summarize `t
 
 Pi's `firstKeptEntryId` remains unchanged. The retained suffix is never moved into the summary source, and the extension returns Pi's original file-operation details.
 
+After the model summary is accepted, the extension appends Pi-compatible `<read-files>` and `<modified-files>` sections. Modified files are excluded from the read-only list. These sections make deterministic file context visible to the next main-model request instead of leaving it only in `CompactionResult.details`.
+
 ## Request budgets
 
 Before any model request, the extension calculates:
@@ -74,7 +76,7 @@ Before any model request, the extension calculates:
 - the maximum final summary size allowed by the prospective next main-model request;
 - one common intermediate summary-node limit that permits pairwise merges and the final summarization request.
 
-The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing only.
+The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, deterministic file-operation sections, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing only.
 
 The final main-model request must fit its model window and must not be larger than the projected request representation it replaces. When no positive final or intermediate budget exists, custom compaction fails before issuing a model request.
 
@@ -94,6 +96,25 @@ Preliminary original ranges are independent: an earlier intermediate summary is 
 
 The bundled `compaction-reduction.md` defines intermediate reduction behavior and is not configurable. `historyPromptFile` and `updatePromptFile` remain the configurable final prompts.
 
+## Progress messages
+
+Interactive Pi sessions receive informational messages for:
+
+- adaptive compaction start;
+- the number of original blocks in each preliminary range;
+- oversized-block fragment count and each fragment position;
+- previous-summary normalization;
+- adjacent summary merges;
+- final summary generation;
+- retry attempt numbers;
+- successful outcome details.
+
+The successful outcome states whether the direct or adaptive path ran and reports applicable counts for reduced blocks, preliminary ranges, oversized blocks, fragments, normalizations, merges, logical model requests, and retries.
+
+A logical model request is counted once even when it is retried. Retries are reported separately. Start and outcome notifications yield one event-loop turn so Pi can repaint them before synchronous planning or lifecycle completion continues. Non-interactive runs emit no progress notifications.
+
+The terminal success or standard-compaction fallback is also stored as a `custom-compaction-outcome` custom entry with a dedicated TUI renderer. This TUI-only entry survives transcript redraw and session reload but does not participate in LLM context. Intermediate progress remains transient and is not persisted.
+
 ## Response handling
 
 Each logical request uses a Pi-compatible UUIDv7 provider session ID. Retries for that request reuse the ID; separate operations use separate IDs.
@@ -111,7 +132,7 @@ The extension rejects:
 
 Rejected responses use the configured retry policy. No partial summary is persisted.
 
-After retries are exhausted, the extension shows the exact reason through Pi UI when UI is available and returns no custom result. Pi then runs standard compaction. Non-interactive runs have no separate custom-compaction warning.
+After retries are exhausted, the extension shows the completed-work counts, exact reason, and `using standard compaction` through Pi UI when UI is available. It then returns no custom result, so Pi runs standard compaction. Failures before model requests use the same explicit fallback message without operation counts. Non-interactive runs have no separate custom-compaction warning.
 
 ## Relationship to context projection
 
