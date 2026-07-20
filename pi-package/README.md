@@ -170,7 +170,10 @@ You are a code review agent. Check correctness, risks, and missing validation.
 
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
-## Changelog
+## v0.20.1 - 2026-07-20
+
+- Convene council: recover participant authentication startup races
+- Context projection: fix replay projections after automatic retries
 
 ### v0.20.0 - 2026-07-19
 
