@@ -204,6 +204,7 @@ Continuation follows these rules:
 - One main-agent runtime cannot start two child processes for the same session concurrently.
 - Missing, conflicting, foreign, or active session IDs fail without starting a new session.
 - A resumed run uses the current model, thinking level, tools, and instructions configured for the same agent.
+- When an invocation is aborted, descendant snapshots still marked as running are finalized as aborted before persistence. Resuming the parent retains those descendants as terminal history instead of showing them as active.
 - The resumed child resolves the current tool patterns against its own runtime catalog, not the resuming caller's catalog.
 
 The numeric alias, child UUID, child session directory, `agentId`, and working directory are persisted as a Pi custom session entry. The current main-session branch also retains versioned invocation-start and browser-selection entries. Terminal tool-result details rebuild completed widget state; a start without a later terminal result reopens as `aborted`. Unknown or malformed widget records reset only the affected reconstructed widget or selection state. They do not invalidate the child-session registry or modify child JSONL files.

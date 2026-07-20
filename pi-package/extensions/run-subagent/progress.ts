@@ -223,7 +223,26 @@ export function finalizeSubagentProgressState(
 	nowMs: number,
 	exitCode: number,
 ): SubagentRunDetails {
-	return toSubagentRunDetails(state, status, nowMs, exitCode);
+	const details = toSubagentRunDetails(state, status, nowMs, exitCode);
+	if (status !== "aborted") {
+		return details;
+	}
+
+	return {
+		...details,
+		children: details.children.map(markRunningDescendantsAborted),
+	};
+}
+
+/** Prevents stale progress snapshots from representing work as active after ancestor cancellation completes. */
+function markRunningDescendantsAborted(
+	details: SubagentRunDetails,
+): SubagentRunDetails {
+	return {
+		...details,
+		status: details.status === "running" ? "aborted" : details.status,
+		children: details.children.map(markRunningDescendantsAborted),
+	};
 }
 
 /** Formats context usage as compact filled-window text. */
