@@ -19,6 +19,7 @@ Full config example:
 ```json
 {
   "enabled": true,
+  "projectCompactionSource": true,
   "projectionRemainingTokensL1": 70000,
   "minToolResultTokensL1": 4000,
   "projectionRemainingTokensL2": 50000,
@@ -47,11 +48,14 @@ All parameters are optional. Unknown parameters make the configuration invalid.
 
 Breaking change: `placeholder` is removed. If the config contains `placeholder`, startup fails with a message that names `omittedNotice` and `summaryNotice`.
 
+Enabled projection requires `custom-compaction` to resolve to a valid configuration with `enabled` not set to `false`. Missing custom-compaction configuration satisfies this requirement because custom compaction is enabled by default. An explicitly disabled or invalid custom-compaction configuration stops projection with an exact configuration error. `context-projection` never edits or automatically enables custom compaction.
+
 ## Parameters
 
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | Disabled when omitted or set to `false` | Enables projection. Set `true` to allow the extension to replace eligible old tool results. |
+| `projectCompactionSource` | No | Boolean | `true` | Before custom compaction, generates missing summaries for eligible tool results in Pi's discarded range. `false` leaves results without existing summaries to Pi's standard 2,000-character truncation. |
 | `projectionRemainingTokensL1` | No | Non-negative integer | `70000` | Starts L1 projection when remaining context tokens are at or below this value. Must be greater than or equal to `projectionRemainingTokensL2`. |
 | `minToolResultTokensL1` | No | Non-negative integer | `4000` | Minimum token count for a tool result to be projected at L1. |
 | `projectionRemainingTokensL2` | No | Non-negative integer | `50000` | Starts L2 projection when remaining context tokens are at or below this value. Must be between L1 and L3. |
@@ -84,6 +88,14 @@ When `summary.enabled` is omitted or set to `false`, other summary values are ig
 
 Each tool-result summary candidate uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session and other candidates. Retries for one candidate reuse that ID.
 
+## Compaction source projection
+
+When `projectCompactionSource` and `summary.enabled` are both `true`, custom compaction reuses existing projection summaries and generates missing summaries for every successful text tool result in `messagesToSummarize` and `turnPrefixMessages` whose size reaches `minToolResultTokensL3`.
+
+This forced pass does not apply ordinary remaining-token triggers, recent-turn protection, loaded-skill protection, or ignored-tool protection. Pi has already selected these entries for removal, so the alternative is Pi's 2,000-character summary serialization rather than continued full visibility.
+
+Generated summaries remain complete in the compaction source and are not passed through Pi's tool-result character limit. A failed, unavailable, non-reducing, or disabled projection summary falls back to Pi serialization for that result. Forced summaries are not persisted as projection state because successful compaction removes their source entries from the active context.
+
 ## Summary diagnostics
 
 Each failed tool-result summary attempt appends a `tool-result-summary-diagnostic` custom entry to the JSONL session. Custom entries do not participate in model context.
@@ -107,8 +119,9 @@ Diagnostic entries never contain prompts, tool-result text, authentication data,
 ## Usage notes
 
 - Missing configuration keeps projection disabled.
-- Most invalid configuration disables projection. Non-absolute summary prompt paths, invalid projection level ordering, and removed `placeholder` stop startup.
-- Projection only changes the provider context for the current request. It does not rewrite stored session entries.
+- Most invalid projection settings disable projection. Non-absolute summary prompt paths, invalid projection level ordering, removed `placeholder`, and an invalid or disabled `custom-compaction` dependency stop startup.
+- Projection only changes the provider context for the current request. It does not rewrite stored session messages.
+- Adaptive compaction reuses recorded summary replacements in its discarded range and can generate missing L3 summaries before building the durable summary source. Omission-only replacements are never used as durable summary input.
 - Only successful text tool results can be projected.
 - Failed tool results, non-text tool results, ignored tools, tool results protected by `keepRecentTurns` or `keepRecentTurnsPercent`, and `read` results for files under loaded skill directories stay visible.
 - Keep `omittedNotice` and `summaryNotice` short because the model sees them in provider context.

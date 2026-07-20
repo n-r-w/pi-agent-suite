@@ -17,15 +17,6 @@
   7. Return one updated summary.
 </update_rules>
 
-<skill_output_rule>
-  1. When  previous summary or new summarized messages include any path ending with `/SKILL.md`,  updated summary MUST preserve or add a `## Critical Context` bullet with this meaning:
-    -  listed skill reads are historical context;
-    -  updated summary does not preserve full skill file content;
-    - before relying on those skills,  next agent must reread  exact listed files.
-  2. Deduplicate exact `SKILL.md` paths.
-  3. Do not convert `SKILL.md` paths from `<read-files>` or  previous summary into `loaded skills`.
-</skill_output_rule>
-
 <output_format guidelines="Use this EXACT format">
 ```
   <goal>
@@ -77,8 +68,7 @@
   <critical_context>
     <!--
       1. Preserve important context. Add new context when needed.
-      2. Preserve or add  skill reload bullet when `SKILL.md` paths appear in  previous summary, new summarized messages, or `<read-files>`.
-      3. Add "(none)" if not applicable
+      2. Add "(none)" if not applicable
     -->
   </critical_context>
 ```

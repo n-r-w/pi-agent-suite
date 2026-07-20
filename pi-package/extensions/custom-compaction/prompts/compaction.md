@@ -15,13 +15,6 @@
   5. Return only the summary.
 </summary_rules>
 
-<skill_output_rule>
-  When summarized messages include `SKILL.md` paths, the `## Critical Context` section MUST include this exact meaning:
-  1. The listed skill reads are historical context.
-  2. The summary does not preserve full skill file content.
-  3. Before relying on these skills, the next agent must reread the exact listed files.
-</skill_output_rule>
-
 <output_format guidelines="Use this EXACT format">
 ```
   ## Goal
@@ -77,8 +70,7 @@
   <critical_context>
     <!--
       1. Any data, examples, or references needed to continue
-      2. Skill reload bullet when summarized messages include `SKILL.md` paths
-      3. Add "(none)" if not applicable
+      2. Add "(none)" if not applicable
     -->
   </critical_context>
 ```

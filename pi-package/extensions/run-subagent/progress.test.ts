@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	createSubagentProgressState,
+	finalizeSubagentProgressState,
 	recordSubagentSessionEvent,
 	toSubagentRunDetails,
 } from "./progress";
@@ -132,6 +133,87 @@ describe("run-subagent progress", () => {
 			childSessionId: "019f0000-0000-7000-8000-000000000003",
 		});
 		expect(rendered).toContain("⇆ Extractor #3 · Continue nested extraction");
+	});
+
+	test("finalizes stale running descendants when an aborted parent is resumed", () => {
+		// Purpose: cancellation must not leave historical descendant sessions visually active after their parent resumes.
+		// Input and expected output: a running child snapshot is finalized with an aborted parent, then retained as aborted across parent resume.
+		// Edge case: the nested terminal update is missing even though the parent invocation has reached a terminal state.
+		// Dependencies: progress finalization feeds the widget's logical-session merge by childSessionId.
+		const childSessionId = "019f0000-0000-7000-8000-000000000004";
+		const rootSessionId = "019f0000-0000-7000-8000-000000000005";
+		const state = createSubagentProgressState({
+			runId: "initial-root",
+			agentId: "SubAgentAnalystSenior",
+			taskName: "Review initial state",
+			sessionId: 7,
+			isResume: false,
+			depth: 1,
+			startedAtMs: 0,
+			childSessionId: rootSessionId,
+		});
+		const childState = createSubagentProgressState({
+			runId: "nested-run",
+			agentId: "SubAgentExtractor",
+			taskName: "Inspect project references",
+			sessionId: 1,
+			isResume: false,
+			depth: 2,
+			startedAtMs: 0,
+			childSessionId,
+		});
+		const grandchildState = createSubagentProgressState({
+			runId: "nested-grandchild-run",
+			agentId: "SubAgentExtractor",
+			taskName: "Inspect nested references",
+			sessionId: 1,
+			isResume: false,
+			depth: 3,
+			startedAtMs: 0,
+			childSessionId: "019f0000-0000-7000-8000-000000000006",
+		});
+		childState.children.push(
+			toSubagentRunDetails(grandchildState, "running", 10),
+		);
+		childState.stopReason = "aborted";
+		childState.errorMessage = "Request was aborted";
+		const runningChild = toSubagentRunDetails(childState, "running", 10);
+		recordSubagentSessionEvent(
+			state,
+			{
+				type: "tool_execution_update",
+				toolName: "run_subagent",
+				partialResult: { details: runningChild },
+			},
+			10,
+		);
+
+		const widgetState = createSubagentWidgetState();
+		const aborted = finalizeSubagentProgressState(state, "aborted", 20, 0);
+		recordSubagentWidgetRun(widgetState, aborted, 20);
+		const resumedState = createSubagentProgressState({
+			runId: "resumed-root",
+			agentId: "SubAgentAnalystSenior",
+			taskName: "Continue full review",
+			sessionId: 7,
+			isResume: true,
+			depth: 1,
+			startedAtMs: 20,
+			childSessionId: rootSessionId,
+		});
+		recordSubagentWidgetRun(
+			widgetState,
+			toSubagentRunDetails(resumedState, "running", 30),
+			30,
+		);
+		const rendered = createSubagentWidgetFactory(widgetState, 3)()
+			.render(140)
+			.join("\n");
+
+		expect(aborted.children[0]?.status).toBe("aborted");
+		expect(aborted.children[0]?.children[0]?.status).toBe("aborted");
+		expect(rendered).toContain("1 running · 2 failed · 0 done");
+		expect(rendered).toContain("■ Extractor #1 · Inspect project references");
 	});
 
 	test("preserves resumed session identity through progress and widget snapshots", () => {
