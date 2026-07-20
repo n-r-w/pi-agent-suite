@@ -869,35 +869,46 @@ export function estimateProjectedSavedTokens({
 	return estimateSavedTokens(decision.savedTokens);
 }
 
-/** Maps provider-context messages back to active branch entries only when the mapping is exact. */
+/** Maps provider-context messages back to active branch entries without treating persisted retry errors as provider context. */
 export function mapEventMessagesToBranchEntries(
 	eventMessages: readonly AgentMessage[],
 	branchEntries: readonly SessionEntry[],
 ): MappedContextEntry[] | undefined {
 	const mappedEntries = buildContextEntryMapping(branchEntries);
-	if (mappedEntries.length !== eventMessages.length) {
+	const eventMappedEntries: MappedContextEntry[] = [];
+	let eventIndex = 0;
+
+	for (const mappedEntry of mappedEntries) {
+		const eventMessage = eventMessages[eventIndex];
+		if (
+			eventMessage !== undefined &&
+			isDeepStrictEqual(mappedEntry.message, eventMessage)
+		) {
+			eventMappedEntries.push({
+				entry: mappedEntry.entry,
+				message: eventMessage,
+			});
+			eventIndex += 1;
+			continue;
+		}
+
+		if (isPersistedProviderError(mappedEntry)) {
+			continue;
+		}
+
 		return undefined;
 	}
 
-	const eventMappedEntries: MappedContextEntry[] = [];
-	for (let index = 0; index < mappedEntries.length; index += 1) {
-		const mappedEntry = mappedEntries[index];
-		const eventMessage = eventMessages[index];
-		if (
-			mappedEntry === undefined ||
-			eventMessage === undefined ||
-			!isDeepStrictEqual(mappedEntry.message, eventMessage)
-		) {
-			return undefined;
-		}
+	return eventIndex === eventMessages.length ? eventMappedEntries : undefined;
+}
 
-		eventMappedEntries.push({
-			entry: mappedEntry.entry,
-			message: eventMessage,
-		});
-	}
-
-	return eventMappedEntries;
+/** Identifies provider errors that Pi keeps in session history but removes from agent state before an automatic retry. */
+function isPersistedProviderError(entry: MappedContextEntry): boolean {
+	return (
+		entry.entry.type === "message" &&
+		entry.message.role === "assistant" &&
+		entry.message.stopReason === "error"
+	);
 }
 
 /** Builds the same branch message sequence that pi uses, but keeps the source entry beside each message. */

@@ -1268,6 +1268,74 @@ describe("context-projection", () => {
 		});
 	});
 
+	test("replays projection when auto-retry omits a persisted provider error", async () => {
+		// Purpose: an automatic retry must keep projected tool results out of provider context after Pi removes the failed assistant attempt from agent state.
+		// Input and expected output: branch history contains the provider error, retry messages omit it, and the existing projection is applied again.
+		// Edge case: the branch-only message is a provider error; other branch and event message mismatches remain invalid.
+		// Dependencies: isolated config, context hook, message_end hook, and mutable in-memory branch history.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const { contextHandler, messageEndHandler } =
+				installContextProjectionTestHarness();
+			const assistant = assistantMessage("call-old");
+			const toolResult = toolResultMessage(
+				"call-old",
+				"old output ".repeat(20),
+			);
+			const branchEntries = [
+				messageEntry("01", assistant, null),
+				messageEntry("02", toolResult, "01"),
+			];
+			const retryMessages = messagesFromBranch(branchEntries);
+			const context = createContextFake(branchEntries, {
+				tokens: 271_950,
+				contextWindow: 272_000,
+			});
+
+			const expectedProjectedResult = {
+				messages: [
+					assistant,
+					{
+						...toolResult,
+						content: [{ type: "text" as const, text: OMITTED_NOTICE }],
+					},
+				],
+			};
+			expect(
+				await contextHandler(
+					{ type: "context", messages: retryMessages },
+					context.ctx,
+				),
+			).toEqual(expectedProjectedResult);
+			const providerError = {
+				...assistantTextMessage("server error"),
+				stopReason: "error" as const,
+			};
+			branchEntries.push(
+				projectionStateEntry(
+					"03",
+					[{ entryId: "02", replacementText: OMITTED_NOTICE }],
+					"02",
+				),
+				messageEntry("04", providerError, "03"),
+			);
+			messageEndHandler(
+				{ type: "message_end", message: providerError },
+				context.ctx,
+			);
+
+			const retryResult = await contextHandler(
+				{ type: "context", messages: retryMessages },
+				context.ctx,
+			);
+
+			expect(retryResult).toEqual(expectedProjectedResult);
+		});
+	});
+
 	test("uses projection-aware usage when deciding whether to discover new projections", async () => {
 		// Purpose: stale raw usage must not trigger redundant projection when pending savings make effective usage safe.
 		// Input and expected output: raw usage crosses the threshold, pending savings moves it above the threshold, and no new projection entry is appended.
