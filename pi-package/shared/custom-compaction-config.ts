@@ -22,6 +22,8 @@ const PROMPT_FILE_KEYS = [
 	"systemPromptFile",
 	"historyPromptFile",
 	"updatePromptFile",
+	"reductionSystemPromptFile",
+	"reductionPromptFile",
 ] as const;
 
 /** Accepted public custom-compaction configuration keys. */
@@ -38,6 +40,8 @@ export interface CustomCompactionConfig {
 	readonly systemPromptFile?: string;
 	readonly historyPromptFile?: string;
 	readonly updatePromptFile?: string;
+	readonly reductionSystemPromptFile?: string;
+	readonly reductionPromptFile?: string;
 	readonly model?: string;
 	readonly reasoning?: ReasoningLevel;
 	readonly retry: RetryConfig;
@@ -144,6 +148,8 @@ function buildCustomCompactionConfig(
 	const systemPromptFile = value["systemPromptFile"];
 	const historyPromptFile = value["historyPromptFile"];
 	const updatePromptFile = value["updatePromptFile"];
+	const reductionSystemPromptFile = value["reductionSystemPromptFile"];
+	const reductionPromptFile = value["reductionPromptFile"];
 	const model = value["model"];
 	const reasoning = value["reasoning"];
 
@@ -151,6 +157,10 @@ function buildCustomCompactionConfig(
 		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
 		...(typeof historyPromptFile === "string" ? { historyPromptFile } : {}),
 		...(typeof updatePromptFile === "string" ? { updatePromptFile } : {}),
+		...(typeof reductionSystemPromptFile === "string"
+			? { reductionSystemPromptFile }
+			: {}),
+		...(typeof reductionPromptFile === "string" ? { reductionPromptFile } : {}),
 		...(typeof model === "string" ? { model } : {}),
 		...(isReasoningLevel(reasoning) ? { reasoning } : {}),
 		retry: buildRetryConfig(value["retry"]),

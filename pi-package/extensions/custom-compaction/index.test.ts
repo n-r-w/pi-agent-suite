@@ -59,6 +59,8 @@ interface PromptFiles {
 	readonly systemPromptFile: string;
 	readonly historyPromptFile: string;
 	readonly updatePromptFile: string;
+	readonly reductionSystemPromptFile: string;
+	readonly reductionPromptFile: string;
 }
 
 /** Runs one test with isolated extension configuration. */
@@ -444,17 +446,24 @@ async function writeProjectionConfig(
 	await writeFile(join(configDir, "config.json"), JSON.stringify(config));
 }
 
-/** Writes the three configurable compaction prompts. */
+/** Writes every configurable compaction prompt with distinct routing markers. */
 async function writePromptFiles(dir: string): Promise<PromptFiles> {
 	await mkdir(dir, { recursive: true });
 	const files = {
 		systemPromptFile: join(dir, "system.md"),
 		historyPromptFile: join(dir, "history.md"),
 		updatePromptFile: join(dir, "update.md"),
+		reductionSystemPromptFile: join(dir, "reduction-system.md"),
+		reductionPromptFile: join(dir, "reduction.md"),
 	};
 	await writeFile(files.systemPromptFile, "custom system prompt");
 	await writeFile(files.historyPromptFile, "custom history prompt");
 	await writeFile(files.updatePromptFile, "custom update prompt");
+	await writeFile(
+		files.reductionSystemPromptFile,
+		"custom reduction system prompt",
+	);
+	await writeFile(files.reductionPromptFile, "custom reduction prompt");
 	return files;
 }
 
@@ -646,7 +655,7 @@ describe("custom-compaction", () => {
 			expect(result).toEqual({
 				compaction: {
 					summary:
-						"adaptive summary\n\n<read-files>\na.ts\n</read-files>\n\n<modified-files>\nb.ts\n</modified-files>",
+						"adaptive summary\n\n<previously_read_files>\na.ts\n</previously_read_files>\n\n<previously_modified_files>\nb.ts\n</previously_modified_files>",
 					firstKeptEntryId: "entry-keep",
 					tokensBefore: 1_234,
 					details: {
@@ -844,7 +853,7 @@ describe("custom-compaction", () => {
 			expect(result).toMatchObject({
 				compaction: {
 					summary: expect.stringContaining(
-						"configured summary\n\n<read-files>\na.ts\n</read-files>",
+						"configured summary\n\n<previously_read_files>\na.ts\n</previously_read_files>",
 					),
 				},
 			});
@@ -861,6 +870,59 @@ describe("custom-compaction", () => {
 		});
 	});
 
+	test("routes configured reduction prompts only to intermediate requests", async () => {
+		// Purpose: final and intermediate requests must use independently configurable prompt pairs.
+		// Input and expected output: a constrained model triggers reduction with custom reduction prompts before a custom final request.
+		// Edge case: the configured final system prompt must not leak into intermediate requests.
+		// Dependencies: isolated prompt files, fake constrained model, and mocked completion.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const prompts = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, {
+				enabled: true,
+				...prompts,
+				model: "configured/reducer",
+			});
+			completeSimpleMock.mockImplementation(async (_model, context) =>
+				createAssistantResponse(
+					requestText(context).includes("custom reduction prompt")
+						? "reduced checkpoint"
+						: "configured final summary",
+				),
+			);
+			const configuredModel = {
+				...createModel("configured", "reducer", 1_500),
+				maxTokens: 96,
+			};
+			const pi = createExtensionApiFake();
+			const session = createSessionFake({ configuredModel });
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toBeDefined();
+			const contexts = completeSimpleMock.mock.calls.map(
+				([, context]) => context,
+			);
+			const reductionContexts = contexts.filter((context) =>
+				requestText(context).includes("custom reduction prompt"),
+			);
+			expect(reductionContexts.length).toBeGreaterThan(0);
+			for (const context of reductionContexts) {
+				expect(context).toMatchObject({
+					systemPrompt: "custom reduction system prompt",
+				});
+			}
+			const finalContext = contexts.at(-1);
+			expect(finalContext).toMatchObject({
+				systemPrompt: "custom system prompt",
+			});
+			expect(requestText(finalContext)).toContain("custom update prompt");
+		});
+	});
+
 	test("rejects relative configurable prompt paths during startup", async () => {
 		// Purpose: configured prompt loading must not depend on process working directory or home expansion.
 		// Input and expected output: every configurable prompt field rejects relative and tilde-prefixed paths.
@@ -870,6 +932,8 @@ describe("custom-compaction", () => {
 			"systemPromptFile",
 			"historyPromptFile",
 			"updatePromptFile",
+			"reductionSystemPromptFile",
+			"reductionPromptFile",
 		] as const) {
 			for (const path of [`${key}.md`, `~/${key}.md`]) {
 				await withIsolatedAgentDir(async (agentDir) => {
@@ -966,7 +1030,7 @@ describe("custom-compaction", () => {
 			expect(result).toMatchObject({
 				compaction: {
 					summary: expect.stringContaining(
-						"retried summary\n\n<read-files>\na.ts\n</read-files>",
+						"retried summary\n\n<previously_read_files>\na.ts\n</previously_read_files>",
 					),
 				},
 			});

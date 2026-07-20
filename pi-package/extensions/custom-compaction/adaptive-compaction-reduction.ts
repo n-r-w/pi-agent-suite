@@ -147,7 +147,11 @@ export function doesReductionRequestFit(
 	summaryNodeTokens: number,
 	options: AdaptiveCompactionOptions,
 ): boolean {
-	const context = buildSummaryContext(items, options.reductionPrompt, options);
+	const context = buildSummaryContext(
+		items,
+		options.reductionPrompt,
+		options.reductionSystemPrompt,
+	);
 	return (
 		estimateSummaryInput(context, options) +
 			summaryNodeTokens +
@@ -177,7 +181,11 @@ export async function summarizeReducingSource(
 						sourceBlocks: source.length,
 					}
 				: { type: "operation", operation },
-		context: buildSummaryContext(source, options.reductionPrompt, options),
+		context: buildSummaryContext(
+			source,
+			options.reductionPrompt,
+			options.reductionSystemPrompt,
+		),
 		maxTokens: summaryNodeTokens,
 		options,
 		validate: (summary) => {
@@ -485,7 +493,7 @@ function buildFragmentContext({
 	return buildRawSummaryContext(
 		`<source-fragment block-id="${blockId}" part="${index + 1}/${total}">\n${fragment}\n</source-fragment>`,
 		options.reductionPrompt,
-		options,
+		options.reductionSystemPrompt,
 	);
 }
 

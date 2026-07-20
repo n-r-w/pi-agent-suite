@@ -56,6 +56,8 @@ const CONFIGURABLE_PROMPT_KEYS = [
 	"systemPromptFile",
 	"historyPromptFile",
 	"updatePromptFile",
+	"reductionSystemPromptFile",
+	"reductionPromptFile",
 ] as const;
 
 /** Bundled prompt files used by adaptive compaction. */
@@ -63,6 +65,10 @@ const DEFAULT_PROMPT_FILES = {
 	systemPromptFile: join(DEFAULT_PROMPT_DIR, "compaction-system.md"),
 	historyPromptFile: join(DEFAULT_PROMPT_DIR, "compaction.md"),
 	updatePromptFile: join(DEFAULT_PROMPT_DIR, "compaction-update.md"),
+	reductionSystemPromptFile: join(
+		DEFAULT_PROMPT_DIR,
+		"compaction-reduction-system.md",
+	),
 	reductionPromptFile: join(DEFAULT_PROMPT_DIR, "compaction-reduction.md"),
 } as const;
 
@@ -83,6 +89,7 @@ interface CustomCompactionPrompts {
 	readonly systemPrompt: string;
 	readonly historyPrompt: string;
 	readonly updatePrompt: string;
+	readonly reductionSystemPrompt: string;
 	readonly reductionPrompt: string;
 }
 
@@ -232,6 +239,7 @@ async function handleSessionBeforeCompact(
 		const summary = await adaptiveCompactHistory({
 			preparation: event.preparation,
 			summarySystemPrompt: resolved.prompts.systemPrompt,
+			reductionSystemPrompt: resolved.prompts.reductionSystemPrompt,
 			finalPrompt: buildFinalPrompt(resolved.prompts, event),
 			reductionPrompt: resolved.prompts.reductionPrompt,
 			summarizationModel: resolved.runtime.model,
@@ -378,7 +386,11 @@ async function readPromptFiles(
 			config.historyPromptFile ?? DEFAULT_PROMPT_FILES.historyPromptFile,
 		updatePromptFile:
 			config.updatePromptFile ?? DEFAULT_PROMPT_FILES.updatePromptFile,
-		reductionPromptFile: DEFAULT_PROMPT_FILES.reductionPromptFile,
+		reductionSystemPromptFile:
+			config.reductionSystemPromptFile ??
+			DEFAULT_PROMPT_FILES.reductionSystemPromptFile,
+		reductionPromptFile:
+			config.reductionPromptFile ?? DEFAULT_PROMPT_FILES.reductionPromptFile,
 	};
 	const entries = await Promise.all(
 		Object.entries(paths).map(async ([key, path]) => {
@@ -406,6 +418,7 @@ async function readPromptFiles(
 		systemPrompt: contentByKey["systemPromptFile"] ?? "",
 		historyPrompt: contentByKey["historyPromptFile"] ?? "",
 		updatePrompt: contentByKey["updatePromptFile"] ?? "",
+		reductionSystemPrompt: contentByKey["reductionSystemPromptFile"] ?? "",
 		reductionPrompt: contentByKey["reductionPromptFile"] ?? "",
 	};
 }
@@ -537,14 +550,29 @@ function computeFileLists(fileOps: {
 /** Appends deterministic file context using Pi's standard summary tag format. */
 function formatFileOperations(files: CompactionFileLists): string {
 	const sections: string[] = [];
+
+	if (files.readFiles.length > 0 || files.modifiedFiles.length > 0) {
+		sections.push(`<summary_file_ops>\n`);
+		sections.push(
+			`These files were read or modified BEFORE summarization. They are not in current context.\n\n`,
+		);
+	}
+
 	if (files.readFiles.length > 0) {
-		sections.push(`<read-files>\n${files.readFiles.join("\n")}\n</read-files>`);
+		sections.push(
+			`<previously_read_files>\n${files.readFiles.join("\n")}\n</previously_read_files>`,
+		);
 	}
 	if (files.modifiedFiles.length > 0) {
 		sections.push(
-			`<modified-files>\n${files.modifiedFiles.join("\n")}\n</modified-files>`,
+			`<previously_modified_files>\n${files.modifiedFiles.join("\n")}\n</previously_modified_files>`,
 		);
 	}
+
+	if (files.readFiles.length > 0 || files.modifiedFiles.length > 0) {
+		sections.push(`</summary_file_ops>`);
+	}
+
 	return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
 }
 

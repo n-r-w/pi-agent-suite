@@ -370,7 +370,7 @@ After compacting context, you MUST restore critical details:
   3. Read any other files that may contain important information.
 
 🚨 CRITICAL: 🚨
-  1. Compacted summary IS NOT FULL REPLACEMENT FOR READING ORIGINAL FILES AND MESSAGES!
+  1. Compacted summary IS NOT FULL REPLACEMENT FOR READING ORIGINAL FILES, SKILLS AND MESSAGES!
   2. If you skip reading original documents and desk messages, your work WILL BE IMMEDIATELY REJECTED!
 </content_compaction>
 

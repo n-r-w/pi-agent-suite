@@ -29,11 +29,13 @@
 
   <progress>
     <done> <!-- Include previously done items and newly completed items -->
-      - [x] [Completed work]
+      - [x] [Completed work. Rationale for completion]
+      ...
     </done>
 
     <in_progress>
-      - [ ] [Current work]
+      -  [ ] [Current work. Rationale for current work]
+      ...
     </in_progress>
   </progress>
 
@@ -43,33 +45,49 @@
 
   <subagents_history> <!-- Only subagents whose work may need to be continued (e.g., coder subagent who may need to fix their code after review, etc.) -->
     - Session #[Session Number]; [Subagent ID]; Task: [Task Name (up to 6 words)]; Work done: [VERY brief summary of work done (up to 20 words)]
+    ...
   </subagents_history>
 
   <assumptions> <!-- Current assumptions. Remove assumptions confirmed or disproven by facts. -->
-    - [Assumption Description]. Why: [Rationale for assumption]
+    - [Assumption Description. Rationale for assumption]
+    ...
   </assumptions>
 
   <open_questions> <!-- Current open questions. Remove questions transformed into decisions or blockers. -->
-    - [Question Description]. Why: [What was done to close question and why it didn't work. Recommendations how it can be closed, if any.]
+    - [Question Description. What was done to close question and why it didn't work. Recommendations how it can be closed, if any.]
+    ...
   </open_questions>
 
   <blocked> <!-- Add Current blockers. Remove resolved blockers  -->
-    - [Blocker Description]. Why: [What was done to find a solution and why it didn't work. Recommendations how it can be unblocked, if any.]
+    - [Blocker Description. What was done to find a solution and why it didn't work. Recommendations how it can be unblocked, if any.]
+    ...
   </blocked>
 
   <key_decisions> <!-- Actual decisions made, with brief rationale. Remove decisions that were reversed or are no longer relevant -->
-    - [Decision Description]. Why: [Rationale for decision]
+    - [Decision Description. Rationale for decision]
+    ...
   </key_decisions>
 
-  <next_steps> <!-- Update based on current state. Numbered list -->
-    1. Goal: [Goal]. To-Do: [Work to be done to achieve goal]
+  <next_steps> <!-- Update based on current state -->
+    - Goal: [Goal]. To-Do: [Work to be done to achieve goal]
+    ...
   </next_steps>
 
   <critical_context>
     <!--
-      1. Preserve important context. Add new context when needed.
+      1. Preserve important context that should be considered before continuing. Add new context when needed.
       2. Add "(none)" if not applicable
     -->
+    - [Context Description. Rationale for context]
   </critical_context>
+
+  <must_read_first note="MUST READ following files IMMEDIATELY AFTER summarizing context. NO EXCEPTIONS. NO POSTPONING!">
+  <!-- Any relevant information that should be read first before continuing. Add new items when needed -->
+    - Skills: <!-- MUST list all SKILL.md files you have read previously or should have read -->
+       * [file path to skills file]
+       * ...
+    - [Link to file or resource. Add exact line ranges of files if possible. Rationale for reading first]
+    ...
+  </must_read_first>
 ```
 </output_format>

@@ -93,6 +93,7 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 			tokensBefore: 5_000,
 		},
 		summarySystemPrompt: "SUMMARY_SYSTEM",
+		reductionSystemPrompt: "REDUCTION_SYSTEM",
 		finalPrompt: "FINAL_PROMPT",
 		reductionPrompt: "REDUCTION_PROMPT",
 		summarizationModel: {
@@ -131,6 +132,21 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 		...overrides,
 	};
 	return { options, progressEvents, requests };
+}
+
+/** Verifies that final and intermediate requests use their assigned prompt pair. */
+function expectPromptRouting(
+	requests: readonly AdaptiveCompactionRequest[],
+): void {
+	for (const request of requests) {
+		const isFinal = request.operation === "final";
+		expect(request.context.systemPrompt).toBe(
+			isFinal ? "SUMMARY_SYSTEM" : "REDUCTION_SYSTEM",
+		);
+		expect(requestText(request)).toContain(
+			isFinal ? "FINAL_PROMPT" : "REDUCTION_PROMPT",
+		);
+	}
 }
 
 describe("adaptiveCompactHistory", () => {
@@ -236,6 +252,7 @@ describe("adaptiveCompactHistory", () => {
 		expect(summary).toBe("final-summary");
 		expect(requests).toHaveLength(1);
 		expect(requests[0]?.operation).toBe("final");
+		expectPromptRouting(requests);
 		const text = requestText(requests[0] as AdaptiveCompactionRequest);
 		expect(text).toContain("<previous-summary>\nprevious-summary");
 		expect(text).toContain("[User]: history-message");
@@ -306,6 +323,7 @@ describe("adaptiveCompactHistory", () => {
 				.some((request) => request.operation === "merge"),
 		).toBeTrue();
 		expect(requests.at(-1)?.operation).toBe("final");
+		expectPromptRouting(requests);
 		const operationEvents = progressEvents.filter(
 			(event) => event.type === "operation",
 		);
@@ -427,6 +445,7 @@ describe("adaptiveCompactHistory", () => {
 			})),
 		);
 		expect(progressDeliveryOverlapped).toBeFalse();
+		expectPromptRouting(requests);
 	});
 
 	/** Proves dense oversized text falls back to selected-model token prefixes. */
@@ -594,6 +613,7 @@ describe("adaptiveCompactHistory", () => {
 					event.type === "operation" && event.operation === "normalization",
 			),
 		).toBeTrue();
+		expectPromptRouting(requests);
 	});
 
 	/** Proves response defects use the configured retry count and one logical request ID. */
@@ -777,7 +797,7 @@ describe("adaptiveCompactHistory", () => {
 		// Edge case: the same history fits when the suffix is empty in the direct-path test.
 		// Dependencies: tokenizer-based prospective request estimation only.
 		const { options, requests } = createOptions({
-			finalSummarySuffix: `<read-files>\n${"large/path.ts\n".repeat(2_000)}</read-files>`,
+			finalSummarySuffix: `<previously_read_files>\n${"large/path.ts\n".repeat(2_000)}</previously_read_files>`,
 		});
 
 		await expect(adaptiveCompactHistory(options)).rejects.toThrow(

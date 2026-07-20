@@ -4,7 +4,7 @@
 
 `custom-compaction` replaces Pi's default compaction request with fixed-boundary adaptive history summarization. It preserves Pi's retained suffix, builds a durable summary from the original chronological summary range, and checks both the summarization-model request and the next main-model request before returning a custom result.
 
-The extension uses the current session model and thinking level by default. A separate compaction model, reasoning level, final prompts, and retry policy are configurable.
+The extension uses the current session model and thinking level by default. A separate compaction model, reasoning level, prompt files, and retry policy are configurable.
 
 ## Configuration file
 
@@ -24,6 +24,8 @@ Missing configuration keeps custom compaction enabled with defaults. The extensi
   "systemPromptFile": "/absolute/path/to/compaction-system.md",
   "historyPromptFile": "/absolute/path/to/compaction.md",
   "updatePromptFile": "/absolute/path/to/compaction-update.md",
+  "reductionSystemPromptFile": "/absolute/path/to/compaction-reduction-system.md",
+  "reductionPromptFile": "/absolute/path/to/compaction-reduction.md",
   "model": "provider/model",
   "reasoning": "medium",
   "retry": {
@@ -43,9 +45,11 @@ Breaking change: `summary` and `turnPrefixPromptFile` are removed. Adaptive comp
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables adaptive custom compaction. `false` lets Pi use standard compaction. |
-| `systemPromptFile` | No | Non-empty absolute path | Bundled system prompt | System prompt used for all adaptive compaction model calls. |
+| `systemPromptFile` | No | Non-empty absolute path | Bundled final system prompt | System prompt used for final summary requests. |
 | `historyPromptFile` | No | Non-empty absolute path | Bundled history prompt | Final prompt used when no previous compaction summary exists. |
 | `updatePromptFile` | No | Non-empty absolute path | Bundled update prompt | Final prompt used when a previous compaction summary exists. |
+| `reductionSystemPromptFile` | No | Non-empty absolute path | Bundled reduction system prompt | System prompt used for preliminary, fragment, normalization, and merge requests. |
+| `reductionPromptFile` | No | Non-empty absolute path | Bundled reduction prompt | User prompt used for preliminary, fragment, normalization, and merge requests. |
 | `model` | No | String in `provider/model` format | Current main model | Model used for direct, preliminary, fragment, normalization, merge, and final requests. Model IDs may contain additional slashes after the provider. |
 | `reasoning` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current thinking level | Reasoning level used for adaptive compaction requests. |
 | `retry` | No | Object | `{ "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }` | Retry settings for provider failures and invalid summarization responses. |
@@ -69,7 +73,7 @@ The extension does not summarize `turnPrefixMessages` separately. They remain at
 
 Pi's `firstKeptEntryId` remains unchanged. The retained suffix is never moved into the summary source, and the extension returns Pi's original file-operation details.
 
-After the model summary is accepted, the extension appends Pi-compatible `<read-files>` and `<modified-files>` sections. Modified files are excluded from the read-only list. These sections make deterministic file context visible to the next main-model request instead of leaving it only in `CompactionResult.details`.
+After the model summary is accepted, the extension appends Pi-compatible `<previously_read_files>` and `<previously_modified_files>` sections. Modified files are excluded from the read-only list. These sections make deterministic file context visible to the next main-model request instead of leaving it only in `CompactionResult.details`.
 
 ## Request budgets
 
@@ -96,7 +100,7 @@ Otherwise it:
 
 Preliminary original ranges are independent: an earlier intermediate summary is not included when summarizing a later original range. Every preliminary, fragment, normalization, and merge result must be smaller than its source and respect the common node limit.
 
-The bundled `compaction-reduction.md` defines intermediate reduction behavior and is not configurable. `historyPromptFile` and `updatePromptFile` remain the configurable final prompts.
+The bundled `compaction-reduction-system.md` and `compaction-reduction.md` define intermediate reduction behavior. `reductionSystemPromptFile` and `reductionPromptFile` replace them independently. Final requests continue to use `systemPromptFile` with either `historyPromptFile` or `updatePromptFile`.
 
 ## Progress messages
 

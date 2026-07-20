@@ -73,7 +73,7 @@ export function calculateCommonNodeBudget(
 				{ kind: "summary", id: "right", text: "" },
 			],
 			options.reductionPrompt,
-			options,
+			options.reductionSystemPrompt,
 		),
 		options,
 	);
@@ -200,7 +200,7 @@ function doesSimulatedFinalRequestFit(
 	const context = buildSummaryContext(
 		[{ kind: "summary", id: "simulated", text: "" }, ...remainingOriginals],
 		options.finalPrompt,
-		options,
+		options.summarySystemPrompt,
 	);
 	return (
 		estimateSummaryInput(context, options) +
@@ -217,7 +217,11 @@ export function doesFinalRequestFit(
 	finalSummaryTokens: number,
 	options: AdaptiveCompactionOptions,
 ): boolean {
-	const context = buildSummaryContext(items, options.finalPrompt, options);
+	const context = buildSummaryContext(
+		items,
+		options.finalPrompt,
+		options.summarySystemPrompt,
+	);
 	return (
 		estimateSummaryInput(context, options) +
 			finalSummaryTokens +

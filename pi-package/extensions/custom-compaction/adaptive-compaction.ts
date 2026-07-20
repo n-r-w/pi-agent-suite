@@ -87,7 +87,10 @@ export type AdaptiveCompactionPreparation = Pick<
 /** Complete input contract for the extension-local adaptive compaction engine. */
 export interface AdaptiveCompactionOptions {
 	readonly preparation: AdaptiveCompactionPreparation;
+	/** System prompt for final summary requests. */
 	readonly summarySystemPrompt: string;
+	/** System prompt for intermediate reduction requests. */
+	readonly reductionSystemPrompt: string;
 	readonly finalPrompt: string;
 	readonly reductionPrompt: string;
 	readonly summarizationModel: AdaptiveCompactionModel;
@@ -309,7 +312,11 @@ async function executeFinalSummary(
 	budgets: FinalSummaryBudget,
 	options: AdaptiveCompactionOptions,
 ): Promise<string> {
-	const context = buildSummaryContext(items, options.finalPrompt, options);
+	const context = buildSummaryContext(
+		items,
+		options.finalPrompt,
+		options.summarySystemPrompt,
+	);
 	return executeSingleRequest({
 		operation: "final",
 		progressEvent: { type: "operation", operation: "final" },

@@ -149,19 +149,19 @@ function serializeMessageBlock(
 export function buildSummaryContext(
 	items: readonly SourceItem[],
 	prompt: string,
-	options: AdaptiveCompactionOptions,
+	systemPrompt: string,
 ): Context {
-	return buildRawSummaryContext(renderSourceItems(items), prompt, options);
+	return buildRawSummaryContext(renderSourceItems(items), prompt, systemPrompt);
 }
 
 /** Wraps already rendered source text without changing Pi's serialized conversation content. */
 export function buildRawSummaryContext(
 	source: string,
 	prompt: string,
-	options: AdaptiveCompactionOptions,
+	systemPrompt: string,
 ): Context {
 	return {
-		systemPrompt: options.summarySystemPrompt,
+		systemPrompt,
 		messages: [
 			{
 				role: "user",
