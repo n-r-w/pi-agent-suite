@@ -26,6 +26,10 @@ import {
 } from "../../shared/agent-suite-storage";
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
+	isChildAuthStartupError,
+	withChildAuthStartupRetry,
+} from "../../shared/child-auth-startup";
+import {
 	type ChildRpcPromptCompletion,
 	type ChildRpcRuntimeFacts,
 	createChildRpcPromptCompletion,
@@ -38,8 +42,8 @@ import {
 	CHILD_RPC_OVERSIZED_JSON_EVENT_ERROR as OVERSIZED_CHILD_JSON_EVENT_ERROR,
 	CHILD_RPC_SKIPPED_TEXT_PART_TYPE as SKIPPED_TEXT_PART_TYPE,
 } from "../../shared/child-rpc-stream";
+import { ChildStartupGate } from "../../shared/child-startup-gate";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
-import { withRetry } from "../../shared/retry";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -72,7 +76,6 @@ import {
 	type SubagentSessionReference,
 	SubagentSessionRegistry,
 } from "./session-registry";
-import { ChildStartupGate } from "./startup-gate";
 import {
 	createSubagentWidgetFactory,
 	createSubagentWidgetState,
@@ -125,12 +128,6 @@ const MISSING_CHILD_FINAL_ANSWER_ERROR =
 	"subagent completed without a final answer";
 /** Error returned when parent abort cancels an incomplete child run. */
 const ABORTED_CHILD_RPC_RUN_ERROR = "subagent execution aborted";
-/** Maximum retries for an auth failure that occurs only in a fresh child process. */
-const CHILD_AUTH_STARTUP_RETRIES = 3;
-/** Minimum backoff before a child auth startup retry. */
-const CHILD_AUTH_RETRY_BASE_DELAY_MS = 200;
-/** Random range added to the retry base so separate Pi processes diverge. */
-const CHILD_AUTH_RETRY_JITTER_MS = 200;
 /** RPC command id used for the child prompt request. */
 const PROMPT_COMMAND_ID = "run-subagent-prompt";
 /** RPC command id used for the child abort request. */
@@ -1063,7 +1060,7 @@ async function runResolvedChildPiWithAuthRetry(
 	let lastRun: ChildRunResult | undefined;
 	let waitingForAuthRetry = false;
 	try {
-		return await withRetry(
+		return await withChildAuthStartupRetry(
 			async () => {
 				waitingForAuthRetry = false;
 				const run = await runResolvedChildPi(options, plan, progress, session);
@@ -1077,14 +1074,6 @@ async function runResolvedChildPiWithAuthRetry(
 				return run;
 			},
 			{
-				retry: {
-					enabled: true,
-					maxRetries: CHILD_AUTH_STARTUP_RETRIES,
-					baseDelayMs:
-						CHILD_AUTH_RETRY_BASE_DELAY_MS +
-						Math.floor(Math.random() * CHILD_AUTH_RETRY_JITTER_MS),
-				},
-				factor: 2,
 				signal: options.signal,
 				shouldRetry: (error) => error instanceof RetryableChildAuthStartupError,
 			},
@@ -1127,7 +1116,7 @@ async function isRetryableChildAuthStartupFailure(
 	const provider = plan.modelId.split("/", 1)[0];
 	if (
 		provider === undefined ||
-		!run.errorMessage?.startsWith(`No API key found for ${provider}.`)
+		!isChildAuthStartupError(run.errorMessage, provider)
 	) {
 		return false;
 	}

@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process";
 import { env as processEnv } from "node:process";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import {
+	isChildAuthStartupError,
+	withChildAuthStartupRetry,
+} from "../../shared/child-auth-startup";
 import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
+import { ChildStartupGate } from "../../shared/child-startup-gate";
 import { CouncilRpcClient, type CouncilRpcTransport } from "./rpc-client";
 import { buildChildParticipantStartupFromToolArgs } from "./startup";
 import type { ParticipantRunner, ParticipantRunnerFactory } from "./types";
@@ -35,10 +40,11 @@ export interface ParticipantRunnerFactoryDependencies {
 	): SpawnedParticipantProcess;
 }
 
-/** Creates a participant runner factory from process dependencies. */
+/** Creates a participant runner factory whose participants share one startup gate. */
 export function createParticipantRunnerFactory(
 	dependencies: ParticipantRunnerFactoryDependencies,
 ): ParticipantRunnerFactory {
+	const startupGate = new ChildStartupGate();
 	return async (options) => {
 		const startup = buildChildParticipantStartupFromToolArgs({
 			plan: options.startupPlan,
@@ -48,25 +54,36 @@ export function createParticipantRunnerFactory(
 			systemPrompt: options.systemPrompt,
 			toolArgs: options.toolArgs,
 		});
-		const child = dependencies.spawnPi("pi", startup.args, {
+		const runtimeFacts = resolveChildRpcRuntimeFacts({
+			modelId: `${options.runtime.model.provider}/${options.runtime.model.id}`,
+			modelRegistry: options.ctx.modelRegistry,
 			cwd: options.ctx.cwd,
 			env: startup.env,
 		});
-		const client = new CouncilRpcClient(
-			createProcessTransport(child),
-			resolveChildRpcRuntimeFacts({
-				modelId: `${options.runtime.model.provider}/${options.runtime.model.id}`,
-				modelRegistry: options.ctx.modelRegistry,
-				cwd: options.ctx.cwd,
-				env: startup.env,
-			}),
-			options.onSessionEvent,
-		);
-		return new RpcParticipantRunner(child, client, {
-			setTimeout: dependencies.setTimeout ?? globalThis.setTimeout,
-			clearTimeout:
-				dependencies.clearTimeout ??
-				((handle) => globalThis.clearTimeout(handle as never)),
+		return new RpcParticipantRunner({
+			launch(onSessionEvent) {
+				const child = dependencies.spawnPi("pi", startup.args, {
+					cwd: options.ctx.cwd,
+					env: startup.env,
+				});
+				return {
+					child,
+					client: new CouncilRpcClient(
+						createProcessTransport(child),
+						runtimeFacts,
+						onSessionEvent,
+					),
+				};
+			},
+			startupGate,
+			provider: options.runtime.model.provider,
+			onSessionEvent: options.onSessionEvent,
+			timers: {
+				setTimeout: dependencies.setTimeout ?? globalThis.setTimeout,
+				clearTimeout:
+					dependencies.clearTimeout ??
+					((handle) => globalThis.clearTimeout(handle as never)),
+			},
 		});
 	};
 }
@@ -83,90 +100,229 @@ export const createRpcParticipantRunner: ParticipantRunnerFactory =
 		},
 	});
 
-/** Participant runner backed by one persistent child RPC process. */
-class RpcParticipantRunner implements ParticipantRunner {
-	private abortTimer: unknown;
-	private disposed = false;
-	private exited = false;
-	private termTimer: unknown;
+/** Holds mutable lifecycle state for one participant process attempt. */
+interface ActiveParticipantProcess {
+	readonly activity: { observed: boolean };
+	readonly child: SpawnedParticipantProcess;
+	readonly client: CouncilRpcClient;
+	abortTimer: unknown;
+	exited: boolean;
+	termTimer: unknown;
+}
 
-	constructor(
-		private readonly child: SpawnedParticipantProcess,
-		private readonly client: CouncilRpcClient,
-		private readonly timers: {
-			readonly setTimeout: (callback: () => void, delayMs: number) => unknown;
-			readonly clearTimeout: (handle: unknown) => void;
-		},
-	) {
-		this.child.on("error", (error) => this.markProcessError(error));
-		this.child.on("exit", () => this.markExited());
+/** Supplies cancellable process-escalation timers to the participant runner. */
+interface ParticipantRunnerTimers {
+	readonly setTimeout: (callback: () => void, delayMs: number) => unknown;
+	readonly clearTimeout: (handle: unknown) => void;
+}
+
+/** Creates one child process and its RPC client for a startup attempt. */
+type LaunchParticipantProcess = (onSessionEvent: (event: unknown) => void) => {
+	readonly child: SpawnedParticipantProcess;
+	readonly client: CouncilRpcClient;
+};
+
+/** Groups process launch, recovery, event, and timer dependencies for one runner. */
+interface RpcParticipantRunnerOptions {
+	readonly launch: LaunchParticipantProcess;
+	readonly startupGate: ChildStartupGate;
+	readonly provider: string;
+	readonly onSessionEvent: ((event: unknown) => void) | undefined;
+	readonly timers: ParticipantRunnerTimers;
+}
+
+/** Carries the original prompt failure through bounded auth retry backoff. */
+class RetryableParticipantAuthStartupError extends Error {
+	constructor(readonly failure: Error) {
+		super(failure.message);
+		this.name = "RetryableParticipantAuthStartupError";
 	}
+}
+
+/** Participant runner that serializes fresh process startup and then reuses one RPC process. */
+class RpcParticipantRunner implements ParticipantRunner {
+	private active: ActiveParticipantProcess | undefined;
+	private disposed = false;
+
+	constructor(private readonly options: RpcParticipantRunnerOptions) {}
 
 	prompt(
 		task: string,
 		signal: AbortSignal | undefined,
 	): Promise<AssistantMessage> {
-		const abort = (): void => this.startAbortEscalation();
-		if (signal?.aborted === true) {
-			abort();
-		} else {
-			signal?.addEventListener("abort", abort, { once: true });
-		}
-		return this.client.prompt(task).finally(() => {
-			signal?.removeEventListener("abort", abort);
-		});
+		const active = this.active;
+		return active === undefined
+			? this.startFirstPrompt(task, signal)
+			: this.promptActive(active, task, signal);
 	}
 
+	/** Stops the active participant process and prevents delayed startup. */
 	async dispose(): Promise<void> {
 		if (this.disposed) {
 			return;
 		}
 		this.disposed = true;
-		this.clearEscalationTimers();
-		this.client.close();
-		if (!this.exited) {
-			this.child.kill("SIGTERM");
+		const active = this.active;
+		if (active !== undefined) {
+			this.disposeActive(active);
 		}
 	}
 
-	private startAbortEscalation(): void {
-		this.client.abort();
-		if (this.abortTimer !== undefined || this.exited) {
+	/** Retries only a fresh child auth miss before prompt preflight or session activity. */
+	private async startFirstPrompt(
+		task: string,
+		signal: AbortSignal | undefined,
+	): Promise<AssistantMessage> {
+		try {
+			return await withChildAuthStartupRetry(
+				async () => this.runFirstPromptAttempt(task, signal),
+				{
+					signal,
+					shouldRetry: (error) =>
+						error instanceof RetryableParticipantAuthStartupError,
+				},
+			);
+		} catch (error) {
+			if (error instanceof RetryableParticipantAuthStartupError) {
+				throw error.failure;
+			}
+			throw error;
+		}
+	}
+
+	/** Owns one serialized process launch and its prompt preflight result. */
+	private async runFirstPromptAttempt(
+		task: string,
+		signal: AbortSignal | undefined,
+	): Promise<AssistantMessage> {
+		const releaseStartup = await this.options.startupGate.acquire(signal);
+		if (releaseStartup === undefined) {
+			throw new Error("participant request aborted");
+		}
+		let promptAccepted = false;
+		try {
+			if (this.disposed) {
+				throw new Error("participant runner disposed");
+			}
+			const active = this.activate();
+			try {
+				return await this.promptActive(active, task, signal, () => {
+					promptAccepted = true;
+					releaseStartup();
+				});
+			} catch (error) {
+				if (
+					!promptAccepted &&
+					!active.activity.observed &&
+					error instanceof Error &&
+					isChildAuthStartupError(error.message, this.options.provider)
+				) {
+					this.disposeActive(active);
+					throw new RetryableParticipantAuthStartupError(error);
+				}
+				throw error;
+			}
+		} finally {
+			releaseStartup();
+		}
+	}
+
+	/** Creates one persistent child process after startup ownership is granted. */
+	private activate(): ActiveParticipantProcess {
+		const activity = { observed: false };
+		const launched = this.options.launch((event) => {
+			activity.observed = true;
+			this.options.onSessionEvent?.(event);
+		});
+		const active: ActiveParticipantProcess = {
+			activity,
+			child: launched.child,
+			client: launched.client,
+			abortTimer: undefined,
+			exited: false,
+			termTimer: undefined,
+		};
+		this.active = active;
+		active.child.on("error", (error) => this.markProcessError(active, error));
+		active.child.on("exit", () => this.markExited(active));
+		return active;
+	}
+
+	/** Sends a prompt and ties parent cancellation to the active process only. */
+	private promptActive(
+		active: ActiveParticipantProcess,
+		task: string,
+		signal: AbortSignal | undefined,
+		onPromptAccepted?: () => void,
+	): Promise<AssistantMessage> {
+		const abort = (): void => this.startAbortEscalation(active);
+		if (signal?.aborted === true) {
+			abort();
+		} else {
+			signal?.addEventListener("abort", abort, { once: true });
+		}
+		return active.client.prompt(task, onPromptAccepted).finally(() => {
+			signal?.removeEventListener("abort", abort);
+		});
+	}
+
+	/** Closes one process attempt without affecting a replacement process. */
+	private disposeActive(active: ActiveParticipantProcess): void {
+		this.clearEscalationTimers(active);
+		active.client.close();
+		if (!active.exited) {
+			active.child.kill("SIGTERM");
+		}
+		if (this.active === active) {
+			this.active = undefined;
+		}
+	}
+
+	/** Escalates parent cancellation from RPC abort to process termination. */
+	private startAbortEscalation(active: ActiveParticipantProcess): void {
+		active.client.abort();
+		if (active.abortTimer !== undefined || active.exited) {
 			return;
 		}
-		this.abortTimer = this.timers.setTimeout(() => {
-			this.abortTimer = undefined;
-			if (this.exited) {
+		active.abortTimer = this.options.timers.setTimeout(() => {
+			active.abortTimer = undefined;
+			if (active.exited) {
 				return;
 			}
-			this.child.kill("SIGTERM");
-			this.termTimer = this.timers.setTimeout(() => {
-				this.termTimer = undefined;
-				if (!this.exited) {
-					this.child.kill("SIGKILL");
+			active.child.kill("SIGTERM");
+			active.termTimer = this.options.timers.setTimeout(() => {
+				active.termTimer = undefined;
+				if (!active.exited) {
+					active.child.kill("SIGKILL");
 				}
 			}, COUNCIL_RPC_TERM_GRACE_MS);
 		}, COUNCIL_RPC_ABORT_GRACE_MS);
 	}
 
-	private markExited(): void {
-		this.exited = true;
-		this.clearEscalationTimers();
-		this.client.handleTransportFailure(new Error("child process exited"));
+	/** Records process exit and rejects RPC work still waiting on that process. */
+	private markExited(active: ActiveParticipantProcess): void {
+		active.exited = true;
+		this.clearEscalationTimers(active);
+		active.client.handleTransportFailure(new Error("child process exited"));
 	}
 
-	private markProcessError(error: Error): void {
-		this.client.handleTransportFailure(error);
+	/** Routes process creation failures to the matching RPC client. */
+	private markProcessError(
+		active: ActiveParticipantProcess,
+		error: Error,
+	): void {
+		active.client.handleTransportFailure(error);
 	}
 
-	private clearEscalationTimers(): void {
-		if (this.abortTimer !== undefined) {
-			this.timers.clearTimeout(this.abortTimer);
-			this.abortTimer = undefined;
+	/** Cancels termination timers owned by one process attempt. */
+	private clearEscalationTimers(active: ActiveParticipantProcess): void {
+		if (active.abortTimer !== undefined) {
+			this.options.timers.clearTimeout(active.abortTimer);
+			active.abortTimer = undefined;
 		}
-		if (this.termTimer !== undefined) {
-			this.timers.clearTimeout(this.termTimer);
-			this.termTimer = undefined;
+		if (active.termTimer !== undefined) {
+			this.options.timers.clearTimeout(active.termTimer);
+			active.termTimer = undefined;
 		}
 	}
 }

@@ -87,7 +87,10 @@ export class CouncilRpcClient {
 	}
 
 	/** Sends one participant prompt and resolves only after the child turn ends. */
-	async prompt(task: string): Promise<AssistantMessage> {
+	async prompt(
+		task: string,
+		onPromptAccepted?: () => void,
+	): Promise<AssistantMessage> {
 		if (this.transportClosed) {
 			throw new Error("child RPC transport closed");
 		}
@@ -101,12 +104,15 @@ export class CouncilRpcClient {
 				resolve,
 				reject,
 			};
-			this.request("prompt", { message: task }).catch((error) => {
-				if (this.activePrompt !== undefined) {
-					this.activePrompt = undefined;
-					reject(error instanceof Error ? error : new Error("prompt failed"));
-				}
-			});
+			this.request("prompt", { message: task }).then(
+				() => onPromptAccepted?.(),
+				(error) => {
+					if (this.activePrompt !== undefined) {
+						this.activePrompt = undefined;
+						reject(error instanceof Error ? error : new Error("prompt failed"));
+					}
+				},
+			);
 		});
 	}
 

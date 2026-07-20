@@ -713,6 +713,34 @@ describe("convene-council loop", () => {
 		});
 	});
 
+	test("fails before participant startup when parent model auth is unavailable", async () => {
+		// Purpose: a real parent authentication failure must not be classified as a child-only startup race.
+		// Input and expected output: parent auth rejects the configured model and no participant runner is created.
+		// Edge case: the error uses the same wording accepted only for child startup recovery.
+		// Dependencies: auth-aware execution context and custom participant runner factory.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeEnabledConfig(agentDir, {});
+			const model = createModel("openai", "main-model");
+			const authError = `No API key found for openai.\n\nUse /login to log into a provider via OAuth or API key.`;
+			let runnerStarts = 0;
+			const pi = createExtensionApiFake();
+			conveneCouncil(pi, {
+				async createParticipantRunner() {
+					runnerStarts += 1;
+					throw new Error("runner must not start");
+				},
+			});
+			const ctx = createContext([model], [], {
+				authResult: { ok: false, error: authError },
+			});
+
+			await expect(executeCouncil(pi, ctx, "Auth failure")).rejects.toThrow(
+				authError,
+			);
+			expect(runnerStarts).toBe(0);
+		});
+	});
+
 	test("passes parent context through a temporary file and removes it after success", async () => {
 		// Purpose: initial participant prompts must carry a context file path instead of inline parent context.
 		// Input and expected output: both participants receive the same context file path, the file contains caller context during the prompt, and the file is deleted after completion.

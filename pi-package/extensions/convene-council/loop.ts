@@ -80,6 +80,11 @@ export async function executeConveneCouncil({
 		throw reportToolError(ctx, runtimeResult.issue);
 	}
 
+	const authIssue = await preflightCouncilAuth(ctx, runtimeResult.runtime);
+	if (authIssue !== undefined) {
+		throw reportToolError(ctx, authIssue);
+	}
+
 	const startupPlan = resolveStartupPlan();
 	if ("issue" in startupPlan) {
 		throw reportToolError(ctx, startupPlan.issue);
@@ -748,6 +753,24 @@ function handleCouncilIssue(
 	progress.recordError(issue.message, "failed");
 	const details = progress.finish("failed", "failed");
 	return errorResult(issue.message, details);
+}
+
+/** Resolves both participant credentials sequentially in the stable parent runtime. */
+async function preflightCouncilAuth(
+	ctx: ExecuteConveneCouncilOptions["ctx"],
+	runtime: CouncilRuntime,
+): Promise<string | undefined> {
+	const firstIssue = await preflightParticipantAuth(ctx, runtime.llm1);
+	return firstIssue ?? preflightParticipantAuth(ctx, runtime.llm2);
+}
+
+/** Returns the parent authentication error for one configured participant model. */
+async function preflightParticipantAuth(
+	ctx: ExecuteConveneCouncilOptions["ctx"],
+	participant: CouncilRuntime["llm1"],
+): Promise<string | undefined> {
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(participant.model);
+	return auth.ok ? undefined : auth.error;
 }
 
 /** Reports a non-logical execution failure and returns the Error to throw. */

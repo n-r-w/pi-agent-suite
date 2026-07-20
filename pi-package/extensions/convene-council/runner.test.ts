@@ -12,6 +12,8 @@ import {
 } from "./runner";
 import type { ParticipantRunnerFactory } from "./types";
 
+const NO_OPENAI_API_KEY_ERROR = `No API key found for openai.\n\nUse /login to log into a provider via OAuth or API key.`;
+
 interface FakeStdin extends EventEmitter {
 	readonly writes: string[];
 	write(chunk: string): boolean;
@@ -106,7 +108,10 @@ function createFakeScheduler(): {
 	};
 }
 
-function createFakeRunnerFactory(scheduler = createFakeScheduler()): {
+function createFakeRunnerFactory(
+	scheduler = createFakeScheduler(),
+	onSpawn?: (process: FakeProcess, attempt: number) => void,
+): {
 	readonly factory: ParticipantRunnerFactory;
 	readonly spawned: Array<{
 		readonly command: string;
@@ -135,6 +140,7 @@ function createFakeRunnerFactory(scheduler = createFakeScheduler()): {
 			spawnPi(command, args, options) {
 				const process = createFakeProcess();
 				spawned.push({ command, args, options, process });
+				onSpawn?.(process, spawned.length);
 				return process;
 			},
 		}),
@@ -188,6 +194,14 @@ function respond(process: FakeProcess, id: string, command: string): void {
 	);
 }
 
+/** Emits one failed response for the selected RPC prompt command id. */
+function rejectPrompt(process: FakeProcess, error: string, id = "1"): void {
+	process.stdout.emit(
+		"data",
+		`${JSON.stringify({ type: "response", id, command: "prompt", success: false, error })}\n`,
+	);
+}
+
 /** Emits one assistant answer and agent_end for the active prompt. */
 function retryablePromptFailure(process: FakeProcess): void {
 	process.stdout.emit(
@@ -205,28 +219,38 @@ function completePrompt(process: FakeProcess, content: string): void {
 	process.stdout.emit("data", `${JSON.stringify({ type: "agent_end" })}\n`);
 }
 
-/** Creates a ready runner and verifies that startup does not write RPC commands. */
-async function createReadyRunner(
+/** Starts one runner prompt and returns the process created under startup ownership. */
+async function startRunnerPrompt(
 	fake: ReturnType<typeof createFakeRunnerFactory>,
+	task: string,
+	signal: AbortSignal | undefined,
 	options: Parameters<ParticipantRunnerFactory>[0] = createRunnerOptions(),
 ): Promise<{
 	readonly runner: Awaited<ReturnType<ParticipantRunnerFactory>>;
 	readonly child: FakeProcess;
+	readonly prompt: ReturnType<
+		Awaited<ReturnType<ParticipantRunnerFactory>>["prompt"]
+	>;
 }> {
-	const runnerPromise = fake.factory(options);
-	const child = fake.spawned[0]?.process as FakeProcess;
-	expect(child.stdin.writes).toEqual([]);
-	return { runner: await runnerPromise, child };
+	const runner = await fake.factory(options);
+	const prompt = runner.prompt(task, signal);
+	await Promise.resolve();
+	const child = fake.spawned.at(-1)?.process as FakeProcess;
+	return { runner, child, prompt };
 }
 
 describe("ParticipantRunner lifecycle", () => {
-	test("spawns child pi with persistent session args and no startup RPC command", async () => {
-		// Purpose: participant runner startup must not mutate child or global settings before work starts.
-		// Input and expected output: spawn receives session/model/tool args and writes no startup RPC command.
+	test("starts child pi only when the first prompt owns the startup slot", async () => {
+		// Purpose: participant credential loading must begin only after the runner owns serialized startup.
+		// Input and expected output: factory creation stays process-free, then the first prompt spawns Pi with the configured session args.
 		// Edge case: child resource-disabling and extension args are both propagated.
-		// Dependencies: fake child process.
+		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
-		const runnerPromise = fake.factory(createRunnerOptions());
+		const runner = await fake.factory(createRunnerOptions());
+		expect(fake.spawned).toHaveLength(0);
+
+		const prompt = runner.prompt("first task", undefined);
+		await Promise.resolve();
 		const child = fake.spawned[0]?.process;
 		expect(child).toBeDefined();
 		expect(fake.spawned[0]).toMatchObject({
@@ -261,10 +285,160 @@ describe("ParticipantRunner lifecycle", () => {
 				},
 			},
 		});
-		expect(child?.stdin.writes).toEqual([]);
 
-		const runner = await runnerPromise;
+		respond(child as FakeProcess, "1", "prompt");
+		completePrompt(child as FakeProcess, "first answer");
+		expect((await prompt).content).toEqual([
+			{ type: "text", text: "first answer" },
+		]);
 		await runner.dispose();
+	});
+
+	test("serializes participant startup only through prompt preflight", async () => {
+		// Purpose: concurrent council participants must not read OAuth credentials at the same time.
+		// Input and expected output: the second process starts after the first prompt response, while the first model turn is still running.
+		// Edge case: prompt completion is deliberately withheld when the second process starts.
+		// Dependencies: two runners sharing one fake factory and CouncilRpcClient protocol.
+		const fake = createFakeRunnerFactory();
+		const firstRunner = await fake.factory(createRunnerOptions());
+		const secondRunner = await fake.factory({
+			...createRunnerOptions(),
+			participantId: "llm2",
+			sessionFile: "/tmp/session/llm2.jsonl",
+		});
+		expect(fake.spawned).toHaveLength(0);
+
+		const firstPrompt = firstRunner.prompt("first task", undefined);
+		const secondPrompt = secondRunner.prompt("second task", undefined);
+		await Promise.resolve();
+		expect(fake.spawned).toHaveLength(1);
+
+		const firstChild = fake.spawned[0]?.process as FakeProcess;
+		respond(firstChild, "1", "prompt");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(fake.spawned).toHaveLength(2);
+
+		const secondChild = fake.spawned[1]?.process as FakeProcess;
+		respond(secondChild, "1", "prompt");
+		completePrompt(firstChild, "first answer");
+		completePrompt(secondChild, "second answer");
+		expect((await firstPrompt).content).toEqual([
+			{ type: "text", text: "first answer" },
+		]);
+		expect((await secondPrompt).content).toEqual([
+			{ type: "text", text: "second answer" },
+		]);
+		await Promise.all([firstRunner.dispose(), secondRunner.dispose()]);
+	});
+
+	test("retries a first-prompt auth race with a fresh participant process", async () => {
+		// Purpose: a child-only OAuth miss must recover after the parent runtime already resolved credentials.
+		// Input and expected output: the first process rejects prompt auth, the replacement completes with the same session arguments.
+		// Edge case: the failed process emits no session events before prompt rejection.
+		// Dependencies: sequential fake RPC transcripts and the shared bounded retry policy.
+		const fake = createFakeRunnerFactory(
+			createFakeScheduler(),
+			(process, attempt) => {
+				queueMicrotask(() => {
+					if (attempt === 1) {
+						rejectPrompt(process, NO_OPENAI_API_KEY_ERROR);
+						return;
+					}
+					respond(process, "1", "prompt");
+					completePrompt(process, "recovered answer");
+				});
+			},
+		);
+		const runner = await fake.factory(createRunnerOptions());
+
+		const result = await runner.prompt("recover auth", undefined);
+
+		expect(result.content).toEqual([
+			{ type: "text", text: "recovered answer" },
+		]);
+		expect(fake.spawned).toHaveLength(2);
+		expect(fake.spawned[0]?.process.killedSignals).toEqual(["SIGTERM"]);
+		expect(fake.spawned[1]?.args).toEqual(fake.spawned[0]?.args);
+		await runner.dispose();
+	});
+
+	test("stops after three retries when participant auth startup keeps failing", async () => {
+		// Purpose: child auth recovery must remain bounded when every fresh process misses OAuth credentials.
+		// Input and expected output: four identical prompt preflight failures return the original auth error.
+		// Edge case: every failed process is terminated before the next launch.
+		// Dependencies: repeating fake RPC failure and the shared retry limit.
+		const fake = createFakeRunnerFactory(createFakeScheduler(), (process) => {
+			queueMicrotask(() => rejectPrompt(process, NO_OPENAI_API_KEY_ERROR));
+		});
+		const runner = await fake.factory(createRunnerOptions());
+
+		await expect(runner.prompt("recover auth", undefined)).rejects.toThrow(
+			NO_OPENAI_API_KEY_ERROR,
+		);
+		expect(fake.spawned).toHaveLength(4);
+		expect(
+			fake.spawned.every(({ process }) =>
+				process.killedSignals.includes("SIGTERM"),
+			),
+		).toBe(true);
+	});
+
+	test("does not retry unrelated first-prompt failures", async () => {
+		// Purpose: startup recovery must not hide model, configuration, or transport failures.
+		// Input and expected output: a non-auth prompt rejection is returned after one process attempt.
+		// Edge case: the failure occurs before prompt preflight succeeds.
+		// Dependencies: one fake RPC rejection.
+		const fake = createFakeRunnerFactory(createFakeScheduler(), (process) => {
+			queueMicrotask(() => rejectPrompt(process, "prompt rejected"));
+		});
+		const runner = await fake.factory(createRunnerOptions());
+
+		await expect(runner.prompt("fail once", undefined)).rejects.toThrow(
+			"prompt rejected",
+		);
+		expect(fake.spawned).toHaveLength(1);
+	});
+
+	test("does not retry auth errors after the participant has started", async () => {
+		// Purpose: recovery must not replace a persistent participant after its first prompt was accepted.
+		// Input and expected output: the first turn succeeds and an auth-shaped second prompt failure uses the same process once.
+		// Edge case: the later error text exactly matches the startup recovery pattern.
+		// Dependencies: one persistent fake process and two RPC prompt commands.
+		const fake = createFakeRunnerFactory();
+		const {
+			runner,
+			child,
+			prompt: firstPrompt,
+		} = await startRunnerPrompt(fake, "first task", undefined);
+		respond(child, "1", "prompt");
+		completePrompt(child, "first answer");
+		await firstPrompt;
+
+		const secondPrompt = runner.prompt("second task", undefined);
+		rejectPrompt(child, NO_OPENAI_API_KEY_ERROR, "2");
+
+		await expect(secondPrompt).rejects.toThrow(NO_OPENAI_API_KEY_ERROR);
+		expect(fake.spawned).toHaveLength(1);
+		await runner.dispose();
+	});
+
+	test("cancels participant auth recovery during retry backoff", async () => {
+		// Purpose: parent cancellation must stop delayed auth recovery without creating another process.
+		// Input and expected output: the first startup misses auth, then abort cancels the pending retry.
+		// Edge case: no child process is active when cancellation arrives.
+		// Dependencies: AbortController and one automatic fake RPC rejection.
+		const controller = new AbortController();
+		const fake = createFakeRunnerFactory(createFakeScheduler(), (process) => {
+			queueMicrotask(() => rejectPrompt(process, NO_OPENAI_API_KEY_ERROR));
+		});
+		const runner = await fake.factory(createRunnerOptions());
+		const prompt = runner.prompt("recover auth", controller.signal);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		controller.abort();
+
+		await expect(prompt).rejects.toThrow();
+		expect(fake.spawned).toHaveLength(1);
 	});
 
 	test("reuses the same child process for multiple participant prompts", async () => {
@@ -273,9 +447,12 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: prompt command success does not complete without agent_end.
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
-		const { runner, child } = await createReadyRunner(fake);
+		const {
+			runner,
+			child,
+			prompt: first,
+		} = await startRunnerPrompt(fake, "first task", undefined);
 
-		const first = runner.prompt("first task", undefined);
 		respond(child, "1", "prompt");
 		completePrompt(child, "first answer");
 		const second = runner.prompt("second task", undefined);
@@ -300,12 +477,16 @@ describe("ParticipantRunner lifecycle", () => {
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
 		const events: unknown[] = [];
-		const { runner, child } = await createReadyRunner(fake, {
-			...createRunnerOptions(),
-			onSessionEvent: (event) => events.push(event),
-		});
+		const { child, prompt } = await startRunnerPrompt(
+			fake,
+			"inspect files",
+			undefined,
+			{
+				...createRunnerOptions(),
+				onSessionEvent: (event) => events.push(event),
+			},
+		);
 
-		const prompt = runner.prompt("inspect files", undefined);
 		respond(child, "1", "prompt");
 		child.stdout.emit(
 			"data",
@@ -334,9 +515,12 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: transport stringifies the chunk before JSONL parsing.
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
-		const { runner, child } = await createReadyRunner(fake);
+		const { child, prompt } = await startRunnerPrompt(
+			fake,
+			"buffer task",
+			undefined,
+		);
 
-		const prompt = runner.prompt("buffer task", undefined);
 		child.stdout.emit(
 			"data",
 			Buffer.from(
@@ -358,11 +542,15 @@ describe("ParticipantRunner lifecycle", () => {
 		const scheduler = createFakeScheduler();
 		const fake = createFakeRunnerFactory(scheduler);
 		const abortController = new AbortController();
-		const { runner, child } = await createReadyRunner(fake, {
-			...createRunnerOptions(),
-			signal: abortController.signal,
-		});
-		const prompt = runner.prompt("long task", abortController.signal);
+		const { child, prompt } = await startRunnerPrompt(
+			fake,
+			"long task",
+			abortController.signal,
+			{
+				...createRunnerOptions(),
+				signal: abortController.signal,
+			},
+		);
 		prompt.catch(() => undefined);
 		respond(child, "1", "prompt");
 
@@ -390,11 +578,15 @@ describe("ParticipantRunner lifecycle", () => {
 		const scheduler = createFakeScheduler();
 		const fake = createFakeRunnerFactory(scheduler);
 		const abortController = new AbortController();
-		const { runner, child } = await createReadyRunner(fake, {
-			...createRunnerOptions(),
-			signal: abortController.signal,
-		});
-		const prompt = runner.prompt("long task", abortController.signal);
+		const { child, prompt } = await startRunnerPrompt(
+			fake,
+			"long task",
+			abortController.signal,
+			{
+				...createRunnerOptions(),
+				signal: abortController.signal,
+			},
+		);
 		prompt.catch(() => undefined);
 		respond(child, "1", "prompt");
 
@@ -412,8 +604,11 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: exit happens after non-final retryable agent_end and before auto_retry_end.
 		// Dependencies: fake child process and participant runner lifecycle.
 		const fake = createFakeRunnerFactory();
-		const { runner, child } = await createReadyRunner(fake);
-		const result = runner.prompt("task", undefined);
+		const { child, prompt: result } = await startRunnerPrompt(
+			fake,
+			"task",
+			undefined,
+		);
 		respond(child, "1", "prompt");
 		retryablePromptFailure(child);
 		child.exit();
@@ -427,8 +622,11 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: process error happens before child exit.
 		// Dependencies: fake child process and participant runner lifecycle.
 		const fake = createFakeRunnerFactory();
-		const { runner, child } = await createReadyRunner(fake);
-		const result = runner.prompt("task", undefined);
+		const { child, prompt: result } = await startRunnerPrompt(
+			fake,
+			"task",
+			undefined,
+		);
 		respond(child, "1", "prompt");
 		retryablePromptFailure(child);
 
@@ -443,8 +641,11 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: stream error happens while the child is between retryable agent turns.
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
-		const { runner, child } = await createReadyRunner(fake);
-		const result = runner.prompt("task", undefined);
+		const { child, prompt: result } = await startRunnerPrompt(
+			fake,
+			"task",
+			undefined,
+		);
 		respond(child, "1", "prompt");
 		retryablePromptFailure(child);
 
@@ -461,9 +662,11 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: blocking child UI request arrives after the runner is logically closed.
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
-		const { runner, child } = await createReadyRunner(fake);
-
-		const prompt = runner.prompt("task", undefined);
+		const { runner, child, prompt } = await startRunnerPrompt(
+			fake,
+			"task",
+			undefined,
+		);
 		respond(child, "1", "prompt");
 		completePrompt(child, "answer");
 		await prompt;
@@ -489,7 +692,12 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: dispose is idempotent for repeated cleanup paths.
 		// Dependencies: fake child process.
 		const fake = createFakeRunnerFactory();
-		const { runner, child } = await createReadyRunner(fake);
+		const { runner, child, prompt } = await startRunnerPrompt(
+			fake,
+			"task",
+			undefined,
+		);
+		prompt.catch(() => undefined);
 
 		await runner.dispose();
 		await runner.dispose();

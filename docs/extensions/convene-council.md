@@ -60,6 +60,14 @@ The extension is disabled when the config file is missing or when `enabled` is n
 
 Unsupported keys make the config invalid.
 
+## Authentication startup recovery
+
+Before creating participant processes, `convene-council` resolves both configured model credentials sequentially through the parent model registry. A parent authentication failure returns without starting child Pi.
+
+The two participants share one FIFO startup gate. The gate allows one participant process at a time to start and complete RPC prompt preflight, including credential loading. A successful prompt response releases the gate while that participant continues generating its answer, so model execution remains parallel.
+
+After successful parent authentication, a fresh participant process can still temporarily miss OAuth credentials when another Pi process holds the shared `auth.json` lock. `convene-council` retries only the matching `No API key found for <provider>` failure received before prompt acceptance and before child session activity. Each retry creates a new process with the same participant session paths and re-enters the startup gate. The original attempt and up to three retries use exponential randomized delays. Cancellation, later participant turns, failures after session activity, and other errors are not retried.
+
 ## Tool input
 
 ```json
