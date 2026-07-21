@@ -56,6 +56,7 @@ const CONFIGURABLE_PROMPT_KEYS = [
 	"systemPromptFile",
 	"historyPromptFile",
 	"updatePromptFile",
+	"fileCandidatesPromptFile",
 	"reductionSystemPromptFile",
 	"reductionPromptFile",
 ] as const;
@@ -65,6 +66,10 @@ const DEFAULT_PROMPT_FILES = {
 	systemPromptFile: join(DEFAULT_PROMPT_DIR, "compaction-system.md"),
 	historyPromptFile: join(DEFAULT_PROMPT_DIR, "compaction.md"),
 	updatePromptFile: join(DEFAULT_PROMPT_DIR, "compaction-update.md"),
+	fileCandidatesPromptFile: join(
+		DEFAULT_PROMPT_DIR,
+		"compaction-file-candidates.md",
+	),
 	reductionSystemPromptFile: join(
 		DEFAULT_PROMPT_DIR,
 		"compaction-reduction-system.md",
@@ -84,11 +89,20 @@ const OUTCOME_MESSAGE_LIMIT = 2_000;
 /** Extra local margin kept beyond provider request framing estimates. */
 const ADAPTIVE_SAFETY_MARGIN_TOKENS = 256;
 
+/** Final-prompt macro replaced by the rendered file-candidate fragment. */
+const FILE_CANDIDATES_MACRO = "{{fileCandidates}}";
+
+/** File-fragment macros replaced by deterministic operation paths. */
+const READ_FILES_MACRO = "{{readFiles}}";
+const MODIFIED_FILES_MACRO = "{{modifiedFiles}}";
+const FILE_LIST_MACRO_PATTERN = /\{\{(?:readFiles|modifiedFiles)\}\}/gu;
+
 /** Prompt text required by final and intermediate summarization requests. */
 interface CustomCompactionPrompts {
 	readonly systemPrompt: string;
 	readonly historyPrompt: string;
 	readonly updatePrompt: string;
+	readonly fileCandidatesPrompt: string;
 	readonly reductionSystemPrompt: string;
 	readonly reductionPrompt: string;
 }
@@ -140,7 +154,7 @@ interface CustomCompactionSession {
 	};
 }
 
-/** Deterministic file lists appended to both summary text and result details. */
+/** Deterministic file lists available to final prompt rendering and result details. */
 interface CompactionFileLists {
 	readonly readFiles: readonly string[];
 	readonly modifiedFiles: readonly string[];
@@ -223,7 +237,6 @@ async function handleSessionBeforeCompact(
 	}
 
 	const files = computeFileLists(event.preparation.fileOps);
-	const finalSummarySuffix = formatFileOperations(files);
 	const progress = createProgressReporter(session);
 	try {
 		const projectedContexts = await resolveProjectedContexts(
@@ -240,12 +253,11 @@ async function handleSessionBeforeCompact(
 			preparation: event.preparation,
 			summarySystemPrompt: resolved.prompts.systemPrompt,
 			reductionSystemPrompt: resolved.prompts.reductionSystemPrompt,
-			finalPrompt: buildFinalPrompt(resolved.prompts, event),
+			finalPrompt: buildFinalPrompt(resolved.prompts, event, files),
 			reductionPrompt: resolved.prompts.reductionPrompt,
 			summarizationModel: resolved.runtime.model,
 			mainModel: ctx.model,
 			...projectedContexts,
-			finalSummarySuffix,
 			mainSystemPrompt: ctx.getSystemPrompt(),
 			activeTools: collectActiveTools(pi),
 			mainModelReserveTokens: event.preparation.settings.reserveTokens,
@@ -265,11 +277,7 @@ async function handleSessionBeforeCompact(
 
 		persistOutcome(pi, session, "success", progress.outcomeMessage);
 		return {
-			compaction: buildCompactionResult(
-				event,
-				`${summary}${finalSummarySuffix}`,
-				files,
-			),
+			compaction: buildCompactionResult(event, summary, files),
 		};
 	} catch (error) {
 		await progress.reportFailure(error);
@@ -386,6 +394,9 @@ async function readPromptFiles(
 			config.historyPromptFile ?? DEFAULT_PROMPT_FILES.historyPromptFile,
 		updatePromptFile:
 			config.updatePromptFile ?? DEFAULT_PROMPT_FILES.updatePromptFile,
+		fileCandidatesPromptFile:
+			config.fileCandidatesPromptFile ??
+			DEFAULT_PROMPT_FILES.fileCandidatesPromptFile,
 		reductionSystemPromptFile:
 			config.reductionSystemPromptFile ??
 			DEFAULT_PROMPT_FILES.reductionSystemPromptFile,
@@ -418,6 +429,7 @@ async function readPromptFiles(
 		systemPrompt: contentByKey["systemPromptFile"] ?? "",
 		historyPrompt: contentByKey["historyPromptFile"] ?? "",
 		updatePrompt: contentByKey["updatePromptFile"] ?? "",
+		fileCandidatesPrompt: contentByKey["fileCandidatesPromptFile"] ?? "",
 		reductionSystemPrompt: contentByKey["reductionSystemPromptFile"] ?? "",
 		reductionPrompt: contentByKey["reductionPromptFile"] ?? "",
 	};
@@ -489,19 +501,43 @@ function buildCompletionOptions(
 	return options;
 }
 
-/** Adds manual compaction focus only to the final summarization prompt. */
+/** Renders file-operation candidates and manual focus into the selected final prompt. */
 function buildFinalPrompt(
 	prompts: CustomCompactionPrompts,
 	event: SessionBeforeCompactEvent,
+	files: CompactionFileLists,
 ): string {
-	const prompt =
+	const template =
 		event.preparation.previousSummary === undefined
 			? prompts.historyPrompt
 			: prompts.updatePrompt;
+	const fileCandidates = renderFileCandidatesPrompt(
+		prompts.fileCandidatesPrompt,
+		files,
+	);
+	const prompt = template.replaceAll(FILE_CANDIDATES_MACRO, fileCandidates);
 	const customInstructions = event.customInstructions?.trim();
 	return customInstructions === undefined || customInstructions.length === 0
 		? prompt
 		: `${prompt}\n\nAdditional focus: ${customInstructions}`;
+}
+
+/** Returns no file guidance when Pi reported no file operations. */
+function renderFileCandidatesPrompt(
+	template: string,
+	files: CompactionFileLists,
+): string {
+	if (files.readFiles.length === 0 && files.modifiedFiles.length === 0) {
+		return "";
+	}
+	const readFiles = files.readFiles.join("\n");
+	const modifiedFiles = files.modifiedFiles.join("\n");
+	return template.replace(FILE_LIST_MACRO_PATTERN, (macro) => {
+		if (macro === READ_FILES_MACRO) {
+			return readFiles;
+		}
+		return macro === MODIFIED_FILES_MACRO ? modifiedFiles : macro;
+	});
 }
 
 /** Returns only active public tool schemas for prospective main-request sizing. */
@@ -545,35 +581,6 @@ function computeFileLists(fileOps: {
 		.filter((path) => !modified.has(path))
 		.sort();
 	return { readFiles, modifiedFiles };
-}
-
-/** Appends deterministic file context using Pi's standard summary tag format. */
-function formatFileOperations(files: CompactionFileLists): string {
-	const sections: string[] = [];
-
-	if (files.readFiles.length > 0 || files.modifiedFiles.length > 0) {
-		sections.push(`<summary_file_ops>\n`);
-		sections.push(
-			`These files were read or modified BEFORE summarization. They are not in current context.\n\n`,
-		);
-	}
-
-	if (files.readFiles.length > 0) {
-		sections.push(
-			`<previously_read_files>\n${files.readFiles.join("\n")}\n</previously_read_files>`,
-		);
-	}
-	if (files.modifiedFiles.length > 0) {
-		sections.push(
-			`<previously_modified_files>\n${files.modifiedFiles.join("\n")}\n</previously_modified_files>`,
-		);
-	}
-
-	if (files.readFiles.length > 0 || files.modifiedFiles.length > 0) {
-		sections.push(`</summary_file_ops>`);
-	}
-
-	return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
 }
 
 /** Rejects configured relative prompt paths during extension loading. */

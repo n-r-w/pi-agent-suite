@@ -24,6 +24,7 @@ Missing configuration keeps custom compaction enabled with defaults. The extensi
   "systemPromptFile": "/absolute/path/to/compaction-system.md",
   "historyPromptFile": "/absolute/path/to/compaction.md",
   "updatePromptFile": "/absolute/path/to/compaction-update.md",
+  "fileCandidatesPromptFile": "/absolute/path/to/compaction-file-candidates.md",
   "reductionSystemPromptFile": "/absolute/path/to/compaction-reduction-system.md",
   "reductionPromptFile": "/absolute/path/to/compaction-reduction.md",
   "model": "provider/model",
@@ -48,6 +49,7 @@ Breaking change: `summary` and `turnPrefixPromptFile` are removed. Adaptive comp
 | `systemPromptFile` | No | Non-empty absolute path | Bundled final system prompt | System prompt used for final summary requests. |
 | `historyPromptFile` | No | Non-empty absolute path | Bundled history prompt | Final prompt used when no previous compaction summary exists. |
 | `updatePromptFile` | No | Non-empty absolute path | Bundled update prompt | Final prompt used when a previous compaction summary exists. |
+| `fileCandidatesPromptFile` | No | Non-empty absolute path | Bundled file-candidate prompt | Optional final-prompt fragment that asks the model to select relevant file-operation paths for `must_read_first`. |
 | `reductionSystemPromptFile` | No | Non-empty absolute path | Bundled reduction system prompt | System prompt used for preliminary, fragment, normalization, and merge requests. |
 | `reductionPromptFile` | No | Non-empty absolute path | Bundled reduction prompt | User prompt used for preliminary, fragment, normalization, and merge requests. |
 | `model` | No | String in `provider/model` format | Current main model | Model used for direct, preliminary, fragment, normalization, merge, and final requests. Model IDs may contain additional slashes after the provider. |
@@ -73,7 +75,9 @@ The extension does not summarize `turnPrefixMessages` separately. They remain at
 
 Pi's `firstKeptEntryId` remains unchanged. The retained suffix is never moved into the summary source, and the extension returns Pi's original file-operation details.
 
-After the model summary is accepted, the extension appends Pi-compatible `<previously_read_files>` and `<previously_modified_files>` sections. Modified files are excluded from the read-only list. These sections make deterministic file context visible to the next main-model request instead of leaving it only in `CompactionResult.details`.
+Before the final summary request, the extension renders the configured file-candidate prompt with deterministic non-overlapping file lists. Modified files are excluded from the read-only list. `{{readFiles}}` and `{{modifiedFiles}}` expand to newline-separated paths inside the file-candidate prompt, then the rendered fragment replaces `{{fileCandidates}}` in the selected history or update prompt. When both lists are empty, `{{fileCandidates}}` becomes an empty string and no file-candidate fragment reaches the model. A final prompt without `{{fileCandidates}}` receives no file guidance.
+
+The model decides which paths belong in `must_read_first`. The extension does not append raw file-operation lists to the generated summary.
 
 ## Request budgets
 
@@ -82,7 +86,7 @@ Before any model request, the extension calculates:
 - the maximum final summary size allowed by the prospective next main-model request;
 - one common intermediate summary-node limit that permits pairwise merges and the final summarization request.
 
-The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, deterministic file-operation sections, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing. Generated summary replacements are also reused in the discarded summary range.
+The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing. Generated summary replacements are also reused in the discarded summary range.
 
 The final main-model request must fit its model window and must not be larger than the projected request representation it replaces. When no positive final or intermediate budget exists, custom compaction fails before issuing a model request.
 
@@ -100,7 +104,7 @@ Otherwise it:
 
 Preliminary original ranges are independent: an earlier intermediate summary is not included when summarizing a later original range. Every preliminary, fragment, normalization, and merge result must be smaller than its source and respect the common node limit.
 
-The bundled `compaction-reduction-system.md` and `compaction-reduction.md` define intermediate reduction behavior. `reductionSystemPromptFile` and `reductionPromptFile` replace them independently. Final requests continue to use `systemPromptFile` with either `historyPromptFile` or `updatePromptFile`.
+The bundled `compaction-reduction-system.md` and `compaction-reduction.md` define intermediate reduction behavior. `reductionSystemPromptFile` and `reductionPromptFile` replace them independently. Final requests use `systemPromptFile` with either `historyPromptFile` or `updatePromptFile`. `fileCandidatesPromptFile` independently replaces the file-candidate fragment used by those final prompts.
 
 ## Progress messages
 

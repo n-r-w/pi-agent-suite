@@ -59,6 +59,7 @@ interface PromptFiles {
 	readonly systemPromptFile: string;
 	readonly historyPromptFile: string;
 	readonly updatePromptFile: string;
+	readonly fileCandidatesPromptFile: string;
 	readonly reductionSystemPromptFile: string;
 	readonly reductionPromptFile: string;
 }
@@ -288,6 +289,15 @@ function createProjectionCompactionEvent(
 /** Creates a compaction event with a large replaceable prefix and fixed suffix. */
 function createCompactionEvent(
 	signal = new AbortController().signal,
+	fileOps: {
+		readonly read: Set<string>;
+		readonly written: Set<string>;
+		readonly edited: Set<string>;
+	} = {
+		read: new Set(["a.ts"]),
+		written: new Set(["b.ts"]),
+		edited: new Set<string>(),
+	},
 ): Record<string, unknown> {
 	const oldUser = {
 		role: "user",
@@ -310,11 +320,7 @@ function createCompactionEvent(
 			isSplitTurn: true,
 			tokensBefore: 1_234,
 			previousSummary: "previous summary",
-			fileOps: {
-				read: new Set(["a.ts"]),
-				written: new Set(["b.ts"]),
-				edited: new Set<string>(),
-			},
+			fileOps,
 			settings: {
 				enabled: true,
 				reserveTokens: 1_000,
@@ -453,12 +459,23 @@ async function writePromptFiles(dir: string): Promise<PromptFiles> {
 		systemPromptFile: join(dir, "system.md"),
 		historyPromptFile: join(dir, "history.md"),
 		updatePromptFile: join(dir, "update.md"),
+		fileCandidatesPromptFile: join(dir, "file-candidates.md"),
 		reductionSystemPromptFile: join(dir, "reduction-system.md"),
 		reductionPromptFile: join(dir, "reduction.md"),
 	};
 	await writeFile(files.systemPromptFile, "custom system prompt");
-	await writeFile(files.historyPromptFile, "custom history prompt");
-	await writeFile(files.updatePromptFile, "custom update prompt");
+	await writeFile(
+		files.historyPromptFile,
+		"custom history prompt\n{{fileCandidates}}",
+	);
+	await writeFile(
+		files.updatePromptFile,
+		"custom update prompt\n{{fileCandidates}}",
+	);
+	await writeFile(
+		files.fileCandidatesPromptFile,
+		"custom file candidates\nread={{readFiles}}\nmodified={{modifiedFiles}}",
+	);
 	await writeFile(
 		files.reductionSystemPromptFile,
 		"custom reduction system prompt",
@@ -654,8 +671,7 @@ describe("custom-compaction", () => {
 
 			expect(result).toEqual({
 				compaction: {
-					summary:
-						"adaptive summary\n\n<previously_read_files>\na.ts\n</previously_read_files>\n\n<previously_modified_files>\nb.ts\n</previously_modified_files>",
+					summary: "adaptive summary",
 					firstKeptEntryId: "entry-keep",
 					tokensBefore: 1_234,
 					details: {
@@ -851,22 +867,101 @@ describe("custom-compaction", () => {
 			);
 
 			expect(result).toMatchObject({
-				compaction: {
-					summary: expect.stringContaining(
-						"configured summary\n\n<previously_read_files>\na.ts\n</previously_read_files>",
-					),
-				},
+				compaction: { summary: "configured summary" },
 			});
 			expect(session.requestedModels).toEqual([configuredModel]);
 			const [model, context, options] = completeSimpleMock.mock.calls[0] ?? [];
 			expect(model).toBe(configuredModel);
 			expect(context).toMatchObject({ systemPrompt: "custom system prompt" });
-			expect(requestText(context)).toContain("custom update prompt");
+			const finalRequestText = requestText(context);
+			expect(finalRequestText).toContain("custom update prompt");
+			expect(finalRequestText).toContain(
+				"custom file candidates\nread=a.ts\nmodified=b.ts",
+			);
 			expect(options).toMatchObject({
 				reasoning: "medium",
 				apiKey: "key-configured-model/variant",
 				headers: { "x-test-model": "model/variant" },
 			});
+		});
+	});
+
+	test("renders file candidates through history prompts and omits empty candidates", async () => {
+		// Purpose: final prompt rendering must route the configured file fragment without exposing empty file metadata.
+		// Input and expected output: a history request receives both lists, while an update request with empty lists receives no fragment.
+		// Edge case: removing the previous summary selects the history prompt without changing the file macro contract.
+		// Dependencies: isolated prompt files, fake compaction events, and captured model contexts.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const prompts = await writePromptFiles(join(agentDir, "prompts"));
+			await writeConfig(agentDir, { enabled: true, ...prompts });
+			completeSimpleMock.mockResolvedValue(
+				createAssistantResponse("rendered summary"),
+			);
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const historyEvent = createCompactionEvent();
+			const historyPreparation = historyEvent["preparation"] as Record<
+				string,
+				unknown
+			>;
+			delete historyPreparation["previousSummary"];
+			await getCompactionHandler(pi)(historyEvent, session.ctx);
+
+			const emptyFileOps = {
+				read: new Set<string>(),
+				written: new Set<string>(),
+				edited: new Set<string>(),
+			};
+			await getCompactionHandler(pi)(
+				createCompactionEvent(new AbortController().signal, emptyFileOps),
+				session.ctx,
+			);
+
+			const historyText = requestText(completeSimpleMock.mock.calls[0]?.[1]);
+			expect(historyText).toContain("custom history prompt");
+			expect(historyText).toContain(
+				"custom file candidates\nread=a.ts\nmodified=b.ts",
+			);
+			const emptyUpdateText = requestText(
+				completeSimpleMock.mock.calls[1]?.[1],
+			);
+			expect(emptyUpdateText).toContain("custom update prompt");
+			expect(emptyUpdateText).not.toContain("custom file candidates");
+			expect(emptyUpdateText).not.toContain("{{fileCandidates}}");
+		});
+	});
+
+	test("does not inject file candidates when the selected prompt omits its macro", async () => {
+		// Purpose: custom final prompts must control whether file guidance participates in the request.
+		// Input and expected output: a configured update prompt without the fragment macro receives no candidate text despite non-empty file operations.
+		// Edge case: the separately configured file-candidate prompt remains valid but unused.
+		// Dependencies: isolated prompt files and captured final model context.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const prompts = await writePromptFiles(join(agentDir, "prompts"));
+			await writeFile(prompts.updatePromptFile, "custom update without macro");
+			await writeConfig(agentDir, { enabled: true, ...prompts });
+			completeSimpleMock.mockResolvedValue(
+				createAssistantResponse("summary without file candidates"),
+			);
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "summary without file candidates" },
+			});
+			const finalRequestText = requestText(
+				completeSimpleMock.mock.calls[0]?.[1],
+			);
+			expect(finalRequestText).toContain("custom update without macro");
+			expect(finalRequestText).not.toContain("custom file candidates");
 		});
 	});
 
@@ -932,6 +1027,7 @@ describe("custom-compaction", () => {
 			"systemPromptFile",
 			"historyPromptFile",
 			"updatePromptFile",
+			"fileCandidatesPromptFile",
 			"reductionSystemPromptFile",
 			"reductionPromptFile",
 		] as const) {
@@ -1028,11 +1124,7 @@ describe("custom-compaction", () => {
 				},
 			]);
 			expect(result).toMatchObject({
-				compaction: {
-					summary: expect.stringContaining(
-						"retried summary\n\n<previously_read_files>\na.ts\n</previously_read_files>",
-					),
-				},
+				compaction: { summary: "retried summary" },
 			});
 			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
 			const firstOptions = completeSimpleMock.mock.calls[0]?.[2];

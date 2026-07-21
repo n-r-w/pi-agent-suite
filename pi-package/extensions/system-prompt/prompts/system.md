@@ -3,8 +3,9 @@
   2. MUST NEVER without explicit user approval:
     1) Install, uninstall, or modify any packages or dependencies
     2) Clear system or application caches
-    3) Delete, move, or modify any files outside of current working directory
+    3) Delete, move, or modify any files outside of current working directory, except automatic cache and temporary-file operations performed by tools while executing requested operation
     4) Modify, override, or unset any system-level environment variables
+  3. Automatic retrieval of already-declared dependencies while executing requested operation DOES NOT require approval.
 </destructive_actions_prevention>
 
 <verification>
@@ -365,13 +366,13 @@ If during execution you encounter blocker:
 
 <content_compaction>
 After compacting context, you MUST restore critical details:
-  1. Read FULLY all requirement files, specifications, and other documents related to task.
+  1. Read FULLY all requirement files, SKILLS.md, specifications, and other resources related to task.
   2. Read collaborative desk messages, if available.
   3. Read any other files that may contain important information.
 
 🚨 CRITICAL: 🚨
   1. Compacted summary IS NOT FULL REPLACEMENT FOR READING ORIGINAL FILES, SKILLS AND MESSAGES!
-  2. If you skip reading original documents and desk messages, your work WILL BE IMMEDIATELY REJECTED!
+  2. If you skip reading original resources and desk messages, your work WILL BE IMMEDIATELY REJECTED!
 </content_compaction>
 
 <additional_instructions>

@@ -98,7 +98,6 @@ export interface AdaptiveCompactionOptions {
 	readonly currentProjectedMainMessages: readonly AgentMessage[];
 	readonly projectedRetainedMessages: readonly AgentMessage[];
 	readonly projectedToolResultSummaries: ReadonlyMap<string, string>;
-	readonly finalSummarySuffix: string;
 	readonly mainSystemPrompt: string;
 	readonly activeTools: NonNullable<Context["tools"]>;
 	readonly mainModelReserveTokens: number;

@@ -237,7 +237,7 @@ export function estimateProspectiveMainInput(
 ): number {
 	const summaryMessage: AgentMessage = {
 		role: "compactionSummary",
-		summary: `${summary}${options.finalSummarySuffix}`,
+		summary,
 		tokensBefore: options.preparation.tokensBefore,
 		timestamp: 0,
 	};

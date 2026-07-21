@@ -111,7 +111,6 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 		currentProjectedMainMessages: [userMessage("x".repeat(6_000))],
 		projectedRetainedMessages: [userMessage("retained-message")],
 		projectedToolResultSummaries: new Map(),
-		finalSummarySuffix: "",
 		mainSystemPrompt: "MAIN_SYSTEM",
 		activeTools: [],
 		mainModelReserveTokens: 512,
@@ -788,22 +787,6 @@ describe("adaptiveCompactHistory", () => {
 			"final summary",
 		);
 		expect(requests).toHaveLength(3);
-	});
-
-	/** Proves deterministic file-operation tags reserve main-model space before completion. */
-	test("includes the final summary suffix in prospective main-request budgeting", async () => {
-		// Purpose: file-operation tags appended after completion must not bypass the next-request size invariant.
-		// Input and expected output: a suffix larger than the remaining main window rejects before model requests.
-		// Edge case: the same history fits when the suffix is empty in the direct-path test.
-		// Dependencies: tokenizer-based prospective request estimation only.
-		const { options, requests } = createOptions({
-			finalSummarySuffix: `<previously_read_files>\n${"large/path.ts\n".repeat(2_000)}</previously_read_files>`,
-		});
-
-		await expect(adaptiveCompactHistory(options)).rejects.toThrow(
-			"no positive final summary budget",
-		);
-		expect(requests).toHaveLength(0);
 	});
 
 	/** Proves the final budget includes complete main-request inputs and fails before completion. */

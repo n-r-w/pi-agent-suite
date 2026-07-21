@@ -22,6 +22,7 @@ const PROMPT_FILE_KEYS = [
 	"systemPromptFile",
 	"historyPromptFile",
 	"updatePromptFile",
+	"fileCandidatesPromptFile",
 	"reductionSystemPromptFile",
 	"reductionPromptFile",
 ] as const;
@@ -40,6 +41,7 @@ export interface CustomCompactionConfig {
 	readonly systemPromptFile?: string;
 	readonly historyPromptFile?: string;
 	readonly updatePromptFile?: string;
+	readonly fileCandidatesPromptFile?: string;
 	readonly reductionSystemPromptFile?: string;
 	readonly reductionPromptFile?: string;
 	readonly model?: string;
@@ -148,6 +150,7 @@ function buildCustomCompactionConfig(
 	const systemPromptFile = value["systemPromptFile"];
 	const historyPromptFile = value["historyPromptFile"];
 	const updatePromptFile = value["updatePromptFile"];
+	const fileCandidatesPromptFile = value["fileCandidatesPromptFile"];
 	const reductionSystemPromptFile = value["reductionSystemPromptFile"];
 	const reductionPromptFile = value["reductionPromptFile"];
 	const model = value["model"];
@@ -157,6 +160,9 @@ function buildCustomCompactionConfig(
 		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
 		...(typeof historyPromptFile === "string" ? { historyPromptFile } : {}),
 		...(typeof updatePromptFile === "string" ? { updatePromptFile } : {}),
+		...(typeof fileCandidatesPromptFile === "string"
+			? { fileCandidatesPromptFile }
+			: {}),
 		...(typeof reductionSystemPromptFile === "string"
 			? { reductionSystemPromptFile }
 			: {}),
