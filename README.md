@@ -170,7 +170,21 @@ You are a code review agent. Check correctness, risks, and missing validation.
 
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
-## v0.20.1 - 2026-07-20
+## Changelog
+
+### v0.21.2 - 2026-07-22
+
+- Added separate configurable system and user prompts for intermediate compaction reduction.
+- Added a configurable file-candidate prompt for selecting paths to include in `must_read_first`.
+- Added goal-alignment instructions requiring clarification when goals are unclear or conflict with requirements.
+- Separated intermediate reduction prompts from final summary prompts.
+- Let the model select relevant files instead of appending raw file-operation lists to summaries.
+- Updated compaction prompts and context rehydration instructions.
+- Allowed automatic dependency retrieval and temporary-file operations without explicit approval.
+- Updated `@earendil-works/pi-*` packages from `0.80.10` to `0.81.1`.
+- Expanded custom-compaction tests and documentation.
+
+### v0.20.1 - 2026-07-20
 
 - Convene council: recover participant authentication startup races
 - Context projection: fix replay projections after automatic retries
