@@ -172,7 +172,7 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 ## Changelog
 
-### v0.21.2 - 2026-07-22
+### v1.0.0 - 2026-07-22
 
 - Added separate configurable system and user prompts for intermediate compaction reduction.
 - Added a configurable file-candidate prompt for selecting paths to include in `must_read_first`.
