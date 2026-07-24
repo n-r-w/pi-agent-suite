@@ -73,33 +73,27 @@
   </key_decisions>
 
   <next_steps>
-    - Fulfill requirements of `<post_compaction_rehydration>`. <!-- Put this AS IS -->
-    - Goal: [Goal]. To-Do: [Work to be done to achieve goal] <!-- Add relevant items -->
-    ...
+    1. YOUR NEXT TURN MUST contain ONLY tool calls that read ALL source from `<lost_during_compaction>`. <!-- Put this AS IS -->
+    2. Futher work:
+      - Goal: [Goal]. To-Do: [Work to be done to achieve goal] <!-- Add relevant items -->
+      ...
   </next_steps>
+
+  <lost_during_compaction note="Resources whose content was LOST during compaction and MUST BE FULLY RE-READ BEFORE ANY FURTHER WORK">
+    IMPORTANT: THESE ARE NOT READ SOURCES. EVEN IF IT SEEMS TO YOU THAT YOU HAVE ALREADY READ THEM, YOU STILL MUST READ THEM AGAIN IN FULL! NO EXCEPTIONS!
+
+    1. Skills: <!-- MUST list all SKILL.md files you have read previously or should have read -->
+       1) [file path to skills file]
+       2) ...
+    2) Files: <!-- Relevant information that should be read first before continuing. MUST NOT put ANY previously read resource, ONLY TRULY CRITICAL for next steps. Add new items when needed -->
+      1) [Link to file. Add exact line ranges of files if possible. Rationale for reading first]
+      2) ...
+    ...
+  </lost_during_compaction>
 
   <critical_context>
     <!-- Preserve important context that should be considered before continuing -->
     - [Context Description. Rationale for context]
   </critical_context>
-
-  <must_read_first>
-    1. Skills: <!-- MUST list all SKILL.md files you have read previously -->
-       - [File path to skills file]
-       - ...
-    2. [Link to file or resource. Rationale for reading first] <!-- Relevant information that should be read first before continuing. MUST NOT put ANY previously read resource, ONLY TRULY CRITICAL for next steps -->
-    ...
-  </must_read_first>
-
-  <post_compaction_rehydration critical="true" priority="maximum"> <!-- Put this AS IS at end of summary. DO NOT CHANGE -->
-    1. On receiving this compacted summary, before any analysis, decision, user-facing answer, or file modification, MUST read:
-      1) EVERY SKILL.md listed in `must_read_first`
-      2) Other relevant resources listed in `must_read_first` which are critical for next steps
-      3) Relevant messages from collaboration desk
-    2. Summary content CANNOT replace restoration of original context from specified sources
-    3. Rehydration is complete only when every listed source has been read successfully
-    4. Any information in summary about previously loaded resources is NOT REPLACEMENT for restoring context from specified sources, as their information has ALREADY BEEN LOST during summarization.
-    5. If you find violation of these rules, MUST IMMEDIATELY fix situation and load missing resources
-  </post_compaction_rehydration>
 ```
 </output_format>

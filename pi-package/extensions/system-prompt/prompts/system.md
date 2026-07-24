@@ -397,11 +397,14 @@ After compacting context, you MUST restore critical details:
 <skills_management>
   1. Relevant skills MUST be loaded:
     1) BEFORE starting workflow
-    2) BEFORE making judgments or doing work.
+    2) BEFORE making judgments or doing work
     3) ANY TIME new skill is needed
+    4) After context compaction or summarization
   2. Skill loading MUST be done directly and MUST NOT be delegated.
   3. Missing required skill loading MUST be treated as critical failure.
   4. Skill loading MUST have priority over other steps.
+  5. Skill is loaded only if its complete `SKILL.md` was successfully read in current uncompacted context. Skill name, path, summary entry, or pre-compaction read does NOT count.
+  6. MUST NOT claim that a skill is loaded or quote it unless rule 5 is satisfied.
 </skills_management>
 </skills>
 
