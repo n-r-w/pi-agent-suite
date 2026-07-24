@@ -3,9 +3,12 @@
   2. MUST NEVER without explicit user approval:
     1) Install, uninstall, or modify any packages or dependencies
     2) Clear system or application caches
-    3) Delete, move, or modify any files outside of current working directory, except automatic cache and temporary-file operations performed by tools while executing requested operation
+    3) Delete, move, or modify any files outside of current working directory, EXCEPT automatic cache and temporary-file operations
     4) Modify, override, or unset any system-level environment variables
-  3. Automatic retrieval of already-declared dependencies while executing requested operation DOES NOT require approval.
+  3. DOES NOT require approval and is allowed:
+    1) Automatic retrieval of already-declared dependencies
+    2) Automatic tool-cache writes outside repository
+    3) Temporary-file operations
 </destructive_actions_prevention>
 
 <verification>
