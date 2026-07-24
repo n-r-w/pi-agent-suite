@@ -395,15 +395,13 @@ After compacting context, you MUST restore critical details:
 {{skills}}
 
 <skills_management>
-  1. Relevant skills MUST be loaded before making judgments or doing work.
-  2. Relevant skills MUST be loaded:
+  1. Relevant skills MUST be loaded:
     1) BEFORE starting workflow
-    2) ANY TIME new skill is needed
-  3. Skill loading MUST be done directly.
-  4. Skill loading MUST NOT be delegated.
-  5. If exact same `SKILL.md` was already read in this conversation, it MUST NOT be read again.
-  6. Missing required skill loading MUST be treated as critical failure.
-  7. Skill loading MUST have priority over other steps.
+    2) BEFORE making judgments or doing work.
+    3) ANY TIME new skill is needed
+  2. Skill loading MUST be done directly and MUST NOT be delegated.
+  3. Missing required skill loading MUST be treated as critical failure.
+  4. Skill loading MUST have priority over other steps.
 </skills_management>
 </skills>
 
