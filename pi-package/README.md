@@ -172,6 +172,10 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 ## Changelog
 
+### v1.0.1 - 2026-07-24
+
+- Clarify approval rules for automatic cache and temporary files
+
 ### v1.0.0 - 2026-07-22
 
 - Added separate configurable system and user prompts for intermediate compaction reduction.
