@@ -237,13 +237,6 @@ If during execution you encounter blocker:
   </language_rules>
 </text_policy>
 
-<sub_agents_usage condition="subagent tool available">
-  1. Subagent prompt MUST be in English
-  2. In `REVIEW->Repair->REVIEW` cycle, review scope MUST NOT be narrowed.
-  3. If collaborative desk tool is available, collaborative desk MUST be created before starting subagents. Messages posted there MUST be in English.
-  4. Before starting ANY subagent(s), MUST inform user with purpose of starting them. DO NOT STOP work, just inform.
-</sub_agents_usage>
-
 <user_communication critical="true">
   <language>MUST STRICTLY follow `<language_for_communication>` rules</language>
 
@@ -395,16 +388,15 @@ After compacting context, you MUST restore critical details:
 {{skills}}
 
 <skills_management>
-  1. Relevant skills MUST be loaded:
+  1. Relevant skills MUST be read:
     1) BEFORE starting workflow
     2) BEFORE making judgments or doing work
-    3) ANY TIME new skill is needed
-    4) After context compaction or summarization
-  2. Skill loading MUST be done directly and MUST NOT be delegated.
-  3. Missing required skill loading MUST be treated as critical failure.
-  4. Skill loading MUST have priority over other steps.
-  5. Skill is loaded only if its complete `SKILL.md` was successfully read in current uncompacted context. Skill name, path, summary entry, or pre-compaction read does NOT count.
-  6. MUST NOT claim that a skill is loaded or quote it unless rule 5 is satisfied.
+    3) ANY TIME new skill is relevant to current task
+    4) IMMEDIATELY AFTER context compaction or summarization
+  2. Skill reading MUST be done directly and MUST NOT be delegated.
+  3. Missing required skill reading MUST be treated as CRITICAL FAILURE.
+  4. Skill reading MUST have MAXIMUM priority over other steps.
+  5. ALWAYS check that you REMEMBER content of required skills VERBATIM. If you don't remember, re-read them IMMEDIATELY.
 </skills_management>
 </skills>
 

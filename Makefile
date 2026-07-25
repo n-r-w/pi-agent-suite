@@ -63,3 +63,6 @@ release-next-steps:
 	@echo "  make release-tag"
 	@echo ""
 	@echo "Then create GitHub Release for $(TAG). The GitHub Actions workflow will publish $(PACKAGE_NAME) to npm."
+
+verify:
+	bun run verify

@@ -67,13 +67,13 @@ export async function normalizePreviousSummary(
 	const normalized = await mergeNodesToOne(nodes, summaryNodeTokens, options);
 	if (normalized === undefined) {
 		throw new Error(
-			"adaptive compaction produced no previous-summary replacement",
+			"adaptive compaction produced no previous_summary replacement",
 		);
 	}
 	return { ...normalized, id: previousSummary.id };
 }
 
-/** Recursively merges adjacent nodes until previous-summary normalization has one result. */
+/** Recursively merges adjacent nodes until previous_summary normalization has one result. */
 async function mergeNodesToOne(
 	nodes: SummaryNode[],
 	summaryNodeTokens: number,
@@ -85,7 +85,7 @@ async function mergeNodesToOne(
 	const left = nodes[0];
 	const right = nodes[1];
 	if (left === undefined || right === undefined) {
-		throw new Error("adaptive compaction lost previous-summary fragments");
+		throw new Error("adaptive compaction lost previous_summary fragments");
 	}
 	const merged = await mergeSummaryNodes(
 		left,
@@ -191,7 +191,7 @@ export async function summarizeReducingSource(
 		validate: (summary) => {
 			const summaryTextTokens = countSummaryTextTokens(summary);
 			if (summaryTextTokens > summaryNodeTokens) {
-				return `${operation} summary exceeds the common summary-node budget`;
+				return `${operation} summary exceeds the common summary_node budget`;
 			}
 			const resultTokens =
 				operation === "normalization"
@@ -305,7 +305,7 @@ async function summarizeFragment({
 	const text = extractValidResponse(response, "fragment");
 	if (countSummaryTextTokens(text) > summaryNodeTokens) {
 		throw new AdaptiveCompactionResponseError(
-			"fragment summary exceeds the common summary-node budget",
+			"fragment summary exceeds the common summary_node budget",
 		);
 	}
 	return {
@@ -491,7 +491,7 @@ function buildFragmentContext({
 	options,
 }: FragmentContextOptions): Context {
 	return buildRawSummaryContext(
-		`<source-fragment block-id="${blockId}" part="${index + 1}/${total}">\n${fragment}\n</source-fragment>`,
+		`<source_fragment block-id="${blockId}" part="${index + 1}/${total}">\n${fragment}\n</source_fragment>`,
 		options.reductionPrompt,
 		options.reductionSystemPrompt,
 	);

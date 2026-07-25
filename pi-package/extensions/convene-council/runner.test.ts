@@ -5,6 +5,7 @@ import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
 } from "../../shared/child-agent-environment";
+import { ChildStartupGate } from "../../shared/child-startup-gate";
 import {
 	COUNCIL_RPC_ABORT_GRACE_MS,
 	COUNCIL_RPC_TERM_GRACE_MS,
@@ -111,6 +112,7 @@ function createFakeScheduler(): {
 function createFakeRunnerFactory(
 	scheduler = createFakeScheduler(),
 	onSpawn?: (process: FakeProcess, attempt: number) => void,
+	startupGate: ChildStartupGate = new ChildStartupGate(),
 ): {
 	readonly factory: ParticipantRunnerFactory;
 	readonly spawned: Array<{
@@ -136,6 +138,7 @@ function createFakeRunnerFactory(
 		spawned,
 		factory: createParticipantRunnerFactory({
 			setTimeout: scheduler.setTimeout,
+			startupGate,
 			clearTimeout: scheduler.clearTimeout,
 			spawnPi(command, args, options) {
 				const process = createFakeProcess();
@@ -294,6 +297,28 @@ describe("ParticipantRunner lifecycle", () => {
 		await runner.dispose();
 	});
 
+	test("removes leading slashes before sending a participant prompt", async () => {
+		// Purpose: council tasks must not enter Pi's extension-command path before native auth preflight.
+		// Input and expected output: every leading slash is removed from the RPC prompt message.
+		// Edge case: a slash inside the task remains unchanged.
+		// Dependencies: fake child stdin captures the outgoing prompt command.
+		const fake = createFakeRunnerFactory();
+		const runner = await fake.factory(createRunnerOptions());
+
+		const prompt = runner.prompt("///review /tmp/input", undefined);
+		await Promise.resolve();
+		const child = fake.spawned[0]?.process as FakeProcess;
+		const promptCommand = JSON.parse(child.stdin.writes[0] ?? "{}") as {
+			readonly message?: string;
+		};
+		expect(promptCommand.message).toBe("review /tmp/input");
+
+		respond(child, "1", "prompt");
+		completePrompt(child, "answer");
+		await prompt;
+		await runner.dispose();
+	});
+
 	test("serializes participant startup only through prompt preflight", async () => {
 		// Purpose: concurrent council participants must not read OAuth credentials at the same time.
 		// Input and expected output: the second process starts after the first prompt response, while the first model turn is still running.
@@ -419,6 +444,33 @@ describe("ParticipantRunner lifecycle", () => {
 
 		await expect(secondPrompt).rejects.toThrow(NO_OPENAI_API_KEY_ERROR);
 		expect(fake.spawned).toHaveLength(1);
+		await runner.dispose();
+	});
+
+	test("does not spawn after cancellation wins the startup acquisition race", async () => {
+		// Purpose: a cancelled queued participant must not write abort and then start a prompt.
+		// Input and expected output: cancellation after gate resolution but before runner continuation produces no process.
+		// Edge case: the gate returns a valid release callback before cancellation is observed.
+		// Dependencies: a gate subclass deterministically aborts at the acquisition boundary.
+		const controller = new AbortController();
+		class AbortAfterAcquireGate extends ChildStartupGate {
+			override async acquire(signal: AbortSignal | undefined) {
+				const release = await super.acquire(signal);
+				controller.abort();
+				return release;
+			}
+		}
+		const fake = createFakeRunnerFactory(
+			createFakeScheduler(),
+			undefined,
+			new AbortAfterAcquireGate(),
+		);
+		const runner = await fake.factory(createRunnerOptions());
+
+		await expect(
+			runner.prompt("cancelled task", controller.signal),
+		).rejects.toThrow("participant request aborted");
+		expect(fake.spawned).toHaveLength(0);
 		await runner.dispose();
 	});
 

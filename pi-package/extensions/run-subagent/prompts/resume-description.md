@@ -8,8 +8,10 @@
 3. New prompt MUST follow same rules as `run_subagent` except:
     1) MUST contain CHANGED requirements, decisions, etc., needed for continuation of task.
     2) MUST NOT DUPLICATE unchanged context already present in child session.
-4. Resumed invocation MAY use a new `taskName`.
+4. Resumed invocation MAY use new `taskName`.
 5. Persisted session selects original agent.
 6. Use `run_subagent` instead when work requires different agent or independent conversation.
 
-**CRITICAL:** Same `resumeSession` MUST NOT be invoked concurrently.
+**CONSTRAINTS:**
+1. MUST NOT reuse existing agents for new tasks that are not DIRECT CONTINUATION of their previous work.
+2. MUST NOT resume same session multiple times in same turn, because it will cause data corruption.

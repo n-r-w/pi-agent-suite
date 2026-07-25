@@ -73,27 +73,14 @@
   </key_decisions>
 
   <next_steps>
-    1. YOUR NEXT TURN MUST contain ONLY tool calls that read ALL source from `<lost_during_compaction>`. <!-- Put this AS IS -->
-    2. Futher work:
-      - Goal: [Goal]. To-Do: [Work to be done to achieve goal] <!-- Add relevant items -->
-      ...
-  </next_steps>
-
-  <lost_during_compaction note="Resources whose content was LOST during compaction and MUST BE FULLY RE-READ BEFORE ANY FURTHER WORK">
-    IMPORTANT: THESE ARE NOT READ SOURCES. EVEN IF IT SEEMS TO YOU THAT YOU HAVE ALREADY READ THEM, YOU STILL MUST READ THEM AGAIN IN FULL! NO EXCEPTIONS!
-
-    1. Skills: <!-- MUST list all SKILL.md files you have read previously or should have read -->
-       1) [file path to skills file]
-       2) ...
-    2) Files: <!-- Relevant information that should be read first before continuing. MUST NOT put ANY previously read resource, ONLY TRULY CRITICAL for next steps. Add new items when needed -->
-      1) [Link to file. Add exact line ranges of files if possible. Rationale for reading first]
-      2) ...
+    - Goal: [Goal]. To-Do: [Work to be done to achieve goal] <!-- Add relevant items -->
     ...
-  </lost_during_compaction>
+  </next_steps>
 
   <critical_context>
     <!-- Preserve important context that should be considered before continuing -->
-    - [Context Description. Rationale for context]
+    - [Context Description. Source. Rationale for context]
+    ...
   </critical_context>
 ```
 </output_format>

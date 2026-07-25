@@ -49,7 +49,7 @@ Breaking change: `summary` and `turnPrefixPromptFile` are removed. Adaptive comp
 | `systemPromptFile` | No | Non-empty absolute path | Bundled final system prompt | System prompt used for final summary requests. |
 | `historyPromptFile` | No | Non-empty absolute path | Bundled history prompt | Final prompt used when no previous compaction summary exists. |
 | `updatePromptFile` | No | Non-empty absolute path | Bundled update prompt | Final prompt used when a previous compaction summary exists. |
-| `fileCandidatesPromptFile` | No | Non-empty absolute path | Bundled file-candidate prompt | Optional final-prompt fragment that asks the model to select relevant file-operation paths for `must_read_first`. |
+| `fileCandidatesPromptFile` | No | Non-empty absolute path | Bundled file-candidate prompt | Optional final-prompt fragment that asks the model to select relevant file-operation paths for `must_read_after_compaction`. |
 | `reductionSystemPromptFile` | No | Non-empty absolute path | Bundled reduction system prompt | System prompt used for preliminary, fragment, normalization, and merge requests. |
 | `reductionPromptFile` | No | Non-empty absolute path | Bundled reduction prompt | User prompt used for preliminary, fragment, normalization, and merge requests. |
 | `model` | No | String in `provider/model` format | Current main model | Model used for direct, preliminary, fragment, normalization, merge, and final requests. Model IDs may contain additional slashes after the provider. |
@@ -77,14 +77,14 @@ Pi's `firstKeptEntryId` remains unchanged. The retained suffix is never moved in
 
 Before the final summary request, the extension renders the configured file-candidate prompt with deterministic non-overlapping file lists. Modified files are excluded from the read-only list. `{{readFiles}}` and `{{modifiedFiles}}` expand to newline-separated paths inside the file-candidate prompt, then the rendered fragment replaces `{{fileCandidates}}` in the selected history or update prompt. When both lists are empty, `{{fileCandidates}}` becomes an empty string and no file-candidate fragment reaches the model. A final prompt without `{{fileCandidates}}` receives no file guidance.
 
-The model decides which paths belong in `must_read_first`. The extension does not append raw file-operation lists to the generated summary.
+The model decides which paths belong in `must_read_after_compaction`. The extension does not append raw file-operation lists to the generated summary.
 
 ## Request budgets
 
 Before any model request, the extension calculates:
 
 - the maximum final summary size allowed by the prospective next main-model request;
-- one common intermediate summary-node limit that permits pairwise merges and the final summarization request.
+- one common intermediate summary_node limit that permits pairwise merges and the final summarization request.
 
 The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing. Generated summary replacements are also reused in the discarded summary range.
 
@@ -114,7 +114,7 @@ Interactive Pi sessions receive informational messages for:
 - adaptive compaction start;
 - the number of original blocks in each preliminary range;
 - oversized-block fragment count and each fragment position;
-- previous-summary normalization;
+- previous_summary normalization;
 - adjacent summary merges;
 - final summary generation;
 - retry attempt numbers;

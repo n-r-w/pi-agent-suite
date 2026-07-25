@@ -1,47 +1,90 @@
 import { withRetry } from "./retry";
 
-/** Maximum retries for an auth failure isolated to a fresh child process. */
-const CHILD_AUTH_STARTUP_RETRIES = 3;
-/** Minimum backoff before a child auth startup retry. */
-const CHILD_AUTH_RETRY_BASE_DELAY_MS = 200;
-/** Random range added so independent Pi processes diverge during retry. */
-const CHILD_AUTH_RETRY_JITTER_MS = 200;
+const CHILD_AUTH_STARTUP_MAX_RETRIES = 3;
+const CHILD_AUTH_STARTUP_BASE_DELAY_MIN_MS = 200;
+const CHILD_AUTH_STARTUP_BASE_DELAY_RANGE_MS = 200;
+const CHILD_AUTH_STARTUP_RETRY_FACTOR = 2;
+const NO_API_KEY_PREFIX = "No API key found for ";
+const LEADING_SLASHES_PATTERN = /^\/+/;
+const TRAILING_PERIOD_PATTERN = /\.$/;
+const SURROUNDING_QUOTES_PATTERN = /^['"]|['"]$/g;
+const CHILD_PROMPT_AFTER_SLASHES_REQUIRED =
+	"child prompt must contain text after leading '/' characters";
 
-/** Supplies cancellation and extension-specific safety classification to auth recovery. */
 export interface ChildAuthStartupRetryOptions {
-	readonly signal: AbortSignal | undefined;
-	readonly shouldRetry: (error: unknown) => boolean;
+	readonly signal?: AbortSignal | undefined;
 }
 
-/** Matches the provider-specific missing-key error emitted during Pi prompt preflight. */
-export function isChildAuthStartupError(
-	errorMessage: string | undefined,
-	provider: string,
-): boolean {
-	return errorMessage?.startsWith(`No API key found for ${provider}.`) === true;
+export interface ChildAuthStartupFailureOptions {
+	readonly activityObserved: boolean;
+	readonly failure: Error;
+	readonly parentAuthVerified: boolean;
+	readonly provider: string;
 }
 
-/** Runs one child startup operation with the shared bounded auth recovery policy. */
-export function withChildAuthStartupRetry<T>(
+/** Carries a verified pre-prompt auth rejection through shared retry backoff. */
+export class ChildAuthStartupRetryError extends Error {
+	constructor(readonly failure: Error) {
+		super(failure.message);
+		this.name = "ChildAuthStartupRetryError";
+	}
+}
+
+/** Removes command markers before a task crosses the child Pi prompt boundary. */
+export function normalizeChildPrompt(prompt: string): string {
+	const normalized = prompt.replace(LEADING_SLASHES_PATTERN, "");
+	if (normalized.trim().length === 0) {
+		throw new Error(CHILD_PROMPT_AFTER_SLASHES_REQUIRED);
+	}
+	return normalized;
+}
+
+/** Creates a retry marker only for a verified, inactive prompt auth rejection. */
+export function createChildAuthStartupRetryError(
+	options: ChildAuthStartupFailureOptions,
+): ChildAuthStartupRetryError | undefined {
+	if (
+		!options.parentAuthVerified ||
+		options.activityObserved ||
+		!isChildAuthStartupError(options.failure.message, options.provider)
+	) {
+		return undefined;
+	}
+	return new ChildAuthStartupRetryError(options.failure);
+}
+
+/** Retries a verified child prompt auth rejection with one randomized base delay. */
+export async function withChildAuthStartupRetry<T>(
 	operation: () => Promise<T>,
-	options: ChildAuthStartupRetryOptions,
+	options: ChildAuthStartupRetryOptions = {},
 ): Promise<T> {
+	const baseDelayMs =
+		CHILD_AUTH_STARTUP_BASE_DELAY_MIN_MS +
+		Math.floor(Math.random() * CHILD_AUTH_STARTUP_BASE_DELAY_RANGE_MS);
 	return withRetry(operation, {
 		retry: {
 			enabled: true,
-			maxRetries: CHILD_AUTH_STARTUP_RETRIES,
-			baseDelayMs: createChildAuthRetryDelayMs(),
+			maxRetries: CHILD_AUTH_STARTUP_MAX_RETRIES,
+			baseDelayMs,
 		},
-		factor: 2,
 		signal: options.signal,
-		shouldRetry: options.shouldRetry,
+		shouldRetry: (error) => error instanceof ChildAuthStartupRetryError,
+		factor: CHILD_AUTH_STARTUP_RETRY_FACTOR,
 	});
 }
 
-/** Creates one randomized initial retry delay shared by child process launchers. */
-function createChildAuthRetryDelayMs(): number {
-	return (
-		CHILD_AUTH_RETRY_BASE_DELAY_MS +
-		Math.floor(Math.random() * CHILD_AUTH_RETRY_JITTER_MS)
-	);
+/** Matches only the provider-specific missing-key startup failure emitted by Pi. */
+export function isChildAuthStartupError(
+	message: string,
+	provider: string,
+): boolean {
+	const firstLine = message.split("\n", 1)[0]?.trim();
+	if (firstLine === undefined || !firstLine.startsWith(NO_API_KEY_PREFIX)) {
+		return false;
+	}
+	const reportedProvider = firstLine
+		.slice(NO_API_KEY_PREFIX.length)
+		.replace(TRAILING_PERIOD_PATTERN, "")
+		.replace(SURROUNDING_QUOTES_PATTERN, "");
+	return reportedProvider === provider;
 }

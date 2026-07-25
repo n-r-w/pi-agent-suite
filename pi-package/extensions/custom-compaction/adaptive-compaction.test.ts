@@ -16,12 +16,12 @@ import {
 /** Detects useful whitespace inside serialized fragment text. */
 const WHITESPACE_PATTERN = /\s/;
 
-/** Creates one context-visible user message for deterministic summary-source fixtures. */
+/** Creates one context-visible user message for deterministic summary_source fixtures. */
 function userMessage(text: string, timestamp = 0): AgentMessage {
 	return { role: "user", content: text, timestamp };
 }
 
-/** Creates one successful text tool result for summary-source projection tests. */
+/** Creates one successful text tool result for summary_source projection tests. */
 function toolResultMessage(
 	toolCallId: string,
 	text: string,
@@ -87,7 +87,7 @@ function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
 	let requestId = 0;
 	const options: AdaptiveCompactionOptions = {
 		preparation: {
-			previousSummary: "previous-summary",
+			previousSummary: "previous_summary",
 			messagesToSummarize: [userMessage("history-message", 1)],
 			turnPrefixMessages: [userMessage("turn-prefix-message", 2)],
 			tokensBefore: 5_000,
@@ -253,10 +253,10 @@ describe("adaptiveCompactHistory", () => {
 		expect(requests[0]?.operation).toBe("final");
 		expectPromptRouting(requests);
 		const text = requestText(requests[0] as AdaptiveCompactionRequest);
-		expect(text).toContain("<previous-summary>\nprevious-summary");
+		expect(text).toContain("<previous_summary>\nprevious_summary");
 		expect(text).toContain("[User]: history-message");
 		expect(text).toContain("[User]: turn-prefix-message");
-		expect(text.indexOf("previous-summary")).toBeLessThan(
+		expect(text.indexOf("previous_summary")).toBeLessThan(
 			text.indexOf("history-message"),
 		);
 		expect(text.indexOf("history-message")).toBeLessThan(
@@ -402,7 +402,7 @@ describe("adaptiveCompactHistory", () => {
 			expect(text).toContain('block-id="messagesToSummarize:0"');
 			expect(text).toContain(`part="${index + 1}/`);
 			if (index < fragmentRequests.length - 1) {
-				const fragmentEnd = text.indexOf("\n</source-fragment>");
+				const fragmentEnd = text.indexOf("\n</source_fragment>");
 				expect(text.slice(0, fragmentEnd)).toEndWith("\n\n");
 			}
 		}
@@ -484,7 +484,7 @@ describe("adaptiveCompactHistory", () => {
 			.map((request) => {
 				const text = requestText(request);
 				const start = text.indexOf(">\n") + 2;
-				const end = text.indexOf("\n</source-fragment>");
+				const end = text.indexOf("\n</source_fragment>");
 				return text.slice(start, end);
 			});
 		let remaining = `[User]: ${denseText}`;
@@ -581,7 +581,7 @@ describe("adaptiveCompactHistory", () => {
 			},
 		});
 
-		// ACT: Compact with previous-summary normalization enabled by its size.
+		// ACT: Compact with previous_summary normalization enabled by its size.
 		const summary = await adaptiveCompactHistory(options);
 
 		// ASSERT: Normalization or its fragment path precedes every original-history preliminary request.
@@ -590,7 +590,7 @@ describe("adaptiveCompactHistory", () => {
 			(request) => request.operation !== "final",
 		);
 		if (firstReduction === undefined) {
-			throw new Error("expected previous-summary reduction");
+			throw new Error("expected previous_summary reduction");
 		}
 		expect(["fragment", "normalization"]).toContain(firstReduction.operation);
 		const preliminaryIndex = requests.findIndex(
@@ -823,7 +823,7 @@ describe("adaptiveCompactHistory", () => {
 
 	/** Proves direct summarization does not depend on hierarchical reduction feasibility. */
 	test("skips the common node budget when the direct final request fits", async () => {
-		// Purpose: direct compaction must not calculate or require a hierarchical summary-node budget.
+		// Purpose: direct compaction must not calculate or require a hierarchical summary_node budget.
 		// Input and expected output: a direct-fit source completes once although merge framing leaves no positive node budget.
 		// Edge case: oversized reduction framing makes the common-node invariants impossible.
 		// Dependencies: deterministic request estimates and the injected completion fake only.
@@ -839,7 +839,7 @@ describe("adaptiveCompactHistory", () => {
 		expect(requests.map((request) => request.operation)).toEqual(["final"]);
 	});
 
-	/** Proves adaptive work still requires a feasible common summary-node budget. */
+	/** Proves adaptive work still requires a feasible common summary_node budget. */
 	test("requires the common node budget when the direct final request does not fit", async () => {
 		// Purpose: preliminary and hierarchical work must remain guarded by the shared node-size invariants.
 		// Input and expected output: an oversized direct source with no feasible node budget fails before completion.
@@ -862,7 +862,7 @@ describe("adaptiveCompactHistory", () => {
 
 		// ACT and ASSERT: Adaptive planning rejects the impossible common budget before any operation.
 		await expect(adaptiveCompactHistory(options)).rejects.toThrow(
-			"common summary-node budget",
+			"common summary_node budget",
 		);
 		expect(requests).toHaveLength(0);
 	});

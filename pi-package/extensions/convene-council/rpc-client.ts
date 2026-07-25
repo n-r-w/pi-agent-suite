@@ -15,6 +15,17 @@ export const COUNCIL_RPC_STDOUT_SUFFIX_MAX_BYTES =
 	CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT;
 export const COUNCIL_RPC_STDERR_MAX_CHARS = CHILD_RPC_STDERR_TEXT_LIMIT;
 
+/** Identifies a command rejection returned by the child RPC protocol. */
+export class CouncilRpcCommandError extends Error {
+	constructor(
+		readonly command: string,
+		message: string,
+	) {
+		super(message);
+		this.name = "CouncilRpcCommandError";
+	}
+}
+
 export interface CouncilRpcTransport {
 	write(line: string): void;
 	onStdout(handler: (chunk: unknown) => void): void;
@@ -222,7 +233,9 @@ export class CouncilRpcClient {
 		}
 		this.pendingCommands.delete(id);
 		if (message["success"] === false) {
-			pending.reject(new Error(readRpcError(message)));
+			pending.reject(
+				new CouncilRpcCommandError(pending.command, readRpcError(message)),
+			);
 			return;
 		}
 		pending.resolve(message["data"]);

@@ -5,8 +5,8 @@
         1. Continue conversation.
         2. Respond to any questions in conversation.
         3. Include information which always available regardless of summarization:
-            1) System instructions content
-            2) SKILLS.md files content, ONLY their file paths. Their content will be loaded after summarization.
+            1) System instructions
+            2) SKILLS.md files content and links
             3) Information about OS, current date, folder structure, or any other system-level information, which not uniquely relevant to the task, unless it is explicitly mentioned in conversation.
 </constraints>
 <rules>

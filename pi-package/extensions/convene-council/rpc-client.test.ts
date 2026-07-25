@@ -5,6 +5,7 @@ import {
 	COUNCIL_RPC_STDERR_MAX_CHARS,
 	COUNCIL_RPC_STDOUT_SUFFIX_MAX_BYTES,
 	CouncilRpcClient,
+	CouncilRpcCommandError,
 } from "./rpc-client";
 
 /** Creates a fake RPC transport for client protocol tests. */
@@ -557,7 +558,9 @@ describe("CouncilRpcClient", () => {
 		fake.stdout(
 			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: false, error: "busy" })}\n`,
 		);
-		await expect(first).rejects.toThrow("busy");
+		const firstFailure = await first.catch((error: unknown) => error);
+		expect(firstFailure).toBeInstanceOf(CouncilRpcCommandError);
+		expect(firstFailure).toMatchObject({ command: "prompt", message: "busy" });
 		const second = client.prompt("second");
 
 		expect(writtenCommand(fake.writes[1]?.trimEnd() ?? "{}")).toMatchObject({

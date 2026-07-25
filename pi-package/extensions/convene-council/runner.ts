@@ -2,12 +2,21 @@ import { spawn } from "node:child_process";
 import { env as processEnv } from "node:process";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
-	isChildAuthStartupError,
+	ChildAuthStartupRetryError,
+	createChildAuthStartupRetryError,
+	normalizeChildPrompt,
 	withChildAuthStartupRetry,
 } from "../../shared/child-auth-startup";
 import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
-import { ChildStartupGate } from "../../shared/child-startup-gate";
-import { CouncilRpcClient, type CouncilRpcTransport } from "./rpc-client";
+import {
+	type ChildStartupGate,
+	sharedChildStartupGate,
+} from "../../shared/child-startup-gate";
+import {
+	CouncilRpcClient,
+	CouncilRpcCommandError,
+	type CouncilRpcTransport,
+} from "./rpc-client";
 import { buildChildParticipantStartupFromToolArgs } from "./startup";
 import type { ParticipantRunner, ParticipantRunnerFactory } from "./types";
 
@@ -33,6 +42,7 @@ export interface SpawnedParticipantProcess {
 export interface ParticipantRunnerFactoryDependencies {
 	setTimeout?: (callback: () => void, delayMs: number) => unknown;
 	clearTimeout?: (handle: unknown) => void;
+	startupGate?: ChildStartupGate;
 	spawnPi(
 		command: string,
 		args: readonly string[],
@@ -44,7 +54,7 @@ export interface ParticipantRunnerFactoryDependencies {
 export function createParticipantRunnerFactory(
 	dependencies: ParticipantRunnerFactoryDependencies,
 ): ParticipantRunnerFactory {
-	const startupGate = new ChildStartupGate();
+	const startupGate = dependencies.startupGate ?? sharedChildStartupGate;
 	return async (options) => {
 		const startup = buildChildParticipantStartupFromToolArgs({
 			plan: options.startupPlan,
@@ -131,14 +141,6 @@ interface RpcParticipantRunnerOptions {
 	readonly timers: ParticipantRunnerTimers;
 }
 
-/** Carries the original prompt failure through bounded auth retry backoff. */
-class RetryableParticipantAuthStartupError extends Error {
-	constructor(readonly failure: Error) {
-		super(failure.message);
-		this.name = "RetryableParticipantAuthStartupError";
-	}
-}
-
 /** Participant runner that serializes fresh process startup and then reuses one RPC process. */
 class RpcParticipantRunner implements ParticipantRunner {
 	private active: ActiveParticipantProcess | undefined;
@@ -146,14 +148,15 @@ class RpcParticipantRunner implements ParticipantRunner {
 
 	constructor(private readonly options: RpcParticipantRunnerOptions) {}
 
-	prompt(
+	async prompt(
 		task: string,
 		signal: AbortSignal | undefined,
 	): Promise<AssistantMessage> {
+		const prompt = normalizeChildPrompt(task);
 		const active = this.active;
 		return active === undefined
-			? this.startFirstPrompt(task, signal)
-			: this.promptActive(active, task, signal);
+			? this.startFirstPrompt(prompt, signal)
+			: this.promptActive(active, prompt, signal);
 	}
 
 	/** Stops the active participant process and prevents delayed startup. */
@@ -176,14 +179,10 @@ class RpcParticipantRunner implements ParticipantRunner {
 		try {
 			return await withChildAuthStartupRetry(
 				async () => this.runFirstPromptAttempt(task, signal),
-				{
-					signal,
-					shouldRetry: (error) =>
-						error instanceof RetryableParticipantAuthStartupError,
-				},
+				{ signal },
 			);
 		} catch (error) {
-			if (error instanceof RetryableParticipantAuthStartupError) {
+			if (error instanceof ChildAuthStartupRetryError) {
 				throw error.failure;
 			}
 			throw error;
@@ -199,26 +198,29 @@ class RpcParticipantRunner implements ParticipantRunner {
 		if (releaseStartup === undefined) {
 			throw new Error("participant request aborted");
 		}
-		let promptAccepted = false;
 		try {
+			if (signal?.aborted) {
+				throw new Error("participant request aborted");
+			}
 			if (this.disposed) {
 				throw new Error("participant runner disposed");
 			}
 			const active = this.activate();
 			try {
-				return await this.promptActive(active, task, signal, () => {
-					promptAccepted = true;
-					releaseStartup();
-				});
+				return await this.promptActive(active, task, signal, releaseStartup);
 			} catch (error) {
-				if (
-					!promptAccepted &&
-					!active.activity.observed &&
-					error instanceof Error &&
-					isChildAuthStartupError(error.message, this.options.provider)
-				) {
+				const retryError =
+					error instanceof CouncilRpcCommandError && error.command === "prompt"
+						? createChildAuthStartupRetryError({
+								activityObserved: active.activity.observed,
+								failure: error,
+								parentAuthVerified: true,
+								provider: this.options.provider,
+							})
+						: undefined;
+				if (retryError !== undefined) {
 					this.disposeActive(active);
-					throw new RetryableParticipantAuthStartupError(error);
+					throw retryError;
 				}
 				throw error;
 			}

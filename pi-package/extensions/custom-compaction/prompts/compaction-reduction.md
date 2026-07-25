@@ -1,5 +1,5 @@
 <task>
-  Reduce ordered content in `<summary-source>` into a smaller intermediate context checkpoint for next AI coding assistant.
+  Reduce ordered content in `<summary_source>` into a smaller intermediate context checkpoint for next AI coding assistant.
 </task>
 <retention_test>
   Retain information only when omitting it would leave next assistant unable to:
@@ -10,10 +10,10 @@
   5. Act on an unresolved blocker or open question.
 </retention_test>
 <source_rules>
-  1. Treat `<previous-summary>` as oldest existing checkpoint. Later source content overrides superseded information.
-  2. Treat `<original-block>` as complete chronological source content.
-  3. Treat `<summary-node>` as already reduced content. Merge it without expanding its detail.
-  4. Treat `<source-fragment>` as an incomplete part of block identified by `block-id`. Do not infer missing content.
+  1. Treat `<previous_summary>` as oldest existing checkpoint. Later source content overrides superseded information.
+  2. Treat `<original_block>` as complete chronological source content.
+  3. Treat `<summary_node>` as already reduced content. Merge it without expanding its detail.
+  4. Treat `<source_fragment>` as an incomplete part of block identified by `block-id`. Do not infer missing content.
   5. Preserve source order only when changing it would change meaning.
 </source_rules>
 <reduction_rules>

@@ -26,7 +26,9 @@ import {
 } from "../../shared/agent-suite-storage";
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
-	isChildAuthStartupError,
+	ChildAuthStartupRetryError,
+	createChildAuthStartupRetryError,
+	normalizeChildPrompt,
 	withChildAuthStartupRetry,
 } from "../../shared/child-auth-startup";
 import {
@@ -42,7 +44,10 @@ import {
 	CHILD_RPC_OVERSIZED_JSON_EVENT_ERROR as OVERSIZED_CHILD_JSON_EVENT_ERROR,
 	CHILD_RPC_SKIPPED_TEXT_PART_TYPE as SKIPPED_TEXT_PART_TYPE,
 } from "../../shared/child-rpc-stream";
-import { ChildStartupGate } from "../../shared/child-startup-gate";
+import {
+	type ChildStartupGate,
+	sharedChildStartupGate,
+} from "../../shared/child-startup-gate";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	SUBAGENT_AGENT_ID_ENV,
@@ -246,6 +251,7 @@ interface RunSubagentDependencies {
 		args: string[],
 		options: SpawnOptions,
 	) => SpawnedProcess;
+	readonly startupGate?: ChildStartupGate;
 }
 
 /** Shares execution dependencies while keeping both public tool schemas separate. */
@@ -274,6 +280,8 @@ interface ChildRunResult {
 	readonly exitCode: number;
 	readonly status: ChildRunStatus;
 	readonly errorMessage?: string;
+	readonly promptRejectionError: string | undefined;
+	readonly activityObserved: boolean;
 	readonly stdoutText: string;
 	readonly stderrText: string;
 	readonly stdoutLineExceededLimit: boolean;
@@ -286,6 +294,8 @@ function createAbortedChildRunResult(): ChildRunResult {
 		exitCode: 0,
 		status: "aborted",
 		errorMessage: ABORTED_CHILD_RPC_RUN_ERROR,
+		promptRejectionError: undefined,
+		activityObserved: false,
 		stdoutText: "",
 		stderrText: "",
 		stdoutLineExceededLimit: false,
@@ -323,17 +333,6 @@ interface ResolvedRunSubagentExecution {
 	readonly childAuthPreflightSucceeded: boolean;
 }
 
-/** Carries the failed child result through retry backoff without losing diagnostics. */
-class RetryableChildAuthStartupError extends Error {
-	readonly run: ChildRunResult;
-
-	constructor(run: ChildRunResult) {
-		super(run.errorMessage ?? "child auth startup failed");
-		this.name = "RetryableChildAuthStartupError";
-		this.run = run;
-	}
-}
-
 type ChildSessionLaunch =
 	| {
 			readonly kind: "new";
@@ -366,7 +365,7 @@ export default async function runSubagent(
 
 	const descriptions = resolveSubagentToolDescriptions(startupConfig);
 	const spawnPi = dependencies.spawnPi ?? defaultSpawnPi;
-	const startupGate = new ChildStartupGate();
+	const startupGate = dependencies.startupGate ?? sharedChildStartupGate;
 	const subagentWidgetState = createSubagentWidgetState();
 	const subagentBrowser = createSubagentBrowserController(
 		subagentWidgetState,
@@ -684,28 +683,42 @@ function formatCallableAgentsPrompt(
 async function executeRunSubagent(
 	options: ExecuteRunSubagentOptions,
 ): Promise<AgentToolResult<unknown>> {
-	const preparation = await prepareRunSubagentExecution(options);
+	let prompt: string;
+	try {
+		prompt = normalizeChildPrompt(options.params.prompt);
+	} catch (error) {
+		return errorResult(formatError(error));
+	}
+	const normalizedOptions: ExecuteRunSubagentOptions = {
+		...options,
+		params: { ...options.params, prompt },
+	};
+	const preparation = await prepareRunSubagentExecution(normalizedOptions);
 	if ("result" in preparation) {
 		return preparation.result;
 	}
 
 	const { plan, session } = preparation;
 	try {
-		const progress = createRunSubagentProgress(options, plan, session);
+		const progress = createRunSubagentProgress(
+			normalizedOptions,
+			plan,
+			session,
+		);
 		const runningDetails = progress.emit("running", undefined, true);
-		options.pi.appendEntry(
+		normalizedOptions.pi.appendEntry(
 			SUBAGENT_WIDGET_START_CUSTOM_TYPE,
 			createSubagentWidgetStartData(runningDetails, progress.state.startedAtMs),
 		);
 		const run = await runResolvedChildPiWithAuthRetry(
-			options,
+			normalizedOptions,
 			plan,
 			progress,
 			session,
 		);
 		return finishRunSubagentExecution(run, progress);
 	} finally {
-		options.sessionRegistry.release(session.reference.sessionId);
+		normalizedOptions.sessionRegistry.release(session.reference.sessionId);
 	}
 }
 
@@ -1046,7 +1059,7 @@ async function preflightChildModelAuth(
 	return auth.ok ? { succeeded: true } : { result: errorResult(auth.error) };
 }
 
-/** Retries a verified child-only auth miss before the child creates durable state. */
+/** Retries a verified child-only auth rejection before prompt acceptance or activity. */
 async function runResolvedChildPiWithAuthRetry(
 	options: ExecuteRunSubagentOptions,
 	plan: ResolvedRunSubagentExecution,
@@ -1065,18 +1078,27 @@ async function runResolvedChildPiWithAuthRetry(
 				waitingForAuthRetry = false;
 				const run = await runResolvedChildPi(options, plan, progress, session);
 				lastRun = run;
-				if (
-					await isRetryableChildAuthStartupFailure(run, plan, progress, session)
-				) {
+				const provider = plan.modelId.split("/", 1)[0];
+				const retryError =
+					provider === undefined ||
+					run.promptRejectionError === undefined ||
+					run.status !== "failed" ||
+					run.exitCode !== 0 ||
+					run.errorMessage !== run.promptRejectionError
+						? undefined
+						: createChildAuthStartupRetryError({
+								activityObserved: run.activityObserved,
+								failure: new Error(run.promptRejectionError),
+								parentAuthVerified: plan.childAuthPreflightSucceeded,
+								provider,
+							});
+				if (retryError !== undefined) {
 					waitingForAuthRetry = true;
-					throw new RetryableChildAuthStartupError(run);
+					throw retryError;
 				}
 				return run;
 			},
-			{
-				signal: options.signal,
-				shouldRetry: (error) => error instanceof RetryableChildAuthStartupError,
-			},
+			{ signal: options.signal },
 		);
 	} catch (error) {
 		if (options.signal?.aborted && lastRun !== undefined) {
@@ -1088,44 +1110,11 @@ async function runResolvedChildPiWithAuthRetry(
 					}
 				: lastRun;
 		}
-		if (error instanceof RetryableChildAuthStartupError) {
-			return error.run;
+		if (error instanceof ChildAuthStartupRetryError && lastRun !== undefined) {
+			return lastRun;
 		}
 		throw error;
 	}
-}
-
-/** Limits retries to the exact pre-session auth race observed in child Pi. */
-async function isRetryableChildAuthStartupFailure(
-	run: ChildRunResult,
-	plan: ResolvedRunSubagentExecution,
-	progress: ReturnType<typeof createRunSubagentProgress>,
-	session: ChildSessionLaunch,
-): Promise<boolean> {
-	if (
-		!plan.childAuthPreflightSucceeded ||
-		session.kind !== "new" ||
-		run.status !== "failed" ||
-		run.exitCode !== 0 ||
-		run.stdoutText.length > 0 ||
-		progress.state.events.length > 0
-	) {
-		return false;
-	}
-
-	const provider = plan.modelId.split("/", 1)[0];
-	if (
-		provider === undefined ||
-		!isChildAuthStartupError(run.errorMessage, provider)
-	) {
-		return false;
-	}
-
-	const childSessionPath = await findChildSessionPath(
-		session.reference.childSessionDir,
-		session.reference.childSessionId,
-	);
-	return childSessionPath === undefined;
 }
 
 /** Runs the child process and records RPC session progress events. */
@@ -1139,13 +1128,15 @@ async function runResolvedChildPi(
 	if (releaseStartup === undefined) {
 		return createAbortedChildRunResult();
 	}
-
-	const env = createChildEnvironment({
-		[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
-		[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
-		...serializeChildToolPatterns(plan.agent.tools),
-	});
 	try {
+		if (options.signal?.aborted) {
+			return createAbortedChildRunResult();
+		}
+		const env = createChildEnvironment({
+			[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
+			[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
+			...serializeChildToolPatterns(plan.agent.tools),
+		});
 		return await runChildPi(options.spawnPi, {
 			args: buildChildArgs({
 				modelId: plan.modelId,
@@ -1604,6 +1595,8 @@ interface ChildRpcState {
 	stdoutProcessing: Promise<void>;
 	stdoutProcessingPending: boolean;
 	agentCompleted: boolean;
+	activityObserved: boolean;
+	promptRejectionError: string | undefined;
 	aborted: boolean;
 	fatalError: string | undefined;
 	stdinClosed: boolean;
@@ -1629,6 +1622,8 @@ function createChildRpcState(
 		stdoutProcessing: Promise.resolve(),
 		stdoutProcessingPending: false,
 		agentCompleted: false,
+		activityObserved: false,
+		promptRejectionError: undefined,
 		aborted: false,
 		fatalError: undefined,
 		stdinClosed: false,
@@ -1888,6 +1883,8 @@ function buildChildRunResult(
 	const result = {
 		exitCode,
 		status,
+		promptRejectionError: state.promptRejectionError,
+		activityObserved: state.activityObserved,
 		stdoutText: state.outputState.finalText,
 		stderrText: formatBoundedChildText(
 			state.parser.diagnostics.stderr,
@@ -1936,11 +1933,6 @@ function handleChildRpcMessage(options: {
 	if (!isRecord(message)) {
 		return;
 	}
-	const policyError = resolveChildToolPolicyStartupError(message);
-	if (policyError !== undefined) {
-		options.terminateForPolicyError(policyError);
-		return;
-	}
 	if (message["type"] === "response") {
 		handleChildRpcResponse(
 			message,
@@ -1948,6 +1940,12 @@ function handleChildRpcMessage(options: {
 			options.closeStdin,
 			options.onPromptPreflightComplete,
 		);
+		return;
+	}
+	rpcState.activityObserved = true;
+	const policyError = resolveChildToolPolicyStartupError(message);
+	if (policyError !== undefined) {
+		options.terminateForPolicyError(policyError);
 		return;
 	}
 	if (message["type"] === "extension_ui_request") {
@@ -1985,10 +1983,11 @@ function handleChildRpcResponse(
 	if (message["success"] !== false) {
 		return;
 	}
-	state.fatalError =
+	state.promptRejectionError =
 		typeof message["error"] === "string"
 			? message["error"]
 			: "child pi rejected the prompt";
+	state.fatalError ??= state.promptRejectionError;
 	closeStdin();
 }
 

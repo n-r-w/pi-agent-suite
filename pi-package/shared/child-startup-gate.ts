@@ -68,3 +68,6 @@ export class ChildStartupGate {
 		waiter.resolve(this.createRelease());
 	}
 }
+
+/** Coordinates child prompt preflight across launchers in one parent process. */
+export const sharedChildStartupGate = new ChildStartupGate();

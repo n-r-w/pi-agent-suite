@@ -30,7 +30,7 @@ export interface SummaryNode {
 /** One ordered original or reduced item in the summarization source. */
 export type SourceItem = OriginalBlock | SummaryNode;
 
-/** Converts Pi preparation groups into previous-summary, history, then turn-prefix items. */
+/** Converts Pi preparation groups into previous_summary, history, then turn-prefix items. */
 export function buildSummarySource(
 	preparation: AdaptiveCompactionPreparation,
 	projectedToolResultSummaries: ReadonlyMap<string, string>,
@@ -168,7 +168,7 @@ export function buildRawSummaryContext(
 				content: [
 					{
 						type: "text",
-						text: `<summary-source>\n${source}\n</summary-source>\n\n${prompt}`,
+						text: `<summary_source>\n${source}\n</summary_source>\n\n${prompt}`,
 					},
 				],
 				timestamp: 0,
@@ -182,18 +182,18 @@ export function renderSourceItems(items: readonly SourceItem[]): string {
 	return items.map(renderSourceItem).join("\n\n");
 }
 
-/** Preserves the update prompt's previous-summary contract after bounded merges. */
+/** Preserves the update prompt's previous_summary contract after bounded merges. */
 export function renderSourceItem(item: SourceItem): string {
 	if (item.kind === "original") {
-		return `<original-block id="${item.id}">\n${item.text}\n</original-block>`;
+		return `<original_block id="${item.id}">\n${item.text}\n</original_block>`;
 	}
 	if (
 		item.id === "previousSummary" ||
 		item.id.startsWith("previousSummary..")
 	) {
-		return `<previous-summary>\n${item.text}\n</previous-summary>`;
+		return `<previous_summary>\n${item.text}\n</previous_summary>`;
 	}
-	return `<summary-node id="${item.id}">\n${item.text}\n</summary-node>`;
+	return `<summary_node id="${item.id}">\n${item.text}\n</summary_node>`;
 }
 
 /** Estimates a summarization request with the selected compaction tokenizer profile. */

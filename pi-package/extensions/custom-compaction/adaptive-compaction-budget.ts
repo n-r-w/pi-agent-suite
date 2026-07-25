@@ -94,7 +94,7 @@ export function calculateCommonNodeBudget(
 	);
 	if (summaryNodeTokens <= 0) {
 		throw new Error(
-			"adaptive compaction has no positive common summary-node budget",
+			"adaptive compaction has no positive common summary_node budget",
 		);
 	}
 	return summaryNodeTokens;

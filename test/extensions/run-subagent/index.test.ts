@@ -21,6 +21,7 @@ import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
 } from "../../../pi-package/shared/child-agent-environment";
+import { ChildStartupGate } from "../../../pi-package/shared/child-startup-gate";
 import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import {
 	SUBAGENT_AGENT_ID_ENV,
@@ -2835,6 +2836,101 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("retries a resumed child auth rejection with the same session path", async () => {
+		// Purpose: resume_subagent must recover from the same pre-prompt OAuth race as a new child.
+		// Input and expected output: the first resumed process rejects auth and the replacement continues the same JSONL session.
+		// Edge case: the existing session file may already have durable metadata but must receive no failed-attempt user turn.
+		// Dependencies: one successful seed run, a persisted child session path, and sequential fake RPC transcripts.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const authFailure = JSON.stringify({
+				id: "run-subagent-prompt",
+				type: "response",
+				command: "prompt",
+				success: false,
+				error: NO_OPENAI_API_KEY_ERROR,
+			});
+			const spawn = createSequentialSpawnFake([
+				rpcOutputLines({
+					type: "message_end",
+					message: childAssistantMessage("Seeded"),
+				}),
+				[authFailure],
+				rpcOutputLines({
+					type: "message_end",
+					message: childAssistantMessage("Continued"),
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Seed work",
+			});
+			const sessionIdIndex = spawn.calls[0]?.args.indexOf("--session-id") ?? -1;
+			const childSessionId = spawn.calls[0]?.args[sessionIdIndex + 1];
+			const childSessionDir = join(
+				agentDir,
+				"agent-suite",
+				"run-subagent",
+				"sessions",
+			);
+			const childSessionPath = join(
+				childSessionDir,
+				`2026-07-14T00-00-00_${childSessionId}.jsonl`,
+			);
+			await mkdir(childSessionDir, { recursive: true });
+			await writeFile(childSessionPath, "{}\n");
+
+			const resumed = (await executeResumeSubagent(pi, ctx, {
+				prompt: "Continue work",
+				resumeSession: 1,
+			})) as AgentToolResult<unknown>;
+
+			expect(toolText(resumed)).toBe("Subagent session: 1\n\nContinued");
+			expect(spawn.calls).toHaveLength(3);
+			expect(spawn.calls[1]?.args).toEqual(spawn.calls[2]?.args);
+			expect(spawn.calls[1]?.args).toContain("--session");
+			expect(spawn.calls[1]?.args).toContain(childSessionPath);
+		});
+	});
+
+	test("removes leading slashes before sending a child prompt", async () => {
+		// Purpose: child tasks must not enter Pi's extension-command path before native auth preflight.
+		// Input and expected output: a task with three leading slashes reaches RPC without those slashes.
+		// Edge case: slash characters inside the task remain unchanged.
+		// Dependencies: one successful fake RPC child with recorded stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "///Review /tmp/input",
+			});
+			const promptWrite = spawn.calls[0]?.process.stdin.writes.find((write) =>
+				write.includes('"type":"prompt"'),
+			);
+
+			expect(promptWrite).toContain('"message":"Review /tmp/input"');
+		});
+	});
+
 	test("stops after three retries when the child auth race persists", async () => {
 		// Purpose: transient auth recovery must remain bounded when every child startup misses credentials.
 		// Input and expected output: four identical startup failures return the final auth error.
@@ -2900,6 +2996,92 @@ describe("run-subagent", () => {
 
 			expect(content).toBe(NO_OPENAI_API_KEY_ERROR);
 			expect(spawn.calls).toHaveLength(0);
+		});
+	});
+
+	test("does not retry an auth rejection after child session activity", async () => {
+		// Purpose: retry safety must use raw child activity rather than projected progress or session kind.
+		// Input and expected output: one session event before the matching auth rejection prevents another process launch.
+		// Edge case: the activity event does not itself complete the prompt.
+		// Dependencies: fake child RPC output preserves event order before prompt rejection.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({ type: "agent_start" }),
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: NO_OPENAI_API_KEY_ERROR,
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(toolText(result)).toBe(sessionToolText(NO_OPENAI_API_KEY_ERROR));
+			expect(spawn.calls).toHaveLength(1);
+		});
+	});
+
+	test("does not retry an auth rejection after child UI activity", async () => {
+		// Purpose: observable child UI interaction must make prompt replay unsafe.
+		// Input and expected output: a UI request before the matching auth rejection prevents another process launch.
+		// Edge case: the headless parent still sends the deterministic UI cancellation response.
+		// Dependencies: fake child RPC output and recorded child stdin writes.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				JSON.stringify({
+					type: "extension_ui_request",
+					id: "confirm-1",
+					method: "confirm",
+					title: "Confirm",
+					message: "Continue?",
+				}),
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: NO_OPENAI_API_KEY_ERROR,
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+			const writes = spawn.calls[0]?.process.stdin.writes.map((line) =>
+				JSON.parse(line),
+			);
+
+			expect(toolText(result)).toBe(sessionToolText(NO_OPENAI_API_KEY_ERROR));
+			expect(spawn.calls).toHaveLength(1);
+			expect(writes).toContainEqual({
+				type: "extension_ui_response",
+				id: "confirm-1",
+				confirmed: false,
+			});
 		});
 	});
 
@@ -3001,6 +3183,53 @@ describe("run-subagent", () => {
 
 			expect(content).toBe(sessionToolText("subagent execution aborted"));
 			expect(spawnCount).toBe(1);
+		});
+	});
+
+	test("does not spawn after cancellation wins the startup acquisition race", async () => {
+		// Purpose: a cancelled queued subagent must not create a process after receiving the gate slot.
+		// Input and expected output: cancellation at the acquisition boundary returns an aborted result with zero spawns.
+		// Edge case: the gate returns a valid release callback before the executor observes cancellation.
+		// Dependencies: an injected gate subclass deterministically aborts at the acquisition boundary.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const controller = new AbortController();
+			class AbortAfterAcquireGate extends ChildStartupGate {
+				override async acquire(signal: AbortSignal | undefined) {
+					const release = await super.acquire(signal);
+					controller.abort();
+					return release;
+				}
+			}
+			const spawn = createSpawnFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, {
+				spawnPi: spawn.spawnPi,
+				startupGate: new AbortAfterAcquireGate(),
+			});
+
+			const result = (await getRunSubagentTool(pi).execute(
+				"tool-call-1",
+				{
+					agentId: "helper",
+					taskName: DEFAULT_TEST_TASK_NAME,
+					prompt: "Do work",
+				},
+				controller.signal,
+				undefined,
+				ctx as never,
+			)) as AgentToolResult<unknown>;
+
+			expect(toolText(result)).toBe(
+				sessionToolText("subagent execution aborted"),
+			);
+			expect(spawn.calls).toHaveLength(0);
 		});
 	});
 
@@ -3244,6 +3473,44 @@ describe("run-subagent", () => {
 		});
 	});
 
+	test("does not retry auth rejection after a malformed transport failure", async () => {
+		// Purpose: a later auth-shaped response must not hide or retry an earlier transport failure.
+		// Input and expected output: malformed JSON followed by matching prompt rejection returns the malformed error after one process.
+		// Edge case: the child exits with code zero and no session activity.
+		// Dependencies: ordered fake stdout lines exercise first-failure provenance.
+		await withIsolatedEnvironment(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "helper",
+				type: "subagent",
+				description: "Helper",
+				body: "Helper prompt",
+			});
+			const spawn = createSpawnFake([
+				"{not-json}",
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: NO_OPENAI_API_KEY_ERROR,
+				}),
+			]);
+			const pi = createExtensionApiFake();
+			const ctx = createContext("/tmp/project");
+			await runSubagent(pi, { spawnPi: spawn.spawnPi });
+
+			const result = (await executeRunSubagent(pi, ctx, {
+				agentId: "helper",
+				prompt: "Do work",
+			})) as AgentToolResult<unknown>;
+
+			expect(toolText(result)).toContain(
+				"child pi emitted malformed RPC output",
+			);
+			expect(spawn.calls).toHaveLength(1);
+		});
+	});
+
 	test("keeps malformed output status when parent abort fires before child close", async () => {
 		// Purpose: parent abort must not replace an already-known transport failure with aborted status.
 		// Input and expected output: malformed output closes stdin, parent abort fires before close, and result remains failed.
@@ -3458,6 +3725,13 @@ describe("run-subagent", () => {
 					extensionPath: "/package/extensions/run-subagent/index.ts",
 					error: policyError,
 				}),
+				JSON.stringify({
+					id: "run-subagent-prompt",
+					type: "response",
+					command: "prompt",
+					success: false,
+					error: NO_OPENAI_API_KEY_ERROR,
+				}),
 			]);
 			const pi = createExtensionApiFake();
 			const ctx = createContext("/tmp/project");
@@ -3471,6 +3745,7 @@ describe("run-subagent", () => {
 				result.content[0]?.type === "text" ? result.content[0].text : "";
 
 			expect(spawn.calls[0]?.process.killedSignals).toContain("SIGTERM");
+			expect(spawn.calls).toHaveLength(1);
 			expect(content).toBe(sessionToolText(policyError));
 		});
 	});
