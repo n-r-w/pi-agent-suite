@@ -172,9 +172,10 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 ## Changelog
 
-### v1.0.2 - 2026-07-25
+### v1.0.3 - 2026-07-27
 
 - Harden child startup recovery and compaction rehydration
+- Isolate package loading authentication (#15)
 
 ### v1.0.1 - 2026-07-24
 
