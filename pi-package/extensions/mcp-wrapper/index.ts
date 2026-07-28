@@ -1,8 +1,10 @@
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { registerPackageToolPresentation } from "../../shared/tool-presentation/registry.ts";
 import { McpClientManager, type ServerInstructions } from "./client-manager.ts";
 import {
 	type McpServerConfig,
@@ -22,6 +24,7 @@ import { createSdkMcpClient } from "./sdk-client-factory.ts";
 import {
 	buildPiToolCatalog,
 	type McpServerToolList,
+	type PiToolCatalog,
 	type PiToolCatalogEntry,
 	type RejectedPiToolRoute,
 } from "./tool-catalog.ts";
@@ -139,6 +142,7 @@ interface BeforeAgentStartEventLike {
 }
 
 interface SessionStartContextLike {
+	readonly sessionManager: ExtensionContext["sessionManager"];
 	readonly ui: {
 		notify(message: string, type?: "info" | "warning" | "error"): void;
 		setStatus(key: string, text: string): void;
@@ -252,20 +256,12 @@ async function handleSessionStart(
 	}
 
 	const catalog = buildPiToolCatalog(startup.serverToolLists);
-	reportStatuses(options.ctx, startup, catalog.rejected);
-	registerCatalogTools({
-		pi: options.pi,
-		tools: catalog.tools,
+	registerStartupCatalog({
+		options,
+		startup,
+		catalog,
 		manager,
-		servers: configResult.config.mcpServers,
-		widgetLineBudget: configResult.config.widgetLineBudget,
-	});
-	reportStartupDiagnostics(options.ctx, {
-		connectedServers: startup.discoveredServerKeys,
-		cachedServers: startup.cachedServerKeys,
-		registeredTools: catalog.tools.map((entry) => entry.definition.name),
-		failures: startup.failures,
-		rejected: catalog.rejected,
+		config: configResult.config,
 	});
 
 	return {
@@ -275,6 +271,38 @@ async function handleSessionStart(
 			catalog.tools,
 		),
 	};
+}
+
+/** Publishes one startup catalog through normal registration and shared runtime presentation. */
+function registerStartupCatalog({
+	options,
+	startup,
+	catalog,
+	manager,
+	config,
+}: {
+	readonly options: HandleSessionStartOptions;
+	readonly startup: StartupMetadata;
+	readonly catalog: PiToolCatalog;
+	readonly manager: McpManagerLike;
+	readonly config: ValidMcpWrapperConfig;
+}): void {
+	reportStatuses(options.ctx, startup, catalog.rejected);
+	registerCatalogTools({
+		pi: options.pi,
+		presentationOwner: options.ctx.sessionManager,
+		tools: catalog.tools,
+		manager,
+		servers: config.mcpServers,
+		widgetLineBudget: config.widgetLineBudget,
+	});
+	reportStartupDiagnostics(options.ctx, {
+		connectedServers: startup.discoveredServerKeys,
+		cachedServers: startup.cachedServerKeys,
+		registeredTools: catalog.tools.map((entry) => entry.definition.name),
+		failures: startup.failures,
+		rejected: catalog.rejected,
+	});
 }
 
 /** Rebuilds MCP metadata from live discovery and reloads pi only after the cache is saved. */
@@ -541,20 +569,23 @@ function reportStatuses(
 
 function registerCatalogTools(options: {
 	readonly pi: ExtensionAPI;
+	readonly presentationOwner: ExtensionContext["sessionManager"];
 	readonly tools: readonly PiToolCatalogEntry[];
 	readonly manager: McpManagerLike;
 	readonly servers: ValidMcpWrapperConfig["mcpServers"];
 	readonly widgetLineBudget: number;
 }): void {
 	for (const entry of options.tools) {
-		options.pi.registerTool(
-			buildToolDefinition(
-				entry,
-				options.manager,
-				options.servers,
-				options.widgetLineBudget,
-			),
+		const definition = buildToolDefinition(
+			entry,
+			options.manager,
+			options.servers,
+			options.widgetLineBudget,
 		);
+		// Dynamic MCP names have no reliable prefix, so normal registration owns
+		// classification and publishes its exact renderer function identities.
+		registerPackageToolPresentation(options.presentationOwner, definition);
+		options.pi.registerTool(definition);
 	}
 }
 

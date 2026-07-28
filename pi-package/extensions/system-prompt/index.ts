@@ -11,6 +11,7 @@ import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
+import { SUBAGENTS_PROMPT_MARKER } from "../run-subagent/contracts";
 
 const EXTENSION_DIR = "system-prompt";
 const ISSUE_PREFIX = "[system-prompt]";
@@ -80,9 +81,7 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 			templateState: templateState.kind,
 			incomingPromptLength: incomingPrompt.length,
 			hasMainAgentRules: incomingPrompt.includes("<rules>"),
-			hasCallableAgents: incomingPrompt.includes(
-				"Callable agents available through run_subagent",
-			),
+			hasCallableAgents: incomingPrompt.includes(SUBAGENTS_PROMPT_MARKER),
 		});
 		if (templateState.kind !== "ready") {
 			return undefined;
@@ -99,12 +98,8 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 			droppedMainAgentRules:
 				incomingPrompt.includes("<rules>") && !systemPrompt.includes("<rules>"),
 			droppedCallableAgents:
-				incomingPrompt.includes(
-					"Callable agents available through run_subagent",
-				) &&
-				!systemPrompt.includes(
-					"Callable agents available through run_subagent",
-				),
+				incomingPrompt.includes(SUBAGENTS_PROMPT_MARKER) &&
+				!systemPrompt.includes(SUBAGENTS_PROMPT_MARKER),
 		});
 		return { systemPrompt };
 	});

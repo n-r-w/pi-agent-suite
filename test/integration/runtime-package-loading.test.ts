@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -14,12 +15,17 @@ import { join } from "node:path";
 
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+const CHILD_AGENT_PROCESS_ENV = "PI_AGENT_SUITE_CHILD_AGENT_PROCESS";
 const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_TOOL_PATTERNS_ENV = "PI_SUBAGENT_TOOL_PATTERNS";
+/** Matches Pi diagnostics that report extension loading or execution failures. */
+const PI_EXTENSION_ERROR_PATTERN =
+	/(?:Extension error|Failed to load extension|Extension failed)/i;
 
 interface RuntimeDump {
 	readonly activeTools: readonly string[];
+	readonly toolDescriptions: Readonly<Record<string, string>>;
 	readonly tools: readonly string[];
 	readonly systemPrompt: string;
 }
@@ -93,7 +99,7 @@ function createIsolatedAgentDir(cwd: string): string {
 			"---",
 			"description: Agent for testing subagents subsystem.",
 			"type: both",
-			'tools: ["run_subagent"]',
+			'tools: ["subagent_start", "subagent_steer", "subagent_wait"]',
 			'agents: ["SubAgentExtractor"]',
 			"---",
 			"Test agent prompt",
@@ -138,6 +144,7 @@ function writeRuntimeDumpExtension(directory: string): string {
 			'\t\tif (dumpFile === undefined) throw new Error("PI_RUNTIME_DUMP_FILE is required");',
 			"\t\twriteFileSync(dumpFile, JSON.stringify({",
 			"\t\t\tactiveTools: pi.getActiveTools(),",
+			"\t\t\ttoolDescriptions: Object.fromEntries(pi.getAllTools().map((tool) => [tool.name, tool.description])),",
 			"\t\t\ttools: pi.getAllTools().map((tool) => tool.name),",
 			"\t\t\tsystemPrompt: event.systemPrompt,",
 			"\t\t}, null, 2));",
@@ -150,7 +157,7 @@ function writeRuntimeDumpExtension(directory: string): string {
 }
 
 test("runtime package loading keeps selected-agent allowlist across split entries", () => {
-	// Purpose: real pi package loading must keep main-agent-selection and run-subagent in one runtime composition.
+	// Purpose: real Pi package loading must keep main-agent selection and Subagents V2 in one runtime composition.
 	// Input and expected output: selected TestAgent allows only SubAgentExtractor, so the final prompt lists only SubAgentExtractor.
 	// Edge case: pi loads package entries separately; disconnected shared state would expose SubAgentCoder and TestAgent too.
 	// Dependencies: this integration check uses the local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
@@ -201,11 +208,10 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 		expect(result.status).toBe(23);
 		const prompt = readFileSync(promptDumpFile, "utf8");
 		expect(prompt).toContain("Test agent prompt");
-		expect(prompt).toContain(
-			"- agentId: SubAgentExtractor\n  description: Extractor",
-		);
-		expect(prompt).not.toContain("- agentId: SubAgentCoder");
-		expect(prompt).not.toContain("- agentId: TestAgent");
+		expect(prompt).toContain("<subagents-v2-callable-agents>");
+		expect(prompt).toContain("agentId: SubAgentExtractor");
+		expect(prompt).not.toContain("agentId: SubAgentCoder");
+		expect(prompt).not.toContain("agentId: TestAgent");
 	} finally {
 		if (previousSuiteDir === undefined) {
 			delete process.env[AGENT_SUITE_DIR_ENV];
@@ -282,6 +288,272 @@ test("runtime child loading uses the project agent override", () => {
 		expect(runtime.systemPrompt).not.toContain("Extractor prompt");
 		expect(runtime.tools).toContain("bash");
 		expect(runtime.activeTools).toEqual(["read"]);
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+		rmSync(projectDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+	}
+});
+
+test("loads Subagents V2 in isolated offline modes", () => {
+	// Purpose: real Pi must load the V2 entry alone and through the complete package without discovered extensions or model access.
+	// Input and expected output: both explicit offline targets use one isolated TestAgent policy and exit successfully without extension diagnostics.
+	// Edge case: print mode receives no prompt because Pi prohibits prompts while offline.
+	// Dependencies: local Pi CLI, production extension entry points, and isolated temporary project and agent state.
+	const repositoryDir = process.cwd();
+	let projectDir: string | undefined;
+	let agentDir: string | undefined;
+
+	try {
+		projectDir = realpathSync(
+			mkdtempSync(join(tmpdir(), "pi-runtime-v2-loading-project-")),
+		);
+		agentDir = createIsolatedAgentDir(projectDir);
+		const childEnv: Record<string, string | undefined> = {
+			...process.env,
+			PI_CODING_AGENT_DIR: agentDir,
+			PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+		};
+		delete childEnv[CHILD_AGENT_PROCESS_ENV];
+		delete childEnv[SUBAGENT_AGENT_ID_ENV];
+		delete childEnv[SUBAGENT_DEPTH_ENV];
+		delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
+		const targets = [
+			join(
+				repositoryDir,
+				"pi-package",
+				"extensions",
+				"run-subagent",
+				"index.ts",
+			),
+			join(repositoryDir, "pi-package"),
+		];
+		for (const target of targets) {
+			const result = spawnSync(
+				"pi",
+				["--no-session", "--no-extensions", "--offline", "-p", "-e", target],
+				{
+					cwd: projectDir,
+					encoding: "utf8",
+					env: childEnv,
+					timeout: 30_000,
+				},
+			);
+
+			expect(result.error).toBeUndefined();
+			expect(result.signal).toBeNull();
+			expect(result.status).toBe(0);
+			expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+				PI_EXTENSION_ERROR_PATTERN,
+			);
+		}
+	} finally {
+		if (agentDir !== undefined) {
+			rmSync(agentDir, { recursive: true, force: true });
+			expect(existsSync(agentDir)).toBeFalse();
+		}
+		if (projectDir !== undefined) {
+			rmSync(projectDir, { recursive: true, force: true });
+			expect(existsSync(projectDir)).toBeFalse();
+		}
+	}
+});
+
+test("exposes Subagents V2 runtime tools and prompt markers", () => {
+	// Purpose: real Pi must expose only V2 subagent tools and compose the selected-agent policy before its first model turn.
+	// Input and expected output: controlled TestAgent and SubAgentExtractor definitions produce exact tools, depth, policy, template, and diagnostic markers.
+	// Edge case: the debug extension exits from before_agent_start, so no provider, model, network, auth, user file, or git access can occur.
+	// Dependencies: local Pi CLI, isolated package state, production runtime composition, and the existing runtime dump extension.
+	const repositoryDir = process.cwd();
+	let projectDir: string | undefined;
+	let scratchDir: string | undefined;
+	let agentDir: string | undefined;
+	let configDir: string | undefined;
+	let runtimeDumpFile: string | undefined;
+	let debugExtensionPath: string | undefined;
+
+	try {
+		projectDir = realpathSync(
+			mkdtempSync(join(tmpdir(), "pi-runtime-v2-snapshot-project-")),
+		);
+		scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-v2-snapshot-"));
+		agentDir = createIsolatedAgentDir(projectDir);
+		configDir = join(agentDir, "agent-suite", "run-subagent");
+		runtimeDumpFile = join(scratchDir, "runtime.json");
+		debugExtensionPath = writeRuntimeDumpExtension(scratchDir);
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "config.json"),
+			JSON.stringify({ enabled: true, maxDepth: 1 }),
+		);
+		const childEnv: Record<string, string | undefined> = {
+			...process.env,
+			PI_CODING_AGENT_DIR: agentDir,
+			PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+			PI_RUNTIME_DUMP_FILE: runtimeDumpFile,
+		};
+		delete childEnv[CHILD_AGENT_PROCESS_ENV];
+		delete childEnv[SUBAGENT_AGENT_ID_ENV];
+		delete childEnv[SUBAGENT_DEPTH_ENV];
+		delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"-p",
+				"-e",
+				join(repositoryDir, "pi-package"),
+				"-e",
+				debugExtensionPath,
+				"capture isolated V2 runtime",
+			],
+			{
+				cwd: projectDir,
+				encoding: "utf8",
+				env: childEnv,
+				timeout: 30_000,
+			},
+		);
+
+		expect(result.error).toBeUndefined();
+		expect(result.signal).toBeNull();
+		expect(result.status).toBe(23);
+		expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+			PI_EXTENSION_ERROR_PATTERN,
+		);
+		const runtime = JSON.parse(
+			readFileSync(runtimeDumpFile, "utf8"),
+		) as RuntimeDump;
+		const subagentTools = runtime.tools.filter(
+			(name) => name.startsWith("subagent_") || name.endsWith("_subagent"),
+		);
+		expect(runtime.activeTools).toEqual([
+			"subagent_start",
+			"subagent_steer",
+			"subagent_wait",
+		]);
+		expect(subagentTools).toEqual([
+			"subagent_start",
+			"subagent_steer",
+			"subagent_wait",
+		]);
+		expect(runtime.systemPrompt).toContain("Test agent prompt");
+		expect(runtime.systemPrompt).toContain("<subagents-v2-callable-agents>");
+		expect(runtime.systemPrompt).toContain(
+			"tools: subagent_start, subagent_steer, subagent_wait",
+		);
+		expect(runtime.systemPrompt).toContain("depth: 0/1");
+		expect(runtime.systemPrompt).toContain("agentId: SubAgentExtractor");
+		expect(runtime.systemPrompt).not.toContain("agentId: SubAgentCoder");
+		expect(runtime.systemPrompt).not.toContain("agentId: TestAgent");
+		expect(runtime.systemPrompt).toContain("</subagents-v2-callable-agents>");
+	} finally {
+		if (agentDir !== undefined) {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+		if (projectDir !== undefined) {
+			rmSync(projectDir, { recursive: true, force: true });
+		}
+		if (scratchDir !== undefined) {
+			rmSync(scratchDir, { recursive: true, force: true });
+		}
+		for (const temporaryPath of [
+			configDir,
+			agentDir,
+			projectDir,
+			debugExtensionPath,
+			runtimeDumpFile,
+			scratchDir,
+		]) {
+			if (temporaryPath !== undefined) {
+				expect(existsSync(temporaryPath)).toBeFalse();
+			}
+		}
+	}
+});
+
+test("runtime package loading snapshots configured V2 descriptions on the first turn", () => {
+	// Purpose: real Pi must await description configuration after synchronous registration and before its first tool snapshot.
+	// Input and expected output: three absolute custom prompt files produce exactly three active V2 tools with matching descriptions.
+	// Edge case: the debug extension exits from the first before_agent_start event, before any provider or model request.
+	// Dependencies: local Pi CLI, isolated package config, production extension loading, and a runtime dump extension.
+	const repositoryDir = process.cwd();
+	const projectDir = realpathSync(
+		mkdtempSync(join(tmpdir(), "pi-runtime-description-project-")),
+	);
+	const scratchDir = mkdtempSync(
+		join(tmpdir(), "pi-runtime-description-dump-"),
+	);
+	const agentDir = createIsolatedAgentDir(projectDir);
+	const runtimeDumpFile = join(scratchDir, "runtime.json");
+	const debugExtensionPath = writeRuntimeDumpExtension(scratchDir);
+	const configDir = join(agentDir, "agent-suite", "run-subagent");
+	mkdirSync(configDir, { recursive: true });
+	const descriptionFiles = {
+		startDescriptionPromptFile: join(scratchDir, "start.md"),
+		steerDescriptionPromptFile: join(scratchDir, "steer.md"),
+		waitDescriptionPromptFile: join(scratchDir, "wait.md"),
+	};
+	writeFileSync(descriptionFiles.startDescriptionPromptFile, " real start ");
+	writeFileSync(descriptionFiles.steerDescriptionPromptFile, " real steer ");
+	writeFileSync(descriptionFiles.waitDescriptionPromptFile, " real wait ");
+	writeFileSync(
+		join(configDir, "config.json"),
+		JSON.stringify({ enabled: true, maxDepth: 1, ...descriptionFiles }),
+	);
+	const childEnv: Record<string, string | undefined> = {
+		...process.env,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_AGENT_SUITE_DIR: join(agentDir, "agent-suite"),
+		PI_RUNTIME_DUMP_FILE: runtimeDumpFile,
+	};
+	delete childEnv[SUBAGENT_AGENT_ID_ENV];
+	delete childEnv[SUBAGENT_DEPTH_ENV];
+	delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
+
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"-p",
+				"-e",
+				join(repositoryDir, "pi-package"),
+				"-e",
+				debugExtensionPath,
+				"debug configured descriptions",
+			],
+			{
+				cwd: projectDir,
+				encoding: "utf8",
+				env: childEnv,
+				timeout: 30_000,
+			},
+		);
+
+		expect(result.status).toBe(23);
+		const runtime = JSON.parse(
+			readFileSync(runtimeDumpFile, "utf8"),
+		) as RuntimeDump;
+		expect({
+			activeTools: runtime.activeTools,
+			v2Tools: runtime.tools.filter((name) => name.startsWith("subagent_")),
+			descriptions: {
+				start: runtime.toolDescriptions["subagent_start"],
+				steer: runtime.toolDescriptions["subagent_steer"],
+				wait: runtime.toolDescriptions["subagent_wait"],
+			},
+		}).toEqual({
+			activeTools: ["subagent_start", "subagent_steer", "subagent_wait"],
+			v2Tools: ["subagent_start", "subagent_steer", "subagent_wait"],
+			descriptions: {
+				start: "real start",
+				steer: "real steer",
+				wait: "real wait",
+			},
+		});
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(projectDir, { recursive: true, force: true });

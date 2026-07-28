@@ -15,6 +15,7 @@ import {
 	convertToLlm,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
@@ -153,7 +154,7 @@ export default function consultAdvisor(
 			"Use consult_advisor for independent advice when the user or task requires a second opinion.",
 	});
 
-	pi.registerTool({
+	const definition: ToolDefinition<typeof ConsultAdvisorParameters> = {
 		name: TOOL_NAME,
 		label: "Consult advisor",
 		description:
@@ -179,7 +180,8 @@ export default function consultAdvisor(
 				},
 			});
 		},
-	});
+	};
+	pi.registerTool(definition);
 }
 
 /** Executes one advisor model call after strict config, prompt, and model validation. */

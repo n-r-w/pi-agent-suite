@@ -1,0 +1,793 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
+import {
+	type SessionEntry,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
+import { createPersistedSession } from "../../../test/support/persisted-session.ts";
+import type {
+	JournalRecord,
+	OwnerIdentity,
+	SubagentFeedback,
+} from "./domain";
+import {
+	type ActiveOwnerSessionWriter,
+	SUBAGENT_HISTORY_CUSTOM_TYPE,
+	SUBAGENT_JOURNAL_CUSTOM_TYPE,
+	V2SessionStore,
+} from "./persistence";
+
+/** Supplies complete accepted invocation facts for durable journal fixtures. */
+const INVOCATION_METADATA = {
+	startedAtMs: 1_700_000_000_000,
+	elapsedMs: 1_000,
+	modelId: "openai/test-model",
+	thinking: "high",
+	contextWindow: 128_000,
+	contextTokens: 58_000,
+	projectionSavedTokens: 20_000,
+} as const;
+
+describe("V2SessionStore", () => {
+	test("reconciles public SessionManager evidence idempotently", async () => {
+		// Purpose: public Pi persistence must preserve one feedback destination across reopen and repeated reconciliation.
+		// Input and expected output: depth-zero reconstruction hides sessions while one pending terminal feedback becomes one history message and one history commit.
+		// Edge case: a second depth-zero reopen appends neither artifact again and preserves the stable key and terminal state.
+		// Dependencies: system temporary files and public SessionManager create, append, getBranch, custom-message, and open APIs.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-session-"));
+		try {
+			const store = new V2SessionStore();
+			const manager = createPersistedSession(directory);
+			const sessionFile = manager.getSessionFile();
+			if (sessionFile === undefined) {
+				throw new Error("public SessionManager did not create a session file");
+			}
+			const owner: OwnerIdentity = {
+				ownerPiSessionId: manager.getSessionId(),
+				ownerSessionFile: sessionFile,
+			};
+			const accepted: JournalRecord = {
+				kind: "session-accepted",
+				session: {
+					key: {
+						ownerPiSessionId: owner.ownerPiSessionId,
+						ownerLocalSessionId: 1,
+					},
+					childPiSessionId: "child-pi",
+					childSessionDir: directory,
+					childSessionFile: join(directory, "child.jsonl"),
+					agentId: "SubAgentCoder",
+					taskName: "Trace runtime",
+					creationOrder: 1,
+					invocationId: "invocation-1",
+					runtimeLeaseId: "lease-1",
+					invocationMetadata: INVOCATION_METADATA,
+					state: "active",
+				},
+			};
+			const terminal: JournalRecord = {
+				kind: "terminal",
+				sessionKey: accepted.session.key,
+				invocationId: "invocation-1",
+				state: "terminal-success",
+				disposition: "pending",
+				feedback: {
+					feedbackId: "feedback-1",
+					invocationId: "invocation-1",
+					sessionKey: accepted.session.key,
+					status: "success",
+					output: "done",
+					presentation: {
+						agentId: accepted.session.agentId,
+						taskName: accepted.session.taskName,
+						invocationMetadata: INVOCATION_METADATA,
+					},
+				} as unknown as SubagentFeedback,
+			};
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, accepted);
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, terminal);
+
+			let first = SessionManager.open(sessionFile, directory, directory);
+			try {
+				await store.reconstruct(first, 0);
+			} catch {}
+			first = SessionManager.open(sessionFile, directory, directory);
+			try {
+				await store.reconstruct(first, 0);
+			} catch {}
+			const reopened = SessionManager.open(sessionFile, directory, directory);
+			const branch = reopened.getBranch();
+			const historyEntries = branch.filter(
+				(entry) =>
+					entry.type === "custom_message" &&
+					entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
+			);
+			const historyCount = historyEntries.length;
+			const commitCount = branch.filter(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+					isHistoryCommit(entry.data),
+			).length;
+			const folded = safeFold(store, branch);
+			const reconstructed = await store.reconstruct(reopened, 0);
+
+			expect({
+				reconstructed,
+				historyCount,
+				commitCount,
+				stableKey: folded?.sessions[0]?.key,
+				state: terminal.state,
+				historyDetails: historyEntries[0]?.details,
+			}).toEqual({
+				reconstructed: [],
+				historyCount: 1,
+				commitCount: 1,
+				stableKey: accepted.session.key,
+				state: "terminal-success",
+				historyDetails: terminal.feedback,
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("reconstructs only descendants within configured depth", async () => {
+		// Purpose: reopen reconstruction must reconcile each exposed owner's journal without exceeding the configured delegation depth.
+		// Input and expected output: depth zero returns none, depth one returns only B and commits C feedback in B, and depth two also returns C.
+		// Edge case: repeating depth-one reconstruction keeps one history message and one commit while unmatched exposed A-owned B becomes terminal-aborted.
+		// Dependencies: public persisted SessionManager instances under a system temporary directory.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-reconstruct-"));
+		try {
+			const child = createPersistedSession(join(directory, "child"));
+			const childFile = child.getSessionFile();
+			if (childFile === undefined) {
+				throw new Error("child SessionManager did not create a session file");
+			}
+			const childSession = {
+				key: {
+					ownerPiSessionId: child.getSessionId(),
+					ownerLocalSessionId: 1,
+				},
+				childPiSessionId: "grandchild-pi",
+				childSessionDir: join(directory, "grandchild"),
+				childSessionFile: join(directory, "missing-grandchild.jsonl"),
+				agentId: "SubAgentCoder",
+				taskName: "Trace child",
+				creationOrder: 1,
+				invocationId: "child-invocation",
+				runtimeLeaseId: "child-lease",
+				invocationMetadata: INVOCATION_METADATA,
+				state: "active" as const,
+			};
+			child.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "session-accepted",
+				session: childSession,
+			} satisfies JournalRecord);
+			child.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "terminal",
+				sessionKey: childSession.key,
+				invocationId: childSession.invocationId,
+				state: "terminal-success",
+				disposition: "pending",
+				feedback: {
+					feedbackId: "child-feedback",
+					invocationId: childSession.invocationId,
+					sessionKey: childSession.key,
+					status: "success",
+					output: "C completed",
+					presentation: {
+						agentId: childSession.agentId,
+						taskName: childSession.taskName,
+						invocationMetadata: childSession.invocationMetadata,
+					},
+				},
+			} satisfies JournalRecord);
+			const parent = createPersistedSession(join(directory, "parent"));
+			const parentSession = {
+				key: {
+					ownerPiSessionId: parent.getSessionId(),
+					ownerLocalSessionId: 1,
+				},
+				childPiSessionId: child.getSessionId(),
+				childSessionDir: child.getSessionDir(),
+				childSessionFile: childFile,
+				agentId: "SubAgentCoder",
+				taskName: "Trace parent",
+				creationOrder: 1,
+				invocationId: "parent-invocation",
+				runtimeLeaseId: "parent-lease",
+				invocationMetadata: INVOCATION_METADATA,
+				state: "active" as const,
+			};
+			parent.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "session-accepted",
+				session: parentSession,
+			} satisfies JournalRecord);
+			const store = new V2SessionStore();
+			const depthZero = await store.reconstruct(parent, 0);
+			const childAfterDepthZero = SessionManager.open(
+				childFile,
+				child.getSessionDir(),
+				child.getCwd(),
+			);
+			expect({
+				depthZero,
+				historyCount: childAfterDepthZero
+					.getBranch()
+					.filter(
+						(entry) =>
+							entry.type === "custom_message" &&
+							entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
+					).length,
+				commitCount: childAfterDepthZero
+					.getBranch()
+					.filter(
+						(entry) =>
+							entry.type === "custom" &&
+							entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+							isHistoryCommit(entry.data),
+					).length,
+			}).toEqual({ depthZero: [], historyCount: 0, commitCount: 0 });
+
+			const depthOne = await store.reconstruct(parent, 1);
+			const childAfterFirstDepthOne = SessionManager.open(
+				childFile,
+				child.getSessionDir(),
+				child.getCwd(),
+			);
+			const firstDepthOneBranch = childAfterFirstDepthOne.getBranch();
+			const firstDepthOneHistoryCount = firstDepthOneBranch.filter(
+				(entry) =>
+					entry.type === "custom_message" &&
+					entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
+			).length;
+			const firstDepthOneCommitCount = firstDepthOneBranch.filter(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+					isHistoryCommit(entry.data),
+			).length;
+
+			expect({
+				depthOne: depthOne.map((session) => session.key),
+				firstDepthOneHistoryCount,
+				firstDepthOneCommitCount,
+			}).toEqual({
+				depthOne: [parentSession.key],
+				firstDepthOneHistoryCount: 1,
+				firstDepthOneCommitCount: 1,
+			});
+
+			const repeatedDepthOne = await store.reconstruct(parent, 1);
+			const childAfterRepeatedDepthOne = SessionManager.open(
+				childFile,
+				child.getSessionDir(),
+				child.getCwd(),
+			);
+			const repeatedDepthOneBranch = childAfterRepeatedDepthOne.getBranch();
+			const depthTwo = await store.reconstruct(parent, 2);
+
+			expect({
+				depthZero: depthZero.map((session) => session.key),
+				repeatedDepthOne: repeatedDepthOne.map((session) => session.key),
+				depthTwo: depthTwo.map((session) => session.key),
+				states: depthTwo.map((session) => session.state),
+				repeatedDepthOneHistoryCount: repeatedDepthOneBranch.filter(
+					(entry) =>
+						entry.type === "custom_message" &&
+						entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
+				).length,
+				repeatedDepthOneCommitCount: repeatedDepthOneBranch.filter(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+						isHistoryCommit(entry.data),
+				).length,
+				parentDisposition: lastTerminalDisposition(parent.getBranch()),
+				childDisposition: lastTerminalDisposition(repeatedDepthOneBranch),
+			}).toEqual({
+				depthZero: [],
+				repeatedDepthOne: [parentSession.key],
+				depthTwo: [parentSession.key, childSession.key],
+				states: ["terminal-aborted", "terminal-success"],
+				repeatedDepthOneHistoryCount: 1,
+				repeatedDepthOneCommitCount: 1,
+				parentDisposition: "withheld-forced-abort",
+				childDisposition: "pending",
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("folds current parent lease from nested continuation records", () => {
+		// Purpose: durable continuation state must replace the nested session's prior parent runtime lease.
+		// Input and expected output: terminal session under old-parent becomes active under new-parent with the continued invocation and runtime lease.
+		// Edge case: the continuation retains the same stable session key and saved child session reference.
+		// Dependencies: public SessionManager journal entries and production journal folding.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-parent-lease-"));
+		try {
+			const manager = createPersistedSession(directory);
+			const session = {
+				key: {
+					ownerPiSessionId: manager.getSessionId(),
+					ownerLocalSessionId: 1,
+				},
+				childPiSessionId: "nested-child",
+				childSessionDir: join(directory, "child"),
+				childSessionFile: join(directory, "child", "session.jsonl"),
+				agentId: "SubAgentCoder",
+				taskName: "Refresh parent lease",
+				creationOrder: 1,
+				invocationId: "old-invocation",
+				runtimeLeaseId: "old-child-lease",
+				ownerRuntimeLeaseId: "old-parent-lease",
+				invocationMetadata: INVOCATION_METADATA,
+				state: "terminal-success" as const,
+			};
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "session-accepted",
+				session,
+			});
+			const continuedMetadata = {
+				...INVOCATION_METADATA,
+				startedAtMs: 1_700_000_010_000,
+				elapsedMs: 500,
+			};
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "continuation-accepted",
+				sessionKey: session.key,
+				invocationId: "new-invocation",
+				runtimeLeaseId: "new-child-lease",
+				ownerRuntimeLeaseId: "new-parent-lease",
+				invocationMetadata: continuedMetadata,
+			});
+			const folded = new V2SessionStore().fold(manager.getBranch());
+
+			expect(folded.sessions).toEqual([
+				{
+					...session,
+					invocationId: "new-invocation",
+					runtimeLeaseId: "new-child-lease",
+					ownerRuntimeLeaseId: "new-parent-lease",
+					invocationMetadata: continuedMetadata,
+					state: "active",
+				},
+			]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("releases a failed lease writer before idempotent offline reconciliation", async () => {
+		// Purpose: failed remote persistence must become offline-writable only after explicit lease release.
+		// Input and expected output: one rejected remote append is followed by one released owner and one durable forced-abort record across two reconciliations.
+		// Edge case: the unmatched active session keeps its stable key and receives no duplicate terminal record.
+		// Dependencies: public SessionManager file, production remote routing, lease release, and offline reconstruction.
+		// Arrange.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-release-"));
+		try {
+			const manager = createPersistedSession(directory);
+			const sessionFile = manager.getSessionFile();
+			if (sessionFile === undefined) {
+				throw new Error("public SessionManager did not create a session file");
+			}
+			const owner: OwnerIdentity = {
+				ownerPiSessionId: manager.getSessionId(),
+				ownerSessionFile: sessionFile,
+			};
+			const accepted: JournalRecord = {
+				kind: "session-accepted",
+				session: {
+					key: {
+						ownerPiSessionId: owner.ownerPiSessionId,
+						ownerLocalSessionId: 1,
+					},
+					childPiSessionId: "stopped-child",
+					childSessionDir: directory,
+					childSessionFile: join(directory, "missing-child.jsonl"),
+					agentId: "SubAgentCoder",
+					taskName: "Recover stopped writer",
+					creationOrder: 1,
+					invocationId: "stopped-invocation",
+					runtimeLeaseId: "stopped-child-lease",
+					invocationMetadata: INVOCATION_METADATA,
+					state: "active",
+				},
+			};
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, accepted);
+			const store = new V2SessionStore({
+				append: async () => {
+					throw new Error("remote writer failed");
+				},
+				appendHistory: async () => {
+					throw new Error("remote writer failed");
+				},
+			});
+			store.registerActive({
+				owner,
+				sessionManager: manager,
+				appendJournal: (record) => {
+					manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, record);
+				},
+				appendHistory: () => undefined,
+			});
+			const evidenceBeforeRemote = await store.hasAcceptedInvocationEvidence(
+				owner,
+				accepted.session.key,
+				accepted.session.invocationId,
+			);
+			store.unregisterActive(owner.ownerPiSessionId);
+			store.registerRemote(owner, "failed-runtime-lease");
+			const evidenceWhileRemote = await store.hasAcceptedInvocationEvidence(
+				owner,
+				accepted.session.key,
+				accepted.session.invocationId,
+			);
+
+			// Act.
+			let appendRejected = false;
+			try {
+				await store.append(owner, {
+					kind: "terminal",
+					sessionKey: accepted.session.key,
+					invocationId: accepted.session.invocationId,
+					state: "terminal-aborted",
+					disposition: "withheld-forced-abort",
+				});
+			} catch {
+				appendRejected = true;
+			}
+			const released = store.releaseRemoteLease("failed-runtime-lease");
+			const evidenceAfterRelease = await store.hasAcceptedInvocationEvidence(
+				owner,
+				accepted.session.key,
+				accepted.session.invocationId,
+			);
+			await store.reconcileOffline(owner, 1);
+			await store.reconcileOffline(owner, 1);
+			const reopened = SessionManager.open(sessionFile, directory, directory);
+			const folded = store.fold(reopened.getBranch());
+
+			// Assert.
+			expect({
+				appendRejected,
+				evidenceBeforeRemote,
+				evidenceWhileRemote,
+				evidenceAfterRelease,
+				released,
+				sessions: folded.sessions.map((session) => ({
+					key: session.key,
+					state: session.state,
+				})),
+				terminalRecords: folded.records.filter(
+					(record) => record.kind === "terminal",
+				).length,
+			}).toEqual({
+				appendRejected: true,
+				evidenceBeforeRemote: true,
+				evidenceWhileRemote: false,
+				evidenceAfterRelease: true,
+				released: [owner],
+				sessions: [
+					{
+						key: accepted.session.key,
+						state: "terminal-aborted",
+					},
+				],
+				terminalRecords: 1,
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("keeps an active wait claim out of history until tool-result evidence exists", async () => {
+		// Purpose: active reconciliation must not duplicate feedback while Pi is appending the claimed wait result.
+		// Input and expected output: a claimed terminal stays pending before the tool result, then gains one wait commit without history.
+		// Edge case: message-end reconciliation can run between wait-claimed durability and Pi's tool-result append.
+		// Dependencies: active public SessionManager writer and exact feedback identity matching.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-active-claim-"));
+		try {
+			const manager = createPersistedSession(directory);
+			const sessionFile = manager.getSessionFile();
+			if (sessionFile === undefined) {
+				throw new Error("public SessionManager did not create a session file");
+			}
+			const owner: OwnerIdentity = {
+				ownerPiSessionId: manager.getSessionId(),
+				ownerSessionFile: sessionFile,
+			};
+			const feedback: SubagentFeedback = {
+				feedbackId: "feedback-active-claim",
+				invocationId: "invocation-active-claim",
+				sessionKey: {
+					ownerPiSessionId: owner.ownerPiSessionId,
+					ownerLocalSessionId: 1,
+				},
+				status: "success",
+				output: "done",
+				presentation: {
+					agentId: "SubAgentCoder",
+					taskName: "Trace active claim",
+					invocationMetadata: INVOCATION_METADATA,
+				},
+			};
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "terminal",
+				sessionKey: feedback.sessionKey,
+				invocationId: feedback.invocationId,
+				state: "terminal-success",
+				disposition: "pending",
+				feedback,
+			} satisfies JournalRecord);
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "wait-claimed",
+				feedback,
+				waitToolCallId: "wait-call",
+				waitRequestId: "wait-request",
+			} satisfies JournalRecord);
+			const historyFeedbackIds: string[] = [];
+			const store = new V2SessionStore();
+			const writer = {
+				owner,
+				sessionManager: manager,
+				appendJournal: (record: JournalRecord) => {
+					manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, record);
+				},
+				appendHistory: (value: SubagentFeedback) => {
+					historyFeedbackIds.push(value.feedbackId);
+				},
+			};
+
+			await store.reconcileActive(writer);
+			const commitsBeforeResult = manager
+				.getBranch()
+				.filter(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+						isWaitCommit(entry.data),
+				).length;
+			manager.appendMessage({
+				role: "toolResult",
+				toolCallId: "wait-call",
+				toolName: "subagent_wait",
+				content: [{ type: "text", text: '{"outcome":"feedback"}' }],
+				details: { feedbackId: feedback.feedbackId },
+				isError: false,
+				timestamp: 2,
+			});
+			await store.reconcileActive(writer);
+			const commitsAfterResult = manager
+				.getBranch()
+				.filter(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+						isWaitCommit(entry.data),
+				).length;
+
+			expect({
+				historyFeedbackIds,
+				commitsBeforeResult,
+				commitsAfterResult,
+			}).toEqual({
+				historyFeedbackIds: [],
+				commitsBeforeResult: 0,
+				commitsAfterResult: 1,
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("serializes reentrant active reconciliation for concurrent feedback", async () => {
+		// Purpose: a feedback insertion that re-enters message reconciliation must not replay every pending terminal record.
+		// Input and expected output: two pending feedback obligations each produce one history message despite one synchronous re-entry.
+		// Edge case: the nested scan starts before the first history evidence is appended, matching Pi sendMessage event re-entry.
+		// Dependencies: public session-entry shapes and the active owner reconciliation boundary.
+		const owner: OwnerIdentity = {
+			ownerPiSessionId: "owner-reentrant",
+			ownerSessionFile: "/tmp/owner-reentrant.jsonl",
+		};
+		const entries: SessionEntry[] = [];
+		const feedbacks = [1, 2].map(
+			(id): SubagentFeedback => ({
+				feedbackId: `feedback-reentrant-${id}`,
+				invocationId: `invocation-reentrant-${id}`,
+				sessionKey: {
+					ownerPiSessionId: owner.ownerPiSessionId,
+					ownerLocalSessionId: id,
+				},
+				status: "success",
+				output: "OK",
+				presentation: {
+					agentId: "SubAgentAnalystJunior",
+					taskName: `Check ${id}`,
+					invocationMetadata: INVOCATION_METADATA,
+				},
+			}),
+		);
+		for (const [index, feedback] of feedbacks.entries()) {
+			entries.push({
+				type: "custom",
+				customType: SUBAGENT_JOURNAL_CUSTOM_TYPE,
+				data: {
+					kind: "terminal",
+					sessionKey: feedback.sessionKey,
+					invocationId: feedback.invocationId,
+					state: "terminal-success",
+					disposition: "pending",
+					feedback,
+				} satisfies JournalRecord,
+				id: `terminal-${index}`,
+				parentId: null,
+				timestamp: new Date(index).toISOString(),
+			});
+		}
+		const store = new V2SessionStore();
+		const historyFeedbackIds: string[] = [];
+		let reentered = false;
+		let nestedReconciliation: Promise<void> | undefined;
+		let sequence = entries.length;
+		const sessionManager = {
+			getBranch: () => entries,
+		} as unknown as ActiveOwnerSessionWriter["sessionManager"];
+		const writer: ActiveOwnerSessionWriter = {
+			owner,
+			sessionManager,
+			appendJournal: (record) => {
+				sequence += 1;
+				entries.push({
+					type: "custom",
+					customType: SUBAGENT_JOURNAL_CUSTOM_TYPE,
+					data: record,
+					id: `journal-${sequence}`,
+					parentId: null,
+					timestamp: new Date(sequence).toISOString(),
+				});
+			},
+			appendHistory: (feedback) => {
+				historyFeedbackIds.push(feedback.feedbackId);
+				if (!reentered) {
+					reentered = true;
+					nestedReconciliation = store.reconcileActive(writer);
+				}
+				// Pi queues sendMessage delivery, so branch evidence is not visible yet.
+			},
+		};
+
+		await store.reconcileActive(writer);
+		await nestedReconciliation;
+
+		expect(historyFeedbackIds).toEqual([
+			"feedback-reentrant-1",
+			"feedback-reentrant-2",
+		]);
+	});
+
+	test("writes inactive history and finds active-branch wait evidence", async () => {
+		// Purpose: public SessionManager access must support both inactive-owner history and wait-result evidence.
+		// Input and expected output: one offline feedback append is idempotent and one subagent_wait tool result matches its feedback ID.
+		// Edge case: reopening the owner twice does not duplicate the history message.
+		// Dependencies: system temporary files and public SessionManager append, open, and getBranch methods.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-evidence-"));
+		try {
+			const manager = createPersistedSession(directory);
+			const sessionFile = manager.getSessionFile();
+			if (sessionFile === undefined) {
+				throw new Error("public SessionManager did not create a session file");
+			}
+			const owner: OwnerIdentity = {
+				ownerPiSessionId: manager.getSessionId(),
+				ownerSessionFile: sessionFile,
+			};
+			const feedback = {
+				feedbackId: "feedback-evidence",
+				invocationId: "invocation-evidence",
+				sessionKey: {
+					ownerPiSessionId: owner.ownerPiSessionId,
+					ownerLocalSessionId: 1,
+				},
+				status: "success" as const,
+				output: "complete",
+				presentation: {
+					agentId: "SubAgentCoder",
+					taskName: "Trace persistence",
+					invocationMetadata: INVOCATION_METADATA,
+				},
+			};
+			const waitResult: ToolResultMessage = {
+				role: "toolResult",
+				toolCallId: "wait-call",
+				toolName: "subagent_wait",
+				content: [{ type: "text", text: '{"outcome":"feedback"}' }],
+				details: { feedbackId: feedback.feedbackId },
+				isError: false,
+				timestamp: 2,
+			};
+			manager.appendMessage(waitResult);
+			const store = new V2SessionStore();
+			await store.appendHistory(owner, feedback);
+			await store.appendHistory(owner, feedback);
+			const reopened = SessionManager.open(sessionFile, directory, directory);
+
+			expect({
+				waitEvidence: await store.hasWaitEvidence(owner, feedback.feedbackId),
+				historyEvidence: await store.hasHistoryEvidence(
+					owner,
+					feedback.feedbackId,
+				),
+				historyCount: reopened
+					.getBranch()
+					.filter(
+						(entry) =>
+							entry.type === "custom_message" &&
+							entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
+					).length,
+			}).toEqual({
+				waitEvidence: true,
+				historyEvidence: true,
+				historyCount: 1,
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+/** Reads the last durable terminal disposition from public branch entries. */
+function lastTerminalDisposition(
+	entries: ReturnType<SessionManager["getBranch"]>,
+): unknown {
+	return entries
+		.flatMap((entry) =>
+			entry.type === "custom" &&
+			entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+			typeof entry.data === "object" &&
+			entry.data !== null &&
+			"kind" in entry.data &&
+			entry.data.kind === "terminal" &&
+			"disposition" in entry.data
+				? [entry.data.disposition]
+				: [],
+		)
+		.at(-1);
+}
+
+/** Recognizes a durable wait-result commit in one public journal entry. */
+function isWaitCommit(value: unknown): boolean {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"kind" in value &&
+		value.kind === "wait-committed"
+	);
+}
+
+/** Recognizes only the journal commit discriminator needed by this behavior test. */
+function isHistoryCommit(value: unknown): boolean {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"kind" in value &&
+		value.kind === "history-committed"
+	);
+}
+
+/** Returns undefined when journal folding fails so the assertion reports missing reconstructed state. */
+function safeFold(
+	store: V2SessionStore,
+	entries: ReturnType<SessionManager["getBranch"]>,
+): ReturnType<V2SessionStore["fold"]> | undefined {
+	try {
+		return store.fold(entries);
+	} catch {
+		return undefined;
+	}
+}

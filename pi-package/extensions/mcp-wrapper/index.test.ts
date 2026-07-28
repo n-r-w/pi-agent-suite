@@ -9,7 +9,9 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
+import { createToolPresentationRegistry } from "../run-subagent/tool-rendering.ts";
 import type { McpClientManager } from "./client-manager.ts";
 import type { McpServerConfig } from "./config.ts";
 import mcpWrapper from "./index.ts";
@@ -158,6 +160,7 @@ async function runSessionStart(
 	pi: ExtensionApiFake,
 	notifications: NotificationRecord[] = [],
 	statuses: Array<{ readonly key: string; readonly text: string }> = [],
+	sessionManager: SessionManager = SessionManager.inMemory(),
 ): Promise<void> {
 	const sessionStart = pi.handlers.find(
 		(handler) => handler.eventName === "session_start",
@@ -165,6 +168,7 @@ async function runSessionStart(
 	expect(sessionStart).toBeDefined();
 	await sessionStart?.handler({ type: "session_start", reason: "startup" }, {
 		hasUI: true,
+		sessionManager,
 		ui: {
 			notify(message: string, type?: "info" | "warning" | "error"): void {
 				notifications.push({ message, type });
@@ -173,7 +177,7 @@ async function runSessionStart(
 				statuses.push({ key, text });
 			},
 		},
-	} as ExtensionContext);
+	} as unknown as ExtensionContext);
 }
 
 async function runSessionShutdown(pi: ExtensionApiFake): Promise<void> {
@@ -426,6 +430,102 @@ describe("mcp-wrapper extension", () => {
 				type: "info",
 			},
 		]);
+	});
+
+	test("shares dynamic presentation through one shared SessionManager runtime identity", async () => {
+		// Purpose: normal MCP registration and Subagents V2 presentation must meet through their shared public SessionManager runtime identity.
+		// Input and expected output: one ExtensionAPI registers the dynamic tool, a second ExtensionAPI identity only illustrates extension separation, and the management consumer resolves exact renderers directly through the SessionManager shared by that Pi runtime.
+		// Edge case: another SessionManager in the same process must still classify that dynamic name as unknown.
+		// Dependencies: production mcp-wrapper session_start, public SessionManager identity, and the Subagents V2 presentation consumer.
+		const mcpPi = createExtensionApiFake();
+		const managementPi = createExtensionApiFake();
+		const runtimeSessionManager = SessionManager.inMemory("/tmp/runtime-one");
+		const isolatedSessionManager = SessionManager.inMemory("/tmp/runtime-two");
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [
+							{
+								name: "read",
+								description: "Read a file",
+								inputSchema: { type: "object" },
+							},
+						],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+		mcpWrapper(mcpPi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+		});
+
+		// ACT: run the producer lifecycle, then let the management consumer resolve through the shared manager.
+		await runSessionStart(mcpPi, [], [], runtimeSessionManager);
+		const normalDefinition = mcpPi.tools[0];
+		if (normalDefinition === undefined) {
+			throw new Error("MCP normal definition is missing");
+		}
+		const managementResolution = createToolPresentationRegistry(
+			"/tmp",
+			runtimeSessionManager,
+		).resolve(normalDefinition.name);
+		const isolatedResolution = createToolPresentationRegistry(
+			"/tmp",
+			isolatedSessionManager,
+		).resolve(normalDefinition.name);
+		const managementCallRenderer = managementResolution.definition?.renderCall;
+		if (managementCallRenderer === undefined) {
+			throw new Error("MCP management call renderer is missing");
+		}
+		const managementCallLines = managementCallRenderer(
+			{ path: "/tmp/file" },
+			THEME as never,
+			{ ...RESULT_RENDER_CONTEXT, args: { path: "/tmp/file" } },
+		).render(80);
+
+		// ASSERT: the second API identity is illustrative; renderer identity matches through the shared SessionManager, and a distinct SessionManager remains isolated.
+		expect({
+			separateExtensionApis: mcpPi !== managementPi,
+			category: managementResolution.category,
+			renderCall:
+				managementResolution.definition?.renderCall ===
+				normalDefinition.renderCall,
+			renderResult:
+				managementResolution.definition?.renderResult ===
+				normalDefinition.renderResult,
+			renderedCallHasName: managementCallLines
+				.join("\n")
+				.includes(FILES_READ_TOOL_NAME),
+			isolatedCategory: isolatedResolution.category,
+		}).toEqual({
+			separateExtensionApis: true,
+			category: "package",
+			renderCall: true,
+			renderResult: true,
+			renderedCallHasName: true,
+			isolatedCategory: "unknown",
+		});
 	});
 
 	test("registers tools from complete cache without waiting for discovery", async () => {

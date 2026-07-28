@@ -40,7 +40,7 @@ export const CHILD_RPC_OVERSIZED_JSON_EVENT_ERROR =
 export const CHILD_RPC_MALFORMED_OUTPUT_ERROR =
 	"child pi emitted malformed RPC output";
 /** Synthetic content part marking text skipped from an oversized assistant message. */
-export const CHILD_RPC_SKIPPED_TEXT_PART_TYPE = "run_subagent_text_skipped";
+export const CHILD_RPC_SKIPPED_TEXT_PART_TYPE = "child_rpc_text_skipped";
 
 /** Diagnostics retained from child RPC streams. */
 export interface ChildRpcStreamDiagnostics {

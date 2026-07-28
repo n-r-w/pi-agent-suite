@@ -7,6 +7,7 @@ import type {
 	ExtensionContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { resolveCouncilToolArgsForNames } from "../../pi-package/extensions/convene-council/startup";
 import type { ConveneCouncilConfig } from "../../pi-package/extensions/convene-council/types";
 import type { McpClientManager } from "../../pi-package/extensions/mcp-wrapper/client-manager";
@@ -98,11 +99,13 @@ function createExtensionApiFake(): ExtensionApiFake {
 }
 
 async function runSessionStart(pi: ExtensionApiFake): Promise<void> {
+	const sessionManager = SessionManager.inMemory("/tmp/mcp-system-prompt");
 	for (const item of pi.handlers.filter(
 		(handler) => handler.eventName === "session_start",
 	)) {
 		await item.handler({ type: "session_start", reason: "startup" }, {
 			hasUI: true,
+			sessionManager,
 			ui: {
 				notify(): void {},
 				setStatus(): void {},

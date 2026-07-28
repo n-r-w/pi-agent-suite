@@ -12,7 +12,6 @@ export const HELPER_API_COST_SOURCES = [
 	"context-projection",
 	"convene-council",
 	"custom-compaction",
-	"run-subagent",
 ] as const;
 
 export type HelperApiCostSource = (typeof HELPER_API_COST_SOURCES)[number];

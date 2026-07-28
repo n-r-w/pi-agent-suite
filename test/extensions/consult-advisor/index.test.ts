@@ -21,7 +21,8 @@ import consultAdvisor from "../../../pi-package/extensions/consult-advisor/index
 import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/consult-advisor/rendering";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
-import runSubagent from "../../../pi-package/extensions/run-subagent/index";
+import { SUBAGENTS_PROMPT_MARKER } from "../../../pi-package/extensions/run-subagent/contracts";
+import subagentsV2 from "../../../pi-package/extensions/run-subagent/index";
 import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import {
 	SUBAGENT_AGENT_ID_ENV,
@@ -99,6 +100,7 @@ interface ContextFake {
 	};
 	readonly sessionManager: {
 		getSessionId(): string;
+		getSessionFile(): string;
 		getEntries(): unknown[];
 		getBranch(): SessionEntry[];
 		getLeafId(): string | null;
@@ -268,6 +270,9 @@ function createContext(
 			getSessionId(): string {
 				return "consult-advisor-test-session";
 			},
+			getSessionFile(): string {
+				return "/tmp/consult-advisor-test-session.jsonl";
+			},
 			getEntries(): unknown[] {
 				return entries;
 			},
@@ -388,6 +393,26 @@ function getConsultTool(pi: ExtensionApiFake): ToolDefinition {
 }
 
 /** Emits before-agent-start handlers in registration order and returns the latest non-empty result. */
+/** Initializes every registered extension before prompt composition. */
+async function emitSessionStartHandlers(
+	pi: ExtensionApiFake,
+	ctx: unknown,
+): Promise<void> {
+	const handlers = pi.handlers
+		.filter((item) => item.eventName === "session_start")
+		.map((item) => item.handler)
+		.filter(
+			(handler): handler is (event: unknown, ctx: unknown) => unknown =>
+				typeof handler === "function",
+		);
+	if (handlers.length === 0) {
+		throw new Error("expected session_start handler");
+	}
+	for (const handler of handlers) {
+		await handler({ type: "session_start", reason: "startup" }, ctx);
+	}
+}
+
 async function emitBeforeAgentStartHandlers(
 	pi: ExtensionApiFake,
 	event: unknown,
@@ -1800,21 +1825,21 @@ describe("consult-advisor", () => {
 	test("composes all agent-related extensions consistently across all load orders", async () => {
 		// Purpose: Agent Runtime Composition must keep prompt and active tools load-order invariant.
 		// Input and expected output: all six factory orders produce the same composed prompt and active tools.
-		// Edge case: main agent enables both run_subagent and consult_advisor tools.
+		// Edge case: main agent enables both subagent_start and consult_advisor tools.
 		// Dependencies: this test intentionally loads all three agent-related extension factories.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeAgent(agentDir, "main", "main", "Main prompt", [
-				"run_subagent",
+				"subagent_start",
 				"consult_advisor",
 			]);
 			await writeAgent(agentDir, "helper", "subagent", "Helper prompt");
-			const orders: Array<readonly ("main" | "run" | "consult")[]> = [
-				["main", "run", "consult"],
-				["main", "consult", "run"],
-				["run", "main", "consult"],
-				["run", "consult", "main"],
-				["consult", "main", "run"],
-				["consult", "run", "main"],
+			const orders: Array<readonly ("main" | "subagents" | "consult")[]> = [
+				["main", "subagents", "consult"],
+				["main", "consult", "subagents"],
+				["subagents", "main", "consult"],
+				["subagents", "consult", "main"],
+				["consult", "main", "subagents"],
+				["consult", "subagents", "main"],
 			];
 
 			const results = [];
@@ -1830,9 +1855,9 @@ describe("consult-advisor", () => {
 
 	test("keeps cross-extension composition isolated from parent subagent environment", async () => {
 		// Purpose: cross-extension prompt composition tests must not inherit subagent depth filtering from the runner process.
-		// Input and expected output: parent PI_SUBAGENT_* values are set, but run_subagent guidance remains visible for the selected main agent.
+		// Input and expected output: selecting the main agent clears inherited child depth and keeps its permitted V2 marker.
 		// Edge case: this test can run inside a pi subagent process.
-		// Dependencies: temp agent files plus main-agent-selection, run-subagent, and consult-advisor factories.
+		// Dependencies: temp agent files plus main-agent selection, Subagents V2, and consult-advisor factories.
 		const previousEnv = new Map(
 			SUBAGENT_ENV_KEYS.map((key) => [key, process.env[key]]),
 		);
@@ -1842,18 +1867,20 @@ describe("consult-advisor", () => {
 		try {
 			await withIsolatedAgentDir(async (agentDir) => {
 				await writeAgent(agentDir, "main", "main", "Main prompt", [
-					"run_subagent",
+					"subagent_start",
 				]);
 				await writeAgent(agentDir, "helper", "subagent", "Helper prompt");
-				const pi = createExtensionApiFake(["run_subagent", "consult_advisor"]);
+				const pi = createExtensionApiFake([
+					"subagent_start",
+					"subagent_steer",
+					"subagent_wait",
+					"consult_advisor",
+				]);
 				const ctx = createContext([]);
 				mainAgentSelection(pi);
-				await runSubagent(pi, {
-					spawnPi: () => {
-						throw new Error("not used");
-					},
-				});
+				await subagentsV2(pi);
 				consultAdvisor(pi);
+				await emitSessionStartHandlers(pi, ctx);
 
 				const command = pi.commands.find(
 					(registeredCommand) => registeredCommand.name === "agent",
@@ -1873,8 +1900,8 @@ describe("consult-advisor", () => {
 				}
 				expect(result.systemPrompt).toContain("Base");
 				expect(result.systemPrompt).toContain("Main prompt");
-				expect(result.systemPrompt).toContain("run_subagent");
-				expect(result.systemPrompt).toContain("helper");
+				expect(result.systemPrompt).toContain(SUBAGENTS_PROMPT_MARKER);
+				expect(pi.activeToolCalls.at(-1)).toEqual(["subagent_start"]);
 			});
 		} finally {
 			for (const key of SUBAGENT_ENV_KEYS) {
@@ -1890,46 +1917,58 @@ describe("consult-advisor", () => {
 
 	test("omits advisor guidance when effective agent lacks consult_advisor", async () => {
 		// Purpose: advisor guidance must appear only when the current effective agent can call consult_advisor.
-		// Input and expected output: selected main agent has only run_subagent, so composed prompt omits consult_advisor guidance.
+		// Input and expected output: selected main agent has only subagent_start, so composed prompt omits consult_advisor guidance.
 		// Edge case: consult-advisor extension is loaded and registered, but the selected agent policy disables its tool.
-		// Dependencies: this test loads main-agent-selection, run-subagent, and consult-advisor against temp agent files.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeAgent(agentDir, "main", "main", "Main prompt", [
-				"run_subagent",
-			]);
-			await writeAgent(agentDir, "helper", "subagent", "Helper prompt");
-			const pi = createExtensionApiFake(["run_subagent", "consult_advisor"]);
-			const ctx = createContext([]);
-			mainAgentSelection(pi);
-			await runSubagent(pi, {
-				spawnPi: () => {
-					throw new Error("not used");
-				},
+		// Dependencies: this test loads main-agent selection, Subagents V2, and consult-advisor against temp agent files.
+		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
+		process.env[SUBAGENT_DEPTH_ENV] = "0";
+		try {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeAgent(agentDir, "main", "main", "Main prompt", [
+					"subagent_start",
+				]);
+				await writeAgent(agentDir, "helper", "subagent", "Helper prompt");
+				const pi = createExtensionApiFake([
+					"subagent_start",
+					"subagent_steer",
+					"subagent_wait",
+					"consult_advisor",
+				]);
+				const ctx = createContext([]);
+				mainAgentSelection(pi);
+				await subagentsV2(pi);
+				consultAdvisor(pi);
+				await emitSessionStartHandlers(pi, ctx);
+
+				const command = pi.commands.find(
+					(registeredCommand) => registeredCommand.name === "agent",
+				);
+				if (command === undefined) {
+					throw new Error("agent command was not captured");
+				}
+				await command.handler("main", ctx);
+				const result = await emitBeforeAgentStartHandlers(
+					pi,
+					{ systemPrompt: "Base" },
+					ctx,
+				);
+
+				if (!isPromptResult(result)) {
+					throw new Error("before_agent_start did not return a system prompt");
+				}
+				expect(result.systemPrompt).toContain("Base");
+				expect(result.systemPrompt).toContain("Main prompt");
+				expect(result.systemPrompt).toContain(SUBAGENTS_PROMPT_MARKER);
+				expect(result.systemPrompt).toContain("agentId: helper");
+				expect(result.systemPrompt).not.toContain("consult_advisor");
 			});
-			consultAdvisor(pi);
-
-			const command = pi.commands.find(
-				(registeredCommand) => registeredCommand.name === "agent",
-			);
-			if (command === undefined) {
-				throw new Error("agent command was not captured");
+		} finally {
+			if (previousDepth === undefined) {
+				delete process.env[SUBAGENT_DEPTH_ENV];
+			} else {
+				process.env[SUBAGENT_DEPTH_ENV] = previousDepth;
 			}
-			await command.handler("main", ctx);
-			const result = await emitBeforeAgentStartHandlers(
-				pi,
-				{ systemPrompt: "Base" },
-				ctx,
-			);
-
-			if (!isPromptResult(result)) {
-				throw new Error("before_agent_start did not return a system prompt");
-			}
-			expect(result.systemPrompt).toContain("Base");
-			expect(result.systemPrompt).toContain("Main prompt");
-			expect(result.systemPrompt).toContain("run_subagent");
-			expect(result.systemPrompt).toContain("helper");
-			expect(result.systemPrompt).not.toContain("consult_advisor");
-		});
+		}
 	});
 
 	test("rejects malformed model id during config validation", async () => {
@@ -2108,22 +2147,23 @@ describe("consult-advisor", () => {
 
 /** Loads agent-related extensions in a specific order, selects the main agent, and returns composed runtime state. */
 async function loadAgentRelatedOrder(
-	order: readonly ("main" | "run" | "consult")[],
+	order: readonly ("main" | "subagents" | "consult")[],
 ): Promise<{
 	readonly promptResult: unknown;
 	readonly activeToolCalls: string[][];
 }> {
-	const pi = createExtensionApiFake(["run_subagent", "consult_advisor"]);
+	const pi = createExtensionApiFake([
+		"subagent_start",
+		"subagent_steer",
+		"subagent_wait",
+		"consult_advisor",
+	]);
 	const ctx = createContext([]);
 	for (const extension of order) {
 		if (extension === "main") {
 			mainAgentSelection(pi);
-		} else if (extension === "run") {
-			await runSubagent(pi, {
-				spawnPi: () => {
-					throw new Error("not used");
-				},
-			});
+		} else if (extension === "subagents") {
+			await subagentsV2(pi);
 		} else {
 			consultAdvisor(pi);
 		}

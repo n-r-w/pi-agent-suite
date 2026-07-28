@@ -1,4 +1,7 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
@@ -55,7 +58,7 @@ export default function conveneCouncil(
 		});
 	}
 
-	pi.registerTool({
+	const definition: ToolDefinition<typeof ConveneCouncilParameters> = {
 		name: TOOL_NAME,
 		label: "Convene council",
 		description:
@@ -81,5 +84,6 @@ export default function conveneCouncil(
 				...(onUpdate !== undefined ? { onUpdate } : {}),
 			});
 		},
-	});
+	};
+	pi.registerTool(definition);
 }

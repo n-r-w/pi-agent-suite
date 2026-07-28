@@ -39,10 +39,8 @@ export interface AgentRuntimeComposition {
 	): void;
 	clearMainAgentContribution(): void;
 	getMainAgentContribution(): MainAgentContribution | undefined;
-	setRunSubagentContribution(
-		contribution: PromptContribution | undefined,
-	): void;
-	setRunSubagentActiveToolFilter(filter: ActiveToolFilter | undefined): void;
+	setSubagentsContribution(contribution: PromptContribution | undefined): void;
+	setSubagentsActiveToolFilter(filter: ActiveToolFilter | undefined): void;
 	setConsultAdvisorContribution(
 		contribution: PromptContribution | undefined,
 	): void;
@@ -117,8 +115,8 @@ export function markAgentRuntimeCompositionStale(pi: ExtensionAPI): void {
 /** Owns final prompt and active-tool application for agent-related extensions. */
 class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private mainAgentContribution: MainAgentContribution | undefined;
-	private runSubagentContribution: PromptContribution | undefined;
-	private runSubagentActiveToolFilter: ActiveToolFilter | undefined;
+	private subagentsContribution: PromptContribution | undefined;
+	private subagentsActiveToolFilter: ActiveToolFilter | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
 	private conveneCouncilContribution: PromptContribution | undefined;
 	private baselineActiveTools: string[] | undefined;
@@ -134,8 +132,8 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			const activeToolNames = await this.resolveActiveToolNames(ctx);
 			const { cwd } = ctx;
 			const mainAgentPrompt = this.mainAgentContribution?.prompt;
-			const runSubagentPrompt = await resolvePromptContribution(
-				this.runSubagentContribution,
+			const subagentsPrompt = await resolvePromptContribution(
+				this.subagentsContribution,
 				activeToolNames,
 				cwd,
 			);
@@ -151,7 +149,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			);
 			const contributionPrompts = [
 				mainAgentPrompt,
-				runSubagentPrompt,
+				subagentsPrompt,
 				consultAdvisorPrompt,
 				conveneCouncilPrompt,
 			].filter((prompt) => prompt !== undefined && prompt.length > 0);
@@ -163,7 +161,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 					basePromptLength:
 						(event as BeforeAgentStartEventLike).systemPrompt?.length ?? 0,
 					mainAgentPromptLength: mainAgentPrompt?.length ?? 0,
-					runSubagentPromptLength: runSubagentPrompt?.length ?? 0,
+					subagentsPromptLength: subagentsPrompt?.length ?? 0,
 					consultAdvisorPromptLength: consultAdvisorPrompt?.length ?? 0,
 					conveneCouncilPromptLength: conveneCouncilPrompt?.length ?? 0,
 					contributionCount: contributionPrompts.length,
@@ -227,16 +225,16 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		return this.mainAgentContribution;
 	}
 
-	public setRunSubagentContribution(
+	public setSubagentsContribution(
 		contribution: PromptContribution | undefined,
 	): void {
-		this.runSubagentContribution = contribution;
+		this.subagentsContribution = contribution;
 	}
 
-	public setRunSubagentActiveToolFilter(
+	public setSubagentsActiveToolFilter(
 		filter: ActiveToolFilter | undefined,
 	): void {
-		this.runSubagentActiveToolFilter = filter;
+		this.subagentsActiveToolFilter = filter;
 	}
 
 	public setConsultAdvisorContribution(
@@ -257,9 +255,9 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	): Promise<readonly string[]> {
 		const currentToolNames = this.pi.getActiveTools();
 		const filteredToolNames =
-			this.runSubagentActiveToolFilter === undefined
+			this.subagentsActiveToolFilter === undefined
 				? currentToolNames
-				: await this.runSubagentActiveToolFilter(currentToolNames, ctx);
+				: await this.subagentsActiveToolFilter(currentToolNames, ctx);
 		if (!areStringArraysEqual(currentToolNames, filteredToolNames)) {
 			this.pi.setActiveTools([...filteredToolNames]);
 		}

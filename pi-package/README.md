@@ -112,7 +112,7 @@ Recommended MCP servers:
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |
 | `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](docs/extensions/main-agent-selection.md) |
-| `run-subagent` | Enabled | Adds strict `run_subagent` and `resume_subagent` tools with numbered child sessions and a navigable live widget. | `run-subagent/config.json`: `enabled`, `maxDepth`, `widgetLineBudget`, separate description files. | [docs/extensions/run-subagent.md](docs/extensions/run-subagent.md) |
+| `run-subagent` | Enabled | Adds asynchronous `subagent_start`, `subagent_steer`, and `subagent_wait` tools plus the `/subagents` (`Ctrl+Shift+G`) management screen; normal mode has no widget. | `run-subagent/config.json`: `enabled`, `maxDepth`, `startDescriptionPromptFile`, `steerDescriptionPromptFile`, `waitDescriptionPromptFile`. | [docs/extensions/run-subagent.md](docs/extensions/run-subagent.md) |
 | `structured-prompt` | Enabled | Adds `/prompt` and `Ctrl+Alt+P` for building structured user requests. | `structured-prompt/config.json`: `enabled`. | [docs/extensions/structured-prompt.md](docs/extensions/structured-prompt.md) |
 | `ask-llm` | Enabled | Adds `/ask` for one-off model questions that are not saved to the current session. | `ask-llm/config.json`: `enabled`, `model`, `systemPromptFile`, `retry`. | [docs/extensions/ask-llm.md](docs/extensions/ask-llm.md) |
 | `consult-advisor` | Enabled | Adds the `consult_advisor` tool for an independent model opinion. | `consult-advisor/config.json`: `enabled`, `model`, `promptFile`, `debugPayloadFile`, `retry`. | [docs/extensions/consult-advisor.md](docs/extensions/consult-advisor.md) |
@@ -231,10 +231,6 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 ### v0.17.0 - 2026-07-15
 
-- Breaking change: continuing a child session moved from `run_subagent` to the separately allowed `resume_subagent` tool.
-- Added resumable child sessions with stable local `#N` identifiers and exact child JSONL continuation.
-- Persisted logical subagent rows and browser selection across main-session restarts while preserving completed descendants.
-- Added separate `runDescriptionPromptFile` and `resumeDescriptionPromptFile` settings and aligned delegation guidance with the active tool set.
 - Removed the obsolete `url-scheme` extension.
 
 ### v0.16.1 - 2026-07-11
@@ -242,9 +238,6 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 ### v0.16.0 - 2026-07-11
 
-- Breaking change: `run_subagent` now requires a concise, unique `taskName` for each run.
-- Added `/subagents` and `Ctrl+Shift+G` to browse runs and focus the live widget on one task.
-- Reworked subagent progress rendering for nested runs, narrow terminals, Unicode text, and terminal control sequences.
 - Refined bundled instructions for parallel subagent tasks, prompt structure, compatibility, and new document formats.
 - Added `max` thinking level support
 
@@ -257,7 +250,6 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 - Breaking change: replaced `context-projection.placeholder` with `omittedNotice` and `summaryNotice`; stale configurations now fail startup with a direct migration error.
 - Shared tool-result summary prompts and helper logic now support `context-projection` and oversized `custom-compaction` requests.
 - Fixed `custom-compaction` overflow retry recovery when retained context ends with an assistant error.
-- `run-subagent` now stores child JSONL sessions with result metadata and estimates context use for zero-usage overflow errors.
 - Auxiliary LLM requests and child agents now use isolated Pi-compatible UUIDv7 session IDs, fixing Luna routing through Codex OAuth.
 - Updated Pi dependencies to `0.80.5`.
 
