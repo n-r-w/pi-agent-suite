@@ -34,7 +34,7 @@ const FEEDBACK = {
 		taskName: "Trace wire evidence",
 		invocationMetadata: INVOCATION_METADATA,
 	},
-};
+} as const;
 const WAIT_EVIDENCE = {
 	presentationKind: "wait-feedback",
 	feedbackId: FEEDBACK.feedbackId,
@@ -42,14 +42,14 @@ const WAIT_EVIDENCE = {
 	waitRequestId: "wait-1",
 	waitElapsedMs: 15_000,
 	feedback: FEEDBACK,
-};
+} as const;
 const ACCEPTED_EVIDENCE = {
 	presentationKind: "accepted",
 	agentId: "SubAgentCoder",
 	taskName: "Trace wire evidence",
 	modelId: "openai/test-model",
 	thinking: "high",
-};
+} as const;
 
 describe("agent operation wire parser", () => {
 	test("rejects unknown and conditional keys in nested operation objects", () => {

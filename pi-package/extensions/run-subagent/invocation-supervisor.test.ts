@@ -205,7 +205,6 @@ class CoordinatorStoreFake implements OwnerSessionStore {
 	/** Records offline reconciliation after every configured closure writer release. */
 	public async reconcileOffline(
 		owner: OwnerIdentity,
-		_maxDepth: number,
 	): Promise<readonly LogicalSession[]> {
 		this.reconciledOwners.push(owner.ownerPiSessionId);
 		this.reconciledAfterCompleteRelease.push(
@@ -1449,6 +1448,7 @@ describe("InvocationSupervisor", () => {
 			creationOrder: 1,
 			invocationId: acceptanceA.invocationId,
 			runtimeLeaseId: acceptanceA.runtimeLeaseId,
+			invocationMetadata: invocationMetadataFor(acceptanceA),
 			state: "active",
 		};
 		const sessionB: LogicalSession = {
@@ -1536,7 +1536,6 @@ describe("InvocationSupervisor", () => {
 			store,
 			owner: ownerA,
 			stoppingRuntimeLeaseId: acceptanceA.runtimeLeaseId,
-			maxDepth: 3,
 		});
 		await Promise.resolve();
 		const facts = {
@@ -1667,6 +1666,7 @@ describe("InvocationSupervisor", () => {
 				creationOrder: 1,
 				invocationId: acceptanceA.invocationId,
 				runtimeLeaseId: acceptanceA.runtimeLeaseId,
+				invocationMetadata: invocationMetadataFor(acceptanceA),
 				state: "active",
 			};
 			const sessionB: LogicalSession = {
@@ -1805,19 +1805,18 @@ describe("InvocationSupervisor", () => {
 							);
 							return store.releaseRemoteLease(runtimeLeaseId);
 						},
-						reconcileOffline: async (releasedOwner, maxDepth) => {
+						reconcileOffline: async (releasedOwner) => {
 							reconciledOwners.push(releasedOwner.ownerPiSessionId);
 							reconciledAfterCompleteRelease.push(
 								expectedReleases.every((runtimeLeaseId) =>
 									releasedLeases.includes(runtimeLeaseId),
 								),
 							);
-							return store.reconcileOffline(releasedOwner, maxDepth);
+							return store.reconcileOffline(releasedOwner);
 						},
 					},
 					owner: ownerA,
 					stoppingRuntimeLeaseId: request.runtimeLeaseId,
-					maxDepth: 3,
 				});
 				return { acknowledged: true };
 			};
@@ -1873,7 +1872,7 @@ describe("InvocationSupervisor", () => {
 			const firstFacts = readGracefulOwnerFacts(
 				SessionManager.open(ownerASessionFile, directory, directory),
 			);
-			const repeatedSessions = await store.reconcileOffline(ownerA, 3);
+			const repeatedSessions = await store.reconcileOffline(ownerA);
 			await coordinator.applyReconciledSessions(repeatedSessions);
 			const repeatedFacts = readGracefulOwnerFacts(
 				SessionManager.open(ownerASessionFile, directory, directory),
@@ -2002,6 +2001,7 @@ describe("InvocationSupervisor", () => {
 				creationOrder: 1,
 				invocationId: acceptanceA.invocationId,
 				runtimeLeaseId: acceptanceA.runtimeLeaseId,
+				invocationMetadata: invocationMetadataFor(acceptanceA),
 				state: "active",
 			};
 			const sessionB: LogicalSession = {
@@ -2105,18 +2105,17 @@ describe("InvocationSupervisor", () => {
 						);
 						return store.releaseRemoteLease(runtimeLeaseId);
 					},
-					reconcileOffline: async (releasedOwner, maxDepth) => {
+					reconcileOffline: async (releasedOwner) => {
 						reconciledOwners.push(releasedOwner.ownerPiSessionId);
 						reconciledAfterCompleteRelease.push(
 							expectedReleases.every((runtimeLeaseId) =>
 								releasedLeases.includes(runtimeLeaseId),
 							),
 						);
-						return store.reconcileOffline(releasedOwner, maxDepth);
+						return store.reconcileOffline(releasedOwner);
 					},
 				},
 				owner: rootOwner,
-				maxDepth: 2,
 			});
 			store.unregisterActive(rootOwner.ownerPiSessionId);
 			const recoveredClosure = [...releasedLeases];
@@ -2130,7 +2129,7 @@ describe("InvocationSupervisor", () => {
 			const firstFacts = readGracefulOwnerFacts(
 				SessionManager.open(ownerASessionFile, directory, directory),
 			);
-			const repeatedSessions = await store.reconcileOffline(ownerA, 2);
+			const repeatedSessions = await store.reconcileOffline(ownerA);
 			await coordinator.applyReconciledSessions(repeatedSessions);
 			const repeatedFacts = readGracefulOwnerFacts(
 				SessionManager.open(ownerASessionFile, directory, directory),
@@ -2345,7 +2344,6 @@ describe("InvocationSupervisor", () => {
 				runtimeLeaseId: acceptance.runtimeLeaseId,
 				reason: "channel_disconnected",
 			},
-			2,
 		).then(() => {
 			recoverySettled = true;
 		});
@@ -2429,12 +2427,10 @@ describe("InvocationSupervisor", () => {
 			"response_delivery_unknown",
 		] as const) {
 			try {
-				await recoverRuntimeFailure(
-					coordinator,
-					store,
-					{ runtimeLeaseId: acceptance.runtimeLeaseId, reason },
-					2,
-				);
+				await recoverRuntimeFailure(coordinator, store, {
+					runtimeLeaseId: acceptance.runtimeLeaseId,
+					reason,
+				});
 			} catch (error) {
 				recoveryErrors.push(
 					error instanceof Error ? error.message : String(error),

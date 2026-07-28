@@ -62,6 +62,8 @@ import type { RuntimeRequest } from "./runtime-wire";
 
 const PROMPT_COMMAND_ID = "prompt";
 const WORKER_READY_TIMEOUT_MS = 10_000;
+/** Converts compact k-suffixed projection counts to complete token counts. */
+const TOKENS_PER_THOUSAND = 1_000;
 
 interface RpcPending {
 	readonly command: "prompt" | "steer" | "get_entries";
@@ -588,49 +590,53 @@ export class InvocationSupervisor implements InvocationControl {
 		});
 		handle.process.on("close", (code, signal) => {
 			handle.processing
-				.then(async () => {
-					const parseError = await handle.parser.flushStdout((event) => {
-						this.handleRpcEvent(handle, event);
-					});
-					handle.parser.flushStderr();
-					if (parseError !== undefined) {
-						this.rejectPending(handle, new Error(parseError));
-					}
-					this.rejectPending(
-						handle,
-						new InvocationStartError(
-							"start_failed",
-							formatExitFailure(code, signal, handle.parser.diagnostics.stderr),
-						),
-					);
-					if (
-						handle.accepted &&
-						!handle.terminalObserved &&
-						handle.teardown === undefined
-					) {
-						await this.options.onEvent({
-							kind: "accepted-exit",
-							invocationId: handle.acceptance.invocationId,
-							exitCode: code,
-							signal,
-							...(handle.contextTokens === undefined
-								? {}
-								: { contextTokens: handle.contextTokens }),
-							...(handle.projectionSavedTokens === undefined
-								? {}
-								: {
-										projectionSavedTokens:
-											handle.projectionSavedTokens,
-									}),
-						});
-					}
-					// A terminal or overlapping teardown leaves removal to the shared teardown promise.
-					if (!handle.terminalObserved && handle.teardown === undefined) {
-						this.handles.delete(handle.acceptance.invocationId);
-					}
-				})
+				.then(() => this.handleProcessClose(handle, code, signal))
 				.catch(() => undefined);
 		});
+	}
+
+	/** Finalizes buffered diagnostics and accepted state after one child exits. */
+	private async handleProcessClose(
+		handle: InvocationHandle,
+		code: number | null,
+		signal: NodeJS.Signals | null,
+	): Promise<void> {
+		const parseError = await handle.parser.flushStdout((event) => {
+			this.handleRpcEvent(handle, event);
+		});
+		handle.parser.flushStderr();
+		if (parseError !== undefined) {
+			this.rejectPending(handle, new Error(parseError));
+		}
+		this.rejectPending(
+			handle,
+			new InvocationStartError(
+				"start_failed",
+				formatExitFailure(code, signal, handle.parser.diagnostics.stderr),
+			),
+		);
+		if (
+			handle.accepted &&
+			!handle.terminalObserved &&
+			handle.teardown === undefined
+		) {
+			await this.options.onEvent({
+				kind: "accepted-exit",
+				invocationId: handle.acceptance.invocationId,
+				exitCode: code,
+				signal,
+				...(handle.contextTokens === undefined
+					? {}
+					: { contextTokens: handle.contextTokens }),
+				...(handle.projectionSavedTokens === undefined
+					? {}
+					: { projectionSavedTokens: handle.projectionSavedTokens }),
+			});
+		}
+		// A terminal or overlapping teardown leaves removal to the shared teardown promise.
+		if (!handle.terminalObserved && handle.teardown === undefined) {
+			this.handles.delete(handle.acceptance.invocationId);
+		}
 	}
 
 	/** Routes only documented RPC response and session-event fields. */
@@ -909,7 +915,9 @@ function readProjectionUpdate(
 	const usesThousands = normalized.endsWith("k");
 	const numericText = normalized.slice(1, usesThousands ? -1 : undefined);
 	const numericValue = Number(numericText);
-	const tokens = Math.round(numericValue * (usesThousands ? 1_000 : 1));
+	const tokens = Math.round(
+		numericValue * (usesThousands ? TOKENS_PER_THOUSAND : 1),
+	);
 	return Number.isSafeInteger(tokens) && tokens > 0
 		? { savedTokens: tokens }
 		: {};

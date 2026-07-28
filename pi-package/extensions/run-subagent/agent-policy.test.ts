@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentDefinition } from "../../shared/agent-registry";
-import { SUBAGENT_TOOL_PATTERNS_ENV } from "../../shared/subagent-environment";
+import {
+	SUBAGENT_DEPTH_ENV,
+	SUBAGENT_TOOL_PATTERNS_ENV,
+} from "../../shared/subagent-environment";
 import {
 	applyChildToolPolicy,
 	isAgentAvailableForCaller,
+	publishPromptContribution,
 	resolveCallerSelectedAgentId,
 	resolveEffectiveCallableAgentPolicy,
 } from "./agent-policy";
@@ -56,6 +60,7 @@ function parentSession(): LogicalSession {
 		creationOrder: 1,
 		invocationId: "parent-invocation",
 		runtimeLeaseId: "parent-lease",
+		invocationMetadata: { startedAtMs: 0, elapsedMs: 0 },
 		state: "active",
 	};
 }
@@ -88,6 +93,45 @@ describe("effective callable-agent policy", () => {
 				delete process.env[SUBAGENT_TOOL_PATTERNS_ENV];
 			} else {
 				process.env[SUBAGENT_TOOL_PATTERNS_ENV] = previous;
+			}
+		}
+	});
+
+	test("removes only new-session delegation at maxDepth", async () => {
+		// Purpose: maxDepth limits new descendants without disabling control of saved direct children.
+		// Input and expected output: a boundary-depth owner loses subagent_start but retains steer and wait.
+		// Edge case: prompt composition runs after the active-tool filter with no callable start guidance.
+		// Dependencies: production runtime composition and Subagents V2 active-tool policy.
+		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
+		process.env[SUBAGENT_DEPTH_ENV] = "1";
+		let activeTools = ["subagent_start", "subagent_steer", "subagent_wait"];
+		let beforeAgentStart:
+			| ((event: unknown, ctx: unknown) => Promise<unknown>)
+			| undefined;
+		const pi = {
+			events: { emit: () => undefined },
+			on: (eventName: string, handler: typeof beforeAgentStart) => {
+				if (eventName === "before_agent_start") {
+					beforeAgentStart = handler;
+				}
+			},
+			getActiveTools: () => [...activeTools],
+			setActiveTools: (toolNames: string[]) => {
+				activeTools = [...toolNames];
+			},
+		} as unknown as ExtensionAPI;
+		try {
+			publishPromptContribution(pi, 1);
+			if (beforeAgentStart === undefined) {
+				throw new Error("runtime composition handler was not registered");
+			}
+			await beforeAgentStart({ systemPrompt: "Base" }, { cwd: "/tmp" });
+			expect(activeTools).toEqual(["subagent_steer", "subagent_wait"]);
+		} finally {
+			if (previousDepth === undefined) {
+				delete process.env[SUBAGENT_DEPTH_ENV];
+			} else {
+				process.env[SUBAGENT_DEPTH_ENV] = previousDepth;
 			}
 		}
 	});

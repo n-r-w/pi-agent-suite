@@ -1,1 +1,2 @@
-Wait for the first terminal feedback from selected active direct-child sessions until the requested timeout. The wait does not stop or change child execution.
+Wait for first terminal feedback from selected active sessions until requested timeout.
+Wait does not stop or change child execution.

@@ -293,13 +293,14 @@ function filterSubagentTools(
 	depth: number,
 	maxDepth: number,
 ): readonly string[] {
-	if (depth >= maxDepth) {
-		return toolNames.filter((name) => !V2_TOOL_NAMES.has(name));
-	}
+	const depthFiltered =
+		depth >= maxDepth
+			? toolNames.filter((name) => name !== "subagent_start")
+			: toolNames;
 	if (mainAgent?.tools === undefined) {
-		return toolNames;
+		return depthFiltered;
 	}
-	return toolNames.filter(
+	return depthFiltered.filter(
 		(name) => !V2_TOOL_NAMES.has(name) || mainAgent.tools?.includes(name),
 	);
 }

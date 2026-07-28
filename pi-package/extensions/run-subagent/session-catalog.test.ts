@@ -19,6 +19,7 @@ function session(ownerPiSessionId: string, id: number): LogicalSession {
 		creationOrder: id,
 		invocationId: `invocation-${ownerPiSessionId}-${id}`,
 		runtimeLeaseId: `lease-${ownerPiSessionId}-${id}`,
+		invocationMetadata: { startedAtMs: 0, elapsedMs: 0 },
 		state: "active",
 	};
 }

@@ -77,6 +77,7 @@ class PromptMessageComponent implements ExpandableComponent {
 			render: (innerWidth: number) => [
 				...renderPrompt(this.text, innerWidth, this.theme, this.expanded),
 			],
+			invalidate: () => {},
 		});
 		return box.render(width);
 	}

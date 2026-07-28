@@ -126,12 +126,7 @@ test("establishes production worker IPC and settles one response", async () => {
 			onRuntimeFailure: (failure) => {
 				failures.push(failure);
 				if (coordinator !== undefined) {
-					failureHandling = recoverRuntimeFailure(
-						coordinator,
-						store,
-						failure,
-						2,
-					);
+					failureHandling = recoverRuntimeFailure(coordinator, store, failure);
 				}
 			},
 			spawnProcess: (command, args, options) => {
@@ -227,6 +222,11 @@ test("establishes production worker IPC and settles one response", async () => {
 			sessionKey: descendantSession.key,
 			status: "success",
 			output: "seed active branch",
+			presentation: {
+				agentId: descendantSession.agentId,
+				taskName: descendantSession.taskName,
+				invocationMetadata: descendantSession.invocationMetadata,
+			},
 		});
 		const nestedAppendResponse = await bridge.request(
 			parent.runtimeLeaseId,
@@ -288,7 +288,7 @@ test("establishes production worker IPC and settles one response", async () => {
 			);
 			writerReleased =
 				store.releaseRemoteLease(parent.runtimeLeaseId).length === 0;
-			await store.reconcileOffline(parentOwner, 2);
+			await store.reconcileOffline(parentOwner);
 			const parentManager = SessionManager.open(
 				parentOwner.ownerSessionFile,
 				parent.childSessionDir,

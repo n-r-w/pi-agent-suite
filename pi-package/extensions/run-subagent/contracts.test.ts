@@ -119,6 +119,11 @@ describe("Subagents V2 contracts", () => {
 		// Edge case: malformed feedback without its status-specific field fails through start_failed.
 		// Dependencies: production result parser and feedback projector.
 		const key = { ownerPiSessionId: "owner", ownerLocalSessionId: 7 };
+		const presentation = {
+			agentId: "SubAgentCoder",
+			taskName: "Project feedback",
+			invocationMetadata: { startedAtMs: 0, elapsedMs: 0 },
+		};
 		expect([
 			parseSubagentNormalResult({ outcome: "accepted", sessionId: 7 }),
 			parseSubagentNormalResult({ outcome: "timeout" }),
@@ -129,6 +134,7 @@ describe("Subagents V2 contracts", () => {
 				sessionKey: key,
 				status: "success",
 				output: "done",
+				presentation,
 			}),
 			feedbackResult({
 				feedbackId: "failure",
@@ -136,6 +142,7 @@ describe("Subagents V2 contracts", () => {
 				sessionKey: key,
 				status: "failure",
 				error: "failed",
+				presentation,
 			}),
 			feedbackResult({
 				feedbackId: "abort",
@@ -143,6 +150,7 @@ describe("Subagents V2 contracts", () => {
 				sessionKey: key,
 				status: "abort",
 				error: "aborted",
+				presentation,
 			}),
 			failureCode(() =>
 				parseSubagentNormalResult({

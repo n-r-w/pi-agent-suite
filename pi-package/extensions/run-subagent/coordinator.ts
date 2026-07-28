@@ -30,6 +30,12 @@ import type { RuntimeChannelFailure } from "./runtime-bridge";
 import type { SessionCatalogState } from "./session-catalog";
 import type { WaitRuntime } from "./wait-coordinator";
 
+/** Represents the only successful result produced by start and steering operations. */
+type AcceptedResult = Extract<
+	SubagentNormalResult,
+	{ readonly outcome: "accepted" }
+>;
+
 /** Supplies coordinator time facts without granting presentation clock ownership. */
 interface CoordinatorClock {
 	monotonicNow(): number;
@@ -44,6 +50,18 @@ interface SubagentCoordinatorOptions {
 	readonly store: OwnerSessionStore;
 	readonly clock: CoordinatorClock;
 	readonly isAgentAvailable: (owner: OwnerIdentity, agentId: string) => boolean;
+}
+
+/** Carries one terminal observation through durable feedback settlement. */
+interface SessionCompletion {
+	readonly session: LogicalSession;
+	readonly state: "terminal-success" | "terminal-failure" | "terminal-aborted";
+	readonly outcome: {
+		readonly status: "success" | "failure" | "abort";
+		readonly text: string;
+	};
+	readonly invocationMetadata: InvocationMetadata;
+	readonly terminalObservedAt: number;
 }
 
 /** Defines one admitted wait execution identity. */
@@ -242,7 +260,7 @@ export class SubagentCoordinator {
 		owner: OwnerIdentity,
 		request: SubagentStartRequest,
 		scope: CoordinationScope = {},
-	): Promise<SubagentNormalResult> {
+	): Promise<AcceptedResult> {
 		this.rememberOwner(owner);
 		const operation = this.operationCancellations.open(
 			scope.operationCorrelation,
@@ -292,7 +310,7 @@ export class SubagentCoordinator {
 		invocationStart,
 		sessionKey,
 		ownerLocalSessionId,
-	}: NewSessionPublication): Promise<SubagentNormalResult> {
+	}: NewSessionPublication): Promise<AcceptedResult> {
 		// Publication authority decides before any durable or in-memory session becomes visible.
 		await this.requireAcceptanceAuthority(acceptance, operation);
 		const common = {
@@ -365,7 +383,7 @@ export class SubagentCoordinator {
 		owner: OwnerIdentity,
 		request: SubagentSteerRequest,
 		scope: CoordinationScope = {},
-	): Promise<SubagentNormalResult> {
+	): Promise<AcceptedResult> {
 		this.rememberOwner(owner);
 		const operation = this.operationCancellations.open(
 			scope.operationCorrelation,
@@ -392,7 +410,7 @@ export class SubagentCoordinator {
 	public submitManagementMessage(
 		sessionKey: SessionKey,
 		prompt: string,
-	): Promise<SubagentNormalResult> {
+	): Promise<AcceptedResult> {
 		return this.enqueue(() => {
 			const session = this.resolveSessionKey(sessionKey);
 			const owner = this.ownerOf(session);
@@ -528,9 +546,7 @@ export class SubagentCoordinator {
 			presentationKind: "accepted",
 			agentId: session.agentId,
 			taskName: session.taskName,
-			...(metadata?.modelId === undefined
-				? {}
-				: { modelId: metadata.modelId }),
+			...(metadata?.modelId === undefined ? {} : { modelId: metadata.modelId }),
 			...(metadata?.thinking === undefined
 				? {}
 				: { thinking: metadata.thinking }),
@@ -560,34 +576,31 @@ export class SubagentCoordinator {
 			}
 			// Wait eligibility belongs to serialized observation, not later durability completion.
 			const terminalObservedAt = this.options.clock.monotonicNow();
-			const invocationMetadata = this.finalInvocationMetadata(
-				session,
-				event,
-			);
+			const invocationMetadata = this.finalInvocationMetadata(session, event);
 			if (event.kind === "accepted-exit") {
-				await this.completeSession(
+				await this.completeSession({
 					session,
-					"terminal-failure",
-					{
+					state: "terminal-failure",
+					outcome: {
 						status: "failure",
 						text: formatAcceptedExit(event.exitCode, event.signal),
 					},
 					invocationMetadata,
 					terminalObservedAt,
-				);
+				});
 				return;
 			}
 			const terminalState = terminalStateFor(event.status);
-			await this.completeSession(
+			await this.completeSession({
 				session,
-				terminalState,
-				{
+				state: terminalState,
+				outcome: {
 					status: event.status,
 					text: event.text,
 				},
 				invocationMetadata,
 				terminalObservedAt,
-			);
+			});
 		});
 	}
 
@@ -827,16 +840,13 @@ export class SubagentCoordinator {
 	}
 
 	/** Preserves one normal terminal before remote durability and feedback routing. */
-	private async completeSession(
-		session: LogicalSession,
-		state: "terminal-success" | "terminal-failure" | "terminal-aborted",
-		outcome: {
-			readonly status: "success" | "failure" | "abort";
-			readonly text: string;
-		},
-		invocationMetadata: InvocationMetadata,
-		terminalObservedAt: number,
-	): Promise<void> {
+	private async completeSession({
+		session,
+		state,
+		outcome,
+		invocationMetadata,
+		terminalObservedAt,
+	}: SessionCompletion): Promise<void> {
 		const feedback = createFeedback(session, outcome, invocationMetadata);
 		const owner = this.ownerOf(session);
 		const terminalRecord: TerminalJournalRecord = {
@@ -980,7 +990,7 @@ export class SubagentCoordinator {
 	/** Shares active steer and terminal continuation without weakening caller authorization. */
 	private steerSession(
 		request: SteerSessionOperation,
-	): Promise<SubagentNormalResult> {
+	): Promise<AcceptedResult> {
 		return request.session.state === "active"
 			? this.steerActiveSession(request)
 			: this.continueTerminalSession(request);
@@ -992,7 +1002,7 @@ export class SubagentCoordinator {
 		prompt,
 		scope,
 		operation,
-	}: SteerSessionOperation): Promise<SubagentNormalResult> {
+	}: SteerSessionOperation): Promise<AcceptedResult> {
 		try {
 			await this.options.invocations.steer(session.invocationId, prompt, {
 				...(scope.signal === undefined ? {} : { signal: scope.signal }),
@@ -1023,7 +1033,7 @@ export class SubagentCoordinator {
 		prompt,
 		scope,
 		operation,
-	}: SteerSessionOperation): Promise<SubagentNormalResult> {
+	}: SteerSessionOperation): Promise<AcceptedResult> {
 		const invocationStart = this.captureInvocationStart();
 		let acceptance: InvocationAcceptance;
 		try {

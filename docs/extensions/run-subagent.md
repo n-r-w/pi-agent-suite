@@ -26,7 +26,7 @@ If the file is missing, the extension uses:
 | Name | Required | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables runtime behavior. When `false`, all three tool definitions remain registered, the runtime and management screen do not start, and every execution fails closed with `start_failed`. |
-| `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum delegation depth. At or beyond this depth, the three tools and callable-agent guidance are removed from the active agent environment. |
+| `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum depth for creating new logical sessions. At or beyond this depth, `subagent_start` and callable-agent guidance are removed; `subagent_steer` and `subagent_wait` remain available for saved direct children. |
 | `startDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/start-description.md` | Replaces the model-visible `subagent_start` description with the file's trimmed content. |
 | `steerDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/steer-description.md` | Replaces the model-visible `subagent_steer` description with the file's trimmed content. |
 | `waitDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/wait-description.md` | Replaces the model-visible `subagent_wait` description with the file's trimmed content. |
@@ -332,7 +332,7 @@ Child sessions are stored under:
 
 When `PI_AGENT_SUITE_DIR` is set, the same `run-subagent/sessions/` path is used under that suite directory.
 
-The owning Pi session saves logical-session identity, direct-owner relationships, accepted continuations, terminal outcomes, and whether feedback was returned by a wait or added to history. This state remains outside model context. Reopening recursively restores saved descendants up to `maxDepth` with the same owner-local IDs and saved child conversations.
+The owning Pi session saves logical-session identity, direct-owner relationships, accepted continuations, terminal outcomes, and whether feedback was returned by a wait or added to history. This state remains outside model context. Reopening recursively restores every saved descendant with the same owner-local ID and saved child conversation, regardless of the current `maxDepth`. Lowering `maxDepth` prevents deeper `subagent_start` calls but does not hide historical sessions.
 
 A saved invocation that was active but has no saved terminal outcome reopens as terminal abort. Its logical session remains continuable through `subagent_steer` with the same owner-local ID.
 

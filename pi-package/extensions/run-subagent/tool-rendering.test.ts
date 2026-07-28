@@ -163,23 +163,30 @@ function waitFeedbackDetails(status: "success" | "failure" = "success") {
 			},
 		},
 	};
-	const feedback =
-		status === "success"
-			? { ...common, status, output: "Rendered **semantic** output." }
-			: { ...common, status, error: "Child failed cleanly." };
-	return {
+	const evidence = {
 		outcome: "feedback",
 		sessionId: 1,
-		status,
-		...(status === "success"
-			? { output: feedback.output }
-			: { error: feedback.error }),
 		presentationKind: "wait-feedback",
 		feedbackId: common.feedbackId,
 		invocationId: common.invocationId,
 		waitRequestId: "wait-1",
 		waitElapsedMs: 15_000,
-		feedback,
+	};
+	if (status === "success") {
+		const output = "Rendered **semantic** output.";
+		return {
+			...evidence,
+			status,
+			output,
+			feedback: { ...common, status, output },
+		};
+	}
+	const error = "Child failed cleanly.";
+	return {
+		...evidence,
+		status,
+		error,
+		feedback: { ...common, status, error },
 	};
 }
 

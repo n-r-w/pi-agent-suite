@@ -282,6 +282,7 @@ function logicalSession(): LogicalSession {
 		creationOrder: 1,
 		invocationId: "active-invocation",
 		runtimeLeaseId: "active-lease",
+		invocationMetadata: { startedAtMs: 0, elapsedMs: 0 },
 		state: "active",
 	};
 }

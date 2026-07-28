@@ -348,9 +348,7 @@ function parseInvocationMetadata(
 		...(thinking === undefined ? {} : { thinking }),
 		...(contextWindow === undefined ? {} : { contextWindow }),
 		...(contextTokens === undefined ? {} : { contextTokens }),
-		...(projectionSavedTokens === undefined
-			? {}
-			: { projectionSavedTokens }),
+		...(projectionSavedTokens === undefined ? {} : { projectionSavedTokens }),
 	};
 }
 

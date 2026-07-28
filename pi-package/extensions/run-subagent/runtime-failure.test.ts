@@ -83,12 +83,10 @@ test("does not release writers when process teardown rejects", async () => {
 	// Act.
 	let error = "";
 	try {
-		await recoverRuntimeFailure(
-			coordinator,
-			store,
-			{ runtimeLeaseId: "failed-lease", reason: "channel_disconnected" },
-			2,
-		);
+		await recoverRuntimeFailure(coordinator, store, {
+			runtimeLeaseId: "failed-lease",
+			reason: "channel_disconnected",
+		});
 	} catch (caught) {
 		error = caught instanceof Error ? caught.message : String(caught);
 	}
@@ -215,16 +213,15 @@ test("preserves normal-first terminal feedback through offline recovery", async 
 					writerReleased ||= released.length === 1;
 					return released;
 				},
-				reconcileOffline: async (releasedOwner, maxDepth) => {
+				reconcileOffline: async (releasedOwner) => {
 					reconciledAfterRelease = writerReleased;
-					return store.reconcileOffline(releasedOwner, maxDepth);
+					return store.reconcileOffline(releasedOwner);
 				},
 			},
 			{
 				runtimeLeaseId: "nested-owner-lease",
 				reason: "channel_disconnected",
 			},
-			2,
 		);
 		const reopened = SessionManager.open(
 			ownerSessionFile,
@@ -232,7 +229,7 @@ test("preserves normal-first terminal feedback through offline recovery", async 
 			directory,
 		);
 		const firstRecovery = readRecoveryFacts(reopened);
-		await store.reconcileOffline(owner, 2);
+		await store.reconcileOffline(owner);
 		const repeatedRecovery = readRecoveryFacts(
 			SessionManager.open(ownerSessionFile, directory, directory),
 		);

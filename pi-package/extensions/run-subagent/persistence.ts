@@ -64,6 +64,17 @@ interface FoldedOwnerJournal {
 	readonly records: readonly JournalRecord[];
 }
 
+/** Carries one owner's evidence and write ports through feedback recovery. */
+interface ReconciliationContext {
+	readonly getEntries: () => readonly SessionEntry[];
+	readonly appendRecord: (record: JournalRecord) => void;
+	readonly appendHistory: (feedback: SubagentFeedback) => void;
+	readonly recoverUndeliveredFeedback: boolean;
+	readonly committed: Set<string>;
+	readonly claimedWaits: ReadonlySet<string>;
+	readonly pendingHistory: Set<string>;
+}
+
 /** Implements public SessionManager persistence and reconstruction. */
 export class V2SessionStore implements OwnerSessionStore {
 	private readonly active = new Map<string, ActiveOwnerSessionWriter>();
@@ -243,9 +254,8 @@ export class V2SessionStore implements OwnerSessionStore {
 	/** Reconciles one stopped remote owner through public offline session access. */
 	public reconcileOffline(
 		owner: OwnerIdentity,
-		maxDepth: number,
 	): Promise<readonly LogicalSession[]> {
-		return this.reconstructOwner(this.openOwner(owner), 0, maxDepth);
+		return this.reconstructOwner(this.openOwner(owner), new Set());
 	}
 
 	/** Folds validated V2 records from one public session branch. */
@@ -274,24 +284,17 @@ export class V2SessionStore implements OwnerSessionStore {
 		};
 	}
 
-	/** Recursively folds saved direct-owner journals to the configured depth. */
-	public reconstruct(
-		root: SessionManager,
-		maxDepth: number,
-	): Promise<readonly LogicalSession[]> {
-		return this.reconstructOwner(root, 0, maxDepth);
+	/** Recursively folds every saved direct-owner journal. */
+	public reconstruct(root: SessionManager): Promise<readonly LogicalSession[]> {
+		return this.reconstructOwner(root, new Set());
 	}
 
-	/** Reconstructs the active root through ExtensionAPI and inactive descendants through SessionManager. */
+	/** Reconstructs the active root through ExtensionAPI and all saved descendants through SessionManager. */
 	public async reconstructActive(
 		writer: ActiveOwnerSessionWriter,
-		maxDepth: number,
 	): Promise<readonly LogicalSession[]> {
 		await this.reconcileActive(writer);
-		// A root owner at the configured boundary exposes no persisted children after durable recovery.
-		if (maxDepth === 0) {
-			return [];
-		}
+		const visitedSessions = new Set([writer.owner.ownerSessionFile]);
 		const folded = this.fold(writer.sessionManager.getBranch());
 		const branches = await Promise.all(
 			folded.sessions.map(async (session) => {
@@ -302,14 +305,13 @@ export class V2SessionStore implements OwnerSessionStore {
 				if (!existsSync(session.childSessionFile)) {
 					return [reconstructed];
 				}
-				// Every exposed session owns a branch that must reconcile even when its descendants remain beyond the boundary.
 				const child = SessionManager.open(
 					session.childSessionFile,
 					session.childSessionDir,
 				);
 				return [
 					reconstructed,
-					...(await this.reconstructOwner(child, 1, maxDepth)),
+					...(await this.reconstructOwner(child, visitedSessions)),
 				];
 			}),
 		);
@@ -326,7 +328,7 @@ export class V2SessionStore implements OwnerSessionStore {
 			this.reconciliationTails.get(ownerPiSessionId) ?? Promise.resolve();
 		const current = previous.catch(() => undefined).then(operation);
 		this.reconciliationTails.set(ownerPiSessionId, current);
-		void current.then(
+		current.then(
 			() => this.clearReconciliation(ownerPiSessionId, current),
 			() => this.clearReconciliation(ownerPiSessionId, current),
 		);
@@ -350,57 +352,22 @@ export class V2SessionStore implements OwnerSessionStore {
 		recoverUndeliveredFeedback: boolean,
 	): Promise<void> {
 		const folded = this.fold(getEntries());
-		const committed = committedFeedbackIds(folded.records);
-		const claimedWaits = claimedWaitFeedbackIds(folded.records);
-		const pendingHistory = pendingHistoryFeedbackIds(folded.records);
+		const context: ReconciliationContext = {
+			getEntries,
+			appendRecord,
+			appendHistory,
+			recoverUndeliveredFeedback,
+			committed: committedFeedbackIds(folded.records),
+			claimedWaits: claimedWaitFeedbackIds(folded.records),
+			pendingHistory: pendingHistoryFeedbackIds(folded.records),
+		};
 		for (const record of folded.records) {
-			if (
-				record.kind !== "terminal" ||
-				record.feedback === undefined ||
-				record.disposition === "withheld-forced-abort" ||
-				committed.has(record.feedback.feedbackId)
-			) {
-				continue;
-			}
-			const feedback = record.feedback;
-			if (hasWaitEvidence(getEntries(), feedback.feedbackId)) {
-				appendRecord(commitRecord("wait-committed", feedback));
-				committed.add(feedback.feedbackId);
-				continue;
-			}
-			// An active owner can still be between durable claim and Pi tool-result append.
-			if (
-				!recoverUndeliveredFeedback &&
-				claimedWaits.has(feedback.feedbackId)
-			) {
-				continue;
-			}
-			const historyDelivered = hasHistoryEvidence(
-				getEntries(),
-				feedback.feedbackId,
+			const feedback = terminalFeedbackForReconciliation(
+				record,
+				context.committed,
 			);
-			if (!historyDelivered) {
-				// sendMessage becomes branch evidence after the active handler returns.
-				if (
-					!recoverUndeliveredFeedback &&
-					pendingHistory.has(feedback.feedbackId)
-				) {
-					continue;
-				}
-				if (!pendingHistory.has(feedback.feedbackId)) {
-					appendRecord({
-						kind: "history-pending",
-						feedbackId: feedback.feedbackId,
-						invocationId: feedback.invocationId,
-						sessionKey: feedback.sessionKey,
-					});
-					pendingHistory.add(feedback.feedbackId);
-				}
-				appendHistory(feedback);
-			}
-			if (hasHistoryEvidence(getEntries(), feedback.feedbackId)) {
-				appendRecord(commitRecord("history-committed", feedback));
-				committed.add(feedback.feedbackId);
+			if (feedback !== undefined) {
+				reconcileTerminalFeedback(feedback, context);
 			}
 		}
 	}
@@ -430,14 +397,14 @@ export class V2SessionStore implements OwnerSessionStore {
 	/** Performs one bounded recursive owner fold. */
 	private async reconstructOwner(
 		manager: SessionManager,
-		depth: number,
-		maxDepth: number,
+		visitedSessions: Set<string>,
 	): Promise<LogicalSession[]> {
-		await this.reconcile(manager);
-		// Each owner contributes children only while its own depth remains below the boundary.
-		if (depth >= maxDepth) {
+		const traversalKey = managerTraversalKey(manager);
+		if (visitedSessions.has(traversalKey)) {
 			return [];
 		}
+		visitedSessions.add(traversalKey);
+		await this.reconcile(manager);
 		const folded = this.fold(manager.getBranch());
 		const branches = await Promise.all(
 			folded.sessions.map(async (session) => {
@@ -451,18 +418,84 @@ export class V2SessionStore implements OwnerSessionStore {
 				if (!existsSync(session.childSessionFile)) {
 					return [reconstructed];
 				}
-				// Reconcile the returned session's owner branch before its own depth guard suppresses deeper sessions.
 				const child = SessionManager.open(
 					session.childSessionFile,
 					session.childSessionDir,
 				);
 				return [
 					reconstructed,
-					...(await this.reconstructOwner(child, depth + 1, maxDepth)),
+					...(await this.reconstructOwner(child, visitedSessions)),
 				];
 			}),
 		);
 		return branches.flat();
+	}
+}
+
+/** Identifies one persisted traversal node without assuming globally unique session IDs. */
+function managerTraversalKey(manager: SessionManager): string {
+	return (
+		manager.getSessionFile() ??
+		`${manager.getSessionDir()}\u0000${manager.getSessionId()}`
+	);
+}
+
+/** Selects terminal feedback that has not already reached a final disposition. */
+function terminalFeedbackForReconciliation(
+	record: JournalRecord,
+	committed: ReadonlySet<string>,
+): SubagentFeedback | undefined {
+	return record.kind === "terminal" &&
+		record.feedback !== undefined &&
+		record.disposition !== "withheld-forced-abort" &&
+		!committed.has(record.feedback.feedbackId)
+		? record.feedback
+		: undefined;
+}
+
+/** Replays one undelivered terminal through wait or history persistence. */
+function reconcileTerminalFeedback(
+	feedback: SubagentFeedback,
+	context: ReconciliationContext,
+): void {
+	if (hasWaitEvidence(context.getEntries(), feedback.feedbackId)) {
+		context.appendRecord(commitRecord("wait-committed", feedback));
+		context.committed.add(feedback.feedbackId);
+		return;
+	}
+	// An active owner can still be between durable claim and Pi tool-result append.
+	if (
+		!context.recoverUndeliveredFeedback &&
+		context.claimedWaits.has(feedback.feedbackId)
+	) {
+		return;
+	}
+	const historyDelivered = hasHistoryEvidence(
+		context.getEntries(),
+		feedback.feedbackId,
+	);
+	if (!historyDelivered) {
+		// sendMessage becomes branch evidence after the active handler returns.
+		if (
+			!context.recoverUndeliveredFeedback &&
+			context.pendingHistory.has(feedback.feedbackId)
+		) {
+			return;
+		}
+		if (!context.pendingHistory.has(feedback.feedbackId)) {
+			context.appendRecord({
+				kind: "history-pending",
+				feedbackId: feedback.feedbackId,
+				invocationId: feedback.invocationId,
+				sessionKey: feedback.sessionKey,
+			});
+			context.pendingHistory.add(feedback.feedbackId);
+		}
+		context.appendHistory(feedback);
+	}
+	if (hasHistoryEvidence(context.getEntries(), feedback.feedbackId)) {
+		context.appendRecord(commitRecord("history-committed", feedback));
+		context.committed.add(feedback.feedbackId);
 	}
 }
 

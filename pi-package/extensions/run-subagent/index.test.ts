@@ -344,6 +344,7 @@ describe("subagents V2 entry", () => {
 			creationOrder: 1,
 			invocationId: "invocation-1",
 			runtimeLeaseId: "child-lease",
+			invocationMetadata: TEST_INVOCATION_METADATA,
 			state: "active",
 		} satisfies LogicalSession;
 		const feedback = {
@@ -1542,7 +1543,6 @@ describe("subagents V2 entry", () => {
 						},
 					},
 					{ runtimeLeaseId: "failure-lease", reason: "channel_disconnected" },
-					2,
 				)
 				.then(() => {
 					runtimeSettled = true;
@@ -1668,7 +1668,6 @@ describe("subagents V2 entry", () => {
 					},
 				},
 				{ runtimeLeaseId: "rejected-lease", reason: "channel_disconnected" },
-				2,
 			);
 		const closeAndDrain = RuntimeFailureRecoveryTracker.prototype.closeAndDrain;
 		const drainSpy = spyOn(
@@ -2254,10 +2253,10 @@ describe("subagents V2 entry", () => {
 		});
 	});
 
-	test("hides saved children from management when maxDepth is zero", async () => {
-		// Purpose: reopening with delegation disabled must not expose a saved child to management selection or continuation.
-		// Input and expected output: one terminal saved child under maxDepth zero produces no selected node and no continuation call.
-		// Edge case: editor text and submit input cannot bypass the empty reconstructed catalog.
+	test("shows saved children when maxDepth disables new delegation", async () => {
+		// Purpose: lowering the delegation limit must not hide historical sessions from management.
+		// Input and expected output: one terminal saved child under maxDepth zero remains selectable and continuable.
+		// Edge case: persisted visibility is independent from prompt-time subagent_start availability.
 		// Dependencies: production entry reconstruction, management screen factory, and a controlled supervisor continuation spy.
 		const configDir = join(suiteDir, "run-subagent");
 		mkdirSync(configDir, { recursive: true });
@@ -2344,7 +2343,7 @@ describe("subagents V2 entry", () => {
 			if (screen === undefined) {
 				throw new Error("management screen was not constructed");
 			}
-			screen.setEditorText("continue hidden child");
+			screen.setEditorText("continue saved child");
 			screen.handleInput("\t");
 			screen.handleInput("\t");
 			screen.handleInput("\r");
@@ -2356,9 +2355,9 @@ describe("subagents V2 entry", () => {
 				focus: screen.getFocusZone(),
 				continueCalls: continueSpy.mock.calls.length,
 			}).toEqual({
-				selectedStableKey: null,
-				focus: "hierarchy",
-				continueCalls: 0,
+				selectedStableKey: projectionStableKey(savedSession.key),
+				focus: "editor",
+				continueCalls: 1,
 			});
 			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 		} finally {
@@ -2367,10 +2366,10 @@ describe("subagents V2 entry", () => {
 		}
 	});
 
-	test("reconciles visible boundary owners without exposing hidden descendants", async () => {
-		// Purpose: management must expose B with reconciled C feedback while keeping boundary-hidden C unroutable.
-		// Input and expected output: public A→B→C persistence at depth one selects only B and renders C's committed feedback.
-		// Edge case: steering C's owner-local ID fails without calling the continuation supervisor.
+	test("reconciles and exposes saved descendants beyond maxDepth", async () => {
+		// Purpose: management must expose B and C with reconciled C feedback after the delegation limit is lowered.
+		// Input and expected output: public A→B→C persistence under maxDepth one keeps both saved nodes visible.
+		// Edge case: root-owned steering of C still fails as not_owner without calling the continuation supervisor.
 		// Dependencies: public persisted SessionManager instances, production reconstruction, and the management overlay.
 		initTheme(undefined, false);
 		const configDir = join(suiteDir, "run-subagent");
@@ -2510,6 +2509,7 @@ describe("subagents V2 entry", () => {
 			}
 			await Promise.resolve();
 			await Promise.resolve();
+			screen.handleInput("\u001b[C");
 			const rendered = screen.render(100).join("\n");
 			screen.setEditorText("message selected B");
 			screen.handleInput("\t");
@@ -2517,7 +2517,7 @@ describe("subagents V2 entry", () => {
 			screen.handleInput("\r");
 			await Promise.resolve();
 			await Promise.resolve();
-			const hiddenRouteCode = await getTool(pi, "subagent_steer")
+			const descendantRouteCode = await getTool(pi, "subagent_steer")
 				.execute(
 					"steer-hidden-C",
 					{
@@ -2534,14 +2534,14 @@ describe("subagents V2 entry", () => {
 			expect({
 				selected: screen.getSelectedStableKey(),
 				rendered,
-				hiddenRouteCode,
+				descendantRouteCode,
 				continuedSessionKey: continueSpy.mock.calls[0]?.[0].key,
 				continuedPrompt: continueSpy.mock.calls[0]?.[1],
 				continueCalls: continueSpy.mock.calls.length,
 			}).toEqual({
 				selected: projectionStableKey(visibleSession.key),
 				rendered: expect.stringContaining("C completed"),
-				hiddenRouteCode: "unknown_session",
+				descendantRouteCode: "not_owner",
 				continuedSessionKey: visibleSession.key,
 				continuedPrompt: "message selected B",
 				continueCalls: 1,

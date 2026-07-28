@@ -263,7 +263,6 @@ class StoreFake implements OwnerSessionStore {
 	/** Records that offline reconciliation begins only after every writer release. */
 	public async reconcileOffline(
 		owner: OwnerIdentity,
-		_maxDepth: number,
 	): Promise<readonly LogicalSession[]> {
 		this.reconciledOwners.push(owner.ownerPiSessionId);
 		this.reconciledAfterCompleteRelease.push(this.remoteOwners.size === 0);
@@ -1859,12 +1858,10 @@ describe("SubagentCoordinator", () => {
 		}
 
 		// Act.
-		await recoverRuntimeFailure(
-			harness.coordinator,
-			harness.store,
-			{ runtimeLeaseId: "lease-a", reason: "channel_disconnected" },
-			3,
-		);
+		await recoverRuntimeFailure(harness.coordinator, harness.store, {
+			runtimeLeaseId: "lease-a",
+			reason: "channel_disconnected",
+		});
 
 		// Assert.
 		expect({
@@ -2138,7 +2135,6 @@ describe("SubagentCoordinator", () => {
 				runtimeLeaseId: "new-parent-lease",
 				reason: "channel_disconnected",
 			},
-			2,
 		);
 
 		expect({
@@ -2186,7 +2182,6 @@ describe("SubagentCoordinator", () => {
 				runtimeLeaseId: "failed-parent-lease",
 				reason: "channel_disconnected",
 			},
-			2,
 		);
 		await reconciliationStarted;
 		harness.invocations.nextAcceptance = {

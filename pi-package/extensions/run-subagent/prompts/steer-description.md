@@ -1,1 +1,3 @@
-Send a prompt to a directly owned logical session. An active session accepts steering in its current invocation; a terminal session continues through a new invocation of the same saved session.
+Send a prompt to previously started subagent session.
+Active session accepts steering in its current invocation.
+Terminal session continues through new invocation of same session.

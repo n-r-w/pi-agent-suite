@@ -917,7 +917,7 @@ function bindingPairHint(
 	const keys = [
 		keybindings.getKeys(first)[0],
 		keybindings.getKeys(second)[0],
-	].filter((key): key is string => key !== undefined);
+	].filter((key) => key !== undefined);
 	return keys.length === 0 ? "" : rawKeyHint(keys.join("/"), description);
 }
 

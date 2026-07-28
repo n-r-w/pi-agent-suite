@@ -10,6 +10,7 @@ import {
 import { createPersistedSession } from "../../../test/support/persisted-session.ts";
 import type {
 	JournalRecord,
+	LogicalSession,
 	OwnerIdentity,
 	SubagentFeedback,
 } from "./domain";
@@ -92,16 +93,16 @@ describe("V2SessionStore", () => {
 
 			let first = SessionManager.open(sessionFile, directory, directory);
 			try {
-				await store.reconstruct(first, 0);
+				await store.reconstruct(first);
 			} catch {}
 			first = SessionManager.open(sessionFile, directory, directory);
 			try {
-				await store.reconstruct(first, 0);
+				await store.reconstruct(first);
 			} catch {}
 			const reopened = SessionManager.open(sessionFile, directory, directory);
 			const branch = reopened.getBranch();
 			const historyEntries = branch.filter(
-				(entry) =>
+				(entry): entry is Extract<SessionEntry, { type: "custom_message" }> =>
 					entry.type === "custom_message" &&
 					entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
 			);
@@ -113,17 +114,22 @@ describe("V2SessionStore", () => {
 					isHistoryCommit(entry.data),
 			).length;
 			const folded = safeFold(store, branch);
-			const reconstructed = await store.reconstruct(reopened, 0);
+			const reconstructed = await store.reconstruct(reopened);
 
 			expect({
-				reconstructed,
+				reconstructed: reconstructed.map((session) => ({
+					key: session.key,
+					state: session.state,
+				})),
 				historyCount,
 				commitCount,
 				stableKey: folded?.sessions[0]?.key,
 				state: terminal.state,
 				historyDetails: historyEntries[0]?.details,
 			}).toEqual({
-				reconstructed: [],
+				reconstructed: [
+					{ key: accepted.session.key, state: "terminal-success" },
+				],
 				historyCount: 1,
 				commitCount: 1,
 				stableKey: accepted.session.key,
@@ -135,10 +141,10 @@ describe("V2SessionStore", () => {
 		}
 	});
 
-	test("reconstructs only descendants within configured depth", async () => {
-		// Purpose: reopen reconstruction must reconcile each exposed owner's journal without exceeding the configured delegation depth.
-		// Input and expected output: depth zero returns none, depth one returns only B and commits C feedback in B, and depth two also returns C.
-		// Edge case: repeating depth-one reconstruction keeps one history message and one commit while unmatched exposed A-owned B becomes terminal-aborted.
+	test("reconstructs every saved descendant independently from maxDepth", async () => {
+		// Purpose: delegation limits must not hide or leave historical descendant journals unreconciled.
+		// Input and expected output: every reconstruction returns B and C and commits C feedback in B.
+		// Edge case: repeated reconstruction keeps one history message and one commit while unmatched active sessions become terminal-aborted.
 		// Dependencies: public persisted SessionManager instances under a system temporary directory.
 		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-reconstruct-"));
 		try {
@@ -208,22 +214,22 @@ describe("V2SessionStore", () => {
 				session: parentSession,
 			} satisfies JournalRecord);
 			const store = new V2SessionStore();
-			const depthZero = await store.reconstruct(parent, 0);
-			const childAfterDepthZero = SessionManager.open(
+			const firstReconstruction = await store.reconstruct(parent);
+			const childAfterFirst = SessionManager.open(
 				childFile,
 				child.getSessionDir(),
 				child.getCwd(),
 			);
 			expect({
-				depthZero,
-				historyCount: childAfterDepthZero
+				firstReconstruction: firstReconstruction.map((session) => session.key),
+				historyCount: childAfterFirst
 					.getBranch()
 					.filter(
 						(entry) =>
 							entry.type === "custom_message" &&
 							entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
 					).length,
-				commitCount: childAfterDepthZero
+				commitCount: childAfterFirst
 					.getBranch()
 					.filter(
 						(entry) =>
@@ -231,21 +237,25 @@ describe("V2SessionStore", () => {
 							entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
 							isHistoryCommit(entry.data),
 					).length,
-			}).toEqual({ depthZero: [], historyCount: 0, commitCount: 0 });
+			}).toEqual({
+				firstReconstruction: [parentSession.key, childSession.key],
+				historyCount: 1,
+				commitCount: 1,
+			});
 
-			const depthOne = await store.reconstruct(parent, 1);
-			const childAfterFirstDepthOne = SessionManager.open(
+			const secondReconstruction = await store.reconstruct(parent);
+			const childAfterSecond = SessionManager.open(
 				childFile,
 				child.getSessionDir(),
 				child.getCwd(),
 			);
-			const firstDepthOneBranch = childAfterFirstDepthOne.getBranch();
-			const firstDepthOneHistoryCount = firstDepthOneBranch.filter(
+			const secondBranch = childAfterSecond.getBranch();
+			const secondHistoryCount = secondBranch.filter(
 				(entry) =>
 					entry.type === "custom_message" &&
 					entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
 			).length;
-			const firstDepthOneCommitCount = firstDepthOneBranch.filter(
+			const secondCommitCount = secondBranch.filter(
 				(entry) =>
 					entry.type === "custom" &&
 					entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
@@ -253,52 +263,122 @@ describe("V2SessionStore", () => {
 			).length;
 
 			expect({
-				depthOne: depthOne.map((session) => session.key),
-				firstDepthOneHistoryCount,
-				firstDepthOneCommitCount,
+				secondReconstruction: secondReconstruction.map(
+					(session) => session.key,
+				),
+				secondHistoryCount,
+				secondCommitCount,
 			}).toEqual({
-				depthOne: [parentSession.key],
-				firstDepthOneHistoryCount: 1,
-				firstDepthOneCommitCount: 1,
+				secondReconstruction: [parentSession.key, childSession.key],
+				secondHistoryCount: 1,
+				secondCommitCount: 1,
 			});
 
-			const repeatedDepthOne = await store.reconstruct(parent, 1);
-			const childAfterRepeatedDepthOne = SessionManager.open(
+			const repeatedReconstruction = await store.reconstruct(parent);
+			const childAfterRepeated = SessionManager.open(
 				childFile,
 				child.getSessionDir(),
 				child.getCwd(),
 			);
-			const repeatedDepthOneBranch = childAfterRepeatedDepthOne.getBranch();
-			const depthTwo = await store.reconstruct(parent, 2);
+			const repeatedBranch = childAfterRepeated.getBranch();
+			const finalReconstruction = await store.reconstruct(parent);
 
 			expect({
-				depthZero: depthZero.map((session) => session.key),
-				repeatedDepthOne: repeatedDepthOne.map((session) => session.key),
-				depthTwo: depthTwo.map((session) => session.key),
-				states: depthTwo.map((session) => session.state),
-				repeatedDepthOneHistoryCount: repeatedDepthOneBranch.filter(
+				firstReconstruction: firstReconstruction.map((session) => session.key),
+				repeatedReconstruction: repeatedReconstruction.map(
+					(session) => session.key,
+				),
+				finalReconstruction: finalReconstruction.map((session) => session.key),
+				states: finalReconstruction.map((session) => session.state),
+				repeatedHistoryCount: repeatedBranch.filter(
 					(entry) =>
 						entry.type === "custom_message" &&
 						entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE,
 				).length,
-				repeatedDepthOneCommitCount: repeatedDepthOneBranch.filter(
+				repeatedCommitCount: repeatedBranch.filter(
 					(entry) =>
 						entry.type === "custom" &&
 						entry.customType === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
 						isHistoryCommit(entry.data),
 				).length,
 				parentDisposition: lastTerminalDisposition(parent.getBranch()),
-				childDisposition: lastTerminalDisposition(repeatedDepthOneBranch),
+				childDisposition: lastTerminalDisposition(repeatedBranch),
 			}).toEqual({
-				depthZero: [],
-				repeatedDepthOne: [parentSession.key],
-				depthTwo: [parentSession.key, childSession.key],
+				firstReconstruction: [parentSession.key, childSession.key],
+				repeatedReconstruction: [parentSession.key, childSession.key],
+				finalReconstruction: [parentSession.key, childSession.key],
 				states: ["terminal-aborted", "terminal-success"],
-				repeatedDepthOneHistoryCount: 1,
-				repeatedDepthOneCommitCount: 1,
+				repeatedHistoryCount: 1,
+				repeatedCommitCount: 1,
 				parentDisposition: "withheld-forced-abort",
 				childDisposition: "pending",
 			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("stops reconstruction when saved session files form a cycle", async () => {
+		// Purpose: showing all historical descendants must remain finite for repeated saved-file references.
+		// Input and expected output: A points to B and B points to A, while reconstruction returns each edge once.
+		// Edge case: different owner IDs and files cannot rely on the delegation depth as a traversal guard.
+		// Dependencies: public persisted SessionManager files and production recursive reconstruction.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-cycle-"));
+		try {
+			const first = createPersistedSession(join(directory, "first"), {
+				id: "first-owner",
+				text: "first owner",
+			});
+			const second = createPersistedSession(join(directory, "second"), {
+				id: "second-owner",
+				text: "second owner",
+			});
+			const firstFile = first.getSessionFile();
+			const secondFile = second.getSessionFile();
+			if (firstFile === undefined || secondFile === undefined) {
+				throw new Error("cycle fixtures did not create session files");
+			}
+			const firstChild: LogicalSession = {
+				key: { ownerPiSessionId: first.getSessionId(), ownerLocalSessionId: 1 },
+				childPiSessionId: second.getSessionId(),
+				childSessionDir: second.getSessionDir(),
+				childSessionFile: secondFile,
+				agentId: "SubAgentCoder",
+				taskName: "Visit second",
+				creationOrder: 1,
+				invocationId: "first-invocation",
+				runtimeLeaseId: "first-lease",
+				invocationMetadata: INVOCATION_METADATA,
+				state: "active",
+			};
+			const secondChild: LogicalSession = {
+				...firstChild,
+				key: {
+					ownerPiSessionId: second.getSessionId(),
+					ownerLocalSessionId: 1,
+				},
+				childPiSessionId: first.getSessionId(),
+				childSessionDir: first.getSessionDir(),
+				childSessionFile: firstFile,
+				taskName: "Visit first",
+				invocationId: "second-invocation",
+				runtimeLeaseId: "second-lease",
+			};
+			first.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "session-accepted",
+				session: firstChild,
+			} satisfies JournalRecord);
+			second.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "session-accepted",
+				session: secondChild,
+			} satisfies JournalRecord);
+
+			const reconstructed = await new V2SessionStore().reconstruct(first);
+
+			expect(reconstructed.map((session) => session.key)).toEqual([
+				firstChild.key,
+				secondChild.key,
+			]);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
@@ -448,8 +528,8 @@ describe("V2SessionStore", () => {
 				accepted.session.key,
 				accepted.session.invocationId,
 			);
-			await store.reconcileOffline(owner, 1);
-			await store.reconcileOffline(owner, 1);
+			await store.reconcileOffline(owner);
+			await store.reconcileOffline(owner);
 			const reopened = SessionManager.open(sessionFile, directory, directory);
 			const folded = store.fold(reopened.getBranch());
 

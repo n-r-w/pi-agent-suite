@@ -27,6 +27,7 @@ import {
 	renderSubagentWaitCall,
 	renderSubagentWaitResult,
 } from "./semantic-rendering.ts";
+
 const CONSULT_ADVISOR_TOOL_NAME = "consult_advisor";
 const CONVENE_COUNCIL_TOOL_NAME = "convene_council";
 

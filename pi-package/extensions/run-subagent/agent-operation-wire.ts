@@ -3,8 +3,6 @@ import {
 	readField,
 	readNonEmptyString as readStringField,
 } from "./boundary-validation";
-import type { AgentOperationEvidence } from "./domain";
-import { parseFeedback } from "./journal-codec";
 import {
 	parseSubagentNormalResult,
 	parseSubagentStartRequest,
@@ -16,6 +14,12 @@ import {
 	type SubagentSteerRequest,
 	type SubagentWaitRequest,
 } from "./contracts";
+import type {
+	AcceptedPresentationEvidence,
+	AgentOperationEvidence,
+	WaitFeedbackPresentationEvidence,
+} from "./domain";
+import { parseFeedback } from "./journal-codec";
 
 /** Carries one validated worker-to-root tool operation. */
 export type AgentOperationPayload =
@@ -111,39 +115,54 @@ export function parseAgentOperationEvidence(
 ): AgentOperationEvidence | undefined {
 	const presentationKind = readStringField(value, "presentationKind");
 	if (presentationKind === "accepted") {
-		if (
-			!hasExactKeys(
-				value,
-				["presentationKind", "agentId", "taskName"],
-				["modelId", "thinking"],
-			)
-		) {
-			return undefined;
-		}
-		const agentId = readStringField(value, "agentId");
-		const taskName = readStringField(value, "taskName");
-		const rawModelId = readField(value, "modelId");
-		const rawThinking = readField(value, "thinking");
-		const modelId = readStringField(value, "modelId");
-		const thinking = readStringField(value, "thinking");
-		if (
-			agentId === undefined ||
-			taskName === undefined ||
-			(rawModelId !== undefined && modelId === undefined) ||
-			(rawThinking !== undefined && thinking === undefined)
-		) {
-			return undefined;
-		}
-		return {
-			presentationKind,
-			agentId,
-			taskName,
-			...(modelId === undefined ? {} : { modelId }),
-			...(thinking === undefined ? {} : { thinking }),
-		};
+		return parseAcceptedEvidence(value);
 	}
+	return presentationKind === "wait-feedback"
+		? parseWaitFeedbackEvidence(value)
+		: undefined;
+}
+
+/** Parses prompt-acceptance presentation fields without admitting unknown keys. */
+function parseAcceptedEvidence(
+	value: unknown,
+): AcceptedPresentationEvidence | undefined {
 	if (
-		presentationKind !== "wait-feedback" ||
+		!hasExactKeys(
+			value,
+			["presentationKind", "agentId", "taskName"],
+			["modelId", "thinking"],
+		)
+	) {
+		return undefined;
+	}
+	const agentId = readStringField(value, "agentId");
+	const taskName = readStringField(value, "taskName");
+	const rawModelId = readField(value, "modelId");
+	const rawThinking = readField(value, "thinking");
+	const modelId = readStringField(value, "modelId");
+	const thinking = readStringField(value, "thinking");
+	if (
+		agentId === undefined ||
+		taskName === undefined ||
+		(rawModelId !== undefined && modelId === undefined) ||
+		(rawThinking !== undefined && thinking === undefined)
+	) {
+		return undefined;
+	}
+	return {
+		presentationKind: "accepted",
+		agentId,
+		taskName,
+		...(modelId === undefined ? {} : { modelId }),
+		...(thinking === undefined ? {} : { thinking }),
+	};
+}
+
+/** Parses wait-feedback evidence and verifies its duplicated stable identities. */
+function parseWaitFeedbackEvidence(
+	value: unknown,
+): WaitFeedbackPresentationEvidence | undefined {
+	if (
 		!hasExactKeys(value, [
 			"presentationKind",
 			"feedbackId",
@@ -172,7 +191,7 @@ export function parseAgentOperationEvidence(
 		return undefined;
 	}
 	return {
-		presentationKind,
+		presentationKind: "wait-feedback",
 		feedbackId,
 		invocationId,
 		waitRequestId,
@@ -187,9 +206,7 @@ function readNonNegativeSafeInteger(
 	key: string,
 ): number | undefined {
 	const field = readField(value, key);
-	return typeof field === "number" &&
-		Number.isSafeInteger(field) &&
-		field >= 0
+	return typeof field === "number" && Number.isSafeInteger(field) && field >= 0
 		? field
 		: undefined;
 }

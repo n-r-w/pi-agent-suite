@@ -185,6 +185,7 @@ function createExtensionApiFake(
 		registerTool(tool: ToolDefinition): void {
 			tools.push(tool);
 		},
+		registerMessageRenderer(): void {},
 		registerCommand(
 			name: string,
 			options: { handler: RegisteredCommandFake["handler"] },

@@ -231,7 +231,7 @@ async function handleSessionStart(
 	state.workerBridge ??= installWorkerRuntimeBridge();
 	if (state.workerBridge === undefined) {
 		state.rootRuntime?.management?.dispose();
-		state.rootRuntime = await createRootRuntime(pi, ctx, config.maxDepth);
+		state.rootRuntime = await createRootRuntime(pi, ctx);
 		registerManagementEntries(pi, state, ctx);
 		return;
 	}
@@ -281,17 +281,12 @@ async function handleSessionShutdown(
 	if (state.rootRuntime !== undefined) {
 		const rootRuntime = state.rootRuntime;
 		rootRuntime.management?.dispose();
-		const config = state.config;
-		if (config === undefined) {
-			throw new Error("root runtime has no initialized configuration");
-		}
 		// Root disposal closes recovery admission before joining closure and admitted work.
 		await rootRuntime.recoveries.closeAndDrain(() =>
 			recoverRootShutdown({
 				coordinator: rootRuntime.coordinator,
 				store: rootRuntime.store,
 				owner: rootRuntime.owner,
-				maxDepth: config.maxDepth,
 			}),
 		);
 		rootRuntime.store.unregisterActive(rootRuntime.owner.ownerPiSessionId);
@@ -314,45 +309,35 @@ function registerStartTool(
 		execute: async (...args) => {
 			const [toolCallId, rawParams, signal, , ctx] = args;
 			const request = parseSubagentStartRequest(rawParams);
-			return executeTool(
-				toolCallId,
-				resolveState,
-				signal,
-				async (state, config) => {
-					if (state.workerBridge !== undefined) {
-						return state.workerBridge.requestOperation(
-							{
-								toolName: "subagent_start",
-								toolCallId,
-								params: request,
-							},
-							signal,
-						);
-					}
-					state.rootRuntime ??= await createRootRuntime(
-						pi,
-						ctx,
-						config.maxDepth,
-					);
-					const result = await state.rootRuntime.coordinator.start(
-						state.rootRuntime.owner,
-						request,
+			return executeTool(toolCallId, resolveState, signal, async (state) => {
+				if (state.workerBridge !== undefined) {
+					return state.workerBridge.requestOperation(
 						{
-							...(signal === undefined ? {} : { signal }),
-							operationCorrelation: { requestId: toolCallId, toolCallId },
+							toolName: "subagent_start",
+							toolCallId,
+							params: request,
 						},
+						signal,
 					);
-					return {
-						kind: "ok",
-						result,
-						evidence:
-							state.rootRuntime.coordinator.acceptedPresentationEvidence(
-								state.rootRuntime.owner,
-								result.sessionId,
-							),
-					};
-				},
-			);
+				}
+				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				const result = await state.rootRuntime.coordinator.start(
+					state.rootRuntime.owner,
+					request,
+					{
+						...(signal === undefined ? {} : { signal }),
+						operationCorrelation: { requestId: toolCallId, toolCallId },
+					},
+				);
+				return {
+					kind: "ok",
+					result,
+					evidence: state.rootRuntime.coordinator.acceptedPresentationEvidence(
+						state.rootRuntime.owner,
+						result.sessionId,
+					),
+				};
+			});
 		},
 	});
 }
@@ -372,45 +357,35 @@ function registerSteerTool(
 		execute: async (...args) => {
 			const [toolCallId, rawParams, signal, , ctx] = args;
 			const request = parseSubagentSteerRequest(rawParams);
-			return executeTool(
-				toolCallId,
-				resolveState,
-				signal,
-				async (state, config) => {
-					if (state.workerBridge !== undefined) {
-						return state.workerBridge.requestOperation(
-							{
-								toolName: "subagent_steer",
-								toolCallId,
-								params: request,
-							},
-							signal,
-						);
-					}
-					state.rootRuntime ??= await createRootRuntime(
-						pi,
-						ctx,
-						config.maxDepth,
-					);
-					const result = await state.rootRuntime.coordinator.steer(
-						state.rootRuntime.owner,
-						request,
+			return executeTool(toolCallId, resolveState, signal, async (state) => {
+				if (state.workerBridge !== undefined) {
+					return state.workerBridge.requestOperation(
 						{
-							...(signal === undefined ? {} : { signal }),
-							operationCorrelation: { requestId: toolCallId, toolCallId },
+							toolName: "subagent_steer",
+							toolCallId,
+							params: request,
 						},
+						signal,
 					);
-					return {
-						kind: "ok",
-						result,
-						evidence:
-							state.rootRuntime.coordinator.acceptedPresentationEvidence(
-								state.rootRuntime.owner,
-								result.sessionId,
-							),
-					};
-				},
-			);
+				}
+				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				const result = await state.rootRuntime.coordinator.steer(
+					state.rootRuntime.owner,
+					request,
+					{
+						...(signal === undefined ? {} : { signal }),
+						operationCorrelation: { requestId: toolCallId, toolCallId },
+					},
+				);
+				return {
+					kind: "ok",
+					result,
+					evidence: state.rootRuntime.coordinator.acceptedPresentationEvidence(
+						state.rootRuntime.owner,
+						result.sessionId,
+					),
+				};
+			});
 		},
 	});
 }
@@ -430,41 +405,32 @@ function registerWaitTool(
 		execute: async (...args) => {
 			const [toolCallId, rawParams, signal, , ctx] = args;
 			const request = parseSubagentWaitRequest(rawParams);
-			return executeTool(
-				toolCallId,
-				resolveState,
-				signal,
-				async (state, config) => {
-					if (state.workerBridge !== undefined) {
-						const response = await state.workerBridge.requestWait(
-							{
-								toolName: "subagent_wait",
-								toolCallId,
-								params: request,
-							},
-							signal,
-						);
-						return response;
-					}
-					state.rootRuntime ??= await createRootRuntime(
-						pi,
-						ctx,
-						config.maxDepth,
-					);
-					const result = await executeRootWait({
-						coordinator: state.rootRuntime.coordinator,
-						owner: state.rootRuntime.owner,
-						request,
-						execution: { toolCallId, requestId: toolCallId },
+			return executeTool(toolCallId, resolveState, signal, async (state) => {
+				if (state.workerBridge !== undefined) {
+					const response = await state.workerBridge.requestWait(
+						{
+							toolName: "subagent_wait",
+							toolCallId,
+							params: request,
+						},
 						signal,
-					});
-					const evidence =
-						state.rootRuntime.coordinator.takeWaitEvidence(toolCallId);
-					return evidence === undefined
-						? { kind: "ok", result }
-						: { kind: "ok", result, evidence };
-				},
-			);
+					);
+					return response;
+				}
+				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				const result = await executeRootWait({
+					coordinator: state.rootRuntime.coordinator,
+					owner: state.rootRuntime.owner,
+					request,
+					execution: { toolCallId, requestId: toolCallId },
+					signal,
+				});
+				const evidence =
+					state.rootRuntime.coordinator.takeWaitEvidence(toolCallId);
+				return evidence === undefined
+					? { kind: "ok", result }
+					: { kind: "ok", result, evidence };
+			});
 		},
 	});
 }
@@ -579,7 +545,6 @@ async function executeTool(
 async function createRootRuntime(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	maxDepth: number,
 ): Promise<RootRuntime> {
 	const owner = ownerFromContext(ctx);
 	const writer = createActiveWriter(pi, ctx, owner);
@@ -598,7 +563,6 @@ async function createRootRuntime(
 		bridge,
 		store,
 		recoveries,
-		maxDepth,
 		getCoordinator: () => requireCoordinator(coordinator),
 	});
 	coordinator = createRootCoordinator({
@@ -609,10 +573,7 @@ async function createRootRuntime(
 		supervisor,
 		store,
 	});
-	addReconstructedSessions(
-		catalog,
-		await store.reconstructActive(writer, maxDepth),
-	);
+	addReconstructedSessions(catalog, await store.reconstructActive(writer));
 	coordinator.registerOwner(owner);
 	const management =
 		ctx.mode === "tui"
@@ -643,7 +604,6 @@ function createRootSupervisor(options: {
 	readonly bridge: RootRuntimeBridge;
 	readonly store: V2SessionStore;
 	readonly recoveries: RuntimeFailureRecoveryTracker;
-	readonly maxDepth: number;
 	readonly getCoordinator: () => SubagentCoordinator;
 }): InvocationSupervisor {
 	let supervisor: InvocationSupervisor;
@@ -668,7 +628,6 @@ function createRootSupervisor(options: {
 				coordinator: options.getCoordinator(),
 				store: options.store,
 				failure,
-				maxDepth: options.maxDepth,
 			}),
 		onRuntimeRequest: (remoteOwner, request) =>
 			handleRootRuntimeRequest({
@@ -676,7 +635,6 @@ function createRootSupervisor(options: {
 				store: options.store,
 				owner: remoteOwner,
 				request,
-				maxDepth: options.maxDepth,
 			}),
 	});
 	return supervisor;
@@ -843,22 +801,15 @@ function startRuntimeFailureRecovery({
 	coordinator,
 	store,
 	failure,
-	maxDepth,
 }: {
 	readonly recoveries: RuntimeFailureRecoveryTracker;
 	readonly coordinator: SubagentCoordinator | undefined;
 	readonly store: V2SessionStore;
 	readonly failure: RuntimeChannelFailure;
-	readonly maxDepth: number;
 }): void {
 	// Root lifecycle owns admitted recovery work even though the failure callback cannot await it.
 	recoveries.start(() =>
-		recoverRuntimeFailure(
-			requireCoordinator(coordinator),
-			store,
-			failure,
-			maxDepth,
-		),
+		recoverRuntimeFailure(requireCoordinator(coordinator), store, failure),
 	);
 }
 
@@ -905,13 +856,11 @@ async function handleRootRuntimeRequest({
 	store,
 	owner,
 	request,
-	maxDepth,
 }: {
 	readonly coordinator: SubagentCoordinator;
 	readonly store: V2SessionStore;
 	readonly owner: OwnerIdentity;
 	readonly request: RuntimeRequest;
-	readonly maxDepth: number;
 }): Promise<AgentOperationResponse | { readonly acknowledged: true }> {
 	if (request.operation === "owner_stopping") {
 		await recoverOwnerShutdown({
@@ -919,7 +868,6 @@ async function handleRootRuntimeRequest({
 			store,
 			owner,
 			stoppingRuntimeLeaseId: request.runtimeLeaseId,
-			maxDepth,
 		});
 		return { acknowledged: true };
 	}
@@ -983,18 +931,23 @@ async function handleRootRuntimeRequest({
 			? { kind: "ok", result }
 			: { kind: "ok", result, evidence };
 	} catch (error) {
-		if (error instanceof RuntimeOperationCancellationError) {
-			throw error;
-		}
-		const failure =
-			error instanceof SubagentToolError
-				? error.details
-				: {
-						code: "start_failed" as const,
-						message: errorMessage(error),
-					};
-		return { kind: "failed", failure };
+		return failedAgentOperation(error);
 	}
+}
+
+/** Maps one coordination failure while preserving cancellation rejection. */
+function failedAgentOperation(error: unknown): AgentOperationResponse {
+	if (error instanceof RuntimeOperationCancellationError) {
+		throw error;
+	}
+	const failure =
+		error instanceof SubagentToolError
+			? error.details
+			: {
+					code: "start_failed" as const,
+					message: errorMessage(error),
+				};
+	return { kind: "failed", failure };
 }
 
 /** Applies root persistence commands through the active worker's public Pi writer. */
