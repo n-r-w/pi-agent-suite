@@ -160,6 +160,7 @@ tools:
   - read
   - bash
   - grep
+  - subagent_*
   - mymcp_*
 agents:
   - Researcher
