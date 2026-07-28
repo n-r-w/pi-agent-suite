@@ -220,9 +220,13 @@ export function renderSubagentWaitResult(
 	const ids = readSessionIds(context.args);
 	const timeoutMs = readNonNegativeInteger(context.args, "timeoutMs");
 	if (context.isError) {
-		return renderWaitErrorCard(
+		return renderWaitCard(
 			[{ value: formatIds(ids), role: "primary" }],
-			readErrorText(result),
+			{
+				label: "Error:",
+				text: readErrorText(result),
+				color: "error",
+			},
 			options.expanded,
 			theme,
 		);
@@ -230,7 +234,7 @@ export function renderSubagentWaitResult(
 	const outcome = readString(result.details, "outcome");
 	if (outcome === "timeout") {
 		const timeout = timeoutMs ?? 0;
-		return renderWaitErrorCard(
+		return renderWaitCard(
 			[
 				{ value: formatIds(ids), role: "primary" },
 				{
@@ -239,18 +243,26 @@ export function renderSubagentWaitResult(
 				},
 				{ value: "timeout", role: "metadata" },
 			],
-			"No feedback was received before the timeout.",
+			{
+				label: "Result:",
+				text: "No feedback before timeout. Subagents were not stopped.",
+				color: "muted",
+			},
 			options.expanded,
 			theme,
 		);
 	}
 	if (outcome === "no_active_sessions") {
-		return renderWaitErrorCard(
+		return renderWaitCard(
 			[
 				{ value: formatIds(ids), role: "primary" },
 				{ value: "no active sessions", role: "metadata" },
 			],
-			"None of the requested sessions is active.",
+			{
+				label: "Result:",
+				text: "None of the requested sessions is active.",
+				color: "muted",
+			},
 			options.expanded,
 			theme,
 		);
@@ -267,22 +279,26 @@ export function renderSubagentWaitResult(
 			});
 }
 
-/** Renders one wait failure with role-colored identity and error text. */
-function renderWaitErrorCard(
+/** Renders one settled wait result with explicit normal or failure semantics. */
+function renderWaitCard(
 	parts: readonly SemanticHeaderPart[],
-	error: string,
+	body: {
+		readonly label: string;
+		readonly text: string;
+		readonly color: "muted" | "error";
+	},
 	expanded: boolean,
 	theme: Theme,
 ): Component {
 	return new SemanticComponent((width) => [
 		renderHeader("subagent_wait", parts, width, theme),
 		...renderBoundedText({
-			label: "Error:",
-			text: error,
+			label: body.label,
+			text: body.text,
 			width,
 			theme,
 			expanded,
-			color: "error",
+			color: body.color,
 		}),
 	]);
 }

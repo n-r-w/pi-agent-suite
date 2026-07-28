@@ -554,11 +554,11 @@ describe("Subagents V2 semantic rendering", () => {
 		});
 	});
 
-	test("renders wait feedback, timeout, no-active, and tool failures without fabricated metadata", () => {
-		// Purpose: wait cards must distinguish delivered feedback from outcomes that have no feedback source.
-		// Input and expected output: feedback shows elapsed wait and terminal snapshot; timeout, no-active, and tool failures show only requested identity and error text.
-		// Edge case: ordered multiple IDs and compact timeout formatting remain stable.
-		// Dependencies: validated wait evidence and structured failed-tool details.
+	test("renders wait feedback, normal outcomes, and tool failures without fabricated metadata", () => {
+		// Purpose: wait cards must distinguish delivered feedback and normal outcomes from failed tool execution.
+		// Input and expected output: feedback shows a terminal snapshot, normal outcomes use muted result text, and tool failures retain error styling.
+		// Edge case: ordered multiple IDs and compact timeout formatting remain stable after result classification.
+		// Dependencies: validated wait evidence, structured failed-tool details, and semantic theme roles.
 		const args = { sessionIds: [1, 3, 8], timeoutMs: 30_000 };
 		const pending = renderTool({ name: "subagent_wait", args });
 		const feedback = renderTool({
@@ -576,14 +576,28 @@ describe("Subagents V2 semantic rendering", () => {
 			args,
 			result: result({ outcome: "no_active_sessions" }),
 		});
+		const failedResult = {
+			content: [{ type: "text" as const, text: "Pi validation wrapper" }],
+			details: { code: "invalid_request", message: "timeout is invalid" },
+		};
 		const failed = renderTool({
 			name: "subagent_wait",
 			args,
-			result: {
-				content: [{ type: "text", text: "Pi validation wrapper" }],
-				details: { code: "invalid_request", message: "timeout is invalid" },
-			},
+			result: failedResult,
 			isError: true,
+		});
+		const markedTimeout = renderTool({
+			name: "subagent_wait",
+			args,
+			result: result({ outcome: "timeout" }),
+			theme: MARKED_THEME,
+		});
+		const markedFailure = renderTool({
+			name: "subagent_wait",
+			args,
+			result: failedResult,
+			isError: true,
+			theme: MARKED_THEME,
 		});
 
 		expect(pending.call).toEqual([
@@ -597,11 +611,11 @@ describe("Subagents V2 semantic rendering", () => {
 		]);
 		expect(timeout.result).toEqual([
 			"subagent_wait #1,3,8 · 30s/30s · timeout",
-			"Error: No feedback was received before the timeout.",
+			"Result: No feedback before timeout. Subagents were not stopped.",
 		]);
 		expect(noActive.result).toEqual([
 			"subagent_wait #1,3,8 · no active sessions",
-			"Error: None of the requested sessions is active.",
+			"Result: None of the requested sessions is active.",
 		]);
 		expect(failed.result).toEqual([
 			"subagent_wait #1,3,8",
@@ -609,6 +623,13 @@ describe("Subagents V2 semantic rendering", () => {
 		]);
 		expect(failed.result.join("\n")).not.toContain("invalid_request");
 		expect(failed.result.join("\n")).not.toContain("SubAgentCoder");
+		expect(markedTimeout.result.join("\n")).toContain(
+			"<toolTitle><bold>Result:</bold></toolTitle><muted> No feedback before timeout. Subagents were not stopped.</muted>",
+		);
+		expect(markedTimeout.result.join("\n")).not.toContain("<error>");
+		expect(markedFailure.result.join("\n")).toContain(
+			"<toolTitle><bold>Error:</bold></toolTitle><error> timeout is invalid</error>",
+		);
 	});
 
 	test("uses V1-style bounded previews, configured hints, expanded formatting, and shell widths", () => {
