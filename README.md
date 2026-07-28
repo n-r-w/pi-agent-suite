@@ -2,6 +2,14 @@
 
 Pi Agent Suite helps you handle complex software tasks without turning one model conversation into a bottleneck. It lets you work through specialized agents, delegate focused tasks, request independent review, and keep long-running sessions useful as context grows.
 
+**Compact subagents TUI:**
+
+![Compact subagents TUI](docs/images/subagents-tui-compact.png)
+
+**Full subagents TUI (activated via `/subagents` or `Ctrl+Shift+G`):**
+
+![Full subagents TUI](docs/images/subagents-tui.png)
+
 ## Core ideas
 
 ### Agent system
@@ -172,6 +180,10 @@ You are a code review agent. Check correctness, risks, and missing validation.
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ## Changelog
+
+### v2.0.0 - 2026-07-29
+
+- Breaking change: completely new subagent management system. The `/subagents` screen now shows all active subagents, their status, and allows steering or waiting for them. Subagents can be started, steered, and waited on asynchronously, and their results are integrated into the main agent's workflow.
 
 ### v1.0.2 - 2026-07-25
 

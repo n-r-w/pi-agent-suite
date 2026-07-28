@@ -2,6 +2,14 @@
 
 Pi Agent Suite helps you handle complex software tasks without turning one model conversation into a bottleneck. It lets you work through specialized agents, delegate focused tasks, request independent review, and keep long-running sessions useful as context grows.
 
+**Compact subagents TUI:**
+
+![Compact subagents TUI](../docs/images/subagents-tui-compact.png)
+
+**Full subagents TUI (activated via `/subagents` or `Ctrl+Shift+G`):**
+
+![Full subagents TUI](../docs/images/subagents-tui.png)
+
 ## Core ideas
 
 ### Agent system
@@ -10,7 +18,7 @@ Choose a main agent that matches the job. It can complete the task directly, del
 
 Create reusable specialists for different kinds of work, then extend or replace them for a specific project. Delegated tasks can run independently, and saved subagent work can be continued later instead of started again.
 
-Learn more: [main-agent-selection](docs/extensions/main-agent-selection.md), [run-subagent](docs/extensions/run-subagent.md), [consult-advisor](docs/extensions/consult-advisor.md), and [convene-council](docs/extensions/convene-council.md).
+Learn more: [main-agent-selection](../docs/extensions/main-agent-selection.md), [run-subagent](../docs/extensions/run-subagent.md), [consult-advisor](../docs/extensions/consult-advisor.md), and [convene-council](../docs/extensions/convene-council.md).
 
 ### Long-context management
 
@@ -35,7 +43,7 @@ Custom compaction keeps pi's selected recent context, but changes how older hist
 
 The result is the same automatic compaction workflow, but it can recover from histories that standard compaction cannot summarize safely.
 
-Learn more: [context-projection](docs/extensions/context-projection.md) and [custom-compaction](docs/extensions/custom-compaction.md).
+Learn more: [context-projection](../docs/extensions/context-projection.md) and [custom-compaction](../docs/extensions/custom-compaction.md).
 
 ## Quick start
 
@@ -98,25 +106,25 @@ Recommended MCP servers:
 
 | Extension | Default behavior | What it does | Quick settings | Details |
 | --- | --- | --- | --- | --- |
-| `system-prompt` | Enabled | Replaces pi's base system prompt with a Markdown template and runtime variables. | `system-prompt/config.json`: `enabled`, `templateFile`. | [docs/extensions/system-prompt.md](docs/extensions/system-prompt.md) |
-| `project-rules` | Enabled | Appends recursive project Markdown rules from `.pi/rules`; global `~/.pi` storage is excluded. | `project-rules/config.json`: `enabled`, `rulesDir`. | [docs/extensions/project-rules.md](docs/extensions/project-rules.md) |
-| `mcp-wrapper` | No MCP tools until configured | Registers tools from configured MCP servers, caches tool metadata, and adds `/mcp-refresh`. | `mcp-wrapper/config.json`: `settings.enabled`, `settings.timeouts`, `mcpServers`. | [docs/extensions/mcp-wrapper.md](docs/extensions/mcp-wrapper.md) |
-| `enable-tools` | Enabled | Enables configured built-in tools such as `grep`, `find`, and `ls`. | `enable-tools/config.json`: `enabled`, `include`, `exclude`. | [docs/extensions/enable-tools.md](docs/extensions/enable-tools.md) |
-| `footer` | Enabled | Shows project, optional git branch, runtime details, and additional extension statuses. | `footer/config.json`: `enabled`, model display options, `showApiCost`, `showGitBranch`, `showAdditionalStatusLine`. | [docs/extensions/footer.md](docs/extensions/footer.md) |
-| `codex-fast` | Disabled | Toggles fast mode for supported OpenAI Codex requests and marks the footer model with `-F`. | State: `codex-fast/state.json`. Toggle with `/fast` or `Ctrl+Alt+F`. | [docs/extensions/codex-fast.md](docs/extensions/codex-fast.md) |
-| `codex-verbosity` | Disabled | Adds `text.verbosity` to OpenAI Codex requests. | `codex-verbosity/config.json`: `enabled`, `verbosity` (`low`, `medium`, `high`). | [docs/extensions/codex-verbosity.md](docs/extensions/codex-verbosity.md) |
-| `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](docs/extensions/codex-quota.md) |
-| `custom-compaction` | Enabled | Replaces fixed-request pi compaction with bounded adaptive summarization that can reduce oversized history before the final summary. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](docs/extensions/custom-compaction.md) |
-| `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary; requires valid enabled custom compaction. | `context-projection/config.json`: `enabled`, `projectCompactionSource`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](docs/extensions/context-projection.md) |
-| `mermaid` | Enabled in TUI mode | Renders supported Mermaid blocks from assistant responses as durable ASCII previews. | Fixed safety limits; no configuration. | [docs/extensions/mermaid.md](docs/extensions/mermaid.md) |
-| `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](docs/extensions/completion-sound.md) |
-| `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](docs/extensions/cmux.md) |
-| `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](docs/extensions/main-agent-selection.md) |
-| `run-subagent` | Enabled | Adds asynchronous `subagent_start`, `subagent_steer`, and `subagent_wait` tools plus the `/subagents` (`Ctrl+Shift+G`) management screen; normal mode has no widget. | `run-subagent/config.json`: `enabled`, `maxDepth`, `startDescriptionPromptFile`, `steerDescriptionPromptFile`, `waitDescriptionPromptFile`. | [docs/extensions/run-subagent.md](docs/extensions/run-subagent.md) |
-| `structured-prompt` | Enabled | Adds `/prompt` and `Ctrl+Alt+P` for building structured user requests. | `structured-prompt/config.json`: `enabled`. | [docs/extensions/structured-prompt.md](docs/extensions/structured-prompt.md) |
-| `ask-llm` | Enabled | Adds `/ask` for one-off model questions that are not saved to the current session. | `ask-llm/config.json`: `enabled`, `model`, `systemPromptFile`, `retry`. | [docs/extensions/ask-llm.md](docs/extensions/ask-llm.md) |
-| `consult-advisor` | Enabled | Adds the `consult_advisor` tool for an independent model opinion. | `consult-advisor/config.json`: `enabled`, `model`, `promptFile`, `debugPayloadFile`, `retry`. | [docs/extensions/consult-advisor.md](docs/extensions/consult-advisor.md) |
-| `convene-council` | Disabled | Adds the `convene_council` tool for a bounded two-participant model discussion. | `convene-council/config.json`: `enabled`, `llm1`, `llm2`, `participantIterationLimit`, `finalAnswerParticipant`, `responseDefectRetries`, `tools`. | [docs/extensions/convene-council.md](docs/extensions/convene-council.md) |
+| `system-prompt` | Enabled | Replaces pi's base system prompt with a Markdown template and runtime variables. | `system-prompt/config.json`: `enabled`, `templateFile`. | [docs/extensions/system-prompt.md](../docs/extensions/system-prompt.md) |
+| `project-rules` | Enabled | Appends recursive project Markdown rules from `.pi/rules`; global `~/.pi` storage is excluded. | `project-rules/config.json`: `enabled`, `rulesDir`. | [docs/extensions/project-rules.md](../docs/extensions/project-rules.md) |
+| `mcp-wrapper` | No MCP tools until configured | Registers tools from configured MCP servers, caches tool metadata, and adds `/mcp-refresh`. | `mcp-wrapper/config.json`: `settings.enabled`, `settings.timeouts`, `mcpServers`. | [docs/extensions/mcp-wrapper.md](../docs/extensions/mcp-wrapper.md) |
+| `enable-tools` | Enabled | Enables configured built-in tools such as `grep`, `find`, and `ls`. | `enable-tools/config.json`: `enabled`, `include`, `exclude`. | [docs/extensions/enable-tools.md](../docs/extensions/enable-tools.md) |
+| `footer` | Enabled | Shows project, optional git branch, runtime details, and additional extension statuses. | `footer/config.json`: `enabled`, model display options, `showApiCost`, `showGitBranch`, `showAdditionalStatusLine`. | [docs/extensions/footer.md](../docs/extensions/footer.md) |
+| `codex-fast` | Disabled | Toggles fast mode for supported OpenAI Codex requests and marks the footer model with `-F`. | State: `codex-fast/state.json`. Toggle with `/fast` or `Ctrl+Alt+F`. | [docs/extensions/codex-fast.md](../docs/extensions/codex-fast.md) |
+| `codex-verbosity` | Disabled | Adds `text.verbosity` to OpenAI Codex requests. | `codex-verbosity/config.json`: `enabled`, `verbosity` (`low`, `medium`, `high`). | [docs/extensions/codex-verbosity.md](../docs/extensions/codex-verbosity.md) |
+| `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](../docs/extensions/codex-quota.md) |
+| `custom-compaction` | Enabled | Replaces fixed-request pi compaction with bounded adaptive summarization that can reduce oversized history before the final summary. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](../docs/extensions/custom-compaction.md) |
+| `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary; requires valid enabled custom compaction. | `context-projection/config.json`: `enabled`, `projectCompactionSource`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](../docs/extensions/context-projection.md) |
+| `mermaid` | Enabled in TUI mode | Renders supported Mermaid blocks from assistant responses as durable ASCII previews. | Fixed safety limits; no configuration. | [docs/extensions/mermaid.md](../docs/extensions/mermaid.md) |
+| `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](../docs/extensions/completion-sound.md) |
+| `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](../docs/extensions/cmux.md) |
+| `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](../docs/extensions/main-agent-selection.md) |
+| `run-subagent` | Enabled | Adds asynchronous `subagent_start`, `subagent_steer`, and `subagent_wait` tools plus the `/subagents` (`Ctrl+Shift+G`) management screen; normal mode has no widget. | `run-subagent/config.json`: `enabled`, `maxDepth`, `startDescriptionPromptFile`, `steerDescriptionPromptFile`, `waitDescriptionPromptFile`. | [docs/extensions/run-subagent.md](../docs/extensions/run-subagent.md) |
+| `structured-prompt` | Enabled | Adds `/prompt` and `Ctrl+Alt+P` for building structured user requests. | `structured-prompt/config.json`: `enabled`. | [docs/extensions/structured-prompt.md](../docs/extensions/structured-prompt.md) |
+| `ask-llm` | Enabled | Adds `/ask` for one-off model questions that are not saved to the current session. | `ask-llm/config.json`: `enabled`, `model`, `systemPromptFile`, `retry`. | [docs/extensions/ask-llm.md](../docs/extensions/ask-llm.md) |
+| `consult-advisor` | Enabled | Adds the `consult_advisor` tool for an independent model opinion. | `consult-advisor/config.json`: `enabled`, `model`, `promptFile`, `debugPayloadFile`, `retry`. | [docs/extensions/consult-advisor.md](../docs/extensions/consult-advisor.md) |
+| `convene-council` | Disabled | Adds the `convene_council` tool for a bounded two-participant model discussion. | `convene-council/config.json`: `enabled`, `llm1`, `llm2`, `participantIterationLimit`, `finalAnswerParticipant`, `responseDefectRetries`, `tools`. | [docs/extensions/convene-council.md](../docs/extensions/convene-council.md) |
 
 ## Agent files
 
@@ -172,6 +180,10 @@ You are a code review agent. Check correctness, risks, and missing validation.
 Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ## Changelog
+
+### v2.0.0 - 2026-07-29
+
+- Breaking change: completely new subagent management system. The `/subagents` screen now shows all active subagents, their status, and allows steering or waiting for them. Subagents can be started, steered, and waited on asynchronously, and their results are integrated into the main agent's workflow.
 
 ### v1.0.2 - 2026-07-25
 
