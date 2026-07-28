@@ -245,7 +245,7 @@ export function renderSubagentWaitResult(
 			],
 			{
 				label: "Result:",
-				text: "No feedback before timeout. Subagents were not stopped.",
+				text: "No feedback before timeout",
 				color: "muted",
 			},
 			options.expanded,

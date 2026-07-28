@@ -611,7 +611,7 @@ describe("Subagents V2 semantic rendering", () => {
 		]);
 		expect(timeout.result).toEqual([
 			"subagent_wait #1,3,8 · 30s/30s · timeout",
-			"Result: No feedback before timeout. Subagents were not stopped.",
+			"Result: No feedback before timeout",
 		]);
 		expect(noActive.result).toEqual([
 			"subagent_wait #1,3,8 · no active sessions",
@@ -624,7 +624,7 @@ describe("Subagents V2 semantic rendering", () => {
 		expect(failed.result.join("\n")).not.toContain("invalid_request");
 		expect(failed.result.join("\n")).not.toContain("SubAgentCoder");
 		expect(markedTimeout.result.join("\n")).toContain(
-			"<toolTitle><bold>Result:</bold></toolTitle><muted> No feedback before timeout. Subagents were not stopped.</muted>",
+			"<toolTitle><bold>Result:</bold></toolTitle><muted> No feedback before timeout</muted>",
 		);
 		expect(markedTimeout.result.join("\n")).not.toContain("<error>");
 		expect(markedFailure.result.join("\n")).toContain(
