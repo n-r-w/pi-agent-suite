@@ -27,6 +27,8 @@ import type { InvocationSupervisor } from "./invocation-supervisor";
 import type { SessionCatalogQuery } from "./session-catalog";
 
 const V2_TOOL_NAMES = new Set<string>(SUBAGENT_TOOL_NAMES);
+/** Delimits shared Subagents V2 rules inside composed system prompts. */
+const SUBAGENT_TOOLS_GUIDELINES_MARKER = "<subagent_tools_guidelines>";
 
 interface ResolveLaunchOptions {
 	readonly pi: ExtensionAPI;
@@ -113,6 +115,7 @@ function resolveAgentModel(
 export function publishPromptContribution(
 	pi: ExtensionAPI,
 	maxDepth: number,
+	extensionDescription: string,
 ): void {
 	const composition = getAgentRuntimeComposition(pi);
 	composition.setSubagentsContribution({
@@ -124,6 +127,7 @@ export function publishPromptContribution(
 				selectedAgentId: readSubagentAgentId(),
 				depth: readCurrentDepth(),
 				maxDepth,
+				extensionDescription,
 			}),
 	});
 	composition.setSubagentsActiveToolFilter((toolNames) =>
@@ -239,6 +243,7 @@ interface BuildSubagentsPromptOptions {
 	readonly selectedAgentId: string | undefined;
 	readonly depth: number;
 	readonly maxDepth: number;
+	readonly extensionDescription: string;
 }
 
 /** Builds guidance only from runtime-read V2 identifiers and policy facts. */
@@ -252,6 +257,7 @@ function buildSubagentsPrompt(
 		selectedAgentId,
 		depth,
 		maxDepth,
+		extensionDescription,
 	} = options;
 	const policy = resolveEffectiveCallableAgentPolicy(
 		agents,
@@ -261,27 +267,43 @@ function buildSubagentsPrompt(
 	const promptParts = policy.selectedAgent?.prompt
 		? [policy.selectedAgent.prompt]
 		: [];
-	if (!activeToolNames.includes("subagent_start") || depth >= maxDepth) {
+	const activeV2Tools = activeToolNames.filter((name) =>
+		V2_TOOL_NAMES.has(name),
+	);
+	if (activeV2Tools.length === 0) {
 		return promptParts.length === 0 ? undefined : promptParts.join("\n\n");
 	}
 	promptParts.push(
 		[
-			SUBAGENTS_PROMPT_MARKER,
-			`tools: ${activeToolNames.filter((name) => V2_TOOL_NAMES.has(name)).join(", ")}`,
-			`depth: ${depth}/${maxDepth}`,
-			...policy.callableAgents.map(
-				(agent) =>
-					`- agentId: ${agent.id}\n  description: ${agent.description}`,
-			),
-			SUBAGENTS_PROMPT_MARKER.replace("<", "</"),
+			SUBAGENT_TOOLS_GUIDELINES_MARKER,
+			extensionDescription,
+			SUBAGENT_TOOLS_GUIDELINES_MARKER.replace("<", "</"),
 		].join("\n"),
 	);
+	const hasCallableAgentGuidance =
+		activeV2Tools.includes("subagent_start") && depth < maxDepth;
+	if (hasCallableAgentGuidance) {
+		promptParts.push(
+			[
+				SUBAGENTS_PROMPT_MARKER,
+				`tools: ${activeV2Tools.join(", ")}`,
+				`depth: ${depth}/${maxDepth}`,
+				...policy.callableAgents.map(
+					(agent) =>
+						`- agentId: ${agent.id}\n  description: ${agent.description}`,
+				),
+				SUBAGENTS_PROMPT_MARKER.replace("<", "</"),
+			].join("\n"),
+		);
+	}
 	writeRuntimeDiagnostic("subagents-v2.prompt.build.applied", {
 		selectedAgentId: policy.selectedAgent?.id ?? null,
 		depth,
 		maxDepth,
-		activeV2Tools: activeToolNames.filter((name) => V2_TOOL_NAMES.has(name)),
-		callableAgentIds: policy.callableAgents.map((agent) => agent.id),
+		activeV2Tools,
+		callableAgentIds: hasCallableAgentGuidance
+			? policy.callableAgents.map((agent) => agent.id)
+			: [],
 	});
 	return promptParts.join("\n\n");
 }

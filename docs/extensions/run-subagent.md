@@ -27,11 +27,14 @@ If the file is missing, the extension uses:
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables runtime behavior. When `false`, all three tool definitions remain registered, the runtime and management screen do not start, and every execution fails closed with `start_failed`. |
 | `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum depth for creating new logical sessions. At or beyond this depth, `subagent_start` and callable-agent guidance are removed; `subagent_steer` and `subagent_wait` remain available for saved direct children. |
+| `extensionDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/extension-description.md` | Replaces the shared model-visible Subagents V2 rules with the file's trimmed content. |
 | `startDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/start-description.md` | Replaces the model-visible `subagent_start` description with the file's trimmed content. |
 | `steerDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/steer-description.md` | Replaces the model-visible `subagent_steer` description with the file's trimmed content. |
 | `waitDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/wait-description.md` | Replaces the model-visible `subagent_wait` description with the file's trimmed content. |
 
-Each description file must be readable and contain non-whitespace text after trimming. The keys are independent: an omitted key keeps its matching bundled description even when another tool uses a custom file.
+Each description file must be readable and contain non-whitespace text after trimming. The keys are independent: an omitted key keeps its matching bundled description even when another description uses a custom file.
+
+Before each model turn, the extension evaluates the active tools after main-agent selection, child tool policy, and depth filtering. If `subagent_start`, `subagent_steer`, or `subagent_wait` is active, the resolved extension description is appended to the system prompt inside `<subagent_tools_guidelines>...</subagent_tools_guidelines>`. The callable-agent list is appended only when `subagent_start` remains active. Neither the shared extension description nor callable-agent guidance is appended when none of the three tools is active.
 
 Example:
 
@@ -39,13 +42,14 @@ Example:
 {
   "enabled": true,
   "maxDepth": 2,
+  "extensionDescriptionPromptFile": "/absolute/path/to/subagents-rules.md",
   "startDescriptionPromptFile": "/absolute/path/to/subagent-start.md",
   "steerDescriptionPromptFile": "/absolute/path/to/subagent-steer.md",
   "waitDescriptionPromptFile": "/absolute/path/to/subagent-wait.md"
 }
 ```
 
-The configuration object accepts only the five keys listed above. Invalid JSON, unsupported keys, invalid values, or one invalid description file fail the complete configuration closed. All three tools remain registered with bundled descriptions, runtime behavior and the management screen remain disabled, and every execution fails with `start_failed`; no valid custom description from the same configuration is applied.
+The configuration object accepts only the six keys listed above. Invalid JSON, unsupported keys, invalid values, or one invalid description file fail the complete configuration closed. All three tools remain registered with bundled descriptions, runtime behavior and the management screen remain disabled, and every execution fails with `start_failed`; no valid custom description from the same configuration is applied.
 
 Configuration and description files are read once while the extension runtime starts and before Pi creates its first model snapshot. Restart Pi to apply file or configuration changes; the extension does not reload them in a running session.
 
@@ -57,7 +61,7 @@ Callable agents come from the shared agent registry documented in [main-agent-se
 
 A project agent definition supplies the child prompt, model, thinking level, tool patterns, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
 
-An agent definition can allow any subset of the three tools by name. The configured depth limit removes all three at the limit without changing unrelated child tools. Invalid child tool policy fails closed by activating no child tools.
+An agent definition can allow any subset of the three tools by name. The configured depth limit removes `subagent_start` at the limit without changing `subagent_steer`, `subagent_wait`, or unrelated child tools. Invalid child tool policy fails closed by activating no child tools.
 
 ## Startup acceptance
 

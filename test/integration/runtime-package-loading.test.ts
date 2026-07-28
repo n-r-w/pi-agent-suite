@@ -225,11 +225,11 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 	}
 });
 
-test("runtime child loading uses the project agent override", () => {
-	// Purpose: real child Pi must preserve its full catalog while applying only its independently transported active-tool policy.
-	// Input and expected output: project SubAgentExtractor contributes its prompt, the catalog retains bash, and active tools equal read.
+test("runtime child loading uses project policy and shared guidance", () => {
+	// Purpose: real child Pi must preserve its full catalog, apply its transported tool policy, and receive shared guidance for remaining V2 tools.
+	// Input and expected output: the project agent prompt wins, maxDepth removes start, steer and wait remain active, and configured guidance stays wrapped without callable-agent listing.
 	// Edge case: the child agent ID keeps global casing while the project override and tool policy remain independent of caller tools.
-	// Dependencies: local Pi CLI, isolated agent files, package lifecycle handlers, and a debug extension that exits before model access.
+	// Dependencies: local Pi CLI, isolated agent files and config, package lifecycle handlers, and a debug extension that exits before model access.
 	const repositoryDir = process.cwd();
 	const projectDir = realpathSync(
 		mkdtempSync(join(tmpdir(), "pi-runtime-project-agents-")),
@@ -238,6 +238,18 @@ test("runtime child loading uses the project agent override", () => {
 	const agentDir = createIsolatedAgentDir(projectDir);
 	const runtimeDumpFile = join(scratchDir, "runtime.json");
 	const debugExtensionPath = writeRuntimeDumpExtension(scratchDir);
+	const extensionDescriptionPromptFile = join(scratchDir, "extension.md");
+	const configDir = join(agentDir, "agent-suite", "run-subagent");
+	mkdirSync(configDir, { recursive: true });
+	writeFileSync(extensionDescriptionPromptFile, " child extension ");
+	writeFileSync(
+		join(configDir, "config.json"),
+		JSON.stringify({
+			enabled: true,
+			maxDepth: 1,
+			extensionDescriptionPromptFile,
+		}),
+	);
 	writeProjectAgent(
 		projectDir,
 		"subagentextractor.md",
@@ -256,7 +268,12 @@ test("runtime child loading uses the project agent override", () => {
 		PI_RUNTIME_DUMP_FILE: runtimeDumpFile,
 		[SUBAGENT_AGENT_ID_ENV]: "SubAgentExtractor",
 		[SUBAGENT_DEPTH_ENV]: "1",
-		[SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify(["read"]),
+		[SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify([
+			"read",
+			"subagent_start",
+			"subagent_steer",
+			"subagent_wait",
+		]),
 	};
 
 	try {
@@ -286,8 +303,18 @@ test("runtime child loading uses the project agent override", () => {
 		) as RuntimeDump;
 		expect(runtime.systemPrompt).toContain("PROJECT_AGENT_BODY");
 		expect(runtime.systemPrompt).not.toContain("Extractor prompt");
+		expect(runtime.systemPrompt).toContain(
+			"<subagent_tools_guidelines>\nchild extension\n</subagent_tools_guidelines>",
+		);
+		expect(runtime.systemPrompt).not.toContain(
+			"<subagents-v2-callable-agents>",
+		);
 		expect(runtime.tools).toContain("bash");
-		expect(runtime.activeTools).toEqual(["read"]);
+		expect(runtime.activeTools).toEqual([
+			"read",
+			"subagent_steer",
+			"subagent_wait",
+		]);
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(projectDir, { recursive: true, force: true });
@@ -474,10 +501,10 @@ test("exposes Subagents V2 runtime tools and prompt markers", () => {
 });
 
 test("runtime package loading snapshots configured V2 descriptions on the first turn", () => {
-	// Purpose: real Pi must await description configuration after synchronous registration and before its first tool snapshot.
-	// Input and expected output: three absolute custom prompt files produce exactly three active V2 tools with matching descriptions.
+	// Purpose: real Pi must await extension and tool description configuration before its first model-visible snapshot.
+	// Input and expected output: four absolute custom prompt files produce shared extension guidance and exactly three active V2 tools with matching descriptions.
 	// Edge case: the debug extension exits from the first before_agent_start event, before any provider or model request.
-	// Dependencies: local Pi CLI, isolated package config, production extension loading, and a runtime dump extension.
+	// Dependencies: local Pi CLI, isolated package config, selected main-agent restoration, production extension loading, and a runtime dump extension.
 	const repositoryDir = process.cwd();
 	const projectDir = realpathSync(
 		mkdtempSync(join(tmpdir(), "pi-runtime-description-project-")),
@@ -491,10 +518,15 @@ test("runtime package loading snapshots configured V2 descriptions on the first 
 	const configDir = join(agentDir, "agent-suite", "run-subagent");
 	mkdirSync(configDir, { recursive: true });
 	const descriptionFiles = {
+		extensionDescriptionPromptFile: join(scratchDir, "extension.md"),
 		startDescriptionPromptFile: join(scratchDir, "start.md"),
 		steerDescriptionPromptFile: join(scratchDir, "steer.md"),
 		waitDescriptionPromptFile: join(scratchDir, "wait.md"),
 	};
+	writeFileSync(
+		descriptionFiles.extensionDescriptionPromptFile,
+		" real extension ",
+	);
 	writeFileSync(descriptionFiles.startDescriptionPromptFile, " real start ");
 	writeFileSync(descriptionFiles.steerDescriptionPromptFile, " real steer ");
 	writeFileSync(descriptionFiles.waitDescriptionPromptFile, " real wait ");
@@ -540,6 +572,7 @@ test("runtime package loading snapshots configured V2 descriptions on the first 
 		expect({
 			activeTools: runtime.activeTools,
 			v2Tools: runtime.tools.filter((name) => name.startsWith("subagent_")),
+			hasExtensionDescription: runtime.systemPrompt.includes("real extension"),
 			descriptions: {
 				start: runtime.toolDescriptions["subagent_start"],
 				steer: runtime.toolDescriptions["subagent_steer"],
@@ -548,6 +581,7 @@ test("runtime package loading snapshots configured V2 descriptions on the first 
 		}).toEqual({
 			activeTools: ["subagent_start", "subagent_steer", "subagent_wait"],
 			v2Tools: ["subagent_start", "subagent_steer", "subagent_wait"],
+			hasExtensionDescription: true,
 			descriptions: {
 				start: "real start",
 				steer: "real steer",

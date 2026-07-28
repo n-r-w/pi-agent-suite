@@ -9,6 +9,7 @@ export const SUBAGENTS_V2_EXTENSION_DIR = "run-subagent";
 const DEFAULT_MAX_DEPTH = 1;
 const CANONICAL_DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
 const DESCRIPTION_PROMPT_FILE_KEYS = [
+	"extensionDescriptionPromptFile",
 	"startDescriptionPromptFile",
 	"steerDescriptionPromptFile",
 	"waitDescriptionPromptFile",
@@ -24,6 +25,7 @@ type DescriptionPromptFileKey = (typeof DESCRIPTION_PROMPT_FILE_KEYS)[number];
 export interface SubagentsV2Config {
 	readonly enabled: boolean;
 	readonly maxDepth: number;
+	readonly extensionDescription?: string;
 	readonly startDescription?: string;
 	readonly steerDescription?: string;
 	readonly waitDescription?: string;
@@ -78,10 +80,15 @@ function parseConfigValue(value: unknown): SubagentsV2Config {
 	) {
 		return invalidConfig("maxDepth must be a non-negative safe integer");
 	}
+	let extensionDescription: string | undefined;
 	let startDescription: string | undefined;
 	let steerDescription: string | undefined;
 	let waitDescription: string | undefined;
 	try {
+		extensionDescription = readConfiguredDescription(
+			value,
+			"extensionDescriptionPromptFile",
+		);
 		startDescription = readConfiguredDescription(
 			value,
 			"startDescriptionPromptFile",
@@ -100,6 +107,7 @@ function parseConfigValue(value: unknown): SubagentsV2Config {
 	return {
 		enabled: enabled ?? true,
 		maxDepth: maxDepth ?? DEFAULT_MAX_DEPTH,
+		...(extensionDescription === undefined ? {} : { extensionDescription }),
 		...(startDescription === undefined ? {} : { startDescription }),
 		...(steerDescription === undefined ? {} : { steerDescription }),
 		...(waitDescription === undefined ? {} : { waitDescription }),

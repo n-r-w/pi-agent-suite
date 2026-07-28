@@ -24,18 +24,23 @@ describe("subagents V2 entry config", () => {
 		rmSync(suiteDir, { recursive: true, force: true });
 	});
 
-	test("loads one, two, and three independent description prompt files", async () => {
-		// Purpose: each supported path must resolve independently without replacing defaults for omitted tools.
+	test("loads independent extension and tool description prompt files", async () => {
+		// Purpose: each supported path must resolve independently without replacing defaults for omitted descriptions.
 		// Input and expected output: absolute files with padded text produce trimmed config descriptions for only configured keys.
-		// Edge case: every case reuses one config boundary while increasing the configured description count.
+		// Edge case: extension guidance can be configured without customizing any tool description.
 		// Dependencies: suite-owned config files and isolated description prompt files.
 		const configDir = join(suiteDir, "run-subagent");
 		mkdirSync(configDir, { recursive: true });
 		const descriptionFiles = {
+			extensionDescriptionPromptFile: join(suiteDir, "extension.md"),
 			startDescriptionPromptFile: join(suiteDir, "start.md"),
 			steerDescriptionPromptFile: join(suiteDir, "steer.md"),
 			waitDescriptionPromptFile: join(suiteDir, "wait.md"),
 		};
+		writeFileSync(
+			descriptionFiles.extensionDescriptionPromptFile,
+			"  custom extension  \n",
+		);
 		writeFileSync(
 			descriptionFiles.startDescriptionPromptFile,
 			"  custom start  \n",
@@ -46,6 +51,13 @@ describe("subagents V2 entry config", () => {
 		);
 		writeFileSync(descriptionFiles.waitDescriptionPromptFile, " custom wait ");
 		const cases = [
+			{
+				paths: {
+					extensionDescriptionPromptFile:
+						descriptionFiles.extensionDescriptionPromptFile,
+				},
+				descriptions: { extensionDescription: "custom extension" },
+			},
 			{
 				paths: {
 					startDescriptionPromptFile:
@@ -68,6 +80,7 @@ describe("subagents V2 entry config", () => {
 			{
 				paths: descriptionFiles,
 				descriptions: {
+					extensionDescription: "custom extension",
 					startDescription: "custom start",
 					steerDescription: "custom steer",
 					waitDescription: "custom wait",
@@ -102,6 +115,10 @@ describe("subagents V2 entry config", () => {
 		const invalidCases: readonly Record<string, unknown>[] = [
 			{
 				startDescriptionPromptFile: validFile,
+				extensionDescriptionPromptFile: join(suiteDir, "missing.md"),
+			},
+			{
+				startDescriptionPromptFile: validFile,
 				steerDescriptionPromptFile: 1,
 			},
 			{
@@ -131,6 +148,7 @@ describe("subagents V2 entry config", () => {
 			expect({
 				enabled: config.enabled,
 				maxDepth: config.maxDepth,
+				hasExtensionDescription: Reflect.has(config, "extensionDescription"),
 				hasStartDescription: Reflect.has(config, "startDescription"),
 				hasSteerDescription: Reflect.has(config, "steerDescription"),
 				hasWaitDescription: Reflect.has(config, "waitDescription"),
@@ -138,6 +156,7 @@ describe("subagents V2 entry config", () => {
 			}).toEqual({
 				enabled: false,
 				maxDepth: 1,
+				hasExtensionDescription: false,
 				hasStartDescription: false,
 				hasSteerDescription: false,
 				hasWaitDescription: false,

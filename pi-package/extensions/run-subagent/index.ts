@@ -85,6 +85,7 @@ import { SessionCatalog } from "./session-catalog";
 import { createToolPresentationRegistry } from "./tool-rendering.ts";
 import { WaitCoordinator } from "./wait-coordinator";
 
+const EXTENSION_DESCRIPTION = readPrompt("extension-description.md");
 const START_DESCRIPTION = readPrompt("start-description.md");
 const STEER_DESCRIPTION = readPrompt("steer-description.md");
 const WAIT_DESCRIPTION = readPrompt("wait-description.md");
@@ -224,7 +225,11 @@ async function handleSessionStart(
 		return;
 	}
 	if (!state.promptPublished) {
-		publishPromptContribution(pi, config.maxDepth);
+		publishPromptContribution(
+			pi,
+			config.maxDepth,
+			config.extensionDescription ?? EXTENSION_DESCRIPTION,
+		);
 		state.promptPublished = true;
 	}
 	applyChildToolPolicy(pi);

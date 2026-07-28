@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentDefinition } from "../../shared/agent-registry";
 import {
+	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../shared/subagent-environment";
@@ -12,6 +13,7 @@ import {
 	resolveCallerSelectedAgentId,
 	resolveEffectiveCallableAgentPolicy,
 } from "./agent-policy";
+import { SUBAGENTS_PROMPT_MARKER } from "./contracts";
 import type { LogicalSession, OwnerIdentity } from "./domain";
 import { SessionCatalog } from "./session-catalog";
 
@@ -97,10 +99,10 @@ describe("effective callable-agent policy", () => {
 		}
 	});
 
-	test("removes only new-session delegation at maxDepth", async () => {
-		// Purpose: maxDepth limits new descendants without disabling control of saved direct children.
-		// Input and expected output: a boundary-depth owner loses subagent_start but retains steer and wait.
-		// Edge case: prompt composition runs after the active-tool filter with no callable start guidance.
+	test("keeps extension guidance when maxDepth removes only new-session delegation", async () => {
+		// Purpose: maxDepth must not remove shared guidance needed to control saved direct children.
+		// Input and expected output: a boundary-depth owner loses subagent_start, retains steer and wait, and receives configured extension guidance without callable-agent listing.
+		// Edge case: prompt composition runs after the active-tool filter has removed the only tool that can create descendants.
 		// Dependencies: production runtime composition and Subagents V2 active-tool policy.
 		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
 		process.env[SUBAGENT_DEPTH_ENV] = "1";
@@ -121,17 +123,61 @@ describe("effective callable-agent policy", () => {
 			},
 		} as unknown as ExtensionAPI;
 		try {
-			publishPromptContribution(pi, 1);
+			publishPromptContribution(pi, 1, "Shared extension guidance");
 			if (beforeAgentStart === undefined) {
 				throw new Error("runtime composition handler was not registered");
 			}
-			await beforeAgentStart({ systemPrompt: "Base" }, { cwd: "/tmp" });
+			const result = (await beforeAgentStart(
+				{ systemPrompt: "Base" },
+				{ cwd: "/tmp" },
+			)) as { readonly systemPrompt?: string } | undefined;
 			expect(activeTools).toEqual(["subagent_steer", "subagent_wait"]);
+			expect(result?.systemPrompt ?? "").toContain(
+				"<subagent_tools_guidelines>\nShared extension guidance\n</subagent_tools_guidelines>",
+			);
+			expect(result?.systemPrompt ?? "").not.toContain(SUBAGENTS_PROMPT_MARKER);
 		} finally {
 			if (previousDepth === undefined) {
 				delete process.env[SUBAGENT_DEPTH_ENV];
 			} else {
 				process.env[SUBAGENT_DEPTH_ENV] = previousDepth;
+			}
+		}
+	});
+
+	test("omits extension guidance when no Subagents V2 tool is active", async () => {
+		// Purpose: shared guidance must not consume model context for agents that cannot use Subagents V2.
+		// Input and expected output: an owner with only read receives no Subagents V2 prompt contribution.
+		// Edge case: callable agent definitions remain available in the registry but no V2 tool is active.
+		// Dependencies: production runtime composition and Subagents V2 active-tool policy.
+		const previousAgentId = process.env[SUBAGENT_AGENT_ID_ENV];
+		delete process.env[SUBAGENT_AGENT_ID_ENV];
+		let beforeAgentStart:
+			| ((event: unknown, ctx: unknown) => Promise<unknown>)
+			| undefined;
+		const pi = {
+			events: { emit: () => undefined },
+			on: (eventName: string, handler: typeof beforeAgentStart) => {
+				if (eventName === "before_agent_start") {
+					beforeAgentStart = handler;
+				}
+			},
+			getActiveTools: () => ["read"],
+			setActiveTools: () => undefined,
+		} as unknown as ExtensionAPI;
+		try {
+			publishPromptContribution(pi, 1, "Shared extension guidance");
+			if (beforeAgentStart === undefined) {
+				throw new Error("runtime composition handler was not registered");
+			}
+			expect(
+				await beforeAgentStart({ systemPrompt: "Base" }, { cwd: "/tmp" }),
+			).toBeUndefined();
+		} finally {
+			if (previousAgentId === undefined) {
+				delete process.env[SUBAGENT_AGENT_ID_ENV];
+			} else {
+				process.env[SUBAGENT_AGENT_ID_ENV] = previousAgentId;
 			}
 		}
 	});
