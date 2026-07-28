@@ -71,8 +71,6 @@ export async function resolveLaunchConfiguration(
 			modelProvider: model.provider,
 			modelId: model.id,
 			contextWindow: model.contextWindow,
-			retryEnabled: "unverified",
-			compactionEnabled: "unverified",
 		},
 	};
 }

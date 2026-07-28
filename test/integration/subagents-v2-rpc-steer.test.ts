@@ -234,8 +234,6 @@ test("real Pi keeps queued active steering accepted when its response is delayed
 					modelProvider: "runtime-steer",
 					modelId: "steer",
 					contextWindow: 4_096,
-					retryEnabled: false,
-					compactionEnabled: false,
 				},
 			}),
 			spawnProcess: (command, args, options) => {

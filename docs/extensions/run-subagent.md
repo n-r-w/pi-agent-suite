@@ -312,6 +312,8 @@ Normal completion produces exactly one terminal state and one feedback dispositi
 - failed completion becomes terminal failure;
 - child abort becomes terminal abort.
 
+Normal child completion uses Pi RPC `agent_settled`. A low-level `agent_end` is not terminal because Pi can still perform an automatic retry, compact the context and retry, or process a queued continuation. Parent cancellation, transport failure, and process exit remain independent terminal boundaries because they can prevent `agent_settled` from arriving.
+
 If an accepted child process exits before a normal terminal event, the invocation becomes terminal failure. Its failure feedback states that the child exited without a terminal event and includes the available exit code, signal, or both. The saved logical session remains available for later continuation.
 
 When the owning Pi runtime stops first:

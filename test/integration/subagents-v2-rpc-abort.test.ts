@@ -384,8 +384,6 @@ test("production Pi RPC abort cancels one pending nested wait", async () => {
 					modelProvider: "runtime-wait",
 					modelId: "wait",
 					contextWindow: 4096,
-					retryEnabled: false,
-					compactionEnabled: false,
 				},
 			},
 		});

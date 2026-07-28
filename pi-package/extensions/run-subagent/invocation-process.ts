@@ -77,14 +77,12 @@ export function defaultPackagePath(): string {
 	return join(dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
-/** Supplies conservative completion facts for prompt-free production channel checks. */
+/** Supplies empty model facts for prompt-free production channel checks. */
 export function defaultRuntimeFacts(): ChildRpcRuntimeFacts {
 	return {
 		modelProvider: "",
 		modelId: "",
 		contextWindow: 0,
-		retryEnabled: "unverified",
-		compactionEnabled: "unverified",
 	};
 }
 

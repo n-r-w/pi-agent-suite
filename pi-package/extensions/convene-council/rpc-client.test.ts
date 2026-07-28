@@ -55,8 +55,6 @@ const BASE_FACTS: ChildRpcRuntimeFacts = {
 	modelProvider: "openai",
 	modelId: "model-a",
 	contextWindow: 1_000,
-	retryEnabled: true,
-	compactionEnabled: true,
 };
 
 /** Creates one complete assistant message for child RPC protocol tests. */
@@ -92,6 +90,11 @@ function emitRpc(
 	fake.stdout(`${JSON.stringify(message)}\n`);
 }
 
+/** Emits the session-level boundary for one fully settled participant prompt. */
+function emitAgentSettled(fake: ReturnType<typeof createTransport>): void {
+	emitRpc(fake, { type: "agent_settled" });
+}
+
 describe("CouncilRpcClient", () => {
 	test("starts participant prompts without a startup RPC command", async () => {
 		// Purpose: constructing the client must not write child settings through RPC.
@@ -114,6 +117,7 @@ describe("CouncilRpcClient", () => {
 			`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "answer", api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
 		);
 		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
+		emitAgentSettled(fake);
 
 		expect(assistantText(await result)).toBe("answer");
 	});
@@ -139,9 +143,9 @@ describe("CouncilRpcClient", () => {
 		await expect(result).rejects.toThrow("busy");
 	});
 
-	test("does not complete a prompt on prompt response success before agent_end", async () => {
-		// Purpose: prompt response success only means the child accepted the prompt.
-		// Input and expected output: message_end text resolves only after agent_end.
+	test("does not complete a prompt before agent_settled", async () => {
+		// Purpose: prompt response success and agent_end do not exhaust Pi's automatic continuations.
+		// Input and expected output: message_end text remains pending through agent_end and resolves on agent_settled.
 		// Edge case: stdout chunks can split valid LF-delimited JSON.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
@@ -166,15 +170,18 @@ describe("CouncilRpcClient", () => {
 			`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "answer", api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
 		);
 		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
+		await Promise.resolve();
+		expect(completed).toBe(false);
+		emitAgentSettled(fake);
 
 		expect(assistantText(await result)).toBe("answer");
 		await handledResult;
 		await completionProbe;
 	});
 
-	test("waits for final agent_end during successful child retry", async () => {
-		// Purpose: participant prompt ownership must survive the non-final agent_end before child auto-retry.
-		// Input and expected output: first retryable agent_end does not resolve; final retry output resolves.
+	test("waits for agent_settled during successful child retry", async () => {
+		// Purpose: participant prompt ownership must survive every low-level agent_end in one retried run.
+		// Input and expected output: retry events and both agent_end events remain pending; agent_settled resolves the retried output.
 		// Edge case: auto_retry_end(success=true) is not the prompt boundary.
 		// Dependencies: fake JSONL transport and shared runtime facts.
 		const fake = createTransport();
@@ -211,14 +218,17 @@ describe("CouncilRpcClient", () => {
 		await Promise.resolve();
 		expect(completed).toBe(false);
 		emitRpc(fake, { type: "agent_end" });
+		await Promise.resolve();
+		expect(completed).toBe(false);
+		emitAgentSettled(fake);
 
 		expect(assistantText(await result)).toBe("retry answer");
 		await completionProbe;
 	});
 
-	test("rejects participant prompt after child retry failure", async () => {
-		// Purpose: exhausted child auto-retry is a terminal participant failure.
-		// Input and expected output: auto_retry_end(success=false) rejects and clears the active prompt.
+	test("rejects participant prompt after failed retry settles", async () => {
+		// Purpose: exhausted child auto-retry preserves its error until Pi reports the session-level boundary.
+		// Input and expected output: auto_retry_end remains pending; agent_settled rejects and clears the active prompt.
 		// Edge case: a later prompt can be started after the failed prompt is cleared.
 		// Dependencies: fake JSONL transport and shared runtime facts.
 		const fake = createTransport();
@@ -244,6 +254,7 @@ describe("CouncilRpcClient", () => {
 			success: false,
 			finalError: "retry exhausted",
 		});
+		emitAgentSettled(fake);
 
 		await expect(result).rejects.toThrow("retry exhausted");
 		const next = client.prompt("next task");
@@ -311,6 +322,7 @@ describe("CouncilRpcClient", () => {
 			message: assistantMessage("after compaction"),
 		});
 		emitRpc(fake, { type: "agent_end" });
+		emitAgentSettled(fake);
 
 		expect(assistantText(await result)).toBe("after compaction");
 		await completionProbe;
@@ -319,7 +331,7 @@ describe("CouncilRpcClient", () => {
 	test("emits child session events without exposing command responses", async () => {
 		// Purpose: live council progress needs child session events while command responses remain protocol-only.
 		// Input and expected output: tool and agent events reach the callback, response records do not.
-		// Edge case: prompt completion still waits for agent_end after event emission.
+		// Edge case: prompt completion still waits for agent_settled after event emission.
 		// Dependencies: fake JSONL transport and callback capture.
 		const fake = createTransport();
 		const events: unknown[] = [];
@@ -341,6 +353,7 @@ describe("CouncilRpcClient", () => {
 			`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "answer", api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
 		);
 		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
+		emitAgentSettled(fake);
 
 		expect(assistantText(await result)).toBe("answer");
 		expect(events).toEqual([
@@ -385,12 +398,13 @@ describe("CouncilRpcClient", () => {
 				},
 			},
 			{ type: "agent_end" },
+			{ type: "agent_settled" },
 		]);
 	});
 
 	test("projects oversized child session events before later prompt completion events", async () => {
 		// Purpose: oversized valid child RPC events must not reject the participant prompt as malformed stdout.
-		// Input and expected output: a large tool_execution_end image result is projected, then the prompt resolves from later message_end and agent_end.
+		// Input and expected output: a large tool_execution_end image result is projected, then the prompt resolves from later message_end and agent_settled.
 		// Edge case: the oversized JSONL line is split across chunks before the final LF delimiter.
 		// Dependencies: fake JSONL transport and callback capture.
 		const fake = createTransport();
@@ -428,6 +442,7 @@ describe("CouncilRpcClient", () => {
 			`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: "answer", api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
 		);
 		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
+		emitAgentSettled(fake);
 
 		expect(assistantText(await result)).toBe("answer");
 		expect(events).toEqual([
@@ -465,12 +480,13 @@ describe("CouncilRpcClient", () => {
 				},
 			},
 			{ type: "agent_end" },
+			{ type: "agent_settled" },
 		]);
 	});
 
-	test("uses get_last_assistant_text when agent_end has no assistant message_end", async () => {
-		// Purpose: participant output extraction must recover final text after agent_end.
-		// Input and expected output: client requests get_last_assistant_text fallback and returns that text.
+	test("uses get_last_assistant_text when agent_settled has no assistant message_end", async () => {
+		// Purpose: participant output extraction must recover final text after agent_settled.
+		// Input and expected output: the settled client requests get_last_assistant_text fallback and returns that text.
 		// Edge case: fallback command response is correlated by id.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
@@ -482,6 +498,7 @@ describe("CouncilRpcClient", () => {
 			`${JSON.stringify({ type: "response", id: "1", command: "prompt", success: true })}\n`,
 		);
 		fake.stdout(`${JSON.stringify({ type: "agent_end" })}\n`);
+		emitAgentSettled(fake);
 		expect(writtenCommand(fake.writes[1] ?? "{}")).toMatchObject({
 			type: "get_last_assistant_text",
 		});
@@ -496,7 +513,7 @@ describe("CouncilRpcClient", () => {
 	test("uses fallback text after malformed assistant message_end", async () => {
 		// Purpose: malformed assistant payloads must not become trusted participant output.
 		// Input and expected output: role-only message_end is ignored and fallback text is returned.
-		// Edge case: malformed payload arrives before final agent_end.
+		// Edge case: malformed payload arrives before agent_settled.
 		// Dependencies: fake JSONL transport.
 		const fake = createTransport();
 		const client = new CouncilRpcClient(fake.transport, BASE_FACTS);
@@ -508,6 +525,7 @@ describe("CouncilRpcClient", () => {
 		);
 		emitRpc(fake, { type: "message_end", message: { role: "assistant" } });
 		emitRpc(fake, { type: "agent_end" });
+		emitAgentSettled(fake);
 		expect(writtenCommand(fake.writes[1] ?? "{}")).toMatchObject({
 			type: "get_last_assistant_text",
 		});
@@ -535,6 +553,7 @@ describe("CouncilRpcClient", () => {
 		);
 		emitRpc(fake, { type: "message_end", message: messageWithoutApi });
 		emitRpc(fake, { type: "agent_end" });
+		emitAgentSettled(fake);
 		expect(writtenCommand(fake.writes[1] ?? "{}")).toMatchObject({
 			type: "get_last_assistant_text",
 		});

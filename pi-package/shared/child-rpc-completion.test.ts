@@ -9,8 +9,6 @@ const BASE_FACTS: ChildRpcRuntimeFacts = {
 	modelProvider: "openai",
 	modelId: "model-a",
 	contextWindow: 1_000,
-	retryEnabled: true,
-	compactionEnabled: true,
 };
 
 /** Creates an assistant message fixture with Pi-compatible usage defaults. */
@@ -42,285 +40,96 @@ function messageEnd(message: AssistantMessage): Record<string, unknown> {
 	return { type: "message_end", message };
 }
 
-/** Builds a child RPC agent_end event. */
+/** Builds a low-level child RPC agent_end event. */
 function agentEnd(): Record<string, unknown> {
 	return { type: "agent_end" };
 }
 
+/** Builds the session-level child RPC completion event. */
+function agentSettled(): Record<string, unknown> {
+	return { type: "agent_settled" };
+}
+
+/** Creates a silent same-model context-overflow response. */
+function overflowMessage(): AssistantMessage {
+	return assistantMessage({
+		usage: {
+			input: 1_001,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_002,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	});
+}
+
 describe("child RPC prompt completion", () => {
-	test("waits past retryable agent_end only when retry is enabled", () => {
-		// Purpose: retryable failures need one non-final agent_end before Pi emits auto_retry_start.
-		// Input and expected output: retry-enabled state waits; disabled and unverified states do not wait.
-		// Edge case: retryable error detection depends on message_end before agent_end.
-		// Dependencies: pure shared state machine.
-		const retryable = assistantMessage({
-			stopReason: "error",
-			errorMessage: "provider returned error 503",
+	test("uses agent_settled as the successful prompt boundary", () => {
+		// Purpose: a low-level agent run must not terminate a prompt that Pi can still continue automatically.
+		// Input and expected output: one successful assistant response waits through agent_end and succeeds on agent_settled.
+		// Edge case: no retry or compaction event appears between the two lifecycle boundaries.
+		// Dependencies: pure shared completion state.
+		// Arrange
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		const answer = assistantMessage({
+			content: [{ type: "text", text: "done" }],
 		});
 
-		const enabled = createChildRpcPromptCompletion(BASE_FACTS);
-		expect(enabled.handleSessionEvent(messageEnd(retryable))).toEqual({
-			kind: "wait",
-		});
-		expect(enabled.handleSessionEvent(agentEnd())).toEqual({ kind: "wait" });
+		// Act
+		completion.handleSessionEvent(messageEnd(answer));
+		const lowLevelEnd = completion.handleSessionEvent(agentEnd());
+		const settled = completion.handleSessionEvent(agentSettled());
 
-		const disabled = createChildRpcPromptCompletion({
-			...BASE_FACTS,
-			retryEnabled: false,
-		});
-		disabled.handleSessionEvent(messageEnd(retryable));
-		expect(disabled.handleSessionEvent(agentEnd()).kind).toBe("failure");
-
-		const unverified = createChildRpcPromptCompletion({
-			...BASE_FACTS,
-			retryEnabled: "unverified",
-		});
-		unverified.handleSessionEvent(messageEnd(retryable));
-		expect(unverified.handleSessionEvent(agentEnd()).kind).toBe("failure");
-
-		const websocketClosed = createChildRpcPromptCompletion(BASE_FACTS);
-		websocketClosed.handleSessionEvent(
-			messageEnd(
-				assistantMessage({
-					stopReason: "error",
-					errorMessage: "websocket closed before response",
-				}),
-			),
-		);
-		expect(websocketClosed.handleSessionEvent(agentEnd())).toEqual({
-			kind: "wait",
-		});
+		// Assert
+		expect(lowLevelEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({ kind: "success", message: answer });
 	});
 
-	test("does not resolve retry success until final agent_end", () => {
-		// Purpose: auto_retry_end(success=true) is not the final prompt boundary.
-		// Input and expected output: successful retry output waits until the later final agent_end.
-		// Edge case: auto_retry_end can arrive between successful message_end and final agent_end.
-		// Dependencies: pure shared state machine.
+	test("survives the observed WebSocket retry sequence", () => {
+		// Purpose: an accepted child must let Pi recover a transient transport error without parent intervention.
+		// Input and expected output: WebSocket failure and agent_end remain pending; the retried answer succeeds on agent_settled.
+		// Edge case: the parent does not need launch-time retry settings because Pi owns the actual retry decision.
+		// Dependencies: pure shared completion state and Pi RPC lifecycle event order.
+		// Arrange
 		const completion = createChildRpcPromptCompletion(BASE_FACTS);
-		completion.handleSessionEvent(
+		const recovered = assistantMessage({
+			content: [{ type: "text", text: "recovered" }],
+		});
+
+		// Act
+		const failureMessage = completion.handleSessionEvent(
 			messageEnd(
 				assistantMessage({
 					stopReason: "error",
-					errorMessage: "rate limit 429",
+					errorMessage: "WebSocket closed 1000",
 				}),
 			),
 		);
-		completion.handleSessionEvent(agentEnd());
+		const failedRunEnd = completion.handleSessionEvent(agentEnd());
 		completion.handleSessionEvent({ type: "auto_retry_start", attempt: 1 });
-		expect(
-			completion.handleSessionEvent(
-				messageEnd(
-					assistantMessage({ content: [{ type: "text", text: "retry ok" }] }),
-				),
-			),
-		).toEqual({ kind: "wait" });
-		expect(
-			completion.handleSessionEvent({ type: "auto_retry_end", success: true }),
-		).toEqual({ kind: "wait" });
-		expect(completion.handleSessionEvent(agentEnd())).toMatchObject({
-			kind: "success",
+		completion.handleSessionEvent(messageEnd(recovered));
+		completion.handleSessionEvent({
+			type: "auto_retry_end",
+			success: true,
+			attempt: 1,
 		});
+		const retriedRunEnd = completion.handleSessionEvent(agentEnd());
+		const settled = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(failureMessage).toEqual({ kind: "wait" });
+		expect(failedRunEnd).toEqual({ kind: "wait" });
+		expect(retriedRunEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({ kind: "success", message: recovered });
 	});
 
-	test("keeps repeated retry attempts active until final failure", () => {
-		// Purpose: repeated retryable attempts must not resolve on intermediate agent_end events.
-		// Input and expected output: second retryable failure waits; final retry end with success false fails.
-		// Edge case: max retry failure arrives after the agent_end that triggered retry handling.
-		// Dependencies: pure shared state machine.
-		const completion = createChildRpcPromptCompletion(BASE_FACTS);
-		for (const errorMessage of [
-			"server error 500",
-			"socket hang up",
-		] as const) {
-			completion.handleSessionEvent(
-				messageEnd(assistantMessage({ stopReason: "error", errorMessage })),
-			);
-			expect(completion.handleSessionEvent(agentEnd())).toEqual({
-				kind: "wait",
-			});
-			completion.handleSessionEvent({ type: "auto_retry_start", attempt: 1 });
-		}
-		expect(
-			completion.handleSessionEvent({
-				type: "auto_retry_end",
-				success: false,
-				finalError: "retry exhausted",
-			}),
-		).toEqual({ kind: "failure", reason: "retry exhausted" });
-	});
-
-	test("waits past overflow agent_end only when compaction is enabled and model matches", () => {
-		// Purpose: overflow compaction has the same non-final agent_end boundary as auto-retry.
-		// Input and expected output: same-model overflow waits; disabled or cross-model overflow fails.
-		// Edge case: silent stop overflow is detected through usage and contextWindow.
-		// Dependencies: pure shared state machine and Pi overflow classifier.
-		const overflow = assistantMessage({
-			usage: {
-				input: 1_001,
-				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 1_002,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-		});
-
-		const enabled = createChildRpcPromptCompletion(BASE_FACTS);
-		enabled.handleSessionEvent(messageEnd(overflow));
-		expect(enabled.handleSessionEvent(agentEnd())).toEqual({ kind: "wait" });
-
-		const disabled = createChildRpcPromptCompletion({
-			...BASE_FACTS,
-			compactionEnabled: false,
-		});
-		disabled.handleSessionEvent(messageEnd(overflow));
-		expect(disabled.handleSessionEvent(agentEnd()).kind).toBe("failure");
-
-		const crossModel = createChildRpcPromptCompletion(BASE_FACTS);
-		crossModel.handleSessionEvent(
-			messageEnd(assistantMessage({ ...overflow, model: "other-model" })),
-		);
-		expect(crossModel.handleSessionEvent(agentEnd()).kind).toBe("failure");
-	});
-
-	test("does not let non-overflow compaction reasons finalize overflow recovery", () => {
-		// Purpose: manual and threshold compaction events are progress, not overflow recovery decisions.
-		// Input and expected output: threshold compaction end keeps the prompt waiting; overflow failure fails.
-		// Edge case: overflow failure can arrive without a prior compaction_start.
-		// Dependencies: pure shared state machine.
-		const completion = createChildRpcPromptCompletion(BASE_FACTS);
-		completion.handleSessionEvent(
-			messageEnd(
-				assistantMessage({
-					stopReason: "length",
-					usage: {
-						input: 990,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 990,
-						cost: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							total: 0,
-						},
-					},
-				}),
-			),
-		);
-		completion.handleSessionEvent(agentEnd());
-		expect(
-			completion.handleSessionEvent({
-				type: "compaction_end",
-				reason: "threshold",
-				willRetry: false,
-				aborted: false,
-			}),
-		).toEqual({ kind: "wait" });
-		expect(
-			completion.handleSessionEvent({
-				type: "compaction_end",
-				reason: "overflow",
-				willRetry: false,
-				aborted: false,
-				errorMessage: "overflow recovery failed",
-			}),
-		).toEqual({ kind: "failure", reason: "overflow recovery failed" });
-	});
-
-	test("continues after overflow compaction will retry", () => {
-		// Purpose: compaction_end(willRetry=true) starts a recovery continuation, not completion.
-		// Input and expected output: later successful message_end plus final agent_end resolves success.
-		// Edge case: compaction success is keyed only by reason overflow.
-		// Dependencies: pure shared state machine.
-		const completion = createChildRpcPromptCompletion(BASE_FACTS);
-		completion.handleSessionEvent(
-			messageEnd(
-				assistantMessage({
-					usage: {
-						input: 1_001,
-						output: 1,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 1_002,
-						cost: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							total: 0,
-						},
-					},
-				}),
-			),
-		);
-		completion.handleSessionEvent(agentEnd());
-		expect(
-			completion.handleSessionEvent({
-				type: "compaction_end",
-				reason: "overflow",
-				willRetry: true,
-				aborted: false,
-			}),
-		).toEqual({ kind: "wait" });
-		expect(
-			completion.handleSessionEvent(
-				messageEnd(
-					assistantMessage({
-						content: [{ type: "text", text: "after compaction" }],
-					}),
-				),
-			),
-		).toEqual({ kind: "wait" });
-		expect(completion.handleSessionEvent(agentEnd())).toMatchObject({
-			kind: "success",
-		});
-	});
-
-	test("classifies compaction abort and unverified compaction as failure", () => {
-		// Purpose: overflow recovery must not wait when compaction state is unavailable or aborts.
-		// Input and expected output: unverified compaction fails on agent_end; aborted compaction fails from event.
-		// Edge case: abort without parent abort is an ordinary child failure.
-		// Dependencies: pure shared state machine.
-		const overflow = assistantMessage({
-			usage: {
-				input: 1_001,
-				output: 1,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 1_002,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-		});
-		const unverified = createChildRpcPromptCompletion({
-			...BASE_FACTS,
-			compactionEnabled: "unverified",
-		});
-		unverified.handleSessionEvent(messageEnd(overflow));
-		expect(unverified.handleSessionEvent(agentEnd()).kind).toBe("failure");
-
-		const aborted = createChildRpcPromptCompletion(BASE_FACTS);
-		aborted.handleSessionEvent(messageEnd(overflow));
-		aborted.handleSessionEvent(agentEnd());
-		expect(
-			aborted.handleSessionEvent({
-				type: "compaction_end",
-				reason: "overflow",
-				willRetry: false,
-				aborted: true,
-				errorMessage: "compaction aborted",
-			}),
-		).toEqual({ kind: "failure", reason: "compaction aborted" });
-	});
-
-	test("finalizes non-retryable assistant errors on agent_end", () => {
-		// Purpose: ordinary assistant errors must not wait for child recovery.
-		// Input and expected output: non-retryable error produces failure at following agent_end.
-		// Edge case: retry is enabled but error text is not retryable.
-		// Dependencies: pure shared state machine.
+	test("reports an unrecovered assistant error only after agent_settled", () => {
+		// Purpose: Pi must retain authority to retry or otherwise recover every assistant error before the parent finalizes it.
+		// Input and expected output: one invalid request error waits through agent_end and fails with its original reason on agent_settled.
+		// Edge case: the error is not transient and produces no auto_retry events.
+		// Dependencies: pure shared completion state.
+		// Arrange
 		const completion = createChildRpcPromptCompletion(BASE_FACTS);
 		completion.handleSessionEvent(
 			messageEnd(
@@ -330,101 +139,148 @@ describe("child RPC prompt completion", () => {
 				}),
 			),
 		);
-		expect(completion.handleSessionEvent(agentEnd())).toEqual({
+
+		// Act
+		const lowLevelEnd = completion.handleSessionEvent(agentEnd());
+		const settled = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(lowLevelEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({
 			kind: "failure",
 			reason: "invalid request payload",
 		});
 	});
 
-	test("ignores malformed assistant message_end payloads", () => {
-		// Purpose: unknown child RPC payloads must not be trusted as assistant messages.
-		// Input and expected output: malformed role-only payload does not become a successful message.
-		// Edge case: later agent_end has no assistant message for council fallback handling.
-		// Dependencies: pure shared state machine.
+	test("defers exhausted retry failure until agent_settled", () => {
+		// Purpose: auto_retry_end reports recovery state but does not replace the session-level terminal boundary.
+		// Input and expected output: final retry failure remains pending until agent_settled returns the final provider error.
+		// Edge case: no later assistant message replaces the failed attempt.
+		// Dependencies: pure shared completion state.
+		// Arrange
 		const completion = createChildRpcPromptCompletion(BASE_FACTS);
-		expect(
-			completion.handleSessionEvent({
-				type: "message_end",
-				message: { role: "assistant" },
-			}),
-		).toEqual({ kind: "wait" });
-		expect(completion.handleSessionEvent(agentEnd())).toEqual({
-			kind: "success",
-			message: undefined,
-		});
-	});
-
-	test("transport failure terminates retry and compaction wait states", () => {
-		// Purpose: child process or stream failure must not leave recovery prompts active.
-		// Input and expected output: transport failure returns failure while waiting for retry or compaction.
-		// Edge case: applies before child emits final recovery events.
-		// Dependencies: pure shared state machine.
-		const retrying = createChildRpcPromptCompletion(BASE_FACTS);
-		retrying.handleSessionEvent(
+		completion.handleSessionEvent(
 			messageEnd(
 				assistantMessage({
 					stopReason: "error",
-					errorMessage: "server error 500",
+					errorMessage: "server error 503",
 				}),
 			),
 		);
-		retrying.handleSessionEvent(agentEnd());
-		expect(retrying.recordTransportFailure("child exited")).toEqual({
-			kind: "failure",
-			reason: "child exited",
-		});
 
-		const compacting = createChildRpcPromptCompletion(BASE_FACTS);
-		compacting.handleSessionEvent(
-			messageEnd(
-				assistantMessage({
-					usage: {
-						input: 1_001,
-						output: 1,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 1_002,
-						cost: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							total: 0,
-						},
-					},
-				}),
-			),
-		);
-		compacting.handleSessionEvent(agentEnd());
-		expect(compacting.recordTransportFailure("malformed stdout")).toEqual({
+		// Act
+		completion.handleSessionEvent(agentEnd());
+		const retryEnd = completion.handleSessionEvent({
+			type: "auto_retry_end",
+			success: false,
+			attempt: 10,
+			finalError: "retry budget exhausted",
+		});
+		const settled = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(retryEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({
 			kind: "failure",
-			reason: "malformed stdout",
+			reason: "retry budget exhausted",
 		});
 	});
 
-	test("parent abort overrides later child success and failure", () => {
-		// Purpose: user cancellation is the highest-priority terminal state.
-		// Input and expected output: abort decision persists before and after child terminal events.
-		// Edge case: late child success and transport failure must not replace abort.
-		// Dependencies: pure shared state machine.
+	test("defers failed overflow compaction until agent_settled", () => {
+		// Purpose: compaction failure must preserve its diagnostic without making compaction_end a second terminal boundary.
+		// Input and expected output: silent overflow and aborted compaction remain pending until agent_settled fails.
+		// Edge case: the assistant response itself has stopReason stop and no errorMessage.
+		// Dependencies: pure shared completion state and Pi overflow classification.
+		// Arrange
 		const completion = createChildRpcPromptCompletion(BASE_FACTS);
-		expect(completion.recordParentAbort()).toEqual({
-			kind: "abort",
-			reason: "parent abort",
+		completion.handleSessionEvent(messageEnd(overflowMessage()));
+		completion.handleSessionEvent(agentEnd());
+
+		// Act
+		const compactionEnd = completion.handleSessionEvent({
+			type: "compaction_end",
+			reason: "overflow",
+			aborted: true,
+			willRetry: false,
+			errorMessage: "child overflow compaction aborted",
 		});
-		expect(
-			completion.handleSessionEvent(messageEnd(assistantMessage())),
-		).toEqual({
-			kind: "abort",
-			reason: "parent abort",
+		const settled = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(compactionEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({
+			kind: "failure",
+			reason: "child overflow compaction aborted",
 		});
-		expect(completion.handleSessionEvent(agentEnd())).toEqual({
-			kind: "abort",
-			reason: "parent abort",
+	});
+
+	test("accepts a successful post-compaction answer on agent_settled", () => {
+		// Purpose: successful overflow recovery must replace the provisional overflow failure.
+		// Input and expected output: overflow, compaction retry, and recovered answer remain pending until agent_settled succeeds.
+		// Edge case: two low-level agent runs belong to one prompt.
+		// Dependencies: pure shared completion state and Pi overflow classification.
+		// Arrange
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		const recovered = assistantMessage({
+			content: [{ type: "text", text: "after compaction" }],
 		});
-		expect(completion.recordTransportFailure("child exited")).toEqual({
-			kind: "abort",
-			reason: "parent abort",
+		completion.handleSessionEvent(messageEnd(overflowMessage()));
+		completion.handleSessionEvent(agentEnd());
+		completion.handleSessionEvent({
+			type: "compaction_end",
+			reason: "overflow",
+			aborted: false,
+			willRetry: true,
 		});
+		completion.handleSessionEvent(messageEnd(recovered));
+
+		// Act
+		const recoveredRunEnd = completion.handleSessionEvent(agentEnd());
+		const settled = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(recoveredRunEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({ kind: "success", message: recovered });
+	});
+
+	test("transport failure and parent abort remain immediate terminal outcomes", () => {
+		// Purpose: boundaries outside Pi's session lifecycle must still stop a child that cannot produce agent_settled.
+		// Input and expected output: transport loss fails immediately and parent abort wins over later session events.
+		// Edge case: terminal decisions remain immutable after later success events.
+		// Dependencies: pure shared completion state.
+		// Arrange
+		const disconnected = createChildRpcPromptCompletion(BASE_FACTS);
+		const aborted = createChildRpcPromptCompletion(BASE_FACTS);
+
+		// Act
+		const transportFailure = disconnected.recordTransportFailure("RPC lost");
+		const parentAbort = aborted.recordParentAbort();
+		const lateSettled = aborted.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(transportFailure).toEqual({ kind: "failure", reason: "RPC lost" });
+		expect(parentAbort).toEqual({ kind: "abort", reason: "parent abort" });
+		expect(lateSettled).toEqual(parentAbort);
+	});
+
+	test("settles without an assistant message only at agent_settled", () => {
+		// Purpose: malformed message events must not fabricate assistant output or restore agent_end terminality.
+		// Input and expected output: role-only assistant payload is ignored, agent_end waits, and agent_settled succeeds without a message.
+		// Edge case: the RPC stream contains no valid AssistantMessage.
+		// Dependencies: pure shared completion state and assistant payload validation.
+		// Arrange
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		completion.handleSessionEvent({
+			type: "message_end",
+			message: { role: "assistant" },
+		});
+
+		// Act
+		const lowLevelEnd = completion.handleSessionEvent(agentEnd());
+		const settled = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(lowLevelEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({ kind: "success", message: undefined });
 	});
 });

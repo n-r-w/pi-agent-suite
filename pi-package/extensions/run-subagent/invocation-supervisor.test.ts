@@ -255,8 +255,6 @@ function createSupervisorHarness(
 				modelProvider: "openai",
 				modelId: "test-model",
 				contextWindow: 128_000,
-				retryEnabled: true,
-				compactionEnabled: true,
 			},
 		}),
 		sessionsDir: "/tmp",
@@ -360,7 +358,7 @@ async function waitForWriteCount(
 	}
 }
 
-/** Emits one successful assistant completion through the controlled RPC stream. */
+/** Emits one successful assistant completion through Pi's complete settled RPC lifecycle. */
 function emitSuccessfulCompletion(child: ControlledChild, text: string): void {
 	child.stdout?.emit(
 		"data",
@@ -390,7 +388,7 @@ function emitSuccessfulCompletion(child: ControlledChild, text: string): void {
 					stopReason: "stop",
 					timestamp: 1,
 				},
-			})}\n${JSON.stringify({ type: "agent_end", messages: [], willRetry: false })}\n`,
+			})}\n${JSON.stringify({ type: "agent_end", messages: [], willRetry: false })}\n${JSON.stringify({ type: "agent_settled" })}\n`,
 		),
 	);
 }
@@ -866,7 +864,7 @@ describe("InvocationSupervisor", () => {
 
 	test("accepts active steering and emits one shared completion decision", async () => {
 		// Purpose: active steering must reuse the process and shared completion state must emit one terminal result.
-		// Input and expected output: steer acceptance precedes a successful assistant message and agent_end terminal event.
+		// Input and expected output: steer acceptance precedes a successful assistant message and agent_settled terminal event.
 		// Edge case: process teardown happens only after the terminal event sink resolves.
 		// Dependencies: controlled RPC stream, shared child completion state, and production supervisor.
 		const child = createChildProcess();
