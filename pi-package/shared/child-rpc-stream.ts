@@ -7,6 +7,10 @@ const requireStreamJson = createRequire(import.meta.url);
 const streamJsonParser = requireStreamJson("stream-json/parser.js") as {
 	readonly parser: StreamJsonParserFactory;
 };
+/** Incremental object assembler used for bounded get_entries session entries. */
+const streamJsonAssembler = requireStreamJson("stream-json/Assembler.js") as {
+	readonly assembler: () => StreamJsonAssembler;
+};
 
 /** Bytes in one kibibyte for child stream limits. */
 const BYTES_PER_KIB = 1024;
@@ -20,6 +24,16 @@ const CHILD_RPC_STDOUT_LINE_BUFFER_KIB = 256;
 const CHILD_RPC_PROJECTED_KEY_TEXT_LIMIT = 128;
 /** Maximum scalar control-field text collected while projecting oversized RPC events. */
 const CHILD_RPC_PROJECTED_SCALAR_TEXT_LIMIT = 4096;
+/** Replacement stored when one get_entries scalar exceeds the projection limit. */
+const CHILD_RPC_PROJECTED_TEXT_MARKER = "[child RPC text omitted: oversized]";
+/** Maximum quoted parser cause or stdout fragment retained in malformed-output diagnostics. */
+const CHILD_RPC_MALFORMED_DIAGNOSTIC_PART_LIMIT = 1024;
+/** Maximum raw line prefix retained while child stdout exceeds the normal line buffer. */
+const CHILD_RPC_MALFORMED_RAW_PREFIX_LIMIT = 1024;
+/** Separator between retained head and tail diagnostic text. */
+const CHILD_RPC_MALFORMED_DIAGNOSTIC_SEPARATOR = "...";
+/** Number of retained sides around a truncated diagnostic part. */
+const CHILD_RPC_MALFORMED_DIAGNOSTIC_SIDE_COUNT = 2;
 /** Trailing carriage return accepted before one JSONL newline delimiter. */
 const TRAILING_CR = /\r$/;
 
@@ -55,6 +69,7 @@ export type ChildRpcEventHandler = (event: unknown) => void;
 
 interface ChildRpcStreamState {
 	stdoutBuffer: string;
+	stdoutLinePrefix: string;
 	stdoutProjection: ChildRpcLineProjection | undefined;
 	stdoutBufferTruncated: boolean;
 }
@@ -70,6 +85,20 @@ interface StreamJsonParserStream {
 	on(event: "data", handler: (token: StreamJsonToken) => void): this;
 	on(event: "error", handler: (error: Error) => void): this;
 	on(event: "end", handler: () => void): this;
+}
+
+interface StreamJsonAssembler {
+	current: unknown;
+	keyValue(value: string): void;
+	stringValue(value: string): void;
+	numberValue(value: string): void;
+	nullValue(): void;
+	trueValue(): void;
+	falseValue(): void;
+	startObject(): void;
+	endObject(): void;
+	startArray(): void;
+	endArray(): void;
 }
 
 interface StreamJsonParserFactory {
@@ -108,6 +137,13 @@ interface ChildRpcLineProjectionState {
 	toolName: string | undefined;
 	toolIsError: boolean | undefined;
 	toolResultText: string | undefined;
+	responseId: string | undefined;
+	responseCommand: string | undefined;
+	responseSuccess: boolean | undefined;
+	responseLeafId: string | null | undefined;
+	readonly responseEntries: Record<string, unknown>[];
+	entryAssembler: StreamJsonAssembler | undefined;
+	responseProjectionInvalid: boolean;
 }
 
 interface JsonProjectionContainer {
@@ -149,6 +185,7 @@ export class ChildRpcStreamParser {
 	private readonly stderrDecoder = new StringDecoder("utf8");
 	private readonly state: ChildRpcStreamState = {
 		stdoutBuffer: "",
+		stdoutLinePrefix: "",
 		stdoutProjection: undefined,
 		stdoutBufferTruncated: false,
 	};
@@ -218,7 +255,9 @@ export class ChildRpcStreamParser {
 		return undefined;
 	}
 
+	/** Appends one decoded line segment to bounded parsing and diagnostic state. */
 	private appendStdoutLineSegment(segment: string): string | undefined {
+		this.retainStdoutLinePrefix(segment);
 		if (!this.state.stdoutBufferTruncated) {
 			const nextLine = this.state.stdoutBuffer + segment;
 			if (nextLine.length <= CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT) {
@@ -232,24 +271,33 @@ export class ChildRpcStreamParser {
 			this.state.stdoutBuffer = nextLine.slice(
 				-CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT,
 			);
-			return writeChildRpcLineProjectionSegment(
+			const projectionError = writeChildRpcLineProjectionSegment(
 				this.state.stdoutProjection,
 				nextLine,
 			);
+			return projectionError === undefined
+				? undefined
+				: this.malformedOutputError(projectionError);
 		}
 
 		this.state.stdoutBuffer = (this.state.stdoutBuffer + segment).slice(
 			-CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT,
 		);
 		if (this.state.stdoutProjection === undefined) {
-			return CHILD_RPC_MALFORMED_OUTPUT_ERROR;
+			return this.malformedOutputError(
+				"oversized RPC projection state is unavailable",
+			);
 		}
-		return writeChildRpcLineProjectionSegment(
+		const projectionError = writeChildRpcLineProjectionSegment(
 			this.state.stdoutProjection,
 			segment,
 		);
+		return projectionError === undefined
+			? undefined
+			: this.malformedOutputError(projectionError);
 	}
 
+	/** Parses or projects one complete buffered JSONL record. */
 	private processStdoutLine(
 		onEvent: ChildRpcEventHandler,
 	): string | Promise<string | undefined> | undefined {
@@ -259,27 +307,57 @@ export class ChildRpcStreamParser {
 		}
 
 		if (this.state.stdoutBufferTruncated) {
-			return projectOversizedChildRpcLine(this.state.stdoutProjection).then(
-				(event) => {
-					if (event === undefined) {
-						return CHILD_RPC_MALFORMED_OUTPUT_ERROR;
-					}
-					onEvent(event);
-					return undefined;
-				},
-			);
+			const projection = this.state.stdoutProjection;
+			const linePrefix = this.state.stdoutLinePrefix.replace(TRAILING_CR, "");
+			const lineSuffix = this.state.stdoutBuffer.replace(TRAILING_CR, "");
+			return projectOversizedChildRpcLine(projection).then((event) => {
+				if (event === undefined) {
+					return formatMalformedOutputError({
+						cause:
+							projection?.error ?? "oversized RPC event could not be projected",
+						linePrefix,
+						lineSuffix,
+						truncated: true,
+					});
+				}
+				onEvent(event);
+				return undefined;
+			});
 		}
 
-		const event = parseJsonLine(line);
-		if (event === undefined) {
-			return CHILD_RPC_MALFORMED_OUTPUT_ERROR;
+		let event: Record<string, unknown>;
+		try {
+			event = parseJsonLine(line);
+		} catch (error) {
+			return this.malformedOutputError(readErrorMessage(error));
 		}
 		onEvent(event);
 		return undefined;
 	}
 
+	/** Retains the start of one stdout line before suffix-only buffering discards it. */
+	private retainStdoutLinePrefix(segment: string): void {
+		const remaining =
+			CHILD_RPC_MALFORMED_RAW_PREFIX_LIMIT - this.state.stdoutLinePrefix.length;
+		if (remaining > 0) {
+			this.state.stdoutLinePrefix += segment.slice(0, remaining);
+		}
+	}
+
+	/** Formats one bounded, escaped parser error with the offending line evidence. */
+	private malformedOutputError(cause: string): string {
+		return formatMalformedOutputError({
+			cause,
+			linePrefix: this.state.stdoutLinePrefix.replace(TRAILING_CR, ""),
+			lineSuffix: this.state.stdoutBuffer.replace(TRAILING_CR, ""),
+			truncated: this.state.stdoutBufferTruncated,
+		});
+	}
+
+	/** Clears per-line parsing state after one LF delimiter is consumed. */
 	private resetStdoutLine(): void {
 		this.state.stdoutBuffer = "";
+		this.state.stdoutLinePrefix = "";
 		this.state.stdoutProjection = undefined;
 		this.state.stdoutBufferTruncated = false;
 	}
@@ -335,6 +413,13 @@ function createChildRpcLineProjection(): ChildRpcLineProjection {
 		toolName: undefined,
 		toolIsError: undefined,
 		toolResultText: undefined,
+		responseId: undefined,
+		responseCommand: undefined,
+		responseSuccess: undefined,
+		responseLeafId: undefined,
+		responseEntries: [],
+		entryAssembler: undefined,
+		responseProjectionInvalid: false,
 	};
 	const stream = streamJsonParser.parser.asStream({
 		packKeys: false,
@@ -365,16 +450,14 @@ function writeChildRpcLineProjectionSegment(
 	segment: string,
 ): string | undefined {
 	if (projection.error !== undefined) {
-		return CHILD_RPC_MALFORMED_OUTPUT_ERROR;
+		return projection.error;
 	}
 	try {
 		projection.stream.write(segment);
-	} catch {
-		return CHILD_RPC_MALFORMED_OUTPUT_ERROR;
+	} catch (error) {
+		return readErrorMessage(error);
 	}
-	return projection.error === undefined
-		? undefined
-		: CHILD_RPC_MALFORMED_OUTPUT_ERROR;
+	return projection.error;
 }
 
 /** Records one streaming JSON token into the bounded RPC event projection. */
@@ -421,7 +504,7 @@ function recordChildRpcProjectionToken(
 			finishJsonProjectionNumberValue(state, token.value);
 			return;
 		case "nullValue":
-			consumeJsonProjectionValuePath(state);
+			recordJsonProjectionNullValue(state);
 			return;
 		case "trueValue":
 			recordJsonProjectionBooleanValue(state, true);
@@ -440,6 +523,20 @@ function pushJsonProjectionContainer(
 	kind: "object" | "array",
 ): void {
 	const path = consumeJsonProjectionValuePath(state);
+	if (kind === "object" && isGetEntriesEntryPath(path)) {
+		if (state.entryAssembler !== undefined) {
+			state.responseProjectionInvalid = true;
+		} else {
+			state.entryAssembler = streamJsonAssembler.assembler();
+		}
+	}
+	if (state.entryAssembler !== undefined) {
+		if (kind === "object") {
+			state.entryAssembler.startObject();
+		} else {
+			state.entryAssembler.startArray();
+		}
+	}
 	state.stack.push({
 		kind,
 		path,
@@ -482,8 +579,10 @@ function popJsonProjectionContainer(
 ): void {
 	const container = state.stack.pop();
 	if (container?.kind !== kind) {
+		state.responseProjectionInvalid = true;
 		return;
 	}
+	finishJsonProjectionAssemblerContainer(state, kind, container.path);
 	const { contentPart } = container;
 	if (contentPart === undefined) {
 		return;
@@ -503,6 +602,32 @@ function popJsonProjectionContainer(
 			contentPart.text,
 		);
 	}
+}
+
+/** Completes one assembled container and commits a finished get_entries entry. */
+function finishJsonProjectionAssemblerContainer(
+	state: ChildRpcLineProjectionState,
+	kind: "object" | "array",
+	path: readonly string[],
+): void {
+	const entryAssembler = state.entryAssembler;
+	if (entryAssembler === undefined) {
+		return;
+	}
+	if (kind === "object") {
+		entryAssembler.endObject();
+	} else {
+		entryAssembler.endArray();
+	}
+	if (!isGetEntriesEntryPath(path)) {
+		return;
+	}
+	if (isRecord(entryAssembler.current)) {
+		state.responseEntries.push(entryAssembler.current);
+	} else {
+		state.responseProjectionInvalid = true;
+	}
+	state.entryAssembler = undefined;
 }
 
 /** Appends one text tool-result part while preserving the projection memory bound. */
@@ -631,6 +756,7 @@ function finishJsonProjectionKey(state: ChildRpcLineProjectionState): void {
 		return;
 	}
 	container.pendingKey = currentString.text;
+	state.entryAssembler?.keyValue(currentString.text);
 }
 
 /** Stores a completed scalar value when it is part of the RPC control projection. */
@@ -639,14 +765,17 @@ function finishJsonProjectionStringValue(
 ): void {
 	const currentString = state.currentString;
 	state.currentString = undefined;
-	if (currentString?.kind !== "value" || currentString.truncated) {
+	if (currentString?.kind !== "value") {
 		return;
 	}
-	recordJsonProjectionStringValue(
-		state,
-		currentString.path,
-		currentString.text,
-	);
+	const projectedValue = currentString.truncated
+		? CHILD_RPC_PROJECTED_TEXT_MARKER
+		: currentString.text;
+	state.entryAssembler?.stringValue(projectedValue);
+	if (currentString.truncated) {
+		return;
+	}
+	recordJsonProjectionStringValue(state, currentString.path, projectedValue);
 }
 
 /** Applies one completed bounded string value to projected RPC event metadata. */
@@ -655,8 +784,7 @@ function recordJsonProjectionStringValue(
 	path: readonly string[],
 	value: string,
 ): void {
-	if (isJsonProjectionPath(path, "type")) {
-		state.eventType = value;
+	if (recordJsonProjectionEnvelopeString(state, path, value)) {
 		return;
 	}
 	if (isJsonProjectionPath(path, "message", "role")) {
@@ -701,6 +829,31 @@ function recordJsonProjectionStringValue(
 	}
 }
 
+/** Records string fields that route either a normal event or a get_entries response. */
+function recordJsonProjectionEnvelopeString(
+	state: ChildRpcLineProjectionState,
+	path: readonly string[],
+	value: string,
+): boolean {
+	if (isJsonProjectionPath(path, "id")) {
+		state.responseId = value;
+		return true;
+	}
+	if (isJsonProjectionPath(path, "type")) {
+		state.eventType = value;
+		return true;
+	}
+	if (isJsonProjectionPath(path, "command")) {
+		state.responseCommand = value;
+		return true;
+	}
+	if (isJsonProjectionPath(path, "data", "leafId")) {
+		state.responseLeafId = value;
+		return true;
+	}
+	return false;
+}
+
 /** Starts collecting a number value only when its path can affect helper-cost accounting. */
 function startJsonProjectionNumberValue(
 	state: ChildRpcLineProjectionState,
@@ -730,15 +883,27 @@ function finishJsonProjectionNumberValue(
 	const currentNumber = state.currentNumber;
 	state.currentNumber = undefined;
 	const path = currentNumber?.path ?? consumeJsonProjectionValuePath(state);
+	const rawValue = value ?? currentNumber?.text;
+	const numberText = String(rawValue);
+	state.entryAssembler?.numberValue(numberText);
 	if (!isJsonProjectionPath(path, "message", "usage", "cost", "total")) {
 		return;
 	}
-
-	const rawValue = value ?? currentNumber?.text;
 	const numericValue =
 		typeof rawValue === "number" ? rawValue : Number(rawValue);
 	if (Number.isFinite(numericValue)) {
 		state.helperCostTotal = numericValue;
+	}
+}
+
+/** Applies one completed null value to an assembled response entry or leaf identity. */
+function recordJsonProjectionNullValue(
+	state: ChildRpcLineProjectionState,
+): void {
+	const path = consumeJsonProjectionValuePath(state);
+	state.entryAssembler?.nullValue();
+	if (isJsonProjectionPath(path, "data", "leafId")) {
+		state.responseLeafId = null;
 	}
 }
 
@@ -748,6 +913,15 @@ function recordJsonProjectionBooleanValue(
 	value: boolean,
 ): void {
 	const path = consumeJsonProjectionValuePath(state);
+	if (value) {
+		state.entryAssembler?.trueValue();
+	} else {
+		state.entryAssembler?.falseValue();
+	}
+	if (isJsonProjectionPath(path, "success")) {
+		state.responseSuccess = value;
+		return;
+	}
 	if (isJsonProjectionPath(path, "isError")) {
 		state.toolIsError = value;
 	}
@@ -799,9 +973,37 @@ function buildProjectedChildRpcEvent(
 			return buildProjectedToolExecutionEndEvent(state);
 		case "turn_end":
 			return buildProjectedTurnEndEvent();
+		case "response":
+			return buildProjectedGetEntriesResponse(state);
 		default:
 			return undefined;
 	}
+}
+
+/** Builds one bounded get_entries response for management conversation synchronization. */
+function buildProjectedGetEntriesResponse(
+	state: ChildRpcLineProjectionState,
+): Record<string, unknown> | undefined {
+	if (
+		state.responseProjectionInvalid ||
+		state.entryAssembler !== undefined ||
+		state.responseId === undefined ||
+		state.responseCommand !== "get_entries" ||
+		state.responseSuccess !== true ||
+		state.responseLeafId === undefined
+	) {
+		return undefined;
+	}
+	return {
+		id: state.responseId,
+		type: "response",
+		command: "get_entries",
+		success: true,
+		data: {
+			entries: state.responseEntries,
+			leafId: state.responseLeafId,
+		},
+	};
 }
 
 /** Builds a minimal message_start event that preserves assistant-turn reset behavior. */
@@ -880,6 +1082,11 @@ function buildProjectedTurnEndEvent(): Record<string, unknown> {
 	return { type: "turn_end" };
 }
 
+/** Identifies one top-level entry object inside a get_entries response. */
+function isGetEntriesEntryPath(path: readonly string[]): boolean {
+	return isJsonProjectionPath(path, "data", "entries", "*");
+}
+
 /** Compares a JSON projection path with a finite path pattern. */
 function isJsonProjectionPath(
 	path: readonly string[],
@@ -891,13 +1098,46 @@ function isJsonProjectionPath(
 	);
 }
 
-/** Parses one RPC JSONL output record. */
-function parseJsonLine(line: string): unknown | undefined {
-	try {
-		return JSON.parse(line);
-	} catch {
-		return undefined;
+/** Parses one RPC JSONL output record and rejects non-object protocol values. */
+function parseJsonLine(line: string): Record<string, unknown> {
+	const parsed: unknown = JSON.parse(line);
+	if (!isRecord(parsed)) {
+		throw new Error("RPC output must be a JSON object");
 	}
+	return parsed;
+}
+
+/** Formats one bounded malformed-output error without emitting raw control characters. */
+function formatMalformedOutputError(options: {
+	readonly cause: string;
+	readonly linePrefix: string;
+	readonly lineSuffix: string;
+	readonly truncated: boolean;
+}): string {
+	const cause = quoteDiagnosticPart(options.cause);
+	if (!options.truncated) {
+		return `${CHILD_RPC_MALFORMED_OUTPUT_ERROR}; cause: ${cause}; line: ${quoteDiagnosticPart(options.lineSuffix)}`;
+	}
+	return `${CHILD_RPC_MALFORMED_OUTPUT_ERROR}; cause: ${cause}; line head: ${quoteDiagnosticPart(options.linePrefix)}; line tail: ${quoteDiagnosticPart(options.lineSuffix)}`;
+}
+
+/** Quotes and bounds one diagnostic part while retaining evidence from both ends. */
+function quoteDiagnosticPart(value: string): string {
+	const quoted = JSON.stringify(value);
+	if (quoted.length <= CHILD_RPC_MALFORMED_DIAGNOSTIC_PART_LIMIT) {
+		return quoted;
+	}
+	const sideLength = Math.floor(
+		(CHILD_RPC_MALFORMED_DIAGNOSTIC_PART_LIMIT -
+			CHILD_RPC_MALFORMED_DIAGNOSTIC_SEPARATOR.length) /
+			CHILD_RPC_MALFORMED_DIAGNOSTIC_SIDE_COUNT,
+	);
+	return `${quoted.slice(0, sideLength)}${CHILD_RPC_MALFORMED_DIAGNOSTIC_SEPARATOR}${quoted.slice(-sideLength)}`;
+}
+
+/** Reads a stable diagnostic message from an unknown thrown value. */
+function readErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /** Appends bounded text while preserving the newest diagnostic suffix. */

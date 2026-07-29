@@ -141,8 +141,16 @@ function selectedNode(): ProjectionNode {
 	};
 }
 
+/** Narrows the deterministic conversation fixture to its user-message role. */
+type UserConversationEntry = Extract<
+	SessionEntry,
+	{ readonly type: "message" }
+> & {
+	readonly message: UserMessage;
+};
+
 /** Creates one projected public user message. */
-function conversationEntry(text: string): ConversationProjectionEntry {
+function conversationEntry(text: string): UserConversationEntry {
 	const message: UserMessage = { role: "user", content: text, timestamp: 1 };
 	return {
 		type: "message",
@@ -238,20 +246,39 @@ class ViewSourceFake implements ManagementViewSource {
 	}
 }
 
-/** Supplies active branches and emits selected invocation activity. */
+/** Supplies active entry pages and emits selected invocation activity. */
 class ActiveConversationSourceFake {
 	public entries: readonly SessionEntry[] = [conversationEntry("active")];
 	public error: Error | undefined;
 	public readCalls = 0;
+	public readonly sinceValues: Array<string | undefined> = [];
 	private readonly listeners = new Set<(invocationId: string) => void>();
 
-	/** Returns the current active branch without opening a session file. */
-	public async readActiveBranch(): Promise<readonly SessionEntry[]> {
+	/** Returns one deterministic append-order page for the selected active session. */
+	public async readActiveEntries(
+		_invocationId: string,
+		since?: string,
+	): Promise<{
+		readonly entries: readonly SessionEntry[];
+		readonly leafId: string | null;
+	}> {
 		this.readCalls += 1;
+		this.sinceValues.push(since);
 		if (this.error !== undefined) {
 			throw this.error;
 		}
-		return this.entries;
+		const sinceIndex =
+			since === undefined
+				? -1
+				: this.entries.findIndex((entry) => entry.id === since);
+		if (since !== undefined && sinceIndex === -1) {
+			throw new Error(`unknown fake conversation entry: ${since}`);
+		}
+		return {
+			entries:
+				since === undefined ? this.entries : this.entries.slice(sinceIndex + 1),
+			leafId: this.entries.at(-1)?.id ?? null,
+		};
 	}
 
 	/** Registers one root-runtime activity listener. */
@@ -1412,7 +1439,18 @@ describe("management screen", () => {
 			readInactiveBranch: () => {
 				inactiveReads += 1;
 				resolveInactiveRead();
-				return [conversationEntry("inactive terminal")];
+				const completedEntry = conversationEntry("active update");
+				return [
+					conversationEntry("active"),
+					{
+						...completedEntry,
+						parentId: "message-active",
+						message: {
+							...completedEntry.message,
+							content: "inactive terminal",
+						},
+					},
+				];
 			},
 			onError: (error) => {
 				throw error;
@@ -1424,12 +1462,19 @@ describe("management screen", () => {
 		// ACT: select, refresh from activity, terminalize, and emit once after disposal.
 		const stableKey = runtime.getView().nodes[0]?.stableKey ?? null;
 		await runtime.select(stableKey);
-		active.entries = [conversationEntry("active update")];
+		active.entries = [
+			conversationEntry("active"),
+			{
+				...conversationEntry("active update"),
+				parentId: "message-active",
+			},
+		];
 		active.emit(session.invocationId);
 		await settleSubmission();
+		const liveView = runtime.getView();
 		catalog.update(session.key, { state: "terminal-success" });
 		await inactiveRead;
-		await Promise.resolve();
+		await settleSubmission();
 		const terminalView = runtime.getView();
 		const readsBeforeDispose = active.readCalls;
 		runtime.dispose();
@@ -1440,6 +1485,11 @@ describe("management screen", () => {
 		expect({
 			selected: terminalView.selectedStableKey,
 			state: terminalView.nodes[0]?.state,
+			liveConversation: liveView.selectedConversation.flatMap((entry) =>
+				entry.type === "message" && entry.message.role === "user"
+					? [entry.message.content]
+					: [],
+			),
 			conversation: terminalView.selectedConversation.flatMap((entry) =>
 				entry.type === "message" && entry.message.role === "user"
 					? [entry.message.content]
@@ -1447,6 +1497,7 @@ describe("management screen", () => {
 			),
 			activeReads: active.readCalls,
 			readsBeforeDispose,
+			sinceValues: active.sinceValues,
 			inactiveReads,
 			revisionsIncreasing: revisions.every(
 				(revision, index) =>
@@ -1455,9 +1506,11 @@ describe("management screen", () => {
 		}).toEqual({
 			selected: stableKey,
 			state: "terminal-success",
-			conversation: ["inactive terminal"],
+			liveConversation: ["active", "active update"],
+			conversation: ["active", "inactive terminal"],
 			activeReads: readsBeforeDispose,
 			readsBeforeDispose: 2,
+			sinceValues: [undefined, "message-active"],
 			inactiveReads: 1,
 			revisionsIncreasing: true,
 		});
@@ -1526,13 +1579,15 @@ describe("management screen", () => {
 			affectedStableKeys: ["stable-descendant-key"],
 		});
 
-		// ASSERT: one unsubscribe owns the lifetime and disposed updates are inert.
+		// ASSERT: one unsubscribe owns the lifetime, selection is released, and disposed updates are inert.
 		expect({
 			unsubscribeCalls: fixture.source.unsubscribeCalls,
+			selected: fixture.source.selected,
 			renderRequests: fixture.tui.renderRequests,
 			requestsBefore,
 		}).toEqual({
 			unsubscribeCalls: 1,
+			selected: null,
 			renderRequests: requestsBefore,
 			requestsBefore,
 		});

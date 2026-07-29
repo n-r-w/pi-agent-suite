@@ -734,9 +734,9 @@ describe("InvocationSupervisor", () => {
 		});
 	});
 
-	test("reads the active branch through documented get_entries RPC", async () => {
-		// Purpose: management projection must read a live child branch without opening its active session file.
-		// Input and expected output: get_entries returns one active root-to-leaf path and excludes an abandoned sibling.
+	test("reads active conversation pages through documented get_entries RPC", async () => {
+		// Purpose: management projection must read live child entries without opening its active session file.
+		// Input and expected output: get_entries returns validated entries and leaf identity for caller-owned branch caching.
 		// Edge case: live activity notifies subscribers, while the get_entries response itself is not activity.
 		// Dependencies: documented Pi RPC response shape and controlled child JSONL transport.
 		// ARRANGE: accept one live invocation and subscribe to its session activity.
@@ -752,8 +752,8 @@ describe("InvocationSupervisor", () => {
 			Buffer.from('{"type":"message_start","message":{"role":"user"}}\n'),
 		);
 
-		// ACT: request entries and return a tree whose selected leaf excludes one sibling.
-		const pending = supervisor.readActiveBranch(acceptance.invocationId);
+		// ACT: request one complete page whose selected leaf excludes one sibling.
+		const pending = supervisor.readActiveEntries(acceptance.invocationId);
 		await waitForWriteCount(child, 2);
 		const request = JSON.parse(child.stdinWrites[1] ?? "{}") as {
 			readonly id?: string;
@@ -822,17 +822,48 @@ describe("InvocationSupervisor", () => {
 				})}\n`,
 			),
 		);
-		const branch = await pending;
+		const page = await pending;
+		const incremental = supervisor.readActiveEntries(
+			acceptance.invocationId,
+			"abandoned-1",
+		);
+		await waitForWriteCount(child, 3);
+		const incrementalRequest = JSON.parse(child.stdinWrites[2] ?? "{}") as {
+			readonly id?: string;
+		};
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: incrementalRequest.id,
+					type: "response",
+					command: "get_entries",
+					success: true,
+					data: { entries: [], leafId: "assistant-1" },
+				})}\n`,
+			),
+		);
+		const incrementalPage = await incremental;
 		unsubscribe();
 
-		// ASSERT: the active path and activity identity remain stable and the response adds no event.
+		// ASSERT: append-order data and documented incremental routing remain stable without activity events.
 		expect({
 			command: JSON.parse(child.stdinWrites[1] ?? "{}"),
-			branchIds: branch.map((entry) => entry.id),
+			incrementalCommand: JSON.parse(child.stdinWrites[2] ?? "{}"),
+			entryIds: page.entries.map((entry) => entry.id),
+			leafId: page.leafId,
+			incrementalPage,
 			activity,
 		}).toEqual({
 			command: { id: request.id, type: "get_entries" },
-			branchIds: ["user-1", "assistant-1"],
+			incrementalCommand: {
+				id: incrementalRequest.id,
+				type: "get_entries",
+				since: "abandoned-1",
+			},
+			entryIds: ["user-1", "assistant-1", "abandoned-1"],
+			leafId: "assistant-1",
+			incrementalPage: { entries: [], leafId: "assistant-1" },
 			activity: [acceptance.invocationId],
 		});
 	});

@@ -144,11 +144,13 @@ The overlay can message any selected descendant, including one whose numeric ID 
 
 ### Updates, errors, restoration, and disposal
 
-Session creation, status changes, continuations, and selected-conversation activity update the overlay without changing a still-valid selection. A continuation updates the existing logical-session node instead of adding another node. If a selected-conversation refresh fails, Pi shows an error notification and the last successfully loaded conversation remains visible.
+Session creation, status changes, continuations, and selected-conversation activity update the overlay without changing a still-valid selection. A continuation updates the existing logical-session node instead of adding another node. The first active-conversation refresh requests the complete `get_entries` snapshot; later refreshes request only entries after the last received entry ID. If one valid response exceeds the normal JSONL buffer, it is parsed as a stream. Scalar entry strings longer than 4,096 characters in that oversized response appear as `[child RPC text omitted: oversized]`. When the session terminates, the selected conversation is reloaded from its JSONL session file.
 
-Reopening the overlay in the same extension runtime retains expanded hierarchy branches and the selected session only while those sessions still exist. Independently, every reopened overlay resamples Pi's current main-conversation tool-expansion state; tool-expansion changes from the prior overlay are not retained. Hierarchy scroll resets to the top, focus and one-pane state reset to the hierarchy. If the retained selection is missing or invalid, the first visible root is selected.
+Only the selected conversation is retained in memory. Changing selection discards the previous conversation payload. If a selected-conversation refresh fails, Pi shows an error notification and the last successfully loaded conversation remains visible.
 
-Closing the overlay returns to the unchanged main conversation editor and viewport and releases the overlay's resources. Shutting down the owning runtime also closes the overlay and stops its background updates.
+Reopening the overlay in the same extension runtime retains expanded hierarchy branches and the selected session only while those sessions still exist. The conversation payload is reloaded instead of retained while the overlay is closed. Independently, every reopened overlay resamples Pi's current main-conversation tool-expansion state; tool-expansion changes from the prior overlay are not retained. Hierarchy scroll resets to the top, focus and one-pane state reset to the hierarchy. If the retained selection is missing or invalid, the first visible root is selected.
+
+Closing the overlay returns to the unchanged main conversation editor and viewport, clears the selected-conversation payload, and stops its background refreshes. Shutting down the owning runtime performs the same cleanup.
 
 ## Tool requests
 

@@ -233,10 +233,12 @@ describe("HierarchyConversationProjection", () => {
 		const conversationUpdated = projection.updateConversation(
 			nestedSession.key,
 			nextNestedBranch,
+			1,
 		);
 		const repeatedConversation = projection.updateConversation(
 			nestedSession.key,
 			nextNestedBranch,
+			1,
 		);
 
 		// ASSERT: only selected conversation entries are exposed and prior revisions remain unchanged.
@@ -270,6 +272,57 @@ describe("HierarchyConversationProjection", () => {
 			liveConversationIds: ["nested-user", "feedback", "nested-live"],
 			priorConversationIds: ["nested-user", "feedback"],
 			repeatedRevisionIdentity: true,
+		});
+	});
+
+	test("retains conversation content only for the selected session", () => {
+		// Purpose: browsing completed sessions must not retain every loaded conversation for the root runtime lifetime.
+		// Input and expected output: changing selection discards the previous branch, which is empty until reloaded.
+		// Edge case: selecting the previous session again must not expose its stale retained snapshot.
+		// Dependencies: in-memory projection only; session histories remain owned by their external readers.
+		// ARRANGE: preload two sessions and their independent conversation branches.
+		const first = createSession({
+			ownerPiSessionId: ROOT_OWNER.ownerPiSessionId,
+			ownerLocalSessionId: 1,
+			childPiSessionId: "child-pi-first",
+			creationOrder: 1,
+		});
+		const second = createSession({
+			ownerPiSessionId: ROOT_OWNER.ownerPiSessionId,
+			ownerLocalSessionId: 2,
+			childPiSessionId: "child-pi-second",
+			creationOrder: 2,
+		});
+		const projection = new HierarchyConversationProjection(
+			ROOT_OWNER.ownerPiSessionId,
+		);
+		projection.replace({
+			journals: [createJournal(ROOT_OWNER, [first, second])],
+			conversations: [
+				{ sessionKey: first.key, entries: [createUserEntry("first", "one")] },
+				{
+					sessionKey: second.key,
+					entries: [createUserEntry("second", "two")],
+				},
+			],
+		});
+
+		// ACT: visit both sessions and return to the first without reloading it.
+		const firstSelected = projection.select(first.key);
+		const secondSelected = projection.select(second.key);
+		const firstRevisited = projection.select(first.key);
+
+		// ASSERT: only the first selected snapshot was available; both discarded branches stay absent.
+		expect({
+			first: firstSelected.selectedConversation.map((entry) => entry.id),
+			second: secondSelected.selectedConversation.map((entry) => entry.id),
+			firstRevisited: firstRevisited.selectedConversation.map(
+				(entry) => entry.id,
+			),
+		}).toEqual({
+			first: ["first"],
+			second: [],
+			firstRevisited: [],
 		});
 	});
 

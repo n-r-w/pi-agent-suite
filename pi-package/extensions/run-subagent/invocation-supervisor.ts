@@ -71,6 +71,12 @@ interface RpcPending {
 	readonly reject: (error: Error) => void;
 }
 
+/** One validated append-order page returned by Pi's get_entries RPC command. */
+export interface ActiveConversationEntries {
+	readonly entries: readonly SessionEntry[];
+	readonly leafId: string | null;
+}
+
 /** Carries one prompt-bearing RPC and its optional dispatch reservation. */
 interface PromptRpcCommand {
 	readonly id: string;
@@ -116,10 +122,11 @@ export class InvocationSupervisor implements InvocationControl {
 		this.startupGate = options.startupGate ?? sharedChildStartupGate;
 	}
 
-	/** Reads one active invocation branch through documented Pi RPC. */
-	public async readActiveBranch(
+	/** Reads one active invocation entry page through documented Pi RPC. */
+	public async readActiveEntries(
 		invocationId: string,
-	): Promise<readonly SessionEntry[]> {
+		since?: string,
+	): Promise<ActiveConversationEntries> {
 		const handle = this.handles.get(invocationId);
 		if (
 			handle === undefined ||
@@ -138,9 +145,9 @@ export class InvocationSupervisor implements InvocationControl {
 			});
 		});
 		handle.process.stdin.write(
-			`${JSON.stringify({ id: requestId, type: "get_entries" })}\n`,
+			`${JSON.stringify({ id: requestId, type: "get_entries", ...(since === undefined ? {} : { since }) })}\n`,
 		);
-		return activeBranchFromRpcData(await data);
+		return activeEntriesFromRpcData(await data);
 	}
 
 	/** Subscribes one read-only listener to live child session activity. */
@@ -819,8 +826,8 @@ function toInvocationStartError(error: unknown): InvocationStartError {
 		: new InvocationStartError("start_failed", errorMessage(error));
 }
 
-/** Parses one documented get_entries response and selects its active leaf branch. */
-function activeBranchFromRpcData(data: unknown): readonly SessionEntry[] {
+/** Validates documented get_entries data for caller-owned incremental branch assembly. */
+function activeEntriesFromRpcData(data: unknown): ActiveConversationEntries {
 	if (!isRecord(data)) {
 		throw new Error("child Pi returned invalid conversation data");
 	}
@@ -832,33 +839,10 @@ function activeBranchFromRpcData(data: unknown): readonly SessionEntry[] {
 	) {
 		throw new Error("child Pi returned invalid conversation entries");
 	}
-	const entries = rawEntries.map(parseRpcSessionEntry);
-	if (leafId === null) {
-		return [];
-	}
-	const entriesById = new Map<string, SessionEntry>();
-	for (const entry of entries) {
-		if (entriesById.has(entry.id)) {
-			throw new Error("child Pi returned duplicate conversation entry ids");
-		}
-		entriesById.set(entry.id, entry);
-	}
-	const branch: SessionEntry[] = [];
-	const visited = new Set<string>();
-	let currentId: string | null = leafId;
-	while (currentId !== null) {
-		if (visited.has(currentId)) {
-			throw new Error("child Pi returned a cyclic conversation branch");
-		}
-		visited.add(currentId);
-		const entry = entriesById.get(currentId);
-		if (entry === undefined) {
-			throw new Error("child Pi returned an unknown conversation leaf");
-		}
-		branch.unshift(entry);
-		currentId = entry.parentId;
-	}
-	return branch;
+	return {
+		entries: rawEntries.map(parseRpcSessionEntry),
+		leafId,
+	};
 }
 
 /** Validates the session-entry fields used for branch routing and presentation. */

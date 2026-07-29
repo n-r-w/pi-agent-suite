@@ -16,10 +16,32 @@ interface ManagementCatalogSource {
 	subscribe(listener: (session: LogicalSession) => void): () => void;
 }
 
-/** Supplies active Pi branches and child activity through public RPC. */
+/** Supplies active Pi entry pages and child activity through public RPC. */
 interface ManagementActiveConversationSource {
-	readActiveBranch(invocationId: string): Promise<readonly SessionEntry[]>;
+	readActiveEntries(
+		invocationId: string,
+		since?: string,
+	): Promise<{
+		readonly entries: readonly SessionEntry[];
+		readonly leafId: string | null;
+	}>;
 	subscribeActivity(listener: (invocationId: string) => void): () => void;
+}
+
+/** Holds only the selected active session's append-order entries and derived branch. */
+interface ActiveConversationCache {
+	readonly invocationId: string;
+	readonly entriesById: Map<string, SessionEntry>;
+	lastEntryId: string | undefined;
+	leafId: string | null;
+	branch: readonly SessionEntry[];
+	version: number;
+}
+
+/** Couples one branch with a payload-independent revision used by immutable projection. */
+interface ConversationRead {
+	readonly entries: readonly SessionEntry[];
+	readonly version: number;
 }
 
 /** Supplies deterministic runtime dependencies around the immutable projection. */
@@ -43,6 +65,8 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 	private readonly unsubscribeActivity: () => void;
 	private refreshRequested = false;
 	private refreshPromise: Promise<void> | undefined;
+	private activeConversation: ActiveConversationCache | undefined;
+	private conversationVersion = 0;
 	private selectionGeneration = 0;
 	private disposed = false;
 
@@ -80,6 +104,9 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 			.nodes.find((candidate) => candidate.stableKey === stableKey);
 		const before = this.projection.getView();
 		const next = this.projection.select(node?.key ?? null);
+		if (before.selectedStableKey !== next.selectedStableKey) {
+			this.activeConversation = undefined;
+		}
 		this.selectionGeneration += 1;
 		this.publishRevision(before, next);
 		await this.refreshSelected();
@@ -122,6 +149,8 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 		this.selectionGeneration += 1;
 		this.unsubscribeCatalog();
 		this.unsubscribeActivity();
+		this.activeConversation = undefined;
+		this.projection.select(null);
 		this.subscribers.clear();
 	}
 
@@ -186,7 +215,7 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 		if (session === undefined) {
 			return this.runRefreshLoop();
 		}
-		const entries = await this.readConversation(session);
+		const conversation = await this.readConversation(session);
 		if (
 			!this.disposed &&
 			generation === this.selectionGeneration &&
@@ -194,28 +223,70 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 				this.projection.getView().selectedStableKey
 		) {
 			const before = this.projection.getView();
-			const next = this.projection.updateConversation(session.key, entries);
+			const next = this.projection.updateConversation(
+				session.key,
+				conversation.entries,
+				conversation.version,
+			);
 			this.publishRevision(before, next);
 		}
 		return this.runRefreshLoop();
 	}
 
-	/** Uses RPC for active writers and public SessionManager for inactive sessions. */
-	private readConversation(
+	/** Uses incremental RPC for the selected active writer and SessionManager after termination. */
+	private async readConversation(
 		session: LogicalSession,
-	): Promise<readonly SessionEntry[]> {
+	): Promise<ConversationRead> {
 		if (session.state === "active") {
-			return this.options.activeConversations.readActiveBranch(
-				session.invocationId,
-			);
+			return await this.readActiveConversation(session.invocationId);
 		}
-		return Promise.resolve(
+		this.activeConversation = undefined;
+		const entries = await Promise.resolve(
 			this.options.readInactiveBranch?.(session) ??
 				SessionManager.open(
 					session.childSessionFile,
 					session.childSessionDir,
 				).getBranch(),
 		);
+		return { entries, version: this.nextConversationVersion() };
+	}
+
+	/** Merges one get_entries delta and derives the selected root-to-leaf branch. */
+	private async readActiveConversation(
+		invocationId: string,
+	): Promise<ConversationRead> {
+		const cache =
+			this.activeConversation ?? createActiveConversationCache(invocationId);
+		if (cache.invocationId !== invocationId) {
+			throw new Error(
+				"selected active conversation identity changed unexpectedly",
+			);
+		}
+		this.activeConversation = cache;
+		const page = await this.options.activeConversations.readActiveEntries(
+			invocationId,
+			cache.lastEntryId,
+		);
+		const leafChanged = cache.leafId !== page.leafId;
+		for (const entry of page.entries) {
+			if (cache.entriesById.has(entry.id)) {
+				throw new Error("child Pi returned duplicate conversation entry ids");
+			}
+			cache.entriesById.set(entry.id, entry);
+		}
+		cache.lastEntryId = page.entries.at(-1)?.id ?? cache.lastEntryId;
+		cache.leafId = page.leafId;
+		if (page.entries.length > 0 || leafChanged) {
+			cache.branch = activeBranchFromCache(cache);
+			cache.version = this.nextConversationVersion();
+		}
+		return { entries: cache.branch, version: cache.version };
+	}
+
+	/** Allocates one small revision without serializing complete conversation payloads. */
+	private nextConversationVersion(): number {
+		this.conversationVersion += 1;
+		return this.conversationVersion;
 	}
 
 	/** Resolves the selected stable key back to the authoritative catalog fact. */
@@ -243,6 +314,45 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 			subscriber(next);
 		}
 	}
+}
+
+/** Creates the only in-memory entry cache owned by the current management selection. */
+function createActiveConversationCache(
+	invocationId: string,
+): ActiveConversationCache {
+	return {
+		invocationId,
+		entriesById: new Map(),
+		lastEntryId: undefined,
+		leafId: null,
+		branch: Object.freeze([]),
+		version: 0,
+	};
+}
+
+/** Resolves one cached active leaf while rejecting incomplete or cyclic RPC topology. */
+function activeBranchFromCache(
+	cache: ActiveConversationCache,
+): readonly SessionEntry[] {
+	if (cache.leafId === null) {
+		return Object.freeze([]);
+	}
+	const branch: SessionEntry[] = [];
+	const visited = new Set<string>();
+	let currentId: string | null = cache.leafId;
+	while (currentId !== null) {
+		if (visited.has(currentId)) {
+			throw new Error("child Pi returned a cyclic conversation branch");
+		}
+		visited.add(currentId);
+		const entry = cache.entriesById.get(currentId);
+		if (entry === undefined) {
+			throw new Error("child Pi returned an unknown conversation leaf");
+		}
+		branch.unshift(entry);
+		currentId = entry.parentId;
+	}
+	return Object.freeze(branch);
 }
 
 /** Preserves Error identity for safe runtime reporting. */

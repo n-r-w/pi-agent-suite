@@ -57,7 +57,7 @@ export interface ManagementProjectionView {
 
 interface ConversationSnapshot {
 	readonly entries: readonly ConversationProjectionEntry[];
-	readonly signature: string;
+	readonly version: number;
 }
 
 /** Encodes complete owner-local identity without relying on a global numeric ID. */
@@ -97,22 +97,15 @@ export class HierarchyConversationProjection {
 			this.catalogSessions.set(projectionStableKey(session.key), session);
 		}
 
-		const priorConversations = new Map(this.conversations);
-		const priorConversationKeys = new Set(priorConversations.keys());
+		const changedConversationKeys = new Set(this.conversations.keys());
 		this.conversations.clear();
-		const changedConversationKeys = new Set<string>();
 		for (const branch of sources.conversations ?? []) {
 			const key = projectionStableKey(branch.sessionKey);
-			const next = createConversationSnapshot(branch.entries);
-			const previous = priorConversations.get(key);
+			const next = createConversationSnapshot(
+				filterConversationEntries(branch.entries),
+			);
 			this.conversations.set(key, next);
-			priorConversationKeys.delete(key);
-			if (previous?.signature !== next.signature) {
-				changedConversationKeys.add(key);
-			}
-		}
-		for (const removedKey of priorConversationKeys) {
-			changedConversationKeys.add(removedKey);
+			changedConversationKeys.add(key);
 		}
 
 		return this.rebuild(changedConversationKeys);
@@ -128,13 +121,17 @@ export class HierarchyConversationProjection {
 	public updateConversation(
 		sessionKey: SessionKey,
 		entries: readonly SessionEntry[],
+		version: number,
 	): ManagementProjectionView {
 		const key = projectionStableKey(sessionKey);
-		const next = createConversationSnapshot(entries);
-		if (this.conversations.get(key)?.signature === next.signature) {
+		if (this.conversations.get(key)?.version === version) {
 			return this.view;
 		}
-		this.conversations.set(key, next);
+		this.conversations.clear();
+		this.conversations.set(
+			key,
+			createConversationSnapshot(filterConversationEntries(entries), version),
+		);
 		return this.rebuild(new Set([key]));
 	}
 
@@ -150,6 +147,12 @@ export class HierarchyConversationProjection {
 		const affected = [this.selectedStableKey, validNextKey].filter(
 			(key): key is string => key !== null,
 		);
+		const retainedConversation =
+			validNextKey === null ? undefined : this.conversations.get(validNextKey);
+		this.conversations.clear();
+		if (validNextKey !== null && retainedConversation !== undefined) {
+			this.conversations.set(validNextKey, retainedConversation);
+		}
 		this.selectedStableKey = validNextKey;
 		this.view = freezeView({
 			revision: this.view.revision + 1,
@@ -345,28 +348,28 @@ function invocationMetadataEqual(
 	);
 }
 
-/** Filters Pi's active branch to displayable conversation entries without side effects. */
-function createConversationSnapshot(
+/** Selects only displayable conversation entries from one complete session branch. */
+function filterConversationEntries(
 	entries: readonly SessionEntry[],
-): ConversationSnapshot {
-	const conversationEntries = entries.filter(
+): readonly ConversationProjectionEntry[] {
+	return entries.filter(
 		(entry): entry is ConversationProjectionEntry =>
 			entry.type === "message" ||
 			(entry.type === "custom_message" &&
 				entry.display &&
 				entry.customType !== CONTEXT_PROJECTION_CUSTOM_TYPE),
 	);
-	// Session branches are caller-owned. Clone before freezing so neither later
-	// RPC updates nor a consumer can mutate an already emitted revision.
+}
+
+/** Clones one selected branch so later source mutation cannot alter published revisions. */
+function createConversationSnapshot(
+	entries: readonly ConversationProjectionEntry[],
+	version = 0,
+): ConversationSnapshot {
 	const frozenEntries = Object.freeze(
-		conversationEntries.map((entry) =>
-			freezeRecursively(structuredClone(entry)),
-		),
+		entries.map((entry) => freezeRecursively(structuredClone(entry))),
 	);
-	return Object.freeze({
-		entries: frozenEntries,
-		signature: JSON.stringify(frozenEntries),
-	});
+	return Object.freeze({ entries: frozenEntries, version });
 }
 
 /** Deeply freezes one JSON-compatible Pi session value and returns its readonly identity. */

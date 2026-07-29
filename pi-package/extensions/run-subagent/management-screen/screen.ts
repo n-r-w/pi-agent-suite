@@ -289,6 +289,10 @@ export class ManagementScreen implements Component, Focusable {
 		// Reopen retains only approved hierarchy expansion and valid selection.
 		this.options.retained.hierarchy = { ...hierarchy, scrollTop: 0 };
 		this.unsubscribe();
+		// The retained key restores selection later; clearing the runtime selection releases conversation payloads now.
+		Promise.resolve(this.options.source.select(null)).catch((error: unknown) =>
+			this.options.notify(errorMessage(error)),
+		);
 		this.conversation.dispose();
 		this.editor.dispose();
 	}
