@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionContext,
@@ -784,6 +784,84 @@ describe("management screen", () => {
 		fixture.screen.dispose();
 	});
 
+	test("updates selected active elapsed time until the invocation terminates", () => {
+		// Purpose: the selected header must advance elapsed time while work remains active without mutating invocation snapshots.
+		// Inputs and expected output: a one-second accepted snapshot renders as three seconds after the presentation clock advances and as the fixed terminal duration after completion.
+		// Edge case: terminal projection and screen disposal clear the refresh timer without changing the finalized elapsed value.
+		// Dependencies: controlled wall clock and interval callbacks, projection publication, and selected-header rendering.
+		const startedAtMs = 1_700_000_000_000;
+		let nowMs = startedAtMs + 1_000;
+		let refresh: (() => void) | undefined;
+		const intervalHandle = 1 as unknown as ReturnType<typeof setInterval>;
+		const nowSpy = spyOn(Date, "now").mockImplementation(() => nowMs);
+		const intervalSpy = spyOn(globalThis, "setInterval").mockImplementation(((
+			handler: () => void,
+		) => {
+			refresh = handler;
+			return intervalHandle;
+		}) as typeof setInterval);
+		const clearIntervalSpy = spyOn(
+			globalThis,
+			"clearInterval",
+		).mockImplementation(() => undefined);
+		let fixture: ReturnType<typeof createScreen> | undefined;
+
+		try {
+			// ARRANGE: open the wide screen on one active invocation with accepted elapsed metadata.
+			const activeNode: ProjectionNode = {
+				...selectedNode(),
+				invocationMetadata: { startedAtMs, elapsedMs: 1_000 },
+			};
+			fixture = createScreen({ node: activeNode });
+			const initialRows = fixture.screen.render(80);
+			const renderRequestsBeforeTick = fixture.tui.renderRequests;
+
+			// ACT: advance the presentation clock, fire one refresh, then publish the finalized terminal snapshot.
+			nowMs += 2_000;
+			expect(refresh).toBeDefined();
+			if (refresh === undefined) {
+				throw new Error("elapsed refresh timer was not scheduled");
+			}
+			refresh();
+			const activeRows = fixture.screen.render(80);
+			fixture.source.publish({
+				...fixture.source.getView(),
+				revision: 2,
+				nodes: [
+					{
+						...activeNode,
+						invocationMetadata: { startedAtMs, elapsedMs: 4_000 },
+						state: "terminal-success",
+					},
+				],
+				affectedStableKeys: [activeNode.stableKey],
+			});
+			nowMs += 10_000;
+			const terminalRows = fixture.screen.render(80);
+			fixture.screen.dispose();
+
+			// ASSERT: active rendering follows time, terminal rendering stays fixed, and the owned timer is released once.
+			expect({
+				initialElapsed: initialRows.some((line) => line.includes("1s")),
+				activeElapsed: activeRows.some((line) => line.includes("3s")),
+				renderRequests: fixture.tui.renderRequests - renderRequestsBeforeTick,
+				terminalElapsed: terminalRows.some((line) => line.includes("4s")),
+				clearCalls: clearIntervalSpy.mock.calls.length,
+			}).toEqual({
+				initialElapsed: true,
+				activeElapsed: true,
+				renderRequests: 2,
+				terminalElapsed: true,
+				clearCalls: 1,
+			});
+		} finally {
+			fixture?.screen.dispose();
+			clearIntervalSpy.mockRestore();
+			intervalSpy.mockRestore();
+			nowSpy.mockRestore();
+		}
+	});
+
 	test("shows every focus zone, one editor frame, and the safe close shortcut", () => {
 		// Purpose: Tab focus ownership and the preferred close action must be visible without duplicate editor separators.
 		// Inputs and expected output: hierarchy title, conversation identity, and both editor borders receive focus in sequence; Ctrl+Shift+G closes.
@@ -931,22 +1009,32 @@ describe("management screen", () => {
 			"\u0085",
 			"\u001b[38;5;201m",
 		];
+		const startedAtMs = 1_700_000_000_000;
 		const controlledNode: ProjectionNode = {
 			...selectedNode(),
 			agentId: "Agent\nSafe\r\t\u0001\u0085\u001b[38;5;201mID\u001b[0m",
 			taskName: "Task\nSafe\r\t\u0001\u0085\u001b[38;5;201mBody\u001b[0m",
 			invocationMetadata: {
-				startedAtMs: 1_700_000_000_000,
+				startedAtMs,
 				elapsedMs: 102_000,
 				modelId: "openai-codex/gpt-5.6-sol",
 				contextTokens: 34_000,
 				contextWindow: 190_000,
 			},
 		};
+		const nowSpy = spyOn(Date, "now").mockImplementation(
+			() => startedAtMs + 102_000,
+		);
 		const fixture = createScreen({ node: controlledNode });
 
 		// ACT: render total width 69, which preserves 40 content columns in the selected pane beside its scrollbar.
-		const rows = fixture.screen.render(69);
+		let rows: string[];
+		try {
+			rows = fixture.screen.render(69);
+		} finally {
+			fixture.screen.dispose();
+			nowSpy.mockRestore();
+		}
 		const prompt = rows.find((line) => line.includes("⧗ initial conversation"));
 		const metadata = rows.find((line) => line.includes("1m42s · openai"));
 		const topBorder = rows[0] ?? "";
@@ -1352,6 +1440,7 @@ describe("management screen", () => {
 		});
 		let monotonicMs = 1_000;
 		let wallMs = 1_700_000_000_000;
+		const nowSpy = spyOn(Date, "now").mockImplementation(() => wallMs);
 		const acceptances: InvocationAcceptance[] = [
 			{
 				invocationId: "unrelated-invocation",
@@ -1494,6 +1583,9 @@ describe("management screen", () => {
 		const folded = store
 			.fold(manager.getBranch())
 			.sessions.find((session) => session.key.ownerLocalSessionId === 2);
+		screen.dispose();
+		runtime.dispose();
+		nowSpy.mockRestore();
 
 		// ASSERT: terminal metrics update the selected node before continuation replaces current invocation facts.
 		expect({
@@ -1546,8 +1638,6 @@ describe("management screen", () => {
 				contextWindow: 200_000,
 			},
 		});
-		screen.dispose();
-		runtime.dispose();
 	});
 
 	test("projects selected live updates and disposes runtime readers", async () => {

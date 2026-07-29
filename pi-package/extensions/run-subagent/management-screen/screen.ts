@@ -49,6 +49,8 @@ const SELECTED_HEADER_ROWS = 3;
 const PANE_DIVIDER_ROWS = 1;
 const MIN_CONVERSATION_ROWS = 1;
 const MIN_FRAMED_EDITOR_ROWS = 3;
+/** Keeps whole-second elapsed presentation current without revising session data. */
+const ELAPSED_REFRESH_INTERVAL_MS = 1_000;
 /** Ends child SGR and OSC 8 state before screen-owned chrome. */
 const SCREEN_SEGMENT_RESET = "\u001b[0m\u001b]8;;\u0007";
 
@@ -146,6 +148,8 @@ export class ManagementScreen implements Component, Focusable {
 	private toolsExpanded: boolean;
 	private lastWidth: number;
 	private previewFillPromise: Promise<void> | undefined;
+	/** Owns the periodic render request for the visible active duration. */
+	private elapsedRefreshTimer: ReturnType<typeof setInterval> | undefined;
 	private disposed = false;
 	private _focused = false;
 
@@ -262,11 +266,12 @@ export class ManagementScreen implements Component, Focusable {
 		this.normalizeFocus();
 		this.syncFocus();
 		const rowBudget = Math.max(1, this.options.tui.terminal.rows);
+		const layout = this.layoutForWidth(width);
+		this.syncElapsedRefresh(this.selectedPaneVisible(width, rowBudget));
 		if (width <= 1 || rowBudget < SCREEN_CHROME_ROWS) {
 			return Array.from({ length: rowBudget }, () => "".padEnd(width));
 		}
 		const contentHeight = rowBudget - SCREEN_CHROME_ROWS;
-		const layout = this.layoutForWidth(width);
 		const content =
 			layout === "wide"
 				? this.renderWideContent(width, contentHeight)
@@ -298,6 +303,7 @@ export class ManagementScreen implements Component, Focusable {
 		// Reopen retains only approved hierarchy expansion and valid selection.
 		this.options.retained.hierarchy = { ...hierarchy, scrollTop: 0 };
 		this.unsubscribe();
+		this.stopElapsedRefresh();
 		// The retained key restores selection later; clearing the runtime selection releases conversation payloads now.
 		Promise.resolve(this.options.source.select(null)).catch((error: unknown) =>
 			this.options.notify(errorMessage(error)),
@@ -478,7 +484,58 @@ export class ManagementScreen implements Component, Focusable {
 		}
 		this.normalizeFocus();
 		this.syncFocus();
+		this.syncElapsedRefresh(
+			this.selectedPaneVisible(
+				this.lastWidth,
+				Math.max(1, this.options.tui.terminal.rows),
+			),
+		);
 		this.options.tui.requestRender();
+	}
+
+	/** Reports whether the selected pane can render within the current screen bounds. */
+	private selectedPaneVisible(width: number, rowBudget: number): boolean {
+		return (
+			width > 1 &&
+			rowBudget >= SCREEN_CHROME_ROWS &&
+			(this.layoutForWidth(width) === "wide" ||
+				this.narrowPane === "conversation")
+		);
+	}
+
+	/** Runs the presentation refresh only while an active elapsed value is visible. */
+	private syncElapsedRefresh(selectedPaneVisible: boolean): void {
+		const selected = this.hierarchy.getSelectedStableKey();
+		const selectedNode =
+			selected === null ? undefined : findProjectionNode(this.view, selected);
+		const shouldRefresh =
+			selectedPaneVisible &&
+			selectedNode?.state === "active" &&
+			selectedNode.invocationMetadata !== undefined;
+		// Hidden and terminal selections must not retain a presentation timer.
+		if (!shouldRefresh) {
+			this.stopElapsedRefresh();
+			return;
+		}
+		// Repeated renders and projection revisions share one owned interval.
+		if (this.elapsedRefreshTimer !== undefined) {
+			return;
+		}
+		this.elapsedRefreshTimer = setInterval(() => {
+			// A queued callback can run once after disposal clears the interval.
+			if (!this.disposed) {
+				this.options.tui.requestRender();
+			}
+		}, ELAPSED_REFRESH_INTERVAL_MS);
+	}
+
+	/** Releases the screen-owned elapsed refresh timer. */
+	private stopElapsedRefresh(): void {
+		if (this.elapsedRefreshTimer === undefined) {
+			return;
+		}
+		clearInterval(this.elapsedRefreshTimer);
+		this.elapsedRefreshTimer = undefined;
 	}
 
 	/** Starts one viewport-driven preview expansion and then full background hydration. */
@@ -811,10 +868,13 @@ export class ManagementScreen implements Component, Focusable {
 		const initialPrompt = readInitialPrompt(this.view.selectedConversation);
 		// Active conversation entries can report usage before the durable invocation reaches a terminal state.
 		const conversationMetadata = this.conversation.getMetadata();
-		const headerMetadata = withLiveContextTokens(
-			selectedNode.invocationMetadata,
-			conversationMetadata.modelId,
-			conversationMetadata.contextTokens,
+		const headerMetadata = withLiveElapsed(
+			withLiveContextTokens(
+				selectedNode.invocationMetadata,
+				conversationMetadata.modelId,
+				conversationMetadata.contextTokens,
+			),
+			selectedNode.state,
 		);
 		const renderedHeader = renderSelectedSessionHeader({
 			nodes: this.view.nodes,
@@ -956,6 +1016,26 @@ export async function openManagementOverlay(
 			margin: 0,
 		},
 	});
+}
+
+/** Derives active elapsed presentation without mutating durable invocation metadata. */
+function withLiveElapsed(
+	metadata: InvocationMetadata | undefined,
+	state: ProjectionNode["state"],
+): InvocationMetadata | undefined {
+	// Terminal snapshots retain the coordinator's finalized monotonic duration.
+	if (metadata === undefined || state !== "active") {
+		return metadata;
+	}
+	// The durable wall-clock start lets a newly opened screen catch up immediately.
+	const wallElapsedMs = Math.max(
+		0,
+		Math.floor(Date.now() - metadata.startedAtMs),
+	);
+	return {
+		...metadata,
+		elapsedMs: Math.max(metadata.elapsedMs, wallElapsedMs),
+	};
 }
 
 /** Adds live usage only when it belongs to the active invocation model. */
