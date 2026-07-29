@@ -116,6 +116,8 @@ Presentation uses Pi's public conversation components:
 - Tool calls and their matching results use `ToolExecutionComponent`.
 - Displayable custom messages use `CustomMessageComponent` with its standard custom-type text or Markdown presentation.
 
+The management pane removes `OSC 133;A/B/C` shell-history markers from nested component rows before composition. These terminal-global markers corrupt Ghostty when an overlay redraw emits them again. Visible text, SGR styling, and OSC 8 hyperlinks are preserved.
+
 Tool presentation follows three paths:
 
 - Pi built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`) use Pi's built-in tool definition.

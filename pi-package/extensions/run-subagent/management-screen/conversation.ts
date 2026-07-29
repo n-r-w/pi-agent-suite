@@ -69,6 +69,23 @@ interface ConversationRowAnchor {
 /** Keeps the loading sentinel outside every persisted Pi entry identity. */
 const EARLIER_HISTORY_COMPONENT_KEY = "management:earlier-history";
 
+/** Identifies shell-history zones that are valid only in Pi's top-level transcript. */
+const SHELL_INTEGRATION_ZONE_MARKERS = [
+	"\u001b]133;A\u0007",
+	"\u001b]133;B\u0007",
+	"\u001b]133;C\u0007",
+] as const;
+
+/** Prevents nested transcript rows from changing the terminal's global shell history. */
+function removeShellIntegrationZones(text: string): string {
+	let result = text;
+	// Remove only Pi's semantic shell zones while preserving styling and hyperlinks.
+	for (const marker of SHELL_INTEGRATION_ZONE_MARKERS) {
+		result = result.replaceAll(marker, "");
+	}
+	return result;
+}
+
 /** Renders one initial or steering prompt with the shared conversation expansion state. */
 class PromptMessageComponent implements ExpandableComponent {
 	private expanded: boolean;
@@ -382,7 +399,11 @@ export class ConversationPane {
 		for (const owned of this.composition.components) {
 			const componentRows = owned.component.render(width);
 			for (const [componentRow, text] of componentRows.entries()) {
-				rows.push({ componentKey: owned.key, componentRow, text });
+				rows.push({
+					componentKey: owned.key,
+					componentRow,
+					text: removeShellIntegrationZones(text),
+				});
 			}
 		}
 		this.cachedWidth = width;

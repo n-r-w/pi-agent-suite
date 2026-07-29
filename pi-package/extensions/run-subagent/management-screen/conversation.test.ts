@@ -90,6 +90,27 @@ function assistantWithTools(): AssistantMessage {
 	};
 }
 
+/** Creates one terminal assistant message without tool calls. */
+function assistantMessage(text: string, timestamp: number): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-responses",
+		provider: "openai-codex",
+		model: "gpt-5.6-sol",
+		usage: {
+			input: 100,
+			output: 20,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 120,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp,
+	};
+}
+
 /** Creates one public tool-result message for a prior assistant call. */
 function toolResult(
 	toolCallId: string,
@@ -242,6 +263,44 @@ describe("management conversation", () => {
 			packageResult: true,
 			unknownResult: true,
 			customText: true,
+		});
+		pane.dispose();
+	});
+
+	test("removes shell integration zones from nested assistant output", () => {
+		// Purpose: nested assistant rendering must not register the management overlay as terminal command history.
+		// Inputs and expected output: one terminal assistant response keeps its visible text while all OSC 133 zone markers are removed.
+		// Edge case: assistant messages without tool calls are the public Pi path that emits shell integration zones.
+		// Dependencies: public Pi AssistantMessageComponent rendering through the management conversation boundary.
+		// ARRANGE: create one terminal assistant response that Pi marks as a semantic shell zone.
+		const pane = new ConversationPane(options());
+		pane.setEntries(
+			[
+				messageEntry(
+					"assistant-1",
+					null,
+					assistantMessage("Final assistant response", 1),
+				),
+			],
+			true,
+			true,
+		);
+
+		// ACT: render the response through the nested management conversation.
+		const rendered = pane.render(60, 1_000).join("\n");
+		const shellIntegrationZones = [
+			"\u001b]133;A\u0007",
+			"\u001b]133;B\u0007",
+			"\u001b]133;C\u0007",
+		].filter((marker) => rendered.includes(marker));
+
+		// ASSERT: the user-visible response remains while terminal-global shell zones do not escape the overlay.
+		expect({
+			assistantText: rendered.includes("Final assistant response"),
+			shellIntegrationZones,
+		}).toEqual({
+			assistantText: true,
+			shellIntegrationZones: [],
 		});
 		pane.dispose();
 	});
