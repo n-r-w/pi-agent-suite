@@ -1,6 +1,6 @@
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
-import type { SubagentFeedback } from "./domain";
+import { invocationElapsedSeconds, type SubagentFeedback } from "./domain";
 import { sanitizePublicSubagentErrorMessage } from "./public-error";
 
 const TASK_NAME_MIN_CODE_POINTS = 3;
@@ -95,7 +95,11 @@ export type SubagentWaitRequest = Static<typeof SubagentWaitParameters>;
 /** Lists public normal results. */
 export type SubagentNormalResult =
 	| { readonly outcome: "accepted"; readonly sessionId: number }
-	| ({ readonly outcome: "feedback"; readonly sessionId: number } & (
+	| ({
+			readonly outcome: "feedback";
+			readonly sessionId: number;
+			readonly elapsedSeconds: number;
+	  } & (
 			| { readonly status: "success"; readonly output: string }
 			| { readonly status: "failure" | "abort"; readonly error: string }
 	  ))
@@ -212,22 +216,37 @@ export function parseSubagentNormalResult(
 		return { outcome, sessionId };
 	}
 	const status = readString(value, "status");
+	const elapsedSeconds = readPositiveInteger(value, "elapsedSeconds");
 	if (
 		outcome === "feedback" &&
 		sessionId !== undefined &&
+		elapsedSeconds !== undefined &&
 		status === "success" &&
-		isExactRecord(value, ["outcome", "sessionId", "status", "output"])
+		isExactRecord(value, [
+			"outcome",
+			"sessionId",
+			"status",
+			"elapsedSeconds",
+			"output",
+		])
 	) {
 		const output = readString(value, "output");
 		if (output !== undefined) {
-			return { outcome, sessionId, status, output };
+			return { outcome, sessionId, status, elapsedSeconds, output };
 		}
 	}
 	if (
 		outcome === "feedback" &&
 		sessionId !== undefined &&
+		elapsedSeconds !== undefined &&
 		(status === "failure" || status === "abort") &&
-		isExactRecord(value, ["outcome", "sessionId", "status", "error"])
+		isExactRecord(value, [
+			"outcome",
+			"sessionId",
+			"status",
+			"elapsedSeconds",
+			"error",
+		])
 	) {
 		const error = readString(value, "error");
 		if (error !== undefined) {
@@ -235,6 +254,7 @@ export function parseSubagentNormalResult(
 				outcome,
 				sessionId,
 				status,
+				elapsedSeconds,
 				error: sanitizePublicSubagentErrorMessage(error),
 			};
 		}
@@ -250,17 +270,22 @@ export function feedbackResult(
 	feedback: SubagentFeedback,
 ): SubagentNormalResult {
 	const sessionId = feedback.sessionKey.ownerLocalSessionId;
+	const elapsedSeconds = invocationElapsedSeconds(
+		feedback.presentation.invocationMetadata,
+	);
 	return feedback.status === "success"
 		? {
 				outcome: "feedback",
 				sessionId,
 				status: "success",
+				elapsedSeconds,
 				output: feedback.output,
 			}
 		: {
 				outcome: "feedback",
 				sessionId,
 				status: feedback.status,
+				elapsedSeconds,
 				error: sanitizePublicSubagentErrorMessage(feedback.error),
 			};
 }

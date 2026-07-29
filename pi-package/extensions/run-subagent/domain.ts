@@ -1,3 +1,6 @@
+/** Converts milliseconds to seconds for model-visible invocation duration. */
+const MILLISECONDS_PER_SECOND = 1_000;
+
 /** Identifies the Pi session that directly owns logical child IDs. */
 export interface OwnerIdentity {
 	readonly ownerPiSessionId: string;
@@ -41,6 +44,11 @@ export interface InvocationMetadata {
 	readonly contextWindow?: number;
 	readonly contextTokens?: number;
 	readonly projectionSavedTokens?: number;
+}
+
+/** Converts invocation runtime to model-visible whole seconds with a one-second minimum. */
+export function invocationElapsedSeconds(metadata: InvocationMetadata): number {
+	return Math.max(1, Math.ceil(metadata.elapsedMs / MILLISECONDS_PER_SECOND));
 }
 
 /** Captures the logical identity and finalized invocation metrics used by feedback rendering. */

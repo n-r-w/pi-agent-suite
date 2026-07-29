@@ -167,6 +167,7 @@ function waitFeedbackDetails(status: "success" | "failure" = "success") {
 	const evidence = {
 		outcome: "feedback",
 		sessionId: 1,
+		elapsedSeconds: 3,
 		presentationKind: "wait-feedback",
 		feedbackId: common.feedbackId,
 		invocationId: common.invocationId,
@@ -202,6 +203,7 @@ function result(details: Record<string, unknown>): AgentToolResult<unknown> {
 			outcome,
 			sessionId: details["sessionId"],
 			status: details["status"],
+			elapsedSeconds: details["elapsedSeconds"],
 			...(details["status"] === "success"
 				? { output: details["output"] }
 				: { error: details["error"] }),

@@ -245,6 +245,7 @@ If selected feedback is observed strictly before the timeout, the tool returns o
   "outcome": "feedback",
   "sessionId": 1,
   "status": "success",
+  "elapsedSeconds": 3,
   "output": "Final child output"
 }
 ```
@@ -254,6 +255,7 @@ If selected feedback is observed strictly before the timeout, the tool returns o
   "outcome": "feedback",
   "sessionId": 1,
   "status": "failure",
+  "elapsedSeconds": 3,
   "error": "Failure details"
 }
 ```
@@ -263,9 +265,12 @@ If selected feedback is observed strictly before the timeout, the tool returns o
   "outcome": "feedback",
   "sessionId": 1,
   "status": "abort",
+  "elapsedSeconds": 3,
   "error": "Abort details"
 }
 ```
+
+`elapsedSeconds` is the total child invocation runtime, not the time spent inside the current wait. The value is rounded up to a whole second and has a one-second minimum.
 
 If no selected feedback is observed strictly before the timeout, the tool returns:
 
@@ -306,6 +311,8 @@ Each normally terminal invocation produces one feedback value with status `succe
 Feedback returned by a wait is not duplicated in owner history. If several selected children finish before one wait settles, the wait returns one feedback value and the others enter owner history. Those other values cannot be consumed by a later wait.
 
 If normal feedback is selected for a matching wait but the owning runtime stops before that wait can return, the feedback is saved for owner history and delivered once when the owner session reopens.
+
+History delivery includes `Duration: N seconds` between the completion header and child output or error. `N` follows the same total-invocation rounding rule as `elapsedSeconds`.
 
 History delivery follows the owner's turn boundary:
 

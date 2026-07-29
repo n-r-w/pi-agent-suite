@@ -16,6 +16,7 @@ import type {
 } from "./domain";
 import {
 	type ActiveOwnerSessionWriter,
+	createHistoryMessage,
 	SUBAGENT_HISTORY_CUSTOM_TYPE,
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
 	V2SessionStore,
@@ -33,6 +34,53 @@ const INVOCATION_METADATA = {
 } as const;
 
 describe("V2SessionStore", () => {
+	test("exposes rounded invocation seconds in model-visible history feedback", () => {
+		// Purpose: automatic feedback must give the owner model the child invocation duration.
+		// Input and expected output: success, failure, and abort messages expose whole seconds rounded up with a one-second minimum.
+		// Edge case: zero, fractional, and exact-second durations preserve the approved conversion rule.
+		// Dependencies: the production history-message projector.
+		const key = { ownerPiSessionId: "owner", ownerLocalSessionId: 7 };
+		// Stable presentation identity isolates elapsed-time behavior across terminal statuses.
+		const presentation = (elapsedMs: number) => ({
+			agentId: "SubAgentCoder",
+			taskName: "Project history feedback",
+			invocationMetadata: { startedAtMs: 0, elapsedMs },
+		});
+
+		const contents = [
+			createHistoryMessage({
+				feedbackId: "success",
+				invocationId: "i1",
+				sessionKey: key,
+				status: "success",
+				output: "done",
+				presentation: presentation(0),
+			}).content,
+			createHistoryMessage({
+				feedbackId: "failure",
+				invocationId: "i2",
+				sessionKey: key,
+				status: "failure",
+				error: "failed",
+				presentation: presentation(1_001),
+			}).content,
+			createHistoryMessage({
+				feedbackId: "abort",
+				invocationId: "i3",
+				sessionKey: key,
+				status: "abort",
+				error: "aborted",
+				presentation: presentation(2_000),
+			}).content,
+		];
+
+		expect(contents).toEqual([
+			"Subagent 7 completed successfully:\nDuration: 1 seconds\ndone",
+			"Subagent 7 finished with failure:\nDuration: 2 seconds\nfailed",
+			"Subagent 7 finished with abort:\nDuration: 2 seconds\naborted",
+		]);
+	});
+
 	test("reconciles public SessionManager evidence idempotently", async () => {
 		// Purpose: public Pi persistence must preserve one feedback destination across reopen and repeated reconciliation.
 		// Input and expected output: depth-zero reconstruction hides sessions while one pending terminal feedback becomes one history message and one history commit.

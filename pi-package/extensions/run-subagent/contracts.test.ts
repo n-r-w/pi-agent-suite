@@ -105,6 +105,7 @@ describe("Subagents V2 contracts", () => {
 			outcome: "feedback",
 			sessionId: 1,
 			status: "failure",
+			elapsedSeconds: 1,
 			error: unsafe,
 		});
 
@@ -161,15 +162,16 @@ describe("Subagents V2 contracts", () => {
 
 	test("validates all normal result variants and feedback projections", () => {
 		// Purpose: runtime IPC and coordinator feedback must expose only exact public normal variants.
-		// Input and expected output: accepted, timeout, no-active, success, failure, and abort parse or project unchanged.
+		// Input and expected output: accepted, timeout, and no-active parse unchanged while every feedback status exposes rounded invocation seconds.
 		// Edge case: malformed feedback without its status-specific field fails through start_failed.
 		// Dependencies: production result parser and feedback projector.
 		const key = { ownerPiSessionId: "owner", ownerLocalSessionId: 7 };
-		const presentation = {
+		// Each status exercises one duration boundary while sharing stable presentation identity.
+		const presentation = (elapsedMs: number) => ({
 			agentId: "SubAgentCoder",
 			taskName: "Project feedback",
-			invocationMetadata: { startedAtMs: 0, elapsedMs: 0 },
-		};
+			invocationMetadata: { startedAtMs: 0, elapsedMs },
+		});
 		expect([
 			parseSubagentNormalResult({ outcome: "accepted", sessionId: 7 }),
 			parseSubagentNormalResult({ outcome: "timeout" }),
@@ -180,7 +182,7 @@ describe("Subagents V2 contracts", () => {
 				sessionKey: key,
 				status: "success",
 				output: "done",
-				presentation,
+				presentation: presentation(0),
 			}),
 			feedbackResult({
 				feedbackId: "failure",
@@ -188,7 +190,7 @@ describe("Subagents V2 contracts", () => {
 				sessionKey: key,
 				status: "failure",
 				error: "failed",
-				presentation,
+				presentation: presentation(1_001),
 			}),
 			feedbackResult({
 				feedbackId: "abort",
@@ -196,22 +198,41 @@ describe("Subagents V2 contracts", () => {
 				sessionKey: key,
 				status: "abort",
 				error: "aborted",
-				presentation,
+				presentation: presentation(2_000),
 			}),
 			failureCode(() =>
 				parseSubagentNormalResult({
 					outcome: "feedback",
 					sessionId: 7,
 					status: "success",
+					elapsedSeconds: 1,
 				}),
 			),
 		]).toEqual([
 			{ outcome: "accepted", sessionId: 7 },
 			{ outcome: "timeout" },
 			{ outcome: "no_active_sessions" },
-			{ outcome: "feedback", sessionId: 7, status: "success", output: "done" },
-			{ outcome: "feedback", sessionId: 7, status: "failure", error: "failed" },
-			{ outcome: "feedback", sessionId: 7, status: "abort", error: "aborted" },
+			{
+				outcome: "feedback",
+				sessionId: 7,
+				status: "success",
+				elapsedSeconds: 1,
+				output: "done",
+			},
+			{
+				outcome: "feedback",
+				sessionId: 7,
+				status: "failure",
+				elapsedSeconds: 2,
+				error: "failed",
+			},
+			{
+				outcome: "feedback",
+				sessionId: 7,
+				status: "abort",
+				elapsedSeconds: 2,
+				error: "aborted",
+			},
 			"start_failed",
 		]);
 	});

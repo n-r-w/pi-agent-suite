@@ -1955,7 +1955,7 @@ describe("InvocationSupervisor", () => {
 					state: "terminal-success",
 					terminalStates: ["terminal-success"],
 					historyContents: [
-						"Subagent 1 completed successfully:\ngraceful normal output",
+						"Subagent 1 completed successfully:\nDuration: 1 seconds\ngraceful normal output",
 					],
 					historyStatuses: ["success"],
 					historyCommitCount: 1,
@@ -1964,7 +1964,7 @@ describe("InvocationSupervisor", () => {
 					state: "terminal-success",
 					terminalStates: ["terminal-success"],
 					historyContents: [
-						"Subagent 1 completed successfully:\ngraceful normal output",
+						"Subagent 1 completed successfully:\nDuration: 1 seconds\ngraceful normal output",
 					],
 					historyStatuses: ["success"],
 					historyCommitCount: 1,
@@ -2201,7 +2201,7 @@ describe("InvocationSupervisor", () => {
 					state: "terminal-success",
 					terminalStates: ["terminal-success"],
 					historyContents: [
-						"Subagent 1 completed successfully:\nroot shutdown normal output",
+						"Subagent 1 completed successfully:\nDuration: 1 seconds\nroot shutdown normal output",
 					],
 					historyStatuses: ["success"],
 					historyCommitCount: 1,
@@ -2210,7 +2210,7 @@ describe("InvocationSupervisor", () => {
 					state: "terminal-success",
 					terminalStates: ["terminal-success"],
 					historyContents: [
-						"Subagent 1 completed successfully:\nroot shutdown normal output",
+						"Subagent 1 completed successfully:\nDuration: 1 seconds\nroot shutdown normal output",
 					],
 					historyStatuses: ["success"],
 					historyCommitCount: 1,

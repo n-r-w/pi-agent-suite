@@ -6,6 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { readNonEmptyString as readStringField } from "./boundary-validation";
 import {
+	invocationElapsedSeconds,
 	type JournalRecord,
 	sessionMapKey as keyOf,
 	type LogicalSession,
@@ -540,11 +541,15 @@ export function createHistoryMessage(feedback: SubagentFeedback): {
 	readonly details: SubagentFeedback;
 } {
 	const sessionId = feedback.sessionKey.ownerLocalSessionId;
+	const elapsedSeconds = invocationElapsedSeconds(
+		feedback.presentation.invocationMetadata,
+	);
+	const duration = `Duration: ${elapsedSeconds} seconds`;
 	return {
 		content:
 			feedback.status === "success"
-				? `Subagent ${sessionId} completed successfully:\n${feedback.output}`
-				: `Subagent ${sessionId} finished with ${feedback.status}:\n${feedback.error}`,
+				? `Subagent ${sessionId} completed successfully:\n${duration}\n${feedback.output}`
+				: `Subagent ${sessionId} finished with ${feedback.status}:\n${duration}\n${feedback.error}`,
 		details: feedback,
 	};
 }
