@@ -52,20 +52,24 @@ interface McpWrapperDependencies {
 	readonly saveCache?: (cache: McpWrapperMetadataCache) => Promise<void>;
 }
 
-/** Extension entry point for registering configured MCP tools after session startup. */
-export default function mcpWrapper(
+/** Registers cached MCP tools during extension loading so restored history can use their renderers. */
+export default async function mcpWrapper(
 	pi: ExtensionAPI,
 	dependencies: McpWrapperDependencies = {},
-): void {
+): Promise<void> {
 	const readConfig = dependencies.readConfig ?? readMcpWrapperConfig;
 	const loadCache = dependencies.loadCache ?? loadMcpWrapperCache;
 	const saveCache = dependencies.saveCache ?? saveMcpWrapperCache;
 	const createManager =
 		dependencies.createManager ?? createDefaultMcpClientManager;
-	let activeManager: McpManagerLike | undefined;
-	let lifecycleVersion = 0;
-	let metadataWriteGeneration = 0;
-	let serverInstructionRecords: readonly ServerInstructionRecord[] = [];
+	const registeredToolDefinitions = new Map<string, ToolDefinition>();
+	const state: McpRuntimeState = {
+		activeManager: undefined,
+		lifecycleVersion: 0,
+		metadataWriteGeneration: 0,
+		preloadedStateConsumed: false,
+		serverInstructionRecords: [],
+	};
 	const queueCacheSave = createQueuedCacheSave(saveCache);
 
 	registerMcpRefreshCommand(pi, {
@@ -73,49 +77,43 @@ export default function mcpWrapper(
 		createManager,
 		queueCacheSave,
 		invalidateBackgroundCacheWrites: () => {
-			metadataWriteGeneration += 1;
+			state.metadataWriteGeneration += 1;
 		},
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
-		const sessionVersion = lifecycleVersion + 1;
-		lifecycleVersion = sessionVersion;
-		serverInstructionRecords = [];
-		await activeManager?.closeAll();
-		activeManager = undefined;
-
-		const result = await handleSessionStart({
-			pi,
-			ctx,
-			readConfig,
-			createManager,
-			activateManager: (manager) => {
-				if (sessionVersion !== lifecycleVersion) {
-					manager.closeAll().catch(() => {});
-					return;
-				}
-				activeManager = manager;
-			},
-			loadCache,
-			saveCache: queueCacheSave,
-			getMetadataWriteGeneration: () => metadataWriteGeneration,
-		});
-		if (sessionVersion !== lifecycleVersion) {
-			return;
-		}
-		activeManager = result.manager;
-		serverInstructionRecords = result.serverInstructionRecords;
+	const preloadedStatePromise = preloadCachedTools({
+		pi,
+		readConfig,
+		loadCache,
+		getActiveManager: () => state.activeManager,
+		registeredToolDefinitions,
 	});
-
-	pi.on("session_shutdown", async () => {
-		lifecycleVersion += 1;
-		serverInstructionRecords = [];
-		const manager = activeManager;
-		activeManager = undefined;
-		await manager?.closeAll();
+	registerMcpSessionLifecycleHandlers({
+		pi,
+		state,
+		preloadedStatePromise,
+		readConfig,
+		loadCache,
+		createManager,
+		queueCacheSave,
+		registeredToolDefinitions,
 	});
+	registerMcpInstructionPromptHandler(pi, () => state.serverInstructionRecords);
 
+	await preloadedStatePromise;
+}
+
+interface BeforeAgentStartEventLike {
+	readonly systemPrompt: string;
+}
+
+/** Adds instructions only for MCP servers that own at least one active generated tool. */
+function registerMcpInstructionPromptHandler(
+	pi: ExtensionAPI,
+	getServerInstructionRecords: () => readonly ServerInstructionRecord[],
+): void {
 	pi.on("before_agent_start", (event) => {
+		const serverInstructionRecords = getServerInstructionRecords();
 		if (serverInstructionRecords.length === 0) {
 			return undefined;
 		}
@@ -137,10 +135,6 @@ export default function mcpWrapper(
 	});
 }
 
-interface BeforeAgentStartEventLike {
-	readonly systemPrompt: string;
-}
-
 interface SessionStartContextLike {
 	readonly sessionManager: ExtensionContext["sessionManager"];
 	readonly ui: {
@@ -155,14 +149,88 @@ interface HandleSessionStartOptions {
 	readonly readConfig: () => Promise<McpWrapperConfigResult>;
 	readonly createManager: McpManagerFactory;
 	readonly activateManager: (manager: McpManagerLike) => void;
+	readonly getActiveManager: () => McpManagerLike | undefined;
 	readonly loadCache: () => Promise<McpWrapperMetadataCache | null>;
 	readonly saveCache: (cache: McpWrapperMetadataCache) => Promise<void>;
 	readonly getMetadataWriteGeneration: () => number;
+	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
 }
 
 interface HandleSessionStartResult {
 	readonly manager: McpManagerLike | undefined;
 	readonly serverInstructionRecords: readonly ServerInstructionRecord[];
+}
+
+interface PreloadedMcpState {
+	readonly configResult: McpWrapperConfigResult;
+	readonly cache: McpWrapperMetadataCache | null;
+}
+
+interface McpRuntimeState {
+	activeManager: McpManagerLike | undefined;
+	lifecycleVersion: number;
+	metadataWriteGeneration: number;
+	preloadedStateConsumed: boolean;
+	serverInstructionRecords: readonly ServerInstructionRecord[];
+}
+
+/** Binds session events after cached tool definitions have started loading. */
+function registerMcpSessionLifecycleHandlers(options: {
+	readonly pi: ExtensionAPI;
+	readonly state: McpRuntimeState;
+	readonly preloadedStatePromise: Promise<PreloadedMcpState>;
+	readonly readConfig: () => Promise<McpWrapperConfigResult>;
+	readonly loadCache: () => Promise<McpWrapperMetadataCache | null>;
+	readonly createManager: McpManagerFactory;
+	readonly queueCacheSave: QueuedCacheSave;
+	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
+}): void {
+	options.pi.on("session_start", async (_event, ctx) => {
+		const preloadedState = await options.preloadedStatePromise;
+		const usePreloadedState = !options.state.preloadedStateConsumed;
+		options.state.preloadedStateConsumed = true;
+		const sessionVersion = options.state.lifecycleVersion + 1;
+		options.state.lifecycleVersion = sessionVersion;
+		options.state.serverInstructionRecords = [];
+		await options.state.activeManager?.closeAll();
+		options.state.activeManager = undefined;
+
+		const result = await handleSessionStart({
+			pi: options.pi,
+			ctx,
+			readConfig: usePreloadedState
+				? async () => preloadedState.configResult
+				: options.readConfig,
+			createManager: options.createManager,
+			activateManager: (manager) => {
+				if (sessionVersion !== options.state.lifecycleVersion) {
+					manager.closeAll().catch(() => {});
+					return;
+				}
+				options.state.activeManager = manager;
+			},
+			getActiveManager: () => options.state.activeManager,
+			loadCache: usePreloadedState
+				? async () => preloadedState.cache
+				: options.loadCache,
+			saveCache: options.queueCacheSave,
+			getMetadataWriteGeneration: () => options.state.metadataWriteGeneration,
+			registeredToolDefinitions: options.registeredToolDefinitions,
+		});
+		if (sessionVersion !== options.state.lifecycleVersion) {
+			return;
+		}
+		options.state.activeManager = result.manager;
+		options.state.serverInstructionRecords = result.serverInstructionRecords;
+	});
+
+	options.pi.on("session_shutdown", async () => {
+		options.state.lifecycleVersion += 1;
+		options.state.serverInstructionRecords = [];
+		const manager = options.state.activeManager;
+		options.state.activeManager = undefined;
+		await manager?.closeAll();
+	});
 }
 
 interface HandleManualRefreshOptions {
@@ -205,6 +273,52 @@ function registerMcpRefreshCommand(
 	});
 }
 
+/** Loads valid cached definitions without network access before Pi renders resumed history. */
+async function preloadCachedTools(options: {
+	readonly pi: ExtensionAPI;
+	readonly readConfig: () => Promise<McpWrapperConfigResult>;
+	readonly loadCache: () => Promise<McpWrapperMetadataCache | null>;
+	readonly getActiveManager: () => McpManagerLike | undefined;
+	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
+}): Promise<PreloadedMcpState> {
+	const configResult = await options.readConfig();
+	if (
+		configResult.kind === "invalid" ||
+		!configResult.config.enabled ||
+		Object.keys(configResult.config.mcpServers).length === 0
+	) {
+		return { configResult, cache: null };
+	}
+
+	const cache = await options.loadCache();
+	const cachedToolLists: McpServerToolList[] = [];
+	for (const [serverKey, serverConfig] of Object.entries(
+		configResult.config.mcpServers,
+	)) {
+		const cachedServer = cache?.servers[serverKey];
+		if (
+			cachedServer !== undefined &&
+			cachedServer.configHash === computeMcpServerConfigHash(serverConfig)
+		) {
+			cachedToolLists.push(cachedServerToolList(serverKey, cachedServer));
+		}
+	}
+
+	// Pi renders resumed messages before session_start, so cached definitions must
+	// exist now even though their execution manager becomes active during startup.
+	registerCatalogTools({
+		pi: options.pi,
+		tools: buildPiToolCatalog(cachedToolLists).tools,
+		getActiveManager: options.getActiveManager,
+		registeredToolDefinitions: options.registeredToolDefinitions,
+		servers: configResult.config.mcpServers,
+		widgetLineBudget: configResult.config.widgetLineBudget,
+	});
+
+	return { configResult, cache };
+}
+
+/** Completes MCP startup after Pi binds the extension to a session UI. */
 async function handleSessionStart(
 	options: HandleSessionStartOptions,
 ): Promise<HandleSessionStartResult> {
@@ -260,7 +374,6 @@ async function handleSessionStart(
 		options,
 		startup,
 		catalog,
-		manager,
 		config: configResult.config,
 	});
 
@@ -278,13 +391,11 @@ function registerStartupCatalog({
 	options,
 	startup,
 	catalog,
-	manager,
 	config,
 }: {
 	readonly options: HandleSessionStartOptions;
 	readonly startup: StartupMetadata;
 	readonly catalog: PiToolCatalog;
-	readonly manager: McpManagerLike;
 	readonly config: ValidMcpWrapperConfig;
 }): void {
 	reportStatuses(options.ctx, startup, catalog.rejected);
@@ -292,7 +403,8 @@ function registerStartupCatalog({
 		pi: options.pi,
 		presentationOwner: options.ctx.sessionManager,
 		tools: catalog.tools,
-		manager,
+		getActiveManager: options.getActiveManager,
+		registeredToolDefinitions: options.registeredToolDefinitions,
 		servers: config.mcpServers,
 		widgetLineBudget: config.widgetLineBudget,
 	});
@@ -567,25 +679,36 @@ function reportStatuses(
 	}
 }
 
+/** Registers each generated definition once and publishes its exact renderer identities after session binding. */
 function registerCatalogTools(options: {
 	readonly pi: ExtensionAPI;
-	readonly presentationOwner: ExtensionContext["sessionManager"];
+	readonly presentationOwner?: ExtensionContext["sessionManager"];
 	readonly tools: readonly PiToolCatalogEntry[];
-	readonly manager: McpManagerLike;
+	readonly getActiveManager: () => McpManagerLike | undefined;
+	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
 	readonly servers: ValidMcpWrapperConfig["mcpServers"];
 	readonly widgetLineBudget: number;
 }): void {
 	for (const entry of options.tools) {
-		const definition = buildToolDefinition(
-			entry,
-			options.manager,
-			options.servers,
-			options.widgetLineBudget,
+		let definition = options.registeredToolDefinitions.get(
+			entry.definition.name,
 		);
-		// Dynamic MCP names have no reliable prefix, so normal registration owns
-		// classification and publishes its exact renderer function identities.
-		registerPackageToolPresentation(options.presentationOwner, definition);
-		options.pi.registerTool(definition);
+		if (definition === undefined) {
+			definition = buildToolDefinition(
+				entry,
+				options.getActiveManager,
+				options.servers,
+				options.widgetLineBudget,
+			);
+			options.registeredToolDefinitions.set(entry.definition.name, definition);
+			options.pi.registerTool(definition);
+		}
+
+		// Presentation registration needs the current SessionManager identity,
+		// which becomes available only after Pi binds the extension.
+		if (options.presentationOwner !== undefined) {
+			registerPackageToolPresentation(options.presentationOwner, definition);
+		}
 	}
 }
 
@@ -657,9 +780,10 @@ function refreshCacheInBackground({
 		.finally(() => manager.closeAll());
 }
 
+/** Builds a generated tool whose renderer is available before its session manager becomes active. */
 function buildToolDefinition(
 	entry: PiToolCatalogEntry,
-	manager: Pick<McpClientManager, "callTool">,
+	getActiveManager: () => Pick<McpClientManager, "callTool"> | undefined,
 	servers: ValidMcpWrapperConfig["mcpServers"],
 	widgetLineBudget: number,
 ): ToolDefinition {
@@ -682,6 +806,10 @@ function buildToolDefinition(
 				throw new Error(
 					`missing MCP server config for ${entry.route.serverKey}`,
 				);
+			}
+			const manager = getActiveManager();
+			if (manager === undefined) {
+				throw new Error("MCP manager is not active");
 			}
 			const result = await manager.callTool(
 				entry.route,

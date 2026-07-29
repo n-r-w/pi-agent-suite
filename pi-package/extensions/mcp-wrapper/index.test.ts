@@ -528,7 +528,11 @@ describe("mcp-wrapper extension", () => {
 		});
 	});
 
-	test("registers tools from complete cache without waiting for discovery", async () => {
+	test("registers cached tools before session start", async () => {
+		// Purpose: resumed history needs MCP tool renderers before Pi emits session_start.
+		// Input and expected output: a complete cache registers one tool during awaited extension loading and does not register it again at session start.
+		// Edge case: cached registration must not start live MCP discovery.
+		// Dependencies: this test uses injected config, cache storage, and an in-memory manager fake.
 		await prepareSuiteCacheDir();
 		const pi = createExtensionApiFake();
 		const serverConfig: McpServerConfig = {
@@ -554,12 +558,16 @@ describe("mcp-wrapper extension", () => {
 				},
 			},
 		});
+		let discoveryCalls = 0;
 		const manager = {
-			discoverServers: async () => new Promise<never>(() => {}),
+			discoverServers: async () => {
+				discoveryCalls += 1;
+				return new Promise<never>(() => {});
+			},
 			callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
 		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
 
-		mcpWrapper(pi, {
+		await mcpWrapper(pi, {
 			readConfig: async () => ({
 				kind: "valid",
 				config: {
@@ -577,22 +585,36 @@ describe("mcp-wrapper extension", () => {
 			createManager: () => managerWithCleanup(manager),
 		});
 
+		expect(
+			pi.tools.map((tool) => ({
+				name: tool.name,
+				hasCallRenderer: typeof tool.renderCall === "function",
+				hasResultRenderer: typeof tool.renderResult === "function",
+			})),
+		).toEqual([
+			{
+				name: FILES_READ_TOOL_NAME,
+				hasCallRenderer: true,
+				hasResultRenderer: true,
+			},
+		]);
+		expect(discoveryCalls).toBe(0);
 		expect(await resolvesWithin(runSessionStart(pi), 25)).toBe(true);
-		expect(pi.tools[0]?.name).toBe(FILES_READ_TOOL_NAME);
+		expect(pi.tools.map((tool) => tool.name)).toEqual([FILES_READ_TOOL_NAME]);
 		pi.setActiveTools([FILES_READ_TOOL_NAME]);
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
 			"Use cached file instructions.",
 		);
 	});
 
-	test("registers a manual MCP cache refresh command", () => {
+	test("registers a manual MCP cache refresh command", async () => {
 		// Purpose: users need a slash command that refreshes MCP metadata on demand.
 		// Input and expected output: registering the extension adds one mcp-refresh command.
 		// Edge case: command registration must not depend on config presence.
 		// Dependencies: this test uses only the ExtensionAPI fake.
 		const pi = createExtensionApiFake();
 
-		mcpWrapper(pi);
+		await mcpWrapper(pi);
 
 		expect(pi.commands.map((command) => command.name)).toContain("mcp-refresh");
 	});
