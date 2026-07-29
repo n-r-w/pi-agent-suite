@@ -75,7 +75,11 @@ export class BoundedToolResult implements Component {
 		const contentLineLimit = this.options.collapsedLineLimit - 1;
 		return [
 			...visualLines.slice(0, contentLineLimit),
-			this.renderHiddenLineHint(visualLines.length - contentLineLimit, width),
+			this.renderHiddenLineHint(
+				visualLines.length - contentLineLimit,
+				visualLines.length,
+				width,
+			),
 		];
 	}
 
@@ -96,11 +100,18 @@ export class BoundedToolResult implements Component {
 		];
 	}
 
-	private renderHiddenLineHint(hiddenLineCount: number, width: number): string {
+	/** Renders Pi's standard collapsed-content summary within one visual line. */
+	private renderHiddenLineHint(
+		hiddenLineCount: number,
+		totalLineCount: number,
+		width: number,
+	): string {
 		const key = getKeybindings()
 			.getKeys(EXPAND_TOOL_RESULT_KEYBINDING)
 			.join("/");
-		const hint = `${hiddenLineCount} hidden · ${key}`;
+		// Match Pi's singular and plural wording for the hidden visual-line count.
+		const lineWord = hiddenLineCount === 1 ? "line" : "lines";
+		const hint = `... (${hiddenLineCount} more ${lineWord}, ${totalLineCount} total, ${key} to expand)`;
 		return this.options.theme.fg(
 			"muted",
 			truncateTextByWidth(hint, width, "..."),

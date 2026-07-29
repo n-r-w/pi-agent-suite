@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type {
 	AgentToolResult,
 	Theme,
@@ -11,13 +11,15 @@ import {
 import {
 	Box,
 	getKeybindings,
+	KeybindingsManager,
+	setKeybindings,
 	type TUI,
+	TUI_KEYBINDINGS,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { createToolRenderContext } from "../../../test/support/tool-render-context.ts";
 import { createUniversalToolDefinition } from "./universal.ts";
 
-const HIDDEN_COUNT_PATTERN = /\d+ hidden/;
 const MARKED_THEME = {
 	bold: (value: string) => value,
 	fg: (color: string, value: string) => `<${color}>${value}</${color}>`,
@@ -51,6 +53,7 @@ function renderResult(
 	result: AgentToolResult<unknown>,
 	options: { readonly expanded: boolean; readonly isError: boolean },
 	width: number,
+	theme: Theme = MARKED_THEME,
 ): string[] {
 	if (definition.renderResult === undefined) {
 		throw new Error("universal definition has no result renderer");
@@ -58,7 +61,7 @@ function renderResult(
 	const component = definition.renderResult(
 		result,
 		{ expanded: options.expanded, isPartial: false },
-		MARKED_THEME,
+		theme,
 		createToolRenderContext({
 			args: {},
 			expanded: options.expanded,
@@ -70,10 +73,15 @@ function renderResult(
 }
 
 describe("universal tool presentation", () => {
+	// Restore the global binding registry after the test-specific expansion shortcut.
+	afterEach(() => {
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+	});
+
 	test("renders unknown tools through bounded default shell", () => {
 		// Purpose: unknown third-party tools must stay bounded while preserving Pi's public default shell and expansion behavior.
-		// Input and expected output: long Unicode JSON and Markdown produce at most two call rows and five collapsed result rows including the configured key hint.
-		// Edge case: expanded content retains the final Markdown text and error output uses the error theme color.
+		// Input and expected output: long Unicode JSON and Markdown produce bounded previews with Pi's standard collapsed-content hint.
+		// Edge case: the default shell stays width-bounded while expanded content retains the final Markdown text.
 		// Dependencies: public Pi ToolDefinition, ToolExecutionComponent, Box, Text, Markdown, keybinding, and width contracts.
 		const width = 30;
 		const args = {
@@ -89,6 +97,15 @@ describe("universal tool presentation", () => {
 		};
 		const definition = createUniversalToolDefinition("third_party_tool");
 		initTheme(undefined, false);
+		setKeybindings(
+			new KeybindingsManager({
+				...TUI_KEYBINDINGS,
+				"app.tools.expand": {
+					defaultKeys: "ctrl+o",
+					description: "Expand collapsed tool output",
+				},
+			}),
+		);
 
 		// ACT: render collapsed and expanded paths, then place the collapsed renderer in Pi's standard shell width contract.
 		const callLines = renderCall(definition, args, width - 2);
@@ -98,11 +115,12 @@ describe("universal tool presentation", () => {
 			{ expanded: false, isError: false },
 			width - 2,
 		);
-		const narrowCollapsedLines = renderResult(
+		const standardHintLines = renderResult(
 			definition,
 			result,
 			{ expanded: false, isError: false },
-			18,
+			80,
+			PLAIN_THEME,
 		);
 		const expandedLines = renderResult(
 			definition,
@@ -133,17 +151,13 @@ describe("universal tool presentation", () => {
 			.getKeys("app.tools.expand")
 			.join("/");
 
-		// ASSERT: visual budgets apply after Pi wrapping and the hidden-line hint consumes one collapsed row.
+		// ASSERT: visual budgets apply after Pi wrapping and the standard hint consumes one collapsed row.
+		const standardHint = `... (3 more lines, 7 total, ${expansionKeys} to expand)`;
 		expect({
 			callLineCount: callLines.length,
 			callHasName: callLines.join("\n").includes("third_party_tool"),
 			collapsedLineCount: collapsedLines.length,
-			collapsedHasHint:
-				(collapsedLines.at(-1) ?? "").includes("hidden") &&
-				(collapsedLines.at(-1) ?? "").includes(expansionKeys),
-			narrowHintHasCountAndKey:
-				HIDDEN_COUNT_PATTERN.test(narrowCollapsedLines.at(-1) ?? "") &&
-				(narrowCollapsedLines.at(-1) ?? "").includes(expansionKeys),
+			standardHint: standardHintLines.at(-1) === standardHint,
 			expandedHasTail: expandedLines.join("\n").includes("line 14:"),
 			errorStyled: errorLines.join("\n").includes("<error>"),
 			defaultShell: definition.renderShell,
@@ -152,8 +166,7 @@ describe("universal tool presentation", () => {
 			callLineCount: 2,
 			callHasName: true,
 			collapsedLineCount: 5,
-			collapsedHasHint: true,
-			narrowHintHasCountAndKey: true,
+			standardHint: true,
 			expandedHasTail: true,
 			errorStyled: true,
 			defaultShell: "default",
