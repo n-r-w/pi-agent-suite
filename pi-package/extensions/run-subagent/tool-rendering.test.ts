@@ -736,4 +736,45 @@ describe("Subagents V2 semantic rendering", () => {
 			"Error: agent is unavailable",
 		]);
 	});
+
+	test("normalizes only collapsed subagent error text", () => {
+		// Purpose: subagent errors must compact layout whitespace only while the tool remains collapsed.
+		// Input and expected output: a multiline semantic error becomes one spaced preview and remains multiline when expanded.
+		// Edge case: duplicate spaces after a tab remain observable only in the expanded view.
+		// Dependencies: the public subagent result renderer reads the structured error message from tool details.
+		const args = {
+			agentId: "SubAgentCoder",
+			taskName: "Fail visibly",
+			prompt: "Attempt launch",
+		};
+		const result: AgentToolResult<unknown> = {
+			content: [{ type: "text", text: "validation wrapper" }],
+			details: {
+				code: "agent_unavailable",
+				message: "first\n\tsecond  third",
+			},
+		};
+
+		const collapsed = renderTool({
+			name: "subagent_start",
+			args,
+			result,
+			isError: true,
+		});
+		const expanded = renderTool({
+			name: "subagent_start",
+			args,
+			result,
+			isError: true,
+			expanded: true,
+		});
+
+		expect(collapsed.result.map((line) => line.trimEnd())).toEqual([
+			"Error: first second third",
+		]);
+		expect(expanded.result.map((line) => line.trimEnd())).toEqual([
+			"Error: first",
+			"\tsecond  third",
+		]);
+	});
 });

@@ -27,6 +27,8 @@ const LINE_CONTROL_WHITESPACE = new Set([
 	"\u2028",
 	"\u2029",
 ]);
+/** Matches complete JSON string tokens after the enclosing JSON text is parsed. */
+const JSON_STRING_TOKEN_PATTERN = /"(?:\\[\s\S]|[^"\\])*"/g;
 
 /** Removes terminal controls and folds single-line spacing without rewriting visible Unicode. */
 export function normalizeTerminalDisplayText(value: string): string {
@@ -51,6 +53,35 @@ export function normalizeTerminalDisplayText(value: string): string {
 		normalized += character;
 	}
 	return trimAsciiSpaces(normalized);
+}
+
+/**
+ * Produces one terminal-safe collapsed tool line.
+ *
+ * Valid JSON string tokens are decoded separately so formatting controls are
+ * normalized without parsing and reserializing number or object values.
+ */
+export function normalizeCollapsedToolText(value: string): string {
+	return normalizeTerminalDisplayText(normalizeJsonStringTokens(value));
+}
+
+/** Normalizes decoded JSON strings while retaining every non-string JSON lexeme. */
+function normalizeJsonStringTokens(value: string): string {
+	try {
+		// Only complete JSON may interpret textual escape sequences as controls.
+		JSON.parse(value);
+	} catch {
+		return value;
+	}
+
+	return value.replace(JSON_STRING_TOKEN_PATTERN, (token) => {
+		const decoded: unknown = JSON.parse(token);
+		if (typeof decoded !== "string") {
+			return token;
+		}
+		const normalized = normalizeTerminalDisplayText(decoded);
+		return normalized === decoded ? token : JSON.stringify(normalized);
+	});
 }
 
 /** Trims only ASCII spaces without applying Unicode whitespace semantics. */

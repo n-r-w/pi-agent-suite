@@ -9,23 +9,26 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
+import { normalizeCollapsedToolText } from "../../shared/terminal-display-text.ts";
 
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
 const RESULT_LABEL = "Result:";
 const MCP_CALL_PREVIEW_LINES = 3;
 
+/** Renders one MCP call header with separate collapsed and expanded text. */
 class McpCallHeader implements Component {
 	constructor(
 		private readonly toolName: string,
-		private readonly args: unknown,
+		private readonly text: string,
 		private readonly theme: Theme,
 		private readonly expanded: boolean,
 	) {}
 
+	/** Wraps arguments and applies the collapsed visual-line budget. */
 	render(width: number): string[] {
 		const rendered = renderLabeledWrappedText({
 			label: `${this.toolName}:`,
-			text: JSON.stringify(this.args) ?? "undefined",
+			text: this.text,
 			width,
 			labelStyle: (value) => this.theme.fg("toolTitle", this.theme.bold(value)),
 			textStyle: (value) => this.theme.fg("dim", value),
@@ -43,8 +46,10 @@ class McpCallHeader implements Component {
 		return preview;
 	}
 
+	/** Keeps the immutable component compatible with Pi invalidation. */
 	invalidate(): void {}
 
+	/** Renders the configured expansion hint for hidden argument rows. */
 	private renderHiddenHint(
 		hidden: number,
 		total: number,
@@ -59,15 +64,22 @@ class McpCallHeader implements Component {
 	}
 }
 
+/** Renders MCP arguments as normalized preview text or complete expanded JSON. */
 export function renderMcpToolCall(
 	toolName: string,
 	args: unknown,
 	theme: Theme,
 	context?: { readonly expanded?: boolean },
 ): Component {
-	return new McpCallHeader(toolName, args, theme, context?.expanded === true);
+	const expanded = context?.expanded === true;
+	const serializedArgs = JSON.stringify(args) ?? "undefined";
+	const text = expanded
+		? serializedArgs
+		: normalizeCollapsedToolText(serializedArgs);
+	return new McpCallHeader(toolName, text, theme, expanded);
 }
 
+/** Renders normalized collapsed MCP text or the original expanded Markdown. */
 export function renderMcpToolResult(
 	result: AgentToolResult<unknown>,
 	options: { readonly expanded?: boolean },
@@ -85,13 +97,14 @@ export function renderMcpToolResult(
 	}
 
 	return new CollapsedMcpResult(
-		text,
+		normalizeCollapsedToolText(text),
 		theme,
 		context.isError === true,
 		context.widgetLineBudget,
 	);
 }
 
+/** Renders one normalized MCP result within the configured preview budget. */
 class CollapsedMcpResult implements Component {
 	constructor(
 		private readonly text: string,
@@ -100,6 +113,7 @@ class CollapsedMcpResult implements Component {
 		private readonly widgetLineBudget: number,
 	) {}
 
+	/** Wraps normalized result text and appends an expansion hint when needed. */
 	render(width: number): string[] {
 		const rendered = renderLabeledWrappedText({
 			label: RESULT_LABEL,
@@ -118,8 +132,10 @@ class CollapsedMcpResult implements Component {
 		return preview;
 	}
 
+	/** Keeps the immutable component compatible with Pi invalidation. */
 	invalidate(): void {}
 
+	/** Renders the configured expansion hint for hidden result rows. */
 	private renderHiddenHint(
 		hidden: number,
 		total: number,
@@ -134,6 +150,7 @@ class CollapsedMcpResult implements Component {
 	}
 }
 
+/** Formats one width-bounded hint with the active Pi expansion key. */
 function renderHiddenHint(options: {
 	readonly hidden: number;
 	readonly total: number;
@@ -152,6 +169,7 @@ function renderHiddenHint(options: {
 	return truncateToWidth(hint, options.width, "...");
 }
 
+/** Joins public text result parts without inspecting MCP-private details. */
 function getResultText(result: AgentToolResult<unknown>): string {
 	return result.content
 		.filter((content) => content.type === "text")

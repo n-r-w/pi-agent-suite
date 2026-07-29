@@ -21,6 +21,7 @@ import {
 	truncateTextByWidth,
 } from "../../shared/display-width";
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
+import { normalizeCollapsedToolText } from "../../shared/terminal-display-text.ts";
 import {
 	type CouncilContextUsage,
 	type CouncilProgressEvent,
@@ -67,7 +68,7 @@ interface FixedLinePart {
 /** Renders the tool-call question with bounded collapsed height and full expanded content. */
 class CouncilQuestionHeader implements Component {
 	public constructor(
-		private readonly questionPreview: string,
+		private readonly question: string,
 		private readonly theme: Theme,
 		private readonly expanded: boolean,
 	) {}
@@ -76,7 +77,7 @@ class CouncilQuestionHeader implements Component {
 	public render(width: number): string[] {
 		return renderWrappedCouncilQuestion({
 			label: "convene_council:",
-			question: this.questionPreview,
+			question: this.question,
 			width,
 			expanded: this.expanded,
 			previewLineBudget: COUNCIL_CALL_QUESTION_PREVIEW_LINES,
@@ -93,7 +94,7 @@ class CouncilQuestionHeader implements Component {
 /** Renders the persisted progress question with the same collapsed and expanded contract as the main call header. */
 class CouncilProgressQuestion implements Component {
 	public constructor(
-		private readonly questionPreview: string,
+		private readonly question: string,
 		private readonly theme: Theme,
 		private readonly expanded: boolean,
 	) {}
@@ -102,7 +103,7 @@ class CouncilProgressQuestion implements Component {
 	public render(width: number): string[] {
 		return renderWrappedCouncilQuestion({
 			label: "  Question:",
-			question: this.questionPreview,
+			question: this.question,
 			width,
 			expanded: this.expanded,
 			previewLineBudget: COUNCIL_CALL_QUESTION_PREVIEW_LINES,
@@ -161,26 +162,20 @@ export function renderConveneCouncilCall(
 	theme: Theme,
 	context: CouncilRenderContext = {},
 ): Component {
-	const questionPreview = args.question
-		? normalizePreviewText(args.question)
-		: "...";
+	const expanded = context.expanded === true;
+	const question = args.question || "...";
+	const displayedQuestion = expanded
+		? question
+		: normalizeCollapsedToolText(question);
 	const details = context.state?.headerDetails;
 	if (details === undefined) {
-		return new CouncilQuestionHeader(
-			questionPreview,
-			theme,
-			context.expanded === true,
-		);
+		return new CouncilQuestionHeader(displayedQuestion, theme, expanded);
 	}
 
 	const container = new Container();
 	container.addChild(new FixedLines([formatCouncilHeaderLine(details)], theme));
 	container.addChild(
-		new CouncilProgressQuestion(
-			questionPreview,
-			theme,
-			context.expanded === true,
-		),
+		new CouncilProgressQuestion(displayedQuestion, theme, expanded),
 	);
 	container.addChild(
 		new FixedLines([formatParticipantRuntimeLine(details)], theme),
@@ -590,7 +585,7 @@ function formatCouncilEventLineParts(
 	parts.push(
 		{ text: " " },
 		{
-			text: normalizePreviewText(event.text, textLimit),
+			text: formatCouncilEventPreviewText(event.text, textLimit),
 			color: "dim",
 			truncate: true,
 		},
@@ -716,9 +711,12 @@ function formatCouncilEventIconColor(
 	return "toolOutput";
 }
 
-/** Normalizes multi-line text into one preview line before width clipping. */
-function normalizePreviewText(value: string, maxWidth?: number): string {
-	const normalizedValue = value.replace(/\s+/g, " ").trim();
+/** Normalizes one structured event row before optional fixed-width clipping. */
+function formatCouncilEventPreviewText(
+	value: string,
+	maxWidth?: number,
+): string {
+	const normalizedValue = normalizeCollapsedToolText(value);
 	return maxWidth === undefined
 		? normalizedValue
 		: truncateTextByWidth(normalizedValue, maxWidth, "…");
@@ -767,7 +765,7 @@ class CollapsedCouncilAnswer implements Component {
 		readonly isError: boolean;
 		readonly previewLineBudget?: number;
 	}) {
-		this.answer = options.answer;
+		this.answer = normalizeCollapsedToolText(options.answer);
 		this.label = options.label;
 		this.theme = options.theme;
 		this.isError = options.isError;
@@ -795,10 +793,10 @@ class CollapsedCouncilAnswer implements Component {
 		return previewLines;
 	}
 
-	/** Delegates wrapping and ANSI preservation to Pi Text rendering. */
+	/** Delegates width-aware wrapping to Pi Text rendering. */
 	private renderAnswerVisualLines(width: number): string[] {
 		const labelColor = this.isError ? "error" : "accent";
-		const text = `${this.theme.fg(labelColor, `${this.label}:`)} ${this.theme.fg("dim", normalizePreviewText(this.answer))}`;
+		const text = `${this.theme.fg(labelColor, `${this.label}:`)} ${this.theme.fg("dim", this.answer)}`;
 		return new Text(text, 0, 0).render(width);
 	}
 

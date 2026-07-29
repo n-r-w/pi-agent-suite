@@ -178,4 +178,44 @@ describe("universal tool presentation", () => {
 			execution.render(width).every((line) => visibleWidth(line) <= width),
 		).toBe(true);
 	});
+
+	test("normalizes unknown tool previews without changing expanded output", () => {
+		// Purpose: tools without package renderers must follow the same compact text contract as MCP tools.
+		// Input and expected output: call and result JSON controls collapse while expanded output retains them.
+		// Edge case: literal path and regular-expression backslashes remain data rather than formatting controls.
+		// Dependencies: the universal definition delegates to bounded call and result components.
+		const args = {
+			body: "first\n\tsecond  third",
+			path: String.raw`C:\temp\new`,
+			regex: String.raw`\n+`,
+		};
+		const text = String.raw`{"body":"first\n\tsecond  third","path":"C:\\temp\\new","regex":"\\n+"}`;
+		const result: AgentToolResult<unknown> = {
+			content: [{ type: "text", text }],
+			details: undefined,
+		};
+		const definition = createUniversalToolDefinition("third_party_tool");
+
+		const call = renderCall(definition, args, 240).join("\n");
+		const collapsed = renderResult(
+			definition,
+			result,
+			{ expanded: false, isError: false },
+			240,
+		).join("\n");
+		const expanded = renderResult(
+			definition,
+			result,
+			{ expanded: true, isError: false },
+			240,
+		).join("\n");
+
+		expect(call).toContain('"body":"first second third"');
+		expect(call).toContain(String.raw`"path":"C:\\temp\\new"`);
+		expect(call).toContain(String.raw`"regex":"\\n+"`);
+		expect(collapsed).toContain('"body":"first second third"');
+		expect(collapsed).toContain(String.raw`"path":"C:\\temp\\new"`);
+		expect(collapsed).toContain(String.raw`"regex":"\\n+"`);
+		expect(expanded).toContain(String.raw`first\n\tsecond  third`);
+	});
 });

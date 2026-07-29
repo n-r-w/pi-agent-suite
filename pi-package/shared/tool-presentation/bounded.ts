@@ -7,6 +7,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { truncateTextByWidth } from "../display-width.ts";
+import { normalizeCollapsedToolText } from "../terminal-display-text.ts";
 
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
 
@@ -30,8 +31,11 @@ export class BoundedToolCall implements Component {
 		private readonly lineLimit: number,
 	) {}
 
+	/** Normalizes serialized arguments before applying the call row limit. */
 	public render(width: number): string[] {
-		const json = JSON.stringify(this.args) ?? "undefined";
+		const json = normalizeCollapsedToolText(
+			JSON.stringify(this.args) ?? "undefined",
+		);
 		const prefix =
 			this.label === undefined
 				? ""
@@ -48,13 +52,17 @@ export class BoundedToolCall implements Component {
 export class BoundedToolResult implements Component {
 	public constructor(private readonly options: BoundedToolResultOptions) {}
 
+	/** Selects original expanded Markdown or normalized collapsed text. */
 	public render(width: number): string[] {
 		if (this.options.expanded) {
 			return this.renderExpanded(width);
 		}
 		const color = this.options.isError ? "error" : "toolOutput";
 		const visualLines = new Text(
-			this.options.theme.fg(color, this.options.text),
+			this.options.theme.fg(
+				color,
+				normalizeCollapsedToolText(this.options.text),
+			),
 			0,
 			0,
 		).render(width);

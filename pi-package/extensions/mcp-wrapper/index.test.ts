@@ -328,6 +328,10 @@ describe("mcp-wrapper extension", () => {
 	});
 
 	test("discovers MCP tools, registers Pi tools, and routes execution", async () => {
+		// Purpose: discovered MCP metadata must produce one executable Pi tool with the configured result preview budget.
+		// Input and expected output: one fake file tool registers, renders a bounded normalized preview, and routes execution to its server.
+		// Edge case: preview rows are counted after newline normalization and width-aware wrapping.
+		// Dependencies: isolated extension API and MCP manager fakes.
 		const pi = createExtensionApiFake();
 		const callResults: unknown[] = [];
 		const manager = {
@@ -390,9 +394,10 @@ describe("mcp-wrapper extension", () => {
 					content: [
 						{
 							type: "text",
-							text: ["line 0", "line 1", "line 2", "line 3", "line 4"].join(
-								"\n",
-							),
+							text: Array.from(
+								{ length: 5 },
+								(_, index) => `line ${index} ${"content ".repeat(20)}`,
+							).join("\n"),
 						},
 					],
 					details: {},
@@ -401,9 +406,10 @@ describe("mcp-wrapper extension", () => {
 				THEME as never,
 				RESULT_RENDER_CONTEXT,
 			)
-			.render(200);
+			.render(80);
 		expect(previewLines).toHaveLength(3);
-		expect(previewLines.join("\n")).toContain("3 more lines, 5 total");
+		expect(previewLines.join("\n")).toContain("more lines");
+		expect(previewLines.join("\n")).toContain("total");
 		const result = await tool.execute(
 			"call-1",
 			{ path: "/tmp/a" },

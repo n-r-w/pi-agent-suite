@@ -123,6 +123,7 @@ Tool presentation follows three paths:
 - Pi built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`) use Pi's built-in tool definition.
 - Package tools reuse their registered call and result presentation. This covers the three Subagents V2 tools, MCP wrapper tools, `consult_advisor`, and `convene_council`.
 - Other tool names use the universal presentation: a compact name and JSON call preview of at most two visual lines, a collapsed result of at most five visual lines, a hidden-line count with the configured expansion key, full Markdown when expanded, error styling for failures, and Pi's normal tool shell.
+- Collapsed arbitrary text uses the same whitespace, JSON-string, and terminal-control normalization as MCP tool previews. Expanded result text remains unchanged.
 
 `Ctrl+O`, the default `app.tools.expand` binding, toggles all tool and custom-message expansion states regardless of focus. Each overlay samples Pi's current main-conversation tool-expansion state when that overlay opens. Toggling expansion inside the overlay changes only that open overlay and does not change the main conversation.
 

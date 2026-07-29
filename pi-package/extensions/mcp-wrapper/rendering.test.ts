@@ -142,6 +142,77 @@ describe("mcp-wrapper rendering", () => {
 		}
 	});
 
+	test("normalizes collapsed JSON call arguments without changing expanded arguments", () => {
+		// Purpose: compact MCP calls must hide formatting controls without corrupting literal backslashes.
+		// Input and expected output: collapsed source text becomes one spaced line while expanded JSON retains its escaped formatting.
+		// Edge case: Windows-style paths and regular expressions contain literal backslash sequences that must remain unchanged.
+		// Dependencies: the public MCP call renderer owns both collapsed and expanded presentation.
+		const args = {
+			body: "first\n\tsecond  third\r\nfourth",
+			path: String.raw`C:\temp\new`,
+			regex: String.raw`\n+`,
+		};
+
+		const collapsed = renderMcpToolCall(
+			"asteria_find_symbol",
+			args,
+			THEME as never,
+			{ expanded: false } as never,
+		)
+			.render(240)
+			.join("\n");
+		const expanded = renderMcpToolCall(
+			"asteria_find_symbol",
+			args,
+			THEME as never,
+			{ expanded: true } as never,
+		)
+			.render(240)
+			.join("\n");
+
+		expect(collapsed).toContain('"body":"first second third fourth"');
+		expect(collapsed).toContain(String.raw`"path":"C:\\temp\\new"`);
+		expect(collapsed).toContain(String.raw`"regex":"\\n+"`);
+		expect(collapsed).not.toContain(String.raw`first\n\tsecond`);
+		expect(expanded).toContain(String.raw`first\n\tsecond  third\r\nfourth`);
+	});
+
+	test("normalizes collapsed JSON results without changing data lexemes", () => {
+		// Purpose: serialized MCP results must become readable previews without changing their represented data.
+		// Input and expected output: JSON string controls collapse while literal escapes and a large integer remain exact.
+		// Edge case: parsing and reserializing the complete JSON value would round the integer beyond JavaScript's safe range.
+		// Dependencies: the public result renderer receives the original MCP text and the expansion state.
+		const text = String.raw`{"symbols":[{"body":"first\n\tsecond  third\r\nfourth","path":"C:\\temp\\new","regex":"\\n+","id":9007199254740993}]}`;
+		const result: AgentToolResult<unknown> = {
+			content: [{ type: "text", text }],
+			details: {},
+		};
+
+		const collapsed = renderMcpToolResult(
+			result,
+			{ expanded: false },
+			THEME as never,
+			{ widgetLineBudget: 5 },
+		)
+			.render(240)
+			.join("\n");
+		const expanded = renderMcpToolResult(
+			result,
+			{ expanded: true },
+			THEME as never,
+			{ widgetLineBudget: 5 },
+		)
+			.render(240)
+			.join("\n");
+
+		expect(collapsed).toContain('"body":"first second third fourth"');
+		expect(collapsed).toContain(String.raw`"path":"C:\\temp\\new"`);
+		expect(collapsed).toContain(String.raw`"regex":"\\n+"`);
+		expect(collapsed).toContain("9007199254740993");
+		expect(collapsed).not.toContain(String.raw`first\n\tsecond`);
+		expect(expanded).toContain(String.raw`first\n\tsecond  third\r\nfourth`);
+	});
+
 	test("renders collapsed successful result with a prominent TUI-only header", () => {
 		const result: AgentToolResult<unknown> = {
 			content: [{ type: "text", text: "result text" }],
@@ -178,13 +249,18 @@ describe("mcp-wrapper rendering", () => {
 	});
 
 	test("renders collapsed result with bounded preview and segmented expand hint colors", () => {
+		// Purpose: the visual-line budget must apply after collapsed whitespace normalization and Pi wrapping.
+		// Input and expected output: normalized long text still produces a bounded preview and segmented expansion hint.
+		// Edge case: source newlines no longer define the preview line count.
+		// Dependencies: the public result renderer and Pi's width-aware text wrapping.
 		const result: AgentToolResult<unknown> = {
 			content: [
 				{
 					type: "text",
-					text: Array.from({ length: 20 }, (_, index) => `line ${index}`).join(
-						"\n",
-					),
+					text: Array.from(
+						{ length: 20 },
+						(_, index) => `line ${index} ${"content ".repeat(20)}`,
+					).join("\n"),
 				},
 			],
 			details: {},
@@ -204,7 +280,9 @@ describe("mcp-wrapper rendering", () => {
 		const lines = component.render(WIDTH);
 
 		expect(lines.length).toBeLessThanOrEqual(5);
-		expect(markedOutput).toContain("<muted>... (18 more lines, 20 total, ");
+		expect(markedOutput).toContain("<muted>... (");
+		expect(markedOutput).toContain("more lines");
+		expect(markedOutput).toContain("total, ");
 		expect(markedOutput).toContain("</dim><muted> to expand)</muted>");
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(WIDTH);

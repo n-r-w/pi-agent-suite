@@ -11,6 +11,7 @@ import {
 	truncateTextByWidth,
 } from "../../shared/display-width.ts";
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
+import { normalizeCollapsedToolText } from "../../shared/terminal-display-text.ts";
 import type {
 	AcceptedPresentationEvidence,
 	InvocationMetadata,
@@ -148,11 +149,10 @@ export function renderName(
 	theme: Theme,
 	expanded: boolean,
 ): readonly string[] {
-	const normalized = normalizePreview(name);
 	if (expanded) {
 		return renderLabeledWrappedText({
 			label: "Name:",
-			text: normalized,
+			text: name,
 			width,
 			labelStyle: (value) => theme.fg("toolTitle", theme.bold(value)),
 			textStyle: (value) => theme.fg("muted", value),
@@ -160,20 +160,26 @@ export function renderName(
 	}
 	const label = "Name:";
 	const available = Math.max(0, width - label.length - 1);
-	const value = truncateTextByWidth(normalized, available, "…");
+	const value = truncateTextByWidth(
+		normalizeCollapsedToolText(name),
+		available,
+		"…",
+	);
 	return [
 		`${theme.fg("toolTitle", theme.bold(label))}${value.length === 0 ? "" : theme.fg("muted", ` ${value}`)}`,
 	];
 }
 
-/** Renders normalized text within the V1 visual-line budget and standard hint. */
+/** Renders collapsed normalized text or complete expanded text within the V1 layout. */
 export function renderBoundedText(
 	options: BoundedTextOptions,
 ): readonly string[] {
-	const normalized = normalizePreview(options.text);
+	const text = options.expanded
+		? options.text
+		: normalizeCollapsedToolText(options.text);
 	const lines = renderLabeledWrappedText({
 		label: options.label,
-		text: normalized,
+		text,
 		width: options.width,
 		labelStyle: (value) =>
 			options.theme.fg("toolTitle", options.theme.bold(value)),
@@ -468,9 +474,4 @@ function renderSemanticValue(
 		return theme.fg("muted", value);
 	}
 	return value;
-}
-
-/** Normalizes collapsed arbitrary text with the historical V1 whitespace rule. */
-function normalizePreview(value: string): string {
-	return value.replace(/\s+/g, " ").trim();
 }
