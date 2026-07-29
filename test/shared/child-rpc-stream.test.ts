@@ -93,9 +93,9 @@ describe("child RPC stream parser", () => {
 		]);
 	});
 
-	test("projects oversized get_entries responses without retaining large message text", async () => {
-		// Purpose: a valid management response must remain usable when one session entry exceeds the raw JSONL limit.
-		// Input and expected output: get_entries keeps response identity, branch metadata, and a bounded message entry.
+	test("projects oversized get_entries responses with a bounded text preview", async () => {
+		// Purpose: a valid management response must remain understandable when one session entry exceeds the raw JSONL limit.
+		// Input and expected output: get_entries keeps response identity, branch metadata, and the first 4,095 text characters followed by an ellipsis.
 		// Edge case: one text part alone exceeds the limit, so incremental requests cannot prevent oversized output.
 		// Dependencies: stream-json is used by the production parser for oversized response projection.
 		// ARRANGE: build one valid response whose assistant text exceeds the raw line buffer.
@@ -137,7 +137,10 @@ describe("child RPC stream parser", () => {
 			readonly data?: {
 				readonly entries?: ReadonlyArray<{
 					readonly parentId?: string | null;
-					readonly message?: { readonly timestamp?: number };
+					readonly message?: {
+						readonly content?: ReadonlyArray<{ readonly text?: string }>;
+						readonly timestamp?: number;
+					};
 				}>;
 				readonly leafId?: string;
 			};
@@ -159,6 +162,10 @@ describe("child RPC stream parser", () => {
 			messageTimestamp: 1,
 			projectedSize: expect.any(Number),
 		});
+		const projectedText =
+			response.data?.entries?.[0]?.message?.content?.[0]?.text;
+		expect(projectedText).toBe(`${"x".repeat(4_095)}…`);
+		expect(projectedText).not.toContain("child RPC text omitted");
 		expect(JSON.stringify(response).length).toBeLessThan(
 			CHILD_RPC_STDOUT_LINE_BUFFER_LIMIT,
 		);

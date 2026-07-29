@@ -16,6 +16,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import type { InvocationMetadata } from "../domain";
 import { errorMessage } from "../error-message";
 import type { ManagementProjectionView, ProjectionNode } from "../projection";
 import type { ToolPresentationRegistry } from "../tool-rendering";
@@ -808,13 +809,18 @@ export class ManagementScreen implements Component, Focusable {
 			return { lines: [], conversationStartIndex: 0, conversationHeight: 0 };
 		}
 		const initialPrompt = readInitialPrompt(this.view.selectedConversation);
+		// Active conversation entries can report usage before the durable invocation reaches a terminal state.
+		const conversationMetadata = this.conversation.getMetadata();
+		const headerMetadata = withLiveContextTokens(
+			selectedNode.invocationMetadata,
+			conversationMetadata.modelId,
+			conversationMetadata.contextTokens,
+		);
 		const renderedHeader = renderSelectedSessionHeader({
 			nodes: this.view.nodes,
 			selectedStableKey: selected,
 			...(initialPrompt === undefined ? {} : { initialPrompt }),
-			...(selectedNode.invocationMetadata === undefined
-				? {}
-				: { metadata: selectedNode.invocationMetadata }),
+			...(headerMetadata === undefined ? {} : { metadata: headerMetadata }),
 			width,
 			theme: this.options.theme,
 			focused: this._focused && this.focus === "conversation",
@@ -950,6 +956,27 @@ export async function openManagementOverlay(
 			margin: 0,
 		},
 	});
+}
+
+/** Adds live usage only when it belongs to the active invocation model. */
+function withLiveContextTokens(
+	metadata: InvocationMetadata | undefined,
+	liveModelId: string | undefined,
+	liveContextTokens: number | undefined,
+): InvocationMetadata | undefined {
+	// Durable terminal usage remains the final source once the coordinator has committed it.
+	if (metadata === undefined || metadata.contextTokens !== undefined) {
+		return metadata;
+	}
+	// A different or unknown model cannot provide comparable usage for this invocation.
+	if (
+		metadata.modelId === undefined ||
+		metadata.modelId !== liveModelId ||
+		liveContextTokens === undefined
+	) {
+		return metadata;
+	}
+	return { ...metadata, contextTokens: liveContextTokens };
 }
 
 /** Resolves one projected node by stable identity. */

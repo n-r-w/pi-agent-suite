@@ -24,8 +24,8 @@ const CHILD_RPC_STDOUT_LINE_BUFFER_KIB = 256;
 const CHILD_RPC_PROJECTED_KEY_TEXT_LIMIT = 128;
 /** Maximum scalar control-field text collected while projecting oversized RPC events. */
 const CHILD_RPC_PROJECTED_SCALAR_TEXT_LIMIT = 4096;
-/** Replacement stored when one get_entries scalar exceeds the projection limit. */
-const CHILD_RPC_PROJECTED_TEXT_MARKER = "[child RPC text omitted: oversized]";
+/** Visible suffix that discloses text omitted from an oversized projected scalar. */
+const CHILD_RPC_PROJECTED_TEXT_ELLIPSIS = "…";
 /** Maximum quoted parser cause or stdout fragment retained in malformed-output diagnostics. */
 const CHILD_RPC_MALFORMED_DIAGNOSTIC_PART_LIMIT = 1024;
 /** Maximum raw line prefix retained while child stdout exceeds the normal line buffer. */
@@ -736,7 +736,11 @@ function appendJsonProjectionStringChunk(
 			: CHILD_RPC_PROJECTED_SCALAR_TEXT_LIMIT;
 	const nextText = state.text + chunk;
 	if (nextText.length > limit) {
-		state.text = "";
+		// Preserve a useful prefix while keeping the projected scalar within its existing bound.
+		state.text = `${nextText.slice(
+			0,
+			limit - CHILD_RPC_PROJECTED_TEXT_ELLIPSIS.length,
+		)}${CHILD_RPC_PROJECTED_TEXT_ELLIPSIS}`;
 		state.truncated = true;
 		return;
 	}
@@ -768,9 +772,7 @@ function finishJsonProjectionStringValue(
 	if (currentString?.kind !== "value") {
 		return;
 	}
-	const projectedValue = currentString.truncated
-		? CHILD_RPC_PROJECTED_TEXT_MARKER
-		: currentString.text;
+	const projectedValue = currentString.text;
 	state.entryAssembler?.stringValue(projectedValue);
 	if (currentString.truncated) {
 		return;

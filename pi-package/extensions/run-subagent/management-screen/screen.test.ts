@@ -730,6 +730,60 @@ describe("management screen", () => {
 		});
 	});
 
+	test("shows live context usage only for the active invocation model", () => {
+		// Purpose: a selected active session must expose the latest trustworthy context usage before the invocation terminates.
+		// Inputs and expected output: matching assistant and invocation models show 120/190k; a later model switch hides that stale usage.
+		// Edge case: the conversation can retain an assistant response from the prior model while the invocation metadata already identifies the new model.
+		// Dependencies: selected conversation metadata, invocation metadata, and selected-header rendering.
+		// ARRANGE: mount one active invocation with a known context window and no terminal usage.
+		const node = {
+			...selectedNode(),
+			invocationMetadata: {
+				startedAtMs: 1_700_000_000_000,
+				elapsedMs: 2_000,
+				modelId: "openai-codex/gpt-5.6-sol",
+				contextWindow: 190_000,
+			},
+		};
+		const fixture = createScreen({ node });
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedConversation: [assistantConversationEntry()],
+			affectedStableKeys: [node.stableKey],
+		});
+
+		// ACT: render matching live usage, then switch the active invocation to another model without replacing the conversation.
+		const matchingRows = fixture.screen.render(120);
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 3,
+			nodes: [
+				{
+					...node,
+					invocationMetadata: {
+						...node.invocationMetadata,
+						modelId: "anthropic/claude-sonnet-4",
+					},
+				},
+			],
+			affectedStableKeys: [node.stableKey],
+		});
+		const switchedRows = fixture.screen.render(120);
+
+		// ASSERT: current-model usage appears live while usage from another model remains hidden.
+		expect({
+			matchingUsage: matchingRows.some((line) => line.includes("120/190k")),
+			staleUsageHidden: switchedRows.every(
+				(line) => !line.includes("120/190k"),
+			),
+		}).toEqual({
+			matchingUsage: true,
+			staleUsageHidden: true,
+		});
+		fixture.screen.dispose();
+	});
+
 	test("shows every focus zone, one editor frame, and the safe close shortcut", () => {
 		// Purpose: Tab focus ownership and the preferred close action must be visible without duplicate editor separators.
 		// Inputs and expected output: hierarchy title, conversation identity, and both editor borders receive focus in sequence; Ctrl+Shift+G closes.
