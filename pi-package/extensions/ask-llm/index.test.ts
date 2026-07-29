@@ -1041,6 +1041,10 @@ describe("ask-llm", () => {
 			const completionPromise = new Promise<AssistantMessage>((resolve) => {
 				releaseCompletion = resolve;
 			});
+			let markCompletionStarted: (() => void) | undefined;
+			const completionStarted = new Promise<void>((resolve) => {
+				markCompletionStarted = resolve;
+			});
 			const model = createModel("openai", "gpt-test");
 			const completionCalls: CompletionCall[] = [];
 			const pi = createExtensionApiFake();
@@ -1052,12 +1056,15 @@ describe("ask-llm", () => {
 						context,
 						options,
 					});
+					markCompletionStarted?.();
 					return completionPromise;
 				},
 			});
 
 			const commandPromise = getAskCommand(pi).handler("Wait for this", ctx);
 			const loaderComponent = await waitForCustomComponent(ctx, 0);
+			// The loader is published before asynchronous setup reaches the model call.
+			await completionStarted;
 			const loaderRender = loaderComponent.render?.(60).join("\n") ?? "";
 
 			expect(completionCalls).toHaveLength(1);
