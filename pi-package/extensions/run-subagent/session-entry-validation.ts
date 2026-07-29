@@ -1,24 +1,12 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 /** Lists every persisted Pi session entry discriminator accepted by conversation projection. */
-const SESSION_ENTRY_TYPES = new Set([
-	"message",
-	"thinking_level_change",
-	"model_change",
-	"compaction",
-	"branch_summary",
-	"custom",
-	"custom_message",
-	"label",
-	"session_info",
-]);
-
 /** Reports whether an untrusted value can be inspected by named fields. */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Validates one conversation entry from an RPC response or persisted JSONL line. */
+/** Validates one conversation entry crossing an untyped runtime boundary. */
 export function parseConversationSessionEntry(
 	value: unknown,
 	source: string,
@@ -34,8 +22,7 @@ export function parseConversationSessionEntry(
 		typeof id !== "string" ||
 		!(parentId === null || typeof parentId === "string") ||
 		typeof timestamp !== "string" ||
-		typeof type !== "string" ||
-		!SESSION_ENTRY_TYPES.has(type)
+		typeof type !== "string"
 	) {
 		throw new Error(`${source} returned an invalid conversation entry`);
 	}

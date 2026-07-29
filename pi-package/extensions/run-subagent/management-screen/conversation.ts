@@ -195,12 +195,15 @@ function composeConversation(
 /** Owns conversation line scrolling and screen-local tool expansion. */
 export class ConversationPane {
 	private composition: ConversationComposition;
+	private entries: readonly ConversationProjectionEntry[] = Object.freeze([]);
 	private expanded: boolean;
 	private scrollTop = 0;
 	private followBottom = true;
 	private lastHeight = 1;
 	private lastTotalRows = 0;
 	private lastRenderedRows: readonly RenderedConversationRow[] = [];
+	private cachedWidth: number | undefined;
+	private cachedRows: readonly RenderedConversationRow[] | undefined;
 	private pendingAnchor: ConversationRowAnchor | undefined;
 	private complete = true;
 	private disposed = false;
@@ -219,6 +222,13 @@ export class ConversationPane {
 		if (this.disposed) {
 			return;
 		}
+		if (entries === this.entries && complete === this.complete) {
+			if (resetToBottom) {
+				this.pendingAnchor = undefined;
+				this.followBottom = true;
+			}
+			return;
+		}
 		const wasFollowing = this.followBottom;
 		this.pendingAnchor =
 			resetToBottom || wasFollowing ? undefined : this.currentRowAnchor();
@@ -226,8 +236,10 @@ export class ConversationPane {
 			...this.options,
 			expanded: this.expanded,
 		});
+		this.entries = entries;
 		this.complete = complete;
 		this.followBottom = resetToBottom || wasFollowing;
+		this.clearRenderedRows();
 	}
 
 	/** Toggles every tool and custom message through its public expanded state. */
@@ -242,6 +254,7 @@ export class ConversationPane {
 		for (const component of this.composition.expandables) {
 			component.setExpanded(expanded);
 		}
+		this.clearRenderedRows();
 	}
 
 	/** Scrolls by visual rows without changing session selection. */
@@ -301,10 +314,7 @@ export class ConversationPane {
 		if (this.disposed || width <= 0) {
 			return 0;
 		}
-		return this.composition.components.reduce(
-			(total, owned) => total + owned.component.render(width).length,
-			0,
-		);
+		return this.renderRows(width).length - (this.complete ? 0 : 1);
 	}
 
 	/** Exposes the last rendered viewport for border-only scroll presentation. */
@@ -338,7 +348,9 @@ export class ConversationPane {
 			expandables: [],
 			metadata: {},
 		};
+		this.entries = Object.freeze([]);
 		this.lastRenderedRows = [];
+		this.clearRenderedRows();
 		this.pendingAnchor = undefined;
 	}
 
@@ -347,10 +359,14 @@ export class ConversationPane {
 		for (const owned of this.composition.components) {
 			owned.component.invalidate();
 		}
+		this.clearRenderedRows();
 	}
 
-	/** Renders stable row ownership around unchanged public Pi components. */
+	/** Renders stable row ownership once for each content revision and width. */
 	private renderRows(width: number): readonly RenderedConversationRow[] {
+		if (this.cachedWidth === width && this.cachedRows !== undefined) {
+			return this.cachedRows;
+		}
 		const rows: RenderedConversationRow[] = [];
 		if (!this.complete) {
 			const label = "Loading earlier messages…";
@@ -369,7 +385,15 @@ export class ConversationPane {
 				rows.push({ componentKey: owned.key, componentRow, text });
 			}
 		}
+		this.cachedWidth = width;
+		this.cachedRows = rows;
 		return rows;
+	}
+
+	/** Invalidates rows after content, expansion, theme, or width-sensitive state changes. */
+	private clearRenderedRows(): void {
+		this.cachedWidth = undefined;
+		this.cachedRows = undefined;
 	}
 
 	/** Captures the current top row before older components are prepended. */

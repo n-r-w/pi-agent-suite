@@ -1674,6 +1674,7 @@ describe("management screen", () => {
 			rootOwnerPiSessionId: "root-owner",
 			catalog,
 			activeConversations: active,
+			readInactiveBranch: () => [],
 			onError: (error) => {
 				errors.push(error.message);
 				resolveError();

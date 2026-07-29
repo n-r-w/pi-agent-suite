@@ -1,7 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { LogicalSession } from "../domain";
 import { projectionStableKey } from "../projection";
@@ -39,38 +36,16 @@ function customMessageEntry(
 	};
 }
 
-/** Writes one append-only session fixture and returns its stable path. */
-function writeSession(
-	directory: string,
-	name: string,
-	entries: readonly SessionEntry[],
-): string {
-	const sessionFile = join(directory, `${name}.jsonl`);
-	const header = {
-		type: "session",
-		version: 3,
-		id: `session-${name}`,
-		timestamp: "2026-01-01T00:00:00.000Z",
-		cwd: directory,
-	};
-	writeFileSync(
-		sessionFile,
-		`${[header, ...entries].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
-	);
-	return sessionFile;
-}
-
-/** Creates one catalog session backed by an isolated persisted file. */
+/** Creates one catalog session without depending on a persisted file format. */
 function logicalSession(
 	id: number,
-	sessionFile: string,
 	state: LogicalSession["state"] = "terminal-success",
 ): LogicalSession {
 	return {
 		key: { ownerPiSessionId: "root-owner", ownerLocalSessionId: id },
 		childPiSessionId: `child-${id}`,
-		childSessionDir: join(sessionFile, ".."),
-		childSessionFile: sessionFile,
+		childSessionDir: `/tmp/child-${id}`,
+		childSessionFile: `/tmp/child-${id}/session.jsonl`,
 		agentId: "SubAgentCoder",
 		taskName: `Session ${id}`,
 		creationOrder: id,
@@ -131,15 +106,19 @@ class ActiveConversationsFake {
 	}
 }
 
-/** Creates one runtime around deterministic catalog and active-conversation sources. */
+/** Creates one runtime around deterministic saved and active sources. */
 function createRuntime(
 	sessions: readonly LogicalSession[],
 	active: ActiveConversationsFake = new ActiveConversationsFake([]),
+	readInactiveBranch: (
+		session: LogicalSession,
+	) => Promise<readonly SessionEntry[]> | readonly SessionEntry[] = () => [],
 ): ManagementProjectionRuntime {
 	return new ManagementProjectionRuntime({
 		rootOwnerPiSessionId: "root-owner",
 		catalog: new CatalogFake(sessions),
 		activeConversations: active,
+		readInactiveBranch,
 		onError: (error) => {
 			throw error;
 		},
@@ -152,227 +131,128 @@ function selectedIds(runtime: ManagementProjectionRuntime): readonly string[] {
 }
 
 describe("management projection runtime progressive loading", () => {
-	test("publishes the latest turn before hydrating the selected terminal branch", async () => {
-		// Purpose: switching sessions must expose a renderable suffix before the complete persisted history is read.
-		// Input and expected output: three turns publish the newest turn on select, one older turn on demand, then the complete branch in background.
-		// Edge case: every intermediate revision remains marked incomplete until the root turn is present.
-		// Dependencies: system-temporary JSONL, production reverse cursor, projection, and runtime orchestration.
-		const directory = mkdtempSync(join(tmpdir(), "subagent-runtime-preview-"));
-		try {
-			const firstUser = userEntry("first-user", null, "first");
-			const firstReply = customMessageEntry("first-reply", firstUser.id, "one");
-			const secondUser = userEntry("second-user", firstReply.id, "second");
-			const secondReply = customMessageEntry(
-				"second-reply",
-				secondUser.id,
-				"two",
-			);
-			const thirdUser = userEntry("third-user", secondReply.id, "third");
-			const thirdReply = customMessageEntry(
-				"third-reply",
-				thirdUser.id,
-				"three",
-			);
-			const session = logicalSession(
-				1,
-				writeSession(directory, "terminal", [
-					firstUser,
-					firstReply,
-					secondUser,
-					secondReply,
-					thirdUser,
-					thirdReply,
-				]),
-			);
-			const runtime = createRuntime([session]);
-
-			await runtime.select(projectionStableKey(session.key));
-			expect(selectedIds(runtime)).toEqual(["third-user", "third-reply"]);
-			expect(runtime.getView().selectedConversationComplete).toBe(false);
-
-			const completeAfterEarlier = await runtime.loadEarlierSelected();
-			expect(completeAfterEarlier).toBe(false);
-			expect(selectedIds(runtime)).toEqual([
-				"second-user",
-				"second-reply",
-				"third-user",
-				"third-reply",
-			]);
-
-			await runtime.refreshSelected();
-			expect(selectedIds(runtime)).toEqual([
-				"first-user",
-				"first-reply",
-				"second-user",
-				"second-reply",
-				"third-user",
-				"third-reply",
-			]);
-			expect(runtime.getView().selectedConversationComplete).toBe(true);
-			runtime.dispose();
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
-
-	test("merges active catch-up and later incremental entries around persisted preview", async () => {
-		// Purpose: active previews must avoid a full get_entries response while retaining exact live branch updates.
-		// Input and expected output: select queries after the persisted id, shows the appended turn, hydrates persisted ancestors, then appends one activity delta.
-		// Edge case: the active leaf initially exists only in the RPC catch-up page, not in the file snapshot.
-		// Dependencies: system-temporary JSONL, production reverse cursor, and a deterministic active RPC fake.
-		const directory = mkdtempSync(join(tmpdir(), "subagent-runtime-active-"));
-		try {
-			const firstUser = userEntry("first-user", null, "first");
-			const firstReply = customMessageEntry("first-reply", firstUser.id, "one");
-			const secondUser = userEntry("second-user", firstReply.id, "second");
-			const secondReply = customMessageEntry(
-				"second-reply",
-				secondUser.id,
-				"two",
-			);
-			const thirdUser = userEntry("third-user", secondReply.id, "third");
-			const thirdReply = customMessageEntry(
-				"third-reply",
-				thirdUser.id,
-				"three",
-			);
-			const fourthUser = userEntry("fourth-user", thirdReply.id, "fourth");
-			const fourthReply = customMessageEntry(
-				"fourth-reply",
-				fourthUser.id,
-				"four",
-			);
-			const session = logicalSession(
-				1,
-				writeSession(directory, "active", [
-					firstUser,
-					firstReply,
-					secondUser,
-					secondReply,
-				]),
-				"active",
-			);
-			const active = new ActiveConversationsFake([
-				{ entries: [thirdUser, thirdReply], leafId: thirdReply.id },
-				{ entries: [], leafId: thirdReply.id },
-				{ entries: [fourthUser, fourthReply], leafId: fourthReply.id },
-			]);
-			const runtime = createRuntime([session], active);
-
-			await runtime.select(projectionStableKey(session.key));
-			expect(active.since).toEqual(["second-reply"]);
-			expect(selectedIds(runtime)).toEqual(["third-user", "third-reply"]);
-
-			await runtime.refreshSelected();
-			expect(selectedIds(runtime)).toEqual([
-				"first-user",
-				"first-reply",
-				"second-user",
-				"second-reply",
-				"third-user",
-				"third-reply",
-			]);
-			expect(active.since).toEqual(["second-reply", "third-reply"]);
-
-			await runtime.refreshSelected();
-			expect(active.since).toEqual([
-				"second-reply",
-				"third-reply",
-				"third-reply",
-			]);
-			expect(selectedIds(runtime).slice(-2)).toEqual([
-				"fourth-user",
-				"fourth-reply",
-			]);
-			runtime.dispose();
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
-
-	test("cancels obsolete background hydration without surfacing an error", async () => {
-		// Purpose: normal navigation must abort the prior reverse cursor without reporting a selected-conversation failure.
-		// Input and expected output: background hydration starts for one session, switching to another fulfills both operations and publishes only the second preview.
-		// Edge case: the first cursor is already consuming unread ancestors when selection ownership changes.
-		// Dependencies: two system-temporary JSONL files and production loader cancellation.
-		const directory = mkdtempSync(
-			join(tmpdir(), "subagent-runtime-hydration-"),
+	test("paginates a complete saved branch without reading its storage", async () => {
+		// Purpose: selection must reveal complete user turns while SessionManager remains the sole storage interpreter.
+		// Input and expected output: three saved turns publish the newest turn first and prepend one turn per explicit request.
+		// Edge case: every intermediate revision stays incomplete until the root turn is visible.
+		// Dependencies: an injected immutable SessionManager branch and production projection orchestration.
+		const firstUser = userEntry("first-user", null, "first");
+		const firstReply = customMessageEntry("first-reply", firstUser.id, "one");
+		const secondUser = userEntry("second-user", firstReply.id, "second");
+		const secondReply = customMessageEntry(
+			"second-reply",
+			secondUser.id,
+			"two",
 		);
-		try {
-			const firstRoot = userEntry("first-root", null, "first root");
-			const firstMiddle = userEntry(
-				"first-middle",
-				firstRoot.id,
-				"first middle",
-			);
-			const firstLeaf = userEntry("first-leaf", firstMiddle.id, "first leaf");
-			const secondUser = userEntry("second-user", null, "second");
-			const first = logicalSession(
-				1,
-				writeSession(directory, "first-hydration", [
-					firstRoot,
-					firstMiddle,
-					firstLeaf,
-				]),
-			);
-			const second = logicalSession(
-				2,
-				writeSession(directory, "second-hydration", [secondUser]),
-			);
-			const runtime = createRuntime([first, second]);
-			await runtime.select(projectionStableKey(first.key));
+		const thirdUser = userEntry("third-user", secondReply.id, "third");
+		const thirdReply = customMessageEntry("third-reply", thirdUser.id, "three");
+		const branch = [
+			firstUser,
+			firstReply,
+			secondUser,
+			secondReply,
+			thirdUser,
+			thirdReply,
+		];
+		const session = logicalSession(1);
+		const runtime = createRuntime([session], undefined, () => branch);
 
-			const earlier = runtime.loadEarlierSelected();
-			const hydration = runtime.refreshSelected();
-			const selection = runtime.select(projectionStableKey(second.key));
-			const outcomes = await Promise.allSettled([
-				earlier,
-				hydration,
-				selection,
-			]);
+		await runtime.select(projectionStableKey(session.key));
+		expect(selectedIds(runtime)).toEqual(["third-user", "third-reply"]);
+		expect(runtime.getView().selectedConversationComplete).toBe(false);
 
-			expect(outcomes.map((outcome) => outcome.status)).toEqual([
-				"fulfilled",
-				"fulfilled",
-				"fulfilled",
-			]);
-			expect(selectedIds(runtime)).toEqual(["second-user"]);
-			runtime.dispose();
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
+		expect(await runtime.loadEarlierSelected()).toBe(false);
+		expect(selectedIds(runtime)).toEqual([
+			"second-user",
+			"second-reply",
+			"third-user",
+			"third-reply",
+		]);
+
+		expect(await runtime.loadEarlierSelected()).toBe(true);
+		expect(selectedIds(runtime)).toEqual(branch.map((entry) => entry.id));
+		expect(runtime.getView().selectedConversationComplete).toBe(true);
+		runtime.dispose();
 	});
 
-	test("prevents an obsolete preview from replacing a newer selection", async () => {
-		// Purpose: rapid navigation must preserve the latest stable key even when an earlier file open settles afterward.
-		// Input and expected output: two selects start without awaiting each other and the second session owns the final preview.
-		// Edge case: the first selection is cancelled while its asynchronous reverse reader is opening.
-		// Dependencies: two system-temporary JSONL files and production selection-generation cancellation.
-		const directory = mkdtempSync(join(tmpdir(), "subagent-runtime-race-"));
-		try {
-			const firstUser = userEntry("first-user", null, "first");
-			const secondUser = userEntry("second-user", null, "second");
-			const first = logicalSession(
-				1,
-				writeSession(directory, "first", [firstUser]),
-			);
-			const second = logicalSession(
-				2,
-				writeSession(directory, "second", [secondUser]),
-			);
-			const runtime = createRuntime([first, second]);
+	test("opens a complete active RPC branch before applying deltas", async () => {
+		// Purpose: active selection must never inspect the concurrently written Pi session file.
+		// Input and expected output: initial get_entries returns the full branch without since, then one incremental page follows the last append id.
+		// Edge case: the active leaf and its complete ancestry exist only in RPC data.
+		// Dependencies: a deterministic active RPC fake and production branch resolution.
+		const firstUser = userEntry("first-user", null, "first");
+		const firstReply = customMessageEntry("first-reply", firstUser.id, "one");
+		const secondUser = userEntry("second-user", firstReply.id, "second");
+		const secondReply = customMessageEntry(
+			"second-reply",
+			secondUser.id,
+			"two",
+		);
+		const thirdUser = userEntry("third-user", secondReply.id, "third");
+		const thirdReply = customMessageEntry("third-reply", thirdUser.id, "three");
+		const initial = [
+			firstUser,
+			firstReply,
+			secondUser,
+			secondReply,
+			thirdUser,
+			thirdReply,
+		];
+		const fourthUser = userEntry("fourth-user", thirdReply.id, "fourth");
+		const fourthReply = customMessageEntry(
+			"fourth-reply",
+			fourthUser.id,
+			"four",
+		);
+		const session = logicalSession(1, "active");
+		const active = new ActiveConversationsFake([
+			{ entries: initial, leafId: thirdReply.id },
+			{ entries: [fourthUser, fourthReply], leafId: fourthReply.id },
+		]);
+		const runtime = createRuntime([session], active);
 
-			const obsolete = runtime.select(projectionStableKey(first.key));
-			const selected = runtime.select(projectionStableKey(second.key));
-			await Promise.all([obsolete, selected]);
+		await runtime.select(projectionStableKey(session.key));
+		expect(active.since).toEqual([undefined]);
+		expect(selectedIds(runtime)).toEqual(initial.map((entry) => entry.id));
+		expect(runtime.getView().selectedConversationComplete).toBe(true);
 
-			expect(runtime.getView().selectedStableKey).toBe(
-				projectionStableKey(second.key),
-			);
-			expect(selectedIds(runtime)).toEqual(["second-user"]);
-			runtime.dispose();
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
+		await runtime.refreshSelected();
+		expect(active.since).toEqual([undefined, "third-reply"]);
+		expect(selectedIds(runtime).slice(-2)).toEqual([
+			"fourth-user",
+			"fourth-reply",
+		]);
+		runtime.dispose();
+	});
+
+	test("ignores a saved snapshot that settles after a newer selection", async () => {
+		// Purpose: safe non-termination of a migrating worker must not let stale data replace the current selection.
+		// Input and expected output: the first delayed reader resolves after the second selection, but only the second branch remains published.
+		// Edge case: the obsolete read cannot be cancelled because SessionManager may be rewriting a migrated file.
+		// Dependencies: two catalog sessions and a controlled asynchronous inactive reader.
+		const first = logicalSession(1);
+		const second = logicalSession(2);
+		const firstUser = userEntry("first-user", null, "first");
+		const secondUser = userEntry("second-user", null, "second");
+		let resolveFirst = (_entries: readonly SessionEntry[]): void => undefined;
+		const firstRead = new Promise<readonly SessionEntry[]>((resolve) => {
+			resolveFirst = resolve;
+		});
+		const runtime = createRuntime([first, second], undefined, (session) =>
+			session.key.ownerLocalSessionId === 1 ? firstRead : [secondUser],
+		);
+
+		const obsolete = runtime.select(projectionStableKey(first.key));
+		await Promise.resolve();
+		const selected = runtime.select(projectionStableKey(second.key));
+		await selected;
+		resolveFirst([firstUser]);
+		await obsolete;
+
+		expect(runtime.getView().selectedStableKey).toBe(
+			projectionStableKey(second.key),
+		);
+		expect(selectedIds(runtime)).toEqual(["second-user"]);
+		runtime.dispose();
 	});
 });

@@ -28,7 +28,7 @@ interface ManagementProjectionRuntimeOptions {
 	readonly rootOwnerPiSessionId: string;
 	readonly catalog: ManagementCatalogSource;
 	readonly activeConversations: ManagementActiveConversationSource;
-	readonly readInactiveBranch?: InactiveConversationReader;
+	readonly readInactiveBranch: InactiveConversationReader;
 	readonly onError: (error: Error) => void;
 }
 
@@ -106,9 +106,7 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 				session,
 				controller,
 				activeConversations: this.options.activeConversations,
-				...(this.options.readInactiveBranch === undefined
-					? {}
-					: { readInactiveBranch: this.options.readInactiveBranch }),
+				readInactiveBranch: this.options.readInactiveBranch,
 			});
 			if (!this.ownsOpeningSelection(session, generation)) {
 				await loader.dispose();

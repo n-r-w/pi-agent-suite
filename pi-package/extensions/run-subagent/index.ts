@@ -82,6 +82,7 @@ import {
 	renderSubagentWaitResult,
 } from "./semantic-rendering.ts";
 import { SessionCatalog } from "./session-catalog";
+import { SessionSnapshotLoader } from "./session-snapshot-loader";
 import { createToolPresentationRegistry } from "./tool-rendering.ts";
 import { WaitCoordinator } from "./wait-coordinator";
 
@@ -685,10 +686,14 @@ function createRootManagementRuntime(options: {
 	readonly coordinator: SubagentCoordinator;
 	readonly supervisor: InvocationSupervisor;
 }): RootManagementRuntime {
+	// One root loader deduplicates saved-session migrations across selection changes.
+	const sessionSnapshots = new SessionSnapshotLoader();
 	const projection = new ManagementProjectionRuntime({
 		rootOwnerPiSessionId: options.owner.ownerPiSessionId,
 		catalog: options.catalog,
 		activeConversations: options.supervisor,
+		readInactiveBranch: (session) =>
+			sessionSnapshots.load(session.childSessionFile),
 		onError: (error) => options.ctx.ui.notify(error.message, "error"),
 	});
 	const disposeStatusIndicator = installSubagentStatusIndicator(

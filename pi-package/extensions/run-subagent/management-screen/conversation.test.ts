@@ -382,6 +382,37 @@ describe("management conversation", () => {
 		pane.dispose();
 	});
 
+	test("reuses rendered conversation rows at an unchanged width", () => {
+		// Purpose: unrelated hierarchy renders must not recompute every persisted conversation component.
+		// Inputs and expected output: two renders at one width call the user-message background once, while a width change recomputes rows.
+		// Edge case: the cached rows remain reusable when only the viewport height changes.
+		// Dependencies: the production ConversationPane and one public user-message component.
+		const base = options();
+		let backgroundCalls = 0;
+		const pane = new ConversationPane({
+			...base,
+			theme: {
+				...base.theme,
+				bg: (_color: string, text: string) => {
+					backgroundCalls += 1;
+					return text;
+				},
+			} as Theme,
+		});
+		const entry = messageEntry("cached", null, userMessage("cached", 1));
+		const entries = [entry];
+		pane.setEntries(entries, true, true);
+
+		pane.render(50, 10);
+		const firstRenderCalls = backgroundCalls;
+		pane.setEntries(entries, false, true);
+		pane.render(50, 5);
+		expect(backgroundCalls).toBe(firstRenderCalls);
+		pane.render(40, 5);
+		expect(backgroundCalls).toBeGreaterThan(firstRenderCalls);
+		pane.dispose();
+	});
+
 	test("shows an earlier-history sentinel only for incomplete previews", () => {
 		// Purpose: users at the loaded upper boundary must see that more history is still loading.
 		// Inputs and expected output: an incomplete suffix prepends one loading row, while the same complete branch removes it.

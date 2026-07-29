@@ -2511,21 +2511,21 @@ describe("subagents V2 entry", () => {
 			await Promise.resolve();
 			await Promise.resolve();
 			screen.handleInput("\u001b[C");
-			/** Waits for asynchronous selected-file preview publication without assuming a fixed microtask count. */
+			/** Waits for the public SessionManager snapshot without assuming storage latency. */
 			const renderLoadedConversation = async (
-				remainingAttempts: number,
+				deadlineMs: number,
 			): Promise<string> => {
 				const renderedConversation = selectedScreen.render(100).join("\n");
 				if (
 					renderedConversation.includes("C completed") ||
-					remainingAttempts === 0
+					Date.now() >= deadlineMs
 				) {
 					return renderedConversation;
 				}
-				await new Promise((resolve) => setTimeout(resolve, 0));
-				return renderLoadedConversation(remainingAttempts - 1);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				return renderLoadedConversation(deadlineMs);
 			};
-			const rendered = await renderLoadedConversation(20);
+			const rendered = await renderLoadedConversation(Date.now() + 5_000);
 			screen.setEditorText("message selected B");
 			screen.handleInput("\t");
 			screen.handleInput("\t");

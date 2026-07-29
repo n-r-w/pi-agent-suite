@@ -1,11 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { LogicalSession } from "../domain";
 import { projectionStableKey } from "../projection";
-import {
-	openSessionBranchCursor,
-	readLatestSessionEntryId,
-	type SessionBranchCursor,
-} from "../session-branch-loader";
 
 /** Supplies active Pi entry pages without exposing process ownership. */
 export interface SelectedConversationActiveSource {
@@ -18,7 +13,7 @@ export interface SelectedConversationActiveSource {
 	}>;
 }
 
-/** Supplies a completed branch when the caller already owns an inactive reader. */
+/** Supplies a completed saved branch through the installed Pi SessionManager. */
 export type InactiveConversationReader = (
 	session: LogicalSession,
 ) => Promise<readonly SessionEntry[]> | readonly SessionEntry[];
@@ -34,18 +29,19 @@ interface SelectedConversationLoaderOptions {
 	readonly session: LogicalSession;
 	readonly controller: AbortController;
 	readonly activeConversations: SelectedConversationActiveSource;
-	readonly readInactiveBranch?: InactiveConversationReader;
+	readonly readInactiveBranch: InactiveConversationReader;
 }
 
-/** Owns one selected session's reverse cursor, active deltas, and branch suffix. */
+/** Owns one selected session's active deltas and in-memory saved-branch pages. */
 export class SelectedConversationLoader {
 	public readonly stableKey: string;
 	private readonly entriesById = new Map<string, SessionEntry>();
 	private operation: Promise<void> = Promise.resolve();
-	private cursor: SessionBranchCursor | undefined;
 	private lastEntryId: string | undefined;
 	private leafId: string | null = null;
 	private branch: readonly SessionEntry[] = Object.freeze([]);
+	private inactiveBranch: readonly SessionEntry[] | undefined;
+	private inactiveStartIndex = 0;
 	private complete = false;
 	private lastState: LogicalSession["state"];
 	private disposed = false;
@@ -53,14 +49,14 @@ export class SelectedConversationLoader {
 	private constructor(
 		private readonly controller: AbortController,
 		private readonly activeConversations: SelectedConversationActiveSource,
-		private readonly readInactiveBranch: InactiveConversationReader | undefined,
+		private readonly readInactiveBranch: InactiveConversationReader,
 		session: LogicalSession,
 	) {
 		this.stableKey = projectionStableKey(session.key);
 		this.lastState = session.state;
 	}
 
-	/** Opens a recent renderable turn or one already supplied complete branch. */
+	/** Opens a complete active RPC branch or the latest saved user turn. */
 	public static async open(
 		options: SelectedConversationLoaderOptions,
 	): Promise<SelectedConversationLoader> {
@@ -84,30 +80,28 @@ export class SelectedConversationLoader {
 		return { entries: this.branch, complete: this.complete };
 	}
 
-	/** Loads one preceding user turn and reports whether the root is now present. */
+	/** Reveals one preceding saved user turn from the in-memory branch. */
 	public async loadEarlier(): Promise<boolean> {
 		if (this.disposed || this.complete) {
 			return true;
 		}
 		await this.enqueue(async () => {
-			const cursor = this.cursor;
-			if (cursor === undefined) {
+			const entries = this.inactiveBranch;
+			if (entries === undefined) {
 				this.complete = true;
 				return;
 			}
-			const entries = await cursor.readPreviousTurn();
-			mergeEntries(this.entriesById, entries, "child Pi session file");
-			this.complete = cursor.complete;
-			if (cursor.complete) {
-				await cursor.dispose();
-				this.cursor = undefined;
-			}
-			this.branch = this.resolveBranch();
+			this.inactiveStartIndex = findPreviousTurnStart(
+				entries,
+				this.inactiveStartIndex,
+			);
+			this.complete = this.inactiveStartIndex === 0;
+			this.branch = Object.freeze(entries.slice(this.inactiveStartIndex));
 		});
 		return this.disposed || this.complete;
 	}
 
-	/** Completes persisted ancestry and applies any later active append page. */
+	/** Applies active append pages or replaces them with the final saved branch. */
 	public async refresh(session: LogicalSession): Promise<boolean> {
 		if (this.disposed) {
 			return false;
@@ -119,30 +113,18 @@ export class SelectedConversationLoader {
 			if (becameTerminal) {
 				return await this.reloadTerminal(session);
 			}
-			let changed = false;
-			const cursor = this.cursor;
-			if (cursor !== undefined) {
-				const entries = await cursor.readRemaining();
-				changed =
-					mergeEntries(this.entriesById, entries, "child Pi session file") ||
-					changed;
-				await cursor.dispose();
-				this.cursor = undefined;
-				this.complete = true;
-				changed = true;
+			if (session.state !== "active") {
+				return this.completeInactivePreview();
 			}
-			if (session.state === "active") {
-				const page = await this.activeConversations.readActiveEntries(
-					session.invocationId,
-					this.lastEntryId,
-				);
-				changed =
-					mergeEntries(this.entriesById, page.entries, "child Pi") || changed;
-				this.lastEntryId = page.entries.at(-1)?.id ?? this.lastEntryId;
-				if (this.leafId !== page.leafId) {
-					this.leafId = page.leafId;
-					changed = true;
-				}
+			const page = await this.activeConversations.readActiveEntries(
+				session.invocationId,
+				this.lastEntryId,
+			);
+			let changed = mergeEntries(this.entriesById, page.entries, "child Pi");
+			this.lastEntryId = page.entries.at(-1)?.id ?? this.lastEntryId;
+			if (this.leafId !== page.leafId) {
+				this.leafId = page.leafId;
+				changed = true;
 			}
 			if (changed) {
 				this.branch = this.resolveBranch();
@@ -151,7 +133,7 @@ export class SelectedConversationLoader {
 		});
 	}
 
-	/** Aborts file work and releases selected payload ownership. */
+	/** Releases selected payload ownership without interrupting Pi migration. */
 	public async dispose(): Promise<void> {
 		if (this.disposed) {
 			return;
@@ -160,97 +142,58 @@ export class SelectedConversationLoader {
 		this.controller.abort(
 			new Error("management conversation selection released"),
 		);
-		await this.cursor?.dispose();
-		this.cursor = undefined;
 		this.entriesById.clear();
 		this.branch = Object.freeze([]);
+		this.inactiveBranch = undefined;
 	}
 
-	/** Selects the injected terminal reader, active catch-up, or persisted cursor. */
+	/** Selects a complete active RPC read or a saved SessionManager snapshot. */
 	private async openInitial(session: LogicalSession): Promise<void> {
-		if (session.state !== "active" && this.readInactiveBranch !== undefined) {
-			const entries = await Promise.resolve(this.readInactiveBranch(session));
-			this.replaceCompleteBranch(entries);
-			return;
-		}
 		if (session.state === "active") {
 			await this.openActive(session);
 			return;
 		}
-		const cursor = await openSessionBranchCursor({
-			sessionFile: session.childSessionFile,
-			signal: this.controller.signal,
-		});
-		const entries = await cursor.readPreviousTurn();
-		this.cursor = cursor.complete ? undefined : cursor;
-		mergeEntries(this.entriesById, entries, "child Pi session file");
-		this.leafId = entries.at(-1)?.id ?? null;
-		this.complete = cursor.complete;
-		this.branch = this.resolveBranch();
-		if (cursor.complete) {
-			await cursor.dispose();
-		}
+		const entries = await Promise.resolve(this.readInactiveBranch(session));
+		this.openInactiveBranch(entries);
 	}
 
-	/** Combines persisted ancestry with entries appended after its file boundary. */
+	/** Loads all active entries through RPC so the session file remains untouched. */
 	private async openActive(session: LogicalSession): Promise<void> {
-		const persistedId = await readPersistedBoundary(
-			session.childSessionFile,
-			this.controller.signal,
-		);
 		const page = await this.activeConversations.readActiveEntries(
 			session.invocationId,
-			persistedId,
 		);
 		mergeEntries(this.entriesById, page.entries, "child Pi");
-		this.lastEntryId = page.entries.at(-1)?.id ?? persistedId;
+		this.lastEntryId = page.entries.at(-1)?.id;
 		this.leafId = page.leafId;
-
-		if (persistedId === undefined) {
-			this.complete = true;
-			this.branch = this.resolveBranch();
-			return;
-		}
-		const unresolvedId = unresolvedAncestorId(this.entriesById, this.leafId);
-		if (unresolvedId === null) {
-			this.complete = true;
-			this.branch = this.resolveBranch();
-			return;
-		}
-		const cursor = await openSessionBranchCursor({
-			sessionFile: session.childSessionFile,
-			leafId: unresolvedId,
-			signal: this.controller.signal,
-		});
-		this.cursor = cursor;
+		this.complete = true;
 		this.branch = this.resolveBranch();
-		if (!this.branch.some(isUserMessageEntry)) {
-			const entries = await cursor.readPreviousTurn();
-			mergeEntries(this.entriesById, entries, "child Pi session file");
-			this.complete = cursor.complete;
-			this.branch = this.resolveBranch();
-			if (cursor.complete) {
-				await cursor.dispose();
-				this.cursor = undefined;
-			}
-		}
 	}
 
-	/** Reopens the final file because the active cursor used an earlier size snapshot. */
+	/** Publishes the retained saved root after initial viewport filling finishes. */
+	private completeInactivePreview(): boolean {
+		const entries = this.inactiveBranch;
+		if (this.complete || entries === undefined) {
+			return false;
+		}
+		this.inactiveStartIndex = 0;
+		this.complete = true;
+		this.branch = entries;
+		return true;
+	}
+
+	/** Reloads the final saved branch after the active writer has stopped. */
 	private async reloadTerminal(session: LogicalSession): Promise<boolean> {
-		if (this.readInactiveBranch !== undefined) {
-			const entries = await Promise.resolve(this.readInactiveBranch(session));
-			return this.replaceTerminalBranch(entries);
-		}
-		const cursor = await openSessionBranchCursor({
-			sessionFile: session.childSessionFile,
-			signal: this.controller.signal,
-		});
-		try {
-			return this.replaceTerminalBranch(await cursor.readRemaining());
-		} finally {
-			await cursor.dispose();
-		}
+		const entries = await Promise.resolve(this.readInactiveBranch(session));
+		return this.replaceTerminalBranch(entries);
+	}
+
+	/** Retains a complete saved branch while exposing only its latest user turn. */
+	private openInactiveBranch(entries: readonly SessionEntry[]): void {
+		this.replaceCompleteBranch(entries);
+		this.inactiveBranch = this.branch;
+		this.inactiveStartIndex = findPreviousTurnStart(entries, entries.length);
+		this.complete = this.inactiveStartIndex === 0;
+		this.branch = Object.freeze(entries.slice(this.inactiveStartIndex));
 	}
 
 	/** Replaces terminal content only when append-only entry identities changed. */
@@ -266,14 +209,16 @@ export class SelectedConversationLoader {
 	/** Replaces cache topology with one complete root-to-leaf branch. */
 	private replaceCompleteBranch(entries: readonly SessionEntry[]): void {
 		this.entriesById.clear();
-		mergeEntries(this.entriesById, entries, "child Pi session file");
+		mergeEntries(this.entriesById, entries, "saved Pi session");
 		this.leafId = entries.at(-1)?.id ?? null;
 		this.lastEntryId = entries.at(-1)?.id ?? this.lastEntryId;
+		this.inactiveBranch = undefined;
+		this.inactiveStartIndex = 0;
 		this.complete = true;
 		this.branch = Object.freeze([...entries]);
 	}
 
-	/** Resolves a suffix and requires the root only after hydration completes. */
+	/** Resolves a complete active root-to-leaf branch from append-order RPC data. */
 	private resolveBranch(): readonly SessionEntry[] {
 		if (this.leafId === null) {
 			return Object.freeze([]);
@@ -288,10 +233,7 @@ export class SelectedConversationLoader {
 			visited.add(currentId);
 			const entry = this.entriesById.get(currentId);
 			if (entry === undefined) {
-				if (this.complete) {
-					throw new Error("child Pi returned an unknown conversation leaf");
-				}
-				break;
+				throw new Error("child Pi returned an unknown conversation leaf");
 			}
 			branch.unshift(entry);
 			currentId = entry.parentId;
@@ -299,7 +241,7 @@ export class SelectedConversationLoader {
 		return Object.freeze(branch);
 	}
 
-	/** Serializes cursor access while preserving each caller's own result. */
+	/** Serializes state changes while preserving each caller's result. */
 	private async enqueue<T>(operation: () => Promise<T>): Promise<T> {
 		const result = this.operation.then(operation);
 		this.operation = result.then(
@@ -308,6 +250,25 @@ export class SelectedConversationLoader {
 		);
 		return await result;
 	}
+}
+
+/** Finds the nearest prior user boundary or the branch root. */
+function findPreviousTurnStart(
+	entries: readonly SessionEntry[],
+	beforeIndex: number,
+): number {
+	for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (entry !== undefined && isUserMessageEntry(entry)) {
+			return index;
+		}
+	}
+	return 0;
+}
+
+/** Detects one user boundary inside a public Pi branch. */
+function isUserMessageEntry(entry: SessionEntry): boolean {
+	return entry.type === "message" && entry.message.role === "user";
 }
 
 /** Compares immutable append-only branch identities without serializing payloads. */
@@ -321,7 +282,7 @@ function branchesHaveSameEntryIds(
 	);
 }
 
-/** Adds one append or persisted page while rejecting ambiguous duplicate topology. */
+/** Adds one RPC or saved page while rejecting ambiguous duplicate topology. */
 function mergeEntries(
 	target: Map<string, SessionEntry>,
 	entries: readonly SessionEntry[],
@@ -334,54 +295,4 @@ function mergeEntries(
 		target.set(entry.id, entry);
 	}
 	return entries.length > 0;
-}
-
-/** Finds the first parent that must be loaded from the persisted reverse cursor. */
-function unresolvedAncestorId(
-	entriesById: ReadonlyMap<string, SessionEntry>,
-	leafId: string | null,
-): string | null {
-	const visited = new Set<string>();
-	let currentId = leafId;
-	while (currentId !== null) {
-		if (visited.has(currentId)) {
-			throw new Error("child Pi returned a cyclic conversation branch");
-		}
-		visited.add(currentId);
-		const entry = entriesById.get(currentId);
-		if (entry === undefined) {
-			return currentId;
-		}
-		currentId = entry.parentId;
-	}
-	return null;
-}
-
-/** Detects a dependency-complete user boundary inside one active catch-up suffix. */
-function isUserMessageEntry(entry: SessionEntry): boolean {
-	return entry.type === "message" && entry.message.role === "user";
-}
-
-/** Reads the persisted boundary absent only before an active session flushes. */
-async function readPersistedBoundary(
-	sessionFile: string,
-	signal: AbortSignal,
-): Promise<string | undefined> {
-	try {
-		return await readLatestSessionEntryId(sessionFile, signal);
-	} catch (error) {
-		if (isFileNotFound(error)) {
-			return undefined;
-		}
-		throw error;
-	}
-}
-
-/** Recognizes the missing-file state before the first assistant is persisted. */
-function isFileNotFound(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		(error as { readonly code?: unknown }).code === "ENOENT"
-	);
 }
