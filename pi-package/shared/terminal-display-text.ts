@@ -1,8 +1,8 @@
 /**
  * Terminal-safe single-line text normalization.
  *
- * The normalizer removes terminal controls and folds only characters that can
- * create terminal line breaks or control spacing. Other Unicode content,
+ * The normalizer removes terminal controls and folds ASCII spaces and characters
+ * that can create terminal line breaks or control spacing. Other Unicode content,
  * including non-breaking spaces and direction controls, remains unchanged.
  */
 
@@ -28,7 +28,7 @@ const LINE_CONTROL_WHITESPACE = new Set([
 	"\u2029",
 ]);
 
-/** Removes terminal controls while preserving non-control Unicode code points. */
+/** Removes terminal controls and folds single-line spacing without rewriting visible Unicode. */
 export function normalizeTerminalDisplayText(value: string): string {
 	let normalized = "";
 	for (const character of stripVTControlCharacters(value)) {
@@ -36,7 +36,7 @@ export function normalizeTerminalDisplayText(value: string): string {
 		if (codePoint === undefined) {
 			continue;
 		}
-		if (LINE_CONTROL_WHITESPACE.has(character)) {
+		if (codePoint === ASCII_SPACE || LINE_CONTROL_WHITESPACE.has(character)) {
 			if (!normalized.endsWith(" ")) {
 				normalized += " ";
 			}

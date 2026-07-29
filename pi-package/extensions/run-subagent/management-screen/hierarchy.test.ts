@@ -595,7 +595,7 @@ describe("management hierarchy", () => {
 	test("renders the selected session as three exact header rows", () => {
 		// Purpose: the selected pane must separate identity, initial prompt, and invocation metadata into stable one-line rows.
 		// Inputs and expected output: one active session renders status icon only, normalized initial prompt, model/thinking, and projected context.
-		// Edge case: control characters in the prompt cannot create physical terminal rows.
+		// Edge case: line indentation is folded into one space and cannot create physical terminal rows.
 		// Dependencies: selected hierarchy identity, persisted initial user message, and invocation metadata.
 		const selected = {
 			...node("selected-header", "root-owner", 2, null, "SubAgentExtractor", 1),
@@ -605,7 +605,7 @@ describe("management hierarchy", () => {
 		const header = renderSelectedSessionHeader({
 			nodes: [selected],
 			selectedStableKey: selected.stableKey,
-			initialPrompt: "Prompt\nwithout\r\tline breaks",
+			initialPrompt: "Prompt\n    without\r\tline breaks",
 			metadata: {
 				elapsedMs: 9_000,
 				modelId: "openai-codex/gpt-5.6-sol",
