@@ -17,6 +17,24 @@ function isUnavailableFile(error: unknown): boolean {
 	);
 }
 
+export type SessionSnapshotFailureKind =
+	| "unavailable"
+	| "empty"
+	| "invalid"
+	| "read_failed";
+
+/** Classifies saved-session failures without exposing storage wording to callers. */
+export class SessionSnapshotError extends Error {
+	public constructor(
+		public readonly kind: SessionSnapshotFailureKind,
+		message: string,
+		cause?: unknown,
+	) {
+		super(message, cause === undefined ? undefined : { cause });
+		this.name = "SessionSnapshotError";
+	}
+}
+
 /** Loads saved Pi branches through the public SessionManager API. */
 export class SessionSnapshotLoader {
 	private readonly inFlight = new Map<
@@ -46,24 +64,35 @@ export class SessionSnapshotLoader {
 			metadata = await stat(sessionFile);
 		} catch (error) {
 			if (isUnavailableFile(error)) {
-				throw new Error("saved Pi session file is unavailable", {
-					cause: error,
-				});
+				throw new SessionSnapshotError(
+					"unavailable",
+					"saved Pi session file is unavailable",
+					error,
+				);
 			}
-			throw new Error("failed to inspect saved Pi session file", {
-				cause: error,
-			});
+			throw new SessionSnapshotError(
+				"read_failed",
+				"failed to inspect saved Pi session file",
+				error,
+			);
 		}
 		if (!metadata.isFile()) {
-			throw new Error("saved Pi session file is unavailable");
+			throw new SessionSnapshotError(
+				"unavailable",
+				"saved Pi session file is unavailable",
+			);
 		}
 		if (metadata.size === 0) {
-			throw new Error("saved Pi session file is empty");
+			throw new SessionSnapshotError("empty", "saved Pi session file is empty");
 		}
 		try {
 			return Object.freeze([...SessionManager.open(sessionFile).getBranch()]);
 		} catch (error) {
-			throw new Error("failed to load saved Pi session", { cause: error });
+			throw new SessionSnapshotError(
+				"invalid",
+				"failed to load saved Pi session",
+				error,
+			);
 		}
 	}
 }

@@ -42,6 +42,7 @@ const TOOL_NAMES = [
 	"subagent_start",
 	"subagent_steer",
 	"subagent_wait",
+	"subagent_query",
 ] as const;
 const EXPAND_HINT_PATTERN =
 	/^\.\.\. \(\d+ more lines, \d+ total, ctrl\+o to expand\)$/;
@@ -239,7 +240,7 @@ describe("Subagents V2 semantic rendering", () => {
 			unknown: second.resolve("third_party").category,
 		}).toEqual({
 			bash: "builtin",
-			v2: ["package", "package", "package"],
+			v2: ["package", "package", "package", "package"],
 			firstMcp: "package",
 			secondMcp: "unknown",
 			unknown: "unknown",
@@ -265,7 +266,7 @@ describe("Subagents V2 semantic rendering", () => {
 
 	test("renders settled semantic cards through the public Pi component", () => {
 		// Purpose: result-driven call-header updates must not recurse into Pi's fallback renderer or duplicate raw JSON.
-		// Input and expected output: accepted start and successful wait render once through ToolExecutionComponent with semantic text only.
+		// Input and expected output: accepted start, successful wait, and settled query render once through ToolExecutionComponent with semantic text only.
 		// Edge case: Pi invalidate is synchronous, so a result renderer must not invalidate while updateDisplay is active.
 		// Dependencies: public ToolExecutionComponent and the same static definitions used by normal conversation.
 		initTheme(undefined, false);
@@ -302,8 +303,26 @@ describe("Subagents V2 semantic rendering", () => {
 		wait.setArgsComplete();
 		wait.updateResult({ ...waitResult, isError: false });
 
+		const query = new ToolExecutionComponent(
+			"subagent_query",
+			"query-call",
+			{ sessionId: 7, question: "What happened in the child session?" },
+			{},
+			resolveV2Definition("subagent_query"),
+			ui,
+			"/tmp",
+		);
+		query.markExecutionStarted();
+		query.setArgsComplete();
+		query.updateResult({
+			content: [{ type: "text", text: "Saved answer." }],
+			details: { answer: "Saved answer.", elapsedMs: 5_000 },
+			isError: false,
+		});
+
 		const startText = stripVTControlCharacters(start.render(100).join("\n"));
 		const waitText = stripVTControlCharacters(wait.render(100).join("\n"));
+		const queryText = stripVTControlCharacters(query.render(100).join("\n"));
 		expect(startText).toContain(
 			"subagent_start SubAgentCoder · openai/test-model/high · #1",
 		);
@@ -312,6 +331,12 @@ describe("Subagents V2 semantic rendering", () => {
 		expect(waitText).toContain("Output:");
 		expect(waitText).toContain("Rendered **semantic** output.");
 		expect(waitText).not.toContain('{"outcome":"feedback"');
+		expect(queryText).toContain("subagent_query #7 · 5s");
+		expect(queryText).toContain(
+			"Question: What happened in the child session?",
+		);
+		expect(queryText).toContain("Answer: Saved answer.");
+		expect(queryText).not.toContain('{"sessionId":7');
 	});
 
 	test("styles direct feedback with the matching tool outcome background", () => {
@@ -689,6 +714,102 @@ describe("Subagents V2 semantic rendering", () => {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(
 				shellLines.includes(line) ? 38 : 36,
 			);
+		}
+	});
+
+	test("renders pending query questions as bounded semantic previews or full Markdown", () => {
+		// Purpose: pending queries must match the semantic Subagents V2 presentation instead of exposing raw JSON.
+		// Input and expected output: collapsed text is whitespace-normalized and bounded, while expansion renders the complete Question section.
+		// Edge case: a long question preserves the shell width and reports hidden visual lines.
+		// Dependencies: shared semantic headers, bounded previews, Markdown sections, and the static query presentation registry.
+		setKeybindings(
+			new KeybindingsManager({
+				...TUI_KEYBINDINGS,
+				"app.tools.expand": {
+					defaultKeys: "ctrl+o",
+					description: "Expand collapsed tool output",
+				},
+			}),
+		);
+		const args = {
+			sessionId: 7,
+			question: `What   changed?\n\t${"Explain the **saved** conversation in detail. ".repeat(12)}`,
+		};
+		const collapsed = renderTool({
+			name: "subagent_query",
+			args,
+			width: 64,
+		});
+		const expanded = renderTool({
+			name: "subagent_query",
+			args,
+			expanded: true,
+			width: 64,
+		});
+
+		expect(collapsed.call[0]).toBe("subagent_query #7 · querying…");
+		expect(collapsed.call[1]).toStartWith("Question: What changed? Explain");
+		expect(collapsed.call.join("\n")).not.toContain("\t");
+		expect(collapsed.call.at(-1)).toMatch(EXPAND_HINT_PATTERN);
+		expect(expanded.call[0]).toBe("subagent_query #7 · querying…");
+		expect(expanded.call).toContain("--- Question ---");
+		expect(expanded.call.join("\n")).toContain("saved");
+		for (const line of [...collapsed.call, ...expanded.call]) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(64);
+		}
+	});
+
+	test("renders settled query questions and answers by expansion state", () => {
+		// Purpose: completed queries must identify their child, elapsed time, normalized question summary, and answer without a separate result card.
+		// Input and expected output: collapsed Question uses one clipped row; expansion renders complete Question and Answer Markdown sections.
+		// Edge case: neither collapsed nor expanded content exceeds the narrow default shell width.
+		// Dependencies: query result presentation details, standard duration formatting, semantic clipping, and Markdown sections.
+		setKeybindings(
+			new KeybindingsManager({
+				...TUI_KEYBINDINGS,
+				"app.tools.expand": {
+					defaultKeys: "ctrl+o",
+					description: "Expand collapsed tool output",
+				},
+			}),
+		);
+		const args = {
+			sessionId: 7,
+			question: `What   changed?\n\t${"Explain the saved conversation in detail. ".repeat(12)}Final **question** detail.`,
+		};
+		const answer = `# Answer\n\n${"Saved detail. ".repeat(30)}`;
+		const result = {
+			content: [{ type: "text" as const, text: answer }],
+			details: { answer, elapsedMs: 5_000 },
+		};
+		const collapsed = renderTool({
+			name: "subagent_query",
+			args,
+			result,
+			width: 64,
+		});
+		const expanded = renderTool({
+			name: "subagent_query",
+			args,
+			result,
+			expanded: true,
+			width: 64,
+		});
+
+		expect(collapsed.call[0]).toBe("subagent_query #7 · 5s");
+		expect(collapsed.call[1]).toStartWith("Question: What changed? Explain");
+		expect(collapsed.call[1]).toEndWith("…");
+		expect(collapsed.call[2]).toStartWith("Answer:");
+		expect(collapsed.call.at(-1)).toMatch(EXPAND_HINT_PATTERN);
+		expect(collapsed.result).toEqual([]);
+		expect(expanded.call[0]).toBe("subagent_query #7 · 5s");
+		expect(expanded.call[1]).toBe("--- Question ---");
+		expect(expanded.call).toContain("--- Answer ---");
+		expect(expanded.call.join("\n")).toContain("Final question detail.");
+		expect(expanded.call.join("\n")).toContain("Saved detail.");
+		expect(expanded.result).toEqual([]);
+		for (const line of [...collapsed.call, ...expanded.call]) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(64);
 		}
 	});
 

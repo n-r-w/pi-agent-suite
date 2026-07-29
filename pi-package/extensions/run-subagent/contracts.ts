@@ -1,6 +1,7 @@
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
 import type { SubagentFeedback } from "./domain";
+import { sanitizePublicSubagentErrorMessage } from "./public-error";
 
 const TASK_NAME_MIN_CODE_POINTS = 3;
 const TASK_NAME_MAX_CODE_POINTS = 60;
@@ -15,6 +16,7 @@ export const SUBAGENT_TOOL_NAMES = [
 	"subagent_start",
 	"subagent_steer",
 	"subagent_wait",
+	"subagent_query",
 ] as const;
 
 /** Marks the callable-agent contribution for runtime diagnostics. */
@@ -28,6 +30,7 @@ const SUBAGENT_FAILED_CODES = [
 	"not_owner",
 	"message_rejected",
 	"start_failed",
+	"query_failed",
 	"wait_already_active",
 ] as const;
 
@@ -59,6 +62,15 @@ export const SubagentSteerParameters = Type.Object(
 	{ additionalProperties: false },
 );
 
+/** Declares the exact public query request boundary. */
+export const SubagentQueryParameters = Type.Object(
+	{
+		sessionId: Type.Integer({ minimum: 1 }),
+		question: Type.String(),
+	},
+	{ additionalProperties: false },
+);
+
 /** Declares the exact public wait request boundary. */
 export const SubagentWaitParameters = Type.Object(
 	{
@@ -75,6 +87,8 @@ export const SubagentWaitParameters = Type.Object(
 export type SubagentStartRequest = Static<typeof SubagentStartParameters>;
 /** Describes a validated steer request. */
 export type SubagentSteerRequest = Static<typeof SubagentSteerParameters>;
+/** Describes a validated query request. */
+export type SubagentQueryRequest = Static<typeof SubagentQueryParameters>;
 /** Describes a validated wait request. */
 export type SubagentWaitRequest = Static<typeof SubagentWaitParameters>;
 
@@ -95,10 +109,11 @@ export class SubagentToolError extends Error {
 
 	/** Creates a stable code while leaving message wording non-contractual. */
 	public constructor(code: SubagentFailedCode, message: string) {
-		super(`[${code}] ${message}`);
+		const safeMessage = sanitizePublicSubagentErrorMessage(message);
+		super(`[${code}] ${safeMessage}`);
 		this.name = "SubagentToolError";
 		this.code = code;
-		this.details = { code, message };
+		this.details = { code, message: safeMessage };
 	}
 }
 
@@ -148,6 +163,27 @@ export function parseSubagentSteerRequest(
 	return { sessionId, prompt };
 }
 
+/** Validates and narrows an unknown query request once at the tool boundary. */
+export function parseSubagentQueryRequest(
+	value: unknown,
+): SubagentQueryRequest {
+	if (!isExactRecord(value, ["sessionId", "question"])) {
+		throw invalidRequest("subagent_query requires sessionId and question");
+	}
+	const sessionId = value["sessionId"];
+	const question = value["question"];
+	if (
+		typeof sessionId !== "number" ||
+		!Number.isInteger(sessionId) ||
+		sessionId <= 0 ||
+		typeof question !== "string" ||
+		!hasNonWhitespaceCodePoint(question)
+	) {
+		throw invalidRequest("subagent_query request fields are invalid");
+	}
+	return { sessionId, question };
+}
+
 /** Validates and narrows an unknown wait request once at the tool boundary. */
 export function parseSubagentWaitRequest(value: unknown): SubagentWaitRequest {
 	if (!Check(SubagentWaitParameters, value)) {
@@ -195,12 +231,17 @@ export function parseSubagentNormalResult(
 	) {
 		const error = readString(value, "error");
 		if (error !== undefined) {
-			return { outcome, sessionId, status, error };
+			return {
+				outcome,
+				sessionId,
+				status,
+				error: sanitizePublicSubagentErrorMessage(error),
+			};
 		}
 	}
 	throw new SubagentToolError(
 		"start_failed",
-		"runtime returned an invalid result",
+		"Subagent returned an invalid response",
 	);
 }
 
@@ -220,7 +261,7 @@ export function feedbackResult(
 				outcome: "feedback",
 				sessionId,
 				status: feedback.status,
-				error: feedback.error,
+				error: sanitizePublicSubagentErrorMessage(feedback.error),
 			};
 }
 

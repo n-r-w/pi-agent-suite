@@ -46,7 +46,7 @@ interface AppendContextOptions {
 	readonly normalColor: "muted" | "toolTitle";
 }
 
-interface FormattedTextOptions {
+export interface FormattedTextOptions {
 	readonly label: string;
 	readonly sectionName: string;
 	readonly text: string;
@@ -123,7 +123,9 @@ export function renderPrompt(
 }
 
 /** Selects bounded plain preview text or a complete Markdown section. */
-function renderFormattedText(options: FormattedTextOptions): readonly string[] {
+export function renderFormattedText(
+	options: FormattedTextOptions,
+): readonly string[] {
 	if (!options.expanded) {
 		return renderBoundedText({
 			label: options.label,
@@ -168,6 +170,27 @@ export function renderName(
 	return [
 		`${theme.fg("toolTitle", theme.bold(label))}${value.length === 0 ? "" : theme.fg("muted", ` ${value}`)}`,
 	];
+}
+
+/** Renders normalized text on exactly one clipped visual row. */
+export function renderClippedTextRow(
+	label: string,
+	text: string,
+	width: number,
+	theme: Theme,
+): string {
+	const clippedLabel = sliceTextByWidth(label, width);
+	const styledLabel = theme.fg("toolTitle", theme.bold(clippedLabel));
+	const available = Math.max(0, width - visibleWidth(clippedLabel) - 1);
+	if (available === 0) {
+		return styledLabel;
+	}
+	const value = truncateTextByWidth(
+		normalizeCollapsedToolText(text),
+		available,
+		"…",
+	);
+	return `${styledLabel}${value.length === 0 ? "" : theme.fg("muted", ` ${value}`)}`;
 }
 
 /** Renders collapsed normalized text or complete expanded text within the V1 layout. */

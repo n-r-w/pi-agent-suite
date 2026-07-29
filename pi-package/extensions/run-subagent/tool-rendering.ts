@@ -20,6 +20,10 @@ import {
 	renderConveneCouncilResult,
 } from "../convene-council/rendering.ts";
 import {
+	renderSubagentQueryCall,
+	renderSubagentQueryResult,
+} from "./query-rendering.ts";
+import {
 	renderSubagentStartCall,
 	renderSubagentStartResult,
 	renderSubagentSteerCall,
@@ -111,6 +115,15 @@ function getStaticPackagePresentation(
 			label: toolName,
 			renderCall: renderSubagentWaitCall,
 			renderResult: renderSubagentWaitResult,
+			renderShell: "default",
+		};
+	}
+	if (toolName === "subagent_query") {
+		return {
+			name: toolName,
+			label: toolName,
+			renderCall: renderSubagentQueryCall,
+			renderResult: renderSubagentQueryResult,
 			renderShell: "default",
 		};
 	}

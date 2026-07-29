@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	feedbackResult,
 	parseSubagentNormalResult,
+	parseSubagentQueryRequest,
 	parseSubagentStartRequest,
 	parseSubagentSteerRequest,
 	parseSubagentWaitRequest,
@@ -43,8 +44,19 @@ describe("Subagents V2 contracts", () => {
 			steer: parseSubagentSteerRequest({ sessionId: 2, prompt: "change" }),
 			wait: parseSubagentWaitRequest({ sessionIds: [2, 1], timeoutMs: 1 }),
 			missing: failureCode(() => parseSubagentStartRequest({})),
+			query: parseSubagentQueryRequest({
+				sessionId: 3,
+				question: "What changed?",
+			}),
 			extra: failureCode(() =>
 				parseSubagentSteerRequest({ sessionId: 1, prompt: "x", extra: true }),
+			),
+			queryExtra: failureCode(() =>
+				parseSubagentQueryRequest({
+					sessionId: 3,
+					question: "What changed?",
+					extra: true,
+				}),
 			),
 			blankPrompt: failureCode(() =>
 				parseSubagentStartRequest({
@@ -52,6 +64,9 @@ describe("Subagents V2 contracts", () => {
 					taskName: "Trace runtime",
 					prompt: " \n ",
 				}),
+			),
+			blankQuestion: failureCode(() =>
+				parseSubagentQueryRequest({ sessionId: 3, question: "\u0085" }),
 			),
 			duplicate: failureCode(() =>
 				parseSubagentWaitRequest({ sessionIds: [1, 1], timeoutMs: 1 }),
@@ -67,11 +82,42 @@ describe("Subagents V2 contracts", () => {
 			},
 			steer: { sessionId: 2, prompt: "change" },
 			wait: { sessionIds: [2, 1], timeoutMs: 1 },
+			query: { sessionId: 3, question: "What changed?" },
 			missing: "invalid_request",
 			extra: "invalid_request",
+			queryExtra: "invalid_request",
 			blankPrompt: "invalid_request",
+			blankQuestion: "invalid_request",
 			duplicate: "invalid_request",
 			outOfRange: "invalid_request",
+		});
+	});
+
+	test("sanitizes and bounds every public tool error message", () => {
+		// Purpose: model-visible failures must preserve unknown diagnostics without allowing terminal controls or unbounded context growth.
+		// Input and expected output: ANSI, layout controls, and oversized text become one terminal-safe truncated line.
+		// Edge case: an error containing only removed controls falls back to a useful message.
+		// Dependencies: the common SubagentToolError boundary used by every V2 tool.
+		const unsafe = `failure\u202e\u2066\u001b[31m red\u001b[0m\n\t${"x".repeat(100_000)}`;
+		const error = new SubagentToolError("start_failed", unsafe);
+		const empty = new SubagentToolError("start_failed", "\u001b[31m\u001b[0m");
+		const feedback = parseSubagentNormalResult({
+			outcome: "feedback",
+			sessionId: 1,
+			status: "failure",
+			error: unsafe,
+		});
+
+		expect(error.details.message).toStartWith("failure red ");
+		expect(error.details.message).toEndWith("…");
+		expect(error.details.message.length).toBeLessThanOrEqual(2_000);
+		for (const control of ["\u001b", "\n", "\r", "\t", "\u202e", "\u2066"]) {
+			expect(error.details.message).not.toContain(control);
+		}
+		expect(empty.details.message).toBe("Unknown error");
+		expect(feedback).toMatchObject({
+			status: "failure",
+			error: error.details.message,
 		});
 	});
 

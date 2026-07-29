@@ -99,7 +99,7 @@ function createIsolatedAgentDir(cwd: string): string {
 			"---",
 			"description: Agent for testing subagents subsystem.",
 			"type: both",
-			'tools: ["subagent_start", "subagent_steer", "subagent_wait"]',
+			'tools: ["subagent_start", "subagent_steer", "subagent_wait", "subagent_query"]',
 			'agents: ["SubAgentExtractor"]',
 			"---",
 			"Test agent prompt",
@@ -459,16 +459,18 @@ test("exposes Subagents V2 runtime tools and prompt markers", () => {
 			"subagent_start",
 			"subagent_steer",
 			"subagent_wait",
+			"subagent_query",
 		]);
 		expect(subagentTools).toEqual([
 			"subagent_start",
 			"subagent_steer",
 			"subagent_wait",
+			"subagent_query",
 		]);
 		expect(runtime.systemPrompt).toContain("Test agent prompt");
 		expect(runtime.systemPrompt).toContain("<subagents-v2-callable-agents>");
 		expect(runtime.systemPrompt).toContain(
-			"tools: subagent_start, subagent_steer, subagent_wait",
+			"tools: subagent_start, subagent_steer, subagent_wait, subagent_query",
 		);
 		expect(runtime.systemPrompt).toContain("depth: 0/1");
 		expect(runtime.systemPrompt).toContain("agentId: SubAgentExtractor");
@@ -502,7 +504,7 @@ test("exposes Subagents V2 runtime tools and prompt markers", () => {
 
 test("runtime package loading snapshots configured V2 descriptions on the first turn", () => {
 	// Purpose: real Pi must await extension and tool description configuration before its first model-visible snapshot.
-	// Input and expected output: four absolute custom prompt files produce shared extension guidance and exactly three active V2 tools with matching descriptions.
+	// Input and expected output: four absolute custom prompt files produce shared extension guidance and exactly four active V2 tools with matching configured descriptions.
 	// Edge case: the debug extension exits from the first before_agent_start event, before any provider or model request.
 	// Dependencies: local Pi CLI, isolated package config, selected main-agent restoration, production extension loading, and a runtime dump extension.
 	const repositoryDir = process.cwd();
@@ -579,8 +581,18 @@ test("runtime package loading snapshots configured V2 descriptions on the first 
 				wait: runtime.toolDescriptions["subagent_wait"],
 			},
 		}).toEqual({
-			activeTools: ["subagent_start", "subagent_steer", "subagent_wait"],
-			v2Tools: ["subagent_start", "subagent_steer", "subagent_wait"],
+			activeTools: [
+				"subagent_start",
+				"subagent_steer",
+				"subagent_wait",
+				"subagent_query",
+			],
+			v2Tools: [
+				"subagent_start",
+				"subagent_steer",
+				"subagent_wait",
+				"subagent_query",
+			],
 			hasExtensionDescription: true,
 			descriptions: {
 				start: "real start",

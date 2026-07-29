@@ -11,6 +11,12 @@ import {
 } from "./boundary-validation";
 import type { JournalRecord, SubagentFeedback } from "./domain";
 import { parseFeedback, parseJournalRecord } from "./journal-codec";
+import {
+	parseQueryBranchRequest,
+	parseQueryBranchResponse,
+	type QueryBranchRequest,
+	type QueryBranchResponse,
+} from "./query-branch-wire";
 
 interface RuntimeRequestIdentity {
 	readonly requestId: string;
@@ -39,6 +45,10 @@ type RuntimeOperation =
 	| {
 			readonly operation: "append_journal";
 			readonly payload: JournalRecord;
+	  }
+	| {
+			readonly operation: "query_branch";
+			readonly payload: QueryBranchRequest;
 	  }
 	| {
 			readonly operation: "append_history";
@@ -272,6 +282,12 @@ export function parseRuntimeOperationPayload(
 			} catch {
 				return undefined;
 			}
+		case "query_branch":
+			try {
+				return { operation, payload: parseQueryBranchRequest(payload) };
+			} catch {
+				return undefined;
+			}
 		case "append_journal": {
 			const record = parseJournalRecord(payload);
 			return record === undefined ? undefined : { operation, payload: record };
@@ -333,12 +349,20 @@ export function parseRuntimeResponseResult(
 	value: unknown,
 ):
 	| AgentOperationResponse
+	| QueryBranchResponse
 	| RuntimeAcknowledgment
 	| RuntimeOperationCancellationAcknowledgment
 	| undefined {
 	if (operation === "agent_operation") {
 		try {
 			return parseAgentOperationResponse(value);
+		} catch {
+			return undefined;
+		}
+	}
+	if (operation === "query_branch") {
+		try {
+			return parseQueryBranchResponse(value);
 		} catch {
 			return undefined;
 		}
@@ -369,6 +393,7 @@ function readOperation(
 	return value === "agent_operation" ||
 		value === "append_journal" ||
 		value === "append_history" ||
+		value === "query_branch" ||
 		value === "cancel_wait" ||
 		value === "cancel_operation" ||
 		value === "owner_stopping" ||

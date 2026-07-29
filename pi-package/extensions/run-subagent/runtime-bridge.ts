@@ -11,6 +11,7 @@ import {
 	readSubagentRuntimeLeaseId,
 } from "./environment";
 import { errorMessage } from "./error-message";
+import type { QueryBranchResponse } from "./query-branch-wire";
 import {
 	parseRuntimeOperationPayload,
 	parseRuntimeResponseResult,
@@ -436,6 +437,10 @@ export class WorkerRuntimeBridge {
 		operation: "cancel_operation",
 		payload: unknown,
 	): Promise<RuntimeOperationCancellationAcknowledgment>;
+	public request(
+		operation: "query_branch",
+		payload: unknown,
+	): Promise<QueryBranchResponse>;
 	public request(
 		operation: RuntimeRequest["operation"],
 		payload: unknown,

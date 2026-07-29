@@ -505,6 +505,30 @@ describe("SubagentCoordinator", () => {
 		});
 	});
 
+	test("reports an unavailable subagent without registry terminology", async () => {
+		// Purpose: agent_unavailable must identify the requested subagent without exposing the internal callable-agent classification.
+		// Input and expected output: an unavailable agent ID produces one concise model-visible failure.
+		// Edge case: availability fails before an invocation or logical session is created.
+		// Dependencies: coordinator availability policy and the common public error boundary.
+		const harness = createHarness();
+		let failure: string | undefined;
+		try {
+			await harness.coordinator.start(OWNER, {
+				agentId: "MissingAgent",
+				taskName: "Unavailable agent",
+				prompt: "Start",
+			});
+		} catch (error) {
+			failure = error instanceof Error ? error.message : String(error);
+		}
+
+		expect(failure).toBe(
+			"[agent_unavailable] Subagent MissingAgent is unavailable",
+		);
+		expect(harness.invocations.startCalls).toBe(0);
+		expect(harness.catalog.sessions).toEqual([]);
+	});
+
 	test("cancels an accepted start before publication without leaving a session", async () => {
 		// Purpose: cancellation must own the start outcome when it precedes logical acceptance publication.
 		// Input and expected output: abort while invocation acceptance is gated rejects with the Pi reason, terminates the lease, and writes no session.
@@ -1591,10 +1615,21 @@ describe("SubagentCoordinator", () => {
 					? {
 							state: record.state,
 							status: record.feedback?.status,
+							error:
+								record.feedback !== undefined &&
+								record.feedback.status !== "success"
+									? record.feedback.error
+									: undefined,
 						}
 					: undefined,
 			),
-		).toEqual([{ state: "terminal-failure", status: "failure" }]);
+		).toEqual([
+			{
+				state: "terminal-failure",
+				status: "failure",
+				error: "Subagent stopped before completing the task",
+			},
+		]);
 	});
 
 	test("steers active sessions and continues terminal sessions", async () => {
@@ -2069,9 +2104,11 @@ describe("SubagentCoordinator", () => {
 			startCalls: 0,
 			continueCalls: [],
 			waitAdmitted: false,
-			startFailure: "[start_failed] runtime lease lease-1 is stopped",
-			steerFailure: "[message_rejected] runtime lease lease-1 is stopped",
-			waitFailure: "[message_rejected] runtime lease lease-1 is stopped",
+			startFailure: "[start_failed] Subagent operation is no longer available",
+			steerFailure:
+				"[message_rejected] Subagent operation is no longer available",
+			waitFailure:
+				"[message_rejected] Subagent operation is no longer available",
 		});
 	});
 

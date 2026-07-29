@@ -64,7 +64,7 @@ describe("runtime wire parser", () => {
 
 	test("parses the complete operation-specific payload and result matrix", () => {
 		// Purpose: each runtime operation must own one exact request payload and successful response result contract.
-		// Input and expected output: all seven valid payload variants parse, while every acknowledgment operation rejects false, missing, and extra fields.
+		// Input and expected output: all eight valid payload variants parse, while every acknowledgment operation rejects false, missing, and extra fields.
 		// Edge case: agent-operation params and response values use their nested exact parsers rather than acknowledgment parsing.
 		// Dependencies: production runtime request and pending-operation response parsers.
 		const sessionKey = {
@@ -110,6 +110,7 @@ describe("runtime wire parser", () => {
 				},
 			],
 			["append_history", feedback],
+			["query_branch", { sessionId: 1 }],
 			[
 				"cancel_wait",
 				{
@@ -189,6 +190,18 @@ describe("runtime wire parser", () => {
 					thinking: "high",
 				},
 			}),
+			queryBranchResult: parseRuntimeResponseResult("query_branch", {
+				kind: "ok",
+				branch: [
+					{
+						type: "message",
+						id: "query-entry",
+						parentId: null,
+						timestamp: "2026-07-29T00:00:00.000Z",
+						message: { role: "user", content: "saved", timestamp: 1 },
+					},
+				],
+			}),
 		}).toEqual({
 			parsedPayloads: payloads.map(([operation]) => operation),
 			validResults: acknowledgmentOperations.map(() => ({
@@ -212,6 +225,18 @@ describe("runtime wire parser", () => {
 					modelId: "openai/test-model",
 					thinking: "high",
 				},
+			},
+			queryBranchResult: {
+				kind: "ok",
+				branch: [
+					{
+						type: "message",
+						id: "query-entry",
+						parentId: null,
+						timestamp: "2026-07-29T00:00:00.000Z",
+						message: { role: "user", content: "saved", timestamp: 1 },
+					},
+				],
 			},
 		});
 	});

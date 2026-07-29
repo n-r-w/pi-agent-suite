@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import type {
 	AgentToolResult,
 	ExtensionAPI,
@@ -6,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
+import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
 import type { AgentOperationResponse } from "./agent-operation-wire";
 import {
 	applyChildToolPolicy,
@@ -16,11 +18,13 @@ import {
 } from "./agent-policy";
 import { readCancellationError } from "./cancellation-reason";
 import {
+	parseSubagentQueryRequest,
 	parseSubagentStartRequest,
 	parseSubagentSteerRequest,
 	parseSubagentWaitRequest,
 	type SubagentFailureDetails,
 	type SubagentNormalResult,
+	SubagentQueryParameters,
 	SubagentStartParameters,
 	SubagentSteerParameters,
 	SubagentToolError,
@@ -59,6 +63,12 @@ import {
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
 	V2SessionStore,
 } from "./persistence";
+import { QueryBranchAccess } from "./query-branch-access";
+import type { QueryBranchResponse } from "./query-branch-wire";
+import {
+	renderSubagentQueryCall,
+	renderSubagentQueryResult,
+} from "./query-rendering";
 import {
 	installWorkerRuntimeBridge,
 	RootRuntimeBridge,
@@ -83,6 +93,7 @@ import {
 } from "./semantic-rendering.ts";
 import { SessionCatalog } from "./session-catalog";
 import { SessionSnapshotLoader } from "./session-snapshot-loader";
+import { executeSubagentQuery } from "./subagent-query";
 import { createToolPresentationRegistry } from "./tool-rendering.ts";
 import { WaitCoordinator } from "./wait-coordinator";
 
@@ -90,10 +101,13 @@ const EXTENSION_DESCRIPTION = readPrompt("extension-description.md");
 const START_DESCRIPTION = readPrompt("start-description.md");
 const STEER_DESCRIPTION = readPrompt("steer-description.md");
 const WAIT_DESCRIPTION = readPrompt("wait-description.md");
+const QUERY_DESCRIPTION = readPrompt("query-description.md");
+const QUERY_SYSTEM_PROMPT = readPrompt("query-system.md");
 const V2_TOOL_NAMES = new Set([
 	"subagent_start",
 	"subagent_steer",
 	"subagent_wait",
+	"subagent_query",
 ]);
 
 interface RootManagementRuntime {
@@ -109,6 +123,7 @@ interface RootRuntime {
 	readonly coordinator: SubagentCoordinator;
 	readonly supervisor: InvocationSupervisor;
 	readonly recoveries: RuntimeFailureRecoveryTracker;
+	readonly queryBranches: QueryBranchAccess;
 	readonly management?: RootManagementRuntime;
 }
 
@@ -126,6 +141,10 @@ interface RuntimeState {
 }
 
 type RuntimeStateResolver = () => Promise<RuntimeState>;
+type RegisteredToolExecute = Parameters<
+	ExtensionAPI["registerTool"]
+>[0]["execute"];
+type RegisteredToolExecuteArgs = Parameters<RegisteredToolExecute>;
 
 /** Marks internal root cancellation so the bridge returns no public V2 failure. */
 class RuntimeOperationCancellationError extends Error {}
@@ -135,8 +154,18 @@ interface RegisteredDescription {
 	description: string;
 }
 
+/** Provides isolated external effects used by subagent query execution. */
+interface SubagentsV2Dependencies {
+	readonly completeSimple?: AuxiliaryLlmCompletion;
+}
+
 /** Registers stable V2 tools before session runtime performs asynchronous work. */
-export default function subagentsV2(pi: ExtensionAPI): Promise<void> {
+export default function subagentsV2(
+	pi: ExtensionAPI,
+	dependencies: SubagentsV2Dependencies = {
+		completeSimple: defaultCompleteSimple,
+	},
+): Promise<void> {
 	let configReady: Promise<SubagentsV2Config> | undefined;
 	const state: RuntimeState = {
 		resolveConfig: () =>
@@ -162,6 +191,11 @@ export default function subagentsV2(pi: ExtensionAPI): Promise<void> {
 		start: registerStartTool(pi, resolveState),
 		steer: registerSteerTool(pi, resolveState),
 		wait: registerWaitTool(pi, resolveState),
+		query: registerQueryTool(
+			pi,
+			resolveState,
+			dependencies.completeSimple ?? defaultCompleteSimple,
+		),
 	};
 	registerLifecycleHandlers(pi, state);
 	configReady = readConfig();
@@ -180,10 +214,17 @@ async function resolveRuntimeState(state: RuntimeState): Promise<RuntimeState> {
 	if (state.initialization === undefined) {
 		throw new SubagentToolError(
 			"start_failed",
-			"subagent runtime is not initialized",
+			"Subagent tools are unavailable",
 		);
 	}
-	await state.initialization;
+	try {
+		await state.initialization;
+	} catch {
+		throw new SubagentToolError(
+			"start_failed",
+			"Subagent tools are unavailable",
+		);
+	}
 	return state;
 }
 
@@ -441,6 +482,114 @@ function registerWaitTool(
 	});
 }
 
+/** Registers one saved-session query whose model request stays in the caller process. */
+function registerQueryTool(
+	pi: ExtensionAPI,
+	resolveState: RuntimeStateResolver,
+	completeSimple: AuxiliaryLlmCompletion,
+): RegisteredDescription {
+	return registerTool(pi, {
+		name: "subagent_query",
+		label: "Query subagent session",
+		description: QUERY_DESCRIPTION,
+		parameters: SubagentQueryParameters,
+		renderCall: renderSubagentQueryCall,
+		renderResult: renderSubagentQueryResult,
+		execute: (...args) =>
+			executeQueryTool(pi, resolveState, completeSimple, args),
+	});
+}
+
+/** Executes one validated query and preserves cancellation identity. */
+async function executeQueryTool(
+	pi: ExtensionAPI,
+	resolveState: RuntimeStateResolver,
+	completeSimple: AuxiliaryLlmCompletion,
+	args: RegisteredToolExecuteArgs,
+): Promise<AgentToolResult<unknown>> {
+	const startedAt = performance.now();
+	const [, rawParams, signal, , ctx] = args;
+	const request = parseSubagentQueryRequest(rawParams);
+	try {
+		const state = await resolveState();
+		const config = state.config;
+		if (config === undefined || !config.enabled) {
+			throw new SubagentToolError(
+				"query_failed",
+				"Subagent queries are unavailable",
+			);
+		}
+		const branchResponse = await loadQueryBranch(
+			pi,
+			ctx,
+			state,
+			request.sessionId,
+		);
+		if (branchResponse.kind === "failed") {
+			throw new SubagentToolError(
+				branchResponse.failure.code,
+				branchResponse.failure.message,
+			);
+		}
+		const modelConfig = config.query?.model;
+		const result = await executeSubagentQuery({
+			completeSimple,
+			ctx,
+			pi,
+			branchEntries: branchResponse.branch,
+			question: request.question,
+			systemPrompt: config.query?.systemPrompt ?? QUERY_SYSTEM_PROMPT,
+			currentThinkingLevel: pi.getThinkingLevel(),
+			...(modelConfig === undefined ? {} : { modelConfig }),
+			...(signal === undefined ? {} : { signal }),
+		});
+		if (result.kind === "issue") {
+			throw new SubagentToolError("query_failed", result.issue);
+		}
+		return {
+			content: [{ type: "text", text: result.answer }],
+			details: {
+				answer: result.answer,
+				elapsedMs: performance.now() - startedAt,
+			},
+		};
+	} catch (error) {
+		if (signal?.aborted && error === readCancellationError(signal)) {
+			throw error;
+		}
+		if (error instanceof SubagentToolError) {
+			throw error;
+		}
+		throw new SubagentToolError("query_failed", errorMessage(error));
+	}
+}
+
+/** Loads one query branch through the caller's process-specific route. */
+async function loadQueryBranch(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	sessionId: number,
+): Promise<QueryBranchResponse> {
+	return state.workerBridge === undefined
+		? loadRootQueryBranch(pi, ctx, state, sessionId)
+		: state.workerBridge.request("query_branch", { sessionId });
+}
+
+/** Resolves the mode-independent root branch-access owner on first use. */
+async function loadRootQueryBranch(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	sessionId: number,
+) {
+	state.rootRuntime ??= await createRootRuntime(pi, ctx);
+	return state.rootRuntime.queryBranches.load(
+		state.rootRuntime.owner,
+		sessionId,
+	);
+}
+
 /** Races root feedback with one serialized exact wait cancellation transition. */
 async function executeRootWait({
 	coordinator,
@@ -514,7 +663,7 @@ async function executeTool(
 		if (config === undefined || !config.enabled) {
 			throw new SubagentToolError(
 				"start_failed",
-				"subagent runtime is disabled",
+				"Subagent tools are unavailable",
 			);
 		}
 		const response = await operation(state, config);
@@ -538,10 +687,7 @@ async function executeTool(
 		const failure =
 			error instanceof SubagentToolError
 				? error.details
-				: {
-						code: "start_failed" as const,
-						message: errorMessage(error),
-					};
+				: new SubagentToolError("start_failed", errorMessage(error)).details;
 		state?.failures.set(toolCallId, failure);
 		throw new SubagentToolError(failure.code, failure.message);
 	}
@@ -560,6 +706,8 @@ async function createRootRuntime(
 	const store = createRootSessionStore(bridge, () => supervisor);
 	store.registerActive(writer);
 	const catalog = new SessionCatalog();
+	const sessionSnapshots = new SessionSnapshotLoader();
+	const queryBranches = new QueryBranchAccess(catalog, sessionSnapshots);
 	const recoveries = new RuntimeFailureRecoveryTracker();
 	let coordinator: SubagentCoordinator | undefined;
 	supervisor = createRootSupervisor({
@@ -569,6 +717,7 @@ async function createRootRuntime(
 		bridge,
 		store,
 		recoveries,
+		queryBranches,
 		getCoordinator: () => requireCoordinator(coordinator),
 	});
 	coordinator = createRootCoordinator({
@@ -589,6 +738,7 @@ async function createRootRuntime(
 					catalog,
 					coordinator,
 					supervisor,
+					sessionSnapshots,
 				})
 			: undefined;
 	return {
@@ -598,6 +748,7 @@ async function createRootRuntime(
 		coordinator,
 		supervisor,
 		recoveries,
+		queryBranches,
 		...(management === undefined ? {} : { management }),
 	};
 }
@@ -610,6 +761,7 @@ function createRootSupervisor(options: {
 	readonly bridge: RootRuntimeBridge;
 	readonly store: V2SessionStore;
 	readonly recoveries: RuntimeFailureRecoveryTracker;
+	readonly queryBranches: QueryBranchAccess;
 	readonly getCoordinator: () => SubagentCoordinator;
 }): InvocationSupervisor {
 	let supervisor: InvocationSupervisor;
@@ -639,6 +791,7 @@ function createRootSupervisor(options: {
 			handleRootRuntimeRequest({
 				coordinator: options.getCoordinator(),
 				store: options.store,
+				queryBranches: options.queryBranches,
 				owner: remoteOwner,
 				request,
 			}),
@@ -685,15 +838,14 @@ function createRootManagementRuntime(options: {
 	readonly catalog: SessionCatalog;
 	readonly coordinator: SubagentCoordinator;
 	readonly supervisor: InvocationSupervisor;
+	readonly sessionSnapshots: SessionSnapshotLoader;
 }): RootManagementRuntime {
-	// One root loader deduplicates saved-session migrations across selection changes.
-	const sessionSnapshots = new SessionSnapshotLoader();
 	const projection = new ManagementProjectionRuntime({
 		rootOwnerPiSessionId: options.owner.ownerPiSessionId,
 		catalog: options.catalog,
 		activeConversations: options.supervisor,
 		readInactiveBranch: (session) =>
-			sessionSnapshots.load(session.childSessionFile),
+			options.sessionSnapshots.load(session.childSessionFile),
 		onError: (error) => options.ctx.ui.notify(error.message, "error"),
 	});
 	const disposeStatusIndicator = installSubagentStatusIndicator(
@@ -864,14 +1016,18 @@ async function cancelRootWait(
 async function handleRootRuntimeRequest({
 	coordinator,
 	store,
+	queryBranches,
 	owner,
 	request,
 }: {
 	readonly coordinator: SubagentCoordinator;
 	readonly store: V2SessionStore;
+	readonly queryBranches: QueryBranchAccess;
 	readonly owner: OwnerIdentity;
 	readonly request: RuntimeRequest;
-}): Promise<AgentOperationResponse | { readonly acknowledged: true }> {
+}): Promise<
+	AgentOperationResponse | QueryBranchResponse | { readonly acknowledged: true }
+> {
 	if (request.operation === "owner_stopping") {
 		await recoverOwnerShutdown({
 			coordinator,
@@ -886,6 +1042,9 @@ async function handleRootRuntimeRequest({
 	}
 	if (request.operation === "cancel_wait") {
 		return cancelRootWait(coordinator, owner, request);
+	}
+	if (request.operation === "query_branch") {
+		return queryBranches.load(owner, request.payload.sessionId);
 	}
 	if (request.operation !== "agent_operation") {
 		throw new Error(`worker operation ${request.operation} is not permitted`);
@@ -953,10 +1112,7 @@ function failedAgentOperation(error: unknown): AgentOperationResponse {
 	const failure =
 		error instanceof SubagentToolError
 			? error.details
-			: {
-					code: "start_failed" as const,
-					message: errorMessage(error),
-				};
+			: new SubagentToolError("start_failed", errorMessage(error)).details;
 	return { kind: "failed", failure };
 }
 

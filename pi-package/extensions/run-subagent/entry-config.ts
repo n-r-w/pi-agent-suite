@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSuiteConfigFile } from "../../shared/agent-suite-storage";
+import {
+	isReasoningLevel,
+	type ReasoningLevel,
+} from "../../shared/reasoning-levels";
+import { hasExactKeys } from "./boundary-validation";
 import { readSubagentDepth } from "./environment";
 import { errorMessage } from "./error-message";
 
@@ -17,14 +22,28 @@ const DESCRIPTION_PROMPT_FILE_KEYS = [
 const CONFIG_KEYS = new Set<string>([
 	"enabled",
 	"maxDepth",
+	"query",
 	...DESCRIPTION_PROMPT_FILE_KEYS,
 ]);
 
 type DescriptionPromptFileKey = (typeof DESCRIPTION_PROMPT_FILE_KEYS)[number];
 
+/** Selects optional caller-local model overrides for subagent queries. */
+export interface SubagentQueryModelConfig {
+	readonly id?: string;
+	readonly thinking?: ReasoningLevel;
+}
+
+/** Holds query settings resolved during atomic extension configuration. */
+export interface SubagentQueryConfig {
+	readonly model?: SubagentQueryModelConfig;
+	readonly systemPrompt?: string;
+}
+
 export interface SubagentsV2Config {
 	readonly enabled: boolean;
 	readonly maxDepth: number;
+	readonly query?: SubagentQueryConfig;
 	readonly extensionDescription?: string;
 	readonly startDescription?: string;
 	readonly steerDescription?: string;
@@ -67,24 +86,16 @@ function parseConfigValue(value: unknown): SubagentsV2Config {
 	if (keys.some((key) => !CONFIG_KEYS.has(key))) {
 		return invalidConfig("configuration contains an unsupported key");
 	}
-	const enabled = Reflect.get(value, "enabled");
-	const maxDepth = Reflect.get(value, "maxDepth");
-	if (enabled !== undefined && typeof enabled !== "boolean") {
-		return invalidConfig("enabled must be boolean");
-	}
-	if (
-		maxDepth !== undefined &&
-		(typeof maxDepth !== "number" ||
-			!Number.isSafeInteger(maxDepth) ||
-			maxDepth < 0)
-	) {
-		return invalidConfig("maxDepth must be a non-negative safe integer");
-	}
+	let enabled: boolean;
+	let maxDepth: number;
+	let query: SubagentQueryConfig | undefined;
 	let extensionDescription: string | undefined;
 	let startDescription: string | undefined;
 	let steerDescription: string | undefined;
 	let waitDescription: string | undefined;
 	try {
+		({ enabled, maxDepth } = readBaseConfig(value));
+		query = readQueryConfig(Reflect.get(value, "query"));
 		extensionDescription = readConfiguredDescription(
 			value,
 			"extensionDescriptionPromptFile",
@@ -105,12 +116,79 @@ function parseConfigValue(value: unknown): SubagentsV2Config {
 		return invalidConfig(errorMessage(error));
 	}
 	return {
-		enabled: enabled ?? true,
-		maxDepth: maxDepth ?? DEFAULT_MAX_DEPTH,
+		enabled,
+		maxDepth,
+		...(query === undefined ? {} : { query }),
 		...(extensionDescription === undefined ? {} : { extensionDescription }),
 		...(startDescription === undefined ? {} : { startDescription }),
 		...(steerDescription === undefined ? {} : { steerDescription }),
 		...(waitDescription === undefined ? {} : { waitDescription }),
+	};
+}
+
+/** Resolves enabled and depth defaults after validating their primitive values. */
+function readBaseConfig(
+	value: object,
+): Pick<SubagentsV2Config, "enabled" | "maxDepth"> {
+	const enabled = Reflect.get(value, "enabled");
+	const maxDepth = Reflect.get(value, "maxDepth");
+	if (enabled !== undefined && typeof enabled !== "boolean") {
+		throw new Error("enabled must be boolean");
+	}
+	if (
+		maxDepth !== undefined &&
+		(typeof maxDepth !== "number" ||
+			!Number.isSafeInteger(maxDepth) ||
+			maxDepth < 0)
+	) {
+		throw new Error("maxDepth must be a non-negative safe integer");
+	}
+	return {
+		enabled: enabled ?? true,
+		maxDepth: maxDepth ?? DEFAULT_MAX_DEPTH,
+	};
+}
+
+/** Parses one optional query object without applying caller-local defaults. */
+function readQueryConfig(value: unknown): SubagentQueryConfig | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!hasExactKeys(value, [], ["model", "systemPromptFile"])) {
+		throw new Error("query must contain only model and systemPromptFile");
+	}
+	const model = readQueryModelConfig(Reflect.get(value, "model"));
+	const systemPrompt = readConfiguredTextFile(
+		Reflect.get(value, "systemPromptFile"),
+		"query.systemPromptFile",
+	);
+	return {
+		...(model === undefined ? {} : { model }),
+		...(systemPrompt === undefined ? {} : { systemPrompt }),
+	};
+}
+
+/** Parses optional query model overrides while preserving caller defaults. */
+function readQueryModelConfig(
+	value: unknown,
+): SubagentQueryModelConfig | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!hasExactKeys(value, [], ["id", "thinking"])) {
+		throw new Error("query.model must contain only id and thinking");
+	}
+	const id = Reflect.get(value, "id");
+	const thinking = Reflect.get(value, "thinking");
+	if (id !== undefined && !hasProviderModelShape(id)) {
+		throw new Error("query.model.id must use provider/model format");
+	}
+	if (thinking !== undefined && !isReasoningLevel(thinking)) {
+		throw new Error("query.model.thinking is invalid");
+	}
+	return {
+		...(id === undefined ? {} : { id }),
+		...(thinking === undefined ? {} : { thinking }),
 	};
 }
 
@@ -119,7 +197,14 @@ function readConfiguredDescription(
 	config: object,
 	key: DescriptionPromptFileKey,
 ): string | undefined {
-	const filePath = Reflect.get(config, key);
+	return readConfiguredTextFile(Reflect.get(config, key), key);
+}
+
+/** Reads one optional absolute text file and returns non-empty trimmed content. */
+function readConfiguredTextFile(
+	filePath: unknown,
+	field: string,
+): string | undefined {
 	if (filePath === undefined) {
 		return undefined;
 	}
@@ -128,18 +213,27 @@ function readConfiguredDescription(
 		filePath.trim().length === 0 ||
 		!isAbsolute(filePath)
 	) {
-		throw new Error(`${key} must be a non-empty absolute path`);
+		throw new Error(`${field} must be a non-empty absolute path`);
 	}
-	let description: string;
+	let content: string;
 	try {
-		description = readFileSync(filePath, "utf8").trim();
+		content = readFileSync(filePath, "utf8").trim();
 	} catch (error) {
-		throw new Error(`${key} could not be read: ${errorMessage(error)}`);
+		throw new Error(`${field} could not be read: ${errorMessage(error)}`);
 	}
-	if (description.length === 0) {
-		throw new Error(`${key} must reference a non-empty file`);
+	if (content.length === 0) {
+		throw new Error(`${field} must reference a non-empty file`);
 	}
-	return description;
+	return content;
+}
+
+/** Requires a non-empty provider and model component around the first slash. */
+function hasProviderModelShape(value: unknown): value is string {
+	if (typeof value !== "string") {
+		return false;
+	}
+	const separator = value.indexOf("/");
+	return separator > 0 && separator < value.length - 1;
 }
 
 /** Returns a fail-closed V2 configuration. */

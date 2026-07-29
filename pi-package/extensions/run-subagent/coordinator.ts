@@ -26,8 +26,10 @@ import {
 	InvocationStartError,
 } from "./invocation-contracts";
 import type { OwnerSessionStore } from "./persistence";
+import { sanitizePublicSubagentErrorMessage } from "./public-error";
 import type { RuntimeChannelFailure } from "./runtime-bridge";
 import type { SessionCatalogState } from "./session-catalog";
+import { resolveDirectChildSession } from "./session-ownership";
 import type { WaitRuntime } from "./wait-coordinator";
 
 /** Represents the only successful result produced by start and steering operations. */
@@ -272,7 +274,7 @@ export class SubagentCoordinator {
 			if (!this.options.isAgentAvailable(owner, request.agentId)) {
 				throw new SubagentToolError(
 					"agent_unavailable",
-					`callable agent ${request.agentId} is unavailable`,
+					`Subagent ${request.agentId} is unavailable`,
 				);
 			}
 			const ownerLocalSessionId = this.consumeNextLocalId(owner);
@@ -395,7 +397,11 @@ export class SubagentCoordinator {
 				scope.ownerRuntimeLeaseId,
 				"message_rejected",
 			);
-			const session = this.resolveOwnedSession(owner, request.sessionId);
+			const session = resolveDirectChildSession(
+				this.options.catalog,
+				owner,
+				request.sessionId,
+			);
 			return this.steerSession({
 				owner,
 				session,
@@ -443,7 +449,7 @@ export class SubagentCoordinator {
 				);
 			}
 			const sessions = request.sessionIds.map((sessionId) =>
-				this.resolveOwnedSession(owner, sessionId),
+				resolveDirectChildSession(this.options.catalog, owner, sessionId),
 			);
 			const selectedIds = new Set(
 				sessions
@@ -540,7 +546,11 @@ export class SubagentCoordinator {
 		owner: OwnerIdentity,
 		sessionId: number,
 	): AcceptedPresentationEvidence {
-		const session = this.resolveOwnedSession(owner, sessionId);
+		const session = resolveDirectChildSession(
+			this.options.catalog,
+			owner,
+			sessionId,
+		);
 		const metadata = session.invocationMetadata;
 		return {
 			presentationKind: "accepted",
@@ -583,7 +593,7 @@ export class SubagentCoordinator {
 					state: "terminal-failure",
 					outcome: {
 						status: "failure",
-						text: formatAcceptedExit(event.exitCode, event.signal),
+						text: formatAcceptedExit(),
 					},
 					invocationMetadata,
 					terminalObservedAt,
@@ -982,7 +992,7 @@ export class SubagentCoordinator {
 		) {
 			throw new SubagentToolError(
 				failureCode,
-				`runtime lease ${runtimeLeaseId} is stopped`,
+				"Subagent operation is no longer available",
 			);
 		}
 	}
@@ -1112,27 +1122,6 @@ export class SubagentCoordinator {
 			);
 		}
 		return session;
-	}
-
-	/** Resolves direct ownership while giving known foreign IDs precedence. */
-	private resolveOwnedSession(
-		owner: OwnerIdentity,
-		ownerLocalSessionId: number,
-	): LogicalSession {
-		const session = this.options.catalog.get(owner, ownerLocalSessionId);
-		if (session !== undefined) {
-			return session;
-		}
-		if (this.options.catalog.findByLocalId(ownerLocalSessionId).length > 0) {
-			throw new SubagentToolError(
-				"not_owner",
-				`session ${ownerLocalSessionId} is not directly owned by the caller`,
-			);
-		}
-		throw new SubagentToolError(
-			"unknown_session",
-			`session ${ownerLocalSessionId} is unknown`,
-		);
 	}
 
 	/** Finds the current session for one supervisor event. */
@@ -1320,7 +1309,12 @@ function mapInvocationError(
 		return error;
 	}
 	if (error instanceof InvocationStartError) {
-		return new SubagentToolError(error.code, error.message);
+		return new SubagentToolError(
+			error.code,
+			error.code === "message_rejected"
+				? "Subagent could not accept the message"
+				: "Subagent could not start",
+		);
 	}
 	return new SubagentToolError(fallback, errorMessage(error));
 }
@@ -1346,19 +1340,14 @@ function createFeedback(
 	};
 	return outcome.status === "success"
 		? { ...common, status: "success", output: outcome.text }
-		: { ...common, status: outcome.status, error: outcome.text };
+		: {
+				...common,
+				status: outcome.status,
+				error: sanitizePublicSubagentErrorMessage(outcome.text),
+			};
 }
 
-/** Formats safe abnormal-exit diagnostics from only available process facts. */
-function formatAcceptedExit(
-	exitCode: number | null,
-	signal: NodeJS.Signals | null,
-): string {
-	const diagnostics = [
-		exitCode === null ? undefined : `exit code ${exitCode}`,
-		signal === null ? undefined : `signal ${signal}`,
-	].filter((value) => value !== undefined);
-	return diagnostics.length === 0
-		? "child exited without a terminal event"
-		: `child exited without a terminal event (${diagnostics.join(", ")})`;
+/** Describes an accepted invocation that stopped before terminal feedback. */
+function formatAcceptedExit(): string {
+	return "Subagent stopped before completing the task";
 }

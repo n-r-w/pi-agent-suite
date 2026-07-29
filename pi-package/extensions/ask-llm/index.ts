@@ -21,12 +21,19 @@ import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
-import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
+import {
+	type AuxiliaryLlmCompletion,
+	type AuxiliaryLlmRuntime,
+	buildAuxiliaryLlmOptions,
+	completeAuxiliaryLlm,
+	doesAuxiliaryLlmInputFitContextWindow,
+	getAuxiliaryLlmResponseText,
+	resolveAuxiliaryLlmRuntime,
+} from "../../shared/auxiliary-llm";
 import {
 	collectLoadedSkillRoots,
 	replayContextProjection,
 } from "../../shared/context-projection";
-import { estimateSerializedInputTokens } from "../../shared/context-size";
 import { readPathEnvironment } from "../../shared/environment";
 import {
 	type CreateFileAutocompleteProvider,
@@ -95,21 +102,13 @@ type PromptReadResult =
 	| { readonly prompt: string }
 	| { readonly issue: string };
 
-type RuntimeResult =
-	| { readonly runtime: AskLlmRuntime }
-	| { readonly issue: string };
-
 type AskLlmResult =
 	| { readonly kind: "success"; readonly answer: string }
 	| { readonly kind: "cancelled" }
 	| { readonly kind: "issue"; readonly issue: string };
 
 interface AskLlmDependencies {
-	readonly completeSimple?: (
-		model: Model<Api>,
-		context: Context,
-		options?: SimpleStreamOptions,
-	) => Promise<AssistantMessage>;
+	readonly completeSimple?: AuxiliaryLlmCompletion;
 	readonly copyToClipboard?: (text: string) => Promise<void>;
 	readonly resolveFdPath?: () => string | null;
 	readonly createAutocompleteProvider?: CreateFileAutocompleteProvider;
@@ -119,12 +118,6 @@ interface AskLlmConfig {
 	readonly model?: { readonly id?: string; readonly thinking?: Thinking };
 	readonly systemPromptFile: string;
 	readonly retry: RetryConfig;
-}
-
-interface AskLlmRuntime {
-	readonly model: Model<Api>;
-	readonly apiKey?: string;
-	readonly headers?: Record<string, string>;
 }
 
 interface AskLlmCommandContext extends ExtensionCommandContext {
@@ -319,7 +312,7 @@ async function executeAskLlm({
 		return { kind: "issue", issue: promptResult.issue };
 	}
 
-	const runtimeResult = await resolveRuntime(
+	const runtimeResult = await resolveAuxiliaryLlmRuntime(
 		ctx,
 		configResult.config.model?.id,
 	);
@@ -334,24 +327,24 @@ async function executeAskLlm({
 		loadedSkillRoots,
 		contextFiles,
 	});
-	if (!doesAskLlmInputFitContextWindow(context, runtimeResult.runtime.model)) {
+	if (
+		!doesAuxiliaryLlmInputFitContextWindow(context, runtimeResult.runtime.model)
+	) {
 		return {
 			kind: "issue",
 			issue: "ask-llm input exceeds model context window",
 		};
 	}
 
-	const auxiliarySessionId = createAuxiliaryLlmSessionId();
 	const response = await executeAskLlmModelWithRetry({
 		completeSimple,
 		runtime: runtimeResult.runtime,
 		context,
-		options: buildOptions(
+		options: buildAuxiliaryLlmOptions(
 			configResult.config.model?.thinking ??
 				parseThinking(currentThinkingLevel),
 			signal,
 			runtimeResult.runtime,
-			auxiliarySessionId,
 		),
 		retry: configResult.config.retry,
 	});
@@ -368,7 +361,7 @@ async function executeAskLlm({
 		};
 	}
 
-	const answer = getResponseText(response);
+	const answer = getAuxiliaryLlmResponseText(response);
 	if (answer.length === 0) {
 		return { kind: "issue", issue: "model response did not contain text" };
 	}
@@ -639,63 +632,6 @@ async function readSystemPrompt(path: string): Promise<PromptReadResult> {
 	}
 }
 
-/** Resolves the configured model or current session model and its auth data. */
-async function resolveRuntime(
-	ctx: AskLlmCommandContext,
-	modelId: string | undefined,
-): Promise<RuntimeResult> {
-	const model =
-		modelId === undefined ? ctx.model : resolveConfiguredModel(ctx, modelId);
-	if (model === undefined) {
-		return {
-			issue:
-				modelId === undefined
-					? "current model is unavailable"
-					: `model ${modelId} was not found`,
-		};
-	}
-
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		return { issue: `model auth unavailable: ${auth.error}` };
-	}
-
-	return {
-		runtime: {
-			model,
-			...(auth.apiKey !== undefined ? { apiKey: auth.apiKey } : {}),
-			...(auth.headers !== undefined ? { headers: auth.headers } : {}),
-		},
-	};
-}
-
-/** Resolves provider/model IDs through the pi model registry. */
-function resolveConfiguredModel(
-	ctx: AskLlmCommandContext,
-	modelId: string,
-): Model<Api> | undefined {
-	const separatorIndex = modelId.indexOf("/");
-	if (separatorIndex <= 0 || separatorIndex === modelId.length - 1) {
-		return undefined;
-	}
-
-	return ctx.modelRegistry.find(
-		modelId.slice(0, separatorIndex),
-		modelId.slice(separatorIndex + 1),
-	);
-}
-
-/** Builds provider options while keeping off as no reasoning option. */
-function doesAskLlmInputFitContextWindow(
-	context: Context,
-	model: Model<Api>,
-): boolean {
-	return (
-		estimateSerializedInputTokens(context, model.id, model.provider) <=
-		model.contextWindow
-	);
-}
-
 async function executeAskLlmModelWithRetry({
 	completeSimple,
 	runtime,
@@ -704,7 +640,7 @@ async function executeAskLlmModelWithRetry({
 	retry,
 }: {
 	readonly completeSimple: NonNullable<AskLlmDependencies["completeSimple"]>;
-	readonly runtime: AskLlmRuntime;
+	readonly runtime: AuxiliaryLlmRuntime;
 	readonly context: Context;
 	readonly options: SimpleStreamOptions;
 	readonly retry: RetryConfig;
@@ -712,7 +648,12 @@ async function executeAskLlmModelWithRetry({
 	try {
 		return await withRetry(
 			async () => {
-				const answer = await completeSimple(runtime.model, context, options);
+				const answer = await completeAuxiliaryLlm(
+					completeSimple,
+					runtime,
+					context,
+					options,
+				);
 				if (answer.stopReason === "error") {
 					throw createRetryableExternalError(
 						answer.errorMessage ?? "model provider returned an error",
@@ -725,28 +666,6 @@ async function executeAskLlmModelWithRetry({
 	} catch (error) {
 		return { issue: `Ask LLM request failed: ${formatError(error)}` };
 	}
-}
-
-function buildOptions(
-	thinking: Thinking | undefined,
-	signal: AbortSignal | undefined,
-	runtime: AskLlmRuntime,
-	sessionId: string,
-): SimpleStreamOptions {
-	const options: SimpleStreamOptions = { sessionId };
-	if (signal !== undefined) {
-		options.signal = signal;
-	}
-	if (runtime.apiKey !== undefined) {
-		options.apiKey = runtime.apiKey;
-	}
-	if (runtime.headers !== undefined) {
-		options.headers = runtime.headers;
-	}
-	if (thinking !== undefined && thinking !== "off") {
-		options.reasoning = thinking;
-	}
-	return options;
 }
 
 /** Shows the question and answer in focused UI without appending them to the session. */
@@ -778,15 +697,6 @@ async function showAnswer(
 			}),
 		ASK_LLM_OVERLAY_OPTIONS,
 	);
-}
-
-/** Extracts visible text from a model response. */
-function getResponseText(message: AssistantMessage): string {
-	return message.content
-		.filter((part) => part.type === "text")
-		.map((part) => part.text)
-		.join("\n")
-		.trim();
 }
 
 /** Reports an ask-llm issue only through UI warnings. */

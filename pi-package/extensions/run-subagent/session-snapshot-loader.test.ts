@@ -9,7 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPersistedSession } from "../../../test/support/persisted-session";
-import { SessionSnapshotLoader } from "./session-snapshot-loader";
+import {
+	SessionSnapshotError,
+	SessionSnapshotLoader,
+} from "./session-snapshot-loader";
 
 const fixtures: string[] = [];
 
@@ -18,6 +21,21 @@ function createFixtureDirectory(): string {
 	const directory = mkdtempSync(join(tmpdir(), "session-snapshot-loader-"));
 	fixtures.push(directory);
 	return directory;
+}
+
+/** Captures one classified loader failure without weakening its rejection contract. */
+async function captureSnapshotError(
+	operation: Promise<readonly unknown[]>,
+): Promise<SessionSnapshotError> {
+	try {
+		await operation;
+	} catch (error) {
+		if (error instanceof SessionSnapshotError) {
+			return error;
+		}
+		throw error;
+	}
+	throw new Error("snapshot operation unexpectedly succeeded");
 }
 
 /** Removes every isolated session fixture after its test. */
@@ -94,6 +112,16 @@ describe("SessionSnapshotLoader", () => {
 		await expect(loader.load(invalidFile)).rejects.toThrow(
 			"failed to load saved Pi session",
 		);
+		const classified = await Promise.all([
+			captureSnapshotError(loader.load(missingFile)),
+			captureSnapshotError(loader.load(emptyFile)),
+			captureSnapshotError(loader.load(invalidFile)),
+		]);
+		expect(classified.map((error) => error.kind)).toEqual([
+			"unavailable",
+			"empty",
+			"invalid",
+		]);
 		expect(Bun.file(emptyFile).size).toBe(0);
 	});
 });

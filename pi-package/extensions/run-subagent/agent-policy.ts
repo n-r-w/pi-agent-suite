@@ -49,7 +49,7 @@ export async function resolveLaunchConfiguration(
 	if (agent === undefined) {
 		throw new InvocationStartError(
 			"start_failed",
-			`callable agent ${request.agentId} disappeared before launch`,
+			`Subagent ${request.agentId} is unavailable`,
 		);
 	}
 	const model = resolveAgentModel(agent, ctx);

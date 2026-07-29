@@ -3,7 +3,13 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Model,
+	SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
 import {
 	type AgentToolResult,
 	type ExtensionAPI,
@@ -31,6 +37,7 @@ import {
 	resolveCallerSelectedAgentId,
 } from "./agent-policy";
 import {
+	SubagentQueryParameters,
 	SubagentStartParameters,
 	SubagentSteerParameters,
 	SubagentWaitParameters,
@@ -204,6 +211,7 @@ function createContext(
 	directory: string,
 	entries: readonly unknown[] = [],
 	options: {
+		readonly authenticated?: boolean;
 		readonly custom?: (...args: unknown[]) => Promise<unknown>;
 		readonly mode?: ExtensionContext["mode"];
 		readonly model?: Model<Api>;
@@ -227,7 +235,9 @@ function createContext(
 			find: () => options.model,
 			getApiKeyAndHeaders: async () => {
 				options.onAuthRequest?.();
-				return { ok: false, error: "missing" };
+				return options.authenticated === true
+					? { ok: true as const, apiKey: "test-key" }
+					: { ok: false as const, error: "missing" };
 			},
 		},
 		sessionManager: {
@@ -315,6 +325,147 @@ describe("subagents V2 entry", () => {
 			},
 			outcome: undefined,
 		});
+	});
+
+	test("queries a worker-owned branch while invoking the model only in the worker", async () => {
+		// Purpose: a worker caller must retrieve saved branch data through process IPC and execute the auxiliary model locally.
+		// Input and expected output: one query_branch response produces answer-only tool content from the worker completion fake.
+		// Edge case: the IPC payload contains the session ID but excludes the question, model, credentials, prompt, answer, usage, and cost.
+		// Dependencies: production worker bridge, process IPC fake, and caller-local completion fake.
+		const previousRuntimeLease = process.env[SUBAGENT_RUNTIME_LEASE_ENV];
+		const previousOwnerSession = process.env[SUBAGENT_OWNER_SESSION_ENV];
+		const previousSend = process.send;
+		const previousConnectedDescriptor = Object.getOwnPropertyDescriptor(
+			process,
+			"connected",
+		);
+		const initialMessageListeners = process.listeners("message");
+		const ipcMessages: unknown[] = [];
+		const modelContexts: Context[] = [];
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, [], {
+			authenticated: true,
+			model: TEST_MODEL,
+		});
+		process.env[SUBAGENT_RUNTIME_LEASE_ENV] = "worker-query-lease";
+		process.env[SUBAGENT_OWNER_SESSION_ENV] = "owner-pi";
+		Object.defineProperty(process, "connected", {
+			configurable: true,
+			enumerable: true,
+			value: true,
+			writable: true,
+		});
+		Reflect.set(
+			process,
+			"send",
+			(message: unknown, callback?: (error: Error | null) => void): boolean => {
+				ipcMessages.push(message);
+				callback?.(null);
+				return true;
+			},
+		);
+
+		try {
+			await subagentsV2(pi, {
+				completeSimple: async (_model, context) => {
+					modelContexts.push(context);
+					return {
+						role: "assistant",
+						content: [{ type: "text", text: "worker answer" }],
+						api: TEST_MODEL.api,
+						provider: TEST_MODEL.provider,
+						model: TEST_MODEL.id,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "stop",
+						timestamp: 1,
+					};
+				},
+			});
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const pending = getTool(pi, "subagent_query").execute(
+				"worker-query",
+				{ sessionId: 4, question: "What happened?" },
+				undefined,
+				undefined,
+				ctx,
+			);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			const requestMessage = ipcMessages.find(
+				(value) =>
+					typeof value === "object" &&
+					value !== null &&
+					Reflect.get(value, "kind") === "subagents-v2-request" &&
+					Reflect.get(Reflect.get(value, "request"), "operation") ===
+						"query_branch",
+			);
+			if (typeof requestMessage !== "object" || requestMessage === null) {
+				throw new Error("worker query did not send a branch request");
+			}
+			const request = Reflect.get(requestMessage, "request");
+			process.emit("message", {
+				kind: "subagents-v2-response",
+				source: "root",
+				runtimeLeaseId: "worker-query-lease",
+				requestId: Reflect.get(request, "requestId"),
+				succeeded: true,
+				result: {
+					kind: "ok",
+					branch: [
+						{
+							type: "message",
+							id: "worker-entry",
+							parentId: null,
+							timestamp: "2026-07-29T00:00:00.000Z",
+							message: {
+								role: "user",
+								content: "worker saved context",
+								timestamp: 1,
+							},
+						},
+					],
+				},
+			});
+			const result = await pending;
+
+			expect(result.content).toEqual([{ type: "text", text: "worker answer" }]);
+			expect(Reflect.get(request, "payload")).toEqual({ sessionId: 4 });
+			expect(JSON.stringify(modelContexts[0]?.messages)).toContain(
+				"worker saved context",
+			);
+			expect(modelContexts[0]?.messages.at(-1)).toMatchObject({
+				role: "user",
+				content: "<question>\nWhat happened?\n</question>",
+			});
+		} finally {
+			for (const listener of process.listeners("message")) {
+				if (!initialMessageListeners.includes(listener)) {
+					process.removeListener("message", listener);
+				}
+			}
+			Reflect.set(process, "send", previousSend);
+			if (previousConnectedDescriptor !== undefined) {
+				Object.defineProperty(
+					process,
+					"connected",
+					previousConnectedDescriptor,
+				);
+			}
+			restoreEnvironment(SUBAGENT_RUNTIME_LEASE_ENV, previousRuntimeLease);
+			restoreEnvironment(SUBAGENT_OWNER_SESSION_ENV, previousOwnerSession);
+		}
 	});
 
 	test("rejects malformed worker persistence commands before writes", async () => {
@@ -851,7 +1002,7 @@ describe("subagents V2 entry", () => {
 
 	test("registers the permitted V2 tools and one semantic feedback renderer", async () => {
 		// Purpose: normal rendering and management replay must use the exact approved V2 tool and feedback renderer references.
-		// Input and expected output: start, steer, wait, and one subagents-v2-feedback renderer register once; management resolves the same tool renderer functions.
+		// Input and expected output: start, steer, wait, query, and one subagents-v2-feedback renderer register once; management resolves the same tool renderer functions.
 		// Edge case: static management presentation remains available before any session starts.
 		// Dependencies: production entry registration and static presentation registry.
 		const pi = createPiFake();
@@ -875,14 +1026,129 @@ describe("subagents V2 entry", () => {
 				};
 			}),
 		}).toEqual({
-			tools: ["subagent_start", "subagent_steer", "subagent_wait"],
+			tools: [
+				"subagent_query",
+				"subagent_start",
+				"subagent_steer",
+				"subagent_wait",
+			],
 			messageRenderers: ["subagents-v2-feedback"],
 			sharedToolRenderers: [
 				{ name: "subagent_start", call: true, result: true },
 				{ name: "subagent_steer", call: true, result: true },
 				{ name: "subagent_wait", call: true, result: true },
+				{ name: "subagent_query", call: true, result: true },
 			],
 		});
+	});
+
+	test("queries one root-owned saved child without invoking the child", async () => {
+		// Purpose: a root caller must load one direct child's saved branch and run the auxiliary model in the calling Pi process.
+		// Input and expected output: reconstructed ownership plus a saved child message produce answer-only tool content, elapsed presentation details, and caller cost attribution.
+		// Edge case: the model receives no tools, while no invocation supervisor method is called.
+		// Dependencies: public persisted SessionManager fixtures, production reconstruction, and one injected completion fake.
+		const child = createPersistedSession(join(suiteDir, "query-child"), {
+			id: "query-child-pi",
+			text: "saved child context",
+		});
+		const childFile = child.getSessionFile();
+		if (childFile === undefined) {
+			throw new Error("query child SessionManager did not create a file");
+		}
+		const parent = createPersistedSession(join(suiteDir, "query-parent"), {
+			id: "owner-pi",
+			text: "parent context",
+		});
+		const session = {
+			key: { ownerPiSessionId: parent.getSessionId(), ownerLocalSessionId: 1 },
+			childPiSessionId: child.getSessionId(),
+			childSessionDir: child.getSessionDir(),
+			childSessionFile: childFile,
+			agentId: "SubAgentCoder",
+			taskName: "Saved query child",
+			creationOrder: 1,
+			invocationId: "query-invocation",
+			runtimeLeaseId: "query-lease",
+			invocationMetadata: TEST_INVOCATION_METADATA,
+			state: "active" as const,
+		};
+		parent.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+			kind: "session-accepted",
+			session,
+		} satisfies JournalRecord);
+		const calls: Array<{
+			readonly context: Context;
+			readonly options: SimpleStreamOptions | undefined;
+		}> = [];
+		const response: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "saved answer" }],
+			api: TEST_MODEL.api,
+			provider: TEST_MODEL.provider,
+			model: TEST_MODEL.id,
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0.2,
+				},
+			},
+			stopReason: "stop",
+			timestamp: 1,
+		};
+		const pi = createPiFake();
+		const ctx = {
+			...createContext(suiteDir, [], {
+				authenticated: true,
+				model: TEST_MODEL,
+			}),
+			sessionManager: parent,
+		} as ExtensionContext;
+		const startSpy = spyOn(InvocationSupervisor.prototype, "start");
+		const continueSpy = spyOn(InvocationSupervisor.prototype, "continue");
+		try {
+			await subagentsV2(pi, {
+				completeSimple: async (_model, context, options) => {
+					calls.push({ context, options });
+					return response;
+				},
+			});
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const result = await getTool(pi, "subagent_query").execute(
+				"query-root",
+				{ sessionId: 1, question: "What happened?" },
+				undefined,
+				undefined,
+				ctx,
+			);
+
+			expect(result.content).toEqual([{ type: "text", text: "saved answer" }]);
+			expect(result.details).toMatchObject({ answer: "saved answer" });
+			const elapsedMs = Reflect.get(result.details as object, "elapsedMs");
+			expect(typeof elapsedMs).toBe("number");
+			expect(elapsedMs).toBeGreaterThanOrEqual(0);
+			expect(JSON.stringify(calls[0]?.context.messages)).toContain(
+				"saved child context",
+			);
+			expect(calls[0]?.context.tools).toEqual([]);
+			expect(pi.appendedEntries).toContainEqual([
+				"helper-api-cost",
+				{ source: "subagent-query", cost: 0.2 },
+			]);
+			expect(startSpy).not.toHaveBeenCalled();
+			expect(continueSpy).not.toHaveBeenCalled();
+		} finally {
+			startSpy.mockRestore();
+			continueSpy.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
 	});
 
 	test("keeps accepted presentation evidence out of model-visible tool JSON", async () => {
@@ -1106,18 +1372,26 @@ describe("subagents V2 entry", () => {
 					start: getTool(pi, "subagent_start").description,
 					steer: getTool(pi, "subagent_steer").description,
 					wait: getTool(pi, "subagent_wait").description,
+					query: getTool(pi, "subagent_query").description,
 				},
 			}).toEqual({
 				toolsBeforeConfig: [
+					"subagent_query",
 					"subagent_start",
 					"subagent_steer",
 					"subagent_wait",
 				],
-				allRegistrations: ["subagent_start", "subagent_steer", "subagent_wait"],
+				allRegistrations: [
+					"subagent_query",
+					"subagent_start",
+					"subagent_steer",
+					"subagent_wait",
+				],
 				descriptions: {
 					start: "snapshot start",
 					steer: "snapshot steer",
 					wait: "snapshot wait",
+					query: readPrompt("query-description.md"),
 				},
 			});
 		} finally {
@@ -1152,6 +1426,15 @@ describe("subagents V2 entry", () => {
 				sessionId: 1,
 				prompt: "Change direction",
 			}),
+			queryValid: Check(SubagentQueryParameters, {
+				sessionId: 1,
+				question: "What changed?",
+			}),
+			queryExtraRejected: Check(SubagentQueryParameters, {
+				sessionId: 1,
+				question: "What changed?",
+				extra: true,
+			}),
 			waitDuplicateRejected: Check(SubagentWaitParameters, {
 				sessionIds: [1, 1],
 				timeoutMs: 1,
@@ -1165,6 +1448,8 @@ describe("subagents V2 entry", () => {
 			unicodeCodePointsValid: true,
 			startExtraRejected: false,
 			steerValid: true,
+			queryValid: true,
+			queryExtraRejected: false,
 			waitDuplicateRejected: false,
 			waitZeroRejected: false,
 		});
@@ -2161,7 +2446,7 @@ describe("subagents V2 entry", () => {
 
 	test("keeps malformed-config tool callbacks inert after early registration", async () => {
 		// Purpose: exact configuration rejection must coexist with tool registration before asynchronous parsing.
-		// Input and expected output: each malformed configuration registers three tools whose execution returns start_failed.
+		// Input and expected output: each malformed configuration registers four tools whose execution returns start_failed.
 		// Edge case: every case uses a fresh extension runtime so one invalid parse cannot affect another result.
 		// Dependencies: suite-owned config file, production parser, and stable registered execution callbacks.
 		const configDir = join(suiteDir, "run-subagent");
@@ -2200,7 +2485,7 @@ describe("subagents V2 entry", () => {
 		}
 
 		expect(observations).toEqual(
-			invalidContents.map(() => ({ count: 3, code: "start_failed" })),
+			invalidContents.map(() => ({ count: 4, code: "start_failed" })),
 		);
 	});
 
@@ -2663,7 +2948,7 @@ describe("subagents V2 entry", () => {
 
 	test("registers inert V2 tools when explicitly disabled", async () => {
 		// Purpose: disabled configuration must keep early tool definitions stable without initializing runtime behavior.
-		// Input and expected output: enabled false registers three tools and execution returns start_failed.
+		// Input and expected output: enabled false registers four tools and execution returns start_failed.
 		// Edge case: maxDepth is omitted because disabled configuration cannot execute a runtime operation.
 		// Dependencies: suite-owned Subagents V2 config file and stable registered execution callbacks.
 		const configDir = join(suiteDir, "run-subagent");
@@ -2687,7 +2972,12 @@ describe("subagents V2 entry", () => {
 			.catch((error: unknown) => readCode(readFailureDetails(error)));
 
 		expect({ tools: pi.tools.map((tool) => tool.name).sort(), code }).toEqual({
-			tools: ["subagent_start", "subagent_steer", "subagent_wait"],
+			tools: [
+				"subagent_query",
+				"subagent_start",
+				"subagent_steer",
+				"subagent_wait",
+			],
 			code: "start_failed",
 		});
 	});

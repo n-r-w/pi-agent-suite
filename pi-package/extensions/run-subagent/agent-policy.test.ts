@@ -101,12 +101,17 @@ describe("effective callable-agent policy", () => {
 
 	test("keeps extension guidance when maxDepth removes only new-session delegation", async () => {
 		// Purpose: maxDepth must not remove shared guidance needed to control saved direct children.
-		// Input and expected output: a boundary-depth owner loses subagent_start, retains steer and wait, and receives configured extension guidance without callable-agent listing.
+		// Input and expected output: a boundary-depth owner loses subagent_start, retains steer, wait, and query, and receives configured extension guidance without callable-agent listing.
 		// Edge case: prompt composition runs after the active-tool filter has removed the only tool that can create descendants.
 		// Dependencies: production runtime composition and Subagents V2 active-tool policy.
 		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
 		process.env[SUBAGENT_DEPTH_ENV] = "1";
-		let activeTools = ["subagent_start", "subagent_steer", "subagent_wait"];
+		let activeTools = [
+			"subagent_start",
+			"subagent_steer",
+			"subagent_wait",
+			"subagent_query",
+		];
 		let beforeAgentStart:
 			| ((event: unknown, ctx: unknown) => Promise<unknown>)
 			| undefined;
@@ -131,7 +136,11 @@ describe("effective callable-agent policy", () => {
 				{ systemPrompt: "Base" },
 				{ cwd: "/tmp" },
 			)) as { readonly systemPrompt?: string } | undefined;
-			expect(activeTools).toEqual(["subagent_steer", "subagent_wait"]);
+			expect(activeTools).toEqual([
+				"subagent_steer",
+				"subagent_wait",
+				"subagent_query",
+			]);
 			expect(result?.systemPrompt ?? "").toContain(
 				"<subagent_tools_guidelines>\nShared extension guidance\n</subagent_tools_guidelines>",
 			);
