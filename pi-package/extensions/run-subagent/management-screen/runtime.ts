@@ -41,6 +41,8 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 	private readonly unsubscribeCatalog: () => void;
 	private readonly unsubscribeActivity: () => void;
 	private refreshRequested = false;
+	/** Retains event activity until the asynchronously opened loader owns selection. */
+	private openingRefreshRequested = false;
 	private refreshPromise: Promise<void> | undefined;
 	private selectedConversation: SelectedConversationLoader | undefined;
 	private selectionController: AbortController | undefined;
@@ -88,6 +90,9 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 
 		const generation = this.selectionGeneration + 1;
 		this.selectionGeneration = generation;
+		// A different selection cannot inherit activity queued for the prior identity.
+		this.refreshRequested = false;
+		this.openingRefreshRequested = false;
 		await this.releaseSelectedConversation();
 		if (this.disposed || generation !== this.selectionGeneration) {
 			return;
@@ -114,6 +119,12 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 			}
 			this.selectedConversation = loader;
 			this.publishConversation(session, loader);
+			// Activity can arrive after the opening snapshot is captured but before
+			// this loader takes ownership, so drain its retained incremental refresh.
+			if (this.openingRefreshRequested) {
+				this.openingRefreshRequested = false;
+				this.requestRefreshAfterEvent();
+			}
 		} catch (error) {
 			if (
 				controller.signal.aborted ||
@@ -189,6 +200,8 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 		}
 		this.disposed = true;
 		this.selectionGeneration += 1;
+		this.refreshRequested = false;
+		this.openingRefreshRequested = false;
 		this.selectionController?.abort(
 			new Error("management conversation selection was disposed"),
 		);
@@ -238,8 +251,12 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 		}
 	}
 
-	/** Starts an event-driven refresh while reporting, rather than hiding, failure. */
+	/** Starts an event refresh or retains it until the selected loader is ready. */
 	private requestRefreshAfterEvent(): void {
+		if (this.selectedConversation === undefined) {
+			this.openingRefreshRequested = true;
+			return;
+		}
 		this.refreshSelected().catch((error: unknown) =>
 			this.options.onError(toError(error)),
 		);
