@@ -1,7 +1,3 @@
-import {
-	type SessionEntry,
-	SessionManager,
-} from "@earendil-works/pi-coding-agent";
 import type { LogicalSession } from "../domain";
 import {
 	HierarchyConversationProjection,
@@ -9,6 +5,11 @@ import {
 	projectionStableKey,
 } from "../projection";
 import type { ManagementViewSource } from "./screen";
+import type {
+	InactiveConversationReader,
+	SelectedConversationActiveSource,
+} from "./selected-conversation";
+import { SelectedConversationLoader } from "./selected-conversation";
 
 /** Supplies accepted catalog facts without exposing mutation operations. */
 interface ManagementCatalogSource {
@@ -16,32 +17,10 @@ interface ManagementCatalogSource {
 	subscribe(listener: (session: LogicalSession) => void): () => void;
 }
 
-/** Supplies active Pi entry pages and child activity through public RPC. */
-interface ManagementActiveConversationSource {
-	readActiveEntries(
-		invocationId: string,
-		since?: string,
-	): Promise<{
-		readonly entries: readonly SessionEntry[];
-		readonly leafId: string | null;
-	}>;
+/** Adds activity notification ownership to selected-session active reads. */
+interface ManagementActiveConversationSource
+	extends SelectedConversationActiveSource {
 	subscribeActivity(listener: (invocationId: string) => void): () => void;
-}
-
-/** Holds only the selected active session's append-order entries and derived branch. */
-interface ActiveConversationCache {
-	readonly invocationId: string;
-	readonly entriesById: Map<string, SessionEntry>;
-	lastEntryId: string | undefined;
-	leafId: string | null;
-	branch: readonly SessionEntry[];
-	version: number;
-}
-
-/** Couples one branch with a payload-independent revision used by immutable projection. */
-interface ConversationRead {
-	readonly entries: readonly SessionEntry[];
-	readonly version: number;
 }
 
 /** Supplies deterministic runtime dependencies around the immutable projection. */
@@ -49,9 +28,7 @@ interface ManagementProjectionRuntimeOptions {
 	readonly rootOwnerPiSessionId: string;
 	readonly catalog: ManagementCatalogSource;
 	readonly activeConversations: ManagementActiveConversationSource;
-	readonly readInactiveBranch?: (
-		session: LogicalSession,
-	) => Promise<readonly SessionEntry[]> | readonly SessionEntry[];
+	readonly readInactiveBranch?: InactiveConversationReader;
 	readonly onError: (error: Error) => void;
 }
 
@@ -65,7 +42,8 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 	private readonly unsubscribeActivity: () => void;
 	private refreshRequested = false;
 	private refreshPromise: Promise<void> | undefined;
-	private activeConversation: ActiveConversationCache | undefined;
+	private selectedConversation: SelectedConversationLoader | undefined;
+	private selectionController: AbortController | undefined;
 	private conversationVersion = 0;
 	private selectionGeneration = 0;
 	private disposed = false;
@@ -94,7 +72,7 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 		return this.projection.getView();
 	}
 
-	/** Selects by internal identity and loads only that logical session's active branch. */
+	/** Selects by internal identity and publishes one recent turn before full hydration. */
 	public async select(stableKey: string | null): Promise<void> {
 		if (this.disposed) {
 			return;
@@ -104,15 +82,81 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 			.nodes.find((candidate) => candidate.stableKey === stableKey);
 		const before = this.projection.getView();
 		const next = this.projection.select(node?.key ?? null);
-		if (before.selectedStableKey !== next.selectedStableKey) {
-			this.activeConversation = undefined;
+		if (before.selectedStableKey === next.selectedStableKey) {
+			return;
 		}
-		this.selectionGeneration += 1;
+
+		const generation = this.selectionGeneration + 1;
+		this.selectionGeneration = generation;
+		await this.releaseSelectedConversation();
+		if (this.disposed || generation !== this.selectionGeneration) {
+			return;
+		}
 		this.publishRevision(before, next);
-		await this.refreshSelected();
+		const session = this.selectedSession();
+		if (session === undefined) {
+			return;
+		}
+
+		const controller = new AbortController();
+		this.selectionController = controller;
+		let loader: SelectedConversationLoader | undefined;
+		try {
+			loader = await SelectedConversationLoader.open({
+				session,
+				controller,
+				activeConversations: this.options.activeConversations,
+				...(this.options.readInactiveBranch === undefined
+					? {}
+					: { readInactiveBranch: this.options.readInactiveBranch }),
+			});
+			if (!this.ownsOpeningSelection(session, generation)) {
+				await loader.dispose();
+				return;
+			}
+			this.selectedConversation = loader;
+			this.publishConversation(session, loader);
+		} catch (error) {
+			if (
+				controller.signal.aborted ||
+				generation !== this.selectionGeneration
+			) {
+				await loader?.dispose();
+				return;
+			}
+			throw error;
+		}
 	}
 
-	/** Coalesces live updates into one selected-branch read at a time. */
+	/** Loads one preceding user turn for viewport-driven preview expansion. */
+	public async loadEarlierSelected(): Promise<boolean> {
+		const loader = this.selectedConversation;
+		const generation = this.selectionGeneration;
+		const session = this.selectedSession();
+		if (this.disposed || loader === undefined || session === undefined) {
+			return true;
+		}
+		const before = loader.getSnapshot();
+		let complete: boolean;
+		try {
+			complete = await loader.loadEarlier();
+		} catch (error) {
+			if (!this.ownsSelection(loader, session, generation)) {
+				return true;
+			}
+			throw error;
+		}
+		const after = loader.getSnapshot();
+		if (
+			this.ownsSelection(loader, session, generation) &&
+			(before.entries !== after.entries || before.complete !== after.complete)
+		) {
+			this.publishConversation(session, loader);
+		}
+		return this.selectedConversation !== loader || complete;
+	}
+
+	/** Coalesces background hydration and live updates into one selected read at a time. */
 	public refreshSelected(): Promise<void> {
 		if (this.disposed) {
 			return Promise.resolve();
@@ -147,9 +191,19 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 		}
 		this.disposed = true;
 		this.selectionGeneration += 1;
+		this.selectionController?.abort(
+			new Error("management conversation selection was disposed"),
+		);
+		this.selectionController = undefined;
+		const selected = this.selectedConversation;
+		this.selectedConversation = undefined;
+		if (selected !== undefined) {
+			selected
+				.dispose()
+				.catch((error: unknown) => this.options.onError(toError(error)));
+		}
 		this.unsubscribeCatalog();
 		this.unsubscribeActivity();
-		this.activeConversation = undefined;
 		this.projection.select(null);
 		this.subscribers.clear();
 	}
@@ -212,75 +266,76 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 		this.refreshRequested = false;
 		const generation = this.selectionGeneration;
 		const session = this.selectedSession();
-		if (session === undefined) {
-			return this.runRefreshLoop();
+		const loader = this.selectedConversation;
+		if (session === undefined || loader === undefined) {
+			return;
 		}
-		const conversation = await this.readConversation(session);
-		if (
-			!this.disposed &&
-			generation === this.selectionGeneration &&
-			projectionStableKey(session.key) ===
-				this.projection.getView().selectedStableKey
-		) {
-			const before = this.projection.getView();
-			const next = this.projection.updateConversation(
-				session.key,
-				conversation.entries,
-				conversation.version,
-			);
-			this.publishRevision(before, next);
+		let changed: boolean;
+		try {
+			changed = await loader.refresh(session);
+		} catch (error) {
+			if (!this.ownsSelection(loader, session, generation)) {
+				return this.runRefreshLoop();
+			}
+			throw error;
+		}
+		if (changed && this.ownsSelection(loader, session, generation)) {
+			this.publishConversation(session, loader);
 		}
 		return this.runRefreshLoop();
 	}
 
-	/** Uses incremental RPC for the selected active writer and SessionManager after termination. */
-	private async readConversation(
+	/** Checks identity while a newly opened loader has not yet been installed. */
+	private ownsOpeningSelection(
 		session: LogicalSession,
-	): Promise<ConversationRead> {
-		if (session.state === "active") {
-			return await this.readActiveConversation(session.invocationId);
-		}
-		this.activeConversation = undefined;
-		const entries = await Promise.resolve(
-			this.options.readInactiveBranch?.(session) ??
-				SessionManager.open(
-					session.childSessionFile,
-					session.childSessionDir,
-				).getBranch(),
+		generation: number,
+	): boolean {
+		return (
+			!this.disposed &&
+			generation === this.selectionGeneration &&
+			projectionStableKey(session.key) ===
+				this.projection.getView().selectedStableKey
 		);
-		return { entries, version: this.nextConversationVersion() };
 	}
 
-	/** Merges one get_entries delta and derives the selected root-to-leaf branch. */
-	private async readActiveConversation(
-		invocationId: string,
-	): Promise<ConversationRead> {
-		const cache =
-			this.activeConversation ?? createActiveConversationCache(invocationId);
-		if (cache.invocationId !== invocationId) {
-			throw new Error(
-				"selected active conversation identity changed unexpectedly",
-			);
-		}
-		this.activeConversation = cache;
-		const page = await this.options.activeConversations.readActiveEntries(
-			invocationId,
-			cache.lastEntryId,
+	/** Checks generation, stable identity, and loader ownership before publication. */
+	private ownsSelection(
+		loader: SelectedConversationLoader,
+		session: LogicalSession,
+		generation: number,
+	): boolean {
+		return (
+			this.ownsOpeningSelection(session, generation) &&
+			this.selectedConversation === loader &&
+			loader.stableKey === projectionStableKey(session.key)
 		);
-		const leafChanged = cache.leafId !== page.leafId;
-		for (const entry of page.entries) {
-			if (cache.entriesById.has(entry.id)) {
-				throw new Error("child Pi returned duplicate conversation entry ids");
-			}
-			cache.entriesById.set(entry.id, entry);
-		}
-		cache.lastEntryId = page.entries.at(-1)?.id ?? cache.lastEntryId;
-		cache.leafId = page.leafId;
-		if (page.entries.length > 0 || leafChanged) {
-			cache.branch = activeBranchFromCache(cache);
-			cache.version = this.nextConversationVersion();
-		}
-		return { entries: cache.branch, version: cache.version };
+	}
+
+	/** Publishes one selected suffix or complete branch with a payload-free revision. */
+	private publishConversation(
+		session: LogicalSession,
+		loader: SelectedConversationLoader,
+	): void {
+		const snapshot = loader.getSnapshot();
+		const before = this.projection.getView();
+		const next = this.projection.updateConversation(
+			session.key,
+			snapshot.entries,
+			this.nextConversationVersion(),
+			snapshot.complete,
+		);
+		this.publishRevision(before, next);
+	}
+
+	/** Releases the prior selected loader before a new identity takes ownership. */
+	private async releaseSelectedConversation(): Promise<void> {
+		this.selectionController?.abort(
+			new Error("management conversation selection changed"),
+		);
+		this.selectionController = undefined;
+		const selected = this.selectedConversation;
+		this.selectedConversation = undefined;
+		await selected?.dispose();
 	}
 
 	/** Allocates one small revision without serializing complete conversation payloads. */
@@ -314,45 +369,6 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 			subscriber(next);
 		}
 	}
-}
-
-/** Creates the only in-memory entry cache owned by the current management selection. */
-function createActiveConversationCache(
-	invocationId: string,
-): ActiveConversationCache {
-	return {
-		invocationId,
-		entriesById: new Map(),
-		lastEntryId: undefined,
-		leafId: null,
-		branch: Object.freeze([]),
-		version: 0,
-	};
-}
-
-/** Resolves one cached active leaf while rejecting incomplete or cyclic RPC topology. */
-function activeBranchFromCache(
-	cache: ActiveConversationCache,
-): readonly SessionEntry[] {
-	if (cache.leafId === null) {
-		return Object.freeze([]);
-	}
-	const branch: SessionEntry[] = [];
-	const visited = new Set<string>();
-	let currentId: string | null = cache.leafId;
-	while (currentId !== null) {
-		if (visited.has(currentId)) {
-			throw new Error("child Pi returned a cyclic conversation branch");
-		}
-		visited.add(currentId);
-		const entry = cache.entriesById.get(currentId);
-		if (entry === undefined) {
-			throw new Error("child Pi returned an unknown conversation leaf");
-		}
-		branch.unshift(entry);
-		currentId = entry.parentId;
-	}
-	return Object.freeze(branch);
 }
 
 /** Preserves Error identity for safe runtime reporting. */

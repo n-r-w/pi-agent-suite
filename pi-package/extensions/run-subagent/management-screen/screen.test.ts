@@ -192,6 +192,7 @@ function assistantConversationEntry(): ConversationProjectionEntry {
 /** Publishes deterministic immutable views and tracks overlay subscriptions. */
 class ViewSourceFake implements ManagementViewSource {
 	public selected: string | null;
+	public earlierCalls = 0;
 	public refreshCalls = 0;
 	public unsubscribeCalls = 0;
 	private readonly listeners = new Set<
@@ -207,6 +208,7 @@ class ViewSourceFake implements ManagementViewSource {
 			nodes: [node],
 			selectedStableKey: node.stableKey,
 			selectedConversation: [conversationEntry("initial conversation")],
+			selectedConversationComplete: true,
 			affectedStableKeys: [node.stableKey],
 		};
 	}
@@ -219,6 +221,12 @@ class ViewSourceFake implements ManagementViewSource {
 	/** Records complete stable identity selection without changing orchestration. */
 	public select(stableKey: string | null): void {
 		this.selected = stableKey;
+	}
+
+	/** Records one viewport-driven request and reports that no further preview page exists. */
+	public loadEarlierSelected(): boolean {
+		this.earlierCalls += 1;
+		return true;
 	}
 
 	/** Records selected-branch refresh requests after accepted submissions. */
@@ -397,6 +405,17 @@ function createScreen(
 async function settleSubmission(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
+}
+
+/** Waits for one deterministic asynchronous projection condition without wall-clock timers. */
+async function settleProjection(condition: () => boolean): Promise<void> {
+	for (let attempt = 0; attempt < 20; attempt += 1) {
+		if (condition()) {
+			return;
+		}
+		await Promise.resolve();
+	}
+	throw new Error("management projection did not settle");
 }
 
 describe("management screen", () => {
@@ -987,6 +1006,7 @@ describe("management screen", () => {
 			nodes,
 			selectedStableKey: nodes[0]?.stableKey ?? null,
 			selectedConversation: [conversationEntry("initial conversation")],
+			selectedConversationComplete: true,
 			affectedStableKeys: nodes.map((node) => node.stableKey),
 		});
 		const topRows = fixture.screen.render(80);
@@ -1002,6 +1022,7 @@ describe("management screen", () => {
 			selectedConversation: Array.from({ length: 20 }, (_, index) =>
 				conversationEntry(`conversation row ${index + 1}`),
 			),
+			selectedConversationComplete: true,
 			affectedStableKeys: [],
 		});
 		fixture.screen.render(80);
@@ -1035,6 +1056,64 @@ describe("management screen", () => {
 			activeConversation: true,
 			trackVisible: true,
 		});
+	});
+
+	test("uses an indeterminate conversation track until history is complete", () => {
+		// Purpose: a partial suffix must not present its loaded row count as the total session size.
+		// Inputs and expected output: an overflowing incomplete conversation shows ellipsis and provisional glyphs, then a complete revision shows the normal thumb.
+		// Edge case: the hierarchy track remains independent while the selected conversation changes loading state.
+		// Dependencies: production screen layout, conversation metrics, and scroll-column rendering.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedConversation: Array.from({ length: 20 }, (_, index) =>
+				conversationEntry(`partial row ${index + 1}`),
+			),
+			selectedConversationComplete: false,
+			affectedStableKeys: ["stable-descendant-key"],
+		});
+
+		const partialRows = fixture.screen.render(80);
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 3,
+			selectedConversationComplete: true,
+			affectedStableKeys: ["stable-descendant-key"],
+		});
+		const completeRows = fixture.screen.render(80);
+
+		expect({
+			partialEllipsis: partialRows.some((line) => line.includes("⋮")),
+			partialTrack: partialRows.some((line) => line.includes("▒")),
+			completeEllipsis: completeRows.some((line) => line.includes("⋮")),
+			completeThumb: completeRows.some((line) => line.includes("█")),
+		}).toEqual({
+			partialEllipsis: true,
+			partialTrack: true,
+			completeEllipsis: false,
+			completeThumb: true,
+		});
+	});
+
+	test("requests earlier turns until an incomplete preview can fill the viewport", async () => {
+		// Purpose: actual Pi-rendered rows, rather than a fixed message count, must drive preview expansion.
+		// Inputs and expected output: one short incomplete message causes one earlier-page request after the first render.
+		// Edge case: the source reports branch completion, so the screen must not spin or issue repeated requests.
+		// Dependencies: production render height calculation and the ManagementViewSource progressive-loading contract.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedConversation: [conversationEntry("short partial preview")],
+			selectedConversationComplete: false,
+			affectedStableKeys: ["stable-descendant-key"],
+		});
+
+		fixture.screen.render(80);
+		await settleSubmission();
+
+		expect(fixture.source.earlierCalls).toBe(1);
 	});
 
 	test("opens and constructs the public full-terminal overlay factory", async () => {
@@ -1294,7 +1373,7 @@ describe("management screen", () => {
 			rootOwnerPiSessionId: owner.ownerPiSessionId,
 			catalog,
 			activeConversations: active,
-			readInactiveBranch: () => [],
+			readInactiveBranch: () => active.entries,
 			onError: (error) => {
 				throw error;
 			},
@@ -1400,7 +1479,7 @@ describe("management screen", () => {
 			unrelatedIdentityStable: true,
 			selectedIdentityRevised: true,
 			affectedStableKeys: selectedStableKey === null ? [] : [selectedStableKey],
-			conversationEntryStable: false,
+			conversationEntryStable: true,
 			terminalHeader: true,
 			continuedStableKey: selectedStableKey,
 			continuedHeader: true,
@@ -1439,16 +1518,11 @@ describe("management screen", () => {
 			readInactiveBranch: () => {
 				inactiveReads += 1;
 				resolveInactiveRead();
-				const completedEntry = conversationEntry("active update");
 				return [
 					conversationEntry("active"),
 					{
-						...completedEntry,
+						...conversationEntry("inactive terminal"),
 						parentId: "message-active",
-						message: {
-							...completedEntry.message,
-							content: "inactive terminal",
-						},
 					},
 				];
 			},
@@ -1470,11 +1544,22 @@ describe("management screen", () => {
 			},
 		];
 		active.emit(session.invocationId);
-		await settleSubmission();
+		await settleProjection(
+			() => runtime.getView().selectedConversation.length === 2,
+		);
 		const liveView = runtime.getView();
 		catalog.update(session.key, { state: "terminal-success" });
 		await inactiveRead;
-		await settleSubmission();
+		await settleProjection(() =>
+			runtime
+				.getView()
+				.selectedConversation.some(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.role === "user" &&
+						entry.message.content === "inactive terminal",
+				),
+		);
 		const terminalView = runtime.getView();
 		const readsBeforeDispose = active.readCalls;
 		runtime.dispose();

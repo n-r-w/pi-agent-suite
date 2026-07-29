@@ -59,6 +59,7 @@ import {
 	withTimeout,
 } from "./invocation-process";
 import type { RuntimeRequest } from "./runtime-wire";
+import { parseConversationSessionEntry } from "./session-entry-validation";
 
 const PROMPT_COMMAND_ID = "prompt";
 const WORKER_READY_TIMEOUT_MS = 10_000;
@@ -840,43 +841,11 @@ function activeEntriesFromRpcData(data: unknown): ActiveConversationEntries {
 		throw new Error("child Pi returned invalid conversation entries");
 	}
 	return {
-		entries: rawEntries.map(parseRpcSessionEntry),
+		entries: rawEntries.map((value) =>
+			parseConversationSessionEntry(value, "child Pi"),
+		),
 		leafId,
 	};
-}
-
-/** Validates the session-entry fields used for branch routing and presentation. */
-function parseRpcSessionEntry(value: unknown): SessionEntry {
-	if (!isRecord(value)) {
-		throw new Error("child Pi returned a non-object conversation entry");
-	}
-	const id = value["id"];
-	const parentId = value["parentId"];
-	const timestamp = value["timestamp"];
-	const type = value["type"];
-	if (
-		typeof id !== "string" ||
-		!(parentId === null || typeof parentId === "string") ||
-		typeof timestamp !== "string" ||
-		typeof type !== "string" ||
-		!SESSION_ENTRY_TYPES.has(type)
-	) {
-		throw new Error("child Pi returned an invalid conversation entry");
-	}
-	if (type === "message" && !isRecord(value["message"])) {
-		throw new Error("child Pi returned an invalid conversation message");
-	}
-	if (
-		type === "custom_message" &&
-		(typeof value["customType"] !== "string" ||
-			typeof value["display"] !== "boolean" ||
-			!(
-				typeof value["content"] === "string" || Array.isArray(value["content"])
-			))
-	) {
-		throw new Error("child Pi returned an invalid custom conversation message");
-	}
-	return value as unknown as SessionEntry;
 }
 
 /** Reads one projection status update, including an explicit savings clear. */
@@ -921,19 +890,6 @@ function readContextTokens(message: unknown): number | undefined {
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-/** Lists the closed public Pi session-entry discriminators accepted from RPC. */
-const SESSION_ENTRY_TYPES = new Set([
-	"message",
-	"thinking_level_change",
-	"model_change",
-	"compaction",
-	"branch_summary",
-	"custom",
-	"label",
-	"session_info",
-	"custom_message",
-]);
 
 /** Races one supervisor boundary with Pi cancellation without abandoning its owner. */
 async function awaitWithSignal<T>(

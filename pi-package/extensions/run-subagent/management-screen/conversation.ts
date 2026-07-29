@@ -47,6 +47,28 @@ interface ExpandableComponent extends Component {
 	setExpanded(expanded: boolean): void;
 }
 
+/** Couples one public Pi component with a stable projected-entry row identity. */
+interface OwnedConversationComponent {
+	readonly key: string;
+	readonly component: Component;
+}
+
+/** Preserves the owning component and local row for viewport anchoring. */
+interface RenderedConversationRow {
+	readonly componentKey: string;
+	readonly componentRow: number;
+	readonly text: string;
+}
+
+/** Identifies one visible row independently from its changing absolute offset. */
+interface ConversationRowAnchor {
+	readonly componentKey: string;
+	readonly componentRow: number;
+}
+
+/** Keeps the loading sentinel outside every persisted Pi entry identity. */
+const EARLIER_HISTORY_COMPONENT_KEY = "management:earlier-history";
+
 /** Renders one initial or steering prompt with the shared conversation expansion state. */
 class PromptMessageComponent implements ExpandableComponent {
 	private expanded: boolean;
@@ -85,7 +107,7 @@ class PromptMessageComponent implements ExpandableComponent {
 
 /** Contains chronological public Pi components and tool expansion owners. */
 interface ConversationComposition {
-	readonly components: readonly Component[];
+	readonly components: readonly OwnedConversationComponent[];
 	readonly tools: readonly ExpandableComponent[];
 	readonly expandables: readonly ExpandableComponent[];
 	readonly metadata: {
@@ -99,7 +121,7 @@ function composeConversation(
 	entries: readonly ConversationProjectionEntry[],
 	options: ConversationCompositionOptions,
 ): ConversationComposition {
-	const components: Component[] = [];
+	const components: OwnedConversationComponent[] = [];
 	const tools: ToolExecutionComponent[] = [];
 	const expandables: ExpandableComponent[] = [];
 	const pendingTools = new Map<string, ToolExecutionComponent>();
@@ -107,7 +129,7 @@ function composeConversation(
 	for (const entry of entries) {
 		if (entry.type === "custom_message") {
 			const component = createCustomComponent(entry, options);
-			components.push(component);
+			components.push({ key: `${entry.id}:custom`, component });
 			expandables.push(component);
 			continue;
 		}
@@ -115,21 +137,22 @@ function composeConversation(
 		switch (message.role) {
 			case "user": {
 				const component = createUserComponent(message, options);
-				components.push(component);
+				components.push({ key: `${entry.id}:user`, component });
 				expandables.push(component);
 				break;
 			}
 			case "assistant": {
 				latestAssistant = message;
-				components.push(
-					new AssistantMessageComponent(
+				components.push({
+					key: `${entry.id}:assistant`,
+					component: new AssistantMessageComponent(
 						message,
 						false,
 						options.markdownTheme,
 						undefined,
 						0,
 					),
-				);
+				});
 				for (const content of message.content) {
 					if (content.type !== "toolCall") {
 						continue;
@@ -146,7 +169,10 @@ function composeConversation(
 					);
 					component.setArgsComplete();
 					component.setExpanded(options.expanded);
-					components.push(component);
+					components.push({
+						key: `${entry.id}:tool:${content.id}`,
+						component,
+					});
 					tools.push(component);
 					expandables.push(component);
 					pendingTools.set(content.id, component);
@@ -174,6 +200,9 @@ export class ConversationPane {
 	private followBottom = true;
 	private lastHeight = 1;
 	private lastTotalRows = 0;
+	private lastRenderedRows: readonly RenderedConversationRow[] = [];
+	private pendingAnchor: ConversationRowAnchor | undefined;
+	private complete = true;
 	private disposed = false;
 
 	public constructor(private readonly options: ConversationCompositionOptions) {
@@ -185,15 +214,19 @@ export class ConversationPane {
 	public setEntries(
 		entries: readonly ConversationProjectionEntry[],
 		resetToBottom: boolean,
+		complete: boolean,
 	): void {
 		if (this.disposed) {
 			return;
 		}
 		const wasFollowing = this.followBottom;
+		this.pendingAnchor =
+			resetToBottom || wasFollowing ? undefined : this.currentRowAnchor();
 		this.composition = composeConversation(entries, {
 			...this.options,
 			expanded: this.expanded,
 		});
+		this.complete = complete;
 		this.followBottom = resetToBottom || wasFollowing;
 	}
 
@@ -202,6 +235,9 @@ export class ConversationPane {
 		if (this.disposed || expanded === this.expanded) {
 			return;
 		}
+		this.pendingAnchor = this.followBottom
+			? undefined
+			: this.currentRowAnchor();
 		this.expanded = expanded;
 		for (const component of this.composition.expandables) {
 			component.setExpanded(expanded);
@@ -234,16 +270,41 @@ export class ConversationPane {
 			return [];
 		}
 		this.lastHeight = height;
-		const lines = this.composition.components.flatMap((component) =>
-			component.render(width),
-		);
-		this.lastTotalRows = lines.length;
-		const maximum = Math.max(0, lines.length - height);
-		this.scrollTop = this.followBottom
-			? maximum
-			: Math.max(0, Math.min(this.scrollTop, maximum));
+		const rows = this.renderRows(width);
+		this.lastTotalRows = rows.length;
+		const maximum = Math.max(0, rows.length - height);
+		if (this.followBottom) {
+			this.scrollTop = maximum;
+		} else if (this.pendingAnchor !== undefined) {
+			const anchoredOffset = rows.findIndex(
+				(row) =>
+					row.componentKey === this.pendingAnchor?.componentKey &&
+					row.componentRow === this.pendingAnchor.componentRow,
+			);
+			this.scrollTop =
+				anchoredOffset < 0
+					? Math.max(0, Math.min(this.scrollTop, maximum))
+					: Math.min(anchoredOffset, maximum);
+		} else {
+			this.scrollTop = Math.max(0, Math.min(this.scrollTop, maximum));
+		}
+		this.pendingAnchor = undefined;
 		this.followBottom = this.scrollTop === maximum;
-		return lines.slice(this.scrollTop, this.scrollTop + height);
+		this.lastRenderedRows = rows;
+		return rows
+			.slice(this.scrollTop, this.scrollTop + height)
+			.map((row) => row.text);
+	}
+
+	/** Measures public Pi component rows without changing the current viewport. */
+	public getLoadedContentRows(width: number): number {
+		if (this.disposed || width <= 0) {
+			return 0;
+		}
+		return this.composition.components.reduce(
+			(total, owned) => total + owned.component.render(width).length,
+			0,
+		);
 	}
 
 	/** Exposes the last rendered viewport for border-only scroll presentation. */
@@ -277,13 +338,49 @@ export class ConversationPane {
 			expandables: [],
 			metadata: {},
 		};
+		this.lastRenderedRows = [];
+		this.pendingAnchor = undefined;
 	}
 
 	/** Invalidates public child components after a theme change. */
 	public invalidate(): void {
-		for (const component of this.composition.components) {
-			component.invalidate();
+		for (const owned of this.composition.components) {
+			owned.component.invalidate();
 		}
+	}
+
+	/** Renders stable row ownership around unchanged public Pi components. */
+	private renderRows(width: number): readonly RenderedConversationRow[] {
+		const rows: RenderedConversationRow[] = [];
+		if (!this.complete) {
+			const label = "Loading earlier messages…";
+			rows.push({
+				componentKey: EARLIER_HISTORY_COMPONENT_KEY,
+				componentRow: 0,
+				text: this.options.theme.fg(
+					"muted",
+					label.slice(0, width).padEnd(width),
+				),
+			});
+		}
+		for (const owned of this.composition.components) {
+			const componentRows = owned.component.render(width);
+			for (const [componentRow, text] of componentRows.entries()) {
+				rows.push({ componentKey: owned.key, componentRow, text });
+			}
+		}
+		return rows;
+	}
+
+	/** Captures the current top row before older components are prepended. */
+	private currentRowAnchor(): ConversationRowAnchor | undefined {
+		const row = this.lastRenderedRows[this.scrollTop];
+		return row === undefined
+			? undefined
+			: {
+					componentKey: row.componentKey,
+					componentRow: row.componentRow,
+				};
 	}
 }
 

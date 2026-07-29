@@ -234,11 +234,13 @@ describe("HierarchyConversationProjection", () => {
 			nestedSession.key,
 			nextNestedBranch,
 			1,
+			false,
 		);
 		const repeatedConversation = projection.updateConversation(
 			nestedSession.key,
 			nextNestedBranch,
 			1,
+			false,
 		);
 
 		// ASSERT: only selected conversation entries are exposed and prior revisions remain unchanged.
@@ -255,6 +257,8 @@ describe("HierarchyConversationProjection", () => {
 			liveConversationIds: conversationUpdated.selectedConversation.map(
 				(entry) => entry.id,
 			),
+			liveConversationComplete:
+				conversationUpdated.selectedConversationComplete,
 			priorConversationIds: updated.selectedConversation.map(
 				(entry) => entry.id,
 			),
@@ -270,6 +274,7 @@ describe("HierarchyConversationProjection", () => {
 			frozenNodes: true,
 			liveAffected: [stableKey(nestedSession.key)],
 			liveConversationIds: ["nested-user", "feedback", "nested-live"],
+			liveConversationComplete: false,
 			priorConversationIds: ["nested-user", "feedback"],
 			repeatedRevisionIdentity: true,
 		});

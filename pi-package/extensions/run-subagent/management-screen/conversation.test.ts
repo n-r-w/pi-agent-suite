@@ -219,7 +219,7 @@ describe("management conversation", () => {
 
 		// ACT: update the public conversation pane and render its chronological output.
 		const pane = new ConversationPane(options());
-		pane.setEntries(entries, true);
+		pane.setEntries(entries, true, true);
 		const rendered = pane.render(60, 1_000).join("\n");
 		const metadata = pane.getMetadata();
 
@@ -261,7 +261,7 @@ describe("management conversation", () => {
 		const entry = messageEntry("prompt-1", null, userMessage(prompt, 1));
 		const pane = new ConversationPane(options());
 
-		pane.setEntries([entry], true);
+		pane.setEntries([entry], true, true);
 		const collapsed = pane.render(40, 100).join("\n");
 		pane.setExpanded(true);
 		const expanded = pane.render(40, 100).join("\n");
@@ -286,7 +286,7 @@ describe("management conversation", () => {
 		// Edge case: the model-visible custom-message content is not rendered as a duplicate raw history block.
 		// Dependencies: public CustomMessageComponent and the Subagents V2 feedback renderer reference.
 		const pane = new ConversationPane(options());
-		pane.setEntries([feedbackEntry()], true);
+		pane.setEntries([feedbackEntry()], true, true);
 		const rendered = pane.render(100, 1_000).join("\n");
 		const plainRendered = stripVTControlCharacters(rendered);
 
@@ -314,7 +314,7 @@ describe("management conversation", () => {
 				userMessage(text, index),
 			),
 		);
-		pane.setEntries(initial, true);
+		pane.setEntries(initial, true, true);
 		pane.render(30, 3);
 
 		// ACT: update once while scrolled away, then once while returned to the bottom.
@@ -323,6 +323,7 @@ describe("management conversation", () => {
 		pane.setEntries(
 			[...initial, messageEntry("user-5", "user-4", userMessage("six", 6))],
 			false,
+			true,
 		);
 		const awayAfter = pane.render(30, 3);
 		pane.scrollLines(1000);
@@ -333,6 +334,7 @@ describe("management conversation", () => {
 				messageEntry("user-6", "user-5", userMessage("seven", 7)),
 			],
 			false,
+			true,
 		);
 		const bottomAfter = pane.render(30, 3);
 
@@ -348,5 +350,53 @@ describe("management conversation", () => {
 			atBottom: true,
 			percentageHidden: true,
 		});
+	});
+
+	test("keeps the visible row anchored when older entries are prepended", () => {
+		// Purpose: background hydration must add earlier history without moving text the user is reading.
+		// Inputs and expected output: a scrolled recent suffix gains two older entries while the three visible rows remain identical.
+		// Edge case: numeric scroll offsets change after prepending, so identity and component-row anchoring must own stability.
+		// Dependencies: public user-message rendering and the production conversation viewport.
+		const pane = new ConversationPane(options());
+		const recent = ["three", "four", "five", "six", "seven"].map(
+			(text, index) =>
+				messageEntry(
+					`recent-${index}`,
+					index === 0 ? null : `recent-${index - 1}`,
+					userMessage(text, index + 3),
+				),
+		);
+		pane.setEntries(recent, true, false);
+		pane.render(30, 3);
+		pane.scrollLines(-2);
+		const before = pane.render(30, 3);
+		const older = [
+			messageEntry("older-1", null, userMessage("one", 1)),
+			messageEntry("older-2", "older-1", userMessage("two", 2)),
+		];
+
+		pane.setEntries([...older, ...recent], false, true);
+		const after = pane.render(30, 3);
+
+		expect(after).toEqual(before);
+		pane.dispose();
+	});
+
+	test("shows an earlier-history sentinel only for incomplete previews", () => {
+		// Purpose: users at the loaded upper boundary must see that more history is still loading.
+		// Inputs and expected output: an incomplete suffix prepends one loading row, while the same complete branch removes it.
+		// Edge case: the loading row is presentation state and must not become a session entry or Pi message component.
+		// Dependencies: the production conversation viewport and theme text styling.
+		const pane = new ConversationPane(options());
+		const entry = messageEntry("latest", null, userMessage("latest", 1));
+
+		pane.setEntries([entry], true, false);
+		const loading = pane.render(50, 100).join("\n");
+		pane.setEntries([entry], false, true);
+		const complete = pane.render(50, 100).join("\n");
+
+		expect(loading).toContain("Loading earlier messages");
+		expect(complete).not.toContain("Loading earlier messages");
+		pane.dispose();
 	});
 });

@@ -66,6 +66,8 @@ export interface ManagementRetainedState {
 export interface ManagementViewSource {
 	getView(): ManagementProjectionView;
 	select(stableKey: string | null): Promise<void> | void;
+	/** Loads one preceding dependency-complete block for the selected preview. */
+	loadEarlierSelected(): Promise<boolean> | boolean;
 	refreshSelected(): Promise<void> | void;
 	subscribe(listener: (view: ManagementProjectionView) => void): () => void;
 }
@@ -81,6 +83,7 @@ interface SelectedPaneRender {
 interface ScrollTrack {
 	readonly startRow: number;
 	readonly length: number;
+	readonly loading: boolean;
 	readonly thumb?: ScrollThumb;
 }
 
@@ -141,6 +144,7 @@ export class ManagementScreen implements Component, Focusable {
 	private narrowPane: ManagementNarrowPane;
 	private toolsExpanded: boolean;
 	private lastWidth: number;
+	private previewFillPromise: Promise<void> | undefined;
 	private disposed = false;
 	private _focused = false;
 
@@ -163,7 +167,11 @@ export class ManagementScreen implements Component, Focusable {
 			tools: options.tools,
 			expanded: this.toolsExpanded,
 		});
-		this.conversation.setEntries(this.view.selectedConversation, true);
+		this.conversation.setEntries(
+			this.view.selectedConversation,
+			true,
+			this.view.selectedConversationComplete,
+		);
 		this.editor = new ManagementMessageEditor({
 			tui: options.tui,
 			theme: options.theme,
@@ -440,7 +448,11 @@ export class ManagementScreen implements Component, Focusable {
 			(error: unknown) => this.options.notify(errorMessage(error)),
 		);
 		if (resetConversation && stableKey === this.view.selectedStableKey) {
-			this.conversation.setEntries(this.view.selectedConversation, true);
+			this.conversation.setEntries(
+				this.view.selectedConversation,
+				true,
+				this.view.selectedConversationComplete,
+			);
 		}
 	}
 
@@ -460,11 +472,70 @@ export class ManagementScreen implements Component, Focusable {
 			this.conversation.setEntries(
 				view.selectedConversation,
 				selected !== priorSelected,
+				view.selectedConversationComplete,
 			);
 		}
 		this.normalizeFocus();
 		this.syncFocus();
 		this.options.tui.requestRender();
+	}
+
+	/** Starts one viewport-driven preview expansion and then full background hydration. */
+	private requestPreviewFill(width: number, height: number): void {
+		if (
+			this.disposed ||
+			this.view.selectedConversationComplete ||
+			height <= 0 ||
+			this.previewFillPromise !== undefined
+		) {
+			return;
+		}
+		const selectedStableKey = this.view.selectedStableKey;
+		if (selectedStableKey === null) {
+			return;
+		}
+		const fill = this.fillSelectedPreview(selectedStableKey, width, height);
+		this.previewFillPromise = fill;
+		fill
+			.catch((error: unknown) => this.options.notify(errorMessage(error)))
+			.finally(() => {
+				if (this.previewFillPromise === fill) {
+					this.previewFillPromise = undefined;
+				}
+			});
+	}
+
+	/** Requests complete user turns until Pi-rendered rows fill the current viewport. */
+	private async fillSelectedPreview(
+		selectedStableKey: string,
+		width: number,
+		height: number,
+	): Promise<void> {
+		if (
+			this.disposed ||
+			this.view.selectedStableKey !== selectedStableKey ||
+			this.view.selectedConversationComplete
+		) {
+			return;
+		}
+		if (this.conversation.getLoadedContentRows(width) >= height) {
+			await Promise.resolve(this.options.source.refreshSelected());
+			return;
+		}
+		const complete = await Promise.resolve(
+			this.options.source.loadEarlierSelected(),
+		);
+		if (complete) {
+			if (
+				!this.disposed &&
+				this.view.selectedStableKey === selectedStableKey &&
+				!this.view.selectedConversationComplete
+			) {
+				await Promise.resolve(this.options.source.refreshSelected());
+			}
+			return;
+		}
+		await this.fillSelectedPreview(selectedStableKey, width, height);
 	}
 
 	/** Requests the selected branch after the coordinator accepts editor input. */
@@ -502,6 +573,7 @@ export class ManagementScreen implements Component, Focusable {
 		const conversationScroll = createScrollTrack(
 			this.conversation.getScrollMetrics(),
 			selectedPane.conversationStartIndex,
+			!this.view.selectedConversationComplete,
 		);
 		return Array.from({ length: height }, (_, index) =>
 			this.renderWideRow(index, height, panes, {
@@ -537,6 +609,7 @@ export class ManagementScreen implements Component, Focusable {
 				: createScrollTrack(
 						this.conversation.getScrollMetrics(),
 						selectedPane?.conversationStartIndex ?? 0,
+						!this.view.selectedConversationComplete,
 					);
 		return Array.from({ length: height }, (_, index) =>
 			this.renderNarrowRow(index, height, contentWidth, {
@@ -666,7 +739,10 @@ export class ManagementScreen implements Component, Focusable {
 		if (trackRow < 0 || trackRow >= track.length) {
 			return " ";
 		}
-		if (!isScrollThumbRow(track.thumb, trackRow)) {
+		if (track.loading) {
+			return this.options.theme.fg("muted", trackRow === 0 ? "⋮" : "▒");
+		}
+		if (track.thumb === undefined || !isScrollThumbRow(track.thumb, trackRow)) {
 			return this.options.theme.fg("muted", "░");
 		}
 		return this.options.theme.fg(
@@ -759,6 +835,7 @@ export class ManagementScreen implements Component, Focusable {
 			width,
 			conversationHeight,
 		);
+		this.requestPreviewFill(width, conversationHeight);
 		const lines = [
 			...header,
 			"─".repeat(width),
@@ -968,11 +1045,17 @@ function cropEditorViewport(
 function createScrollTrack(
 	metrics: ScrollMetrics,
 	startRow: number,
+	loading = false,
 ): ScrollTrack | undefined {
+	if (loading) {
+		return metrics.viewport <= 0
+			? undefined
+			: { startRow, length: metrics.viewport, loading: true };
+	}
 	const thumb = calculateScrollThumb(metrics, metrics.viewport);
 	return thumb === undefined
 		? undefined
-		: { startRow, length: metrics.viewport, thumb };
+		: { startRow, length: metrics.viewport, loading: false, thumb };
 }
 
 /** Pads or clips one line to an exact pane width. */

@@ -41,6 +41,7 @@
 3. A subagent session KNOWS NOTHING about your current context. Subagent has its own context. If you did not provide information in prompt, subagent does not know it.
 4. Subagents MUST NOT be used to load skills to obtain information from them by main agent.
 5. Each agent owns only ITS subagents. MUST NOT ask subagent to perform `subagent_steer` to send messages to subagents that you started.
+6. MUST NOT "push" subagents with `subagent_steer` requests. If the subagent has not yet completed its work, it means you MUST wait.
 
 **SUBAGENT PROMPT FORMAT**:
 ```

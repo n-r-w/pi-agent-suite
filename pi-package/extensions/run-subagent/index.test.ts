@@ -2507,10 +2507,25 @@ describe("subagents V2 entry", () => {
 			if (screen === undefined) {
 				throw new Error("management screen was not constructed");
 			}
+			const selectedScreen = screen;
 			await Promise.resolve();
 			await Promise.resolve();
 			screen.handleInput("\u001b[C");
-			const rendered = screen.render(100).join("\n");
+			/** Waits for asynchronous selected-file preview publication without assuming a fixed microtask count. */
+			const renderLoadedConversation = async (
+				remainingAttempts: number,
+			): Promise<string> => {
+				const renderedConversation = selectedScreen.render(100).join("\n");
+				if (
+					renderedConversation.includes("C completed") ||
+					remainingAttempts === 0
+				) {
+					return renderedConversation;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				return renderLoadedConversation(remainingAttempts - 1);
+			};
+			const rendered = await renderLoadedConversation(20);
 			screen.setEditorText("message selected B");
 			screen.handleInput("\t");
 			screen.handleInput("\t");

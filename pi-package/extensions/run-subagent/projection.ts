@@ -52,12 +52,15 @@ export interface ManagementProjectionView {
 	readonly nodes: readonly ProjectionNode[];
 	readonly selectedStableKey: string | null;
 	readonly selectedConversation: readonly ConversationProjectionEntry[];
+	/** Distinguishes a complete branch from a selected suffix with unread ancestors. */
+	readonly selectedConversationComplete: boolean;
 	readonly affectedStableKeys: readonly string[];
 }
 
 interface ConversationSnapshot {
 	readonly entries: readonly ConversationProjectionEntry[];
 	readonly version: number;
+	readonly complete: boolean;
 }
 
 /** Encodes complete owner-local identity without relying on a global numeric ID. */
@@ -78,6 +81,7 @@ export class HierarchyConversationProjection {
 		nodes: [],
 		selectedStableKey: null,
 		selectedConversation: [],
+		selectedConversationComplete: true,
 		affectedStableKeys: [],
 	});
 
@@ -103,6 +107,8 @@ export class HierarchyConversationProjection {
 			const key = projectionStableKey(branch.sessionKey);
 			const next = createConversationSnapshot(
 				filterConversationEntries(branch.entries),
+				0,
+				true,
 			);
 			this.conversations.set(key, next);
 			changedConversationKeys.add(key);
@@ -122,6 +128,7 @@ export class HierarchyConversationProjection {
 		sessionKey: SessionKey,
 		entries: readonly SessionEntry[],
 		version: number,
+		complete: boolean,
 	): ManagementProjectionView {
 		const key = projectionStableKey(sessionKey);
 		if (this.conversations.get(key)?.version === version) {
@@ -130,7 +137,11 @@ export class HierarchyConversationProjection {
 		this.conversations.clear();
 		this.conversations.set(
 			key,
-			createConversationSnapshot(filterConversationEntries(entries), version),
+			createConversationSnapshot(
+				filterConversationEntries(entries),
+				version,
+				complete,
+			),
 		);
 		return this.rebuild(new Set([key]));
 	}
@@ -159,6 +170,7 @@ export class HierarchyConversationProjection {
 			nodes: this.view.nodes,
 			selectedStableKey: validNextKey,
 			selectedConversation: this.getSelectedConversation(),
+			selectedConversationComplete: this.getSelectedConversationComplete(),
 			affectedStableKeys: affected,
 		});
 		return this.view;
@@ -232,6 +244,7 @@ export class HierarchyConversationProjection {
 			nodes: nextNodes,
 			selectedStableKey: this.selectedStableKey,
 			selectedConversation: this.getSelectedConversation(),
+			selectedConversationComplete: this.getSelectedConversationComplete(),
 			affectedStableKeys: orderAffectedKeys(affected, nextNodes),
 		});
 		return this.view;
@@ -245,6 +258,14 @@ export class HierarchyConversationProjection {
 		return (
 			this.conversations.get(this.selectedStableKey)?.entries ??
 			Object.freeze([])
+		);
+	}
+
+	/** Reports completeness only for the conversation owned by the selected key. */
+	private getSelectedConversationComplete(): boolean {
+		return (
+			this.selectedStableKey === null ||
+			this.conversations.get(this.selectedStableKey)?.complete === true
 		);
 	}
 }
@@ -364,12 +385,13 @@ function filterConversationEntries(
 /** Clones one selected branch so later source mutation cannot alter published revisions. */
 function createConversationSnapshot(
 	entries: readonly ConversationProjectionEntry[],
-	version = 0,
+	version: number,
+	complete: boolean,
 ): ConversationSnapshot {
 	const frozenEntries = Object.freeze(
 		entries.map((entry) => freezeRecursively(structuredClone(entry))),
 	);
-	return Object.freeze({ entries: frozenEntries, version });
+	return Object.freeze({ entries: frozenEntries, version, complete });
 }
 
 /** Deeply freezes one JSON-compatible Pi session value and returns its readonly identity. */
