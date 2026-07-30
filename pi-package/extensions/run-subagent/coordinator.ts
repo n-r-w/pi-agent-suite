@@ -683,9 +683,9 @@ export class SubagentCoordinator {
 	}
 
 	/** Stops the complete descendant closure during owner-runtime shutdown. */
-	public shutdown(owner: OwnerIdentity): Promise<readonly string[]> {
+	public async shutdown(owner: OwnerIdentity): Promise<readonly string[]> {
 		this.rememberOwner(owner);
-		return this.enqueue(async () => {
+		const prepared = await this.enqueue(async () => {
 			const seedRuntimeLeaseIds = [
 				...new Set(
 					this.options.catalog
@@ -705,20 +705,23 @@ export class SubagentCoordinator {
 			} catch {
 				// Offline reconciliation repairs durable state after every closure writer is released.
 			}
-			const teardowns = await Promise.allSettled(
-				seedRuntimeLeaseIds.map((runtimeLeaseId) =>
-					this.options.invocations.terminateLease(runtimeLeaseId),
-				),
-			);
-			const rejected = teardowns.find((result) => result.status === "rejected");
-			if (rejected !== undefined) {
-				// All seed closures settle before graceful shutdown reports one teardown failure.
-				throw rejected.reason instanceof Error
-					? rejected.reason
-					: new Error(errorMessage(rejected.reason));
-			}
-			return closure.runtimeLeaseIds;
+			return { closure, seedRuntimeLeaseIds };
 		});
+
+		// Worker shutdown can reenter the coordinator while process teardown waits for its acknowledgment.
+		const teardowns = await Promise.allSettled(
+			prepared.seedRuntimeLeaseIds.map((runtimeLeaseId) =>
+				this.options.invocations.terminateLease(runtimeLeaseId),
+			),
+		);
+		const rejected = teardowns.find((result) => result.status === "rejected");
+		if (rejected !== undefined) {
+			// All seed closures settle before graceful shutdown reports one teardown failure.
+			throw rejected.reason instanceof Error
+				? rejected.reason
+				: new Error(errorMessage(rejected.reason));
+		}
+		return prepared.closure.runtimeLeaseIds;
 	}
 
 	/** Applies strict timeout precedence inside the serialized transition queue. */

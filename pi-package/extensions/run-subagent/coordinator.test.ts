@@ -109,6 +109,10 @@ class InvocationControlFake implements InvocationControl {
 	public steerGate: Promise<void> | undefined;
 	public steerResponseGate: Promise<void> | undefined;
 	public terminateGate: Promise<void> | undefined;
+	/** Runs controlled teardown behavior after one lease enters process termination. */
+	public terminateAction:
+		| ((runtimeLeaseId: string) => Promise<void>)
+		| undefined;
 	public readonly steerCalls: string[] = [];
 	public readonly continueCalls: string[] = [];
 	public readonly terminatedLeases: string[] = [];
@@ -161,6 +165,7 @@ class InvocationControlFake implements InvocationControl {
 	/** Marks a test runtime lease inactive. */
 	public async terminateLease(runtimeLeaseId: string): Promise<void> {
 		this.terminatedLeases.push(runtimeLeaseId);
+		await this.terminateAction?.(runtimeLeaseId);
 		await this.terminateGate;
 		this.active = false;
 	}
@@ -2308,6 +2313,43 @@ describe("SubagentCoordinator", () => {
 			historyStatuses: ["success"],
 			settlements: [{ outcome: "timeout" }],
 		});
+	});
+
+	test("allows owner shutdown reentry during process teardown", async () => {
+		// Purpose: process teardown must not retain the coordinator queue needed by a worker's owner_stopping request.
+		// Input and expected output: root shutdown starts lease termination, whose nested owner shutdown settles before root shutdown completes.
+		// Edge case: the nested owner has no descendants, matching a worker that only needs its stopping acknowledgment.
+		// Dependencies: serialized logical shutdown, controlled invocation termination, and reentrant owner shutdown.
+		const harness = createHarness();
+		const session = activeSession();
+		const childOwner: OwnerIdentity = {
+			ownerPiSessionId: session.childPiSessionId,
+			ownerSessionFile: session.childSessionFile,
+		};
+		harness.catalog.add(session);
+		let markTeardownEntered = (): void => {
+			throw new Error("teardown entry signal was not initialized");
+		};
+		const teardownEntered = new Promise<void>((resolve) => {
+			markTeardownEntered = resolve;
+		});
+		let nestedShutdownSettled = false;
+		harness.invocations.terminateAction = async () => {
+			markTeardownEntered();
+			await harness.coordinator.shutdown(childOwner);
+			nestedShutdownSettled = true;
+		};
+
+		const rootShutdown = harness.coordinator.shutdown(OWNER);
+		await teardownEntered;
+		// A full event-loop turn lets an independently admitted owner shutdown settle.
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		expect(nestedShutdownSettled).toBe(true);
+		await rootShutdown;
+		expect(harness.invocations.terminatedLeases).toEqual([
+			session.runtimeLeaseId,
+		]);
 	});
 
 	test("preserves normal feedback through graceful descendant closure", async () => {
