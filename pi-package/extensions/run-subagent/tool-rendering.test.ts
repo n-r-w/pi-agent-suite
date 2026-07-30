@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type {
 	AgentToolResult,
@@ -262,6 +262,11 @@ function result(details: Record<string, unknown>): AgentToolResult<unknown> {
 }
 
 describe("Subagents V2 semantic rendering", () => {
+	beforeEach(() => {
+		// Pi's Markdown renderer reads the process-global theme, so each test establishes its own render state.
+		initTheme(undefined, false);
+	});
+
 	afterEach(() => {
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 	});
@@ -301,7 +306,6 @@ describe("Subagents V2 semantic rendering", () => {
 			unknown: "unknown",
 		});
 
-		initTheme(undefined, false);
 		const resolution = second.resolve("bash");
 		if (resolution.category !== "builtin") {
 			throw new Error("bash did not resolve as a built-in");
@@ -324,7 +328,6 @@ describe("Subagents V2 semantic rendering", () => {
 		// Input and expected output: accepted start, successful wait, and settled query render once through ToolExecutionComponent with semantic text only.
 		// Edge case: Pi invalidate is synchronous, so a result renderer must not invalidate while updateDisplay is active.
 		// Dependencies: public ToolExecutionComponent and the same static definitions used by normal conversation.
-		initTheme(undefined, false);
 		const ui = { requestRender(): void {} } as TUI;
 		const startResult = result(acceptedDetails());
 		const start = new ToolExecutionComponent(
@@ -857,11 +860,12 @@ describe("Subagents V2 semantic rendering", () => {
 		expect(collapsed.call[2]).toStartWith("Answer:");
 		expect(collapsed.call.at(-1)).toMatch(EXPAND_HINT_PATTERN);
 		expect(collapsed.result).toEqual([]);
+		const expandedText = stripVTControlCharacters(expanded.call.join("\n"));
 		expect(expanded.call[0]).toBe("subagent_query #7 · 5s");
 		expect(expanded.call[1]).toBe("--- Question ---");
 		expect(expanded.call).toContain("--- Answer ---");
-		expect(expanded.call.join("\n")).toContain("Final question detail.");
-		expect(expanded.call.join("\n")).toContain("Saved detail.");
+		expect(expandedText).toContain("Final question detail.");
+		expect(expandedText).toContain("Saved detail.");
 		expect(expanded.result).toEqual([]);
 		for (const line of [...collapsed.call, ...expanded.call]) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(64);
