@@ -22,6 +22,27 @@ const SUBAGENT_TOOL_PATTERNS_ENV = "PI_SUBAGENT_TOOL_PATTERNS";
 /** Matches Pi diagnostics that report extension loading or execution failures. */
 const PI_EXTENSION_ERROR_PATTERN =
 	/(?:Extension error|Failed to load extension|Extension failed)/i;
+/** Defines the isolated model provider used by online Pi runtime tests. */
+const RUNTIME_TEST_PROVIDER_ID = "runtime-test";
+const RUNTIME_TEST_MODEL_ID = "fake";
+const RUNTIME_TEST_MODEL = `${RUNTIME_TEST_PROVIDER_ID}/${RUNTIME_TEST_MODEL_ID}`;
+const RUNTIME_TEST_PROVIDER_LINES = [
+	`\tpi.registerProvider("${RUNTIME_TEST_PROVIDER_ID}", {`,
+	'\t\tname: "Runtime Test",',
+	'\t\tbaseUrl: "http://127.0.0.1:1/v1",',
+	'\t\tapiKey: "test",',
+	'\t\tapi: "openai-completions",',
+	"\t\tmodels: [{",
+	`\t\t\tid: "${RUNTIME_TEST_MODEL_ID}",`,
+	'\t\t\tname: "Fake",',
+	"\t\t\treasoning: false,",
+	'\t\t\tinput: ["text"],',
+	"\t\t\tcost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },",
+	"\t\t\tcontextWindow: 128000,",
+	"\t\t\tmaxTokens: 4096,",
+	"\t\t}],",
+	"\t});",
+] as const;
 
 interface RuntimeDump {
 	readonly activeTools: readonly string[];
@@ -118,6 +139,7 @@ function writePromptDumpExtension(directory: string): string {
 			'import { writeFileSync } from "node:fs";',
 			"",
 			"export default function dumpPrompt(pi) {",
+			...RUNTIME_TEST_PROVIDER_LINES,
 			'\tpi.on("before_agent_start", (event) => {',
 			"\t\tconst dumpFile = process.env.PI_PROMPT_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_PROMPT_DUMP_FILE is required");',
@@ -139,6 +161,7 @@ function writeRuntimeDumpExtension(directory: string): string {
 			'import { writeFileSync } from "node:fs";',
 			"",
 			"export default function dumpRuntime(pi) {",
+			...RUNTIME_TEST_PROVIDER_LINES,
 			'\tpi.on("before_agent_start", (event) => {',
 			"\t\tconst dumpFile = process.env.PI_RUNTIME_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_RUNTIME_DUMP_FILE is required");',
@@ -190,6 +213,8 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -289,6 +314,8 @@ test("runtime child loading removes subagent context at maxDepth", () => {
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -389,8 +416,8 @@ test("loads Subagents in isolated offline modes", () => {
 test("exposes subagent runtime tools and available-agent context", () => {
 	// Purpose: real Pi must expose only subagent tools and compose the selected-agent policy before its first model turn.
 	// Input and expected output: controlled TestAgent and SubAgentExtractor definitions produce the active tools and structured available-agent section.
-	// Edge case: the debug extension exits from before_agent_start, so no provider, model, network, auth, user file, or git access can occur.
-	// Dependencies: local Pi CLI, isolated package state, production runtime composition, and the existing runtime dump extension.
+	// Edge case: the debug extension exits from before_agent_start after selecting the isolated model, before any network or authentication request.
+	// Dependencies: local Pi CLI, isolated package state, production runtime composition, and the provider-registering runtime dump extension.
 	const repositoryDir = process.cwd();
 	let projectDir: string | undefined;
 	let scratchDir: string | undefined;
@@ -428,6 +455,8 @@ test("exposes subagent runtime tools and available-agent context", () => {
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -507,8 +536,8 @@ test("exposes subagent runtime tools and available-agent context", () => {
 test("runtime package loading snapshots configured subagent descriptions on the first turn", () => {
 	// Purpose: real Pi must await extension and tool description configuration before its first model-visible snapshot.
 	// Input and expected output: four absolute custom prompt files produce shared extension guidance and exactly four active subagent tools with matching configured descriptions.
-	// Edge case: the debug extension exits from the first before_agent_start event, before any provider or model request.
-	// Dependencies: local Pi CLI, isolated package config, selected main-agent restoration, production extension loading, and a runtime dump extension.
+	// Edge case: the debug extension exits from the first before_agent_start event after selecting the isolated model, before any network or authentication request.
+	// Dependencies: local Pi CLI, isolated package config, selected main-agent restoration, production extension loading, and the provider-registering runtime dump extension.
 	const repositoryDir = process.cwd();
 	const projectDir = realpathSync(
 		mkdtempSync(join(tmpdir(), "pi-runtime-description-project-")),
@@ -554,6 +583,8 @@ test("runtime package loading snapshots configured subagent descriptions on the 
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -652,6 +683,8 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),
@@ -715,6 +748,8 @@ test("runtime package loading exposes convene_council when enabled", () => {
 			[
 				"--no-session",
 				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
 				"-p",
 				"-e",
 				join(repositoryDir, "pi-package"),

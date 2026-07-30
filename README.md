@@ -185,9 +185,10 @@ Allowed thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, 
 
 - Breaking change: completely new subagent management system. The `/subagents` screen now shows all active subagents, their status, and allows steering or waiting for them. Subagents can be started, steered, and waited on asynchronously, and their results are integrated into the main agent's workflow.
 
-### v1.0.2 - 2026-07-25
+### v1.0.3 - 2026-07-27
 
 - Harden child startup recovery and compaction rehydration
+- Isolate package loading authentication (#15)
 
 ### v1.0.1 - 2026-07-24
 
