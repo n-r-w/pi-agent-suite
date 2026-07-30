@@ -23,7 +23,7 @@ import type {
 	InvocationAcceptance,
 	InvocationControl,
 } from "../invocation-contracts";
-import { SUBAGENT_JOURNAL_CUSTOM_TYPE, V2SessionStore } from "../persistence";
+import { SessionStore, SUBAGENT_JOURNAL_CUSTOM_TYPE } from "../persistence";
 import type {
 	ConversationProjectionEntry,
 	ManagementProjectionView,
@@ -1553,12 +1553,12 @@ describe("management screen", () => {
 		// Dependencies: real coordinator, journal store, catalog, management projection runtime, and screen; only the child process boundary is faked.
 		// ARRANGE: register one active owner writer and a deterministic invocation/clock boundary.
 		initTheme(undefined, false);
-		const manager = SessionManager.inMemory("/tmp/subagents-v2-metadata");
+		const manager = SessionManager.inMemory("/tmp/subagents-metadata");
 		const owner: OwnerIdentity = {
 			ownerPiSessionId: manager.getSessionId(),
-			ownerSessionFile: "/tmp/subagents-v2-metadata/session.jsonl",
+			ownerSessionFile: "/tmp/subagents-metadata/session.jsonl",
 		};
-		const store = new V2SessionStore();
+		const store = new SessionStore();
 		store.registerActive({
 			owner,
 			sessionManager: manager,

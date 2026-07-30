@@ -49,7 +49,7 @@ export interface AgentRuntimeComposition {
 	): void;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeCompositionV5";
+const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeComposition";
 
 export const MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT =
 	"pi-harness:main-agent-contribution-change";

@@ -83,18 +83,18 @@ export interface RuntimeOperationCancellationAcknowledgment {
 
 export type RuntimeWireMessage =
 	| {
-			readonly kind: "subagents-v2-ready";
+			readonly kind: "subagents-ready";
 			readonly runtimeLeaseId: string;
 			readonly ownerPiSessionId: string;
 			readonly ownerSessionFile: string;
 	  }
 	| {
-			readonly kind: "subagents-v2-request";
+			readonly kind: "subagents-request";
 			readonly source: "root" | "worker";
 			readonly request: RuntimeRequest;
 	  }
 	| {
-			readonly kind: "subagents-v2-response";
+			readonly kind: "subagents-response";
 			readonly source: "root" | "worker";
 			readonly runtimeLeaseId: string;
 			readonly requestId: string;
@@ -103,7 +103,7 @@ export type RuntimeWireMessage =
 			readonly error?: string;
 	  }
 	| {
-			readonly kind: "subagents-v2-settled";
+			readonly kind: "subagents-settled";
 			readonly runtimeLeaseId: string;
 			readonly requestId: string;
 	  };
@@ -114,13 +114,13 @@ export function parseWireMessage(
 ): RuntimeWireMessage | undefined {
 	const kind = readString(value, "kind");
 	switch (kind) {
-		case "subagents-v2-ready":
+		case "subagents-ready":
 			return parseReadyMessage(value);
-		case "subagents-v2-request":
+		case "subagents-request":
 			return parseRequestMessage(value);
-		case "subagents-v2-response":
+		case "subagents-response":
 			return parseResponseMessage(value);
-		case "subagents-v2-settled":
+		case "subagents-settled":
 			return parseSettledMessage(value);
 		default:
 			return undefined;
@@ -147,7 +147,7 @@ function parseReadyMessage(value: unknown): RuntimeWireMessage | undefined {
 		ownerSessionFile === undefined
 		? undefined
 		: {
-				kind: "subagents-v2-ready",
+				kind: "subagents-ready",
 				runtimeLeaseId,
 				ownerPiSessionId,
 				ownerSessionFile,
@@ -163,7 +163,7 @@ function parseRequestMessage(value: unknown): RuntimeWireMessage | undefined {
 	const request = parseRuntimeRequest(readField(value, "request"));
 	return source === undefined || request === undefined
 		? undefined
-		: { kind: "subagents-v2-request", source, request };
+		: { kind: "subagents-request", source, request };
 }
 
 /** Parses one correlated runtime response. */
@@ -195,7 +195,7 @@ function parseResponseMessage(value: unknown): RuntimeWireMessage | undefined {
 	}
 	return succeeded
 		? {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source,
 				runtimeLeaseId,
 				requestId,
@@ -203,7 +203,7 @@ function parseResponseMessage(value: unknown): RuntimeWireMessage | undefined {
 				result: readField(value, "result"),
 			}
 		: {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source,
 				runtimeLeaseId,
 				requestId,
@@ -221,12 +221,12 @@ function parseSettledMessage(value: unknown): RuntimeWireMessage | undefined {
 	const requestId = readString(value, "requestId");
 	return runtimeLeaseId === undefined || requestId === undefined
 		? undefined
-		: { kind: "subagents-v2-settled", runtimeLeaseId, requestId };
+		: { kind: "subagents-settled", runtimeLeaseId, requestId };
 }
 
 /** Reads the lease identity from either top-level or nested request framing. */
 export function wireRuntimeLeaseId(message: RuntimeWireMessage): string {
-	return message.kind === "subagents-v2-request"
+	return message.kind === "subagents-request"
 		? message.request.runtimeLeaseId
 		: message.runtimeLeaseId;
 }

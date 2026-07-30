@@ -16,10 +16,10 @@ import {
 } from "./domain";
 import { parseJournalRecord } from "./journal-codec";
 
-/** Identifies the sole V2 custom-entry family. */
-export const SUBAGENT_JOURNAL_CUSTOM_TYPE = "subagents-v2-journal";
+/** Identifies the sole subagent custom-entry family. */
+export const SUBAGENT_JOURNAL_CUSTOM_TYPE = "subagents-journal";
 /** Identifies feedback messages inserted into owner history. */
-export const SUBAGENT_HISTORY_CUSTOM_TYPE = "subagents-v2-feedback";
+export const SUBAGENT_HISTORY_CUSTOM_TYPE = "subagents-feedback";
 
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
@@ -77,7 +77,7 @@ interface ReconciliationContext {
 }
 
 /** Implements public SessionManager persistence and reconstruction. */
-export class V2SessionStore implements OwnerSessionStore {
+export class SessionStore implements OwnerSessionStore {
 	private readonly active = new Map<string, ActiveOwnerSessionWriter>();
 	private readonly remoteOwners = new Map<
 		string,
@@ -259,7 +259,7 @@ export class V2SessionStore implements OwnerSessionStore {
 		return this.reconstructOwner(this.openOwner(owner), new Set());
 	}
 
-	/** Folds validated V2 records from one public session branch. */
+	/** Folds validated subagent records from one public session branch. */
 	public fold(entries: readonly SessionEntry[]): FoldedOwnerJournal {
 		const records: JournalRecord[] = [];
 		const sessions = new Map<string, LogicalSession>();

@@ -14,13 +14,13 @@ describe("runtime wire parser", () => {
 		// Dependencies: production runtime wire parser and lease selector.
 		const messages: RuntimeWireMessage[] = [
 			{
-				kind: "subagents-v2-ready",
+				kind: "subagents-ready",
 				runtimeLeaseId: "lease-1",
 				ownerPiSessionId: "owner-1",
 				ownerSessionFile: "/tmp/owner.jsonl",
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "request-1",
@@ -31,7 +31,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: "lease-1",
 				requestId: "request-1",
@@ -39,7 +39,7 @@ describe("runtime wire parser", () => {
 				result: { acknowledged: true },
 			},
 			{
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "worker",
 				runtimeLeaseId: "lease-1",
 				requestId: "request-2",
@@ -47,7 +47,7 @@ describe("runtime wire parser", () => {
 				error: "failed",
 			},
 			{
-				kind: "subagents-v2-settled",
+				kind: "subagents-settled",
 				runtimeLeaseId: "lease-1",
 				requestId: "request-1",
 			},
@@ -130,7 +130,7 @@ describe("runtime wire parser", () => {
 		] as const;
 		const parsedPayloads = payloads.map(([operation, payload], index) =>
 			parseWireMessage({
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: `matrix-${index}`,
@@ -156,7 +156,7 @@ describe("runtime wire parser", () => {
 
 		expect({
 			parsedPayloads: parsedPayloads.map((message) =>
-				message?.kind === "subagents-v2-request"
+				message?.kind === "subagents-request"
 					? message.request.operation
 					: undefined,
 			),
@@ -251,18 +251,18 @@ describe("runtime wire parser", () => {
 			{},
 			{ kind: "unknown" },
 			{
-				kind: "subagents-v2-ready",
+				kind: "subagents-ready",
 				runtimeLeaseId: "",
 				ownerPiSessionId: "owner",
 				ownerSessionFile: "/tmp/owner.jsonl",
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "peer",
 				request: {},
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "request",
@@ -273,26 +273,26 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: "lease",
 				requestId: "request",
 				succeeded: "yes",
 			},
 			{
-				kind: "subagents-v2-settled",
+				kind: "subagents-settled",
 				runtimeLeaseId: "lease",
 				requestId: "",
 			},
 			{
-				kind: "subagents-v2-ready",
+				kind: "subagents-ready",
 				runtimeLeaseId: "lease",
 				ownerPiSessionId: "owner",
 				ownerSessionFile: "/tmp/owner.jsonl",
 				extra: true,
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "request",
@@ -304,7 +304,7 @@ describe("runtime wire parser", () => {
 				extra: true,
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "request",
@@ -316,7 +316,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "cancel-wait-extra",
@@ -331,7 +331,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "cancel-operation-extra",
@@ -346,7 +346,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "owner-stopping-extra",
@@ -357,7 +357,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "root",
 				request: {
 					requestId: "delivery-invalid",
@@ -368,7 +368,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "agent-envelope-extra",
@@ -388,7 +388,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: "agent-params-extra",
@@ -408,7 +408,7 @@ describe("runtime wire parser", () => {
 				},
 			},
 			{
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: "lease",
 				requestId: "request",
@@ -417,7 +417,7 @@ describe("runtime wire parser", () => {
 				extra: true,
 			},
 			{
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: "lease",
 				requestId: "request",
@@ -426,7 +426,7 @@ describe("runtime wire parser", () => {
 				error: "not permitted on success",
 			},
 			{
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "worker",
 				runtimeLeaseId: "lease",
 				requestId: "request",
@@ -435,14 +435,14 @@ describe("runtime wire parser", () => {
 				result: { acknowledged: true },
 			},
 			{
-				kind: "subagents-v2-settled",
+				kind: "subagents-settled",
 				runtimeLeaseId: "lease",
 				requestId: "request",
 				extra: true,
 			},
 		];
 		const failedDefault = parseWireMessage({
-			kind: "subagents-v2-response",
+			kind: "subagents-response",
 			source: "root",
 			runtimeLeaseId: "lease",
 			requestId: "request",
@@ -455,7 +455,7 @@ describe("runtime wire parser", () => {
 		}).toEqual({
 			malformed: malformed.map(() => undefined),
 			failedDefault: {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: "lease",
 				requestId: "request",

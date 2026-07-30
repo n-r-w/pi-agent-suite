@@ -55,7 +55,7 @@ describe("query branch wire", () => {
 	test("rejects extra fields, empty branches, invalid entries, and foreign codes", () => {
 		// Purpose: untrusted process messages must fail before they reach query execution.
 		// Input and expected output: each malformed request or response throws a boundary error.
-		// Edge case: a structurally valid failure with an unrelated Subagents V2 code is still rejected.
+		// Edge case: a structurally valid failure with an unrelated Subagents code is still rejected.
 		// Dependencies: production query branch boundary parsers only.
 		const operations = [
 			() => parseQueryBranchRequest({ sessionId: 1, question: "leak" }),

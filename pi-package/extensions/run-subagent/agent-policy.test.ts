@@ -69,7 +69,7 @@ function parentSession(): LogicalSession {
 describe("effective callable-agent policy", () => {
 	test("reports only the unmatched child tool pattern", () => {
 		// Purpose: child startup errors must state the actionable pattern mismatch without an internal subsystem prefix.
-		// Input and expected output: obsolete run_subagent against one V2 tool throws the shared policy issue verbatim.
+		// Input and expected output: obsolete run_subagent against one subagent tool throws the shared policy issue verbatim.
 		// Edge case: active tools are cleared before the invalid policy escapes.
 		// Dependencies: child tool-pattern environment parsing and public ExtensionAPI tool selection.
 		const previous = process.env[SUBAGENT_TOOL_PATTERNS_ENV];
@@ -148,11 +148,11 @@ describe("effective callable-agent policy", () => {
 		}
 	});
 
-	test("omits extension guidance when no Subagents V2 tool is active", async () => {
-		// Purpose: shared guidance must not consume model context for agents that cannot use Subagents V2.
-		// Input and expected output: an owner with only read receives no Subagents V2 prompt contribution.
-		// Edge case: callable agent definitions remain available in the registry but no V2 tool is active.
-		// Dependencies: production runtime composition and Subagents V2 active-tool policy.
+	test("omits extension guidance when no Subagents tool is active", async () => {
+		// Purpose: shared guidance must not consume model context for agents that cannot use Subagents.
+		// Input and expected output: an owner with only read receives no Subagents prompt contribution.
+		// Edge case: callable agent definitions remain available in the registry but no subagent tool is active.
+		// Dependencies: production runtime composition and Subagents active-tool policy.
 		const previousAgentId = process.env[SUBAGENT_AGENT_ID_ENV];
 		delete process.env[SUBAGENT_AGENT_ID_ENV];
 		let beforeAgentStart:

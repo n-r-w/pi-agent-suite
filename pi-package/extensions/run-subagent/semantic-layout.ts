@@ -193,7 +193,7 @@ export function renderClippedTextRow(
 	return `${styledLabel}${value.length === 0 ? "" : theme.fg("muted", ` ${value}`)}`;
 }
 
-/** Renders collapsed normalized text or complete expanded text within the V1 layout. */
+/** Renders collapsed normalized text or complete expanded text within the semantic layout. */
 export function renderBoundedText(
 	options: BoundedTextOptions,
 ): readonly string[] {
@@ -322,7 +322,7 @@ export function formatMetadataRuntime(
 		: `${metadata.modelId}/${metadata.thinking}`;
 }
 
-/** Colors projection savings and current usage with the shared V1 thresholds. */
+/** Colors projection savings and current usage with the shared context thresholds. */
 export function renderContext(
 	metadata: Pick<
 		InvocationMetadata,
@@ -374,7 +374,7 @@ export function renderContext(
 	return `${theme.fg("warning", saved)}${styledUsage}`;
 }
 
-/** Formats one token count as the rounded V1 compact k-unit. */
+/** Formats one token count as the rounded compact k-unit. */
 function formatTokenCount(tokens: number): string {
 	if (tokens < TOKEN_THOUSAND) {
 		return String(tokens);

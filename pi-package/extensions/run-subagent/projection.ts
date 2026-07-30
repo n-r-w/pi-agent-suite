@@ -7,7 +7,7 @@ import type {
 	SessionKey,
 } from "./domain.ts";
 import type { LiveAgentStatus } from "./live-status.ts";
-import { V2SessionStore } from "./persistence.ts";
+import { SessionStore } from "./persistence.ts";
 
 /** Supplies one direct owner's durable journal to recursive hierarchy projection. */
 export interface ProjectionJournal {
@@ -82,7 +82,7 @@ export function projectionStableKey(key: SessionKey): string {
 
 /** Maintains immutable hierarchy and selected-conversation revisions from read-only facts. */
 export class HierarchyConversationProjection {
-	private readonly store = new V2SessionStore();
+	private readonly store = new SessionStore();
 	private readonly durableSessions = new Map<string, LogicalSession>();
 	private readonly catalogSessions = new Map<string, LogicalSession>();
 	private readonly conversations = new Map<string, ConversationSnapshot>();

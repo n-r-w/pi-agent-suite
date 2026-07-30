@@ -3,7 +3,7 @@ import { formatDuration } from "./semantic-layout";
 
 describe("semantic layout", () => {
 	test("formats every elapsed duration with the shared compact units", () => {
-		// Purpose: every V2 surface must use one duration format.
+		// Purpose: every subagent surface must use one duration format.
 		// Inputs and expected output: seconds, minute-second, and hour-minute ranges use stable compact fields.
 		// Edge case: exact minute and hour boundaries retain their lower zero-valued field.
 		// Dependencies: shared semantic duration formatting only.

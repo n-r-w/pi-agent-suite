@@ -439,10 +439,10 @@ describe("mcp-wrapper extension", () => {
 	});
 
 	test("shares dynamic presentation through one Pi runtime event bus", async () => {
-		// Purpose: normal MCP registration and Subagents V2 presentation must meet through Pi's shared extension event bus.
+		// Purpose: normal MCP registration and Subagents presentation must meet through Pi's shared extension event bus.
 		// Input and expected output: one ExtensionAPI registers the dynamic tool, while the management consumer resolves exact renderers through the same runtime event bus.
 		// Edge case: another event bus in the same process must still classify that dynamic name as unknown.
-		// Dependencies: production mcp-wrapper session_start, public Pi event bus, and the Subagents V2 presentation consumer.
+		// Dependencies: production mcp-wrapper session_start, public Pi event bus, and the Subagents presentation consumer.
 		const runtimeEvents = createEventBus();
 		const mcpPi = createExtensionApiFake(runtimeEvents);
 		const managementPi = createExtensionApiFake(runtimeEvents);

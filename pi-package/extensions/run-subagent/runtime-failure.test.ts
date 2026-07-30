@@ -8,9 +8,9 @@ import { SubagentCoordinator } from "./coordinator";
 import type { LogicalSession } from "./domain";
 import type { InvocationControl } from "./invocation-contracts";
 import {
+	SessionStore,
 	SUBAGENT_HISTORY_CUSTOM_TYPE,
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
-	V2SessionStore,
 } from "./persistence";
 import { recoverRuntimeFailure } from "./runtime-failure";
 import { SessionCatalog } from "./session-catalog";
@@ -36,7 +36,7 @@ function readRecoveryFacts(manager: SessionManager): {
 		}
 		return [entry.data];
 	});
-	const store = new V2SessionStore();
+	const store = new SessionStore();
 	return {
 		state: store.fold(branch).sessions[0]?.state,
 		terminalStates: terminalRecords.map((record) =>
@@ -105,9 +105,7 @@ test("preserves normal-first terminal feedback through offline recovery", async 
 	// Edge case: duplicate normal-terminal evidence from delivery uncertainty still yields one destination, and repeated reconciliation adds nothing.
 	// Dependencies: production coordinator ordering, runtime-failure recovery, public SessionManager persistence, and remote-writer release.
 	// Arrange.
-	const directory = mkdtempSync(
-		join(tmpdir(), "subagents-v2-normal-recovery-"),
-	);
+	const directory = mkdtempSync(join(tmpdir(), "subagents-normal-recovery-"));
 	try {
 		const manager = createPersistedSession(directory, {
 			id: "nested-owner",
@@ -148,7 +146,7 @@ test("preserves normal-first terminal feedback through offline recovery", async 
 			session,
 		});
 		let remoteAppendCount = 0;
-		const store = new V2SessionStore({
+		const store = new SessionStore({
 			append: async (_remoteOwner, record) => {
 				remoteAppendCount += 1;
 				manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, record);

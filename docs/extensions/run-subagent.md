@@ -28,7 +28,7 @@ If the file is missing, the extension uses:
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables runtime behavior. When `false`, all four tool definitions remain registered, the runtime and management screen do not start, and every execution fails closed. |
 | `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum delegation depth. At or beyond this depth, all four subagent tools and both model-visible subagent sections are removed. Unrelated agent tools remain active. |
-| `extensionDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/extension-description.md` | Replaces the shared model-visible Subagents V2 rules with the file's trimmed content. |
+| `extensionDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/extension-description.md` | Replaces the shared model-visible Subagents rules with the file's trimmed content. |
 | `startDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/start-description.md` | Replaces the model-visible `subagent_start` description with the file's trimmed content. |
 | `steerDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/steer-description.md` | Replaces the model-visible `subagent_steer` description with the file's trimmed content. |
 | `waitDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/wait-description.md` | Replaces the model-visible `subagent_wait` description with the file's trimmed content. |
@@ -161,7 +161,7 @@ The management pane removes `OSC 133;A/B/C` shell-history markers from nested co
 Tool presentation follows three paths:
 
 - Pi built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`) use Pi's built-in tool definition.
-- Package tools publish their exact call, result, and shell presentation through Pi's shared extension event bus. The management pane resolves these presentations by tool name, independent of extension load order and Jiti module isolation. This covers the four Subagents V2 tools, MCP wrapper tools, `consult_advisor`, and `convene_council`.
+- Package tools publish their exact call, result, and shell presentation through Pi's shared extension event bus. The management pane resolves these presentations by tool name, independent of extension load order and Jiti module isolation. This covers the four Subagents tools, MCP wrapper tools, `consult_advisor`, and `convene_council`.
 - Other tool names use the universal presentation: the JSON call preview starts on the tool-name row and occupies at most two visual lines; collapsed results occupy at most five visual lines and include a hidden-line count with the configured expansion key; expanded results use full Markdown; failures use error styling; and Pi supplies the normal tool shell.
 - Collapsed arbitrary text uses the same whitespace, JSON-string, and terminal-control normalization as MCP tool previews. Expanded result text remains unchanged.
 
@@ -359,7 +359,7 @@ When cancellation wins:
 - An active-session steer canceled before dispatch sends no steering prompt, applies no prompt, and sends no child abort.
 - A wait removes its admission, timer, resolver, and bridge correlation before cancellation becomes observable. Later child feedback follows normal owner-history delivery.
 - A query returns no answer and no `query_failed` result after caller cancellation wins.
-- The tool call propagates as Pi cancellation. It returns neither a normal Subagents V2 outcome nor a failed Subagents V2 `{ code, message }` result.
+- The tool call propagates as Pi cancellation. It returns neither a normal Subagents outcome nor a failed Subagents `{ code, message }` result.
 
 Once active-steer dispatch is reserved, cancellation cannot win. If child Pi returns a successful steer response, the call returns the accepted result and applies the prompt exactly once, even when the parent observed cancellation before receiving that response. A rejected child steer response remains `message_rejected`; no child abort is sent in either case.
 

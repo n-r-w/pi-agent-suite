@@ -10,7 +10,7 @@ import { hasExactKeys } from "./boundary-validation";
 import { readSubagentDepth } from "./environment";
 import { errorMessage } from "./error-message";
 
-export const SUBAGENTS_V2_EXTENSION_DIR = "run-subagent";
+export const SUBAGENTS_EXTENSION_DIR = "run-subagent";
 const DEFAULT_MAX_DEPTH = 1;
 const CANONICAL_DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
 const DESCRIPTION_PROMPT_FILE_KEYS = [
@@ -40,7 +40,7 @@ export interface SubagentQueryConfig {
 	readonly systemPrompt?: string;
 }
 
-export interface SubagentsV2Config {
+export interface SubagentsConfig {
 	readonly enabled: boolean;
 	readonly maxDepth: number;
 	readonly query?: SubagentQueryConfig;
@@ -52,8 +52,8 @@ export interface SubagentsV2Config {
 }
 
 /** Parses the supported configuration keys and rejects unknown input. */
-export async function readConfig(): Promise<SubagentsV2Config> {
-	const result = await readSuiteConfigFile(SUBAGENTS_V2_EXTENSION_DIR);
+export async function readConfig(): Promise<SubagentsConfig> {
+	const result = await readSuiteConfigFile(SUBAGENTS_EXTENSION_DIR);
 	if (result.kind === "missing") {
 		return { enabled: true, maxDepth: DEFAULT_MAX_DEPTH };
 	}
@@ -61,7 +61,7 @@ export async function readConfig(): Promise<SubagentsV2Config> {
 		return {
 			enabled: false,
 			maxDepth: DEFAULT_MAX_DEPTH,
-			issue: `[subagents-v2] could not read ${result.location.displayPath}: ${errorMessage(result.error)}`,
+			issue: `[subagents] could not read ${result.location.displayPath}: ${errorMessage(result.error)}`,
 		};
 	}
 	let value: unknown;
@@ -71,14 +71,14 @@ export async function readConfig(): Promise<SubagentsV2Config> {
 		return {
 			enabled: false,
 			maxDepth: DEFAULT_MAX_DEPTH,
-			issue: `[subagents-v2] invalid JSON in ${result.file.displayPath}: ${errorMessage(error)}`,
+			issue: `[subagents] invalid JSON in ${result.file.displayPath}: ${errorMessage(error)}`,
 		};
 	}
 	return parseConfigValue(value);
 }
 
 /** Validates parsed configuration and resolves all descriptions as one result. */
-function parseConfigValue(value: unknown): SubagentsV2Config {
+function parseConfigValue(value: unknown): SubagentsConfig {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		return invalidConfig("configuration must be an object");
 	}
@@ -129,7 +129,7 @@ function parseConfigValue(value: unknown): SubagentsV2Config {
 /** Resolves enabled and depth defaults after validating their primitive values. */
 function readBaseConfig(
 	value: object,
-): Pick<SubagentsV2Config, "enabled" | "maxDepth"> {
+): Pick<SubagentsConfig, "enabled" | "maxDepth"> {
 	const enabled = Reflect.get(value, "enabled");
 	const maxDepth = Reflect.get(value, "maxDepth");
 	if (enabled !== undefined && typeof enabled !== "boolean") {
@@ -236,12 +236,12 @@ function hasProviderModelShape(value: unknown): value is string {
 	return separator > 0 && separator < value.length - 1;
 }
 
-/** Returns a fail-closed V2 configuration. */
-function invalidConfig(issue: string): SubagentsV2Config {
+/** Returns a fail-closed subagent configuration. */
+function invalidConfig(issue: string): SubagentsConfig {
 	return {
 		enabled: false,
 		maxDepth: DEFAULT_MAX_DEPTH,
-		issue: `[subagents-v2] ${issue}`,
+		issue: `[subagents] ${issue}`,
 	};
 }
 

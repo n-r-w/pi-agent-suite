@@ -45,11 +45,11 @@ import {
 import { SubagentCoordinator } from "./coordinator";
 import type { JournalRecord, LogicalSession, OwnerIdentity } from "./domain";
 import { readPrompt } from "./entry-config";
-import subagentsV2 from "./index";
+import subagents from "./index";
 import type { InvocationAcceptance } from "./invocation-contracts";
 import { InvocationSupervisor } from "./invocation-supervisor";
 import type { ManagementScreen } from "./management-screen/screen";
-import { SUBAGENT_JOURNAL_CUSTOM_TYPE, V2SessionStore } from "./persistence";
+import { SessionStore, SUBAGENT_JOURNAL_CUSTOM_TYPE } from "./persistence";
 import { projectionStableKey } from "./projection";
 import { RuntimeFailureRecoveryTracker } from "./runtime-recovery-tracker";
 import { SessionCatalog } from "./session-catalog";
@@ -269,7 +269,7 @@ let previousAgentId: string | undefined;
 
 beforeEach(() => {
 	// The suite directory isolates config and agent discovery without modifying HOME.
-	suiteDir = mkdtempSync(join(tmpdir(), "subagents-v2-entry-"));
+	suiteDir = mkdtempSync(join(tmpdir(), "subagents-entry-"));
 	mkdirSync(join(suiteDir, "agent-selection", "agents"), { recursive: true });
 	previousSuiteDir = process.env[SUITE_DIR_ENV];
 	previousDepth = process.env[DEPTH_ENV];
@@ -290,14 +290,14 @@ afterEach(() => {
 	rmSync(suiteDir, { recursive: true, force: true });
 });
 
-describe("subagents V2 entry", () => {
-	test("rejects structurally invalid V2 requests", async () => {
+describe("subagents entry", () => {
+	test("rejects structurally invalid subagent requests", async () => {
 		// Purpose: structural request violations must fail before semantic agent checks.
 		// Input and expected output: whitespace-only subagent_start.prompt fails with invalid_request and no normal outcome.
 		// Edge case: the requested agent is also unavailable, but structural precedence still wins.
 		// Dependencies: registered production entry tool and isolated config/agent state.
 		const pi = createPiFake();
-		await subagentsV2(pi);
+		await subagents(pi);
 		let result: AgentToolResult<unknown> | undefined;
 		try {
 			result = await getTool(pi, "subagent_start").execute(
@@ -366,7 +366,7 @@ describe("subagents V2 entry", () => {
 		);
 
 		try {
-			await subagentsV2(pi, {
+			await subagents(pi, {
 				completeSimple: async (_model, context) => {
 					modelContexts.push(context);
 					return {
@@ -407,7 +407,7 @@ describe("subagents V2 entry", () => {
 				(value) =>
 					typeof value === "object" &&
 					value !== null &&
-					Reflect.get(value, "kind") === "subagents-v2-request" &&
+					Reflect.get(value, "kind") === "subagents-request" &&
 					Reflect.get(Reflect.get(value, "request"), "operation") ===
 						"query_branch",
 			);
@@ -416,7 +416,7 @@ describe("subagents V2 entry", () => {
 			}
 			const request = Reflect.get(requestMessage, "request");
 			process.emit("message", {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: "worker-query-lease",
 				requestId: Reflect.get(request, "requestId"),
@@ -525,7 +525,7 @@ describe("subagents V2 entry", () => {
 
 		// Act.
 		try {
-			await subagentsV2(pi);
+			await subagents(pi);
 			await pi.emit("session_start", { type: "session_start" }, ctx);
 			for (const request of [
 				{
@@ -544,7 +544,7 @@ describe("subagents V2 entry", () => {
 				},
 			] as const) {
 				process.emit("message", {
-					kind: "subagents-v2-request",
+					kind: "subagents-request",
 					source: "root",
 					request: {
 						requestId: request.requestId,
@@ -580,7 +580,7 @@ describe("subagents V2 entry", () => {
 				(value): value is object =>
 					typeof value === "object" &&
 					value !== null &&
-					Reflect.get(value, "kind") === "subagents-v2-response",
+					Reflect.get(value, "kind") === "subagents-response",
 			)
 			.map((value) => ({
 				requestId: Reflect.get(value, "requestId"),
@@ -635,7 +635,7 @@ describe("subagents V2 entry", () => {
 		);
 
 		try {
-			await subagentsV2(pi);
+			await subagents(pi);
 			await pi.emit("session_start", { type: "session_start" }, ctx);
 			const controller = new AbortController();
 			const reason = new Error("cancel nested wait");
@@ -697,7 +697,7 @@ describe("subagents V2 entry", () => {
 					: undefined;
 
 			process.emit("message", {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: "nested-abort-lease",
 				requestId: originalRequestId,
@@ -706,7 +706,7 @@ describe("subagents V2 entry", () => {
 			});
 			if (typeof cancelRequestId === "string") {
 				process.emit("message", {
-					kind: "subagents-v2-response",
+					kind: "subagents-response",
 					source: "root",
 					runtimeLeaseId: "nested-abort-lease",
 					requestId: cancelRequestId,
@@ -720,7 +720,7 @@ describe("subagents V2 entry", () => {
 				if (
 					typeof message !== "object" ||
 					message === null ||
-					Reflect.get(message, "kind") !== "subagents-v2-settled"
+					Reflect.get(message, "kind") !== "subagents-settled"
 				) {
 					return [];
 				}
@@ -831,7 +831,7 @@ describe("subagents V2 entry", () => {
 		] as const;
 
 		try {
-			await subagentsV2(pi);
+			await subagents(pi);
 			await pi.emit("session_start", { type: "session_start" }, ctx);
 			const observations: Array<{
 				readonly toolName: string;
@@ -909,7 +909,7 @@ describe("subagents V2 entry", () => {
 						: undefined;
 				if (typeof cancellationRequestId === "string") {
 					process.emit("message", {
-						kind: "subagents-v2-response",
+						kind: "subagents-response",
 						source: "root",
 						runtimeLeaseId: "nested-operation-lease",
 						requestId: cancellationRequestId,
@@ -921,7 +921,7 @@ describe("subagents V2 entry", () => {
 					});
 				}
 				process.emit("message", {
-					kind: "subagents-v2-response",
+					kind: "subagents-response",
 					source: "root",
 					runtimeLeaseId: "nested-operation-lease",
 					requestId: operationRequestId,
@@ -935,7 +935,7 @@ describe("subagents V2 entry", () => {
 					.flatMap((message) =>
 						typeof message === "object" &&
 						message !== null &&
-						Reflect.get(message, "kind") === "subagents-v2-settled"
+						Reflect.get(message, "kind") === "subagents-settled"
 							? [Reflect.get(message, "requestId")]
 							: [],
 					);
@@ -1000,13 +1000,13 @@ describe("subagents V2 entry", () => {
 		}
 	});
 
-	test("registers the permitted V2 tools and one semantic feedback renderer", async () => {
-		// Purpose: normal rendering and management replay must use the exact approved V2 tool and feedback renderer references.
-		// Input and expected output: start, steer, wait, query, and one subagents-v2-feedback renderer register once; management resolves the same tool renderer functions.
+	test("registers the permitted subagent tools and one semantic feedback renderer", async () => {
+		// Purpose: normal rendering and management replay must use the exact approved subagent tool and feedback renderer references.
+		// Input and expected output: start, steer, wait, query, and one subagents-feedback renderer register once; management resolves the same tool renderer functions.
 		// Edge case: static management presentation remains available before any session starts.
 		// Dependencies: production entry registration and shared event-bus presentation registry.
 		const pi = createPiFake();
-		await subagentsV2(pi);
+		await subagents(pi);
 		const registry = createToolPresentationRegistry("/tmp", pi.events);
 
 		expect({
@@ -1029,7 +1029,7 @@ describe("subagents V2 entry", () => {
 				"subagent_steer",
 				"subagent_wait",
 			],
-			messageRenderers: ["subagents-v2-feedback"],
+			messageRenderers: ["subagents-feedback"],
 			sharedToolRenderers: [
 				{ name: "subagent_start", call: true, result: true },
 				{ name: "subagent_steer", call: true, result: true },
@@ -1111,7 +1111,7 @@ describe("subagents V2 entry", () => {
 		const startSpy = spyOn(InvocationSupervisor.prototype, "start");
 		const continueSpy = spyOn(InvocationSupervisor.prototype, "continue");
 		try {
-			await subagentsV2(pi, {
+			await subagents(pi, {
 				completeSimple: async (_model, context, options) => {
 					calls.push({ context, options });
 					return response;
@@ -1165,7 +1165,7 @@ describe("subagents V2 entry", () => {
 		);
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir, [], { model: TEST_MODEL });
-		await subagentsV2(pi);
+		await subagents(pi);
 		getAgentRuntimeComposition(pi).setMainAgentContribution({
 			prompt: "Main prompt",
 			tools: ["subagent_start", "subagent_steer", "subagent_wait"],
@@ -1236,7 +1236,7 @@ describe("subagents V2 entry", () => {
 	});
 
 	test("applies independent descriptions without leaking between runtimes", async () => {
-		// Purpose: every V2 tool must resolve its configured description independently while omitted tools retain bundled text.
+		// Purpose: every subagent tool must resolve its configured description independently while omitted tools retain bundled text.
 		// Input and expected output: one, two, and three absolute prompt files customize only their matching tools; a fresh default runtime restores all bundled descriptions.
 		// Edge case: sequential extension instances share the process but must not share mutable registration state.
 		// Dependencies: production entry registration, suite-owned config, and isolated prompt files.
@@ -1293,7 +1293,7 @@ describe("subagents V2 entry", () => {
 				JSON.stringify(configCase.config),
 			);
 			const pi = createPiFake();
-			await subagentsV2(pi);
+			await subagents(pi);
 			expect({
 				start: getTool(pi, "subagent_start").description,
 				steer: getTool(pi, "subagent_steer").description,
@@ -1306,7 +1306,7 @@ describe("subagents V2 entry", () => {
 			JSON.stringify({ enabled: true }),
 		);
 		const defaultPi = createPiFake();
-		await subagentsV2(defaultPi);
+		await subagents(defaultPi);
 		expect({
 			start: getTool(defaultPi, "subagent_start").description,
 			steer: getTool(defaultPi, "subagent_steer").description,
@@ -1314,8 +1314,8 @@ describe("subagents V2 entry", () => {
 		}).toEqual(defaults);
 	});
 
-	test("registers stable V2 tools before asynchronous runtime initialization", async () => {
-		// Purpose: agent-core must snapshot all V2 extension tools before asynchronous configuration and session runtime initialization.
+	test("registers stable subagent tools before asynchronous runtime initialization", async () => {
+		// Purpose: agent-core must snapshot all subagent extension tools before asynchronous configuration and session runtime initialization.
 		// Input and expected output: a gated config read still exposes each tool once; repeated session and tree events do not register again.
 		// Edge case: execution callbacks remain the same registrations while root runtime state is replaced by a later session_start.
 		// Dependencies: production extension initialization, gated config reader, and public lifecycle handlers.
@@ -1354,7 +1354,7 @@ describe("subagents V2 entry", () => {
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir);
 		try {
-			const initialization = subagentsV2(pi);
+			const initialization = subagents(pi);
 			const toolsBeforeConfig = pi.tools.map((tool) => tool.name).sort();
 			releaseConfig();
 			await initialization;
@@ -1397,7 +1397,7 @@ describe("subagents V2 entry", () => {
 		}
 	});
 
-	test("publishes exact V2 schemas", () => {
+	test("publishes exact subagent schemas", () => {
 		// Purpose: all public request schemas must remain closed and machine-readable.
 		// Input and expected output: one valid request per tool passes while an extra property, duplicate wait ID, and zero timeout fail.
 		// Edge case: Unicode code-point bounds remain distinct from UTF-16 code units.
@@ -1453,7 +1453,7 @@ describe("subagents V2 entry", () => {
 	});
 
 	test("runs root lifecycle and semantic failure boundaries", async () => {
-		// Purpose: registered V2 tools must use one reconstructed root runtime across lifecycle events.
+		// Purpose: registered subagent tools must use one reconstructed root runtime across lifecycle events.
 		// Input and expected output: an unavailable start and unknown steer/wait return their stable semantic codes without spawning Pi.
 		// Edge case: message reconciliation and shutdown run with an empty owner journal and no UI.
 		// Dependencies: production entry handlers, isolated empty agent registry, and public session-manager fake methods.
@@ -1469,7 +1469,7 @@ describe("subagents V2 entry", () => {
 		);
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir);
-		await subagentsV2(pi);
+		await subagents(pi);
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		const operations = [
 			getTool(pi, "subagent_start").execute(
@@ -1558,7 +1558,7 @@ describe("subagents V2 entry", () => {
 			return registerOwner.call(this, owner);
 		});
 		try {
-			await subagentsV2(pi);
+			await subagents(pi);
 			await pi.emit("session_start", { type: "session_start" }, ctx);
 			if (coordinator === undefined) {
 				throw new Error("root session did not expose its coordinator");
@@ -1648,7 +1648,7 @@ describe("subagents V2 entry", () => {
 		// Purpose: the registered root session_shutdown handler must retain runtime state and its active writer until non-empty closure recovery settles.
 		// Input and expected output: one reconstructed lease enters a gated recovery; the handler stays pending, remains reconcilable, then unregisters and clears once.
 		// Edge case: a second shutdown and later message reconciliation must not reuse the disposed root runtime.
-		// Dependencies: registered lifecycle handler, production root recovery binding, coordinator closure, and V2 store lifecycle.
+		// Dependencies: registered lifecycle handler, production root recovery binding, coordinator closure, and session store lifecycle.
 		const rootSession = {
 			key: { ownerPiSessionId: "owner-pi", ownerLocalSessionId: 1 },
 			childPiSessionId: "root-child",
@@ -1677,7 +1677,7 @@ describe("subagents V2 entry", () => {
 		];
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir, entries);
-		await subagentsV2(pi);
+		await subagents(pi);
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		let releaseRecovery = (): void => undefined;
 		const recoveryGate = new Promise<void>((resolve) => {
@@ -1695,8 +1695,8 @@ describe("subagents V2 entry", () => {
 			runtimeFailure,
 			"recoverRootShutdown",
 		).mockImplementation(async (options) => {
-			if (!(options.store instanceof V2SessionStore)) {
-				throw new Error("root recovery store is not V2SessionStore");
+			if (!(options.store instanceof SessionStore)) {
+				throw new Error("root recovery store is not SessionStore");
 			}
 			const store = options.store;
 			const unregisterActive = store.unregisterActive.bind(store);
@@ -1763,7 +1763,7 @@ describe("subagents V2 entry", () => {
 		// Dependencies: registered lifecycle handler, recovery tracker, production recovery functions, and root store lifecycle.
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir);
-		await subagentsV2(pi);
+		await subagents(pi);
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		const runtimeFailure = await import("./runtime-failure");
 		const recoverRootShutdown = runtimeFailure.recoverRootShutdown;
@@ -1773,8 +1773,8 @@ describe("subagents V2 entry", () => {
 			runtimeFailure,
 			"recoverRootShutdown",
 		).mockImplementation(async (options) => {
-			if (!(options.store instanceof V2SessionStore)) {
-				throw new Error("root recovery store is not V2SessionStore");
+			if (!(options.store instanceof SessionStore)) {
+				throw new Error("root recovery store is not SessionStore");
 			}
 			const store = options.store;
 			const unregisterActive = store.unregisterActive.bind(store);
@@ -1894,7 +1894,7 @@ describe("subagents V2 entry", () => {
 		// Dependencies: registered lifecycle handler, recovery tracker rejection, and retained root store.
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir);
-		await subagentsV2(pi);
+		await subagents(pi);
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		const runtimeFailure = await import("./runtime-failure");
 		const recoverRootShutdown = runtimeFailure.recoverRootShutdown;
@@ -1904,8 +1904,8 @@ describe("subagents V2 entry", () => {
 			runtimeFailure,
 			"recoverRootShutdown",
 		).mockImplementation(async (options) => {
-			if (!(options.store instanceof V2SessionStore)) {
-				throw new Error("root recovery store is not V2SessionStore");
+			if (!(options.store instanceof SessionStore)) {
+				throw new Error("root recovery store is not SessionStore");
 			}
 			const store = options.store;
 			const unregisterActive = store.unregisterActive.bind(store);
@@ -2071,7 +2071,7 @@ describe("subagents V2 entry", () => {
 					throw new Error("controlled launch boundary");
 				},
 			});
-			await subagentsV2(pi);
+			await subagents(pi);
 			getAgentRuntimeComposition(pi).setMainAgentContribution({
 				prompt: "Main prompt",
 				tools: ["subagent_start", "subagent_steer", "subagent_wait"],
@@ -2329,7 +2329,7 @@ describe("subagents V2 entry", () => {
 		);
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir, entries);
-		await subagentsV2(pi);
+		await subagents(pi);
 
 		// Act.
 		try {
@@ -2424,7 +2424,7 @@ describe("subagents V2 entry", () => {
 		];
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir, entries);
-		await subagentsV2(pi);
+		await subagents(pi);
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		const result = await getTool(pi, "subagent_wait").execute(
 			"wait-terminal",
@@ -2463,7 +2463,7 @@ describe("subagents V2 entry", () => {
 			writeFileSync(join(configDir, "config.json"), content);
 			const pi = createPiFake();
 			const ctx = createContext(suiteDir);
-			await subagentsV2(pi);
+			await subagents(pi);
 			const code = await getTool(pi, "subagent_start")
 				.execute(
 					`invalid-config-${index}`,
@@ -2506,7 +2506,7 @@ describe("subagents V2 entry", () => {
 		);
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir);
-		await subagentsV2(pi);
+		await subagents(pi);
 		const code = await getTool(pi, "subagent_start")
 			.execute(
 				"invalid-description-config",
@@ -2618,7 +2618,7 @@ describe("subagents V2 entry", () => {
 			childSessionFile: savedSession.childSessionFile,
 		});
 		try {
-			await subagentsV2(pi);
+			await subagents(pi);
 			await pi.emit("session_start", { type: "session_start" }, ctx);
 			const command = pi.commands.find(({ name }) => name === "subagents");
 			await command?.handler("", ctx);
@@ -2782,7 +2782,7 @@ describe("subagents V2 entry", () => {
 			childSessionFile: visibleSession.childSessionFile,
 		});
 		try {
-			await subagentsV2(pi);
+			await subagents(pi);
 			await pi.emit("session_start", { type: "session_start" }, ctx);
 			const command = pi.commands.find(({ name }) => name === "subagents");
 			await command?.handler("", ctx);
@@ -2868,7 +2868,7 @@ describe("subagents V2 entry", () => {
 			},
 			setWidget: (...args: unknown[]) => tuiWidgetCalls.push(args),
 		});
-		await subagentsV2(tuiPi);
+		await subagents(tuiPi);
 		await tuiPi.emit("session_start", { type: "session_start" }, tuiContext);
 
 		// ACT: invoke both TUI registrations, then start a separate non-interactive runtime.
@@ -2887,7 +2887,7 @@ describe("subagents V2 entry", () => {
 				return undefined;
 			},
 		});
-		await subagentsV2(rpcPi);
+		await subagents(rpcPi);
 		await rpcPi.emit("session_start", { type: "session_start" }, rpcContext);
 
 		// ASSERT: both interactive paths share one factory and exact overlay options while normal and RPC modes remain isolated.
@@ -2943,11 +2943,11 @@ describe("subagents V2 entry", () => {
 		);
 	});
 
-	test("registers inert V2 tools when explicitly disabled", async () => {
+	test("registers inert subagent tools when explicitly disabled", async () => {
 		// Purpose: disabled configuration must keep early tool definitions stable without initializing runtime behavior.
 		// Input and expected output: enabled false registers four tools and execution returns start_failed.
 		// Edge case: maxDepth is omitted because disabled configuration cannot execute a runtime operation.
-		// Dependencies: suite-owned Subagents V2 config file and stable registered execution callbacks.
+		// Dependencies: suite-owned Subagents config file and stable registered execution callbacks.
 		const configDir = join(suiteDir, "run-subagent");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
@@ -2956,7 +2956,7 @@ describe("subagents V2 entry", () => {
 		);
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir);
-		await subagentsV2(pi);
+		await subagents(pi);
 		const code = await getTool(pi, "subagent_wait")
 			.execute(
 				"disabled-wait",

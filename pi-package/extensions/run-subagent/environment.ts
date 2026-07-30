@@ -88,7 +88,7 @@ function isValidToolPatternList(value: unknown): value is readonly string[] {
 	return true;
 }
 
-/** Returns true for environment keys owned by the Subagents V2 runtime. */
+/** Returns true for environment keys owned by the Subagents runtime. */
 function isSubagentOwnedEnvKey(key: string): boolean {
 	return (
 		key === SUBAGENT_AGENT_ID_ENV ||

@@ -23,7 +23,7 @@ afterEach(async () => {
 
 describe("agent registry project overlay", () => {
 	test("merges project agents of every type and overrides global IDs case-insensitively", async () => {
-		// Purpose: one project registry must extend both main-agent selection and Subagents V2 without separate formats.
+		// Purpose: one project registry must extend both main-agent selection and Subagents without separate formats.
 		// Input and expected output: project main, subagent, and both definitions extend the global set, and local builder replaces global Builder.
 		// Edge case: override matching ignores file-name case while preserving the selected local agent ID.
 		// Dependencies: this test uses only temporary suite and project directories.

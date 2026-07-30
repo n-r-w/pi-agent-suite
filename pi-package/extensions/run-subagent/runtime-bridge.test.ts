@@ -77,7 +77,7 @@ async function probeRootAcknowledgment(result: unknown): Promise<{
 		onFailure: () => undefined,
 	});
 	process.emit("message", {
-		kind: "subagents-v2-ready",
+		kind: "subagents-ready",
 		runtimeLeaseId: "lease-root-ack",
 		ownerPiSessionId: "owner-root-ack",
 		ownerSessionFile: "/tmp/owner-root-ack.jsonl",
@@ -100,14 +100,14 @@ async function probeRootAcknowledgment(result: unknown): Promise<{
 		});
 	await Promise.resolve();
 	const request = process.sent.find(
-		(message) => readKind(message) === "subagents-v2-request",
+		(message) => readKind(message) === "subagents-request",
 	);
 	const requestId = readNestedRequestId(request);
 	if (requestId === undefined) {
 		throw new Error("root acknowledgment correlation was not captured");
 	}
 	process.emit("message", {
-		kind: "subagents-v2-response",
+		kind: "subagents-response",
 		source: "worker",
 		runtimeLeaseId: "lease-root-ack",
 		requestId,
@@ -117,7 +117,7 @@ async function probeRootAcknowledgment(result: unknown): Promise<{
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const settledAfterMalformed = settled;
 	process.emit("message", {
-		kind: "subagents-v2-response",
+		kind: "subagents-response",
 		source: "worker",
 		runtimeLeaseId: "lease-root-ack",
 		requestId,
@@ -152,14 +152,14 @@ async function probeWorkerAcknowledgment(result: unknown): Promise<{
 	});
 	await Promise.resolve();
 	const request = channel.sent.find(
-		(message) => readKind(message) === "subagents-v2-request",
+		(message) => readKind(message) === "subagents-request",
 	);
 	const requestId = readNestedRequestId(request);
 	if (requestId === undefined) {
 		throw new Error("worker acknowledgment correlation was not captured");
 	}
 	channel.emit({
-		kind: "subagents-v2-response",
+		kind: "subagents-response",
 		source: "root",
 		runtimeLeaseId: "lease-worker-ack",
 		requestId,
@@ -169,7 +169,7 @@ async function probeWorkerAcknowledgment(result: unknown): Promise<{
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const settledAfterMalformed = settled;
 	channel.emit({
-		kind: "subagents-v2-response",
+		kind: "subagents-response",
 		source: "root",
 		runtimeLeaseId: "lease-worker-ack",
 		requestId,
@@ -267,7 +267,7 @@ describe("RootRuntimeBridge", () => {
 			onFailure: () => undefined,
 		});
 		process.emit("message", {
-			kind: "subagents-v2-ready",
+			kind: "subagents-ready",
 			runtimeLeaseId: "lease-request-validation",
 			ownerPiSessionId: "owner-request-validation",
 			ownerSessionFile: "/tmp/owner-request-validation.jsonl",
@@ -305,7 +305,7 @@ describe("RootRuntimeBridge", () => {
 			],
 		] as const) {
 			process.emit("message", {
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId,
@@ -338,7 +338,7 @@ describe("RootRuntimeBridge", () => {
 			["delivery", "delivery_acknowledgment", false],
 		] as const) {
 			workerChannel.emit({
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "root",
 				request: {
 					requestId,
@@ -355,10 +355,10 @@ describe("RootRuntimeBridge", () => {
 			rootRequestCalls,
 			workerHandlerCalls,
 			rootResponses: process.sent.filter(
-				(message) => readKind(message) === "subagents-v2-response",
+				(message) => readKind(message) === "subagents-response",
 			).length,
 			workerResponses: workerChannel.sent.filter(
-				(message) => readKind(message) === "subagents-v2-response",
+				(message) => readKind(message) === "subagents-response",
 			).length,
 		}).toEqual({
 			rootRequestCalls: 0,
@@ -400,14 +400,14 @@ describe("RootRuntimeBridge", () => {
 			});
 		await Promise.resolve();
 		const nestedRequest = channel.sent.find(
-			(message) => readKind(message) === "subagents-v2-request",
+			(message) => readKind(message) === "subagents-request",
 		);
 		const nestedRequestId = readNestedRequestId(nestedRequest);
 		if (nestedRequestId === undefined) {
 			throw new Error("worker request correlation was not captured");
 		}
 		channel.emit({
-			kind: "subagents-v2-response",
+			kind: "subagents-response",
 			source: "root",
 			runtimeLeaseId: "lease-worker",
 			requestId: nestedRequestId,
@@ -418,7 +418,7 @@ describe("RootRuntimeBridge", () => {
 		await Promise.resolve();
 		const settledAfterMalformed = nestedSettled;
 		channel.emit({
-			kind: "subagents-v2-response",
+			kind: "subagents-response",
 			source: "root",
 			runtimeLeaseId: "lease-worker",
 			requestId: nestedRequestId,
@@ -431,7 +431,7 @@ describe("RootRuntimeBridge", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const settledAfterNestedMalformed = nestedSettled;
 		channel.emit({
-			kind: "subagents-v2-response",
+			kind: "subagents-response",
 			source: "root",
 			runtimeLeaseId: "lease-worker",
 			requestId: nestedRequestId,
@@ -441,7 +441,7 @@ describe("RootRuntimeBridge", () => {
 		const nestedResult = await pending;
 		await Promise.resolve();
 		channel.emit({
-			kind: "subagents-v2-request",
+			kind: "subagents-request",
 			source: "root",
 			request: {
 				requestId: "wrong-owner",
@@ -452,7 +452,7 @@ describe("RootRuntimeBridge", () => {
 			},
 		});
 		channel.emit({
-			kind: "subagents-v2-request",
+			kind: "subagents-request",
 			source: "root",
 			request: {
 				requestId: "root-command",
@@ -471,7 +471,7 @@ describe("RootRuntimeBridge", () => {
 			kinds: channel.sent.map(readKind),
 			rootResponses: channel.sent.filter(
 				(message) =>
-					readKind(message) === "subagents-v2-response" &&
+					readKind(message) === "subagents-response" &&
 					readRequestId(message) === "root-command",
 			),
 		}).toEqual({
@@ -479,14 +479,14 @@ describe("RootRuntimeBridge", () => {
 			settledAfterNestedMalformed: false,
 			nestedResult: { kind: "ok", result: { outcome: "timeout" } },
 			kinds: [
-				"subagents-v2-ready",
-				"subagents-v2-request",
-				"subagents-v2-settled",
-				"subagents-v2-response",
+				"subagents-ready",
+				"subagents-request",
+				"subagents-settled",
+				"subagents-response",
 			],
 			rootResponses: [
 				{
-					kind: "subagents-v2-response",
+					kind: "subagents-response",
 					source: "worker",
 					runtimeLeaseId: "lease-worker",
 					requestId: "root-command",
@@ -522,7 +522,7 @@ describe("RootRuntimeBridge", () => {
 			},
 		});
 		child.emit("message", {
-			kind: "subagents-v2-request",
+			kind: "subagents-request",
 			source: "worker",
 			request: {
 				requestId: "owner-stopping-request",
@@ -535,7 +535,7 @@ describe("RootRuntimeBridge", () => {
 		await Promise.resolve();
 		await Promise.resolve();
 		child.emit("message", {
-			kind: "subagents-v2-settled",
+			kind: "subagents-settled",
 			runtimeLeaseId: "lease-stopping",
 			requestId: "owner-stopping-request",
 		});
@@ -566,19 +566,19 @@ describe("RootRuntimeBridge", () => {
 			onRequest: async () => ({ acknowledged: true }),
 			onFailure: (failure) => failures.push(failure),
 		});
-		process.emit("message", { kind: "subagents-v2-settled" });
+		process.emit("message", { kind: "subagents-settled" });
 		process.emit("message", {
-			kind: "subagents-v2-settled",
+			kind: "subagents-settled",
 			runtimeLeaseId: "wrong-lease",
 			requestId: "unknown",
 		});
 		process.emit("message", {
-			kind: "subagents-v2-settled",
+			kind: "subagents-settled",
 			runtimeLeaseId: "lease-2",
 			requestId: "unknown",
 		});
 		process.emit("message", {
-			kind: "subagents-v2-settled",
+			kind: "subagents-settled",
 			runtimeLeaseId: "lease-2",
 			requestId: "unknown",
 		});

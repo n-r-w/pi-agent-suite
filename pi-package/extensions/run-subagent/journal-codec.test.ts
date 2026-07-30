@@ -42,7 +42,7 @@ describe("journal codec", () => {
 		// Purpose: unknown persisted data must enter the runtime only through the closed journal union.
 		// Input and expected output: every journal discriminator round-trips to the corresponding validated record.
 		// Edge case: terminal feedback is optional while owner runtime identity remains optional on accepted sessions.
-		// Dependencies: production journal parser and representative V2 domain values.
+		// Dependencies: production journal parser and representative subagent domain values.
 		const records: JournalRecord[] = [
 			{ kind: "session-accepted", session: SESSION },
 			{

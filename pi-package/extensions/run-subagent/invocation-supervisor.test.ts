@@ -27,9 +27,9 @@ import {
 import { InvocationSupervisor } from "./invocation-supervisor";
 import {
 	type OwnerSessionStore,
+	SessionStore,
 	SUBAGENT_HISTORY_CUSTOM_TYPE,
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
-	V2SessionStore,
 } from "./persistence";
 import { RootRuntimeBridge } from "./runtime-bridge";
 import {
@@ -267,7 +267,7 @@ function createSupervisorHarness(
 			if (emitReady) {
 				queueMicrotask(() => {
 					child.emit("message", {
-						kind: "subagents-v2-ready",
+						kind: "subagents-ready",
 						runtimeLeaseId: options.env[SUBAGENT_RUNTIME_LEASE_ENV],
 						ownerPiSessionId: options.env[SUBAGENT_OWNER_SESSION_ENV],
 						ownerSessionFile: "/tmp/child-session.jsonl",
@@ -470,7 +470,7 @@ function readGracefulOwnerFacts(manager: SessionManager): {
 			: [],
 	);
 	return {
-		state: new V2SessionStore().fold(branch).sessions[0]?.state,
+		state: new SessionStore().fold(branch).sessions[0]?.state,
 		terminalStates: journalRecords.flatMap((record) =>
 			Reflect.get(record, "kind") === "terminal"
 				? [Reflect.get(record, "state")]
@@ -1639,7 +1639,7 @@ describe("InvocationSupervisor", () => {
 		// Edge case: repeated reconciliation must not replace success with unmatched-active abort or duplicate terminal, history, or disposition records.
 		// Dependencies: production coordinator and supervisor, graceful recovery, public SessionManager persistence, and idempotent reconciliation.
 		const directory = mkdtempSync(
-			join(tmpdir(), "subagents-v2-graceful-handoff-"),
+			join(tmpdir(), "subagents-graceful-handoff-"),
 		);
 		try {
 			const childA = createChildProcess({ closeOnStdinEnd: false });
@@ -1748,7 +1748,7 @@ describe("InvocationSupervisor", () => {
 				session: sessionC,
 			});
 			let rejectedRemoteAppends = 0;
-			const store = new V2SessionStore({
+			const store = new SessionStore({
 				append: async (remoteOwner, record) => {
 					if (
 						remoteOwner.ownerPiSessionId === ownerA.ownerPiSessionId &&
@@ -1866,7 +1866,7 @@ describe("InvocationSupervisor", () => {
 			// Act.
 			const ownerStoppingRequestId = "graceful-owner-stopping";
 			childA.emit("message", {
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId: ownerStoppingRequestId,
@@ -1882,7 +1882,7 @@ describe("InvocationSupervisor", () => {
 					(message) =>
 						typeof message === "object" &&
 						message !== null &&
-						Reflect.get(message, "kind") === "subagents-v2-response" &&
+						Reflect.get(message, "kind") === "subagents-response" &&
 						Reflect.get(message, "requestId") === ownerStoppingRequestId,
 				);
 				if (ownerStoppingResponse === undefined) {
@@ -1907,7 +1907,7 @@ describe("InvocationSupervisor", () => {
 					SessionManager.open(ownerASessionFile, directory, directory),
 				).state === "terminal-success";
 			childA.emit("message", {
-				kind: "subagents-v2-settled",
+				kind: "subagents-settled",
 				runtimeLeaseId: acceptanceA.runtimeLeaseId,
 				requestId: ownerStoppingRequestId,
 			});
@@ -1993,9 +1993,7 @@ describe("InvocationSupervisor", () => {
 		// Input and expected output: B succeeds under A, remote append rejects while connected, A reaches SIGTERM, and root shutdown persists one success history.
 		// Edge case: A sends no completed owner_stopping, so the root handler is the only recovery authority before public reopen.
 		// Dependencies: production coordinator and supervisor, root active writer, public SessionManager persistence, and repeated reconciliation.
-		const directory = mkdtempSync(
-			join(tmpdir(), "subagents-v2-root-shutdown-"),
-		);
+		const directory = mkdtempSync(join(tmpdir(), "subagents-root-shutdown-"));
 		try {
 			const childA = createChildProcess({
 				closeOnStdinEnd: false,
@@ -2072,7 +2070,7 @@ describe("InvocationSupervisor", () => {
 				session: sessionB,
 			});
 			let rejectedRemoteAppends = 0;
-			const store = new V2SessionStore({
+			const store = new SessionStore({
 				append: async (_remoteOwner, record) => {
 					if (
 						record.kind === "terminal" &&

@@ -14,7 +14,7 @@ import type {
 	OwnerIdentity,
 } from "../../pi-package/extensions/run-subagent/domain";
 import { InvocationSupervisor } from "../../pi-package/extensions/run-subagent/invocation-supervisor";
-import { V2SessionStore } from "../../pi-package/extensions/run-subagent/persistence";
+import { SessionStore } from "../../pi-package/extensions/run-subagent/persistence";
 import {
 	RootRuntimeBridge,
 	type RuntimeChannelFailure,
@@ -95,7 +95,7 @@ function delay(milliseconds: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-/** Starts one local model stream that invokes all registered V2 tools in one turn. */
+/** Starts one local model stream that invokes all registered subagent tools in one turn. */
 async function startAbortProbeServer(): Promise<{
 	readonly server: Server;
 	readonly baseUrl: string;
@@ -245,7 +245,7 @@ test("production Pi RPC abort cancels one pending nested wait", async () => {
 	// Input and expected output: a package-loaded worker enters subagent_wait; abort receives success within the prompt window and root handles one cancel_wait.
 	// Edge case: no child feedback or wait timeout is available to unblock the RPC command.
 	// Dependencies: local pi CLI, deterministic custom provider, production extension package, Node IPC bridge, coordinator, and system temporary state.
-	const directory = mkdtempSync(join(tmpdir(), "subagents-v2-rpc-abort-"));
+	const directory = mkdtempSync(join(tmpdir(), "subagents-rpc-abort-"));
 	const workers: ChildProcess[] = [];
 	let workerDiagnostics = "";
 	const bridge = new RootRuntimeBridge();
@@ -262,7 +262,7 @@ test("production Pi RPC abort cancels one pending nested wait", async () => {
 		const agentDirectory = join(directory, "agent");
 		writeAbortProbeModel(agentDirectory, probe.baseUrl);
 		let supervisor: InvocationSupervisor | undefined;
-		const store = new V2SessionStore({
+		const store = new SessionStore({
 			append: async (owner, record) => {
 				const lease = supervisor?.findRuntimeLeaseForOwner(
 					owner.ownerPiSessionId,
@@ -484,7 +484,7 @@ test("production Pi RPC abort cancels one pending nested wait", async () => {
 	}
 }, 10_000);
 
-/** Routes production V2 worker operations required by the RPC abort scenario. */
+/** Routes production subagent worker operations required by the RPC abort scenario. */
 async function handleRuntimeRequest(
 	coordinator: SubagentCoordinator,
 	owner: OwnerIdentity,

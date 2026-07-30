@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import { readConfig } from "./entry-config";
 
-describe("subagents V2 entry config", () => {
+describe("subagents entry config", () => {
 	let suiteDir = "";
 	let previousSuiteDir: string | undefined;
 
 	beforeEach(() => {
 		previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
-		suiteDir = mkdtempSync(join(tmpdir(), "subagents-v2-entry-config-"));
+		suiteDir = mkdtempSync(join(tmpdir(), "subagents-entry-config-"));
 		process.env[AGENT_SUITE_DIR_ENV] = suiteDir;
 	});
 

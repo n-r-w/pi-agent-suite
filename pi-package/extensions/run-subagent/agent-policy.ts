@@ -31,8 +31,8 @@ import {
 import type { InvocationSupervisor } from "./invocation-supervisor";
 import type { SessionCatalogQuery } from "./session-catalog";
 
-const V2_TOOL_NAMES = new Set<string>(SUBAGENT_TOOL_NAMES);
-/** Delimits shared Subagents V2 rules inside composed system prompts. */
+const SUBAGENT_TOOL_NAME_SET = new Set<string>(SUBAGENT_TOOL_NAMES);
+/** Delimits shared Subagents rules inside composed system prompts. */
 const SUBAGENT_TOOLS_GUIDELINES_MARKER = "<subagent_tools_guidelines>";
 
 interface ResolveLaunchOptions {
@@ -114,7 +114,7 @@ function resolveAgentModel(
 	return model;
 }
 
-/** Publishes depth-aware V2 tools and callable-agent guidance after policy filtering. */
+/** Publishes depth-aware subagent tools and callable-agent guidance after policy filtering. */
 export function publishPromptContribution(
 	pi: ExtensionAPI,
 	maxDepth: number,
@@ -249,7 +249,7 @@ interface BuildSubagentsPromptOptions {
 	readonly extensionDescription: string;
 }
 
-/** Builds guidance only from runtime-read V2 identifiers and policy facts. */
+/** Builds guidance only from runtime-read subagent identifiers and policy facts. */
 function buildSubagentsPrompt(
 	options: BuildSubagentsPromptOptions,
 ): string | undefined {
@@ -270,10 +270,10 @@ function buildSubagentsPrompt(
 	const promptParts = policy.selectedAgent?.prompt
 		? [policy.selectedAgent.prompt]
 		: [];
-	const activeV2Tools = activeToolNames.filter((name) =>
-		V2_TOOL_NAMES.has(name),
+	const activeSubagentTools = activeToolNames.filter((name) =>
+		SUBAGENT_TOOL_NAME_SET.has(name),
 	);
-	if (activeV2Tools.length === 0) {
+	if (activeSubagentTools.length === 0) {
 		return promptParts.length === 0 ? undefined : promptParts.join("\n\n");
 	}
 	promptParts.push(
@@ -284,7 +284,7 @@ function buildSubagentsPrompt(
 		].join("\n"),
 	);
 	const hasCallableAgentGuidance =
-		activeV2Tools.includes("subagent_start") && depth < maxDepth;
+		activeSubagentTools.includes("subagent_start") && depth < maxDepth;
 	if (hasCallableAgentGuidance) {
 		promptParts.push(
 			[
@@ -297,11 +297,11 @@ function buildSubagentsPrompt(
 			].join("\n"),
 		);
 	}
-	writeRuntimeDiagnostic("subagents-v2.prompt.build.applied", {
+	writeRuntimeDiagnostic("subagents.prompt.build.applied", {
 		selectedAgentId: policy.selectedAgent?.id ?? null,
 		depth,
 		maxDepth,
-		activeV2Tools,
+		activeSubagentTools,
 		callableAgentIds: hasCallableAgentGuidance
 			? policy.callableAgents.map((agent) => agent.id)
 			: [],
@@ -309,7 +309,7 @@ function buildSubagentsPrompt(
 	return promptParts.join("\n\n");
 }
 
-/** Filters all three V2 tools through depth and selected-agent policy. */
+/** Filters all three subagent tools through depth and selected-agent policy. */
 function filterSubagentTools(
 	toolNames: readonly string[],
 	mainAgent: MainAgentRuntimeInfo | undefined,
@@ -318,13 +318,14 @@ function filterSubagentTools(
 ): readonly string[] {
 	const depthFiltered =
 		depth >= maxDepth
-			? toolNames.filter((name) => !V2_TOOL_NAMES.has(name))
+			? toolNames.filter((name) => !SUBAGENT_TOOL_NAME_SET.has(name))
 			: toolNames;
 	if (mainAgent?.tools === undefined) {
 		return depthFiltered;
 	}
 	return depthFiltered.filter(
-		(name) => !V2_TOOL_NAMES.has(name) || mainAgent.tools?.includes(name),
+		(name) =>
+			!SUBAGENT_TOOL_NAME_SET.has(name) || mainAgent.tools?.includes(name),
 	);
 }
 

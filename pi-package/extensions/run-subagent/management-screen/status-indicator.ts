@@ -8,7 +8,7 @@ import {
 	countAgentStatuses,
 } from "./status-summary";
 
-const STATUS_WIDGET_KEY = "subagents-v2-status";
+const STATUS_WIDGET_KEY = "subagents-status";
 
 /** Supplies immutable hierarchy revisions to the main-window status indicator. */
 export interface SubagentStatusSource {

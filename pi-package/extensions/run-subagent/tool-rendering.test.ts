@@ -59,8 +59,8 @@ const TOOL_NAMES = [
 ] as const;
 const EXPAND_HINT_PATTERN =
 	/^\.\.\. \(\d+ more lines, \d+ total, ctrl\+o to expand\)$/;
-/** Maps each V2 tool name to the renderers registered by its extension entry point. */
-const V2_PRESENTATIONS = {
+/** Maps each subagent tool name to the renderers registered by its extension entry point. */
+const SUBAGENT_PRESENTATIONS = {
 	subagent_start: {
 		renderCall: renderSubagentStartCall,
 		renderResult: renderSubagentStartResult,
@@ -114,15 +114,15 @@ function createPresentationApi(events: ExtensionAPI["events"]): ExtensionAPI {
 	} as unknown as ExtensionAPI;
 }
 
-/** Resolves one registered V2 presentation definition for semantic rendering. */
-function resolveV2Definition(
+/** Resolves one registered subagent presentation definition for semantic rendering. */
+function resolveSubagentDefinition(
 	name: (typeof TOOL_NAMES)[number],
 ): ToolDefinition {
 	const events = createEventBus();
 	registerPackageToolPresentation(createPresentationApi(events), {
 		name,
 		label: name,
-		...V2_PRESENTATIONS[name],
+		...SUBAGENT_PRESENTATIONS[name],
 		renderShell: "default",
 	});
 	const registry = createToolPresentationRegistry("/tmp", events);
@@ -146,7 +146,7 @@ function renderTool(options: {
 	readonly width?: number;
 	readonly theme?: Theme;
 }): { readonly call: readonly string[]; readonly result: readonly string[] } {
-	const definition = resolveV2Definition(options.name);
+	const definition = resolveSubagentDefinition(options.name);
 	const renderCall = definition.renderCall;
 	const renderResult = definition.renderResult;
 	if (renderCall === undefined || renderResult === undefined) {
@@ -261,7 +261,7 @@ function result(details: Record<string, unknown>): AgentToolResult<unknown> {
 	};
 }
 
-describe("Subagents V2 semantic rendering", () => {
+describe("Subagents semantic rendering", () => {
 	beforeEach(() => {
 		// Pi's Markdown renderer reads the process-global theme, so each test establishes its own render state.
 		initTheme(undefined, false);
@@ -272,8 +272,8 @@ describe("Subagents V2 semantic rendering", () => {
 	});
 
 	test("keeps built-in, package, and unknown presentation ownership isolated", () => {
-		// Purpose: management replay must use public built-ins, static V2 definitions, runtime-local package definitions, and universal unknown definitions.
-		// Input and expected output: bash, all V2 names, one registered MCP name, and one unknown name resolve through their distinct public paths.
+		// Purpose: management replay must use public built-ins, static subagent definitions, runtime-local package definitions, and universal unknown definitions.
+		// Input and expected output: bash, all subagent names, one registered MCP name, and one unknown name resolve through their distinct public paths.
 		// Edge case: a second Pi event bus cannot observe the first runtime's dynamic MCP registration.
 		// Dependencies: public Pi tool factories, event buses, and package presentation registry.
 		const firstEvents = createEventBus();
@@ -285,7 +285,7 @@ describe("Subagents V2 semantic rendering", () => {
 			registerPackageToolPresentation(secondApi, {
 				name,
 				label: name,
-				...V2_PRESENTATIONS[name],
+				...SUBAGENT_PRESENTATIONS[name],
 				renderShell: "default",
 			});
 		}
@@ -294,13 +294,13 @@ describe("Subagents V2 semantic rendering", () => {
 
 		expect({
 			bash: second.resolve("bash").category,
-			v2: TOOL_NAMES.map((name) => second.resolve(name).category),
+			subagents: TOOL_NAMES.map((name) => second.resolve(name).category),
 			firstMcp: first.resolve(mcp.name).category,
 			secondMcp: second.resolve(mcp.name).category,
 			unknown: second.resolve("third_party").category,
 		}).toEqual({
 			bash: "builtin",
-			v2: ["package", "package", "package", "package"],
+			subagents: ["package", "package", "package", "package"],
 			firstMcp: "package",
 			secondMcp: "unknown",
 			unknown: "unknown",
@@ -339,7 +339,7 @@ describe("Subagents V2 semantic rendering", () => {
 				prompt: "Inspect the semantic card.",
 			},
 			{},
-			resolveV2Definition("subagent_start"),
+			resolveSubagentDefinition("subagent_start"),
 			ui,
 			"/tmp",
 		);
@@ -353,7 +353,7 @@ describe("Subagents V2 semantic rendering", () => {
 			"wait-call",
 			{ sessionIds: [1], timeoutMs: 30_000 },
 			{},
-			resolveV2Definition("subagent_wait"),
+			resolveSubagentDefinition("subagent_wait"),
 			ui,
 			"/tmp",
 		);
@@ -366,7 +366,7 @@ describe("Subagents V2 semantic rendering", () => {
 			"query-call",
 			{ sessionId: 7, question: "What happened in the child session?" },
 			{},
-			resolveV2Definition("subagent_query"),
+			resolveSubagentDefinition("subagent_query"),
 			ui,
 			"/tmp",
 		);
@@ -407,7 +407,7 @@ describe("Subagents V2 semantic rendering", () => {
 			const component = renderSubagentFeedback(
 				{
 					role: "custom",
-					customType: "subagents-v2-feedback",
+					customType: "subagents-feedback",
 					content: "terminal feedback",
 					display: true,
 					details: evidence.feedback,
@@ -427,7 +427,7 @@ describe("Subagents V2 semantic rendering", () => {
 	});
 
 	test("uses one semantic color contract across tool and feedback headers", () => {
-		// Purpose: identical semantic roles must keep identical colors across every V2 presentation surface.
+		// Purpose: identical semantic roles must keep identical colors across every subagent presentation surface.
 		// Inputs and expected output: tool names, agents, runtime metadata, identifiers, durations, and separators use their approved roles.
 		// Edge case: the wait metadata row and direct feedback use the same agent and runtime colors as start and steer.
 		// Dependencies: shared semantic header and metadata presentation.
@@ -461,7 +461,7 @@ describe("Subagents V2 semantic rendering", () => {
 			renderSubagentFeedback(
 				{
 					role: "custom",
-					customType: "subagents-v2-feedback",
+					customType: "subagents-feedback",
 					content: "terminal feedback",
 					display: true,
 					details: feedbackEvidence.feedback,
@@ -514,8 +514,8 @@ describe("Subagents V2 semantic rendering", () => {
 		expect(direct).toContain("<muted>2s</muted>");
 	});
 
-	test("applies V1 context pressure thresholds to cards and direct feedback", () => {
-		// Purpose: every semantic context display must share the V1 warning and error thresholds.
+	test("applies context pressure thresholds to cards and direct feedback", () => {
+		// Purpose: every semantic context display must share the warning and error thresholds.
 		// Inputs and expected output: 49%, 50%, 79%, and 80% produce normal, warning, warning, and error usage colors.
 		// Edge case: projected savings remain warning-colored independently of current usage.
 		// Dependencies: wait-card metadata, direct-feedback headers, and shared context presentation.
@@ -535,7 +535,7 @@ describe("Subagents V2 semantic rendering", () => {
 			const direct = renderSubagentFeedback(
 				{
 					role: "custom",
-					customType: "subagents-v2-feedback",
+					customType: "subagents-feedback",
 					content: "terminal feedback",
 					display: true,
 					details: evidence.feedback,
@@ -715,7 +715,7 @@ describe("Subagents V2 semantic rendering", () => {
 		);
 	});
 
-	test("uses V1-style bounded previews, configured hints, expanded formatting, and shell widths", () => {
+	test("uses bounded previews, configured hints, expanded formatting, and shell widths", () => {
 		// Purpose: collapsed arbitrary text must use a visual-line budget and configured hint while expanded text remains complete and formatted.
 		// Input and expected output: long start prompt and wait output collapse with one hint; expansion wraps Name and renders complete Markdown sections.
 		// Edge case: every line remains inside Pi's default Box(1,1) shell contract at a narrow width.
@@ -753,7 +753,7 @@ describe("Subagents V2 semantic rendering", () => {
 		});
 		const shell = new Box(1, 1);
 		shell.addChild(
-			resolveV2Definition("subagent_start").renderCall?.(
+			resolveSubagentDefinition("subagent_start").renderCall?.(
 				args,
 				PLAIN_THEME,
 				createToolRenderContext({ args, expanded: false, isError: false }),
@@ -776,7 +776,7 @@ describe("Subagents V2 semantic rendering", () => {
 	});
 
 	test("renders pending query questions as bounded semantic previews or full Markdown", () => {
-		// Purpose: pending queries must match the semantic Subagents V2 presentation instead of exposing raw JSON.
+		// Purpose: pending queries must match the semantic Subagents presentation instead of exposing raw JSON.
 		// Input and expected output: collapsed text is whitespace-normalized and bounded, while expansion renders the complete Question section.
 		// Edge case: a long question preserves the shell width and reports hidden visual lines.
 		// Dependencies: shared semantic headers, bounded previews, Markdown sections, and the static query presentation registry.
@@ -873,7 +873,7 @@ describe("Subagents V2 semantic rendering", () => {
 	});
 
 	test("renders structured errors as text only in collapsed and expanded views", () => {
-		// Purpose: V2 and Pi validation failures must never expose internal error codes.
+		// Purpose: Subagent and Pi validation failures must never expose internal error codes.
 		// Input and expected output: start failure preserves available call identity and renders only Error text in both expansion states.
 		// Edge case: expanded error wraps fully instead of being formatted as Markdown.
 		// Dependencies: failed tool details supplied by the public tool_result hook.

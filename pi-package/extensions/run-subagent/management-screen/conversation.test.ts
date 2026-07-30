@@ -153,7 +153,7 @@ function feedbackEntry(): Extract<SessionEntry, { type: "custom_message" }> {
 		id: "feedback-1",
 		parentId: null,
 		timestamp: new Date(5).toISOString(),
-		customType: "subagents-v2-feedback",
+		customType: "subagents-feedback",
 		content: "Subagent 1 completed successfully:\nRendered semantic output.",
 		display: true,
 		details: {
@@ -308,7 +308,7 @@ describe("management conversation", () => {
 		// Purpose: initial prompts and later steering messages must share the configured conversation expansion state.
 		// Inputs and expected output: collapsed user content uses a bounded normalized preview and expanded content restores the full formatted prompt.
 		// Edge case: the final line remains absent from the collapsed viewport but visible after expansion.
-		// Dependencies: projected user messages and the shared V1-style prompt renderer.
+		// Dependencies: projected user messages and the shared shared prompt renderer.
 		const prompt = [
 			...Array.from(
 				{ length: 30 },
@@ -342,7 +342,7 @@ describe("management conversation", () => {
 		// Purpose: reopened management history must use the same semantic feedback layout as normal owner history.
 		// Inputs and expected output: one durable feedback snapshot renders source identity, runtime, context, duration, logical name, and output.
 		// Edge case: the model-visible custom-message content is not rendered as a duplicate raw history block.
-		// Dependencies: public CustomMessageComponent and the Subagents V2 feedback renderer reference.
+		// Dependencies: public CustomMessageComponent and the Subagents feedback renderer reference.
 		const pane = new ConversationPane(options());
 		pane.setEntries([feedbackEntry()], true, true);
 		const rendered = pane.render(100, 1_000).join("\n");
@@ -353,7 +353,7 @@ describe("management conversation", () => {
 		);
 		expect(rendered).toContain("Trace semantic rendering");
 		expect(rendered).toContain("Rendered semantic output.");
-		expect(rendered).not.toContain("[subagents-v2-feedback]");
+		expect(rendered).not.toContain("[subagents-feedback]");
 		expect(rendered.split("Rendered semantic output.")).toHaveLength(2);
 		pane.dispose();
 	});

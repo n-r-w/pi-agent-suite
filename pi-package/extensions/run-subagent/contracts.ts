@@ -11,7 +11,7 @@ const NON_SURROGATE_PATTERN = "[^\\uD800-\\uDFFF]";
 const TASK_NAME_CODE_POINT_PATTERN = `^(?:(?:${HIGH_SURROGATE_PATTERN}${LOW_SURROGATE_PATTERN}|${NON_SURROGATE_PATTERN})){3,60}$`;
 const UNICODE_WHITE_SPACE_CODE_POINT = /^\p{White_Space}$/u;
 
-/** Names the complete public V2 tool set. */
+/** Names the complete public subagent tool set. */
 export const SUBAGENT_TOOL_NAMES = [
 	"subagent_start",
 	"subagent_steer",

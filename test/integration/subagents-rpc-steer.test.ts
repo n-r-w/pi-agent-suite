@@ -13,7 +13,7 @@ import type {
 } from "../../pi-package/extensions/run-subagent/domain";
 import type { InvocationEvent } from "../../pi-package/extensions/run-subagent/invocation-contracts";
 import { InvocationSupervisor } from "../../pi-package/extensions/run-subagent/invocation-supervisor";
-import { V2SessionStore } from "../../pi-package/extensions/run-subagent/persistence";
+import { SessionStore } from "../../pi-package/extensions/run-subagent/persistence";
 import { RootRuntimeBridge } from "../../pi-package/extensions/run-subagent/runtime-bridge";
 import { SessionCatalog } from "../../pi-package/extensions/run-subagent/session-catalog";
 import { WaitCoordinator } from "../../pi-package/extensions/run-subagent/wait-coordinator";
@@ -167,7 +167,7 @@ test("real Pi keeps queued active steering accepted when its response is delayed
 	// Input and expected output: delayed response observation plus signal abort returns accepted, sends no abort, and saves the steer prompt once.
 	// Edge case: the first model request remains active while the child queues steer and the parent pauses child stdout.
 	// Dependencies: real Pi 0.82.1 RPC mode, local deterministic provider, production supervisor and bridge, and public SessionManager.
-	const directory = mkdtempSync(join(tmpdir(), "subagents-v2-rpc-steer-"));
+	const directory = mkdtempSync(join(tmpdir(), "subagents-rpc-steer-"));
 	const workers: ChildProcess[] = [];
 	let probe: SteerProbe | undefined;
 	let supervisor: InvocationSupervisor | undefined;
@@ -294,7 +294,7 @@ test("real Pi keeps queued active steering accepted when its response is delayed
 			catalog,
 			invocations: supervisor,
 			waits: new WaitCoordinator(),
-			store: new V2SessionStore(),
+			store: new SessionStore(),
 			clock: {
 				monotonicNow: () => performance.now(),
 				wallNow: () => Date.now(),

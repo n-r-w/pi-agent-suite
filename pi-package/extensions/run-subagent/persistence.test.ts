@@ -17,9 +17,9 @@ import type {
 import {
 	type ActiveOwnerSessionWriter,
 	createHistoryMessage,
+	SessionStore,
 	SUBAGENT_HISTORY_CUSTOM_TYPE,
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
-	V2SessionStore,
 } from "./persistence";
 
 /** Supplies complete accepted invocation facts for durable journal fixtures. */
@@ -33,7 +33,7 @@ const INVOCATION_METADATA = {
 	projectionSavedTokens: 20_000,
 } as const;
 
-describe("V2SessionStore", () => {
+describe("SessionStore", () => {
 	test("exposes rounded invocation seconds in model-visible history feedback", () => {
 		// Purpose: automatic feedback must give the owner model the child invocation duration.
 		// Input and expected output: success, failure, and abort messages expose whole seconds rounded up with a one-second minimum.
@@ -86,9 +86,9 @@ describe("V2SessionStore", () => {
 		// Input and expected output: depth-zero reconstruction hides sessions while one pending terminal feedback becomes one history message and one history commit.
 		// Edge case: a second depth-zero reopen appends neither artifact again and preserves the stable key and terminal state.
 		// Dependencies: system temporary files and public SessionManager create, append, getBranch, custom-message, and open APIs.
-		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-session-"));
+		const directory = mkdtempSync(join(tmpdir(), "subagents-session-"));
 		try {
-			const store = new V2SessionStore();
+			const store = new SessionStore();
 			const manager = createPersistedSession(directory);
 			const sessionFile = manager.getSessionFile();
 			if (sessionFile === undefined) {
@@ -194,7 +194,7 @@ describe("V2SessionStore", () => {
 		// Input and expected output: every reconstruction returns B and C and commits C feedback in B.
 		// Edge case: repeated reconstruction keeps one history message and one commit while unmatched active sessions become terminal-aborted.
 		// Dependencies: public persisted SessionManager instances under a system temporary directory.
-		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-reconstruct-"));
+		const directory = mkdtempSync(join(tmpdir(), "subagents-reconstruct-"));
 		try {
 			const child = createPersistedSession(join(directory, "child"));
 			const childFile = child.getSessionFile();
@@ -261,7 +261,7 @@ describe("V2SessionStore", () => {
 				kind: "session-accepted",
 				session: parentSession,
 			} satisfies JournalRecord);
-			const store = new V2SessionStore();
+			const store = new SessionStore();
 			const firstReconstruction = await store.reconstruct(parent);
 			const childAfterFirst = SessionManager.open(
 				childFile,
@@ -371,7 +371,7 @@ describe("V2SessionStore", () => {
 		// Input and expected output: A points to B and B points to A, while reconstruction returns each edge once.
 		// Edge case: different owner IDs and files cannot rely on the delegation depth as a traversal guard.
 		// Dependencies: public persisted SessionManager files and production recursive reconstruction.
-		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-cycle-"));
+		const directory = mkdtempSync(join(tmpdir(), "subagents-cycle-"));
 		try {
 			const first = createPersistedSession(join(directory, "first"), {
 				id: "first-owner",
@@ -421,7 +421,7 @@ describe("V2SessionStore", () => {
 				session: secondChild,
 			} satisfies JournalRecord);
 
-			const reconstructed = await new V2SessionStore().reconstruct(first);
+			const reconstructed = await new SessionStore().reconstruct(first);
 
 			expect(reconstructed.map((session) => session.key)).toEqual([
 				firstChild.key,
@@ -437,7 +437,7 @@ describe("V2SessionStore", () => {
 		// Input and expected output: terminal session under old-parent becomes active under new-parent with the continued invocation and runtime lease.
 		// Edge case: the continuation retains the same stable session key and saved child session reference.
 		// Dependencies: public SessionManager journal entries and production journal folding.
-		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-parent-lease-"));
+		const directory = mkdtempSync(join(tmpdir(), "subagents-parent-lease-"));
 		try {
 			const manager = createPersistedSession(directory);
 			const session = {
@@ -474,7 +474,7 @@ describe("V2SessionStore", () => {
 				ownerRuntimeLeaseId: "new-parent-lease",
 				invocationMetadata: continuedMetadata,
 			});
-			const folded = new V2SessionStore().fold(manager.getBranch());
+			const folded = new SessionStore().fold(manager.getBranch());
 
 			expect(folded.sessions).toEqual([
 				{
@@ -497,7 +497,7 @@ describe("V2SessionStore", () => {
 		// Edge case: the unmatched active session keeps its stable key and receives no duplicate terminal record.
 		// Dependencies: public SessionManager file, production remote routing, lease release, and offline reconstruction.
 		// Arrange.
-		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-release-"));
+		const directory = mkdtempSync(join(tmpdir(), "subagents-release-"));
 		try {
 			const manager = createPersistedSession(directory);
 			const sessionFile = manager.getSessionFile();
@@ -528,7 +528,7 @@ describe("V2SessionStore", () => {
 				},
 			};
 			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, accepted);
-			const store = new V2SessionStore({
+			const store = new SessionStore({
 				append: async () => {
 					throw new Error("remote writer failed");
 				},
@@ -619,7 +619,7 @@ describe("V2SessionStore", () => {
 		// Input and expected output: a claimed terminal stays pending before the tool result, then gains one wait commit without history.
 		// Edge case: message-end reconciliation can run between wait-claimed durability and Pi's tool-result append.
 		// Dependencies: active public SessionManager writer and exact feedback identity matching.
-		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-active-claim-"));
+		const directory = mkdtempSync(join(tmpdir(), "subagents-active-claim-"));
 		try {
 			const manager = createPersistedSession(directory);
 			const sessionFile = manager.getSessionFile();
@@ -660,7 +660,7 @@ describe("V2SessionStore", () => {
 				waitRequestId: "wait-request",
 			} satisfies JournalRecord);
 			const historyFeedbackIds: string[] = [];
-			const store = new V2SessionStore();
+			const store = new SessionStore();
 			const writer = {
 				owner,
 				sessionManager: manager,
@@ -758,7 +758,7 @@ describe("V2SessionStore", () => {
 				timestamp: new Date(index).toISOString(),
 			});
 		}
-		const store = new V2SessionStore();
+		const store = new SessionStore();
 		const historyFeedbackIds: string[] = [];
 		let reentered = false;
 		let nestedReconciliation: Promise<void> | undefined;
@@ -804,7 +804,7 @@ describe("V2SessionStore", () => {
 		// Input and expected output: one offline feedback append is idempotent and one subagent_wait tool result matches its feedback ID.
 		// Edge case: reopening the owner twice does not duplicate the history message.
 		// Dependencies: system temporary files and public SessionManager append, open, and getBranch methods.
-		const directory = mkdtempSync(join(tmpdir(), "subagents-v2-evidence-"));
+		const directory = mkdtempSync(join(tmpdir(), "subagents-evidence-"));
 		try {
 			const manager = createPersistedSession(directory);
 			const sessionFile = manager.getSessionFile();
@@ -840,7 +840,7 @@ describe("V2SessionStore", () => {
 				timestamp: 2,
 			};
 			manager.appendMessage(waitResult);
-			const store = new V2SessionStore();
+			const store = new SessionStore();
 			await store.appendHistory(owner, feedback);
 			await store.appendHistory(owner, feedback);
 			const reopened = SessionManager.open(sessionFile, directory, directory);
@@ -910,9 +910,9 @@ function isHistoryCommit(value: unknown): boolean {
 
 /** Returns undefined when journal folding fails so the assertion reports missing reconstructed state. */
 function safeFold(
-	store: V2SessionStore,
+	store: SessionStore,
 	entries: ReturnType<SessionManager["getBranch"]>,
-): ReturnType<V2SessionStore["fold"]> | undefined {
+): ReturnType<SessionStore["fold"]> | undefined {
 	try {
 		return store.fold(entries);
 	} catch {

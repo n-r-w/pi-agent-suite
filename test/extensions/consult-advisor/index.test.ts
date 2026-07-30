@@ -23,7 +23,7 @@ import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/c
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../../../pi-package/extensions/run-subagent/contracts";
-import subagentsV2 from "../../../pi-package/extensions/run-subagent/index";
+import subagents from "../../../pi-package/extensions/run-subagent/index";
 import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import {
 	SUBAGENT_AGENT_ID_ENV,
@@ -1866,9 +1866,9 @@ describe("consult-advisor", () => {
 
 	test("keeps cross-extension composition isolated from parent subagent environment", async () => {
 		// Purpose: cross-extension prompt composition tests must not inherit subagent depth filtering from the runner process.
-		// Input and expected output: selecting the main agent clears inherited child depth and keeps its permitted V2 marker.
+		// Input and expected output: selecting the main agent clears inherited child depth and keeps its permitted subagent marker.
 		// Edge case: this test can run inside a pi subagent process.
-		// Dependencies: temp agent files plus main-agent selection, Subagents V2, and consult-advisor factories.
+		// Dependencies: temp agent files plus main-agent selection, Subagents, and consult-advisor factories.
 		const previousEnv = new Map(
 			SUBAGENT_ENV_KEYS.map((key) => [key, process.env[key]]),
 		);
@@ -1889,7 +1889,7 @@ describe("consult-advisor", () => {
 				]);
 				const ctx = createContext([]);
 				mainAgentSelection(pi);
-				await subagentsV2(pi);
+				await subagents(pi);
 				consultAdvisor(pi);
 				await emitSessionStartHandlers(pi, ctx);
 
@@ -1932,7 +1932,7 @@ describe("consult-advisor", () => {
 		// Purpose: advisor guidance must appear only when the current effective agent can call consult_advisor.
 		// Input and expected output: selected main agent has only subagent_start, so composed prompt omits consult_advisor guidance.
 		// Edge case: consult-advisor extension is loaded and registered, but the selected agent policy disables its tool.
-		// Dependencies: this test loads main-agent selection, Subagents V2, and consult-advisor against temp agent files.
+		// Dependencies: this test loads main-agent selection, Subagents, and consult-advisor against temp agent files.
 		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
 		process.env[SUBAGENT_DEPTH_ENV] = "0";
 		try {
@@ -1949,7 +1949,7 @@ describe("consult-advisor", () => {
 				]);
 				const ctx = createContext([]);
 				mainAgentSelection(pi);
-				await subagentsV2(pi);
+				await subagents(pi);
 				consultAdvisor(pi);
 				await emitSessionStartHandlers(pi, ctx);
 
@@ -2178,7 +2178,7 @@ async function loadAgentRelatedOrder(
 		if (extension === "main") {
 			mainAgentSelection(pi);
 		} else if (extension === "subagents") {
-			await subagentsV2(pi);
+			await subagents(pi);
 		} else {
 			consultAdvisor(pi);
 		}

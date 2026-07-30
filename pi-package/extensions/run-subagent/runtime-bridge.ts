@@ -140,7 +140,7 @@ export class RootRuntimeBridge {
 		};
 		try {
 			await sendToChild(lease.registration.process, {
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "root",
 				request,
 			} satisfies RuntimeWireMessage);
@@ -193,16 +193,16 @@ export class RootRuntimeBridge {
 			return;
 		}
 		switch (message.kind) {
-			case "subagents-v2-ready":
+			case "subagents-ready":
 				this.handleReady(lease, message);
 				return;
-			case "subagents-v2-request":
+			case "subagents-request":
 				await this.handleRequestMessage(lease, message);
 				return;
-			case "subagents-v2-response":
+			case "subagents-response":
 				this.handleResponseMessage(lease, message);
 				return;
-			case "subagents-v2-settled":
+			case "subagents-settled":
 				this.handleSettlementMessage(lease, message.requestId);
 		}
 	}
@@ -210,7 +210,7 @@ export class RootRuntimeBridge {
 	/** Activates one validated worker owner exactly once. */
 	private handleReady(
 		lease: RuntimeLease,
-		message: Extract<RuntimeWireMessage, { kind: "subagents-v2-ready" }>,
+		message: Extract<RuntimeWireMessage, { kind: "subagents-ready" }>,
 	): void {
 		if (
 			message.ownerPiSessionId !== lease.registration.owner.ownerPiSessionId ||
@@ -231,7 +231,7 @@ export class RootRuntimeBridge {
 	/** Accepts only worker-originated requests with the assigned owner identity. */
 	private async handleRequestMessage(
 		lease: RuntimeLease,
-		message: Extract<RuntimeWireMessage, { kind: "subagents-v2-request" }>,
+		message: Extract<RuntimeWireMessage, { kind: "subagents-request" }>,
 	): Promise<void> {
 		if (
 			message.source !== "worker" ||
@@ -246,7 +246,7 @@ export class RootRuntimeBridge {
 	/** Resolves one root command response or fails on an unknown correlation. */
 	private handleResponseMessage(
 		lease: RuntimeLease,
-		message: Extract<RuntimeWireMessage, { kind: "subagents-v2-response" }>,
+		message: Extract<RuntimeWireMessage, { kind: "subagents-response" }>,
 	): void {
 		if (message.source !== "worker") {
 			return;
@@ -292,7 +292,7 @@ export class RootRuntimeBridge {
 		let response: RuntimeWireMessage;
 		try {
 			response = {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: request.runtimeLeaseId,
 				requestId: request.requestId,
@@ -301,7 +301,7 @@ export class RootRuntimeBridge {
 			};
 		} catch (error) {
 			response = {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "root",
 				runtimeLeaseId: request.runtimeLeaseId,
 				requestId: request.requestId,
@@ -421,7 +421,7 @@ export class WorkerRuntimeBridge {
 		this.owner = owner;
 		this.handler = handler;
 		this.send({
-			kind: "subagents-v2-ready",
+			kind: "subagents-ready",
 			runtimeLeaseId: this.runtimeLeaseId,
 			ownerPiSessionId: owner.ownerPiSessionId,
 			ownerSessionFile: owner.ownerSessionFile,
@@ -563,7 +563,7 @@ export class WorkerRuntimeBridge {
 		});
 		try {
 			await this.send({
-				kind: "subagents-v2-request",
+				kind: "subagents-request",
 				source: "worker",
 				request: {
 					requestId,
@@ -626,7 +626,7 @@ export class WorkerRuntimeBridge {
 		) {
 			return;
 		}
-		if (message.kind === "subagents-v2-request") {
+		if (message.kind === "subagents-request") {
 			if (
 				message.source !== "root" ||
 				message.request.ownerPiSessionId !== this.ownerPiSessionId
@@ -636,7 +636,7 @@ export class WorkerRuntimeBridge {
 			await this.handleRootRequest(message.request);
 			return;
 		}
-		if (message.kind !== "subagents-v2-response" || message.source !== "root") {
+		if (message.kind !== "subagents-response" || message.source !== "root") {
 			return;
 		}
 		const pending = this.pending.get(message.requestId);
@@ -654,7 +654,7 @@ export class WorkerRuntimeBridge {
 			pending.reject(new Error(message.error ?? "root request failed"));
 		}
 		await this.send({
-			kind: "subagents-v2-settled",
+			kind: "subagents-settled",
 			runtimeLeaseId: this.runtimeLeaseId,
 			requestId: message.requestId,
 		});
@@ -669,7 +669,7 @@ export class WorkerRuntimeBridge {
 					? { acknowledged: true }
 					: await this.requireHandler()(request.operation, request.payload);
 			response = {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "worker",
 				runtimeLeaseId: this.runtimeLeaseId,
 				requestId: request.requestId,
@@ -678,7 +678,7 @@ export class WorkerRuntimeBridge {
 			};
 		} catch (error) {
 			response = {
-				kind: "subagents-v2-response",
+				kind: "subagents-response",
 				source: "worker",
 				runtimeLeaseId: this.runtimeLeaseId,
 				requestId: request.requestId,
@@ -733,7 +733,7 @@ function createProcessWorkerChannel(): WorkerRuntimeChannel {
 /** Parses operation-specific nested results before either bridge mutates correlation state. */
 function parsePendingResponseResult(
 	pending: PendingRequest,
-	message: Extract<RuntimeWireMessage, { kind: "subagents-v2-response" }>,
+	message: Extract<RuntimeWireMessage, { kind: "subagents-response" }>,
 ): { readonly result: unknown } | undefined {
 	if (!message.succeeded) {
 		return { result: undefined };

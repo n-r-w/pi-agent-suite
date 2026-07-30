@@ -45,8 +45,8 @@ import type {
 import {
 	readConfig,
 	readPrompt,
-	SUBAGENTS_V2_EXTENSION_DIR,
-	type SubagentsV2Config,
+	SUBAGENTS_EXTENSION_DIR,
+	type SubagentsConfig,
 } from "./entry-config";
 import { readSubagentAgentId } from "./environment";
 import { errorMessage } from "./error-message";
@@ -63,9 +63,9 @@ import { installSubagentStatusIndicator } from "./management-screen/status-indic
 import {
 	type ActiveOwnerSessionWriter,
 	createHistoryMessage,
+	SessionStore,
 	SUBAGENT_HISTORY_CUSTOM_TYPE,
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
-	V2SessionStore,
 } from "./persistence";
 import { QueryBranchAccess } from "./query-branch-access";
 import type { QueryBranchResponse } from "./query-branch-wire";
@@ -107,7 +107,7 @@ const STEER_DESCRIPTION = readPrompt("steer-description.md");
 const WAIT_DESCRIPTION = readPrompt("wait-description.md");
 const QUERY_DESCRIPTION = readPrompt("query-description.md");
 const QUERY_SYSTEM_PROMPT = readPrompt("query-system.md");
-const V2_TOOL_NAMES = new Set([
+const SUBAGENT_TOOL_NAME_SET = new Set([
 	"subagent_start",
 	"subagent_steer",
 	"subagent_wait",
@@ -123,7 +123,7 @@ interface RootManagementRuntime {
 interface RootRuntime {
 	readonly owner: OwnerIdentity;
 	readonly writer: ActiveOwnerSessionWriter;
-	readonly store: V2SessionStore;
+	readonly store: SessionStore;
 	readonly coordinator: SubagentCoordinator;
 	readonly supervisor: InvocationSupervisor;
 	readonly recoveries: RuntimeFailureRecoveryTracker;
@@ -132,14 +132,14 @@ interface RootRuntime {
 }
 
 interface RuntimeState {
-	readonly resolveConfig: () => Promise<SubagentsV2Config>;
+	readonly resolveConfig: () => Promise<SubagentsConfig>;
 	readonly failures: Map<string, SubagentFailureDetails>;
-	config: SubagentsV2Config | undefined;
+	config: SubagentsConfig | undefined;
 	initialization: Promise<void> | undefined;
 	workerBridge: WorkerRuntimeBridge | undefined;
 	rootRuntime: RootRuntime | undefined;
 	workerWriter: ActiveOwnerSessionWriter | undefined;
-	workerStore: V2SessionStore | undefined;
+	workerStore: SessionStore | undefined;
 	promptPublished: boolean;
 	managementRegistered: boolean;
 }
@@ -150,7 +150,7 @@ type RegisteredToolExecute = Parameters<
 >[0]["execute"];
 type RegisteredToolExecuteArgs = Parameters<RegisteredToolExecute>;
 
-/** Marks internal root cancellation so the bridge returns no public V2 failure. */
+/** Marks internal root cancellation so the bridge returns no public subagent failure. */
 class RuntimeOperationCancellationError extends Error {}
 
 /** Keeps one registered definition mutable until Pi completes extension loading. */
@@ -159,18 +159,18 @@ interface RegisteredDescription {
 }
 
 /** Provides isolated external effects used by subagent query execution. */
-interface SubagentsV2Dependencies {
+interface SubagentsDependencies {
 	readonly completeSimple?: AuxiliaryLlmCompletion;
 }
 
-/** Registers stable V2 tools before session runtime performs asynchronous work. */
-export default function subagentsV2(
+/** Registers stable subagent tools before session runtime performs asynchronous work. */
+export default function subagents(
 	pi: ExtensionAPI,
-	dependencies: SubagentsV2Dependencies = {
+	dependencies: SubagentsDependencies = {
 		completeSimple: defaultCompleteSimple,
 	},
 ): Promise<void> {
-	let configReady: Promise<SubagentsV2Config> | undefined;
+	let configReady: Promise<SubagentsConfig> | undefined;
 	const state: RuntimeState = {
 		resolveConfig: () =>
 			configReady ??
@@ -244,7 +244,7 @@ function registerLifecycleHandlers(
 	pi.on("message_end", (_event, ctx) => reconcileRuntime(state, ctx));
 	pi.on("session_shutdown", (_event, ctx) => handleSessionShutdown(state, ctx));
 	pi.on("tool_result", (event) => {
-		if (!V2_TOOL_NAMES.has(event.toolName) || !event.isError) {
+		if (!SUBAGENT_TOOL_NAME_SET.has(event.toolName) || !event.isError) {
 			return undefined;
 		}
 		const failure = state.failures.get(event.toolCallId);
@@ -287,7 +287,7 @@ async function handleSessionStart(
 		return;
 	}
 	const owner = ownerFromContext(ctx);
-	const store = new V2SessionStore();
+	const store = new SessionStore();
 	const writer = createActiveWriter(pi, ctx, owner);
 	state.workerStore = store;
 	state.workerWriter = writer;
@@ -636,7 +636,7 @@ async function executeRootWait({
 	}
 }
 
-/** Registers one V2 tool without attaching execution renderers. */
+/** Registers one subagent tool without attaching execution renderers. */
 function registerTool(
 	pi: ExtensionAPI,
 	definition: Parameters<ExtensionAPI["registerTool"]>[0],
@@ -656,7 +656,7 @@ async function executeTool(
 	signal: AbortSignal | undefined,
 	operation: (
 		state: RuntimeState,
-		config: SubagentsV2Config,
+		config: SubagentsConfig,
 	) => Promise<AgentOperationResponse>,
 ): Promise<AgentToolResult<unknown>> {
 	let state: RuntimeState | undefined;
@@ -764,7 +764,7 @@ function createRootSupervisor(options: {
 	readonly ctx: ExtensionContext;
 	readonly agents: Awaited<ReturnType<typeof loadCallableAgents>>;
 	readonly bridge: RootRuntimeBridge;
-	readonly store: V2SessionStore;
+	readonly store: SessionStore;
 	readonly recoveries: RuntimeFailureRecoveryTracker;
 	readonly queryBranches: QueryBranchAccess;
 	readonly getCoordinator: () => SubagentCoordinator;
@@ -773,7 +773,7 @@ function createRootSupervisor(options: {
 	supervisor = new InvocationSupervisor({
 		bridge: options.bridge,
 		sessionsDir: join(
-			getSuiteExtensionDir(SUBAGENTS_V2_EXTENSION_DIR),
+			getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR),
 			"sessions",
 		),
 		resolveLaunch: (request) =>
@@ -811,7 +811,7 @@ function createRootCoordinator(options: {
 	readonly agents: Awaited<ReturnType<typeof loadCallableAgents>>;
 	readonly catalog: SessionCatalog;
 	readonly supervisor: InvocationSupervisor;
-	readonly store: V2SessionStore;
+	readonly store: SessionStore;
 }): SubagentCoordinator {
 	const composition = getAgentRuntimeComposition(options.pi);
 	return new SubagentCoordinator({
@@ -932,8 +932,8 @@ function registerManagementEntries(
 function createRootSessionStore(
 	bridge: RootRuntimeBridge,
 	getSupervisor: () => InvocationSupervisor | undefined,
-): V2SessionStore {
-	return new V2SessionStore({
+): SessionStore {
+	return new SessionStore({
 		append: async (remoteOwner, record) => {
 			const lease = requireRemoteLease(getSupervisor(), remoteOwner);
 			await bridge.request(lease, "append_journal", record);
@@ -972,7 +972,7 @@ function startRuntimeFailureRecovery({
 }: {
 	readonly recoveries: RuntimeFailureRecoveryTracker;
 	readonly coordinator: SubagentCoordinator | undefined;
-	readonly store: V2SessionStore;
+	readonly store: SessionStore;
 	readonly failure: RuntimeChannelFailure;
 }): void {
 	// Root lifecycle owns admitted recovery work even though the failure callback cannot await it.
@@ -981,7 +981,7 @@ function startRuntimeFailureRecovery({
 	);
 }
 
-/** Cancels one exact nested start or steer without publishing a V2 failure. */
+/** Cancels one exact nested start or steer without publishing a subagent failure. */
 function cancelRootOperation(
 	coordinator: SubagentCoordinator,
 	request: Extract<RuntimeRequest, { readonly operation: "cancel_operation" }>,
@@ -997,7 +997,7 @@ function cancelRootOperation(
 	return { acknowledged: true, cancellationWon };
 }
 
-/** Cancels one exact nested wait without publishing a V2 failure. */
+/** Cancels one exact nested wait without publishing a subagent failure. */
 async function cancelRootWait(
 	coordinator: SubagentCoordinator,
 	owner: OwnerIdentity,
@@ -1027,7 +1027,7 @@ async function handleRootRuntimeRequest({
 	request,
 }: {
 	readonly coordinator: SubagentCoordinator;
-	readonly store: V2SessionStore;
+	readonly store: SessionStore;
 	readonly queryBranches: QueryBranchAccess;
 	readonly owner: OwnerIdentity;
 	readonly request: RuntimeRequest;
@@ -1127,7 +1127,7 @@ async function handleWorkerCommand(
 	operation: RuntimeRequest["operation"],
 	payload: unknown,
 	owner: OwnerIdentity,
-	store: V2SessionStore,
+	store: SessionStore,
 ): Promise<{ readonly acknowledged: true }> {
 	if (operation === "append_journal") {
 		const record = parseJournalRecord(payload);

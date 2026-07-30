@@ -157,7 +157,7 @@ function writeRuntimeDumpExtension(directory: string): string {
 }
 
 test("runtime package loading keeps selected-agent allowlist across split entries", () => {
-	// Purpose: real Pi package loading must keep main-agent selection and Subagents V2 in one runtime composition.
+	// Purpose: real Pi package loading must keep main-agent selection and Subagents in one runtime composition.
 	// Input and expected output: selected TestAgent allows only SubAgentExtractor, so the final prompt lists only SubAgentExtractor.
 	// Edge case: pi loads package entries separately; disconnected shared state would expose SubAgentCoder and TestAgent too.
 	// Dependencies: this integration check uses the local pi CLI, isolated temp agent files, and a debug extension that exits before any model request.
@@ -322,8 +322,8 @@ test("runtime child loading removes subagent context at maxDepth", () => {
 	}
 });
 
-test("loads Subagents V2 in isolated offline modes", () => {
-	// Purpose: real Pi must load the V2 entry alone and through the complete package without discovered extensions or model access.
+test("loads Subagents in isolated offline modes", () => {
+	// Purpose: real Pi must load the subagent entry alone and through the complete package without discovered extensions or model access.
 	// Input and expected output: both explicit offline targets use one isolated TestAgent policy and exit successfully without extension diagnostics.
 	// Edge case: print mode receives no prompt because Pi prohibits prompts while offline.
 	// Dependencies: local Pi CLI, production extension entry points, and isolated temporary project and agent state.
@@ -333,7 +333,7 @@ test("loads Subagents V2 in isolated offline modes", () => {
 
 	try {
 		projectDir = realpathSync(
-			mkdtempSync(join(tmpdir(), "pi-runtime-v2-loading-project-")),
+			mkdtempSync(join(tmpdir(), "pi-runtime-loading-project-")),
 		);
 		agentDir = createIsolatedAgentDir(projectDir);
 		const childEnv: Record<string, string | undefined> = {
@@ -401,9 +401,9 @@ test("exposes subagent runtime tools and available-agent context", () => {
 
 	try {
 		projectDir = realpathSync(
-			mkdtempSync(join(tmpdir(), "pi-runtime-v2-snapshot-project-")),
+			mkdtempSync(join(tmpdir(), "pi-runtime-snapshot-project-")),
 		);
-		scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-v2-snapshot-"));
+		scratchDir = mkdtempSync(join(tmpdir(), "pi-runtime-snapshot-"));
 		agentDir = createIsolatedAgentDir(projectDir);
 		configDir = join(agentDir, "agent-suite", "run-subagent");
 		runtimeDumpFile = join(scratchDir, "runtime.json");
@@ -433,7 +433,7 @@ test("exposes subagent runtime tools and available-agent context", () => {
 				join(repositoryDir, "pi-package"),
 				"-e",
 				debugExtensionPath,
-				"capture isolated V2 runtime",
+				"capture isolated subagent runtime",
 			],
 			{
 				cwd: projectDir,
@@ -504,9 +504,9 @@ test("exposes subagent runtime tools and available-agent context", () => {
 	}
 });
 
-test("runtime package loading snapshots configured V2 descriptions on the first turn", () => {
+test("runtime package loading snapshots configured subagent descriptions on the first turn", () => {
 	// Purpose: real Pi must await extension and tool description configuration before its first model-visible snapshot.
-	// Input and expected output: four absolute custom prompt files produce shared extension guidance and exactly four active V2 tools with matching configured descriptions.
+	// Input and expected output: four absolute custom prompt files produce shared extension guidance and exactly four active subagent tools with matching configured descriptions.
 	// Edge case: the debug extension exits from the first before_agent_start event, before any provider or model request.
 	// Dependencies: local Pi CLI, isolated package config, selected main-agent restoration, production extension loading, and a runtime dump extension.
 	const repositoryDir = process.cwd();
@@ -575,7 +575,9 @@ test("runtime package loading snapshots configured V2 descriptions on the first 
 		) as RuntimeDump;
 		expect({
 			activeTools: runtime.activeTools,
-			v2Tools: runtime.tools.filter((name) => name.startsWith("subagent_")),
+			subagentTools: runtime.tools.filter((name) =>
+				name.startsWith("subagent_"),
+			),
 			hasExtensionDescription: runtime.systemPrompt.includes("real extension"),
 			descriptions: {
 				start: runtime.toolDescriptions["subagent_start"],
@@ -589,7 +591,7 @@ test("runtime package loading snapshots configured V2 descriptions on the first 
 				"subagent_wait",
 				"subagent_query",
 			],
-			v2Tools: [
+			subagentTools: [
 				"subagent_start",
 				"subagent_steer",
 				"subagent_wait",

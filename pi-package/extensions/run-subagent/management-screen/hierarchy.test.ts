@@ -664,8 +664,8 @@ describe("management hierarchy", () => {
 		);
 	});
 
-	test("applies V1 context pressure thresholds to selected metadata", () => {
-		// Purpose: selected context must retain the V1 warning and error thresholds.
+	test("applies context pressure thresholds to selected metadata", () => {
+		// Purpose: selected context must retain the warning and error thresholds.
 		// Inputs and expected output: 49%, 50%, 79%, and 80% produce normal, warning, warning, and error usage colors.
 		// Edge case: projected savings remain warning-colored independently of current usage.
 		// Dependencies: shared context formatting and the selected-session metadata row.

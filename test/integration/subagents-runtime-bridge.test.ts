@@ -13,8 +13,8 @@ import type {
 import { InvocationSupervisor } from "../../pi-package/extensions/run-subagent/invocation-supervisor";
 import { parseJournalRecord } from "../../pi-package/extensions/run-subagent/journal-codec";
 import {
+	SessionStore,
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
-	V2SessionStore,
 } from "../../pi-package/extensions/run-subagent/persistence";
 import {
 	RootRuntimeBridge,
@@ -34,9 +34,9 @@ test("establishes production worker IPC and settles one response", async () => {
 	// Purpose: production fail-stop must survive failed nested persistence and reconcile after writer release.
 	// Input and expected output: two package-loaded workers, one nested catalog session, one pending wait, and one failed remote append still produce complete teardown and durable forced abort.
 	// Edge case: writer release occurs only after both processes stop, repeated offline reconciliation remains idempotent, and later sends reject.
-	// Dependencies: local pi CLI, production coordinator, supervisor, bridge, V2SessionStore, public SessionManager, system temporary state, and no provider or network.
+	// Dependencies: local pi CLI, production coordinator, supervisor, bridge, SessionStore, public SessionManager, system temporary state, and no provider or network.
 	// Arrange.
-	const directory = mkdtempSync(join(tmpdir(), "subagents-v2-runtime-"));
+	const directory = mkdtempSync(join(tmpdir(), "subagents-runtime-"));
 	const bridge = new RootRuntimeBridge();
 	const waits = new WaitCoordinator();
 	const failures: RuntimeChannelFailure[] = [];
@@ -63,7 +63,7 @@ test("establishes production worker IPC and settles one response", async () => {
 		const rootManager = SessionManager.create(rootDirectory, rootDirectory, {
 			id: "owner-pi",
 		});
-		rootManager.appendCustomEntry("subagents-v2-test-seed", { created: true });
+		rootManager.appendCustomEntry("subagents-test-seed", { created: true });
 		const rootSessionFile = rootManager.getSessionFile();
 		if (rootSessionFile === undefined) {
 			throw new Error(
@@ -90,7 +90,7 @@ test("establishes production worker IPC and settles one response", async () => {
 		const agentDir = join(directory, "agent");
 		const suiteDir = join(agentDir, "agent-suite");
 		mkdirSync(suiteDir, { recursive: true });
-		const store = new V2SessionStore({
+		const store = new SessionStore({
 			append: async (_owner, record) => {
 				failedRemoteAppends += 1;
 				if (failedRuntimeLeaseId === undefined) {

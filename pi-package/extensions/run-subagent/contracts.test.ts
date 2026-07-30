@@ -29,7 +29,7 @@ function failureCode(operation: () => unknown): string {
 	return "missing";
 }
 
-describe("Subagents V2 contracts", () => {
+describe("Subagents contracts", () => {
 	test("validates structural requests before semantic coordination", () => {
 		// Purpose: each agent operation must receive one closed, normalized request shape.
 		// Input and expected output: valid requests round-trip while missing, extra, whitespace, duplicate, and range violations return invalid_request.
@@ -97,7 +97,7 @@ describe("Subagents V2 contracts", () => {
 		// Purpose: model-visible failures must preserve unknown diagnostics without allowing terminal controls or unbounded context growth.
 		// Input and expected output: ANSI, layout controls, and oversized text become one terminal-safe truncated line.
 		// Edge case: an error containing only removed controls falls back to a useful message.
-		// Dependencies: the common SubagentToolError boundary used by every V2 tool.
+		// Dependencies: the common SubagentToolError boundary used by every subagent tool.
 		const unsafe = `failure\u202e\u2066\u001b[31m red\u001b[0m\n\t${"x".repeat(100_000)}`;
 		const error = new SubagentToolError("start_failed", unsafe);
 		const empty = new SubagentToolError("start_failed", "\u001b[31m\u001b[0m");
