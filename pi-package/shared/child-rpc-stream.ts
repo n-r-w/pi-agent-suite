@@ -8,7 +8,7 @@ const streamJsonParser = requireStreamJson("stream-json/parser.js") as {
 	readonly parser: StreamJsonParserFactory;
 };
 /** Incremental object assembler used for bounded get_entries session entries. */
-const streamJsonAssembler = requireStreamJson("stream-json/Assembler.js") as {
+const streamJsonAssembler = requireStreamJson("stream-json/assembler.js") as {
 	readonly assembler: () => StreamJsonAssembler;
 };
 
