@@ -8,6 +8,10 @@ import type {
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
+import {
+	type PackagePresentationEventBus,
+	registerPackageTool,
+} from "../../shared/tool-presentation/registry";
 import type { AgentOperationResponse } from "./agent-operation-wire";
 import {
 	applyChildToolPolicy,
@@ -641,7 +645,7 @@ function registerTool(
 		...definition,
 		executionMode: "parallel" as const,
 	};
-	pi.registerTool(registeredDefinition);
+	registerPackageTool(pi, registeredDefinition);
 	return registeredDefinition;
 }
 
@@ -734,6 +738,7 @@ async function createRootRuntime(
 		ctx.mode === "tui"
 			? createRootManagementRuntime({
 					ctx,
+					presentationEvents: pi.events,
 					owner,
 					catalog,
 					coordinator,
@@ -834,6 +839,7 @@ function createRootCoordinator(options: {
 /** Creates one TUI-only projection, submission adapter, and stable screen factory. */
 function createRootManagementRuntime(options: {
 	readonly ctx: ExtensionContext;
+	readonly presentationEvents: PackagePresentationEventBus;
 	readonly owner: OwnerIdentity;
 	readonly catalog: SessionCatalog;
 	readonly coordinator: SubagentCoordinator;
@@ -855,7 +861,7 @@ function createRootManagementRuntime(options: {
 	const retained = createManagementRetainedState();
 	const tools = createToolPresentationRegistry(
 		options.ctx.cwd,
-		options.ctx.sessionManager,
+		options.presentationEvents,
 	);
 	const submission = {
 		async submit(stableKey: string, text: string) {

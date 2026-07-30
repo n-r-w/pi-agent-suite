@@ -2,12 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type {
 	AgentToolResult,
+	ExtensionAPI,
 	Theme,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
+	createEventBus,
 	initTheme,
-	SessionManager,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -25,7 +26,19 @@ import {
 	renderMcpToolCall,
 	renderMcpToolResult,
 } from "../mcp-wrapper/rendering.ts";
-import { renderSubagentFeedback } from "./semantic-rendering.ts";
+import {
+	renderSubagentQueryCall,
+	renderSubagentQueryResult,
+} from "./query-rendering.ts";
+import {
+	renderSubagentFeedback,
+	renderSubagentStartCall,
+	renderSubagentStartResult,
+	renderSubagentSteerCall,
+	renderSubagentSteerResult,
+	renderSubagentWaitCall,
+	renderSubagentWaitResult,
+} from "./semantic-rendering.ts";
 import { createToolPresentationRegistry } from "./tool-rendering.ts";
 
 const MCP_PARAMETERS = Type.Object({ path: Type.Optional(Type.String()) });
@@ -46,6 +59,25 @@ const TOOL_NAMES = [
 ] as const;
 const EXPAND_HINT_PATTERN =
 	/^\.\.\. \(\d+ more lines, \d+ total, ctrl\+o to expand\)$/;
+/** Maps each V2 tool name to the renderers registered by its extension entry point. */
+const V2_PRESENTATIONS = {
+	subagent_start: {
+		renderCall: renderSubagentStartCall,
+		renderResult: renderSubagentStartResult,
+	},
+	subagent_steer: {
+		renderCall: renderSubagentSteerCall,
+		renderResult: renderSubagentSteerResult,
+	},
+	subagent_wait: {
+		renderCall: renderSubagentWaitCall,
+		renderResult: renderSubagentWaitResult,
+	},
+	subagent_query: {
+		renderCall: renderSubagentQueryCall,
+		renderResult: renderSubagentQueryResult,
+	},
+} as const;
 
 /** Supplies a fail-closed execution member for presentation-only test definitions. */
 async function rejectPresentationExecution(): Promise<
@@ -74,14 +106,26 @@ function createMcpDefinition(): ToolDefinition<typeof MCP_PARAMETERS> {
 	};
 }
 
-/** Resolves one static V2 presentation definition for semantic rendering. */
+/** Creates the smallest extension API needed by the package presentation publisher. */
+function createPresentationApi(events: ExtensionAPI["events"]): ExtensionAPI {
+	return {
+		events,
+		on(): void {},
+	} as unknown as ExtensionAPI;
+}
+
+/** Resolves one registered V2 presentation definition for semantic rendering. */
 function resolveV2Definition(
 	name: (typeof TOOL_NAMES)[number],
 ): ToolDefinition {
-	const registry = createToolPresentationRegistry(
-		"/tmp",
-		SessionManager.inMemory("/tmp"),
-	);
+	const events = createEventBus();
+	registerPackageToolPresentation(createPresentationApi(events), {
+		name,
+		label: name,
+		...V2_PRESENTATIONS[name],
+		renderShell: "default",
+	});
+	const registry = createToolPresentationRegistry("/tmp", events);
 	const resolution = registry.resolve(name);
 	if (
 		resolution.category !== "package" ||
@@ -225,14 +269,23 @@ describe("Subagents V2 semantic rendering", () => {
 	test("keeps built-in, package, and unknown presentation ownership isolated", () => {
 		// Purpose: management replay must use public built-ins, static V2 definitions, runtime-local package definitions, and universal unknown definitions.
 		// Input and expected output: bash, all V2 names, one registered MCP name, and one unknown name resolve through their distinct public paths.
-		// Edge case: a second SessionManager identity cannot observe the first identity's dynamic MCP registration.
-		// Dependencies: public Pi tool factories and package presentation registry.
-		const firstOwner = SessionManager.inMemory("/tmp/runtime-one");
-		const secondOwner = SessionManager.inMemory("/tmp/runtime-two");
+		// Edge case: a second Pi event bus cannot observe the first runtime's dynamic MCP registration.
+		// Dependencies: public Pi tool factories, event buses, and package presentation registry.
+		const firstEvents = createEventBus();
+		const secondEvents = createEventBus();
 		const mcp = createMcpDefinition();
-		registerPackageToolPresentation(firstOwner, mcp);
-		const first = createToolPresentationRegistry("/tmp", firstOwner);
-		const second = createToolPresentationRegistry("/tmp", secondOwner);
+		registerPackageToolPresentation(createPresentationApi(firstEvents), mcp);
+		const secondApi = createPresentationApi(secondEvents);
+		for (const name of TOOL_NAMES) {
+			registerPackageToolPresentation(secondApi, {
+				name,
+				label: name,
+				...V2_PRESENTATIONS[name],
+				renderShell: "default",
+			});
+		}
+		const first = createToolPresentationRegistry("/tmp", firstEvents);
+		const second = createToolPresentationRegistry("/tmp", secondEvents);
 
 		expect({
 			bash: second.resolve("bash").category,

@@ -11,6 +11,7 @@ import type {
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import {
+	createEventBus,
 	DEFAULT_MAX_LINES,
 	type ExtensionAPI,
 	type SessionEntry,
@@ -29,6 +30,7 @@ import {
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../../pi-package/shared/subagent-environment";
+import { getPackageToolPresentation } from "../../../pi-package/shared/tool-presentation/registry";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -173,12 +175,7 @@ function createExtensionApiFake(
 		commands,
 		activeToolCalls,
 		appendEntryCalls,
-		events: {
-			emit(): void {},
-			on(): () => void {
-				return () => {};
-			},
-		},
+		events: createEventBus(),
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
 		},
@@ -625,15 +622,28 @@ describe("consult-advisor", () => {
 
 	test("registers the unchanged public consult_advisor schema", () => {
 		// Purpose: the public tool contract must stay limited to question.
-		// Input and expected output: extension load registers consult_advisor with one question parameter.
+		// Input and expected output: extension load registers one question parameter and publishes the exact call and result renderers.
 		// Edge case: no config file is needed for registration.
-		// Dependencies: this test uses only an in-memory ExtensionAPI fake.
+		// Dependencies: this test uses an in-memory ExtensionAPI fake with Pi's event bus.
 		const pi = createExtensionApiFake();
 		consultAdvisor(pi);
-		const parameters = getConsultTool(pi).parameters as unknown as {
+		const tool = getConsultTool(pi);
+		const parameters = tool.parameters as unknown as {
 			readonly properties: Record<string, unknown>;
 		};
-		expect(Object.keys(parameters.properties)).toEqual(["question"]);
+		const presentation = getPackageToolPresentation(
+			pi.events,
+			"consult_advisor",
+		);
+		expect({
+			parameterNames: Object.keys(parameters.properties),
+			renderCall: presentation?.renderCall === tool.renderCall,
+			renderResult: presentation?.renderResult === tool.renderResult,
+		}).toEqual({
+			parameterNames: ["question"],
+			renderCall: true,
+			renderResult: true,
+		});
 	});
 
 	test("renders advisor question and collapsed answer within terminal width", () => {

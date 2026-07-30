@@ -4,7 +4,10 @@ import type {
 	ExtensionContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { registerPackageToolPresentation } from "../../shared/tool-presentation/registry.ts";
+import {
+	registerPackageTool,
+	registerPackageToolPresentation,
+} from "../../shared/tool-presentation/registry.ts";
 import { McpClientManager, type ServerInstructions } from "./client-manager.ts";
 import {
 	type McpServerConfig,
@@ -401,7 +404,6 @@ function registerStartupCatalog({
 	reportStatuses(options.ctx, startup, catalog.rejected);
 	registerCatalogTools({
 		pi: options.pi,
-		presentationOwner: options.ctx.sessionManager,
 		tools: catalog.tools,
 		getActiveManager: options.getActiveManager,
 		registeredToolDefinitions: options.registeredToolDefinitions,
@@ -679,10 +681,9 @@ function reportStatuses(
 	}
 }
 
-/** Registers each generated definition once and publishes its exact renderer identities after session binding. */
+/** Registers each generated definition once and publishes its exact renderer identities. */
 function registerCatalogTools(options: {
 	readonly pi: ExtensionAPI;
-	readonly presentationOwner?: ExtensionContext["sessionManager"];
 	readonly tools: readonly PiToolCatalogEntry[];
 	readonly getActiveManager: () => McpManagerLike | undefined;
 	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
@@ -701,14 +702,13 @@ function registerCatalogTools(options: {
 				options.widgetLineBudget,
 			);
 			options.registeredToolDefinitions.set(entry.definition.name, definition);
-			options.pi.registerTool(definition);
+			registerPackageTool(options.pi, definition);
+			continue;
 		}
 
-		// Presentation registration needs the current SessionManager identity,
-		// which becomes available only after Pi binds the extension.
-		if (options.presentationOwner !== undefined) {
-			registerPackageToolPresentation(options.presentationOwner, definition);
-		}
+		// Existing dynamic definitions must rejoin the event-bus publisher after
+		// session replacement without registering the Pi tool a second time.
+		registerPackageToolPresentation(options.pi, definition);
 	}
 }
 

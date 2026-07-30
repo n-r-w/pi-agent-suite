@@ -5,6 +5,7 @@ import type {
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
+import { registerPackageTool } from "../../shared/tool-presentation/registry";
 import { readConveneCouncilRegistrationState } from "./config";
 import { TOOL_NAME } from "./constants";
 import { executeConveneCouncil } from "./loop";
@@ -85,5 +86,5 @@ export default function conveneCouncil(
 			});
 		},
 	};
-	pi.registerTool(definition);
+	registerPackageTool(pi, definition);
 }

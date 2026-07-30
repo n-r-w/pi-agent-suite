@@ -7,6 +7,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { truncateTextByWidth } from "../display-width.ts";
+import { renderLabeledWrappedText } from "../labeled-wrapped-text.ts";
 import { normalizeCollapsedToolText } from "../terminal-display-text.ts";
 
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
@@ -31,18 +32,23 @@ export class BoundedToolCall implements Component {
 		private readonly lineLimit: number,
 	) {}
 
-	/** Normalizes serialized arguments before applying the call row limit. */
+	/** Starts labeled arguments on the label row before applying the call row limit. */
 	public render(width: number): string[] {
 		const json = normalizeCollapsedToolText(
 			JSON.stringify(this.args) ?? "undefined",
 		);
-		const prefix =
-			this.label === undefined
-				? ""
-				: `${this.theme.fg("toolTitle", this.theme.bold(`${this.label}:`))} `;
-		return new Text(`${prefix}${this.theme.fg("dim", json)}`, 0, 0)
-			.render(width)
-			.slice(0, this.lineLimit);
+		if (this.label === undefined) {
+			return new Text(this.theme.fg("dim", json), 0, 0)
+				.render(width)
+				.slice(0, this.lineLimit);
+		}
+		return renderLabeledWrappedText({
+			label: `${this.label}:`,
+			text: json,
+			width,
+			labelStyle: (value) => this.theme.fg("toolTitle", this.theme.bold(value)),
+			textStyle: (value) => this.theme.fg("dim", value),
+		}).slice(0, this.lineLimit);
 	}
 
 	public invalidate(): void {}

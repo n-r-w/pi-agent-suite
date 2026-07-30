@@ -47,6 +47,7 @@ import {
 	withRetry,
 } from "../../shared/retry";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
+import { registerPackageTool } from "../../shared/tool-presentation/registry";
 import {
 	renderConsultAdvisorCall,
 	renderConsultAdvisorResult,
@@ -181,7 +182,7 @@ export default function consultAdvisor(
 			});
 		},
 	};
-	pi.registerTool(definition);
+	registerPackageTool(pi, definition);
 }
 
 /** Executes one advisor model call after strict config, prompt, and model validation. */

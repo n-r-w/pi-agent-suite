@@ -1,6 +1,6 @@
 import type {
 	AgentToolResult,
-	ExtensionContext,
+	ExtensionAPI,
 	Theme,
 	ToolDefinition,
 	ToolRenderResultOptions,
@@ -21,9 +21,8 @@ type PackageRenderResult = {
 	): Component;
 }["bivarianceHack"];
 
-/** Identifies one Pi runtime through its public shared session manager object. */
-export type PackageRuntimePresentationOwner =
-	ExtensionContext["sessionManager"];
+/** Identifies the Pi event bus shared by independently loaded extensions. */
+export type PackagePresentationEventBus = ExtensionAPI["events"];
 
 /** Retains the public rendering portion of one package-owned normal definition. */
 export interface PackageToolPresentation {
@@ -34,45 +33,139 @@ export interface PackageToolPresentation {
 	readonly renderShell?: ToolDefinition["renderShell"];
 }
 
-// Pi supplies the same SessionManager to every extension context in one runtime.
-// Weak ownership shares dynamic renderers across extensions without cross-runtime leaks.
-const packagePresentations = new WeakMap<
-	PackageRuntimePresentationOwner,
-	Map<string, PackageToolPresentation>
->();
-
-/** Registers the exact renderer references used by one package-owned normal tool. */
-export function registerPackageToolPresentation(
-	owner: PackageRuntimePresentationOwner,
-	definition: PackageToolPresentation,
-): void {
-	let presentations = packagePresentations.get(owner);
-	if (presentations === undefined) {
-		presentations = new Map();
-		packagePresentations.set(owner, presentations);
-	}
-	presentations.set(
-		definition.name,
-		Object.freeze({
-			name: definition.name,
-			label: definition.label,
-			...(definition.renderCall === undefined
-				? {}
-				: { renderCall: definition.renderCall }),
-			...(definition.renderResult === undefined
-				? {}
-				: { renderResult: definition.renderResult }),
-			...(definition.renderShell === undefined
-				? {}
-				: { renderShell: definition.renderShell }),
-		}),
-	);
+/** Requests one named presentation from every package extension publisher. */
+interface PackageToolPresentationRequest {
+	readonly name: string;
+	readonly accept: (presentation: PackageToolPresentation) => void;
 }
 
-/** Resolves package renderers without replaying extension lifecycle or querying Pi internals. */
+/** Stores the presentations published by one isolated extension module. */
+interface PackageToolPresentationPublisher {
+	publish(definition: PackageToolPresentation): void;
+}
+
+/** Carries synchronous presentation requests across Pi's shared extension event bus. */
+const PACKAGE_TOOL_PRESENTATION_REQUEST_CHANNEL =
+	"pi-agent-suite:package-tool-presentation:request";
+
+/** Keeps one lifecycle-aware publisher for each extension API instance. */
+const publishers = new WeakMap<
+	ExtensionAPI,
+	PackageToolPresentationPublisher
+>();
+
+/** Registers a package tool and exposes its exact renderers to other extensions. */
+export function registerPackageTool(
+	pi: ExtensionAPI,
+	definition: Parameters<ExtensionAPI["registerTool"]>[0],
+): void {
+	pi.registerTool(definition);
+	registerPackageToolPresentation(pi, definition);
+}
+
+/** Publishes exact renderer references from one independently loaded extension. */
+export function registerPackageToolPresentation(
+	pi: ExtensionAPI,
+	definition: PackageToolPresentation,
+): void {
+	let publisher = publishers.get(pi);
+	if (publisher === undefined) {
+		publisher = createPackageToolPresentationPublisher(pi);
+		publishers.set(pi, publisher);
+	}
+	publisher.publish(definition);
+}
+
+/** Resolves a package renderer through Pi's synchronous shared event bus. */
 export function getPackageToolPresentation(
-	owner: PackageRuntimePresentationOwner,
+	events: PackagePresentationEventBus,
 	name: string,
 ): PackageToolPresentation | undefined {
-	return packagePresentations.get(owner)?.get(name);
+	let presentation: PackageToolPresentation | undefined;
+	const request: PackageToolPresentationRequest = {
+		name,
+		accept(candidate) {
+			presentation = candidate;
+		},
+	};
+	events.emit(PACKAGE_TOOL_PRESENTATION_REQUEST_CHANNEL, request);
+	return presentation;
+}
+
+/** Creates one publisher whose listener follows the owning extension lifecycle. */
+function createPackageToolPresentationPublisher(
+	pi: ExtensionAPI,
+): PackageToolPresentationPublisher {
+	const presentations = new Map<string, PackageToolPresentation>();
+	let unsubscribe: (() => void) | undefined;
+
+	/** Installs the request listener after startup and after session replacement. */
+	const subscribe = (): void => {
+		unsubscribe ??= pi.events.on(
+			PACKAGE_TOOL_PRESENTATION_REQUEST_CHANNEL,
+			(data) => {
+				const request = parsePackageToolPresentationRequest(data);
+				if (request === undefined) {
+					return;
+				}
+				const presentation = presentations.get(request.name);
+				if (presentation !== undefined) {
+					request.accept(presentation);
+				}
+			},
+		);
+	};
+
+	subscribe();
+	pi.on("session_start", subscribe);
+	pi.on("session_shutdown", () => {
+		unsubscribe?.();
+		unsubscribe = undefined;
+	});
+
+	return {
+		publish(definition): void {
+			subscribe();
+			presentations.set(definition.name, freezePresentation(definition));
+		},
+	};
+}
+
+/** Copies one presentation so later tool-definition mutation cannot change replay. */
+function freezePresentation(
+	definition: PackageToolPresentation,
+): PackageToolPresentation {
+	return Object.freeze({
+		name: definition.name,
+		label: definition.label,
+		...(definition.renderCall === undefined
+			? {}
+			: { renderCall: definition.renderCall }),
+		...(definition.renderResult === undefined
+			? {}
+			: { renderResult: definition.renderResult }),
+		...(definition.renderShell === undefined
+			? {}
+			: { renderShell: definition.renderShell }),
+	});
+}
+
+/** Validates one internal event payload before invoking its response callback. */
+function parsePackageToolPresentationRequest(
+	data: unknown,
+): PackageToolPresentationRequest | undefined {
+	if (
+		typeof data !== "object" ||
+		data === null ||
+		!("name" in data) ||
+		typeof data.name !== "string" ||
+		!("accept" in data) ||
+		typeof data.accept !== "function"
+	) {
+		return undefined;
+	}
+	return {
+		name: data.name,
+		accept: data.accept as PackageToolPresentationRequest["accept"],
+	};
 }

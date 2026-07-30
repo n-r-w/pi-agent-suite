@@ -7,9 +7,9 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
 import {
+	createEventBus,
 	getMarkdownTheme,
 	initTheme,
-	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { ConversationProjectionEntry } from "../projection";
@@ -186,8 +186,7 @@ function feedbackEntry(): Extract<SessionEntry, { type: "custom_message" }> {
 function options(): ConstructorParameters<typeof ConversationPane>[0] {
 	initTheme(undefined, false);
 	const tui = { requestRender(): void {} } as TUI;
-	const owner = SessionManager.inMemory("/tmp/subagents-v2-conversation");
-	const tools = createToolPresentationRegistry("/tmp", owner);
+	const tools = createToolPresentationRegistry("/tmp", createEventBus());
 	const theme = {
 		fg: (_color: string, text: string) => text,
 		bg: (_color: string, text: string) => text,

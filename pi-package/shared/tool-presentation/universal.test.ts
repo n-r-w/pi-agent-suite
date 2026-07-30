@@ -34,13 +34,14 @@ function renderCall(
 	definition: ToolDefinition,
 	args: unknown,
 	width: number,
+	theme: Theme = MARKED_THEME,
 ): string[] {
 	if (definition.renderCall === undefined) {
 		throw new Error("universal definition has no call renderer");
 	}
 	const component = definition.renderCall(
 		args,
-		MARKED_THEME,
+		theme,
 		createToolRenderContext({ args, expanded: false, isError: false }),
 	);
 	component.invalidate();
@@ -190,6 +191,27 @@ describe("universal tool presentation", () => {
 		expect(
 			execution.render(width).every((line) => visibleWidth(line) <= width),
 		).toBe(true);
+	});
+
+	test("starts unknown tool arguments on the label row", () => {
+		// Purpose: unknown tools must use available label-row width before wrapping serialized arguments.
+		// Input and expected output: a long JSON argument starts immediately after the tool name and continues on later rows.
+		// Edge case: the first JSON token is wider than the remaining label-row width and contains no spaces.
+		// Dependencies: the universal call renderer uses Pi-compatible visual wrapping.
+		const definition = createUniversalToolDefinition(
+			"asteria_find_referencing_symbols",
+		);
+		const args = {
+			workspace_root:
+				"/Users/example/workspaces/pi-harness/pi-new-agents/with-a-long-suffix",
+		};
+
+		const lines = renderCall(definition, args, 80, PLAIN_THEME);
+
+		expect(lines[0]).toStartWith(
+			'asteria_find_referencing_symbols: {"workspace_root":',
+		);
+		expect(lines.length).toBe(2);
 	});
 
 	test("normalizes unknown tool previews without changing expanded output", () => {

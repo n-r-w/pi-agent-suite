@@ -138,8 +138,8 @@ The management pane removes `OSC 133;A/B/C` shell-history markers from nested co
 Tool presentation follows three paths:
 
 - Pi built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`) use Pi's built-in tool definition.
-- Package tools reuse their registered call and result presentation. This covers the four Subagents V2 tools, MCP wrapper tools, `consult_advisor`, and `convene_council`.
-- Other tool names use the universal presentation: a compact name and JSON call preview of at most two visual lines, a collapsed result of at most five visual lines, a hidden-line count with the configured expansion key, full Markdown when expanded, error styling for failures, and Pi's normal tool shell.
+- Package tools publish their exact call, result, and shell presentation through Pi's shared extension event bus. The management pane resolves these presentations by tool name, independent of extension load order and Jiti module isolation. This covers the four Subagents V2 tools, MCP wrapper tools, `consult_advisor`, and `convene_council`.
+- Other tool names use the universal presentation: the JSON call preview starts on the tool-name row and occupies at most two visual lines; collapsed results occupy at most five visual lines and include a hidden-line count with the configured expansion key; expanded results use full Markdown; failures use error styling; and Pi supplies the normal tool shell.
 - Collapsed arbitrary text uses the same whitespace, JSON-string, and terminal-control normalization as MCP tool previews. Expanded result text remains unchanged.
 
 `Ctrl+O`, the default `app.tools.expand` binding, toggles all tool and custom-message expansion states regardless of focus. Each overlay samples Pi's current main-conversation tool-expansion state when that overlay opens. Toggling expansion inside the overlay changes only that open overlay and does not change the main conversation.

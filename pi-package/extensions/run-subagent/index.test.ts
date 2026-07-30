@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +11,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import {
 	type AgentToolResult,
+	createEventBus,
 	type ExtensionAPI,
 	type ExtensionContext,
 	initTheme,
@@ -130,7 +130,7 @@ function createPiFake(): ExtensionAPI & {
 	const sentMessages: unknown[] = [];
 	const shortcuts: RegisteredShortcutLike[] = [];
 	const tools: RegisteredToolLike[] = [];
-	const events = new EventEmitter();
+	const events = createEventBus();
 	const handlers = new Map<
 		string,
 		Array<(event: unknown, ctx: unknown) => unknown>
@@ -1004,13 +1004,10 @@ describe("subagents V2 entry", () => {
 		// Purpose: normal rendering and management replay must use the exact approved V2 tool and feedback renderer references.
 		// Input and expected output: start, steer, wait, query, and one subagents-v2-feedback renderer register once; management resolves the same tool renderer functions.
 		// Edge case: static management presentation remains available before any session starts.
-		// Dependencies: production entry registration and static presentation registry.
+		// Dependencies: production entry registration and shared event-bus presentation registry.
 		const pi = createPiFake();
 		await subagentsV2(pi);
-		const registry = createToolPresentationRegistry(
-			"/tmp",
-			SessionManager.inMemory("/tmp"),
-		);
+		const registry = createToolPresentationRegistry("/tmp", pi.events);
 
 		expect({
 			tools: pi.tools.map((tool) => tool.name).sort(),

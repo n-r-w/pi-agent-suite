@@ -6,6 +6,7 @@ import type {
 	Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
+	createEventBus,
 	getMarkdownTheme,
 	initTheme,
 	SessionManager,
@@ -370,10 +371,7 @@ function createScreen(
 			scrollTop: 0,
 		};
 	}
-	const tools = createToolPresentationRegistry(
-		"/tmp",
-		SessionManager.inMemory("/tmp/subagents-v2-screen"),
-	);
+	const tools = createToolPresentationRegistry("/tmp", createEventBus());
 	const screen = new ManagementScreen({
 		tui,
 		theme,
@@ -1296,10 +1294,7 @@ describe("management screen", () => {
 				},
 			},
 		} as unknown as ExtensionContext;
-		const tools = createToolPresentationRegistry(
-			ctx.cwd,
-			SessionManager.inMemory("/tmp/subagents-v2-factory"),
-		);
+		const tools = createToolPresentationRegistry(ctx.cwd, createEventBus());
 		const factory = createManagementScreenFactory({
 			ctx,
 			source,
@@ -1536,10 +1531,7 @@ describe("management screen", () => {
 			keybindings: createKeybindings(),
 			cwd: "/tmp",
 			source: runtime,
-			tools: createToolPresentationRegistry(
-				"/tmp",
-				SessionManager.inMemory("/tmp/subagents-v2-metadata-tools"),
-			),
+			tools: createToolPresentationRegistry("/tmp", createEventBus()),
 			submission: new SubmissionFake(),
 			retained,
 			toolsExpanded: false,

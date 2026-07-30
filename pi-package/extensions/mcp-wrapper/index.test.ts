@@ -9,7 +9,10 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	createEventBus,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
 import { createToolPresentationRegistry } from "../run-subagent/tool-rendering.ts";
 import type { McpClientManager } from "./client-manager.ts";
@@ -88,7 +91,9 @@ function managerWithCleanup<
 	};
 }
 
-function createExtensionApiFake(): ExtensionApiFake {
+function createExtensionApiFake(
+	events: ExtensionAPI["events"] = createEventBus(),
+): ExtensionApiFake {
 	const commands: Array<
 		Omit<RegisteredCommand, "name" | "sourceInfo"> & { readonly name: string }
 	> = [];
@@ -100,12 +105,7 @@ function createExtensionApiFake(): ExtensionApiFake {
 		commands,
 		handlers,
 		tools,
-		events: {
-			emit(): void {},
-			on(): () => void {
-				return () => {};
-			},
-		},
+		events,
 		on(eventName: string, handler: RegisteredHandler["handler"]): void {
 			handlers.push({ eventName, handler });
 		},
@@ -438,15 +438,16 @@ describe("mcp-wrapper extension", () => {
 		]);
 	});
 
-	test("shares dynamic presentation through one shared SessionManager runtime identity", async () => {
-		// Purpose: normal MCP registration and Subagents V2 presentation must meet through their shared public SessionManager runtime identity.
-		// Input and expected output: one ExtensionAPI registers the dynamic tool, a second ExtensionAPI identity only illustrates extension separation, and the management consumer resolves exact renderers directly through the SessionManager shared by that Pi runtime.
-		// Edge case: another SessionManager in the same process must still classify that dynamic name as unknown.
-		// Dependencies: production mcp-wrapper session_start, public SessionManager identity, and the Subagents V2 presentation consumer.
-		const mcpPi = createExtensionApiFake();
-		const managementPi = createExtensionApiFake();
+	test("shares dynamic presentation through one Pi runtime event bus", async () => {
+		// Purpose: normal MCP registration and Subagents V2 presentation must meet through Pi's shared extension event bus.
+		// Input and expected output: one ExtensionAPI registers the dynamic tool, while the management consumer resolves exact renderers through the same runtime event bus.
+		// Edge case: another event bus in the same process must still classify that dynamic name as unknown.
+		// Dependencies: production mcp-wrapper session_start, public Pi event bus, and the Subagents V2 presentation consumer.
+		const runtimeEvents = createEventBus();
+		const mcpPi = createExtensionApiFake(runtimeEvents);
+		const managementPi = createExtensionApiFake(runtimeEvents);
 		const runtimeSessionManager = SessionManager.inMemory("/tmp/runtime-one");
-		const isolatedSessionManager = SessionManager.inMemory("/tmp/runtime-two");
+		const isolatedEvents = createEventBus();
 		const manager = {
 			discoverServers: async () => ({
 				serverToolLists: [
@@ -494,11 +495,11 @@ describe("mcp-wrapper extension", () => {
 		}
 		const managementResolution = createToolPresentationRegistry(
 			"/tmp",
-			runtimeSessionManager,
+			managementPi.events,
 		).resolve(normalDefinition.name);
 		const isolatedResolution = createToolPresentationRegistry(
 			"/tmp",
-			isolatedSessionManager,
+			isolatedEvents,
 		).resolve(normalDefinition.name);
 		const managementCallRenderer = managementResolution.definition?.renderCall;
 		if (managementCallRenderer === undefined) {
@@ -510,7 +511,7 @@ describe("mcp-wrapper extension", () => {
 			{ ...RESULT_RENDER_CONTEXT, args: { path: "/tmp/file" } },
 		).render(80);
 
-		// ASSERT: the second API identity is illustrative; renderer identity matches through the shared SessionManager, and a distinct SessionManager remains isolated.
+		// ASSERT: renderer identity matches through the shared event bus, and a distinct runtime event bus remains isolated.
 		expect({
 			separateExtensionApis: mcpPi !== managementPi,
 			category: managementResolution.category,
