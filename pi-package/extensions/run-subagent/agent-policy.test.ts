@@ -104,7 +104,9 @@ describe("effective callable-agent policy", () => {
 		// Edge case: prompt composition runs after depth filtering removes the complete subagent tool family.
 		// Dependencies: production runtime composition and subagent active-tool policy.
 		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
+		const previousAgentId = process.env[SUBAGENT_AGENT_ID_ENV];
 		process.env[SUBAGENT_DEPTH_ENV] = "1";
+		delete process.env[SUBAGENT_AGENT_ID_ENV];
 		let activeTools = [
 			"subagent_start",
 			"subagent_steer",
@@ -144,6 +146,11 @@ describe("effective callable-agent policy", () => {
 				delete process.env[SUBAGENT_DEPTH_ENV];
 			} else {
 				process.env[SUBAGENT_DEPTH_ENV] = previousDepth;
+			}
+			if (previousAgentId === undefined) {
+				delete process.env[SUBAGENT_AGENT_ID_ENV];
+			} else {
+				process.env[SUBAGENT_AGENT_ID_ENV] = previousAgentId;
 			}
 		}
 	});
