@@ -8,7 +8,7 @@ PI_PACKAGES := \
 	@earendil-works/pi-coding-agent \
 	@earendil-works/pi-tui
 
-.PHONY: pi-versions pi-update release-check release-patch release-minor release-major release-tag release-next-steps
+.PHONY: pi-versions pi-update release-check release-patch release-minor release-major release-tag release-github release-next-steps
 
 # Reports the pinned and latest published version of every Pi development package.
 pi-versions:
@@ -51,6 +51,9 @@ release-tag:
 	git tag $(TAG)
 	git push origin $(TAG)
 
+release-github:
+	gh release create $(TAG) --repo n-r-w/pi-agent-suite --title "$(TAG)" --generate-notes
+
 release-next-steps:
 	@echo "Version: $(VERSION)"
 	@echo "Tag: $(TAG)"
@@ -62,7 +65,8 @@ release-next-steps:
 	@echo "Create and push tag:"
 	@echo "  make release-tag"
 	@echo ""
-	@echo "Then create GitHub Release for $(TAG). The GitHub Actions workflow will publish $(PACKAGE_NAME) to npm."
+	@echo "Create GitHub Release and publish $(PACKAGE_NAME) to npm:"
+	@echo "  make release-github"
 
 verify:
 	bun run verify

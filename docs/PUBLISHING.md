@@ -90,7 +90,13 @@ Create and push the tag:
 make release-tag
 ```
 
-Create a GitHub Release for the pushed tag `vX.Y.Z`. Publishing the GitHub Release starts `.github/workflows/npm-publish.yml`, which publishes the npm package.
+Create a GitHub Release for the pushed tag:
+
+```bash
+make release-github
+```
+
+The target runs `gh release create` for the version in `pi-package/package.json` and generates the release notes. Publishing the GitHub Release starts `.github/workflows/npm-publish.yml`, which publishes the npm package.
 
 ## Validation commands
 
