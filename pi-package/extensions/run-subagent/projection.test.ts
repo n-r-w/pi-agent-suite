@@ -230,18 +230,25 @@ describe("HierarchyConversationProjection", () => {
 			...nestedBranch,
 			createUserEntry("nested-live", "live RPC message"),
 		];
-		const conversationUpdated = projection.updateConversation(
-			nestedSession.key,
-			nextNestedBranch,
-			1,
-			false,
-		);
-		const repeatedConversation = projection.updateConversation(
-			nestedSession.key,
-			nextNestedBranch,
-			1,
-			false,
-		);
+		const conversationUpdated = projection.updateConversation({
+			sessionKey: nestedSession.key,
+			entries: nextNestedBranch,
+			version: 1,
+			complete: false,
+			liveStatus: { kind: "working" },
+		});
+		const repeatedConversation = projection.updateConversation({
+			sessionKey: nestedSession.key,
+			entries: nextNestedBranch,
+			version: 1,
+			complete: false,
+			liveStatus: {
+				kind: "retrying",
+				attempt: 1,
+				maxAttempts: 2,
+				deadlineAtMs: 1_000,
+			},
+		});
 
 		// ASSERT: only selected conversation entries are exposed and prior revisions remain unchanged.
 		expect({
@@ -259,6 +266,7 @@ describe("HierarchyConversationProjection", () => {
 			),
 			liveConversationComplete:
 				conversationUpdated.selectedConversationComplete,
+			liveStatus: conversationUpdated.selectedLiveStatus,
 			priorConversationIds: updated.selectedConversation.map(
 				(entry) => entry.id,
 			),
@@ -275,6 +283,7 @@ describe("HierarchyConversationProjection", () => {
 			liveAffected: [stableKey(nestedSession.key)],
 			liveConversationIds: ["nested-user", "feedback", "nested-live"],
 			liveConversationComplete: false,
+			liveStatus: { kind: "working" },
 			priorConversationIds: ["nested-user", "feedback"],
 			repeatedRevisionIdentity: true,
 		});

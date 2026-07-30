@@ -333,12 +333,13 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 	): void {
 		const snapshot = loader.getSnapshot();
 		const before = this.projection.getView();
-		const next = this.projection.updateConversation(
-			session.key,
-			snapshot.entries,
-			this.nextConversationVersion(),
-			snapshot.complete,
-		);
+		const next = this.projection.updateConversation({
+			sessionKey: session.key,
+			entries: snapshot.entries,
+			version: this.nextConversationVersion(),
+			complete: snapshot.complete,
+			liveStatus: snapshot.liveStatus,
+		});
 		this.publishRevision(before, next);
 	}
 

@@ -126,6 +126,19 @@ Wide mode shows the hierarchy on the left and the selected header, conversation,
 
 The conversation shows the selected saved session's active root-to-leaf branch in chronological order. Selecting another node replaces the conversation and moves its viewport to the latest content. Context-projection custom entries are excluded, and custom entries with `display: false` are not shown.
 
+#### Live runtime status
+
+An active selected session shows the child Pi runtime status between the conversation and editor:
+
+- `Working...`
+- retry countdown;
+- manual, automatic, or context-overflow compaction;
+- branch summarization.
+
+The status is transient projection state, not a synthetic session entry, so it never appears in saved history. The active invocation retains the latest state and includes it in each selected-session snapshot. Opening or switching selection therefore does not require the original event to arrive again.
+
+The row uses Pi's public `Loader`. It does not advertise a cancellation key because `Escape` remains owned by overlay navigation and closing.
+
 Presentation uses Pi's public conversation components:
 
 - User messages use `UserMessageComponent`.
@@ -166,7 +179,7 @@ The overlay can message any selected descendant, including one whose numeric ID 
 
 ### Updates, errors, restoration, and disposal
 
-Session creation, status changes, continuations, and selected-conversation activity update the overlay without changing a still-valid selection. A continuation updates the existing logical-session node instead of adding another node. Active selection requests the complete append-order entry set through Pi RPC `get_entries` and uses the response's `leafId` to select its current branch without reading the concurrently written session file. Later refreshes request only entries after the last received entry ID. Activity received while the initial request is in flight schedules an incremental refresh after the selected loader owns that snapshot, so an entry appended after the opening snapshot was produced does not wait for another activity event. If one valid response exceeds the normal RPC line buffer, it is parsed as a stream. Scalar entry strings longer than 4,096 characters in that oversized response retain their first 4,095 characters followed by `…`. When an active session terminates, its final saved branch is loaded through `SessionManager`.
+Session creation, status changes, continuations, and selected-conversation activity update the overlay without changing a still-valid selection. A continuation updates the existing logical-session node instead of adding another node. Active selection requests the complete append-order entry set through Pi RPC `get_entries` and combines it with the supervisor's latest transient runtime status. The response's `leafId` selects the current branch without reading the concurrently written session file. Later refreshes request only entries after the last received entry ID. Activity received while the initial request is in flight schedules an incremental refresh after the selected loader owns that snapshot, so an entry appended after the opening snapshot was produced does not wait for another activity event. If one valid response exceeds the normal RPC line buffer, it is parsed as a stream. Scalar entry strings longer than 4,096 characters in that oversized response retain their first 4,095 characters followed by `…`. When an active session terminates, its final saved branch is loaded through `SessionManager`.
 
 The installed Pi version owns saved-session parsing and migration; the extension does not interpret Pi's storage format. Only the selected complete saved branch or complete active entry set is retained in memory. Changing selection discards its conversation payload. An in-flight saved-session load is allowed to finish because `SessionManager.open()` can migrate the file, but its stale result cannot publish after another session becomes selected. Concurrent requests for the same saved file share one loading operation. If a selected-conversation refresh fails, Pi shows an error notification and the last successfully loaded conversation remains visible.
 

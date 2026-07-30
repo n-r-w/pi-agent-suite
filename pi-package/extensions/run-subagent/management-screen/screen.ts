@@ -11,6 +11,7 @@ import {
 	Key,
 	type Keybinding,
 	type KeybindingsManager,
+	Loader,
 	matchesKey,
 	type TUI,
 	truncateToWidth,
@@ -18,6 +19,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { InvocationMetadata } from "../domain";
 import { errorMessage } from "../error-message";
+import type { LiveAgentStatus } from "../live-status";
 import type { ManagementProjectionView, ProjectionNode } from "../projection";
 import type { ToolPresentationRegistry } from "../tool-rendering";
 import { ConversationPane, readInitialPrompt } from "./conversation";
@@ -51,6 +53,8 @@ const MIN_CONVERSATION_ROWS = 1;
 const MIN_FRAMED_EDITOR_ROWS = 3;
 /** Keeps whole-second elapsed presentation current without revising session data. */
 const ELAPSED_REFRESH_INTERVAL_MS = 1_000;
+/** Converts retry deadlines to whole-second countdown labels. */
+const MILLISECONDS_PER_SECOND = 1_000;
 /** Ends child SGR and OSC 8 state before screen-owned chrome. */
 const SCREEN_SEGMENT_RESET = "\u001b[0m\u001b]8;;\u0007";
 
@@ -150,6 +154,8 @@ export class ManagementScreen implements Component, Focusable {
 	private previewFillPromise: Promise<void> | undefined;
 	/** Owns the periodic render request for the visible active duration. */
 	private elapsedRefreshTimer: ReturnType<typeof setInterval> | undefined;
+	/** Owns the public Pi loader used for the selected child runtime status. */
+	private liveStatusIndicator: Loader | undefined;
 	private disposed = false;
 	private _focused = false;
 
@@ -304,6 +310,8 @@ export class ManagementScreen implements Component, Focusable {
 		this.options.retained.hierarchy = { ...hierarchy, scrollTop: 0 };
 		this.unsubscribe();
 		this.stopElapsedRefresh();
+		this.liveStatusIndicator?.stop();
+		this.liveStatusIndicator = undefined;
 		// The retained key restores selection later; clearing the runtime selection releases conversation payloads now.
 		Promise.resolve(this.options.source.select(null)).catch((error: unknown) =>
 			this.options.notify(errorMessage(error)),
@@ -865,6 +873,59 @@ export class ManagementScreen implements Component, Focusable {
 		if (selectedNode === undefined) {
 			return { lines: [], conversationStartIndex: 0, conversationHeight: 0 };
 		}
+		const header = this.renderSelectedHeader(selectedNode, selected, width);
+		const editorLines = this.editor.render(width);
+		const maximumEditorRows = Math.max(
+			1,
+			height - SELECTED_HEADER_ROWS - PANE_DIVIDER_ROWS - MIN_CONVERSATION_ROWS,
+		);
+		const liveStatusLines = this.renderLiveStatus(width);
+		const editorViewport = cropEditorViewport(
+			editorLines,
+			Math.max(1, maximumEditorRows - liveStatusLines.length),
+		);
+		const editorHeight = editorViewport.length;
+		const conversationHeight = Math.max(
+			0,
+			height -
+				header.length -
+				PANE_DIVIDER_ROWS -
+				liveStatusLines.length -
+				editorHeight,
+		);
+		const conversationLines = this.conversation.render(
+			width,
+			conversationHeight,
+		);
+		this.requestPreviewFill(width, conversationHeight);
+		const lines = [
+			...header,
+			"─".repeat(width),
+			...padRows(conversationLines, conversationHeight, width),
+			...liveStatusLines,
+			...editorViewport,
+		].slice(0, height);
+		const editorTopIndex =
+			editorViewport.length >= MIN_FRAMED_EDITOR_ROWS
+				? header.length +
+					PANE_DIVIDER_ROWS +
+					conversationHeight +
+					liveStatusLines.length
+				: undefined;
+		return {
+			lines,
+			conversationStartIndex: header.length + PANE_DIVIDER_ROWS,
+			conversationHeight,
+			...(editorTopIndex === undefined ? {} : { editorTopIndex }),
+		};
+	}
+
+	/** Renders selected identity and the latest matching invocation metadata. */
+	private renderSelectedHeader(
+		selectedNode: ProjectionNode,
+		selectedStableKey: string,
+		width: number,
+	): readonly string[] {
 		const initialPrompt = readInitialPrompt(this.view.selectedConversation);
 		// Active conversation entries can report usage before the durable invocation reaches a terminal state.
 		const conversationMetadata = this.conversation.getMetadata();
@@ -876,48 +937,43 @@ export class ManagementScreen implements Component, Focusable {
 			),
 			selectedNode.state,
 		);
-		const renderedHeader = renderSelectedSessionHeader({
+		return renderSelectedSessionHeader({
 			nodes: this.view.nodes,
-			selectedStableKey: selected,
+			selectedStableKey,
 			...(initialPrompt === undefined ? {} : { initialPrompt }),
 			...(headerMetadata === undefined ? {} : { metadata: headerMetadata }),
 			width,
 			theme: this.options.theme,
 			focused: this._focused && this.focus === "conversation",
 		});
-		const header = renderedHeader;
-		const editorLines = this.editor.render(width);
-		const maximumEditorRows = Math.max(
-			1,
-			height - SELECTED_HEADER_ROWS - PANE_DIVIDER_ROWS - MIN_CONVERSATION_ROWS,
-		);
-		const editorViewport = cropEditorViewport(editorLines, maximumEditorRows);
-		const editorHeight = editorViewport.length;
-		const conversationHeight = Math.max(
-			0,
-			height - header.length - PANE_DIVIDER_ROWS - editorHeight,
-		);
-		const conversationLines = this.conversation.render(
-			width,
-			conversationHeight,
-		);
-		this.requestPreviewFill(width, conversationHeight);
-		const lines = [
-			...header,
-			"─".repeat(width),
-			...padRows(conversationLines, conversationHeight, width),
-			...editorViewport,
-		].slice(0, height);
-		const editorTopIndex =
-			editorViewport.length >= MIN_FRAMED_EDITOR_ROWS
-				? header.length + PANE_DIVIDER_ROWS + conversationHeight
-				: undefined;
-		return {
-			lines,
-			conversationStartIndex: header.length + PANE_DIVIDER_ROWS,
-			conversationHeight,
-			...(editorTopIndex === undefined ? {} : { editorTopIndex }),
-		};
+	}
+
+	/** Renders one transient child status row without adding it to conversation history. */
+	private renderLiveStatus(width: number): readonly string[] {
+		const status = this.view.selectedLiveStatus;
+		if (status === undefined) {
+			this.liveStatusIndicator?.stop();
+			this.liveStatusIndicator = undefined;
+			return [];
+		}
+		if (this.liveStatusIndicator === undefined) {
+			this.liveStatusIndicator = new Loader(
+				this.options.tui,
+				(text) =>
+					this.options.theme.fg(
+						this.view.selectedLiveStatus?.kind === "retrying"
+							? "warning"
+							: "accent",
+						text,
+					),
+				(text) => this.options.theme.fg("muted", text),
+				liveStatusMessage(status, Date.now()),
+			);
+		}
+		this.liveStatusIndicator.setMessage(liveStatusMessage(status, Date.now()));
+		// Loader reserves a leading spacer for Pi's standalone status container; this pane owns its row budget.
+		const line = this.liveStatusIndicator.render(width)[1];
+		return line === undefined ? [] : [truncateToWidth(line, width)];
 	}
 
 	/** Renders only actions that apply to the active focus and pane. */
@@ -1016,6 +1072,29 @@ export async function openManagementOverlay(
 			margin: 0,
 		},
 	});
+}
+
+/** Formats one child Pi status without claiming unsupported management actions. */
+function liveStatusMessage(status: LiveAgentStatus, nowMs: number): string {
+	switch (status.kind) {
+		case "working":
+			return "Working...";
+		case "retrying": {
+			const seconds = Math.ceil(
+				Math.max(0, status.deadlineAtMs - nowMs) / MILLISECONDS_PER_SECOND,
+			);
+			return `Retrying (${status.attempt}/${status.maxAttempts}) in ${seconds}s...`;
+		}
+		case "compacting":
+			if (status.reason === "manual") {
+				return "Compacting context...";
+			}
+			return status.reason === "overflow"
+				? "Context overflow detected, Auto-compacting..."
+				: "Auto-compacting...";
+		case "summarizingBranch":
+			return "Summarizing branch...";
+	}
 }
 
 /** Derives active elapsed presentation without mutating durable invocation metadata. */

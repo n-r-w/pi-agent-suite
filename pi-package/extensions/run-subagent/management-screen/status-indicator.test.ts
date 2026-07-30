@@ -50,6 +50,7 @@ function view(nodes: readonly ProjectionNode[]): ManagementProjectionView {
 		selectedStableKey: null,
 		selectedConversation: [],
 		selectedConversationComplete: true,
+		selectedLiveStatus: undefined,
 		affectedStableKeys: nodes.map((node) => node.stableKey),
 	};
 }

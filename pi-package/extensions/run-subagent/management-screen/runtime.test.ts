@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { LogicalSession } from "../domain";
+import type { LiveAgentStatus } from "../live-status";
 import { projectionStableKey } from "../projection";
 import { ManagementProjectionRuntime } from "./runtime";
 
@@ -96,6 +97,7 @@ class CatalogFake {
 interface ActiveConversationPage {
 	readonly entries: readonly SessionEntry[];
 	readonly leafId: string | null;
+	readonly liveStatus: LiveAgentStatus | undefined;
 }
 
 /** Supplies controlled active deltas, activity events, and incremental boundaries. */
@@ -248,8 +250,21 @@ describe("management projection runtime progressive loading", () => {
 		);
 		const session = logicalSession(1, "active");
 		const active = new ActiveConversationsFake([
-			{ entries: initial, leafId: thirdReply.id },
-			{ entries: [fourthUser, fourthReply], leafId: fourthReply.id },
+			{
+				entries: initial,
+				leafId: thirdReply.id,
+				liveStatus: { kind: "working" },
+			},
+			{
+				entries: [fourthUser, fourthReply],
+				leafId: fourthReply.id,
+				liveStatus: {
+					kind: "retrying",
+					attempt: 2,
+					maxAttempts: 3,
+					deadlineAtMs: 5_000,
+				},
+			},
 		]);
 		const runtime = createRuntime([session], active);
 
@@ -257,6 +272,7 @@ describe("management projection runtime progressive loading", () => {
 		expect(active.since).toEqual([undefined]);
 		expect(selectedIds(runtime)).toEqual(initial.map((entry) => entry.id));
 		expect(runtime.getView().selectedConversationComplete).toBe(true);
+		expect(runtime.getView().selectedLiveStatus).toEqual({ kind: "working" });
 
 		await runtime.refreshSelected();
 		expect(active.since).toEqual([undefined, "third-reply"]);
@@ -264,6 +280,12 @@ describe("management projection runtime progressive loading", () => {
 			"fourth-user",
 			"fourth-reply",
 		]);
+		expect(runtime.getView().selectedLiveStatus).toEqual({
+			kind: "retrying",
+			attempt: 2,
+			maxAttempts: 3,
+			deadlineAtMs: 5_000,
+		});
 		runtime.dispose();
 	});
 
@@ -287,7 +309,11 @@ describe("management projection runtime progressive loading", () => {
 		const session = logicalSession(1, "active");
 		const active = new ActiveConversationsFake([
 			initialRead,
-			{ entries: [secondUser, secondReply], leafId: secondReply.id },
+			{
+				entries: [secondUser, secondReply],
+				leafId: secondReply.id,
+				liveStatus: undefined,
+			},
 		]);
 		const runtime = createRuntime([session], active);
 
@@ -295,7 +321,11 @@ describe("management projection runtime progressive loading", () => {
 		await Promise.resolve();
 		expect(active.since).toEqual([undefined]);
 		active.emitActivity(session.invocationId);
-		resolveInitial({ entries: [firstUser, firstReply], leafId: firstReply.id });
+		resolveInitial({
+			entries: [firstUser, firstReply],
+			leafId: firstReply.id,
+			liveStatus: undefined,
+		});
 		await opening;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -324,7 +354,11 @@ describe("management projection runtime progressive loading", () => {
 		});
 		const active = new ActiveConversationsFake([
 			firstRead,
-			{ entries: [secondUser], leafId: secondUser.id },
+			{
+				entries: [secondUser],
+				leafId: secondUser.id,
+				liveStatus: undefined,
+			},
 		]);
 		const runtime = createRuntime([firstSession, secondSession], active);
 
@@ -333,7 +367,11 @@ describe("management projection runtime progressive loading", () => {
 		expect(active.since).toEqual([undefined]);
 		active.emitActivity(firstSession.invocationId);
 		await runtime.select(projectionStableKey(secondSession.key));
-		resolveFirst({ entries: [firstUser], leafId: firstUser.id });
+		resolveFirst({
+			entries: [firstUser],
+			leafId: firstUser.id,
+			liveStatus: undefined,
+		});
 		await obsolete;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -363,7 +401,11 @@ describe("management projection runtime progressive loading", () => {
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		active.emitActivity(session.invocationId);
 		runtime.dispose();
-		resolveInitial({ entries: [firstUser], leafId: firstUser.id });
+		resolveInitial({
+			entries: [firstUser],
+			leafId: firstUser.id,
+			liveStatus: undefined,
+		});
 		await opening;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -395,7 +437,11 @@ describe("management projection runtime progressive loading", () => {
 		const opening = runtime.select(projectionStableKey(activeSession.key));
 		await Promise.resolve();
 		catalog.update(terminalSession);
-		resolveInitial({ entries: [firstUser], leafId: firstUser.id });
+		resolveInitial({
+			entries: [firstUser],
+			leafId: firstUser.id,
+			liveStatus: undefined,
+		});
 		await opening;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 

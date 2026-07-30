@@ -6,6 +6,7 @@ import type {
 	OwnerIdentity,
 	SessionKey,
 } from "./domain.ts";
+import type { LiveAgentStatus } from "./live-status.ts";
 import { V2SessionStore } from "./persistence.ts";
 
 /** Supplies one direct owner's durable journal to recursive hierarchy projection. */
@@ -54,6 +55,7 @@ export interface ManagementProjectionView {
 	readonly selectedConversation: readonly ConversationProjectionEntry[];
 	/** Distinguishes a complete branch from a selected suffix with unread ancestors. */
 	readonly selectedConversationComplete: boolean;
+	readonly selectedLiveStatus: LiveAgentStatus | undefined;
 	readonly affectedStableKeys: readonly string[];
 }
 
@@ -61,6 +63,16 @@ interface ConversationSnapshot {
 	readonly entries: readonly ConversationProjectionEntry[];
 	readonly version: number;
 	readonly complete: boolean;
+	readonly liveStatus: LiveAgentStatus | undefined;
+}
+
+/** Supplies one selected conversation revision without positional argument coupling. */
+interface ConversationUpdate {
+	readonly sessionKey: SessionKey;
+	readonly entries: readonly SessionEntry[];
+	readonly version: number;
+	readonly complete: boolean;
+	readonly liveStatus: LiveAgentStatus | undefined;
 }
 
 /** Encodes complete owner-local identity without relying on a global numeric ID. */
@@ -82,6 +94,7 @@ export class HierarchyConversationProjection {
 		selectedStableKey: null,
 		selectedConversation: [],
 		selectedConversationComplete: true,
+		selectedLiveStatus: undefined,
 		affectedStableKeys: [],
 	});
 
@@ -109,6 +122,7 @@ export class HierarchyConversationProjection {
 				filterConversationEntries(branch.entries),
 				0,
 				true,
+				undefined,
 			);
 			this.conversations.set(key, next);
 			changedConversationKeys.add(key);
@@ -125,22 +139,20 @@ export class HierarchyConversationProjection {
 
 	/** Replaces one logical session's active branch without exposing any unselected branch. */
 	public updateConversation(
-		sessionKey: SessionKey,
-		entries: readonly SessionEntry[],
-		version: number,
-		complete: boolean,
+		update: ConversationUpdate,
 	): ManagementProjectionView {
-		const key = projectionStableKey(sessionKey);
-		if (this.conversations.get(key)?.version === version) {
+		const key = projectionStableKey(update.sessionKey);
+		if (this.conversations.get(key)?.version === update.version) {
 			return this.view;
 		}
 		this.conversations.clear();
 		this.conversations.set(
 			key,
 			createConversationSnapshot(
-				filterConversationEntries(entries),
-				version,
-				complete,
+				filterConversationEntries(update.entries),
+				update.version,
+				update.complete,
+				update.liveStatus,
 			),
 		);
 		return this.rebuild(new Set([key]));
@@ -171,6 +183,7 @@ export class HierarchyConversationProjection {
 			selectedStableKey: validNextKey,
 			selectedConversation: this.getSelectedConversation(),
 			selectedConversationComplete: this.getSelectedConversationComplete(),
+			selectedLiveStatus: this.getSelectedLiveStatus(),
 			affectedStableKeys: affected,
 		});
 		return this.view;
@@ -245,6 +258,7 @@ export class HierarchyConversationProjection {
 			selectedStableKey: this.selectedStableKey,
 			selectedConversation: this.getSelectedConversation(),
 			selectedConversationComplete: this.getSelectedConversationComplete(),
+			selectedLiveStatus: this.getSelectedLiveStatus(),
 			affectedStableKeys: orderAffectedKeys(affected, nextNodes),
 		});
 		return this.view;
@@ -267,6 +281,13 @@ export class HierarchyConversationProjection {
 			this.selectedStableKey === null ||
 			this.conversations.get(this.selectedStableKey)?.complete === true
 		);
+	}
+
+	/** Returns transient runtime state only for the selected stable key. */
+	private getSelectedLiveStatus(): LiveAgentStatus | undefined {
+		return this.selectedStableKey === null
+			? undefined
+			: this.conversations.get(this.selectedStableKey)?.liveStatus;
 	}
 }
 
@@ -387,11 +408,21 @@ function createConversationSnapshot(
 	entries: readonly ConversationProjectionEntry[],
 	version: number,
 	complete: boolean,
+	liveStatus: LiveAgentStatus | undefined,
 ): ConversationSnapshot {
 	const frozenEntries = Object.freeze(
 		entries.map((entry) => freezeRecursively(structuredClone(entry))),
 	);
-	return Object.freeze({ entries: frozenEntries, version, complete });
+	const frozenLiveStatus =
+		liveStatus === undefined
+			? undefined
+			: freezeRecursively(structuredClone(liveStatus));
+	return Object.freeze({
+		entries: frozenEntries,
+		version,
+		complete,
+		liveStatus: frozenLiveStatus,
+	});
 }
 
 /** Deeply freezes one JSON-compatible Pi session value and returns its readonly identity. */

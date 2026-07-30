@@ -210,6 +210,7 @@ class ViewSourceFake implements ManagementViewSource {
 			selectedStableKey: node.stableKey,
 			selectedConversation: [conversationEntry("initial conversation")],
 			selectedConversationComplete: true,
+			selectedLiveStatus: undefined,
 			affectedStableKeys: [node.stableKey],
 		};
 	}
@@ -258,6 +259,7 @@ class ViewSourceFake implements ManagementViewSource {
 /** Supplies active entry pages and emits selected invocation activity. */
 class ActiveConversationSourceFake {
 	public entries: readonly SessionEntry[] = [conversationEntry("active")];
+	public liveStatus: ManagementProjectionView["selectedLiveStatus"];
 	public error: Error | undefined;
 	public readCalls = 0;
 	public readonly sinceValues: Array<string | undefined> = [];
@@ -270,6 +272,7 @@ class ActiveConversationSourceFake {
 	): Promise<{
 		readonly entries: readonly SessionEntry[];
 		readonly leafId: string | null;
+		readonly liveStatus: ManagementProjectionView["selectedLiveStatus"];
 	}> {
 		this.readCalls += 1;
 		this.sinceValues.push(since);
@@ -287,6 +290,7 @@ class ActiveConversationSourceFake {
 			entries:
 				since === undefined ? this.entries : this.entries.slice(sinceIndex + 1),
 			leafId: this.entries.at(-1)?.id ?? null,
+			liveStatus: this.liveStatus,
 		};
 	}
 
@@ -860,6 +864,102 @@ describe("management screen", () => {
 		}
 	});
 
+	test("renders every built-in child Pi live status outside conversation history", () => {
+		// Purpose: the selected pane must expose transient runtime progress without synthesizing session entries.
+		// Inputs and expected output: working, retry, compaction, and branch-summary states render their Pi labels.
+		// Edge case: retry countdown reaches zero and no unsupported cancellation shortcut is advertised.
+		// Dependencies: controlled wall clock, immutable projection revisions, and selected-pane rendering.
+		let nowMs = 1_000;
+		const nowSpy = spyOn(Date, "now").mockImplementation(() => nowMs);
+		const fixture = createScreen();
+		const renderStatus = (
+			revision: number,
+			status: ManagementProjectionView["selectedLiveStatus"],
+		): string[] => {
+			fixture.source.publish({
+				...fixture.source.getView(),
+				revision,
+				selectedLiveStatus: status,
+			});
+			return fixture.screen.render(80);
+		};
+
+		try {
+			const working = renderStatus(2, { kind: "working" });
+			const retrying = renderStatus(3, {
+				kind: "retrying",
+				attempt: 8,
+				maxAttempts: 10,
+				deadlineAtMs: 97_000,
+			});
+			nowMs = 98_000;
+			const expiredRetry = fixture.screen.render(80);
+			const manualCompaction = renderStatus(4, {
+				kind: "compacting",
+				reason: "manual",
+			});
+			const automaticCompaction = renderStatus(5, {
+				kind: "compacting",
+				reason: "threshold",
+			});
+			const overflowCompaction = renderStatus(6, {
+				kind: "compacting",
+				reason: "overflow",
+			});
+			const branchSummary = renderStatus(7, {
+				kind: "summarizingBranch",
+			});
+			const idle = renderStatus(8, undefined);
+
+			expect({
+				working: working.some((line) => line.includes("Working...")),
+				retrying: retrying.some((line) =>
+					line.includes("Retrying (8/10) in 96s..."),
+				),
+				expiredRetry: expiredRetry.some((line) =>
+					line.includes("Retrying (8/10) in 0s..."),
+				),
+				manualCompaction: manualCompaction.some((line) =>
+					line.includes("Compacting context..."),
+				),
+				automaticCompaction: automaticCompaction.some((line) =>
+					line.includes("Auto-compacting..."),
+				),
+				overflowCompaction: overflowCompaction.some((line) =>
+					line.includes("Context overflow detected, Auto-compacting..."),
+				),
+				branchSummary: branchSummary.some((line) =>
+					line.includes("Summarizing branch..."),
+				),
+				unsupportedCancellationHidden: [
+					...retrying,
+					...manualCompaction,
+					...branchSummary,
+				].every((line) => !line.includes("to cancel")),
+				idle: idle.every(
+					(line) =>
+						!line.includes("Working...") &&
+						!line.includes("Retrying") &&
+						!line.includes("Compacting") &&
+						!line.includes("Summarizing branch"),
+				),
+			}).toEqual({
+				working: true,
+				retrying: true,
+				expiredRetry: true,
+				manualCompaction: true,
+				automaticCompaction: true,
+				overflowCompaction: true,
+				branchSummary: true,
+				unsupportedCancellationHidden: true,
+				idle: true,
+			});
+		} finally {
+			fixture.screen.dispose();
+			nowSpy.mockRestore();
+		}
+	});
+
 	test("shows every focus zone, one editor frame, and the safe close shortcut", () => {
 		// Purpose: Tab focus ownership and the preferred close action must be visible without duplicate editor separators.
 		// Inputs and expected output: hierarchy title, conversation identity, and both editor borders receive focus in sequence; Ctrl+Shift+G closes.
@@ -1147,6 +1247,7 @@ describe("management screen", () => {
 			selectedStableKey: nodes[0]?.stableKey ?? null,
 			selectedConversation: [conversationEntry("initial conversation")],
 			selectedConversationComplete: true,
+			selectedLiveStatus: undefined,
 			affectedStableKeys: nodes.map((node) => node.stableKey),
 		});
 		const topRows = fixture.screen.render(80);
@@ -1163,6 +1264,7 @@ describe("management screen", () => {
 				conversationEntry(`conversation row ${index + 1}`),
 			),
 			selectedConversationComplete: true,
+			selectedLiveStatus: undefined,
 			affectedStableKeys: [],
 		});
 		fixture.screen.render(80);

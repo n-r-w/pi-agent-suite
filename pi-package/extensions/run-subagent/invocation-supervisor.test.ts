@@ -747,9 +747,12 @@ describe("InvocationSupervisor", () => {
 		const unsubscribe = supervisor.subscribeActivity((invocationId) =>
 			activity.push(invocationId),
 		);
+		const retryObservedAfterMs = Date.now();
 		child.stdout?.emit(
 			"data",
-			Buffer.from('{"type":"message_start","message":{"role":"user"}}\n'),
+			Buffer.from(
+				'{"type":"auto_retry_start","attempt":8,"maxAttempts":10,"delayMs":96000}\n',
+			),
 		);
 
 		// ACT: request one complete page whose selected leaf excludes one sibling.
@@ -846,12 +849,16 @@ describe("InvocationSupervisor", () => {
 		const incrementalPage = await incremental;
 		unsubscribe();
 
-		// ASSERT: append-order data and documented incremental routing remain stable without activity events.
+		// ASSERT: append-order data and the retained live status share one current active snapshot.
 		expect({
 			command: JSON.parse(child.stdinWrites[1] ?? "{}"),
 			incrementalCommand: JSON.parse(child.stdinWrites[2] ?? "{}"),
 			entryIds: page.entries.map((entry) => entry.id),
 			leafId: page.leafId,
+			liveStatus: page.liveStatus,
+			deadlineValid:
+				page.liveStatus?.kind === "retrying" &&
+				page.liveStatus.deadlineAtMs >= retryObservedAfterMs + 96_000,
 			incrementalPage,
 			activity,
 		}).toEqual({
@@ -863,7 +870,13 @@ describe("InvocationSupervisor", () => {
 			},
 			entryIds: ["user-1", "assistant-1", "abandoned-1"],
 			leafId: "assistant-1",
-			incrementalPage: { entries: [], leafId: "assistant-1" },
+			liveStatus: page.liveStatus,
+			deadlineValid: true,
+			incrementalPage: {
+				entries: [],
+				leafId: "assistant-1",
+				liveStatus: page.liveStatus,
+			},
 			activity: [acceptance.invocationId],
 		});
 	});

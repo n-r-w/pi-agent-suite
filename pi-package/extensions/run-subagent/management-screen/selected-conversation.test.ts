@@ -53,8 +53,8 @@ test("reloads each terminal file revision after repeated continuations", async (
 	const continued = userEntry("continued", first.id, "continued");
 	const finalized = userEntry("finalized", continued.id, "finalized");
 	const pages = [
-		{ entries: [first], leafId: first.id },
-		{ entries: [continued], leafId: continued.id },
+		{ entries: [first], leafId: first.id, liveStatus: undefined },
+		{ entries: [continued], leafId: continued.id, liveStatus: undefined },
 	];
 	let terminalReads = 0;
 	let terminalBranch: readonly SessionEntry[] = [first];
@@ -119,7 +119,7 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 			/** Records the initial RPC boundary and returns the complete public branch. */
 			async readActiveEntries(_invocationId: string, since?: string) {
 				boundaries.push(since);
-				return { entries: branch, leafId };
+				return { entries: branch, leafId, liveStatus: undefined };
 			},
 		};
 		const loader = await SelectedConversationLoader.open({
@@ -130,11 +130,68 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 		});
 
 		expect(boundaries).toEqual([undefined]);
-		expect(loader.getSnapshot()).toEqual({ entries: branch, complete: true });
+		expect(loader.getSnapshot()).toEqual({
+			entries: branch,
+			complete: true,
+			liveStatus: undefined,
+		});
 		await loader.dispose();
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
+});
+
+test("publishes a live status change without new conversation entries", async () => {
+	// Purpose: transient child activity must update the selected pane independently from durable messages.
+	// Inputs and expected output: identical empty pages change from working to retrying and report one visible refresh.
+	// Edge case: neither the branch identity nor leaf identity changes between active reads.
+	// Dependencies: the selected-conversation loader and controlled active snapshots.
+	const pages = [
+		{ entries: [], leafId: null, liveStatus: { kind: "working" } as const },
+		{
+			entries: [],
+			leafId: null,
+			liveStatus: {
+				kind: "retrying",
+				attempt: 2,
+				maxAttempts: 3,
+				deadlineAtMs: 5_000,
+			} as const,
+		},
+	];
+	const session = sessionRevision("active", "active-invocation");
+	const loader = await SelectedConversationLoader.open({
+		session,
+		controller: new AbortController(),
+		activeConversations: {
+			/** Returns the next status-only active snapshot. */
+			async readActiveEntries() {
+				const page = pages.shift();
+				if (page === undefined) {
+					throw new Error("active status fixture is exhausted");
+				}
+				return page;
+			},
+		},
+		readInactiveBranch: () => [],
+	});
+
+	const changed = await loader.refresh(session);
+
+	expect({ changed, snapshot: loader.getSnapshot() }).toEqual({
+		changed: true,
+		snapshot: {
+			entries: [],
+			complete: true,
+			liveStatus: {
+				kind: "retrying",
+				attempt: 2,
+				maxAttempts: 3,
+				deadlineAtMs: 5_000,
+			},
+		},
+	});
+	await loader.dispose();
 });
 
 test("paginates an inactive branch in memory by complete user turns", async () => {
@@ -158,14 +215,23 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		readInactiveBranch: () => branch,
 	});
 
-	expect(loader.getSnapshot()).toEqual({ entries: [third], complete: false });
+	expect(loader.getSnapshot()).toEqual({
+		entries: [third],
+		complete: false,
+		liveStatus: undefined,
+	});
 	expect(await loader.loadEarlier()).toBe(false);
 	expect(loader.getSnapshot()).toEqual({
 		entries: [second, third],
 		complete: false,
+		liveStatus: undefined,
 	});
 	expect(await loader.loadEarlier()).toBe(true);
-	expect(loader.getSnapshot()).toEqual({ entries: branch, complete: true });
+	expect(loader.getSnapshot()).toEqual({
+		entries: branch,
+		complete: true,
+		liveStatus: undefined,
+	});
 	await loader.dispose();
 });
 
@@ -192,6 +258,10 @@ test("completes an inactive preview during background refresh", async () => {
 	});
 
 	expect(await loader.refresh(session)).toBe(true);
-	expect(loader.getSnapshot()).toEqual({ entries: branch, complete: true });
+	expect(loader.getSnapshot()).toEqual({
+		entries: branch,
+		complete: true,
+		liveStatus: undefined,
+	});
 	await loader.dispose();
 });

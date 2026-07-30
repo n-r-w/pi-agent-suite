@@ -58,6 +58,7 @@ import {
 	terminateProcess,
 	withTimeout,
 } from "./invocation-process";
+import { type LiveAgentStatus, reduceLiveAgentStatus } from "./live-status";
 import type { RuntimeRequest } from "./runtime-wire";
 import { parseConversationSessionEntry } from "./session-entry-validation";
 
@@ -72,11 +73,18 @@ interface RpcPending {
 	readonly reject: (error: Error) => void;
 }
 
-/** One validated append-order page returned by Pi's get_entries RPC command. */
+/** One validated append-order page and its current transient runtime status. */
 export interface ActiveConversationEntries {
 	readonly entries: readonly SessionEntry[];
 	readonly leafId: string | null;
+	readonly liveStatus: LiveAgentStatus | undefined;
 }
+
+/** One validated append-order page returned directly by Pi's get_entries RPC command. */
+type ActiveConversationRpcEntries = Omit<
+	ActiveConversationEntries,
+	"liveStatus"
+>;
 
 /** Carries one prompt-bearing RPC and its optional dispatch reservation. */
 interface PromptRpcCommand {
@@ -104,6 +112,7 @@ interface InvocationHandle {
 	lastAssistantText: string;
 	contextTokens: number | undefined;
 	projectionSavedTokens: number | undefined;
+	liveStatus: LiveAgentStatus | undefined;
 }
 
 /** Owns one process, RPC stream, and runtime lease per invocation. */
@@ -148,7 +157,8 @@ export class InvocationSupervisor implements InvocationControl {
 		handle.process.stdin.write(
 			`${JSON.stringify({ id: requestId, type: "get_entries", ...(since === undefined ? {} : { since }) })}\n`,
 		);
-		return activeEntriesFromRpcData(await data);
+		const entries = activeEntriesFromRpcData(await data);
+		return { ...entries, liveStatus: handle.liveStatus };
 	}
 
 	/** Subscribes one read-only listener to live child session activity. */
@@ -383,6 +393,7 @@ export class InvocationSupervisor implements InvocationControl {
 			lastAssistantText: "",
 			contextTokens: undefined,
 			projectionSavedTokens: undefined,
+			liveStatus: undefined,
 		};
 	}
 
@@ -650,6 +661,12 @@ export class InvocationSupervisor implements InvocationControl {
 	/** Routes only documented RPC response and session-event fields. */
 	private handleRpcEvent(handle: InvocationHandle, value: unknown): void {
 		const type = readString(value, "type");
+		// Retain presentation state before publishing activity so snapshots observe the triggering event.
+		handle.liveStatus = reduceLiveAgentStatus(
+			handle.liveStatus,
+			value,
+			Date.now(),
+		);
 		if (type === "extension_error" && !handle.accepted) {
 			const startupError = readString(value, "error");
 			if (startupError !== undefined) {
@@ -828,7 +845,7 @@ function toInvocationStartError(error: unknown): InvocationStartError {
 }
 
 /** Validates documented get_entries data for caller-owned incremental branch assembly. */
-function activeEntriesFromRpcData(data: unknown): ActiveConversationEntries {
+function activeEntriesFromRpcData(data: unknown): ActiveConversationRpcEntries {
 	if (!isRecord(data)) {
 		throw new Error("child Pi returned invalid conversation data");
 	}

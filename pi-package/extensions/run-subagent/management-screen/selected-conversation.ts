@@ -1,5 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { LogicalSession } from "../domain";
+import type { LiveAgentStatus } from "../live-status";
 import { projectionStableKey } from "../projection";
 
 /** Supplies active Pi entry pages without exposing process ownership. */
@@ -10,6 +11,7 @@ export interface SelectedConversationActiveSource {
 	): Promise<{
 		readonly entries: readonly SessionEntry[];
 		readonly leafId: string | null;
+		readonly liveStatus: LiveAgentStatus | undefined;
 	}>;
 }
 
@@ -22,6 +24,7 @@ export type InactiveConversationReader = (
 export interface SelectedConversationSnapshot {
 	readonly entries: readonly SessionEntry[];
 	readonly complete: boolean;
+	readonly liveStatus: LiveAgentStatus | undefined;
 }
 
 /** Configures one selected-only progressive branch loader. */
@@ -43,6 +46,7 @@ export class SelectedConversationLoader {
 	private inactiveBranch: readonly SessionEntry[] | undefined;
 	private inactiveStartIndex = 0;
 	private complete = false;
+	private liveStatus: LiveAgentStatus | undefined;
 	private lastState: LogicalSession["state"];
 	private disposed = false;
 
@@ -77,7 +81,11 @@ export class SelectedConversationLoader {
 
 	/** Returns the current root-to-leaf suffix and its ancestry state. */
 	public getSnapshot(): SelectedConversationSnapshot {
-		return { entries: this.branch, complete: this.complete };
+		return {
+			entries: this.branch,
+			complete: this.complete,
+			liveStatus: this.liveStatus,
+		};
 	}
 
 	/** Reveals one preceding saved user turn from the in-memory branch. */
@@ -126,6 +134,11 @@ export class SelectedConversationLoader {
 				this.leafId = page.leafId;
 				changed = true;
 			}
+			// Runtime status revisions remain visible even when no durable message was appended.
+			if (this.liveStatus !== page.liveStatus) {
+				this.liveStatus = page.liveStatus;
+				changed = true;
+			}
 			if (changed) {
 				this.branch = this.resolveBranch();
 			}
@@ -145,6 +158,7 @@ export class SelectedConversationLoader {
 		this.entriesById.clear();
 		this.branch = Object.freeze([]);
 		this.inactiveBranch = undefined;
+		this.liveStatus = undefined;
 	}
 
 	/** Selects a complete active RPC read or a saved SessionManager snapshot. */
@@ -166,6 +180,7 @@ export class SelectedConversationLoader {
 		this.lastEntryId = page.entries.at(-1)?.id;
 		this.leafId = page.leafId;
 		this.complete = true;
+		this.liveStatus = page.liveStatus;
 		this.branch = this.resolveBranch();
 	}
 
@@ -198,10 +213,14 @@ export class SelectedConversationLoader {
 
 	/** Replaces terminal content only when append-only entry identities changed. */
 	private replaceTerminalBranch(entries: readonly SessionEntry[]): boolean {
-		const changed =
+		const contentChanged =
 			!this.complete || !branchesHaveSameEntryIds(this.branch, entries);
-		if (changed) {
+		const changed = contentChanged || this.liveStatus !== undefined;
+		if (contentChanged) {
 			this.replaceCompleteBranch(entries);
+		} else {
+			// Terminal snapshots cannot retain presentation state from the stopped writer.
+			this.liveStatus = undefined;
 		}
 		return changed;
 	}
@@ -215,6 +234,7 @@ export class SelectedConversationLoader {
 		this.inactiveBranch = undefined;
 		this.inactiveStartIndex = 0;
 		this.complete = true;
+		this.liveStatus = undefined;
 		this.branch = Object.freeze([...entries]);
 	}
 
