@@ -19,8 +19,12 @@ export const SUBAGENT_TOOL_NAMES = [
 	"subagent_query",
 ] as const;
 
-/** Marks the callable-agent contribution for runtime diagnostics. */
-export const SUBAGENTS_PROMPT_MARKER = "<subagents-v2-callable-agents>";
+/** Opens the available-subagent contribution for model context and diagnostics. */
+export const AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG =
+	'<available_subagents note="List of available subagent IDs">';
+
+/** Closes the available-subagent contribution in model context. */
+export const AVAILABLE_SUBAGENTS_PROMPT_CLOSING_TAG = "</available_subagents>";
 
 /** Lists stable failed-tool codes. */
 const SUBAGENT_FAILED_CODES = [

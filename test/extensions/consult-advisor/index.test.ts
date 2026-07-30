@@ -22,7 +22,7 @@ import consultAdvisor from "../../../pi-package/extensions/consult-advisor/index
 import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/consult-advisor/rendering";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
-import { SUBAGENTS_PROMPT_MARKER } from "../../../pi-package/extensions/run-subagent/contracts";
+import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../../../pi-package/extensions/run-subagent/contracts";
 import subagentsV2 from "../../../pi-package/extensions/run-subagent/index";
 import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import {
@@ -1911,7 +1911,9 @@ describe("consult-advisor", () => {
 				}
 				expect(result.systemPrompt).toContain("Base");
 				expect(result.systemPrompt).toContain("Main prompt");
-				expect(result.systemPrompt).toContain(SUBAGENTS_PROMPT_MARKER);
+				expect(result.systemPrompt).toContain(
+					AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
+				);
 				expect(pi.activeToolCalls.at(-1)).toEqual(["subagent_start"]);
 			});
 		} finally {
@@ -1969,8 +1971,10 @@ describe("consult-advisor", () => {
 				}
 				expect(result.systemPrompt).toContain("Base");
 				expect(result.systemPrompt).toContain("Main prompt");
-				expect(result.systemPrompt).toContain(SUBAGENTS_PROMPT_MARKER);
-				expect(result.systemPrompt).toContain("agentId: helper");
+				expect(result.systemPrompt).toContain(
+					AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
+				);
+				expect(result.systemPrompt).toContain('<agent id="helper">');
 				expect(result.systemPrompt).not.toContain("consult_advisor");
 			});
 		} finally {

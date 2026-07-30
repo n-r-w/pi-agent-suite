@@ -1521,7 +1521,7 @@ describe("subagents V2 entry", () => {
 			promptResults: [
 				{
 					systemPrompt: expect.stringContaining(
-						"<subagents-v2-callable-agents>",
+						'<available_subagents note="List of available subagent IDs">',
 					),
 				},
 			],
@@ -2177,8 +2177,8 @@ describe("subagents V2 entry", () => {
 			},
 		]);
 		for (const observation of observations) {
-			expect(observation.prompt).toContain("agentId: Allowed");
-			expect(observation.prompt).not.toContain("agentId: Blocked");
+			expect(observation.prompt).toContain('<agent id=\\"Allowed\\">');
+			expect(observation.prompt).not.toContain('<agent id=\\"Blocked\\">');
 		}
 	});
 

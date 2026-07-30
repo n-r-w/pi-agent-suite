@@ -27,7 +27,7 @@ If the file is missing, the extension uses:
 | Name | Required | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables runtime behavior. When `false`, all four tool definitions remain registered, the runtime and management screen do not start, and every execution fails closed. |
-| `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum depth for creating new logical sessions. At or beyond this depth, `subagent_start` and callable-agent guidance are removed; `subagent_steer`, `subagent_wait`, and `subagent_query` remain available for saved direct children. |
+| `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum delegation depth. At or beyond this depth, all four subagent tools and both model-visible subagent sections are removed. Unrelated agent tools remain active. |
 | `extensionDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/extension-description.md` | Replaces the shared model-visible Subagents V2 rules with the file's trimmed content. |
 | `startDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/start-description.md` | Replaces the model-visible `subagent_start` description with the file's trimmed content. |
 | `steerDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/steer-description.md` | Replaces the model-visible `subagent_steer` description with the file's trimmed content. |
@@ -44,7 +44,17 @@ Each description file must be readable and contain non-whitespace text after tri
 | `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Calling agent's current thinking level | Selects reasoning for the auxiliary request. `off` omits the provider reasoning option. |
 | `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Supplies trimmed non-empty text as the auxiliary system prompt. |
 
-Before each model turn, the extension evaluates the active tools after main-agent selection, child tool policy, and depth filtering. If any Subagents V2 tool is active, the resolved extension description is appended to the system prompt inside `<subagent_tools_guidelines>...</subagent_tools_guidelines>`. The callable-agent list is appended only when `subagent_start` remains active. Neither the shared extension description nor callable-agent guidance is appended when none of the four tools is active.
+Before each model turn, the extension evaluates the active tools after main-agent selection, child tool policy, and depth filtering. If any subagent tool is active, the resolved extension description is appended to the system prompt inside `<subagent_tools_guidelines>...</subagent_tools_guidelines>`. When `subagent_start` is active, each callable agent is appended with its escaped ID and description:
+
+```xml
+<available_subagents note="List of available subagent IDs">
+<agent id="SubAgentExtractor">
+Extracts facts without analysis.
+</agent>
+</available_subagents>
+```
+
+At or beyond `maxDepth`, none of the four subagent tools, `<subagent_tools_guidelines>`, or `<available_subagents>` is included in model context.
 
 Example:
 
@@ -78,7 +88,7 @@ Callable agents come from the shared agent registry documented in [main-agent-se
 
 A project agent definition supplies the child prompt, model, thinking level, tool patterns, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
 
-An agent definition can allow any subset of the four tools by name. The configured depth limit removes `subagent_start` at the limit without changing `subagent_steer`, `subagent_wait`, `subagent_query`, or unrelated child tools. Invalid child tool policy fails closed by activating no child tools.
+An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.
 
 ## Startup acceptance
 

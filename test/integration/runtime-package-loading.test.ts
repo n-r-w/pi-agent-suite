@@ -86,7 +86,7 @@ function createIsolatedAgentDir(cwd: string): string {
 		"SubAgentExtractor.md",
 		[
 			"---",
-			"description: Extractor",
+			'description: "Extractor & verifier <safe>"',
 			"type: subagent",
 			"---",
 			"Extractor prompt",
@@ -208,10 +208,17 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 		expect(result.status).toBe(23);
 		const prompt = readFileSync(promptDumpFile, "utf8");
 		expect(prompt).toContain("Test agent prompt");
-		expect(prompt).toContain("<subagents-v2-callable-agents>");
-		expect(prompt).toContain("agentId: SubAgentExtractor");
-		expect(prompt).not.toContain("agentId: SubAgentCoder");
-		expect(prompt).not.toContain("agentId: TestAgent");
+		expect(prompt).toContain(
+			[
+				'<available_subagents note="List of available subagent IDs">',
+				'<agent id="SubAgentExtractor">',
+				"Extractor &amp; verifier &lt;safe&gt;",
+				"</agent>",
+				"</available_subagents>",
+			].join("\n"),
+		);
+		expect(prompt).not.toContain('<agent id="SubAgentCoder">');
+		expect(prompt).not.toContain('<agent id="TestAgent">');
 	} finally {
 		if (previousSuiteDir === undefined) {
 			delete process.env[AGENT_SUITE_DIR_ENV];
@@ -225,9 +232,9 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 	}
 });
 
-test("runtime child loading uses project policy and shared guidance", () => {
-	// Purpose: real child Pi must preserve its full catalog, apply its transported tool policy, and receive shared guidance for remaining V2 tools.
-	// Input and expected output: the project agent prompt wins, maxDepth removes start, steer and wait remain active, and configured guidance stays wrapped without callable-agent listing.
+test("runtime child loading removes subagent context at maxDepth", () => {
+	// Purpose: a child at maxDepth must keep its selected-agent prompt while receiving no subagent tools or prompt sections.
+	// Input and expected output: the project agent prompt wins, every transported subagent tool is removed, and only the unrelated read tool stays active.
 	// Edge case: the child agent ID keeps global casing while the project override and tool policy remain independent of caller tools.
 	// Dependencies: local Pi CLI, isolated agent files and config, package lifecycle handlers, and a debug extension that exits before model access.
 	const repositoryDir = process.cwd();
@@ -303,18 +310,11 @@ test("runtime child loading uses project policy and shared guidance", () => {
 		) as RuntimeDump;
 		expect(runtime.systemPrompt).toContain("PROJECT_AGENT_BODY");
 		expect(runtime.systemPrompt).not.toContain("Extractor prompt");
-		expect(runtime.systemPrompt).toContain(
-			"<subagent_tools_guidelines>\nchild extension\n</subagent_tools_guidelines>",
-		);
-		expect(runtime.systemPrompt).not.toContain(
-			"<subagents-v2-callable-agents>",
-		);
+		expect(runtime.systemPrompt).not.toContain("child extension");
+		expect(runtime.systemPrompt).not.toContain("<subagent_tools_guidelines>");
+		expect(runtime.systemPrompt).not.toContain("<available_subagents");
 		expect(runtime.tools).toContain("bash");
-		expect(runtime.activeTools).toEqual([
-			"read",
-			"subagent_steer",
-			"subagent_wait",
-		]);
+		expect(runtime.activeTools).toEqual(["read"]);
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 		rmSync(projectDir, { recursive: true, force: true });
@@ -386,9 +386,9 @@ test("loads Subagents V2 in isolated offline modes", () => {
 	}
 });
 
-test("exposes Subagents V2 runtime tools and prompt markers", () => {
-	// Purpose: real Pi must expose only V2 subagent tools and compose the selected-agent policy before its first model turn.
-	// Input and expected output: controlled TestAgent and SubAgentExtractor definitions produce exact tools, depth, policy, template, and diagnostic markers.
+test("exposes subagent runtime tools and available-agent context", () => {
+	// Purpose: real Pi must expose only subagent tools and compose the selected-agent policy before its first model turn.
+	// Input and expected output: controlled TestAgent and SubAgentExtractor definitions produce the active tools and structured available-agent section.
 	// Edge case: the debug extension exits from before_agent_start, so no provider, model, network, auth, user file, or git access can occur.
 	// Dependencies: local Pi CLI, isolated package state, production runtime composition, and the existing runtime dump extension.
 	const repositoryDir = process.cwd();
@@ -468,15 +468,17 @@ test("exposes Subagents V2 runtime tools and prompt markers", () => {
 			"subagent_query",
 		]);
 		expect(runtime.systemPrompt).toContain("Test agent prompt");
-		expect(runtime.systemPrompt).toContain("<subagents-v2-callable-agents>");
 		expect(runtime.systemPrompt).toContain(
-			"tools: subagent_start, subagent_steer, subagent_wait, subagent_query",
+			[
+				'<available_subagents note="List of available subagent IDs">',
+				'<agent id="SubAgentExtractor">',
+				"Extractor &amp; verifier &lt;safe&gt;",
+				"</agent>",
+				"</available_subagents>",
+			].join("\n"),
 		);
-		expect(runtime.systemPrompt).toContain("depth: 0/1");
-		expect(runtime.systemPrompt).toContain("agentId: SubAgentExtractor");
-		expect(runtime.systemPrompt).not.toContain("agentId: SubAgentCoder");
-		expect(runtime.systemPrompt).not.toContain("agentId: TestAgent");
-		expect(runtime.systemPrompt).toContain("</subagents-v2-callable-agents>");
+		expect(runtime.systemPrompt).not.toContain('<agent id="SubAgentCoder">');
+		expect(runtime.systemPrompt).not.toContain('<agent id="TestAgent">');
 	} finally {
 		if (agentDir !== undefined) {
 			rmSync(agentDir, { recursive: true, force: true });

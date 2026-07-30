@@ -13,7 +13,6 @@ import {
 	resolveCallerSelectedAgentId,
 	resolveEffectiveCallableAgentPolicy,
 } from "./agent-policy";
-import { SUBAGENTS_PROMPT_MARKER } from "./contracts";
 import type { LogicalSession, OwnerIdentity } from "./domain";
 import { SessionCatalog } from "./session-catalog";
 
@@ -99,11 +98,11 @@ describe("effective callable-agent policy", () => {
 		}
 	});
 
-	test("keeps extension guidance when maxDepth removes only new-session delegation", async () => {
-		// Purpose: maxDepth must not remove shared guidance needed to control saved direct children.
-		// Input and expected output: a boundary-depth owner loses subagent_start, retains steer, wait, and query, and receives configured extension guidance without callable-agent listing.
-		// Edge case: prompt composition runs after the active-tool filter has removed the only tool that can create descendants.
-		// Dependencies: production runtime composition and Subagents V2 active-tool policy.
+	test("removes subagent tools and guidance at maxDepth", async () => {
+		// Purpose: an agent that cannot create descendants must not receive unusable subagent tools or guidance.
+		// Input and expected output: a boundary-depth owner loses all subagent tools and contributes no subagent prompt sections.
+		// Edge case: prompt composition runs after depth filtering removes the complete subagent tool family.
+		// Dependencies: production runtime composition and subagent active-tool policy.
 		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
 		process.env[SUBAGENT_DEPTH_ENV] = "1";
 		let activeTools = [
@@ -136,15 +135,10 @@ describe("effective callable-agent policy", () => {
 				{ systemPrompt: "Base" },
 				{ cwd: "/tmp" },
 			)) as { readonly systemPrompt?: string } | undefined;
-			expect(activeTools).toEqual([
-				"subagent_steer",
-				"subagent_wait",
-				"subagent_query",
-			]);
-			expect(result?.systemPrompt ?? "").toContain(
-				"<subagent_tools_guidelines>\nShared extension guidance\n</subagent_tools_guidelines>",
-			);
-			expect(result?.systemPrompt ?? "").not.toContain(SUBAGENTS_PROMPT_MARKER);
+			expect({ activeTools, result }).toEqual({
+				activeTools: [],
+				result: undefined,
+			});
 		} finally {
 			if (previousDepth === undefined) {
 				delete process.env[SUBAGENT_DEPTH_ENV];

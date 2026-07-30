@@ -3,6 +3,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { escapeUTF8 } from "entities";
 import { agentIdMatches } from "../../shared/agent-id";
 import {
 	type AgentDefinition,
@@ -14,7 +15,11 @@ import {
 } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import { resolveToolPolicy } from "../../shared/tool-policy";
-import { SUBAGENT_TOOL_NAMES, SUBAGENTS_PROMPT_MARKER } from "./contracts";
+import {
+	AVAILABLE_SUBAGENTS_PROMPT_CLOSING_TAG,
+	AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
+	SUBAGENT_TOOL_NAMES,
+} from "./contracts";
 import type { OwnerIdentity } from "./domain";
 import { readCurrentDepth } from "./entry-config";
 import { readSubagentAgentId, readSubagentToolPatterns } from "./environment";
@@ -283,14 +288,12 @@ function buildSubagentsPrompt(
 	if (hasCallableAgentGuidance) {
 		promptParts.push(
 			[
-				SUBAGENTS_PROMPT_MARKER,
-				`tools: ${activeV2Tools.join(", ")}`,
-				`depth: ${depth}/${maxDepth}`,
+				AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
 				...policy.callableAgents.map(
 					(agent) =>
-						`- agentId: ${agent.id}\n  description: ${agent.description}`,
+						`<agent id="${escapeUTF8(agent.id)}">\n${escapeUTF8(agent.description)}\n</agent>`,
 				),
-				SUBAGENTS_PROMPT_MARKER.replace("<", "</"),
+				AVAILABLE_SUBAGENTS_PROMPT_CLOSING_TAG,
 			].join("\n"),
 		);
 	}
@@ -315,7 +318,7 @@ function filterSubagentTools(
 ): readonly string[] {
 	const depthFiltered =
 		depth >= maxDepth
-			? toolNames.filter((name) => name !== "subagent_start")
+			? toolNames.filter((name) => !V2_TOOL_NAMES.has(name))
 			: toolNames;
 	if (mainAgent?.tools === undefined) {
 		return depthFiltered;

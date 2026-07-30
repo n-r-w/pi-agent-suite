@@ -11,7 +11,7 @@ import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
-import { SUBAGENTS_PROMPT_MARKER } from "../run-subagent/contracts";
+import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../run-subagent/contracts";
 
 const EXTENSION_DIR = "system-prompt";
 const ISSUE_PREFIX = "[system-prompt]";
@@ -81,7 +81,9 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 			templateState: templateState.kind,
 			incomingPromptLength: incomingPrompt.length,
 			hasMainAgentRules: incomingPrompt.includes("<rules>"),
-			hasCallableAgents: incomingPrompt.includes(SUBAGENTS_PROMPT_MARKER),
+			hasAvailableSubagents: incomingPrompt.includes(
+				AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
+			),
 		});
 		if (templateState.kind !== "ready") {
 			return undefined;
@@ -97,9 +99,9 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 			finalPromptLength: systemPrompt.length,
 			droppedMainAgentRules:
 				incomingPrompt.includes("<rules>") && !systemPrompt.includes("<rules>"),
-			droppedCallableAgents:
-				incomingPrompt.includes(SUBAGENTS_PROMPT_MARKER) &&
-				!systemPrompt.includes(SUBAGENTS_PROMPT_MARKER),
+			droppedAvailableSubagents:
+				incomingPrompt.includes(AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG) &&
+				!systemPrompt.includes(AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG),
 		});
 		return { systemPrompt };
 	});
