@@ -733,7 +733,11 @@ export class ManagementScreen implements Component, Focusable {
 		if (index === 1) {
 			return `├${hierarchyLine}${SCREEN_SEGMENT_RESET}─┤${conversationLine}${SCREEN_SEGMENT_RESET}${conversationScroll}│`;
 		}
-		if (index === SELECTED_HEADER_ROWS) {
+		if (
+			index === SELECTED_HEADER_ROWS &&
+			content.conversationLines.length > 0
+		) {
+			// The divider belongs to the selected-session header and must stay absent with no selection.
 			return `│${hierarchyLine}${SCREEN_SEGMENT_RESET}${hierarchyScroll}├${conversationLine}${SCREEN_SEGMENT_RESET}─┤`;
 		}
 		return `│${hierarchyLine}${SCREEN_SEGMENT_RESET}${hierarchyScroll}│${conversationLine}${SCREEN_SEGMENT_RESET}${conversationScroll}│`;

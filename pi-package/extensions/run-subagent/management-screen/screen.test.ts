@@ -201,17 +201,18 @@ class ViewSourceFake implements ManagementViewSource {
 	>();
 	private view: ManagementProjectionView;
 
-	/** Seeds one immutable selected-node revision for the screen under test. */
-	public constructor(node: ProjectionNode = selectedNode()) {
-		this.selected = node.stableKey;
+	/** Seeds one immutable selected-node or empty revision for the screen under test. */
+	public constructor(node: ProjectionNode | null = selectedNode()) {
+		this.selected = node?.stableKey ?? null;
 		this.view = {
 			revision: 1,
-			nodes: [node],
-			selectedStableKey: node.stableKey,
-			selectedConversation: [conversationEntry("initial conversation")],
+			nodes: node === null ? [] : [node],
+			selectedStableKey: node?.stableKey ?? null,
+			selectedConversation:
+				node === null ? [] : [conversationEntry("initial conversation")],
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
-			affectedStableKeys: [node.stableKey],
+			affectedStableKeys: node === null ? [] : [node.stableKey],
 		};
 	}
 
@@ -352,7 +353,7 @@ class SubmissionFake implements ManagementMessageSubmission {
 /** Creates a screen whose only mutable dependencies are explicit fakes. */
 function createScreen(
 	options: {
-		readonly node?: ProjectionNode;
+		readonly node?: ProjectionNode | null;
 		readonly retained?: ManagementRetainedState;
 		readonly rows?: number;
 		readonly toolsExpanded?: boolean;
@@ -371,7 +372,7 @@ function createScreen(
 	if (options.retained === undefined) {
 		retained.hierarchy = {
 			expandedStableKeys: [],
-			selectedStableKey: "stable-descendant-key",
+			selectedStableKey: options.node === null ? null : "stable-descendant-key",
 			scrollTop: 0,
 		};
 	}
@@ -421,6 +422,36 @@ async function settleProjection(condition: () => boolean): Promise<void> {
 }
 
 describe("management screen", () => {
+	test("keeps the selected pane empty when no agents exist", () => {
+		// Purpose: an empty hierarchy must not leave selected-header divider fragments in the wide pane.
+		// Inputs and expected output: a wide empty projection shows zero agent counts and ordinary blank pane borders.
+		// Edge case: the fixed selected-header row must not render its divider without selected content.
+		// Dependencies: wide screen composition and the empty projection selection contract.
+		// ARRANGE: create a wide management screen whose projection contains no agents.
+		const fixture = createScreen({ node: null });
+
+		// ACT: render the complete wide layout.
+		const rows = fixture.screen.render(160);
+		const selectedHeaderDividerRow = rows[4] ?? "";
+
+		// ASSERT: the hierarchy title remains visible while the selected-header divider stays absent.
+		expect({
+			rowCount: rows.length,
+			rowsFit: rows.every((line) => visibleWidth(line) <= 160),
+			zeroAgentTitle: rows.some(
+				(line) => line.includes("Agents:") && line.includes("⧗ 0"),
+			),
+			selectedHeaderDividerFragments:
+				selectedHeaderDividerRow.includes("├") ||
+				selectedHeaderDividerRow.includes("─┤"),
+		}).toEqual({
+			rowCount: 18,
+			rowsFit: true,
+			zeroAgentTitle: true,
+			selectedHeaderDividerFragments: false,
+		});
+	});
+
 	test("preserves rejected editor input", async () => {
 		// Purpose: submission must route by complete stable identity and preserve non-empty input when coordination rejects it.
 		// Inputs and expected output: zero characters no-op, rejected text notifies once, and accepted text clears only after acceptance.
