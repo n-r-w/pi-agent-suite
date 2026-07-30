@@ -60,6 +60,16 @@ Top-level parameters:
 | `timeouts` | No | Object | Uses defaults for all timeout fields | Time limits for MCP startup, discovery, and calls. Values are seconds. |
 | `widgetLineBudget` | No | Positive integer | `5` | Number of result preview lines shown before the collapsed-output hint. |
 
+## Tool display
+
+Collapsed call arguments and text results are normalized into one logical line before Pi applies visual wrapping and `widgetLineBudget`:
+
+- Repeated ASCII spaces and line-control whitespace become one ASCII space.
+- C0, C1, and terminal control sequences are removed.
+- Complete JSON text is normalized inside decoded string tokens. Non-string JSON lexemes, literal backslashes, paths, regular expressions, and visible Unicode remain unchanged.
+
+Expanded calls retain their complete serialized arguments. Expanded results retain the original MCP text and use Pi Markdown rendering.
+
 `settings.timeouts` parameters:
 
 | Parameter | Required | Type or shape | Default | Meaning |

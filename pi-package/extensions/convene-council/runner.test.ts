@@ -205,7 +205,7 @@ function rejectPrompt(process: FakeProcess, error: string, id = "1"): void {
 	);
 }
 
-/** Emits one assistant answer and agent_end for the active prompt. */
+/** Emits one transient assistant failure and its non-terminal low-level run boundary. */
 function retryablePromptFailure(process: FakeProcess): void {
 	process.stdout.emit(
 		"data",
@@ -214,12 +214,14 @@ function retryablePromptFailure(process: FakeProcess): void {
 	process.stdout.emit("data", `${JSON.stringify({ type: "agent_end" })}\n`);
 }
 
+/** Emits one assistant answer and the complete settled lifecycle boundary. */
 function completePrompt(process: FakeProcess, content: string): void {
 	process.stdout.emit(
 		"data",
 		`${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: content }], api: "test", provider: "test", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 } })}\n`,
 	);
 	process.stdout.emit("data", `${JSON.stringify({ type: "agent_end" })}\n`);
+	process.stdout.emit("data", `${JSON.stringify({ type: "agent_settled" })}\n`);
 }
 
 /** Starts one runner prompt and returns the process created under startup ownership. */
@@ -496,7 +498,7 @@ describe("ParticipantRunner lifecycle", () => {
 	test("reuses the same child process for multiple participant prompts", async () => {
 		// Purpose: participant context must stay in one child session across rounds.
 		// Input and expected output: two prompts write to one fake process and return two answers.
-		// Edge case: prompt command success does not complete without agent_end.
+		// Edge case: prompt command success does not complete without agent_settled.
 		// Dependencies: fake child process and CouncilRpcClient protocol.
 		const fake = createFakeRunnerFactory();
 		const {

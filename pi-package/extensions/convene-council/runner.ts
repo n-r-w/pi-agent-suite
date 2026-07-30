@@ -67,8 +67,6 @@ export function createParticipantRunnerFactory(
 		const runtimeFacts = resolveChildRpcRuntimeFacts({
 			modelId: `${options.runtime.model.provider}/${options.runtime.model.id}`,
 			modelRegistry: options.ctx.modelRegistry,
-			cwd: options.ctx.cwd,
-			env: startup.env,
 		});
 		return new RpcParticipantRunner({
 			launch(onSessionEvent) {

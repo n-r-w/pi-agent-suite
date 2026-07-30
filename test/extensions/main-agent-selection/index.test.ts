@@ -1457,7 +1457,7 @@ describe("main-agent-selection", () => {
 				body: "Coder system prompt",
 				tools: [
 					"consult_advisor",
-					"run_subagent",
+					"subagent_start",
 					"read",
 					"team_*",
 					"asteria_*",
@@ -1466,7 +1466,7 @@ describe("main-agent-selection", () => {
 			const pi = createExtensionApiFake({
 				allTools: [
 					"consult_advisor",
-					"run_subagent",
+					"subagent_start",
 					"read",
 					"bash",
 					"team_topic_list",
@@ -1483,7 +1483,7 @@ describe("main-agent-selection", () => {
 			expect(pi.activeToolCalls).toEqual([
 				[
 					"consult_advisor",
-					"run_subagent",
+					"subagent_start",
 					"read",
 					"team_topic_list",
 					"team_message_get",

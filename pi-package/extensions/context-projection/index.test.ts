@@ -2353,7 +2353,7 @@ describe("context-projection", () => {
 
 	test("keeps consult_advisor and configured ignored tool results visible during projection", async () => {
 		// Purpose: projection must preserve advisor output and user-configured tool results while still projecting other eligible results.
-		// Input and expected output: consult_advisor and run_subagent outputs remain unchanged, while bash output is replaced with the omitted notice.
+		// Input and expected output: consult_advisor and subagent_start outputs remain unchanged, while bash output is replaced with the omitted notice.
 		// Edge case: consult_advisor is preserved even when projectionIgnoredTools omits it.
 		// Dependencies: this test observes provider-context copies and verifies stored session messages are unchanged.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2361,7 +2361,7 @@ describe("context-projection", () => {
 				agentDir,
 				createValidConfig({
 					keepRecentTurns: 0,
-					projectionIgnoredTools: ["run_subagent"],
+					projectionIgnoredTools: ["subagent_start"],
 				}),
 			);
 			const { pi, contextHandler } = installContextProjectionTestHarness();
@@ -2376,7 +2376,7 @@ describe("context-projection", () => {
 			const subagentToolResult = toolResultMessage(
 				"call-subagent",
 				"subagent output ".repeat(5),
-				{ toolName: "run_subagent" },
+				{ toolName: "subagent_start" },
 			);
 			const bashAssistant = assistantMessage("call-bash");
 			const bashToolResult = toolResultMessage(
@@ -3486,7 +3486,7 @@ describe("context-projection", () => {
 			{
 				config: createValidConfig({
 					keepRecentTurns: 0,
-					projectionIgnoredTools: ["run_subagent", "run_subagent"],
+					projectionIgnoredTools: ["subagent_start", "subagent_start"],
 				}),
 				expectedUiCalls: [
 					{

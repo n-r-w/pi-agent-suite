@@ -7,6 +7,7 @@ import type {
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import {
+	createEventBus,
 	type ExtensionAPI,
 	parseSessionEntries,
 	type SessionEntry,
@@ -74,14 +75,7 @@ export function createExtensionApiFake(): ExtensionApiFake {
 	return {
 		handlers,
 		tools,
-		events: {
-			emit(): void {
-				unsupported("events.emit");
-			},
-			on(): () => void {
-				return unsupported("events.on");
-			},
-		},
+		events: createEventBus(),
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
 		},

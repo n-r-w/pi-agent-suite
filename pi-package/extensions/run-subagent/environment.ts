@@ -2,6 +2,8 @@ import { withChildAgentProcessMarker } from "../../shared/child-agent-environmen
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
+	SUBAGENT_OWNER_SESSION_ENV,
+	SUBAGENT_RUNTIME_LEASE_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../shared/subagent-environment";
 
@@ -21,6 +23,16 @@ export function readSubagentAgentId(): string | undefined {
 /** Reads the current subagent nesting depth from the current process environment. */
 export function readSubagentDepth(): string | undefined {
 	return process.env[SUBAGENT_DEPTH_ENV];
+}
+
+/** Reads the root-supervised runtime lease from the current process environment. */
+export function readSubagentRuntimeLeaseId(): string | undefined {
+	return process.env[SUBAGENT_RUNTIME_LEASE_ENV];
+}
+
+/** Reads the child Pi owner identity from the current process environment. */
+export function readSubagentOwnerSessionId(): string | undefined {
+	return process.env[SUBAGENT_OWNER_SESSION_ENV];
 }
 
 /** Parses the optional child tool-pattern snapshot at the process boundary. */
@@ -76,11 +88,13 @@ function isValidToolPatternList(value: unknown): value is readonly string[] {
 	return true;
 }
 
-/** Returns true for environment keys owned by run-subagent. */
+/** Returns true for environment keys owned by the Subagents runtime. */
 function isSubagentOwnedEnvKey(key: string): boolean {
 	return (
 		key === SUBAGENT_AGENT_ID_ENV ||
 		key === SUBAGENT_DEPTH_ENV ||
+		key === SUBAGENT_OWNER_SESSION_ENV ||
+		key === SUBAGENT_RUNTIME_LEASE_ENV ||
 		key === SUBAGENT_TOOL_PATTERNS_ENV
 	);
 }

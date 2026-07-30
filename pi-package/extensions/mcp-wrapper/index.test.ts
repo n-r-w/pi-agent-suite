@@ -9,7 +9,12 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import {
+	createEventBus,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
+import { createToolPresentationRegistry } from "../run-subagent/tool-rendering.ts";
 import type { McpClientManager } from "./client-manager.ts";
 import type { McpServerConfig } from "./config.ts";
 import mcpWrapper from "./index.ts";
@@ -86,7 +91,9 @@ function managerWithCleanup<
 	};
 }
 
-function createExtensionApiFake(): ExtensionApiFake {
+function createExtensionApiFake(
+	events: ExtensionAPI["events"] = createEventBus(),
+): ExtensionApiFake {
 	const commands: Array<
 		Omit<RegisteredCommand, "name" | "sourceInfo"> & { readonly name: string }
 	> = [];
@@ -98,12 +105,7 @@ function createExtensionApiFake(): ExtensionApiFake {
 		commands,
 		handlers,
 		tools,
-		events: {
-			emit(): void {},
-			on(): () => void {
-				return () => {};
-			},
-		},
+		events,
 		on(eventName: string, handler: RegisteredHandler["handler"]): void {
 			handlers.push({ eventName, handler });
 		},
@@ -158,6 +160,7 @@ async function runSessionStart(
 	pi: ExtensionApiFake,
 	notifications: NotificationRecord[] = [],
 	statuses: Array<{ readonly key: string; readonly text: string }> = [],
+	sessionManager: SessionManager = SessionManager.inMemory(),
 ): Promise<void> {
 	const sessionStart = pi.handlers.find(
 		(handler) => handler.eventName === "session_start",
@@ -165,6 +168,7 @@ async function runSessionStart(
 	expect(sessionStart).toBeDefined();
 	await sessionStart?.handler({ type: "session_start", reason: "startup" }, {
 		hasUI: true,
+		sessionManager,
 		ui: {
 			notify(message: string, type?: "info" | "warning" | "error"): void {
 				notifications.push({ message, type });
@@ -173,7 +177,7 @@ async function runSessionStart(
 				statuses.push({ key, text });
 			},
 		},
-	} as ExtensionContext);
+	} as unknown as ExtensionContext);
 }
 
 async function runSessionShutdown(pi: ExtensionApiFake): Promise<void> {
@@ -324,6 +328,10 @@ describe("mcp-wrapper extension", () => {
 	});
 
 	test("discovers MCP tools, registers Pi tools, and routes execution", async () => {
+		// Purpose: discovered MCP metadata must produce one executable Pi tool with the configured result preview budget.
+		// Input and expected output: one fake file tool registers, renders a bounded normalized preview, and routes execution to its server.
+		// Edge case: preview rows are counted after newline normalization and width-aware wrapping.
+		// Dependencies: isolated extension API and MCP manager fakes.
 		const pi = createExtensionApiFake();
 		const callResults: unknown[] = [];
 		const manager = {
@@ -386,9 +394,10 @@ describe("mcp-wrapper extension", () => {
 					content: [
 						{
 							type: "text",
-							text: ["line 0", "line 1", "line 2", "line 3", "line 4"].join(
-								"\n",
-							),
+							text: Array.from(
+								{ length: 5 },
+								(_, index) => `line ${index} ${"content ".repeat(20)}`,
+							).join("\n"),
 						},
 					],
 					details: {},
@@ -397,9 +406,10 @@ describe("mcp-wrapper extension", () => {
 				THEME as never,
 				RESULT_RENDER_CONTEXT,
 			)
-			.render(200);
+			.render(80);
 		expect(previewLines).toHaveLength(3);
-		expect(previewLines.join("\n")).toContain("3 more lines, 5 total");
+		expect(previewLines.join("\n")).toContain("more lines");
+		expect(previewLines.join("\n")).toContain("total");
 		const result = await tool.execute(
 			"call-1",
 			{ path: "/tmp/a" },
@@ -428,7 +438,108 @@ describe("mcp-wrapper extension", () => {
 		]);
 	});
 
-	test("registers tools from complete cache without waiting for discovery", async () => {
+	test("shares dynamic presentation through one Pi runtime event bus", async () => {
+		// Purpose: normal MCP registration and Subagents presentation must meet through Pi's shared extension event bus.
+		// Input and expected output: one ExtensionAPI registers the dynamic tool, while the management consumer resolves exact renderers through the same runtime event bus.
+		// Edge case: another event bus in the same process must still classify that dynamic name as unknown.
+		// Dependencies: production mcp-wrapper session_start, public Pi event bus, and the Subagents presentation consumer.
+		const runtimeEvents = createEventBus();
+		const mcpPi = createExtensionApiFake(runtimeEvents);
+		const managementPi = createExtensionApiFake(runtimeEvents);
+		const runtimeSessionManager = SessionManager.inMemory("/tmp/runtime-one");
+		const isolatedEvents = createEventBus();
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "files",
+						tools: [
+							{
+								name: "read",
+								description: "Read a file",
+								inputSchema: { type: "object" },
+							},
+						],
+					},
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+		mcpWrapper(mcpPi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: {
+						files: { type: "stdio", command: "node", args: [], env: {} },
+					},
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+		});
+
+		// ACT: run the producer lifecycle, then let the management consumer resolve through the shared manager.
+		await runSessionStart(mcpPi, [], [], runtimeSessionManager);
+		const normalDefinition = mcpPi.tools[0];
+		if (normalDefinition === undefined) {
+			throw new Error("MCP normal definition is missing");
+		}
+		const managementResolution = createToolPresentationRegistry(
+			"/tmp",
+			managementPi.events,
+		).resolve(normalDefinition.name);
+		const isolatedResolution = createToolPresentationRegistry(
+			"/tmp",
+			isolatedEvents,
+		).resolve(normalDefinition.name);
+		const managementCallRenderer = managementResolution.definition?.renderCall;
+		if (managementCallRenderer === undefined) {
+			throw new Error("MCP management call renderer is missing");
+		}
+		const managementCallLines = managementCallRenderer(
+			{ path: "/tmp/file" },
+			THEME as never,
+			{ ...RESULT_RENDER_CONTEXT, args: { path: "/tmp/file" } },
+		).render(80);
+
+		// ASSERT: renderer identity matches through the shared event bus, and a distinct runtime event bus remains isolated.
+		expect({
+			separateExtensionApis: mcpPi !== managementPi,
+			category: managementResolution.category,
+			renderCall:
+				managementResolution.definition?.renderCall ===
+				normalDefinition.renderCall,
+			renderResult:
+				managementResolution.definition?.renderResult ===
+				normalDefinition.renderResult,
+			renderedCallHasName: managementCallLines
+				.join("\n")
+				.includes(FILES_READ_TOOL_NAME),
+			isolatedCategory: isolatedResolution.category,
+		}).toEqual({
+			separateExtensionApis: true,
+			category: "package",
+			renderCall: true,
+			renderResult: true,
+			renderedCallHasName: true,
+			isolatedCategory: "unknown",
+		});
+	});
+
+	test("registers cached tools before session start", async () => {
+		// Purpose: resumed history needs MCP tool renderers before Pi emits session_start.
+		// Input and expected output: a complete cache registers one tool during awaited extension loading and does not register it again at session start.
+		// Edge case: cached registration must not start live MCP discovery.
+		// Dependencies: this test uses injected config, cache storage, and an in-memory manager fake.
 		await prepareSuiteCacheDir();
 		const pi = createExtensionApiFake();
 		const serverConfig: McpServerConfig = {
@@ -454,12 +565,16 @@ describe("mcp-wrapper extension", () => {
 				},
 			},
 		});
+		let discoveryCalls = 0;
 		const manager = {
-			discoverServers: async () => new Promise<never>(() => {}),
+			discoverServers: async () => {
+				discoveryCalls += 1;
+				return new Promise<never>(() => {});
+			},
 			callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
 		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
 
-		mcpWrapper(pi, {
+		await mcpWrapper(pi, {
 			readConfig: async () => ({
 				kind: "valid",
 				config: {
@@ -477,22 +592,36 @@ describe("mcp-wrapper extension", () => {
 			createManager: () => managerWithCleanup(manager),
 		});
 
+		expect(
+			pi.tools.map((tool) => ({
+				name: tool.name,
+				hasCallRenderer: typeof tool.renderCall === "function",
+				hasResultRenderer: typeof tool.renderResult === "function",
+			})),
+		).toEqual([
+			{
+				name: FILES_READ_TOOL_NAME,
+				hasCallRenderer: true,
+				hasResultRenderer: true,
+			},
+		]);
+		expect(discoveryCalls).toBe(0);
 		expect(await resolvesWithin(runSessionStart(pi), 25)).toBe(true);
-		expect(pi.tools[0]?.name).toBe(FILES_READ_TOOL_NAME);
+		expect(pi.tools.map((tool) => tool.name)).toEqual([FILES_READ_TOOL_NAME]);
 		pi.setActiveTools([FILES_READ_TOOL_NAME]);
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
 			"Use cached file instructions.",
 		);
 	});
 
-	test("registers a manual MCP cache refresh command", () => {
+	test("registers a manual MCP cache refresh command", async () => {
 		// Purpose: users need a slash command that refreshes MCP metadata on demand.
 		// Input and expected output: registering the extension adds one mcp-refresh command.
 		// Edge case: command registration must not depend on config presence.
 		// Dependencies: this test uses only the ExtensionAPI fake.
 		const pi = createExtensionApiFake();
 
-		mcpWrapper(pi);
+		await mcpWrapper(pi);
 
 		expect(pi.commands.map((command) => command.name)).toContain("mcp-refresh");
 	});

@@ -1,2416 +1,1208 @@
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { join } from "node:path";
+import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import type {
+	AgentToolResult,
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
-import { agentIdMatches, toAgentIdMatchKey } from "../../shared/agent-id";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
+import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
 import {
-	type AgentDefinition,
-	loadAgentDefinitions,
-} from "../../shared/agent-registry";
+	type PackagePresentationEventBus,
+	registerPackageTool,
+} from "../../shared/tool-presentation/registry";
+import type { AgentOperationResponse } from "./agent-operation-wire";
 import {
-	getAgentRuntimeComposition,
-	type MainAgentRuntimeInfo,
-} from "../../shared/agent-runtime-composition";
-import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
+	applyChildToolPolicy,
+	isAgentAvailableForCaller,
+	loadCallableAgents,
+	publishPromptContribution,
+	resolveLaunchConfiguration,
+} from "./agent-policy";
+import { readCancellationError } from "./cancellation-reason";
 import {
-	getSuiteExtensionDir,
-	readExtensionConfigFile,
-} from "../../shared/agent-suite-storage";
-import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
+	parseSubagentQueryRequest,
+	parseSubagentStartRequest,
+	parseSubagentSteerRequest,
+	parseSubagentWaitRequest,
+	type SubagentFailureDetails,
+	type SubagentNormalResult,
+	SubagentQueryParameters,
+	SubagentStartParameters,
+	SubagentSteerParameters,
+	SubagentToolError,
+	SubagentWaitParameters,
+	type SubagentWaitRequest,
+} from "./contracts";
+import { SubagentCoordinator } from "./coordinator";
+import type {
+	JournalRecord,
+	LogicalSession,
+	OwnerIdentity,
+	SubagentFeedback,
+} from "./domain";
 import {
-	ChildAuthStartupRetryError,
-	createChildAuthStartupRetryError,
-	normalizeChildPrompt,
-	withChildAuthStartupRetry,
-} from "../../shared/child-auth-startup";
+	readConfig,
+	readPrompt,
+	SUBAGENTS_EXTENSION_DIR,
+	type SubagentsConfig,
+} from "./entry-config";
+import { readSubagentAgentId } from "./environment";
+import { errorMessage } from "./error-message";
+import { InvocationSupervisor } from "./invocation-supervisor";
+import { parseFeedback, parseJournalRecord } from "./journal-codec";
+import { ManagementProjectionRuntime } from "./management-screen/runtime";
 import {
-	type ChildRpcPromptCompletion,
-	type ChildRpcRuntimeFacts,
-	createChildRpcPromptCompletion,
-} from "../../shared/child-rpc-completion";
-import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
+	createManagementRetainedState,
+	createManagementScreenFactory,
+	findProjectionNode,
+	openManagementOverlay,
+} from "./management-screen/screen";
+import { installSubagentStatusIndicator } from "./management-screen/status-indicator";
 import {
-	CHILD_RPC_STREAMED_TEXT_BYTES_LIMIT as CHILD_STREAMED_TEXT_BYTES_LIMIT,
-	CHILD_RPC_STREAMED_TEXT_MIB_LIMIT as CHILD_STREAMED_TEXT_MIB_LIMIT,
-	ChildRpcStreamParser,
-	CHILD_RPC_OVERSIZED_JSON_EVENT_ERROR as OVERSIZED_CHILD_JSON_EVENT_ERROR,
-	CHILD_RPC_SKIPPED_TEXT_PART_TYPE as SKIPPED_TEXT_PART_TYPE,
-} from "../../shared/child-rpc-stream";
+	type ActiveOwnerSessionWriter,
+	createHistoryMessage,
+	SessionStore,
+	SUBAGENT_HISTORY_CUSTOM_TYPE,
+	SUBAGENT_JOURNAL_CUSTOM_TYPE,
+} from "./persistence";
+import { QueryBranchAccess } from "./query-branch-access";
+import type { QueryBranchResponse } from "./query-branch-wire";
 import {
-	type ChildStartupGate,
-	sharedChildStartupGate,
-} from "../../shared/child-startup-gate";
-import { recordHelperApiCost } from "../../shared/helper-api-cost";
+	renderSubagentQueryCall,
+	renderSubagentQueryResult,
+} from "./query-rendering";
 import {
-	SUBAGENT_AGENT_ID_ENV,
-	SUBAGENT_DEPTH_ENV,
-	SUBAGENT_TOOL_PATTERNS_ENV,
-} from "../../shared/subagent-environment";
-import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
-import { resolveToolPolicy } from "../../shared/tool-policy";
+	installWorkerRuntimeBridge,
+	RootRuntimeBridge,
+	type RuntimeChannelFailure,
+	type WorkerRuntimeBridge,
+} from "./runtime-bridge";
 import {
-	createChildEnvironment,
-	readSubagentAgentId,
-	readSubagentDepth,
-	readSubagentToolPatterns,
-} from "./environment";
+	recoverOwnerShutdown,
+	recoverRootShutdown,
+	recoverRuntimeFailure,
+} from "./runtime-failure";
+import { RuntimeFailureRecoveryTracker } from "./runtime-recovery-tracker";
+import type { RuntimeRequest } from "./runtime-wire";
 import {
-	appendSubagentStderr,
-	createSubagentProgressState,
-	finalizeSubagentProgressState,
-	recordSubagentSessionEvent,
-	type SubagentRunDetails,
-	type SubagentRunStatus,
-	toSubagentRunDetails,
-} from "./progress";
-import {
-	renderResumeSubagentCall,
-	renderRunSubagentCall,
-	renderRunSubagentResult,
-} from "./rendering";
-import {
-	SUBAGENT_SESSION_CUSTOM_TYPE,
-	type SubagentSessionReference,
-	SubagentSessionRegistry,
-} from "./session-registry";
-import {
-	createSubagentWidgetFactory,
-	createSubagentWidgetState,
-	recordSubagentWidgetRun,
-	SUBAGENT_WIDGET_KEY,
-} from "./widget";
-import { createSubagentBrowserController } from "./widget-browser";
-import {
-	createSubagentWidgetPinData,
-	createSubagentWidgetStartData,
-	restoreSubagentWidgetState,
-	SUBAGENT_WIDGET_PIN_CUSTOM_TYPE,
-	SUBAGENT_WIDGET_START_CUSTOM_TYPE,
-} from "./widget-persistence";
+	renderSubagentFeedback,
+	renderSubagentStartCall,
+	renderSubagentStartResult,
+	renderSubagentSteerCall,
+	renderSubagentSteerResult,
+	renderSubagentWaitCall,
+	renderSubagentWaitResult,
+} from "./semantic-rendering.ts";
+import { SessionCatalog } from "./session-catalog";
+import { SessionSnapshotLoader } from "./session-snapshot-loader";
+import { executeSubagentQuery } from "./subagent-query";
+import { createToolPresentationRegistry } from "./tool-rendering.ts";
+import { WaitCoordinator } from "./wait-coordinator";
 
-const RUN_TOOL_NAME = "run_subagent";
-const RESUME_TOOL_NAME = "resume_subagent";
-const ISSUE_PREFIX = "[run-subagent]";
-/** Stable marker used to fail a parent run on child policy initialization errors. */
-const CHILD_TOOL_POLICY_ERROR_PREFIX = "run-subagent child tool policy:";
-const RUN_SUBAGENT_EXTENSION_DIR = "run-subagent";
-const RUN_SUBAGENT_LEGACY_CONFIG_FILE = "run-subagent.json";
-const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "prompts");
-const RUN_SUBAGENT_DESCRIPTION = readPromptFile("description.md");
-const RESUME_SUBAGENT_DESCRIPTION = readPromptFile("resume-description.md");
-const ENABLED_CONFIG_KEY = "enabled";
-const RUN_DESCRIPTION_PROMPT_FILE_CONFIG_KEY = "runDescriptionPromptFile";
-const RESUME_DESCRIPTION_PROMPT_FILE_CONFIG_KEY = "resumeDescriptionPromptFile";
-/** Default maximum child-subagent nesting depth when config omits maxDepth. */
-const DEFAULT_MAX_DEPTH = 1;
-/** Default number of lines kept in the live subagent widget. */
-const DEFAULT_WIDGET_LINE_BUDGET = 7;
-/** Minimum time between non-forced widget updates to avoid excessive UI redraws. */
-const WIDGET_UPDATE_THROTTLE_MS = 120;
-/** Milliseconds in one second for elapsed-time formatting. */
-const SECOND_MS = 1000;
-/** Fraction digits shown for elapsed seconds. */
-const ELAPSED_SECONDS_FRACTION_DIGITS = 1;
-/** Grace period for child RPC abort before sending SIGTERM. */
-const CHILD_ABORT_FALLBACK_TIMEOUT_MS = 10_000;
-/** Grace period after SIGTERM before escalating child termination to SIGKILL. */
-const CHILD_ABORT_KILL_TIMEOUT_MS = 5_000;
-/** Error returned when streamed final-answer accumulation exceeds its memory bound. */
-const OVERSIZED_CHILD_FINAL_RESPONSE_ERROR = `child pi final response exceeded ${CHILD_STREAMED_TEXT_MIB_LIMIT} MiB memory limit`;
-/** Error returned when child exits before the prompt completion event. */
-const INCOMPLETE_CHILD_RPC_RUN_ERROR =
-	"subagent exited before completing the task";
-/** Error returned when child completed without a usable final assistant answer. */
-const MISSING_CHILD_FINAL_ANSWER_ERROR =
-	"subagent completed without a final answer";
-/** Error returned when parent abort cancels an incomplete child run. */
-const ABORTED_CHILD_RPC_RUN_ERROR = "subagent execution aborted";
-/** RPC command id used for the child prompt request. */
-const PROMPT_COMMAND_ID = "run-subagent-prompt";
-/** RPC command id used for the child abort request. */
-const ABORT_COMMAND_ID = "run-subagent-abort";
-/** Slash command that opens the complete subagent browser. */
-const SUBAGENT_BROWSER_COMMAND_ID = "subagents";
-/** Keyboard shortcut that opens the complete subagent browser. */
-const SUBAGENT_BROWSER_SHORTCUT = "ctrl+shift+g";
-/** Valid canonical non-negative integer format for child nesting depth. */
-const DEPTH_PATTERN = /^(0|[1-9][0-9]*)$/;
-/** Keeps task identity constraints identical across new and resumed schema branches. */
-const RunSubagentTaskNameParameter = Type.String({
-	minLength: 3,
-	maxLength: 60,
-	description:
-		'Unique 2–6 word name for specific work performed by this run. MUST use action and object, for example "Trace TUI redraws". For concurrent calls, distinguish each task by its focus. MUST NOT include agent type, generic labels, sequence numbers, or technical IDs.',
-});
-/** Keeps the delegated prompt contract identical across both invocation modes. */
-const RunSubagentPromptParameter = Type.String({
-	description: "Task prompt for selected subagent",
-});
-/** Declares the complete provider-visible contract for a new child session. */
-const RunSubagentParameters = Type.Object(
-	{
-		agentId: Type.String({
-			description: "Callable agent ID for a new child session",
-		}),
-		taskName: RunSubagentTaskNameParameter,
-		prompt: RunSubagentPromptParameter,
-	},
-	{ additionalProperties: false },
-);
-/** Declares the complete provider-visible contract for continuation. */
-const ResumeSubagentParameters = Type.Object(
-	{
-		resumeSession: Type.Integer({
-			minimum: 1,
-			description:
-				"Session ID returned by an earlier run_subagent or resume_subagent invocation",
-		}),
-		taskName: RunSubagentTaskNameParameter,
-		prompt: RunSubagentPromptParameter,
-	},
-	{ additionalProperties: false },
-);
+const EXTENSION_DESCRIPTION = readPrompt("extension-description.md");
+const START_DESCRIPTION = readPrompt("start-description.md");
+const STEER_DESCRIPTION = readPrompt("steer-description.md");
+const WAIT_DESCRIPTION = readPrompt("wait-description.md");
+const QUERY_DESCRIPTION = readPrompt("query-description.md");
+const QUERY_SYSTEM_PROMPT = readPrompt("query-system.md");
+const SUBAGENT_TOOL_NAME_SET = new Set([
+	"subagent_start",
+	"subagent_steer",
+	"subagent_wait",
+	"subagent_query",
+]);
 
-type RunSubagentParams =
-	| {
-			readonly kind: "new";
-			readonly agentId: string;
-			readonly taskName: string;
-			readonly prompt: string;
-	  }
-	| {
-			readonly kind: "resume";
-			readonly resumeSession: number;
-			readonly taskName: string;
-			readonly prompt: string;
-	  };
-
-interface RunSubagentConfig {
-	readonly enabled: boolean;
-	readonly maxDepth: number;
-	readonly widgetLineBudget: number;
-	readonly runDescriptionPromptFile?: string;
-	readonly resumeDescriptionPromptFile?: string;
-	readonly descriptionPromptIssue?: string;
-	readonly issue?: string;
+interface RootManagementRuntime {
+	readonly projection: ManagementProjectionRuntime;
+	readonly factory: Parameters<ExtensionContext["ui"]["custom"]>[0];
+	dispose(): void;
 }
 
-type DescriptionPromptFileValidation =
-	| { readonly valid: true; readonly path?: string }
-	| { readonly valid: false; readonly issue: string };
-
-/** Groups independently validated description paths before runtime config assembly. */
-interface DescriptionPromptFiles {
-	readonly runDescriptionPromptFile?: string;
-	readonly resumeDescriptionPromptFile?: string;
+interface RootRuntime {
+	readonly owner: OwnerIdentity;
+	readonly writer: ActiveOwnerSessionWriter;
+	readonly store: SessionStore;
+	readonly coordinator: SubagentCoordinator;
+	readonly supervisor: InvocationSupervisor;
+	readonly recoveries: RuntimeFailureRecoveryTracker;
+	readonly queryBranches: QueryBranchAccess;
+	readonly management?: RootManagementRuntime;
 }
 
-interface RunSubagentContext extends ExtensionContext {
-	readonly model: Model<Api> | undefined;
+interface RuntimeState {
+	readonly resolveConfig: () => Promise<SubagentsConfig>;
+	readonly failures: Map<string, SubagentFailureDetails>;
+	config: SubagentsConfig | undefined;
+	initialization: Promise<void> | undefined;
+	workerBridge: WorkerRuntimeBridge | undefined;
+	rootRuntime: RootRuntime | undefined;
+	workerWriter: ActiveOwnerSessionWriter | undefined;
+	workerStore: SessionStore | undefined;
+	promptPublished: boolean;
+	managementRegistered: boolean;
 }
 
-interface SpawnOptions {
-	readonly cwd: string;
-	readonly env: Record<string, string>;
-	readonly signal: AbortSignal | undefined;
+type RuntimeStateResolver = () => Promise<RuntimeState>;
+type RegisteredToolExecute = Parameters<
+	ExtensionAPI["registerTool"]
+>[0]["execute"];
+type RegisteredToolExecuteArgs = Parameters<RegisteredToolExecute>;
+
+/** Marks internal root cancellation so the bridge returns no public subagent failure. */
+class RuntimeOperationCancellationError extends Error {}
+
+/** Keeps one registered definition mutable until Pi completes extension loading. */
+interface RegisteredDescription {
+	description: string;
 }
 
-interface DepthResult {
-	readonly value?: number;
-	readonly issue?: string;
+/** Provides isolated external effects used by subagent query execution. */
+interface SubagentsDependencies {
+	readonly completeSimple?: AuxiliaryLlmCompletion;
 }
 
-interface SpawnedProcess {
-	readonly stdin: {
-		write(data: string): boolean;
-		end(): void;
-		on(event: "error", handler: (error: Error) => void): void;
-	};
-	readonly stdout: {
-		on(event: "data", handler: (data: unknown) => void): void;
-	};
-	readonly stderr: {
-		on(event: "data", handler: (data: unknown) => void): void;
-	};
-	kill(signal?: string): boolean;
-	on(event: "close", handler: (code: number | null) => void): void;
-	on(event: "error", handler: (error: Error) => void): void;
-}
-
-interface RunSubagentDependencies {
-	readonly spawnPi?: (
-		command: string,
-		args: string[],
-		options: SpawnOptions,
-	) => SpawnedProcess;
-	readonly startupGate?: ChildStartupGate;
-}
-
-/** Shares execution dependencies while keeping both public tool schemas separate. */
-interface RegisterSubagentToolsOptions {
-	readonly pi: ExtensionAPI;
-	readonly spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>;
-	readonly startupGate: ChildStartupGate;
-	readonly sessionRegistry: SubagentSessionRegistry;
-	readonly subagentWidgetState: ReturnType<typeof createSubagentWidgetState>;
-	readonly subagentBrowser: ReturnType<typeof createSubagentBrowserController>;
-	readonly descriptions: { readonly run: string; readonly resume: string };
-}
-
-/** Normalizes Pi tool callbacks before they enter the shared executor. */
-interface SubagentToolExecutionInput {
-	readonly toolCallId: string;
-	readonly params: RunSubagentParams;
-	readonly signal: AbortSignal | undefined;
-	readonly onUpdate: ((partial: AgentToolResult<unknown>) => void) | undefined;
-	readonly ctx: ExtensionContext;
-}
-
-type ChildRunStatus = "succeeded" | "failed" | "aborted";
-
-interface ChildRunResult {
-	readonly exitCode: number;
-	readonly status: ChildRunStatus;
-	readonly errorMessage?: string;
-	readonly promptRejectionError: string | undefined;
-	readonly activityObserved: boolean;
-	readonly stdoutText: string;
-	readonly stderrText: string;
-	readonly stdoutLineExceededLimit: boolean;
-	readonly streamedTextExceededLimit: boolean;
-}
-
-/** Builds an aborted result when cancellation removes a child before process startup. */
-function createAbortedChildRunResult(): ChildRunResult {
-	return {
-		exitCode: 0,
-		status: "aborted",
-		errorMessage: ABORTED_CHILD_RPC_RUN_ERROR,
-		promptRejectionError: undefined,
-		activityObserved: false,
-		stdoutText: "",
-		stderrText: "",
-		stdoutLineExceededLimit: false,
-		streamedTextExceededLimit: false,
-	};
-}
-
-interface ChildFinalOutputState {
-	streamedText: string;
-	streamedTextBytes: number;
-	streamedTextExceededLimit: boolean;
-	finalText: string;
-}
-
-interface ExecuteRunSubagentOptions {
-	readonly pi: ExtensionAPI;
-	readonly spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>;
-	readonly startupGate: ChildStartupGate;
-	readonly sessionRegistry: SubagentSessionRegistry;
-	readonly subagentWidgetState: ReturnType<typeof createSubagentWidgetState>;
-	readonly subagentBrowser: ReturnType<typeof createSubagentBrowserController>;
-	readonly toolCallId: string;
-	readonly params: RunSubagentParams;
-	readonly signal: AbortSignal | undefined;
-	readonly onUpdate: ((partial: AgentToolResult<unknown>) => void) | undefined;
-	readonly ctx: RunSubagentContext;
-}
-
-interface ResolvedRunSubagentExecution {
-	readonly config: RunSubagentConfig;
-	readonly depth: number;
-	readonly agent: AgentDefinition;
-	readonly modelId: string;
-	readonly thinking: string;
-	readonly childAuthPreflightSucceeded: boolean;
-}
-
-type ChildSessionLaunch =
-	| {
-			readonly kind: "new";
-			readonly reference: SubagentSessionReference;
-	  }
-	| {
-			readonly kind: "resume";
-			readonly reference: SubagentSessionReference;
-			readonly childSessionPath: string;
-	  };
-
-/** Supplies final active tools so generated guidance cannot advertise filtered capabilities. */
-interface BuildRunSubagentPromptOptions {
-	readonly activeToolNames: readonly string[];
-	readonly callableAgents: readonly AgentDefinition[];
-	readonly mainAgent: MainAgentRuntimeInfo | undefined;
-	readonly childAgentId: string | undefined;
-	readonly isDepthAvailable: boolean;
-}
-
-/** Extension entry point for subagent execution behavior. */
-export default async function runSubagent(
+/** Registers stable subagent tools before session runtime performs asynchronous work. */
+export default function subagents(
 	pi: ExtensionAPI,
-	dependencies: RunSubagentDependencies = {},
+	dependencies: SubagentsDependencies = {
+		completeSimple: defaultCompleteSimple,
+	},
 ): Promise<void> {
-	const startupConfig = await readRunSubagentConfig();
-	if (!startupConfig.enabled) {
-		return;
-	}
-
-	const descriptions = resolveSubagentToolDescriptions(startupConfig);
-	const spawnPi = dependencies.spawnPi ?? defaultSpawnPi;
-	const startupGate = dependencies.startupGate ?? sharedChildStartupGate;
-	const subagentWidgetState = createSubagentWidgetState();
-	const subagentBrowser = createSubagentBrowserController(
-		subagentWidgetState,
-		startupConfig.widgetLineBudget,
-		(childSessionId) => {
-			pi.appendEntry(
-				SUBAGENT_WIDGET_PIN_CUSTOM_TYPE,
-				createSubagentWidgetPinData(childSessionId),
-			);
-		},
-	);
-	const sessionRegistry = new SubagentSessionRegistry();
-	publishRunSubagentPromptContribution(pi);
-
-	pi.registerCommand(SUBAGENT_BROWSER_COMMAND_ID, {
-		description: "Browse and pin subagent progress",
-		handler: async (_args, ctx) => {
-			await subagentBrowser.open(ctx);
-		},
-	});
-	pi.registerShortcut(SUBAGENT_BROWSER_SHORTCUT, {
-		description: "Browse and pin subagent progress",
-		handler: async (ctx) => {
-			await subagentBrowser.open(ctx);
-		},
-	});
-	pi.on("session_start", (_event, ctx) => {
-		applyChildToolPolicy(pi);
-		subagentBrowser.close();
-		sessionRegistry.restore(ctx.sessionManager.getEntries());
-		restoreSubagentWidgetState(
-			subagentWidgetState,
-			ctx.sessionManager.getBranch(),
-			Date.now(),
-		);
-		if (ctx.mode === "tui" && ctx.hasUI !== false) {
-			ctx.ui.setWidget(
-				SUBAGENT_WIDGET_KEY,
-				subagentWidgetState.roots.length === 0
-					? undefined
-					: createSubagentWidgetFactory(
-							subagentWidgetState,
-							startupConfig.widgetLineBudget,
-						),
-			);
-		}
-	});
-
-	registerSubagentTools({
-		pi,
-		spawnPi,
-		startupGate,
-		sessionRegistry,
-		subagentWidgetState,
-		subagentBrowser,
-		descriptions,
-	});
-}
-
-/** Registers strict new and resume boundaries backed by one shared executor. */
-function registerSubagentTools(options: RegisterSubagentToolsOptions): void {
-	const execute = (
-		input: SubagentToolExecutionInput,
-	): Promise<AgentToolResult<unknown>> =>
-		executeRunSubagent({
-			...options,
-			toolCallId: input.toolCallId,
-			params: input.params,
-			signal: input.signal,
-			onUpdate: input.onUpdate,
-			ctx: input.ctx as RunSubagentContext,
-		});
-
-	options.pi.registerTool({
-		name: RUN_TOOL_NAME,
-		label: "Run subagent",
-		description: options.descriptions.run,
-		parameters: RunSubagentParameters,
-		executionMode: "parallel",
-		execute: (...[toolCallId, params, signal, onUpdate, ctx]) =>
-			execute({
-				toolCallId,
-				params: { kind: "new", ...params },
-				signal,
-				onUpdate,
-				ctx,
-			}),
-		renderCall: renderRunSubagentCall,
-		renderResult: renderRunSubagentResult,
-	});
-	options.pi.registerTool({
-		name: RESUME_TOOL_NAME,
-		label: "Resume subagent",
-		description: options.descriptions.resume,
-		parameters: ResumeSubagentParameters,
-		executionMode: "parallel",
-		execute: (...[toolCallId, params, signal, onUpdate, ctx]) =>
-			execute({
-				toolCallId,
-				params: { kind: "resume", ...params },
-				signal,
-				onUpdate,
-				ctx,
-			}),
-		renderCall: (args, theme, context) =>
-			renderResumeSubagentCall(
-				args,
-				theme,
-				context,
-				options.sessionRegistry.get(args.resumeSession)?.agentId,
-			),
-		renderResult: renderRunSubagentResult,
-	});
-}
-
-/** Applies the selected definition's patterns against the complete child runtime catalog. */
-function applyChildToolPolicy(pi: ExtensionAPI): void {
-	const configuredPatterns = readSubagentToolPatterns();
-	if ("issue" in configuredPatterns) {
-		failChildToolPolicy(pi, configuredPatterns.issue);
-	}
-	if (configuredPatterns.patterns === undefined) {
-		return;
-	}
-
-	const availableToolNames = pi.getAllTools().map((tool) => tool.name);
-	const resolvedPolicy = resolveToolPolicy(
-		configuredPatterns.patterns,
-		availableToolNames,
-	);
-	if ("issue" in resolvedPolicy) {
-		failChildToolPolicy(pi, resolvedPolicy.issue);
-	}
-	pi.setActiveTools([...resolvedPolicy.tools]);
-}
-
-/** Removes all active tools before reporting an invalid child policy. */
-function failChildToolPolicy(pi: ExtensionAPI, issue: string): never {
-	pi.setActiveTools([]);
-	throw new Error(`${CHILD_TOOL_POLICY_ERROR_PREFIX} ${issue}`);
-}
-
-/** Publishes callable-agent guidance and child prompt through runtime composition. */
-function publishRunSubagentPromptContribution(pi: ExtensionAPI): void {
-	const composition = getAgentRuntimeComposition(pi);
-	composition.setRunSubagentContribution({
-		buildPrompt: async (activeToolNames, cwd) => {
-			const callableAgents = await loadCallableAgents(cwd);
-			writeRuntimeDiagnostic("run-subagent.prompt-contribution.built", {
-				cwd,
-				callableAgentIds: callableAgents.map((agent) => agent.id),
-			});
-			return buildRunSubagentPrompt({
-				activeToolNames,
-				callableAgents,
-				mainAgent: composition.getMainAgentContribution()?.agent,
-				childAgentId: readSubagentAgentId(),
-				isDepthAvailable: await isRunSubagentDepthAvailable(),
-			});
-		},
-	});
-	composition.setRunSubagentActiveToolFilter(filterSubagentTools);
-}
-
-/** Enforces the run master gate and removes both delegation tools at the depth limit. */
-async function filterSubagentTools(
-	toolNames: readonly string[],
-): Promise<readonly string[]> {
-	const runAllowed = toolNames.includes(RUN_TOOL_NAME);
-	const depthAvailable = runAllowed && (await isRunSubagentDepthAvailable());
-	return depthAvailable
-		? toolNames
-		: toolNames.filter(
-				(toolName) =>
-					toolName !== RUN_TOOL_NAME && toolName !== RESUME_TOOL_NAME,
-			);
-}
-
-/** Checks whether the current process may expose another run_subagent call. */
-async function isRunSubagentDepthAvailable(): Promise<boolean> {
-	const config = await readRunSubagentConfig();
-	const currentDepth = readCurrentDepth();
-	if (currentDepth.issue !== undefined) {
-		return false;
-	}
-
-	const depth = currentDepth.value ?? 0;
-	return config.enabled && depth < config.maxDepth;
-}
-
-/** Builds the prompt section that exposes the callable agents available to the current effective agent. */
-function buildRunSubagentPrompt({
-	activeToolNames,
-	callableAgents,
-	mainAgent,
-	childAgentId,
-	isDepthAvailable,
-}: BuildRunSubagentPromptOptions): string | undefined {
-	const effectiveAgent = resolveEffectiveAgentPolicy(
-		callableAgents,
-		mainAgent,
-		childAgentId,
-	);
-	writeRuntimeDiagnostic("run-subagent.prompt.build.started", {
-		mainAgentId: mainAgent?.id ?? null,
-		mainAgentTools: mainAgent?.tools ?? null,
-		mainAgentSubagents: mainAgent?.agents ?? null,
-		childAgentId: childAgentId ?? null,
-		isDepthAvailable,
-	});
-	const prompts: string[] = [];
-	if (childAgentId !== undefined) {
-		const childAgent = callableAgents.find((agent) =>
-			agentIdMatches(agent.id, childAgentId),
-		);
-		if (childAgent?.prompt) {
-			prompts.push(childAgent.prompt);
-		}
-	}
-
-	const toolAvailability = resolveSubagentToolAvailability(activeToolNames);
-	if (!isDepthAvailable || !toolAvailability.run) {
-		const prompt = prompts.length > 0 ? prompts.join("\n\n") : undefined;
-		writeRuntimeDiagnostic("run-subagent.prompt.build.skipped", {
-			mainAgentId: mainAgent?.id ?? null,
-			isDepthAvailable,
-			isAllowedForEffectiveAgent: toolAvailability.run,
-			promptLength: prompt?.length ?? 0,
-		});
-		return prompt;
-	}
-
-	const filteredAgents = filterCallableAgents(callableAgents, effectiveAgent);
-	prompts.push(
-		formatCallableAgentsPrompt(filteredAgents, toolAvailability.resume),
-	);
-	const prompt = prompts.join("\n\n");
-	writeRuntimeDiagnostic("run-subagent.prompt.build.applied", {
-		mainAgentId: mainAgent?.id ?? null,
-		callableAgentIds: filteredAgents.map((agent) => agent.id),
-		promptLength: prompt.length,
-	});
-	return prompt;
-}
-
-/** Resolves the agent whose subagent policy controls the current process. */
-function resolveEffectiveAgentPolicy(
-	callableAgents: readonly AgentDefinition[],
-	mainAgent: MainAgentRuntimeInfo | undefined,
-	childAgentId: string | undefined,
-): MainAgentRuntimeInfo | AgentDefinition | undefined {
-	if (childAgentId === undefined) {
-		return mainAgent;
-	}
-
-	return callableAgents.find((agent) => agentIdMatches(agent.id, childAgentId));
-}
-
-/** Applies the effective agent's explicit subagent allowlist to callable agents. */
-function filterCallableAgents(
-	callableAgents: readonly AgentDefinition[],
-	effectiveAgent: MainAgentRuntimeInfo | AgentDefinition | undefined,
-): readonly AgentDefinition[] {
-	if (effectiveAgent?.agents === undefined) {
-		return callableAgents;
-	}
-
-	const allowedIds = new Set(effectiveAgent.agents.map(toAgentIdMatchKey));
-	return callableAgents.filter((agent) =>
-		allowedIds.has(toAgentIdMatchKey(agent.id)),
-	);
-}
-
-/** Resolves prompt guidance from tools that remain active after runtime filtering. */
-function resolveSubagentToolAvailability(activeToolNames: readonly string[]): {
-	readonly run: boolean;
-	readonly resume: boolean;
-} {
-	const run = activeToolNames.includes(RUN_TOOL_NAME);
-	return {
-		run,
-		resume: run && activeToolNames.includes(RESUME_TOOL_NAME),
+	let configReady: Promise<SubagentsConfig> | undefined;
+	const state: RuntimeState = {
+		resolveConfig: () =>
+			configReady ??
+			Promise.reject(new Error("subagent configuration is initializing")),
+		failures: new Map(),
+		config: undefined,
+		initialization: undefined,
+		workerBridge: undefined,
+		rootRuntime: undefined,
+		workerWriter: undefined,
+		workerStore: undefined,
+		promptPublished: false,
+		managementRegistered: false,
 	};
-}
-
-/** Formats callable agent ids and descriptions for the parent model context. */
-function formatCallableAgentsPrompt(
-	callableAgents: readonly AgentDefinition[],
-	canResume: boolean,
-): string {
-	const rows =
-		callableAgents.length > 0
-			? callableAgents
-					.map(
-						(agent) =>
-							`- agentId: ${agent.id}\n  description: ${agent.description}`,
-					)
-					.join("\n")
-			: "none";
-
-	return [
-		"Callable agents available through run_subagent:",
-		rows,
-		"Use run_subagent with agentId to start an independent child session.",
-		...(canResume
-			? [
-					"Use resume_subagent with resumeSession to continue an existing child session.",
-				]
-			: []),
-		"For parallel execution, emit multiple independent subagent tool calls in the same turn.",
-	].join("\n");
-}
-
-/** Runs the selected callable agent after config, depth, model, and tool-policy checks. */
-async function executeRunSubagent(
-	options: ExecuteRunSubagentOptions,
-): Promise<AgentToolResult<unknown>> {
-	let prompt: string;
-	try {
-		prompt = normalizeChildPrompt(options.params.prompt);
-	} catch (error) {
-		return errorResult(formatError(error));
-	}
-	const normalizedOptions: ExecuteRunSubagentOptions = {
-		...options,
-		params: { ...options.params, prompt },
-	};
-	const preparation = await prepareRunSubagentExecution(normalizedOptions);
-	if ("result" in preparation) {
-		return preparation.result;
-	}
-
-	const { plan, session } = preparation;
-	try {
-		const progress = createRunSubagentProgress(
-			normalizedOptions,
-			plan,
-			session,
-		);
-		const runningDetails = progress.emit("running", undefined, true);
-		normalizedOptions.pi.appendEntry(
-			SUBAGENT_WIDGET_START_CUSTOM_TYPE,
-			createSubagentWidgetStartData(runningDetails, progress.state.startedAtMs),
-		);
-		const run = await runResolvedChildPiWithAuthRetry(
-			normalizedOptions,
-			plan,
-			progress,
-			session,
-		);
-		return finishRunSubagentExecution(run, progress);
-	} finally {
-		normalizedOptions.sessionRegistry.release(session.reference.sessionId);
-	}
-}
-
-/** Allocates and persists a short alias before starting a new child conversation. */
-function createNewChildSession(
-	options: ExecuteRunSubagentOptions,
-	plan: ResolvedRunSubagentExecution,
-): ChildSessionLaunch {
-	const reference = options.sessionRegistry.create({
-		childSessionId: createAuxiliaryLlmSessionId(),
-		childSessionDir: resolveChildSessionDir(),
-		agentId: plan.agent.id,
-		cwd: options.ctx.cwd,
-	});
-	// Custom entries persist the UUID mapping without placing it in LLM context.
-	options.pi.appendEntry(SUBAGENT_SESSION_CUSTOM_TYPE, reference);
-	options.sessionRegistry.acquire(reference.sessionId);
-	return { kind: "new", reference };
-}
-
-/** Resolves saved ownership and the exact JSONL path without acquiring the write lock. */
-async function resolveResumedChildSession(
-	options: ExecuteRunSubagentOptions,
-	requestedSessionId: number,
-): Promise<
-	| {
-			readonly agentId: string;
-			readonly session: Extract<
-				ChildSessionLaunch,
-				{ readonly kind: "resume" }
-			>;
-	  }
-	| { readonly result: AgentToolResult<unknown> }
-> {
-	const reference = options.sessionRegistry.get(requestedSessionId);
-	if (reference === undefined) {
-		return {
-			result: errorResult(
-				`subagent session ${requestedSessionId} was not found`,
-			),
-		};
-	}
-	if (reference.cwd !== options.ctx.cwd) {
-		return {
-			result: errorResult(
-				`subagent session ${requestedSessionId} belongs to working directory ${reference.cwd}`,
-			),
-		};
-	}
-
-	const childSessionPath = await findChildSessionPath(
-		reference.childSessionDir,
-		reference.childSessionId,
+	const resolveState = (): Promise<RuntimeState> => resolveRuntimeState(state);
+	pi.registerMessageRenderer(
+		SUBAGENT_HISTORY_CUSTOM_TYPE,
+		renderSubagentFeedback,
 	);
-	if (childSessionPath === undefined) {
-		return {
-			result: errorResult(
-				`subagent session ${requestedSessionId} file was not found`,
-			),
-		};
-	}
-	return {
-		agentId: reference.agentId,
-		session: { kind: "resume", reference, childSessionPath },
-	};
-}
-
-/** Resolves the persisted agent before runtime policy and acquires the session only after all fail-closed checks pass. */
-async function prepareRunSubagentExecution(
-	options: ExecuteRunSubagentOptions,
-): Promise<
-	| {
-			readonly plan: ResolvedRunSubagentExecution;
-			readonly session: ChildSessionLaunch;
-	  }
-	| { readonly result: AgentToolResult<unknown> }
-> {
-	const config = await readRunSubagentConfig();
-	if (config.issue !== undefined) {
-		reportIssue(options.ctx, config.issue);
-	}
-
-	const depthResult = resolveNextSubagentDepth(config);
-	if ("result" in depthResult) {
-		return depthResult;
-	}
-
-	const requestedAgent =
-		options.params.kind === "new"
-			? { agentId: options.params.agentId }
-			: await resolveResumedChildSession(options, options.params.resumeSession);
-	if ("result" in requestedAgent) {
-		return requestedAgent;
-	}
-	const resumed = "session" in requestedAgent ? requestedAgent : undefined;
-	const planResult = await resolveRunSubagentPlan(
-		options,
-		config,
-		depthResult.depth,
-		requestedAgent.agentId,
-	);
-	if ("result" in planResult) {
-		return planResult;
-	}
-	const { plan } = planResult;
-	if (resumed === undefined) {
-		return { plan, session: createNewChildSession(options, plan) };
-	}
-	if (!options.sessionRegistry.acquire(resumed.session.reference.sessionId)) {
-		return {
-			result: errorResult(
-				`subagent session ${resumed.session.reference.sessionId} is already running`,
-			),
-		};
-	}
-	return { plan, session: resumed.session };
-}
-
-/** Applies the current callable-agent, model, thinking, and tool policy to one effective agent ID. */
-async function resolveRunSubagentPlan(
-	options: ExecuteRunSubagentOptions,
-	config: RunSubagentConfig,
-	depth: number,
-	agentId: string,
-): Promise<
-	| { readonly plan: ResolvedRunSubagentExecution }
-	| { readonly result: AgentToolResult<unknown> }
-> {
-	const agentResult = await resolveCallableAgent(
-		options.pi,
-		options.ctx.cwd,
-		agentId,
-	);
-	if ("result" in agentResult) {
-		return agentResult;
-	}
-
-	const { agent } = agentResult;
-	const modelId = resolveChildModelId(agent, options.ctx.model);
-	if (modelId === undefined) {
-		return {
-			result: errorResult(
-				`agent ${agent.id} has no model and no current model is available`,
-			),
-		};
-	}
-
-	const authPreflight = await preflightChildModelAuth(options.ctx, modelId);
-	if ("result" in authPreflight) {
-		return authPreflight;
-	}
-
-	return {
-		plan: {
-			config,
-			depth,
-			agent,
-			modelId,
-			thinking: agent.model?.thinking ?? options.pi.getThinkingLevel(),
-			childAuthPreflightSucceeded: authPreflight.succeeded,
-		},
-	};
-}
-
-/** Resolves the next child depth while enforcing the configured maximum depth. */
-function resolveNextSubagentDepth(
-	config: RunSubagentConfig,
-): { readonly depth: number } | { readonly result: AgentToolResult<unknown> } {
-	const currentDepth = readCurrentDepth();
-	if (currentDepth.issue !== undefined) {
-		return { result: errorResult(currentDepth.issue) };
-	}
-
-	const depth = currentDepth.value ?? 0;
-	return depth >= config.maxDepth
-		? {
-				result: errorResult(
-					`subagent depth ${depth} reached maxDepth ${config.maxDepth}`,
-				),
-			}
-		: { depth };
-}
-
-/** Resolves the requested callable agent after applying the effective allowlist. */
-async function resolveCallableAgent(
-	pi: ExtensionAPI,
-	cwd: string,
-	agentId: string,
-): Promise<
-	| { readonly agent: AgentDefinition }
-	| { readonly result: AgentToolResult<unknown> }
-> {
-	const agents = await loadCallableAgents(cwd);
-	const effectiveAgent = resolveEffectiveAgentPolicy(
-		agents,
-		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent,
-		readSubagentAgentId(),
-	);
-	const allowedAgents = filterCallableAgents(agents, effectiveAgent);
-	const agent = allowedAgents.find((candidate) =>
-		agentIdMatches(candidate.id, agentId),
-	);
-	return agent === undefined
-		? { result: errorResult(`agent ${agentId} was not found`) }
-		: { agent };
-}
-
-/** Creates progress state and throttled UI updates for the child run. */
-function createRunSubagentProgress(
-	options: ExecuteRunSubagentOptions,
-	plan: ResolvedRunSubagentExecution,
-	session: ChildSessionLaunch,
-): {
-	readonly state: ReturnType<typeof createSubagentProgressState>;
-	readonly emit: (
-		status: SubagentRunStatus,
-		exitCode?: number,
-		forceWidgetUpdate?: boolean,
-	) => SubagentRunDetails;
-} {
-	let lastWidgetUpdateAt = 0;
-	let hasPublishedTuiHeader = false;
-	const state = createSubagentProgressState({
-		agentId: plan.agent.id,
-		taskName: options.params.taskName,
-		sessionId: session.reference.sessionId,
-		depth: plan.depth + 1,
-		startedAtMs: Date.now(),
-		runtime: resolveSubagentRuntimeDetails(
-			plan.modelId,
-			plan.thinking,
-			options.ctx,
+	// Agent-core receives all definitions before configuration or session I/O begins.
+	const registrations = {
+		start: registerStartTool(pi, resolveState),
+		steer: registerSteerTool(pi, resolveState),
+		wait: registerWaitTool(pi, resolveState),
+		query: registerQueryTool(
+			pi,
+			resolveState,
+			dependencies.completeSimple ?? defaultCompleteSimple,
 		),
-		runId: options.toolCallId,
-		childSessionId: session.reference.childSessionId,
-		childSessionDir: session.reference.childSessionDir,
-		isResume: session.kind === "resume",
-	});
-
-	return {
-		state,
-		emit(status, exitCode, forceWidgetUpdate = false) {
-			const details = createSubagentRunDetails(state, status, exitCode);
-			// TUI publishes one partial result to populate the static runtime header.
-			// Later TUI progress belongs only to the widget, while RPC keeps every update for parent propagation.
-			if (options.ctx.mode !== "tui" || !hasPublishedTuiHeader) {
-				reportSubagentProgress(options.onUpdate, details);
-				hasPublishedTuiHeader = options.ctx.mode === "tui";
-			}
-			lastWidgetUpdateAt = updateSubagentWidget({
-				options,
-				plan,
-				details,
-				lastWidgetUpdateAt,
-				forceWidgetUpdate,
-			});
-			return details;
-		},
 	};
-}
-
-/** Converts current progress state into serializable run details. */
-function createSubagentRunDetails(
-	state: ReturnType<typeof createSubagentProgressState>,
-	status: SubagentRunStatus,
-	exitCode: number | undefined,
-): SubagentRunDetails {
-	return status === "running"
-		? toSubagentRunDetails(state, status, Date.now(), exitCode)
-		: finalizeSubagentProgressState(state, status, Date.now(), exitCode ?? 0);
-}
-
-/** Emits progress details to the tool-call update stream. */
-function reportSubagentProgress(
-	onUpdate: ((partial: AgentToolResult<unknown>) => void) | undefined,
-	details: SubagentRunDetails,
-): void {
-	onUpdate?.({
-		content: [{ type: "text", text: formatSubagentProgressContent(details) }],
-		details,
+	registerLifecycleHandlers(pi, state);
+	configReady = readConfig();
+	// Pi awaits the factory promise before copying definitions into its first agent snapshot.
+	return configReady.then((config) => {
+		registrations.start.description =
+			config.startDescription ?? START_DESCRIPTION;
+		registrations.steer.description =
+			config.steerDescription ?? STEER_DESCRIPTION;
+		registrations.wait.description = config.waitDescription ?? WAIT_DESCRIPTION;
 	});
 }
 
-/** Updates the subagent widget when the UI is available and the throttle allows it. */
-function updateSubagentWidget({
-	options,
-	plan,
-	details,
-	lastWidgetUpdateAt,
-	forceWidgetUpdate,
-}: {
-	readonly options: ExecuteRunSubagentOptions;
-	readonly plan: ResolvedRunSubagentExecution;
-	readonly details: SubagentRunDetails;
-	readonly lastWidgetUpdateAt: number;
-	readonly forceWidgetUpdate: boolean;
-}): number {
-	const now = Date.now();
-	// RPC can expose dialog-capable UI but must not create terminal-only widget state.
-	if (options.ctx.mode !== "tui" || options.ctx.hasUI === false) {
-		return lastWidgetUpdateAt;
-	}
-
-	recordSubagentWidgetRun(options.subagentWidgetState, details, now);
-	if (
-		!forceWidgetUpdate &&
-		lastWidgetUpdateAt !== 0 &&
-		now - lastWidgetUpdateAt < WIDGET_UPDATE_THROTTLE_MS
-	) {
-		return lastWidgetUpdateAt;
-	}
-
-	options.ctx.ui.setWidget(
-		SUBAGENT_WIDGET_KEY,
-		createSubagentWidgetFactory(
-			options.subagentWidgetState,
-			plan.config.widgetLineBudget,
-		),
-	);
-	options.subagentBrowser.refresh();
-	return now;
-}
-
-/** Re-resolves child credentials in the stable parent runtime before process startup. */
-async function preflightChildModelAuth(
-	ctx: RunSubagentContext,
-	modelId: string,
-): Promise<
-	| { readonly succeeded: boolean }
-	| { readonly result: AgentToolResult<unknown> }
-> {
-	const model = findConfiguredChildModel(modelId, ctx);
-	if (model === undefined) {
-		return { succeeded: false };
-	}
-
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	return auth.ok ? { succeeded: true } : { result: errorResult(auth.error) };
-}
-
-/** Retries a verified child-only auth rejection before prompt acceptance or activity. */
-async function runResolvedChildPiWithAuthRetry(
-	options: ExecuteRunSubagentOptions,
-	plan: ResolvedRunSubagentExecution,
-	progress: ReturnType<typeof createRunSubagentProgress>,
-	session: ChildSessionLaunch,
-): Promise<ChildRunResult> {
-	if (options.signal?.aborted) {
-		return runResolvedChildPi(options, plan, progress, session);
-	}
-
-	let lastRun: ChildRunResult | undefined;
-	let waitingForAuthRetry = false;
-	try {
-		return await withChildAuthStartupRetry(
-			async () => {
-				waitingForAuthRetry = false;
-				const run = await runResolvedChildPi(options, plan, progress, session);
-				lastRun = run;
-				const provider = plan.modelId.split("/", 1)[0];
-				const retryError =
-					provider === undefined ||
-					run.promptRejectionError === undefined ||
-					run.status !== "failed" ||
-					run.exitCode !== 0 ||
-					run.errorMessage !== run.promptRejectionError
-						? undefined
-						: createChildAuthStartupRetryError({
-								activityObserved: run.activityObserved,
-								failure: new Error(run.promptRejectionError),
-								parentAuthVerified: plan.childAuthPreflightSucceeded,
-								provider,
-							});
-				if (retryError !== undefined) {
-					waitingForAuthRetry = true;
-					throw retryError;
-				}
-				return run;
-			},
-			{ signal: options.signal },
+/** Resolves the runtime initialized by the current session_start event. */
+async function resolveRuntimeState(state: RuntimeState): Promise<RuntimeState> {
+	if (state.initialization === undefined) {
+		throw new SubagentToolError(
+			"start_failed",
+			"Subagent tools are unavailable",
 		);
-	} catch (error) {
-		if (options.signal?.aborted && lastRun !== undefined) {
-			return waitingForAuthRetry
-				? {
-						...lastRun,
-						status: "aborted",
-						errorMessage: ABORTED_CHILD_RPC_RUN_ERROR,
-					}
-				: lastRun;
-		}
-		if (error instanceof ChildAuthStartupRetryError && lastRun !== undefined) {
-			return lastRun;
-		}
-		throw error;
-	}
-}
-
-/** Runs the child process and records RPC session progress events. */
-async function runResolvedChildPi(
-	options: ExecuteRunSubagentOptions,
-	plan: ResolvedRunSubagentExecution,
-	progress: ReturnType<typeof createRunSubagentProgress>,
-	session: ChildSessionLaunch,
-): Promise<ChildRunResult> {
-	const releaseStartup = await options.startupGate.acquire(options.signal);
-	if (releaseStartup === undefined) {
-		return createAbortedChildRunResult();
 	}
 	try {
-		if (options.signal?.aborted) {
-			return createAbortedChildRunResult();
-		}
-		const env = createChildEnvironment({
-			[SUBAGENT_AGENT_ID_ENV]: plan.agent.id,
-			[SUBAGENT_DEPTH_ENV]: String(plan.depth + 1),
-			...serializeChildToolPatterns(plan.agent.tools),
-		});
-		return await runChildPi(options.spawnPi, {
-			args: buildChildArgs({
-				modelId: plan.modelId,
-				thinking: plan.thinking,
-				session,
-			}),
-			cwd: options.ctx.cwd,
-			env,
-			runtimeFacts: resolveChildRpcRuntimeFacts({
-				modelId: plan.modelId,
-				modelRegistry: options.ctx.modelRegistry,
-				cwd: options.ctx.cwd,
-				env,
-			}),
-			signal: options.signal,
-			prompt: options.params.prompt,
-			onPromptPreflightComplete: releaseStartup,
-			onSessionEvent(event) {
-				if (recordSubagentSessionEvent(progress.state, event, Date.now())) {
-					progress.emit("running");
-				}
-			},
-			recordCost(message) {
-				recordHelperApiCost(options.pi, "run-subagent", message);
-			},
-		});
-	} finally {
-		releaseStartup();
-	}
-}
-
-/** Converts the child process result into the final tool output. */
-async function finishRunSubagentExecution(
-	run: ChildRunResult,
-	progress: ReturnType<typeof createRunSubagentProgress>,
-): Promise<AgentToolResult<unknown>> {
-	progress.state.childSessionPath = await findChildSessionPath(
-		progress.state.childSessionDir,
-		progress.state.childSessionId,
-	);
-
-	if (run.stderrText.length > 0) {
-		appendSubagentStderr(progress.state, run.stderrText);
-	}
-
-	if (run.status === "aborted") {
-		const details = progress.emit("aborted", run.exitCode, true);
-		return errorResult(
-			run.errorMessage ?? ABORTED_CHILD_RPC_RUN_ERROR,
-			details,
-		);
-	}
-
-	if (run.streamedTextExceededLimit) {
-		const details = progress.emit("failed", run.exitCode, true);
-		return errorResult(OVERSIZED_CHILD_FINAL_RESPONSE_ERROR, details);
-	}
-
-	if (run.status === "failed" || run.exitCode !== 0) {
-		const details = progress.emit("failed", run.exitCode, true);
-		return errorResult(
-			run.errorMessage ||
-				run.stderrText ||
-				`child pi exited with code ${run.exitCode}`,
-			details,
-		);
-	}
-
-	const details = progress.emit("succeeded", run.exitCode, true);
-	if (run.stdoutText.length === 0 && run.stdoutLineExceededLimit) {
-		return errorResult(OVERSIZED_CHILD_JSON_EVENT_ERROR, details);
-	}
-
-	const output = await truncateToolTextOutput(
-		run.stdoutText,
-		"pi-run-subagent-",
-	);
-	return {
-		content: [
-			{ type: "text", text: formatSessionOutput(details, output.content) },
-		],
-		details:
-			output.details === undefined
-				? details
-				: {
-						...details,
-						...output.details,
-					},
-	};
-}
-
-/** Reads and validates run-subagent configuration from the isolated pi agent directory. */
-async function readRunSubagentConfig(): Promise<RunSubagentConfig> {
-	const configFile = await readExtensionConfigFile({
-		extensionDir: RUN_SUBAGENT_EXTENSION_DIR,
-		legacyConfigFileName: RUN_SUBAGENT_LEGACY_CONFIG_FILE,
-	});
-	if (configFile.kind === "missing") {
-		return {
-			enabled: true,
-			maxDepth: DEFAULT_MAX_DEPTH,
-			widgetLineBudget: DEFAULT_WIDGET_LINE_BUDGET,
-		};
-	}
-	if (configFile.kind === "read-error") {
-		return invalidConfig(
-			`failed to read config: ${formatError(configFile.error)}`,
-		);
-	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(configFile.file.content);
-	} catch (error) {
-		return invalidConfig(`failed to parse config: ${formatError(error)}`);
-	}
-
-	return parseRunSubagentConfig(parsed);
-}
-
-/** Parses strict config and moves the tool to fail-closed state on invalid input. */
-function parseRunSubagentConfig(value: unknown): RunSubagentConfig {
-	if (!isRecord(value)) {
-		return invalidConfig("config must be an object");
-	}
-	if (
-		!hasOnlyKeys(value, [
-			ENABLED_CONFIG_KEY,
-			"maxDepth",
-			"widgetLineBudget",
-			RUN_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
-			RESUME_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
-		])
-	) {
-		return invalidConfig("config contains unsupported keys");
-	}
-
-	const {
-		enabled,
-		maxDepth,
-		widgetLineBudget,
-		runDescriptionPromptFile,
-		resumeDescriptionPromptFile,
-	} = value;
-	if (enabled !== undefined && typeof enabled !== "boolean") {
-		return invalidConfig(`${ENABLED_CONFIG_KEY} must be a boolean`);
-	}
-	if (enabled === false) {
-		return {
-			enabled: false,
-			maxDepth: 0,
-			widgetLineBudget: DEFAULT_WIDGET_LINE_BUDGET,
-		};
-	}
-	if (
-		maxDepth !== undefined &&
-		(typeof maxDepth !== "number" ||
-			!Number.isInteger(maxDepth) ||
-			maxDepth < 0)
-	) {
-		return invalidConfig(
-			"maxDepth must be an integer greater than or equal to 0",
-		);
-	}
-	if (
-		widgetLineBudget !== undefined &&
-		(typeof widgetLineBudget !== "number" ||
-			!Number.isInteger(widgetLineBudget) ||
-			widgetLineBudget < 1)
-	) {
-		return invalidConfig(
-			"widgetLineBudget must be an integer greater than or equal to 1",
-		);
-	}
-	const descriptionFiles = parseDescriptionPromptFiles(
-		runDescriptionPromptFile,
-		resumeDescriptionPromptFile,
-	);
-	if ("issue" in descriptionFiles) {
-		return invalidDescriptionPromptConfig(descriptionFiles.issue);
-	}
-
-	return {
-		enabled: true,
-		maxDepth: maxDepth ?? DEFAULT_MAX_DEPTH,
-		widgetLineBudget: widgetLineBudget ?? DEFAULT_WIDGET_LINE_BUDGET,
-		...descriptionFiles,
-	};
-}
-
-/** Parses independent custom description paths without weakening either field. */
-function parseDescriptionPromptFiles(
-	runValue: unknown,
-	resumeValue: unknown,
-): DescriptionPromptFiles | { readonly issue: string } {
-	const run = validateDescriptionPromptFile(
-		runValue,
-		RUN_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
-	);
-	if (!run.valid) {
-		return { issue: run.issue };
-	}
-	const resume = validateDescriptionPromptFile(
-		resumeValue,
-		RESUME_DESCRIPTION_PROMPT_FILE_CONFIG_KEY,
-	);
-	if (!resume.valid) {
-		return { issue: resume.issue };
-	}
-	return {
-		...(run.path === undefined ? {} : { runDescriptionPromptFile: run.path }),
-		...(resume.path === undefined
-			? {}
-			: { resumeDescriptionPromptFile: resume.path }),
-	};
-}
-
-/** Validates the optional custom description prompt path. */
-function validateDescriptionPromptFile(
-	value: unknown,
-	configKey: string,
-): DescriptionPromptFileValidation {
-	if (value === undefined) {
-		return { valid: true };
-	}
-	if (typeof value !== "string" || value.trim().length === 0) {
-		return {
-			valid: false,
-			issue: `${configKey} must be a non-empty string`,
-		};
-	}
-	if (!isAbsolute(value)) {
-		return {
-			valid: false,
-			issue: `${configKey} must be an absolute path`,
-		};
-	}
-
-	return { valid: true, path: value };
-}
-
-/** Marks description prompt config errors that block tool registration. */
-function invalidDescriptionPromptConfig(issue: string): RunSubagentConfig {
-	return {
-		...invalidConfig(issue),
-		descriptionPromptIssue: issue,
-	};
-}
-
-/** Builds fail-closed config while preserving the default widget size. */
-function invalidConfig(issue: string): RunSubagentConfig {
-	return {
-		enabled: true,
-		maxDepth: 0,
-		widgetLineBudget: DEFAULT_WIDGET_LINE_BUDGET,
-		issue,
-	};
-}
-
-/** Loads agents callable by run_subagent for the active project registry. */
-async function loadCallableAgents(cwd: string): Promise<AgentDefinition[]> {
-	const agents = await loadAgentDefinitions(cwd);
-	return agents.filter(
-		(agent) => agent.type === "subagent" || agent.type === "both",
-	);
-}
-
-/** Resolves the child model from the callable agent or current parent model. */
-function resolveChildModelId(
-	agent: AgentDefinition,
-	currentModel: Model<Api> | undefined,
-): string | undefined {
-	if (agent.model?.id !== undefined) {
-		return agent.model.id;
-	}
-	if (currentModel === undefined) {
-		return undefined;
-	}
-
-	return `${currentModel.provider}/${currentModel.id}`;
-}
-
-/** Resolves a provider-qualified child model through the parent registry. */
-function findConfiguredChildModel(
-	modelId: string,
-	ctx: RunSubagentContext,
-): Model<Api> | undefined {
-	const [provider, ...modelParts] = modelId.split("/");
-	const modelName = modelParts.join("/");
-	return provider !== undefined && modelName.length > 0
-		? ctx.modelRegistry.find(provider, modelName)
-		: undefined;
-}
-
-/** Builds runtime metadata shown in subagent progress UI. */
-function resolveSubagentRuntimeDetails(
-	modelId: string,
-	thinking: string,
-	ctx: RunSubagentContext,
-): { modelId: string; thinking: string; contextWindow: number } {
-	const configuredModel = findConfiguredChildModel(modelId, ctx);
-	return {
-		modelId,
-		thinking,
-		contextWindow:
-			configuredModel?.contextWindow ?? ctx.model?.contextWindow ?? 0,
-	};
-}
-
-/** Builds compact progress text while details drive width-aware TUI rendering. */
-function formatSubagentProgressContent(details: SubagentRunDetails): string {
-	const lastEvent = details.events.at(-1);
-	const lastEventText = lastEvent
-		? ` Last event: ${lastEvent.title}${lastEvent.text ? ` — ${lastEvent.text}` : ""}.`
-		: "";
-	const runtimeText = details.runtime
-		? ` with ${details.runtime.modelId} thinking=${details.runtime.thinking}`
-		: "";
-	return `Subagent "${details.agentId}" ${details.status}${runtimeText} for ${formatElapsedMs(details.elapsedMs)}.${lastEventText}`;
-}
-
-/** Formats elapsed milliseconds into compact progress text. */
-function formatElapsedMs(elapsedMs: number): string {
-	if (elapsedMs < SECOND_MS) {
-		return `${elapsedMs}ms`;
-	}
-
-	return `${(elapsedMs / SECOND_MS).toFixed(ELAPSED_SECONDS_FRACTION_DIGITS)}s`;
-}
-
-/** Serializes the selected definition snapshot without resolving it against the caller catalog. */
-function serializeChildToolPatterns(
-	patterns: readonly string[] | undefined,
-): Record<string, string> {
-	return patterns === undefined
-		? {}
-		: { [SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify(patterns) };
-}
-
-/** Builds the child pi command-line arguments. */
-/** Resolves the suite-owned directory for child subagent session logs. */
-function resolveChildSessionDir(): string {
-	return join(getSuiteExtensionDir(RUN_SUBAGENT_EXTENSION_DIR), "sessions");
-}
-
-/** Finds the JSONL session file created by Pi for the assigned child session ID. */
-async function findChildSessionPath(
-	childSessionDir: string | undefined,
-	childSessionId: string | undefined,
-): Promise<string | undefined> {
-	if (childSessionDir === undefined || childSessionId === undefined) {
-		return undefined;
-	}
-
-	try {
-		const files = await readdir(childSessionDir);
-		const sessionFile = files
-			.filter((file) => file.endsWith(`_${childSessionId}.jsonl`))
-			.sort()
-			.at(-1);
-		return sessionFile === undefined
-			? undefined
-			: join(childSessionDir, sessionFile);
+		await state.initialization;
 	} catch {
-		return undefined;
+		throw new SubagentToolError(
+			"start_failed",
+			"Subagent tools are unavailable",
+		);
 	}
+	return state;
 }
 
-function buildChildArgs(options: {
-	readonly modelId: string;
-	readonly thinking: string;
-	readonly session: ChildSessionLaunch;
-}): string[] {
-	const sessionArgs =
-		options.session.kind === "new"
-			? [
-					"--session-dir",
-					options.session.reference.childSessionDir,
-					"--session-id",
-					options.session.reference.childSessionId,
-				]
-			: [
-					"--session-dir",
-					options.session.reference.childSessionDir,
-					"--session",
-					options.session.childSessionPath,
-				];
-	return [
-		"--mode",
-		"rpc",
-		...sessionArgs,
-		"--model",
-		options.modelId,
-		"--thinking",
-		options.thinking,
-	];
-}
-
-/** Runs the child pi process and extracts final assistant text from RPC session events. */
-async function runChildPi(
-	spawnPi: NonNullable<RunSubagentDependencies["spawnPi"]>,
-	options: {
-		readonly args: string[];
-		readonly cwd: string;
-		readonly env: Record<string, string>;
-		readonly runtimeFacts: ChildRpcRuntimeFacts;
-		readonly signal: AbortSignal | undefined;
-		readonly prompt: string;
-		readonly onPromptPreflightComplete: () => void;
-		readonly onSessionEvent: (event: unknown) => void;
-		readonly recordCost: (message: { readonly usage?: unknown }) => void;
-	},
-): Promise<ChildRunResult> {
-	return new Promise((resolve) => {
-		const child = spawnPi("pi", options.args, {
-			cwd: options.cwd,
-			env: options.env,
-			signal: undefined,
-		});
-		const rpcState = createChildRpcState(options.runtimeFacts);
-		const closeStdin = () => closeChildStdin(child, rpcState);
-		const writeRpcCommand = (command: Record<string, unknown>) =>
-			writeChildRpcCommand(child, rpcState, command, closeStdin);
-		const abort = () => abortChildRpcRun(child, rpcState, writeRpcCommand);
-		const handleRpcMessage = (message: unknown) =>
-			handleChildRpcMessage({
-				message,
-				rpcState,
-				onSessionEvent: options.onSessionEvent,
-				recordCost: options.recordCost,
-				writeRpcCommand,
-				closeStdin,
-				onPromptPreflightComplete: options.onPromptPreflightComplete,
-				terminateForPolicyError: (error) =>
-					terminateChildRpcRun(child, rpcState, error),
-			});
-		const finish = (code: number | null) =>
-			finishChildRpcRun({
-				code,
-				rpcState,
-				signal: options.signal,
-				abort,
-				handleRpcMessage,
-				resolve,
-			});
-
-		attachChildRpcProcessHandlers(child, rpcState, handleRpcMessage, finish);
-		startChildRpcPrompt(options.signal, options.prompt, abort, writeRpcCommand);
+/** Registers session, reconciliation, shutdown, and failed-result handlers. */
+function registerLifecycleHandlers(
+	pi: ExtensionAPI,
+	state: RuntimeState,
+): void {
+	pi.on("session_start", (_event, ctx) => {
+		state.initialization = handleSessionStart(pi, state, ctx);
+		return state.initialization;
+	});
+	pi.on("message_end", (_event, ctx) => reconcileRuntime(state, ctx));
+	pi.on("session_shutdown", (_event, ctx) => handleSessionShutdown(state, ctx));
+	pi.on("tool_result", (event) => {
+		if (!SUBAGENT_TOOL_NAME_SET.has(event.toolName) || !event.isError) {
+			return undefined;
+		}
+		const failure = state.failures.get(event.toolCallId);
+		if (failure === undefined) {
+			return undefined;
+		}
+		state.failures.delete(event.toolCallId);
+		return { details: failure, isError: true };
 	});
 }
 
-interface ChildRpcState {
-	readonly parser: ChildRpcStreamParser;
-	readonly promptCompletion: ChildRpcPromptCompletion;
-	readonly outputState: ChildFinalOutputState;
-	stdoutProcessing: Promise<void>;
-	stdoutProcessingPending: boolean;
-	agentCompleted: boolean;
-	activityObserved: boolean;
-	promptRejectionError: string | undefined;
-	aborted: boolean;
-	fatalError: string | undefined;
-	stdinClosed: boolean;
-	stdinFailed: boolean;
-	resolved: boolean;
-	abortFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-	abortKillTimer: ReturnType<typeof setTimeout> | undefined;
+/** Initializes either the worker adapter or the root runtime for one Pi session. */
+async function handleSessionStart(
+	pi: ExtensionAPI,
+	state: RuntimeState,
+	ctx: ExtensionContext,
+): Promise<void> {
+	const config = await state.resolveConfig();
+	state.config = config;
+	if (!config.enabled) {
+		if (config.issue !== undefined && ctx.hasUI) {
+			ctx.ui.notify(config.issue, "error");
+		}
+		return;
+	}
+	if (!state.promptPublished) {
+		publishPromptContribution(
+			pi,
+			config.maxDepth,
+			config.extensionDescription ?? EXTENSION_DESCRIPTION,
+		);
+		state.promptPublished = true;
+	}
+	applyChildToolPolicy(pi);
+	state.workerBridge ??= installWorkerRuntimeBridge();
+	if (state.workerBridge === undefined) {
+		state.rootRuntime?.management?.dispose();
+		state.rootRuntime = await createRootRuntime(pi, ctx);
+		registerManagementEntries(pi, state, ctx);
+		return;
+	}
+	const owner = ownerFromContext(ctx);
+	const store = new SessionStore();
+	const writer = createActiveWriter(pi, ctx, owner);
+	state.workerStore = store;
+	state.workerWriter = writer;
+	store.registerActive(writer);
+	state.workerBridge.activate(owner, (operation, payload) =>
+		handleWorkerCommand(operation, payload, owner, store),
+	);
+	await store.reconcileActive(writer);
 }
 
-/** Creates mutable state for one child RPC process. */
-function createChildRpcState(
-	runtimeFacts: ChildRpcRuntimeFacts,
-): ChildRpcState {
-	return {
-		parser: new ChildRpcStreamParser(),
-		promptCompletion: createChildRpcPromptCompletion(runtimeFacts),
-		outputState: {
-			streamedText: "",
-			streamedTextBytes: 0,
-			streamedTextExceededLimit: false,
-			finalText: "",
+/** Reconciles pending feedback after Pi persists a message event. */
+async function reconcileRuntime(
+	state: RuntimeState,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (state.workerWriter !== undefined && state.workerStore !== undefined) {
+		await state.workerStore.reconcileActive(state.workerWriter);
+		return;
+	}
+	if (
+		state.rootRuntime !== undefined &&
+		state.rootRuntime.owner.ownerPiSessionId ===
+			ctx.sessionManager.getSessionId()
+	) {
+		await state.rootRuntime.store.reconcileActive(state.rootRuntime.writer);
+	}
+}
+
+/** Stops direct-owner work before releasing its sole session writer. */
+async function handleSessionShutdown(
+	state: RuntimeState,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (state.workerBridge !== undefined) {
+		try {
+			await state.workerBridge.request("owner_stopping", {});
+		} finally {
+			state.workerStore?.unregisterActive(ctx.sessionManager.getSessionId());
+		}
+		return;
+	}
+	if (state.rootRuntime !== undefined) {
+		const rootRuntime = state.rootRuntime;
+		rootRuntime.management?.dispose();
+		// Root disposal closes recovery admission before joining closure and admitted work.
+		await rootRuntime.recoveries.closeAndDrain(() =>
+			recoverRootShutdown({
+				coordinator: rootRuntime.coordinator,
+				store: rootRuntime.store,
+				owner: rootRuntime.owner,
+			}),
+		);
+		rootRuntime.store.unregisterActive(rootRuntime.owner.ownerPiSessionId);
+		state.rootRuntime = undefined;
+	}
+}
+
+/** Registers non-blocking new-session acceptance. */
+function registerStartTool(
+	pi: ExtensionAPI,
+	resolveState: RuntimeStateResolver,
+): RegisteredDescription {
+	return registerTool(pi, {
+		name: "subagent_start",
+		label: "Start subagent",
+		description: START_DESCRIPTION,
+		parameters: SubagentStartParameters,
+		renderCall: renderSubagentStartCall,
+		renderResult: renderSubagentStartResult,
+		execute: async (...args) => {
+			const [toolCallId, rawParams, signal, , ctx] = args;
+			const request = parseSubagentStartRequest(rawParams);
+			return executeTool(toolCallId, resolveState, signal, async (state) => {
+				if (state.workerBridge !== undefined) {
+					return state.workerBridge.requestOperation(
+						{
+							toolName: "subagent_start",
+							toolCallId,
+							params: request,
+						},
+						signal,
+					);
+				}
+				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				const result = await state.rootRuntime.coordinator.start(
+					state.rootRuntime.owner,
+					request,
+					{
+						...(signal === undefined ? {} : { signal }),
+						operationCorrelation: { requestId: toolCallId, toolCallId },
+					},
+				);
+				return {
+					kind: "ok",
+					result,
+					evidence: state.rootRuntime.coordinator.acceptedPresentationEvidence(
+						state.rootRuntime.owner,
+						result.sessionId,
+					),
+				};
+			});
 		},
-		stdoutProcessing: Promise.resolve(),
-		stdoutProcessingPending: false,
-		agentCompleted: false,
-		activityObserved: false,
-		promptRejectionError: undefined,
-		aborted: false,
-		fatalError: undefined,
-		stdinClosed: false,
-		stdinFailed: false,
-		resolved: false,
-		abortFallbackTimer: undefined,
-		abortKillTimer: undefined,
+	});
+}
+
+/** Registers active steering and terminal continuation. */
+function registerSteerTool(
+	pi: ExtensionAPI,
+	resolveState: RuntimeStateResolver,
+): RegisteredDescription {
+	return registerTool(pi, {
+		name: "subagent_steer",
+		label: "Steer subagent",
+		description: STEER_DESCRIPTION,
+		parameters: SubagentSteerParameters,
+		renderCall: renderSubagentSteerCall,
+		renderResult: renderSubagentSteerResult,
+		execute: async (...args) => {
+			const [toolCallId, rawParams, signal, , ctx] = args;
+			const request = parseSubagentSteerRequest(rawParams);
+			return executeTool(toolCallId, resolveState, signal, async (state) => {
+				if (state.workerBridge !== undefined) {
+					return state.workerBridge.requestOperation(
+						{
+							toolName: "subagent_steer",
+							toolCallId,
+							params: request,
+						},
+						signal,
+					);
+				}
+				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				const result = await state.rootRuntime.coordinator.steer(
+					state.rootRuntime.owner,
+					request,
+					{
+						...(signal === undefined ? {} : { signal }),
+						operationCorrelation: { requestId: toolCallId, toolCallId },
+					},
+				);
+				return {
+					kind: "ok",
+					result,
+					evidence: state.rootRuntime.coordinator.acceptedPresentationEvidence(
+						state.rootRuntime.owner,
+						result.sessionId,
+					),
+				};
+			});
+		},
+	});
+}
+
+/** Registers one owner-scoped wait that never changes child execution. */
+function registerWaitTool(
+	pi: ExtensionAPI,
+	resolveState: RuntimeStateResolver,
+): RegisteredDescription {
+	return registerTool(pi, {
+		name: "subagent_wait",
+		label: "Wait for subagents",
+		description: WAIT_DESCRIPTION,
+		parameters: SubagentWaitParameters,
+		renderCall: renderSubagentWaitCall,
+		renderResult: renderSubagentWaitResult,
+		execute: async (...args) => {
+			const [toolCallId, rawParams, signal, , ctx] = args;
+			const request = parseSubagentWaitRequest(rawParams);
+			return executeTool(toolCallId, resolveState, signal, async (state) => {
+				if (state.workerBridge !== undefined) {
+					const response = await state.workerBridge.requestWait(
+						{
+							toolName: "subagent_wait",
+							toolCallId,
+							params: request,
+						},
+						signal,
+					);
+					return response;
+				}
+				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				const result = await executeRootWait({
+					coordinator: state.rootRuntime.coordinator,
+					owner: state.rootRuntime.owner,
+					request,
+					execution: { toolCallId, requestId: toolCallId },
+					signal,
+				});
+				const evidence =
+					state.rootRuntime.coordinator.takeWaitEvidence(toolCallId);
+				return evidence === undefined
+					? { kind: "ok", result }
+					: { kind: "ok", result, evidence };
+			});
+		},
+	});
+}
+
+/** Registers one saved-session query whose model request stays in the caller process. */
+function registerQueryTool(
+	pi: ExtensionAPI,
+	resolveState: RuntimeStateResolver,
+	completeSimple: AuxiliaryLlmCompletion,
+): RegisteredDescription {
+	return registerTool(pi, {
+		name: "subagent_query",
+		label: "Query subagent session",
+		description: QUERY_DESCRIPTION,
+		parameters: SubagentQueryParameters,
+		renderCall: renderSubagentQueryCall,
+		renderResult: renderSubagentQueryResult,
+		execute: (...args) =>
+			executeQueryTool(pi, resolveState, completeSimple, args),
+	});
+}
+
+/** Executes one validated query and preserves cancellation identity. */
+async function executeQueryTool(
+	pi: ExtensionAPI,
+	resolveState: RuntimeStateResolver,
+	completeSimple: AuxiliaryLlmCompletion,
+	args: RegisteredToolExecuteArgs,
+): Promise<AgentToolResult<unknown>> {
+	const startedAt = performance.now();
+	const [, rawParams, signal, , ctx] = args;
+	const request = parseSubagentQueryRequest(rawParams);
+	try {
+		const state = await resolveState();
+		const config = state.config;
+		if (config === undefined || !config.enabled) {
+			throw new SubagentToolError(
+				"query_failed",
+				"Subagent queries are unavailable",
+			);
+		}
+		const branchResponse = await loadQueryBranch(
+			pi,
+			ctx,
+			state,
+			request.sessionId,
+		);
+		if (branchResponse.kind === "failed") {
+			throw new SubagentToolError(
+				branchResponse.failure.code,
+				branchResponse.failure.message,
+			);
+		}
+		const modelConfig = config.query?.model;
+		const result = await executeSubagentQuery({
+			completeSimple,
+			ctx,
+			pi,
+			branchEntries: branchResponse.branch,
+			question: request.question,
+			systemPrompt: config.query?.systemPrompt ?? QUERY_SYSTEM_PROMPT,
+			currentThinkingLevel: pi.getThinkingLevel(),
+			...(modelConfig === undefined ? {} : { modelConfig }),
+			...(signal === undefined ? {} : { signal }),
+		});
+		if (result.kind === "issue") {
+			throw new SubagentToolError("query_failed", result.issue);
+		}
+		return {
+			content: [{ type: "text", text: result.answer }],
+			details: {
+				answer: result.answer,
+				elapsedMs: performance.now() - startedAt,
+			},
+		};
+	} catch (error) {
+		if (signal?.aborted && error === readCancellationError(signal)) {
+			throw error;
+		}
+		if (error instanceof SubagentToolError) {
+			throw error;
+		}
+		throw new SubagentToolError("query_failed", errorMessage(error));
+	}
+}
+
+/** Loads one query branch through the caller's process-specific route. */
+async function loadQueryBranch(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	sessionId: number,
+): Promise<QueryBranchResponse> {
+	return state.workerBridge === undefined
+		? loadRootQueryBranch(pi, ctx, state, sessionId)
+		: state.workerBridge.request("query_branch", { sessionId });
+}
+
+/** Resolves the mode-independent root branch-access owner on first use. */
+async function loadRootQueryBranch(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	state: RuntimeState,
+	sessionId: number,
+) {
+	state.rootRuntime ??= await createRootRuntime(pi, ctx);
+	return state.rootRuntime.queryBranches.load(
+		state.rootRuntime.owner,
+		sessionId,
+	);
+}
+
+/** Races root feedback with one serialized exact wait cancellation transition. */
+async function executeRootWait({
+	coordinator,
+	owner,
+	request,
+	execution,
+	signal,
+}: {
+	readonly coordinator: SubagentCoordinator;
+	readonly owner: OwnerIdentity;
+	readonly request: SubagentWaitRequest;
+	readonly execution: {
+		readonly toolCallId: string;
+		readonly requestId: string;
+	};
+	readonly signal: AbortSignal | undefined;
+}): Promise<SubagentNormalResult> {
+	if (signal?.aborted) {
+		throw readCancellationError(signal);
+	}
+	const pending = coordinator.wait(owner, request, execution);
+	if (signal === undefined) {
+		return pending;
+	}
+	let cancel = (): void => undefined;
+	const cancellation = new Promise<SubagentNormalResult>((resolve, reject) => {
+		cancel = () => {
+			// Coordinator admission, timer, and resolver end before rejection is observable.
+			coordinator
+				.cancelWait(owner, execution, readCancellationError(signal))
+				.then(() => pending)
+				.then(resolve, reject);
+		};
+		signal.addEventListener("abort", cancel, { once: true });
+	});
+	try {
+		return await Promise.race([pending, cancellation]);
+	} finally {
+		signal.removeEventListener("abort", cancel);
+	}
+}
+
+/** Registers one subagent tool without attaching execution renderers. */
+function registerTool(
+	pi: ExtensionAPI,
+	definition: Parameters<ExtensionAPI["registerTool"]>[0],
+): RegisteredDescription {
+	const registeredDefinition = {
+		...definition,
+		executionMode: "parallel" as const,
+	};
+	registerPackageTool(pi, registeredDefinition);
+	return registeredDefinition;
+}
+
+/** Executes one operation and preserves stable failure details for tool_result. */
+async function executeTool(
+	toolCallId: string,
+	resolveState: RuntimeStateResolver,
+	signal: AbortSignal | undefined,
+	operation: (
+		state: RuntimeState,
+		config: SubagentsConfig,
+	) => Promise<AgentOperationResponse>,
+): Promise<AgentToolResult<unknown>> {
+	let state: RuntimeState | undefined;
+	try {
+		// Execution resolves initialized state after registration has already entered Pi's tool snapshot.
+		state = await resolveState();
+		const config = state.config;
+		if (config === undefined || !config.enabled) {
+			throw new SubagentToolError(
+				"start_failed",
+				"Subagent tools are unavailable",
+			);
+		}
+		const response = await operation(state, config);
+		if (response.kind === "failed") {
+			throw new SubagentToolError(
+				response.failure.code,
+				response.failure.message,
+			);
+		}
+		return {
+			content: [{ type: "text", text: JSON.stringify(response.result) }],
+			details:
+				response.evidence === undefined
+					? response.result
+					: { ...response.result, ...response.evidence },
+		};
+	} catch (error) {
+		if (signal?.aborted && error === readCancellationError(signal)) {
+			throw error;
+		}
+		const failure =
+			error instanceof SubagentToolError
+				? error.details
+				: new SubagentToolError("start_failed", errorMessage(error)).details;
+		state?.failures.set(toolCallId, failure);
+		throw new SubagentToolError(failure.code, failure.message);
+	}
+}
+
+/** Creates one root coordinator, supervisor, persistence owner, and reconstruction state. */
+async function createRootRuntime(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): Promise<RootRuntime> {
+	const owner = ownerFromContext(ctx);
+	const writer = createActiveWriter(pi, ctx, owner);
+	const agents = await loadCallableAgents(ctx.cwd);
+	const bridge = new RootRuntimeBridge();
+	let supervisor: InvocationSupervisor | undefined;
+	const store = createRootSessionStore(bridge, () => supervisor);
+	store.registerActive(writer);
+	const catalog = new SessionCatalog();
+	const sessionSnapshots = new SessionSnapshotLoader();
+	const queryBranches = new QueryBranchAccess(catalog, sessionSnapshots);
+	const recoveries = new RuntimeFailureRecoveryTracker();
+	let coordinator: SubagentCoordinator | undefined;
+	supervisor = createRootSupervisor({
+		pi,
+		ctx,
+		agents,
+		bridge,
+		store,
+		recoveries,
+		queryBranches,
+		getCoordinator: () => requireCoordinator(coordinator),
+	});
+	coordinator = createRootCoordinator({
+		pi,
+		owner,
+		agents,
+		catalog,
+		supervisor,
+		store,
+	});
+	addReconstructedSessions(catalog, await store.reconstructActive(writer));
+	coordinator.registerOwner(owner);
+	const management =
+		ctx.mode === "tui"
+			? createRootManagementRuntime({
+					ctx,
+					presentationEvents: pi.events,
+					owner,
+					catalog,
+					coordinator,
+					supervisor,
+					sessionSnapshots,
+				})
+			: undefined;
+	return {
+		owner,
+		writer,
+		store,
+		coordinator,
+		supervisor,
+		recoveries,
+		queryBranches,
+		...(management === undefined ? {} : { management }),
 	};
 }
 
-/** Closes RPC stdin once so the child can shut down after completion or failure. */
-function closeChildStdin(child: SpawnedProcess, state: ChildRpcState): void {
-	if (state.stdinClosed) {
-		return;
-	}
-	state.stdinClosed = true;
-	if (state.stdinFailed) {
-		return;
-	}
-	try {
-		child.stdin.end();
-	} catch (error) {
-		state.stdinFailed = true;
-		state.fatalError ??= `failed to close child stdin: ${formatError(error)}`;
-	}
-}
-
-/** Writes one JSONL RPC command to child stdin and fails closed on pipe errors. */
-function writeChildRpcCommand(
-	child: SpawnedProcess,
-	state: ChildRpcState,
-	command: Record<string, unknown>,
-	closeStdin: () => void,
-): void {
-	if (state.stdinClosed || state.stdinFailed) {
-		return;
-	}
-	try {
-		child.stdin.write(`${JSON.stringify(command)}\n`);
-	} catch (error) {
-		state.stdinFailed = true;
-		state.fatalError ??= `failed to write child RPC command: ${formatError(error)}`;
-		closeStdin();
-	}
-}
-
-/** Sends an RPC abort command and starts the force-termination fallback timer. */
-function abortChildRpcRun(
-	child: SpawnedProcess,
-	state: ChildRpcState,
-	writeRpcCommand: (command: Record<string, unknown>) => void,
-): void {
-	if (state.agentCompleted || state.resolved) {
-		return;
-	}
-	if (state.fatalError !== undefined) {
-		scheduleChildTerminationFallback(child, state);
-		return;
-	}
-	if (state.aborted) {
-		return;
-	}
-	state.aborted = true;
-	state.promptCompletion.recordParentAbort();
-	writeRpcCommand({ id: ABORT_COMMAND_ID, type: "abort" });
-	scheduleChildTerminationFallback(child, state);
-}
-
-/** Immediately terminates a child that could otherwise run with an invalid active-tool policy. */
-function terminateChildRpcRun(
-	child: SpawnedProcess,
-	state: ChildRpcState,
-	error: string,
-): void {
-	if (state.resolved) {
-		return;
-	}
-	state.fatalError ??= error;
-	closeChildStdin(child, state);
-	child.kill("SIGTERM");
-	if (state.abortKillTimer === undefined) {
-		state.abortKillTimer = setTimeout(() => {
-			child.kill("SIGKILL");
-		}, CHILD_ABORT_KILL_TIMEOUT_MS);
-	}
-}
-
-/** Schedules normal abort escalation after the RPC grace period. */
-function scheduleChildTerminationFallback(
-	child: SpawnedProcess,
-	state: ChildRpcState,
-): void {
-	if (state.abortFallbackTimer !== undefined) {
-		return;
-	}
-	state.abortFallbackTimer = setTimeout(() => {
-		child.kill("SIGTERM");
-		state.abortKillTimer = setTimeout(() => {
-			child.kill("SIGKILL");
-		}, CHILD_ABORT_KILL_TIMEOUT_MS);
-	}, CHILD_ABORT_FALLBACK_TIMEOUT_MS);
-}
-
-/** Sends the single subagent prompt unless the parent was already aborted. */
-function startChildRpcPrompt(
-	signal: AbortSignal | undefined,
-	prompt: string,
-	abort: () => void,
-	writeRpcCommand: (command: Record<string, unknown>) => void,
-): void {
-	signal?.addEventListener("abort", abort, { once: true });
-	if (signal?.aborted) {
-		abort();
-		return;
-	}
-	writeRpcCommand({ id: PROMPT_COMMAND_ID, type: "prompt", message: prompt });
-}
-
-/** Attaches stdout, stderr, close, and error handlers for one child RPC process. */
-function attachChildRpcProcessHandlers(
-	child: SpawnedProcess,
-	state: ChildRpcState,
-	handleRpcMessage: (message: unknown) => void,
-	finish: (code: number | null) => void,
-): void {
-	child.stdin.on("error", (error) => {
-		state.stdinFailed = true;
-		state.stdinClosed = true;
-		state.fatalError ??= `child stdin error: ${error.message}`;
+/** Creates the root supervisor while retaining the coordinator callback cycle. */
+function createRootSupervisor(options: {
+	readonly pi: ExtensionAPI;
+	readonly ctx: ExtensionContext;
+	readonly agents: Awaited<ReturnType<typeof loadCallableAgents>>;
+	readonly bridge: RootRuntimeBridge;
+	readonly store: SessionStore;
+	readonly recoveries: RuntimeFailureRecoveryTracker;
+	readonly queryBranches: QueryBranchAccess;
+	readonly getCoordinator: () => SubagentCoordinator;
+}): InvocationSupervisor {
+	let supervisor: InvocationSupervisor;
+	supervisor = new InvocationSupervisor({
+		bridge: options.bridge,
+		sessionsDir: join(
+			getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR),
+			"sessions",
+		),
+		resolveLaunch: (request) =>
+			resolveLaunchConfiguration({
+				pi: options.pi,
+				ctx: options.ctx,
+				agents: options.agents,
+				supervisor,
+				request,
+			}),
+		onEvent: (event) => options.getCoordinator().observeInvocation(event),
+		onRuntimeFailure: (failure) =>
+			startRuntimeFailureRecovery({
+				recoveries: options.recoveries,
+				coordinator: options.getCoordinator(),
+				store: options.store,
+				failure,
+			}),
+		onRuntimeRequest: (remoteOwner, request) =>
+			handleRootRuntimeRequest({
+				coordinator: options.getCoordinator(),
+				store: options.store,
+				queryBranches: options.queryBranches,
+				owner: remoteOwner,
+				request,
+			}),
 	});
-	child.stdout.on("data", (data) => {
-		const processData = () =>
-			state.parser.processStdoutChunk(data, handleRpcMessage);
-		const handleLineError = (lineError: string | undefined) => {
-			if (lineError !== undefined) {
-				state.fatalError ??= lineError;
-				closeChildStdin(child, state);
+	return supervisor;
+}
+
+/** Creates the sole root transition owner around the production ports. */
+function createRootCoordinator(options: {
+	readonly pi: ExtensionAPI;
+	readonly owner: OwnerIdentity;
+	readonly agents: Awaited<ReturnType<typeof loadCallableAgents>>;
+	readonly catalog: SessionCatalog;
+	readonly supervisor: InvocationSupervisor;
+	readonly store: SessionStore;
+}): SubagentCoordinator {
+	const composition = getAgentRuntimeComposition(options.pi);
+	return new SubagentCoordinator({
+		catalog: options.catalog,
+		invocations: options.supervisor,
+		waits: new WaitCoordinator(),
+		store: options.store,
+		clock: {
+			monotonicNow: () => performance.now(),
+			wallNow: () => Date.now(),
+		},
+		isAgentAvailable: (caller, agentId) =>
+			isAgentAvailableForCaller({
+				agents: options.agents,
+				mainAgent: composition.getMainAgentContribution()?.agent,
+				rootOwner: options.owner,
+				caller,
+				catalog: options.catalog,
+				rootSelectedAgentId: readSubagentAgentId(),
+				requestedAgentId: agentId,
+			}),
+	});
+}
+
+/** Creates one TUI-only projection, submission adapter, and stable screen factory. */
+function createRootManagementRuntime(options: {
+	readonly ctx: ExtensionContext;
+	readonly presentationEvents: PackagePresentationEventBus;
+	readonly owner: OwnerIdentity;
+	readonly catalog: SessionCatalog;
+	readonly coordinator: SubagentCoordinator;
+	readonly supervisor: InvocationSupervisor;
+	readonly sessionSnapshots: SessionSnapshotLoader;
+}): RootManagementRuntime {
+	const projection = new ManagementProjectionRuntime({
+		rootOwnerPiSessionId: options.owner.ownerPiSessionId,
+		catalog: options.catalog,
+		activeConversations: options.supervisor,
+		readInactiveBranch: (session) =>
+			options.sessionSnapshots.load(session.childSessionFile),
+		onError: (error) => options.ctx.ui.notify(error.message, "error"),
+	});
+	const disposeStatusIndicator = installSubagentStatusIndicator(
+		options.ctx.ui,
+		projection,
+	);
+	const retained = createManagementRetainedState();
+	const tools = createToolPresentationRegistry(
+		options.ctx.cwd,
+		options.presentationEvents,
+	);
+	const submission = {
+		async submit(stableKey: string, text: string) {
+			const node = findProjectionNode(projection.getView(), stableKey);
+			if (node === undefined) {
+				return {
+					accepted: false as const,
+					error: "selected subagent session is unavailable",
+				};
 			}
-		};
-		if (!state.stdoutProcessingPending) {
-			const lineError = processData();
-			if (!isPromiseLike(lineError)) {
-				handleLineError(lineError);
-				return;
+			try {
+				await options.coordinator.submitManagementMessage(node.key, text);
+				return { accepted: true as const };
+			} catch (error) {
+				return { accepted: false as const, error: errorMessage(error) };
 			}
-			state.stdoutProcessingPending = true;
-			const processing = lineError.then(handleLineError);
-			const trackedProcessing = processing.finally(() => {
-				if (state.stdoutProcessing === trackedProcessing) {
-					state.stdoutProcessingPending = false;
-				}
-			});
-			state.stdoutProcessing = trackedProcessing;
+		},
+	};
+	const factory = createManagementScreenFactory({
+		ctx: options.ctx,
+		source: projection,
+		tools,
+		submission,
+		retained,
+	});
+	return {
+		projection,
+		factory,
+		dispose: () => {
+			disposeStatusIndicator();
+			projection.dispose();
+		},
+	};
+}
+
+/** Registers both interactive entries once and routes them to the current runtime. */
+function registerManagementEntries(
+	pi: ExtensionAPI,
+	state: RuntimeState,
+	ctx: ExtensionContext,
+): void {
+	if (
+		ctx.mode !== "tui" ||
+		state.managementRegistered ||
+		state.rootRuntime?.management === undefined
+	) {
+		return;
+	}
+	state.managementRegistered = true;
+	const open = async (handlerContext: ExtensionContext): Promise<void> => {
+		const management = state.rootRuntime?.management;
+		if (handlerContext.mode !== "tui" || management === undefined) {
 			return;
 		}
-
-		const processing = state.stdoutProcessing.then(async () => {
-			const lineError = await processData();
-			handleLineError(lineError);
-		});
-		const trackedProcessing = processing.finally(() => {
-			if (state.stdoutProcessing === trackedProcessing) {
-				state.stdoutProcessingPending = false;
-			}
-		});
-		state.stdoutProcessing = trackedProcessing;
-	});
-	child.stderr.on("data", (data) => {
-		state.parser.processStderrChunk(data);
-	});
-	child.on("close", finish);
-	child.on("error", (error) => {
-		state.fatalError ??= error.message;
-		finish(1);
-	});
-}
-
-/** Finalizes one child RPC run after the process exits or emits an error. */
-function finishChildRpcRun(options: {
-	readonly code: number | null;
-	readonly rpcState: ChildRpcState;
-	readonly signal: AbortSignal | undefined;
-	readonly abort: () => void;
-	readonly handleRpcMessage: (message: unknown) => void;
-	readonly resolve: (result: ChildRunResult) => void;
-}): void {
-	const { rpcState } = options;
-	if (rpcState.resolved) {
-		return;
-	}
-	rpcState.resolved = true;
-	const stdoutProcessing = rpcState.stdoutProcessing;
-	rpcState.stdoutProcessing = finishChildRpcRunAfterStdout(
-		options,
-		stdoutProcessing,
-	);
-}
-
-/** Completes child RPC finalization after queued stdout parsing has finished. */
-async function finishChildRpcRunAfterStdout(
-	options: {
-		readonly code: number | null;
-		readonly rpcState: ChildRpcState;
-		readonly signal: AbortSignal | undefined;
-		readonly abort: () => void;
-		readonly handleRpcMessage: (message: unknown) => void;
-		readonly resolve: (result: ChildRunResult) => void;
-	},
-	stdoutProcessing: Promise<void>,
-): Promise<void> {
-	const { rpcState } = options;
-	clearAbortFallbackTimer(rpcState);
-	options.signal?.removeEventListener("abort", options.abort);
-	try {
-		await stdoutProcessing;
-		rpcState.parser.flushStderr();
-		rpcState.fatalError ??= await flushRemainingChildStdout(
-			rpcState,
-			options.handleRpcMessage,
-		);
-	} catch (error) {
-		rpcState.fatalError ??= formatError(error);
-	}
-	options.resolve(buildChildRunResult(options.code ?? 0, rpcState));
-}
-
-/** Clears the abort fallback timer when a child process exits. */
-function clearAbortFallbackTimer(state: ChildRpcState): void {
-	if (state.abortFallbackTimer !== undefined) {
-		clearTimeout(state.abortFallbackTimer);
-	}
-	if (state.abortKillTimer !== undefined) {
-		clearTimeout(state.abortKillTimer);
-	}
-}
-
-/** Processes the final unterminated RPC stdout line after child process exit. */
-async function flushRemainingChildStdout(
-	state: ChildRpcState,
-	handleRpcMessage: (message: unknown) => void,
-): Promise<string | undefined> {
-	return await state.parser.flushStdout(handleRpcMessage);
-}
-
-/** Builds the child process result while preserving exact optional property semantics. */
-function buildChildRunResult(
-	exitCode: number,
-	state: ChildRpcState,
-): ChildRunResult {
-	const status = resolveChildRunStatus({
-		exitCode,
-		aborted: state.aborted,
-		agentCompleted: state.agentCompleted,
-		fatalError: state.fatalError,
-		hasFinalAnswer: state.outputState.finalText.length > 0,
-	});
-	const result = {
-		exitCode,
-		status,
-		promptRejectionError: state.promptRejectionError,
-		activityObserved: state.activityObserved,
-		stdoutText: state.outputState.finalText,
-		stderrText: formatBoundedChildText(
-			state.parser.diagnostics.stderr,
-			state.parser.diagnostics.stderrTruncated,
-			"child stderr",
-		),
-		stdoutLineExceededLimit: state.parser.diagnostics.stdoutLineExceededLimit,
-		streamedTextExceededLimit: state.outputState.streamedTextExceededLimit,
+		await openManagementOverlay(handlerContext, management.factory);
 	};
-	const errorMessage = resolveChildRunErrorMessage(exitCode, status, state);
-	return errorMessage === undefined ? result : { ...result, errorMessage };
+	pi.registerCommand("subagents", {
+		description: "Open the Subagents management screen",
+		handler: async (_args, handlerContext) => open(handlerContext),
+	});
+	pi.registerShortcut("ctrl+shift+g", {
+		description: "Open the Subagents management screen",
+		handler: open,
+	});
 }
 
-/** Resolves the user-facing child run error message for failed or aborted runs. */
-function resolveChildRunErrorMessage(
-	exitCode: number,
-	status: ChildRunStatus,
-	state: ChildRpcState,
-): string | undefined {
-	if (state.fatalError !== undefined) {
-		return state.fatalError;
-	}
-	if (status === "aborted") {
-		return ABORTED_CHILD_RPC_RUN_ERROR;
-	}
-	if (status !== "failed" || exitCode !== 0) {
-		return undefined;
-	}
-	return state.agentCompleted
-		? MISSING_CHILD_FINAL_ANSWER_ERROR
-		: INCOMPLETE_CHILD_RPC_RUN_ERROR;
+/** Creates remote persistence adapters that resolve the current root supervisor lease. */
+function createRootSessionStore(
+	bridge: RootRuntimeBridge,
+	getSupervisor: () => InvocationSupervisor | undefined,
+): SessionStore {
+	return new SessionStore({
+		append: async (remoteOwner, record) => {
+			const lease = requireRemoteLease(getSupervisor(), remoteOwner);
+			await bridge.request(lease, "append_journal", record);
+		},
+		appendHistory: async (remoteOwner, feedback) => {
+			const lease = requireRemoteLease(getSupervisor(), remoteOwner);
+			await bridge.request(lease, "append_history", feedback);
+		},
+	});
 }
 
-/** Classifies one RPC stdout message and updates progress or protocol state. */
-function handleChildRpcMessage(options: {
-	readonly message: unknown;
-	readonly rpcState: ChildRpcState;
-	readonly onSessionEvent: (event: unknown) => void;
-	readonly recordCost: (message: { readonly usage?: unknown }) => void;
-	readonly writeRpcCommand: (command: Record<string, unknown>) => void;
-	readonly closeStdin: () => void;
-	readonly onPromptPreflightComplete: () => void;
-	readonly terminateForPolicyError: (error: string) => void;
+/** Adds every reconstructed stable session key once despite reusable owner-local IDs. */
+function addReconstructedSessions(
+	catalog: SessionCatalog,
+	sessions: readonly LogicalSession[],
+): void {
+	for (const session of sessions) {
+		const alreadyRegistered = catalog
+			.findByLocalId(session.key.ownerLocalSessionId)
+			.some(
+				(current) =>
+					current.key.ownerPiSessionId === session.key.ownerPiSessionId,
+			);
+		if (!alreadyRegistered) {
+			catalog.add(session);
+		}
+	}
+}
+
+/** Starts one observed fail-stop without floating its recovery rejection. */
+function startRuntimeFailureRecovery({
+	recoveries,
+	coordinator,
+	store,
+	failure,
+}: {
+	readonly recoveries: RuntimeFailureRecoveryTracker;
+	readonly coordinator: SubagentCoordinator | undefined;
+	readonly store: SessionStore;
+	readonly failure: RuntimeChannelFailure;
 }): void {
-	const { message, rpcState } = options;
-	if (!isRecord(message)) {
-		return;
-	}
-	if (message["type"] === "response") {
-		handleChildRpcResponse(
-			message,
-			rpcState,
-			options.closeStdin,
-			options.onPromptPreflightComplete,
-		);
-		return;
-	}
-	rpcState.activityObserved = true;
-	const policyError = resolveChildToolPolicyStartupError(message);
-	if (policyError !== undefined) {
-		options.terminateForPolicyError(policyError);
-		return;
-	}
-	if (message["type"] === "extension_ui_request") {
-		options.onSessionEvent(message);
-		handleExtensionUiRequest(message, options.writeRpcCommand);
-		return;
-	}
-	handleChildRpcSessionEvent(message, options);
-}
-
-/** Extracts only run-subagent's stable child-policy startup failure signal. */
-function resolveChildToolPolicyStartupError(
-	message: Record<string, unknown>,
-): string | undefined {
-	const error = message["error"];
-	return message["type"] === "extension_error" &&
-		message["event"] === "session_start" &&
-		typeof error === "string" &&
-		error.startsWith(`${CHILD_TOOL_POLICY_ERROR_PREFIX} `)
-		? error
-		: undefined;
-}
-
-/** Handles RPC command responses without exposing them as progress events. */
-function handleChildRpcResponse(
-	message: Record<string, unknown>,
-	state: ChildRpcState,
-	closeStdin: () => void,
-	onPromptPreflightComplete: () => void,
-): void {
-	if (message["id"] !== PROMPT_COMMAND_ID || message["command"] !== "prompt") {
-		return;
-	}
-	onPromptPreflightComplete();
-	if (message["success"] !== false) {
-		return;
-	}
-	state.promptRejectionError =
-		typeof message["error"] === "string"
-			? message["error"]
-			: "child pi rejected the prompt";
-	state.fatalError ??= state.promptRejectionError;
-	closeStdin();
-}
-
-/** Routes one RPC session event to progress and final-output extraction. */
-function handleChildRpcSessionEvent(
-	message: Record<string, unknown>,
-	options: {
-		readonly rpcState: ChildRpcState;
-		readonly onSessionEvent: (event: unknown) => void;
-		readonly recordCost: (message: { readonly usage?: unknown }) => void;
-		readonly closeStdin: () => void;
-	},
-): void {
-	if (options.rpcState.agentCompleted) {
-		return;
-	}
-	if (isAssistantMessageEnd(message)) {
-		options.recordCost(message.message);
-	}
-	resetChildAssistantDeltaOnStart(options.rpcState.outputState, message);
-	recordChildAssistantDelta(options.rpcState.outputState, message);
-	const assistantText = recordChildAssistantText(
-		options.rpcState.outputState,
-		message,
+	// Root lifecycle owns admitted recovery work even though the failure callback cannot await it.
+	recoveries.start(() =>
+		recoverRuntimeFailure(requireCoordinator(coordinator), store, failure),
 	);
-	options.onSessionEvent(projectChildProgressEvent(message, assistantText));
-	const decision =
-		options.rpcState.promptCompletion.handleSessionEvent(message);
-	if (decision.kind === "wait") {
-		return;
-	}
-	options.rpcState.agentCompleted = true;
-	if (decision.kind === "failure") {
-		options.rpcState.fatalError ??= decision.reason;
-	}
-	if (decision.kind === "abort") {
-		options.rpcState.aborted = true;
-	}
-	options.closeStdin();
 }
 
-/** Appends streamed assistant deltas from RPC session events. */
-function recordChildAssistantDelta(
-	state: ChildFinalOutputState,
-	message: unknown,
-): void {
-	if (isProjectedTextDeltaExceeded(message)) {
-		state.streamedText = "";
-		state.streamedTextExceededLimit = true;
-		return;
+/** Cancels one exact nested start or steer without publishing a subagent failure. */
+function cancelRootOperation(
+	coordinator: SubagentCoordinator,
+	request: Extract<RuntimeRequest, { readonly operation: "cancel_operation" }>,
+): { readonly acknowledged: true; readonly cancellationWon: boolean } {
+	const cancellationWon = coordinator.cancelOperation(
+		{
+			requestId: request.payload.operationRequestId,
+			toolCallId: request.payload.operationToolCallId,
+			runtimeLeaseId: request.runtimeLeaseId,
+		},
+		new RuntimeOperationCancellationError("nested operation was aborted"),
+	);
+	return { acknowledged: true, cancellationWon };
+}
+
+/** Cancels one exact nested wait without publishing a subagent failure. */
+async function cancelRootWait(
+	coordinator: SubagentCoordinator,
+	owner: OwnerIdentity,
+	request: Extract<RuntimeRequest, { readonly operation: "cancel_wait" }>,
+): Promise<{ readonly acknowledged: true }> {
+	const cancelled = await coordinator.cancelWait(
+		owner,
+		{
+			toolCallId: request.payload.waitToolCallId,
+			requestId: request.payload.waitRequestId,
+			runtimeLeaseId: request.runtimeLeaseId,
+		},
+		new RuntimeOperationCancellationError("nested wait was aborted"),
+	);
+	if (!cancelled) {
+		throw new Error("nested wait cancellation lost its correlation");
 	}
-	const delta = extractAssistantTextDelta(message);
-	if (delta !== undefined) {
-		appendStreamedTextDelta(state, delta);
+	return { acknowledged: true };
+}
+
+/** Routes one validated worker request into the root coordination authority. */
+async function handleRootRuntimeRequest({
+	coordinator,
+	store,
+	queryBranches,
+	owner,
+	request,
+}: {
+	readonly coordinator: SubagentCoordinator;
+	readonly store: SessionStore;
+	readonly queryBranches: QueryBranchAccess;
+	readonly owner: OwnerIdentity;
+	readonly request: RuntimeRequest;
+}): Promise<
+	AgentOperationResponse | QueryBranchResponse | { readonly acknowledged: true }
+> {
+	if (request.operation === "owner_stopping") {
+		await recoverOwnerShutdown({
+			coordinator,
+			store,
+			owner,
+			stoppingRuntimeLeaseId: request.runtimeLeaseId,
+		});
+		return { acknowledged: true };
+	}
+	if (request.operation === "cancel_operation") {
+		return cancelRootOperation(coordinator, request);
+	}
+	if (request.operation === "cancel_wait") {
+		return cancelRootWait(coordinator, owner, request);
+	}
+	if (request.operation === "query_branch") {
+		return queryBranches.load(owner, request.payload.sessionId);
+	}
+	if (request.operation !== "agent_operation") {
+		throw new Error(`worker operation ${request.operation} is not permitted`);
+	}
+	// Wire parsing validates the operation envelope and params before owner state publication.
+	const operation = request.payload;
+	store.registerRemote(owner, request.runtimeLeaseId);
+	coordinator.registerOwner(owner);
+	try {
+		if (operation.toolName === "subagent_start") {
+			const result = await coordinator.start(owner, operation.params, {
+				ownerRuntimeLeaseId: request.runtimeLeaseId,
+				operationCorrelation: {
+					requestId: request.requestId,
+					toolCallId: operation.toolCallId,
+					runtimeLeaseId: request.runtimeLeaseId,
+				},
+			});
+			return {
+				kind: "ok",
+				result,
+				evidence: coordinator.acceptedPresentationEvidence(
+					owner,
+					result.sessionId,
+				),
+			};
+		}
+		if (operation.toolName === "subagent_steer") {
+			const result = await coordinator.steer(owner, operation.params, {
+				ownerRuntimeLeaseId: request.runtimeLeaseId,
+				operationCorrelation: {
+					requestId: request.requestId,
+					toolCallId: operation.toolCallId,
+					runtimeLeaseId: request.runtimeLeaseId,
+				},
+			});
+			return {
+				kind: "ok",
+				result,
+				evidence: coordinator.acceptedPresentationEvidence(
+					owner,
+					result.sessionId,
+				),
+			};
+		}
+		const result = await coordinator.wait(owner, operation.params, {
+			toolCallId: operation.toolCallId,
+			requestId: request.requestId,
+			runtimeLeaseId: request.runtimeLeaseId,
+		});
+		const evidence = coordinator.takeWaitEvidence(operation.toolCallId);
+		return evidence === undefined
+			? { kind: "ok", result }
+			: { kind: "ok", result, evidence };
+	} catch (error) {
+		return failedAgentOperation(error);
 	}
 }
 
-/** Stores the latest completed assistant text observed before completion. */
-function recordChildAssistantText(
-	state: ChildFinalOutputState,
-	message: unknown,
-): string | undefined {
-	const text = extractAssistantText(state, message);
-	if (text !== undefined) {
-		state.finalText = text;
+/** Maps one coordination failure while preserving cancellation rejection. */
+function failedAgentOperation(error: unknown): AgentOperationResponse {
+	if (error instanceof RuntimeOperationCancellationError) {
+		throw error;
 	}
-	if (isAssistantMessageEnd(message)) {
-		state.streamedText = "";
-		state.streamedTextBytes = 0;
-	}
-	return text;
+	const failure =
+		error instanceof SubagentToolError
+			? error.details
+			: new SubagentToolError("start_failed", errorMessage(error)).details;
+	return { kind: "failed", failure };
 }
 
-/** Provides progress with fallback text when bounded parsing skipped the full message content. */
-function projectChildProgressEvent(
-	message: Record<string, unknown>,
-	assistantText: string | undefined,
-): Record<string, unknown> {
-	if (assistantText === undefined || message["type"] !== "message_end") {
-		return message;
+/** Applies root persistence commands through the active worker's public Pi writer. */
+async function handleWorkerCommand(
+	operation: RuntimeRequest["operation"],
+	payload: unknown,
+	owner: OwnerIdentity,
+	store: SessionStore,
+): Promise<{ readonly acknowledged: true }> {
+	if (operation === "append_journal") {
+		const record = parseJournalRecord(payload);
+		if (record === undefined) {
+			throw new Error("root sent an invalid journal command");
+		}
+		await store.append(owner, record);
+		return { acknowledged: true };
 	}
-	const childMessage = message["message"];
-	if (!isRecord(childMessage) || !Array.isArray(childMessage["content"])) {
-		return message;
+	if (operation === "append_history") {
+		const feedback = parseFeedback(payload);
+		if (feedback === undefined) {
+			throw new Error("root sent an invalid history command");
+		}
+		await store.appendHistory(owner, feedback);
+		return { acknowledged: true };
 	}
-	if (!childMessage["content"].some(isSkippedTextPart)) {
-		return message;
-	}
+	throw new Error(`root operation ${operation} is not permitted`);
+}
+
+/** Creates the sole active owner writer from public extension APIs. */
+function createActiveWriter(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	owner: OwnerIdentity,
+): ActiveOwnerSessionWriter {
 	return {
-		...message,
-		message: {
-			...childMessage,
-			content: [{ type: "text", text: assistantText }],
+		owner,
+		sessionManager: ctx.sessionManager,
+		appendJournal: (record: JournalRecord) => {
+			pi.appendEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, record);
+		},
+		appendHistory: (feedback: SubagentFeedback) => {
+			const message = createHistoryMessage(feedback);
+			pi.sendMessage(
+				{
+					customType: SUBAGENT_HISTORY_CUSTOM_TYPE,
+					content: message.content,
+					display: true,
+					details: message.details,
+				},
+				{ triggerTurn: false, deliverAs: "steer" },
+			);
 		},
 	};
 }
 
-/** Starts a new provisional streamed-text buffer for each assistant message. */
-function resetChildAssistantDeltaOnStart(
-	state: ChildFinalOutputState,
-	message: unknown,
-): void {
-	if (!isAssistantMessageStart(message)) {
-		return;
-	}
-	state.streamedText = "";
-	state.streamedTextBytes = 0;
-}
-
-/** Resolves final child run status from RPC and process lifecycle state. */
-function resolveChildRunStatus(options: {
-	readonly exitCode: number;
-	readonly aborted: boolean;
-	readonly agentCompleted: boolean;
-	readonly fatalError: string | undefined;
-	readonly hasFinalAnswer: boolean;
-}): ChildRunStatus {
-	if (options.aborted) {
-		return "aborted";
-	}
-	if (
-		options.fatalError !== undefined ||
-		options.exitCode !== 0 ||
-		!options.hasFinalAnswer
-	) {
-		return "failed";
-	}
-	return options.agentCompleted ? "succeeded" : "failed";
-}
-
-/** Answers blocking RPC UI requests so child extensions cannot hang the subagent run. */
-function handleExtensionUiRequest(
-	message: Record<string, unknown>,
-	writeRpcCommand: (command: Record<string, unknown>) => void,
-): void {
-	const id = message["id"];
-	const method = message["method"];
-	if (typeof id !== "string") {
-		return;
-	}
-	if (method === "confirm") {
-		writeRpcCommand({ type: "extension_ui_response", id, confirmed: false });
-		return;
-	}
-	if (method === "select" || method === "input" || method === "editor") {
-		writeRpcCommand({ type: "extension_ui_response", id, cancelled: true });
-	}
-}
-
-/** Appends one assistant text delta while enforcing the streamed-answer memory limit. */
-function appendStreamedTextDelta(
-	state: ChildFinalOutputState,
-	delta: string,
-): void {
-	if (state.streamedTextExceededLimit) {
-		return;
-	}
-
-	const nextBytes = state.streamedTextBytes + Buffer.byteLength(delta, "utf8");
-	if (nextBytes > CHILD_STREAMED_TEXT_BYTES_LIMIT) {
-		state.streamedText = "";
-		state.streamedTextExceededLimit = true;
-		return;
-	}
-
-	state.streamedText += delta;
-	state.streamedTextBytes = nextBytes;
-}
-
-/** Adds a visible truncation marker when child-process text exceeded its streaming limit. */
-function formatBoundedChildText(
-	text: string,
-	truncated: boolean,
-	label: string,
-): string {
-	if (!truncated) {
-		return text;
-	}
-
-	return `[${label} truncated to last ${text.length} characters]\n${text}`;
-}
-
-/** Returns true when a projected text_delta exceeded the streamed-answer memory limit. */
-function isProjectedTextDeltaExceeded(event: unknown): boolean {
-	if (!isRecord(event) || event["type"] !== "message_update") {
-		return false;
-	}
-	const { assistantMessageEvent } = event;
-	return (
-		isRecord(assistantMessageEvent) &&
-		assistantMessageEvent["type"] === "text_delta" &&
-		assistantMessageEvent["deltaExceededLimit"] === true
-	);
-}
-
-/** Extracts one streamed assistant text delta from a child message_update event. */
-function extractAssistantTextDelta(event: unknown): string | undefined {
-	if (!isRecord(event)) {
-		return undefined;
-	}
-	const { type, assistantMessageEvent } = event;
-	if (type !== "message_update" || !isRecord(assistantMessageEvent)) {
-		return undefined;
-	}
-	if (assistantMessageEvent["type"] !== "text_delta") {
-		return undefined;
-	}
-	const delta = assistantMessageEvent["delta"];
-	return typeof delta === "string" ? delta : undefined;
-}
-
-/** Extracts assistant text from a child message_end event. */
-function extractAssistantText(
-	state: ChildFinalOutputState,
-	event: unknown,
-): string | undefined {
-	if (!isRecord(event)) {
-		return undefined;
-	}
-	const { type, message } = event;
-	if (type !== "message_end" || !isRecord(message)) {
-		return undefined;
-	}
-	const { role, content } = message;
-	if (role !== "assistant") {
-		return undefined;
-	}
-	if (
-		message["stopReason"] === "error" ||
-		message["stopReason"] === "aborted"
-	) {
-		return undefined;
-	}
-	if (!Array.isArray(content) || content.some(isToolCallPart)) {
-		return undefined;
-	}
-
-	const textParts = content
-		.filter(isTextPart)
-		.map((part) => part.text)
-		.join("\n");
-	if (textParts.length > 0) {
-		return textParts;
-	}
-	if (content.some(isSkippedTextPart) && state.streamedText.length > 0) {
-		return state.streamedText;
-	}
-	return undefined;
-}
-
-/** Prefixes final child output with the alias needed for later continuation. */
-function formatSessionOutput(
-	details: SubagentRunDetails,
-	message: string,
-): string {
-	return `Subagent session: ${details.sessionId}\n\n${message}`;
-}
-
-/** Creates a text tool result and includes a session alias when execution started. */
-function errorResult(
-	message: string,
-	details?: SubagentRunDetails,
-): AgentToolResult<unknown> {
+/** Builds direct owner identity only from public session manager methods. */
+function ownerFromContext(ctx: ExtensionContext): OwnerIdentity {
 	return {
-		content: [
-			{
-				type: "text",
-				text:
-					details === undefined
-						? message
-						: formatSessionOutput(details, message),
-			},
-		],
-		details,
+		ownerPiSessionId: ctx.sessionManager.getSessionId(),
+		ownerSessionFile: ctx.sessionManager.getSessionFile() ?? "",
 	};
 }
 
-/** Reports an issue scoped only to run-subagent. */
-function reportIssue(ctx: RunSubagentContext, issue: string): void {
-	if (ctx.hasUI === false) {
-		return;
+/** Requires the initialized root coordinator inside supervisor callbacks. */
+function requireCoordinator(
+	coordinator: SubagentCoordinator | undefined,
+): SubagentCoordinator {
+	if (coordinator === undefined) {
+		throw new Error("subagent coordinator is not initialized");
 	}
-
-	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
+	return coordinator;
 }
 
-/** Resolves independent model-facing descriptions for both delegation tools. */
-function resolveSubagentToolDescriptions(config: RunSubagentConfig): {
-	readonly run: string;
-	readonly resume: string;
-} {
-	if (config.descriptionPromptIssue !== undefined) {
-		throw new Error(`${ISSUE_PREFIX} ${config.descriptionPromptIssue}`);
-	}
-	return {
-		run:
-			config.runDescriptionPromptFile === undefined
-				? RUN_SUBAGENT_DESCRIPTION
-				: readDescriptionPromptFile(config.runDescriptionPromptFile),
-		resume:
-			config.resumeDescriptionPromptFile === undefined
-				? RESUME_SUBAGENT_DESCRIPTION
-				: readDescriptionPromptFile(config.resumeDescriptionPromptFile),
-	};
-}
-
-/** Reads a configured custom description prompt and rejects unusable content. */
-function readDescriptionPromptFile(filePath: string): string {
-	let prompt: string;
-	try {
-		prompt = readFileSync(filePath, "utf8").trim();
-	} catch (error) {
+/** Resolves the one active remote owner lease without fallback. */
+function requireRemoteLease(
+	supervisor: InvocationSupervisor | undefined,
+	owner: OwnerIdentity,
+): string {
+	const lease = supervisor?.findRuntimeLeaseForOwner(owner.ownerPiSessionId);
+	if (lease === undefined) {
 		throw new Error(
-			`${ISSUE_PREFIX} failed to read description prompt: ${formatError(error)}`,
+			`owner ${owner.ownerPiSessionId} has no active runtime lease`,
 		);
 	}
-	if (prompt.length === 0) {
-		throw new Error(`${ISSUE_PREFIX} description prompt must not be empty`);
-	}
-
-	return prompt;
-}
-
-/** Reads one bundled prompt file and trims trailing file whitespace. */
-function readPromptFile(fileName: string): string {
-	return readFileSync(join(PROMPTS_DIR, fileName), "utf8").trim();
-}
-
-/** Reads the current subagent nesting depth from the process environment. */
-function readCurrentDepth(): DepthResult {
-	const raw = readSubagentDepth();
-	if (raw === undefined) {
-		return { value: 0 };
-	}
-
-	if (!DEPTH_PATTERN.test(raw)) {
-		return {
-			issue: "PI_SUBAGENT_DEPTH must be a canonical non-negative integer",
-		};
-	}
-
-	const depth = Number(raw);
-	if (!Number.isSafeInteger(depth)) {
-		return { issue: "PI_SUBAGENT_DEPTH must be a safe integer" };
-	}
-
-	return { value: depth };
-}
-
-/** Spawns the real child pi process with sanitized parent environment plus explicit subagent env. */
-function defaultSpawnPi(
-	command: string,
-	args: string[],
-	options: SpawnOptions,
-): SpawnedProcess {
-	return spawn(command, args, {
-		cwd: options.cwd,
-		env: options.env,
-		stdio: ["pipe", "pipe", "pipe"],
-		signal: options.signal,
-	}) as SpawnedProcess;
-}
-
-/** Returns true when an object contains only keys from a finite set. */
-function hasOnlyKeys(
-	value: Record<string, unknown>,
-	allowedKeys: readonly string[],
-): boolean {
-	return Object.keys(value).every((key) => allowedKeys.includes(key));
-}
-
-/** Returns true when a runtime value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Returns true when a value follows the Promise contract enough to await it safely. */
-function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
-	return isRecord(value) && typeof value["then"] === "function";
-}
-
-/** Returns true when a child event starts a new assistant message stream. */
-function isAssistantMessageStart(event: unknown): boolean {
-	if (!isRecord(event) || event["type"] !== "message_start") {
-		return false;
-	}
-	const { message } = event;
-	return isRecord(message) && message["role"] === "assistant";
-}
-
-/** Returns true when a child event completes the current assistant message stream. */
-function isAssistantMessageEnd(event: unknown): event is {
-	readonly type: "message_end";
-	readonly message: { readonly role: "assistant"; readonly usage?: unknown };
-} {
-	if (!isRecord(event) || event["type"] !== "message_end") {
-		return false;
-	}
-	const { message } = event;
-	return isRecord(message) && message["role"] === "assistant";
-}
-
-/** Returns true when a runtime value is a text content part. */
-function isTextPart(value: unknown): value is { readonly text: string } {
-	if (!isRecord(value)) {
-		return false;
-	}
-
-	const { type, text } = value;
-	return type === "text" && typeof text === "string";
-}
-
-/** Returns true when a projected content part marks text skipped by bounded parsing. */
-function isSkippedTextPart(value: unknown): boolean {
-	return isRecord(value) && value["type"] === SKIPPED_TEXT_PART_TYPE;
-}
-
-/** Returns true when a runtime value is a tool-call content part. */
-function isToolCallPart(value: unknown): boolean {
-	return isRecord(value) && value["type"] === "toolCall";
-}
-
-/** Converts unknown failures into safe diagnostics. */
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return lease;
 }

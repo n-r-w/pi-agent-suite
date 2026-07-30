@@ -13,6 +13,7 @@ import {
 	projectContextMessages,
 	readContextProjectionConfig,
 	replayContextProjection,
+	replayPersistedContextProjection,
 	replayRetainedContextProjection,
 	resetPendingProjectionSavings,
 	setPendingProjectionSavings,
@@ -565,6 +566,40 @@ describe("projection-aware context usage", () => {
 });
 
 describe("context projection replay", () => {
+	test("replays only replacements persisted in the supplied branch", async () => {
+		// Purpose: saved-session queries must not depend on current projection configuration or process-local state.
+		// Input and expected output: a persisted replacement hides its target even while current projection is disabled.
+		// Edge case: a protected tool name does not override a replacement already persisted by the target session.
+		// Dependencies: isolated disabled config and in-memory saved branch entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, { enabled: false });
+			const branchEntries = [
+				messageEntry(
+					"01",
+					assistantMessage("call-council", "convene_council"),
+					null,
+				),
+				messageEntry(
+					"02",
+					toolResultMessage(
+						"call-council",
+						"saved council output",
+						"convene_council",
+					),
+					"01",
+				),
+				projectionStateEntry("03", "02", "[saved replacement]", "02"),
+			];
+
+			const replayed = JSON.stringify(
+				replayPersistedContextProjection(branchEntries),
+			);
+
+			expect(replayed).not.toContain("saved council output");
+			expect(replayed).toContain("[saved replacement]");
+		});
+	});
+
 	test("replays persisted replacements when projection config is valid", async () => {
 		// Purpose: advisor input must reuse recorded projection instead of sending full old tool output.
 		// Input and expected output: valid config plus one projected entry replaces only that tool result with its replacement text.

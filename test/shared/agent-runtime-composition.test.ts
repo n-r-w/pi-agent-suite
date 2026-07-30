@@ -62,11 +62,11 @@ test("does not reuse stale runtime composition objects from previous reloads", a
 	// Edge case: the stale property may be non-configurable because previous versions stored it as a permanent event-bus property.
 	// Dependencies: this test uses the real shared module and an ExtensionAPI fake.
 	const { pi, handlers } = createCompositionApiFake();
-	Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV4", {
+	Object.defineProperty(pi.events, "__piHarnessStaleAgentRuntimeComposition", {
 		configurable: false,
 		enumerable: false,
 		value: {
-			setRunSubagentContribution() {},
+			setSubagentsContribution() {},
 		},
 		writable: false,
 	});
@@ -74,7 +74,7 @@ test("does not reuse stale runtime composition objects from previous reloads", a
 	const module = await importIsolatedRuntimeCompositionModule("stale");
 	const composition = module.getAgentRuntimeComposition(pi);
 
-	expect(typeof composition.setRunSubagentActiveToolFilter).toBe("function");
+	expect(typeof composition.setSubagentsActiveToolFilter).toBe("function");
 	expect(typeof composition.setConveneCouncilContribution).toBe("function");
 	expect(
 		handlers.filter((handler) => handler.event === "before_agent_start"),
@@ -121,7 +121,7 @@ test("creates a fresh runtime composition after shutdown marks the previous runt
 
 test("shares one runtime composition across isolated module instances", async () => {
 	// Purpose: split pi package entry points must coordinate through one runtime composition even when the shared module is loaded more than once.
-	// Input and expected output: isolated modules set main-agent, run-subagent, and council contributions, and one handler composes all.
+	// Input and expected output: isolated modules set main-agent, Subagents, and council contributions, and one handler composes all.
 	// Edge case: duplicate module instances must not create duplicate before_agent_start handlers with disconnected state.
 	// Dependencies: this test uses Bun dynamic imports and an ExtensionAPI fake; it does not depend on extension load order.
 	const moduleA = await importIsolatedRuntimeCompositionModule("a");
@@ -134,7 +134,7 @@ test("shares one runtime composition across isolated module instances", async ()
 		prompt: "Main prompt",
 		agent: { id: "main", agents: ["helper"] },
 	});
-	compositionB.setRunSubagentContribution({
+	compositionB.setSubagentsContribution({
 		buildPrompt: () =>
 			compositionB.getMainAgentContribution()?.agent?.agents?.join(","),
 	});

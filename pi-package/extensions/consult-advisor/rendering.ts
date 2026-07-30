@@ -11,6 +11,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
+import { normalizeCollapsedToolText } from "../../shared/terminal-display-text.ts";
 
 const EXPAND_TOOL_RESULT_KEYBINDING = "app.tools.expand";
 const CALL_QUESTION_PREVIEW_LINES = 3;
@@ -19,7 +20,7 @@ export const COLLAPSED_ADVICE_PREVIEW_LINES = 5;
 /** Renders the question preview as wrapped rows in the tool-call header. */
 class AdvisorQuestionHeader implements Component {
 	public constructor(
-		private readonly questionPreview: string,
+		private readonly question: string,
 		private readonly theme: Theme,
 		private readonly expanded: boolean,
 	) {}
@@ -28,7 +29,7 @@ class AdvisorQuestionHeader implements Component {
 	public render(width: number): string[] {
 		const wrappedLines = renderLabeledWrappedText({
 			label: "consult_advisor:",
-			text: this.questionPreview,
+			text: this.question,
 			width,
 			labelStyle: (value) => this.theme.fg("toolTitle", this.theme.bold(value)),
 			textStyle: (value) => this.theme.fg("dim", value),
@@ -75,13 +76,12 @@ export function renderConsultAdvisorCall(
 	theme: Theme,
 	context?: { readonly expanded?: boolean },
 ): Component {
-	const questionPreview = args.question
-		? normalizePreviewText(args.question)
-		: "...";
+	const expanded = context?.expanded === true;
+	const question = args.question || "...";
 	return new AdvisorQuestionHeader(
-		questionPreview,
+		expanded ? question : normalizeCollapsedToolText(question),
 		theme,
-		context?.expanded === true,
+		expanded,
 	);
 }
 
@@ -95,7 +95,12 @@ export function renderConsultAdvisorResult(
 	const advice = getResultText(result) || "(no advice)";
 	const label = context.isError === true ? "Error" : "Advice";
 	if (options.expanded !== true) {
-		return new CollapsedAdvice(advice, label, theme, context.isError === true);
+		return new CollapsedAdvice(
+			normalizeCollapsedToolText(advice),
+			label,
+			theme,
+			context.isError === true,
+		);
 	}
 
 	const container = new Container();
@@ -111,11 +116,6 @@ export function renderConsultAdvisorResult(
 	);
 	container.addChild(new Markdown(advice, 0, 0, getMarkdownTheme()));
 	return container;
-}
-
-/** Normalizes multi-line text into one preview line before width clipping. */
-function normalizePreviewText(value: string): string {
-	return value.replace(/\s+/g, " ").trim();
 }
 
 /** Formats the currently configured keys for expanding collapsed tool results. */
@@ -147,10 +147,10 @@ class CollapsedAdvice implements Component {
 		return previewLines;
 	}
 
-	/** Delegates wrapping and ANSI preservation to Pi Text rendering. */
+	/** Delegates width-aware wrapping to Pi Text rendering. */
 	private renderAdviceVisualLines(width: number): string[] {
 		const labelColor = this.isError ? "error" : "accent";
-		const text = `${this.theme.fg(labelColor, `${this.label}:`)} ${this.theme.fg("dim", normalizePreviewText(this.advice))}`;
+		const text = `${this.theme.fg(labelColor, `${this.label}:`)} ${this.theme.fg("dim", this.advice)}`;
 		return new Text(text, 0, 0).render(width);
 	}
 

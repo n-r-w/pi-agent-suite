@@ -374,6 +374,7 @@ function isPromptCompletionEvent(message: Record<string, unknown>): boolean {
 	return (
 		message["type"] === "message_end" ||
 		message["type"] === "agent_end" ||
+		message["type"] === "agent_settled" ||
 		message["type"] === "auto_retry_start" ||
 		message["type"] === "auto_retry_end" ||
 		message["type"] === "compaction_end"

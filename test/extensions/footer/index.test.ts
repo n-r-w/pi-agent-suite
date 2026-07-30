@@ -451,21 +451,25 @@ describe("footer", () => {
 
 	test("ignores a stale pre-reload runtime composition object", async () => {
 		// Purpose: footer must not reuse runtime composition objects from older extension code after /reload.
-		// Input and expected output: a stale V2 object with agent Stale exists, but the footer renders `No agent` from a new runtime composition.
+		// Input and expected output: a stale runtime object with agent Stale exists, but the footer renders `No agent` from a new runtime composition.
 		// Edge case: the stale property is non-configurable, matching previous runtime singleton storage.
 		// Dependencies: this test uses the real runtime composition lookup with an in-memory event bus fake.
 		const { pi, footerRenderer } = await installFooterTestHarness();
-		Object.defineProperty(pi.events, "__piHarnessAgentRuntimeCompositionV2", {
-			configurable: false,
-			enumerable: false,
-			value: {
-				getMainAgentContribution: () => ({
-					prompt: "Stale prompt",
-					agent: { id: "Stale" },
-				}),
+		Object.defineProperty(
+			pi.events,
+			"__piHarnessStaleAgentRuntimeComposition",
+			{
+				configurable: false,
+				enumerable: false,
+				value: {
+					getMainAgentContribution: () => ({
+						prompt: "Stale prompt",
+						agent: { id: "Stale" },
+					}),
+				},
+				writable: false,
 			},
-			writable: false,
-		});
+		);
 		const footerComponent = createFooterComponent(
 			footerRenderer,
 			createFooterDataFake(),

@@ -733,6 +733,20 @@ export async function replayRetainedContextProjection({
 	return decision.changed ? decision.messages : originalMessages;
 }
 
+/** Maps one saved branch using only projection replacements persisted in that branch. */
+export function replayPersistedContextProjection(
+	branchEntries: readonly SessionEntry[],
+): AgentMessage[] {
+	const projectedReplacementsByEntryId =
+		collectProjectedReplacements(branchEntries);
+	return buildContextEntryMapping(branchEntries).map(({ entry, message }) => {
+		const replacementText = projectedReplacementsByEntryId.get(entry.id);
+		return replacementText === undefined || !isSuccessfulTextToolResult(message)
+			? message
+			: createProjectedToolResult(message, replacementText);
+	});
+}
+
 /** Returns branch context with persisted projection state applied when projection is active. */
 export async function replayContextProjection({
 	branchEntries,
@@ -1070,10 +1084,7 @@ function projectMappedContextEntry({
 		: (replacementTextByEntryId?.get(entry.id) ?? config.omittedNotice);
 	return {
 		kind: "projected",
-		message: {
-			...message,
-			content: [{ type: "text" as const, text: replacementText }],
-		},
+		message: createProjectedToolResult(message, replacementText),
 		projectedEntry: alreadyProjected
 			? undefined
 			: { entryId: entry.id, replacementText },
@@ -1081,6 +1092,17 @@ function projectMappedContextEntry({
 			getTextToolResultText(message),
 			replacementText,
 		),
+	};
+}
+
+/** Replaces one successful tool result while preserving its correlation fields. */
+function createProjectedToolResult(
+	message: Extract<AgentMessage, { role: "toolResult" }>,
+	replacementText: string,
+): Extract<AgentMessage, { role: "toolResult" }> {
+	return {
+		...message,
+		content: [{ type: "text" as const, text: replacementText }],
 	};
 }
 

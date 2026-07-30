@@ -127,7 +127,7 @@ describe("helper API cost accounting", () => {
 		// Dependencies: in-memory session entry fixtures only.
 		const entries: SessionEntry[] = [
 			createCustomEntry({ source: "consult-advisor", cost: 0.25 }),
-			createCustomEntry({ source: "run-subagent", cost: 0.5 }),
+			createCustomEntry({ source: "context-projection", cost: 0.5 }),
 			createCustomEntry({ source: "unknown", cost: 100 }),
 			createCustomEntry({ source: "custom-compaction", cost: 0 }),
 			createCustomEntry({ source: "convene-council", cost: -1 }),

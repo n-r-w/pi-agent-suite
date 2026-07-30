@@ -1,6 +1,6 @@
 {
 	"name": "pi-agent-suite",
-	"version": "1.0.3",
+	"version": "2.0.0",
 	"description": "Adds a configurable multi-agent layer to pi, with context management, Codex quota status, a custom footer, and more.",
 	"type": "module",
 	"keywords": [

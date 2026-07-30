@@ -243,7 +243,7 @@ describe("completion-sound", () => {
 	test("does not play when the current process is a child agent process", async () => {
 		// Purpose: child agent completion must not duplicate the top-level completion sound.
 		// Input and expected output: PI_AGENT_SUITE_CHILD_AGENT_PROCESS=1 suppresses playback.
-		// Edge case: the marker is shared by every child pi process, not only run-subagent children.
+		// Edge case: the marker is shared by every child Pi process, not only Subagents children.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake, fake playback sink, and temp agent directory.
 		await withIsolatedAgentDir(async () => {
 			const playbackCalls: PlaybackCall[] = [];

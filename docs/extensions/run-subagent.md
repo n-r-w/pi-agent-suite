@@ -2,213 +2,434 @@
 
 ## Purpose
 
-`run-subagent` adds two tools. `run_subagent` starts an independent child session with a configured callable agent. `resume_subagent` continues a saved child session with the original agent.
+`run-subagent` provides exactly four agent-facing tools:
 
-## Configuration file
+- `subagent_start` starts a callable agent in a new saved logical session.
+- `subagent_steer` sends another prompt to a directly owned logical session.
+- `subagent_wait` waits for terminal feedback from selected active direct children.
+- `subagent_query` asks a separate auxiliary model a focused question using one saved direct-child conversation as context. It does not invoke the child agent.
+
+Start and steer return after the child accepts the prompt. They do not wait for the child invocation to finish.
+
+## Configuration
 
 Default file: `~/.pi/agent/agent-suite/run-subagent/config.json`.
 
-If the file is missing, the extension is enabled with default settings.
-
-## Full configuration example
+If the file is missing, the extension uses:
 
 ```json
 {
   "enabled": true,
-  "maxDepth": 1,
-  "widgetLineBudget": 7,
-  "runDescriptionPromptFile": "/absolute/path/to/run-subagent-description.md",
-  "resumeDescriptionPromptFile": "/absolute/path/to/resume-subagent-description.md"
+  "maxDepth": 1
 }
 ```
 
-## Parameters
-
-| Name | Required | Type or shape | Default | Meaning |
+| Name | Required | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `enabled` | No | Boolean | `true` | Enables or disables both subagent tools. Set to `false` to prevent their registration. |
-| `maxDepth` | No | Integer greater than or equal to `0` | `1` | Limits nested subagent calls. `0` removes both tools from the active tool list. |
-| `widgetLineBudget` | No | Integer greater than or equal to `1` | `7` | Limits the live widget to this many content lines, including its header, agent rows, and omission summaries. The separator above the widget is not counted. |
-| `runDescriptionPromptFile` | No | Non-empty absolute file path string | Bundled `run_subagent` description | Replaces the `run_subagent` description with the trimmed file contents. |
-| `resumeDescriptionPromptFile` | No | Non-empty absolute file path string | Bundled `resume_subagent` description | Replaces the `resume_subagent` description with the trimmed file contents. |
+| `enabled` | No | Boolean | `true` | Enables runtime behavior. When `false`, all four tool definitions remain registered, the runtime and management screen do not start, and every execution fails closed. |
+| `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum delegation depth. At or beyond this depth, all four subagent tools and both model-visible subagent sections are removed. Unrelated agent tools remain active. |
+| `extensionDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/extension-description.md` | Replaces the shared model-visible Subagents rules with the file's trimmed content. |
+| `startDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/start-description.md` | Replaces the model-visible `subagent_start` description with the file's trimmed content. |
+| `steerDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/steer-description.md` | Replaces the model-visible `subagent_steer` description with the file's trimmed content. |
+| `waitDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/wait-description.md` | Replaces the model-visible `subagent_wait` description with the file's trimmed content. |
+| `query` | No | Object | `{}` | Configures the auxiliary model and system prompt used by `subagent_query`. |
 
-Configured description files must be readable and non-empty after trimming whitespace. The config object accepts only `enabled`, `maxDepth`, `widgetLineBudget`, `runDescriptionPromptFile`, and `resumeDescriptionPromptFile`.
+Each description file must be readable and contain non-whitespace text after trimming. The keys are independent: an omitted key keeps its matching bundled description even when another description uses a custom file.
 
-## Agent definitions
+`query` accepts only these fields:
 
-Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended by `<cwd>/.pi/agents`.
+| Name | Required | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `model.id` | No | `provider/model` string | Calling agent's current model | Selects a model from the calling Pi process's registry. |
+| `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Calling agent's current thinking level | Selects reasoning for the auxiliary request. `off` omits the provider reasoning option. |
+| `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Supplies trimmed non-empty text as the auxiliary system prompt. |
 
-`run-subagent` rebuilds the registry for the current working directory when it creates callable-agent guidance and when it validates a tool call. A project override therefore supplies the child prompt, model, thinking level, tools, and callable subagents. Each child resolves its own `tools` patterns against its complete runtime tool catalog, independently of the caller's catalog. Resumed sessions keep their original agent ID but use its current definition for the same working directory.
+Before each model turn, the extension evaluates the active tools after main-agent selection, child tool policy, and depth filtering. If any subagent tool is active, the resolved extension description is appended to the system prompt inside `<subagent_tools_guidelines>...</subagent_tools_guidelines>`. When `subagent_start` is active, each callable agent is appended with its escaped ID and description:
 
-## Authentication startup recovery
-
-Before allocating or resuming a child session, `run-subagent` resolves the selected model credentials through the parent model registry. A parent authentication failure returns immediately without starting child `pi`.
-
-All child launchers in the package share one FIFO startup gate within the parent process. The gate allows one child Pi process at a time to start and complete prompt preflight, including credential loading. A prompt response releases the gate while an accepted child continues its full run, so agent execution remains parallel. Process exit and spawn failure also release the gate. Cancellation before process creation removes the call from the queue without starting Pi; cancellation after process creation uses the child RPC abort path.
-
-Before RPC delivery, all contiguous leading `/` characters are removed from the child prompt. An empty result is rejected, so child tasks cannot enter Pi's extension-command path.
-
-A child can still temporarily miss OAuth credentials when an independent Pi process holds the shared `auth.json` lock. After successful parent authentication, both new and resumed sessions retry only a provider-matching `No API key found for <provider>` RPC prompt rejection received before observable child RPC activity. Every retry starts a fresh process, re-enters the startup gate, and preserves the same new-session UUID or resumed JSONL path. The original attempt and up to three retries use exponential randomized delays. Cancellation, failures after child activity, transport failures, and other errors are not retried.
-
-## Live progress
-
-Interactive TUI mode sends one initial partial update to populate the historical call with the resolved model and thinking level. Later live progress appears only in the widget and focused browser. RPC and other non-TUI modes keep every intermediate tool update for nested progress propagation.
-
-The header counts every direct and nested logical child session. It also shows the number of concrete displayed sessions, total recorded sessions, and the `Ctrl+Shift+G` browser shortcut.
-
-### Automatic view
-
-The automatic body follows these rules:
-
-- Failed and aborted work is selected before running work.
-- Running work is selected before completed work.
-- Sessions within one status class are ordered by their latest update time.
-- A nested session is shown only with its complete visible ancestor path.
-- A parent with only hidden descendants shows their aggregate on the parent row.
-- A partially visible branch ends with a local omission summary.
-- Hidden root branches keep a root-level summary when the line budget permits it or attention-bearing work is hidden.
-- Completed sessions use remaining rows after failed, aborted, and running work.
-- With `widgetLineBudget` set to `1`, only the aggregate header fits.
-
-Connectors are derived after the visible tree is selected. A visible descendant therefore cannot retain a connector to a hidden parent or sibling.
-
-### Selected-session view
-
-Selecting a child session in the browser switches the widget from the aggregate overview to that session. Selection uses the internal `childSessionId`, so it remains stable while other sessions start or finish and while the selected session is resumed.
-
-A root session uses one header row:
-
-```text
-✓ Root: YandexExtractor #2 · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
+```xml
+<available_subagents note="List of available subagent IDs">
+<agent id="SubAgentExtractor">
+Extracts facts without analysis.
+</agent>
+</available_subagents>
 ```
 
-When the line budget permits a second row, a nested session shows its direct parent and root-relative depth:
+At or beyond `maxDepth`, none of the four subagent tools, `<subagent_tools_guidelines>`, or `<available_subagents>` is included in model context.
 
-```text
-✓ Child: YandexExtractor #1 · Delegate identity checks · openai-codex/gpt-5.6-luna/low · 18k/372k · 85.3s
-Parent: SubAgentExtractor #2 · Delegate catalog checks · Depth 1
+Example:
+
+```json
+{
+  "enabled": true,
+  "maxDepth": 2,
+  "extensionDescriptionPromptFile": "/absolute/path/to/subagents-rules.md",
+  "startDescriptionPromptFile": "/absolute/path/to/subagent-start.md",
+  "steerDescriptionPromptFile": "/absolute/path/to/subagent-steer.md",
+  "waitDescriptionPromptFile": "/absolute/path/to/subagent-wait.md",
+  "query": {
+    "model": {
+      "id": "provider/model",
+      "thinking": "medium"
+    },
+    "systemPromptFile": "/absolute/path/to/subagent-query-system.md"
+  }
+}
 ```
 
-The first selected-session row starts with the same symbol as the overview: `➜` for a running new session, `⇆` for a running continuation, `✓` for success, `✗` for failure, or `■` for an abort. A terminal symbol replaces the running invocation symbol when work ends. Runtime model details and tool event payloads use the normal foreground color; status symbols, tool names, context pressure, and elapsed time retain their semantic styling. The remaining rows within `widgetLineBudget` show the latest retained tool events in chronological order without tree connectors. `tool_call`, `tool_result`, and tool execution `error` events each use one row. Assistant output and assistant failures are excluded. Rows do not wrap and are clipped to terminal width. The selected-session view does not scroll.
+The configuration object accepts only the seven top-level keys listed above. Invalid JSON, unsupported keys, invalid values, or one unreadable or empty configured prompt file fail the complete configuration closed. All four tools remain registered with bundled descriptions, while runtime behavior and the management screen remain disabled. Existing operations fail with `start_failed`; `subagent_query` fails with `query_failed`. No valid custom value from the same configuration is applied.
 
-Select `Automatic view` in the browser to resume aggregate selection. The selected logical session is stored with the current main session and restored when that session reopens.
+Configuration and description files are read once while the extension runtime starts and before Pi creates its first model snapshot. Restart Pi to apply file or configuration changes; the extension does not reload them in a running session.
 
-### Browser
+The root agent has depth `0`. With the default `maxDepth` of `1`, the root can start direct children, but those children cannot delegate further.
 
-Open the complete session list with either:
+## Callable agents and tool policy
+
+Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended or replaced by definitions under `<cwd>/.pi/agents`.
+
+A project agent definition supplies the child prompt, model, thinking level, tool patterns, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
+
+An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.
+
+## Startup acceptance
+
+Child prompt startup is serialized across package child launchers until each initial prompt is accepted, rejected, or fails to start. Accepted invocations then run concurrently.
+
+Before delivery, leading `/` characters are removed from a child prompt. If no non-whitespace text remains, the prompt is rejected. This prevents a child prompt from entering Pi's extension-command path.
+
+After parent authentication succeeds, a provider-matching missing-credential rejection can be retried only before the child shows other activity. The original attempt and up to three retries each use a fresh process. Cancellation, other startup failures, failures after child activity, and runtime transport failures are not retried.
+
+## Interactive management screen
+
+In interactive TUI mode, either entry opens the same full-terminal overlay:
 
 - `/subagents`
 - `Ctrl+Shift+G`
 
-The browser uses Pi `SelectList` behavior:
+The overlay is available only after the interactive root runtime starts. RPC and print modes do not construct the management screen or register its command and shortcut. The extension does not install a subagent widget in the normal conversation view.
 
-- `Up` and `Down` navigate and scroll through every recorded root and nested child session.
-- `Enter` shows the selected child session in the widget or applies `Automatic view`.
-- `Escape` or `Ctrl+C` closes the browser without changing the current mode.
+### Hierarchy and selected-session header
 
-Browser labels append `Root` for root sessions or root-relative `Depth N` for nested sessions. Nested descriptions also name the direct parent. The browser preserves selection by `childSessionId` while the invocation `runId`, live status, elapsed time, context usage, and activity descriptions change.
+The hierarchy contains every recorded root and descendant session beneath its direct caller. Siblings retain creation order. Each node uses two visual rows: the first shows its expansion marker, status, agent ID, and owner-local session ID; the second shows its task name. Caller connectors, indentation, collapsing, and scrolling keep arbitrary-depth hierarchies navigable.
 
-### Session identity and row content
+Owner-local session IDs can repeat under different callers. Selection and message routing use the owning session together with its local ID, so a status update, repeated numeric ID, or update elsewhere in the tree does not move the selection. If the selected session disappears, selection moves to the first visible root; an empty hierarchy has no selection.
 
-Each logical child session shows the short numeric `sessionId` used for continuation. A running new session renders as `➜ Sage #2 · Review widget navigation`. Resuming it updates the same row, returns it to `running`, replaces its task and invocation state, and uses the continuation symbol, for example `⇆ Sage #2 · Verify project quality gates`. Completed descendants absent from the latest resume snapshot remain attached to the session. `childSessionId` is the internal logical-row identity, while `runId` identifies the latest invocation. Numeric session IDs are local to the owning Pi session, so separate nested branches may display the same number.
+The status symbols are:
 
-Each overview agent row uses one visual terminal line:
+- `●` for an active invocation;
+- `✓` for successful completion;
+- `✗` for failure;
+- `■` for abort.
 
-- Elapsed time uses milliseconds below one second, then seconds, `m:ss`, or `h:mm:ss`.
-- Context usage shows rounded whole-thousand token counts such as `190k/372k`; unknown overflow usage uses `~/372k`.
-- Projection savings remain first and use the same rounding, for example `~20k/190k/372k`. Context pressure colors still use the unrounded usage percentage.
-- Tool activity shows the most recent tool name followed by its serialized call arguments, even when a later assistant event completes the run. Captured argument text is limited to 240 UTF-16 code units and 240 terminal columns, then clipped to the remaining row width with `…`. Tool result payloads are not shown in overview rows; failures and empty searches use compact outcome labels. Terminal control sequences and standalone C0/C1 controls are removed. Terminal line whitespace is folded without rewriting other Unicode content.
+The outer title shows `SUBAGENTS` and the total session count, followed by non-zero `●<running>`, `✗<failed>`, and `✓<completed>` counts in that order. Aborted sessions keep `■` on their hierarchy nodes but have no title aggregate. With no sessions, the title is `SUBAGENTS · 0 total`, while the selected-session pane and editor remain empty.
 
-When a mixed omission summary does not fit in verbose form, it uses status icons while preserving every non-zero count. For example, `3 nested: 1 running · 1 failed · 1 done` becomes `3 nested: ⏳1 ✗1 ✓1`.
+The selected-session header shows the caller ancestry from the root session through the selected session. Every segment contains the agent ID and its owner-local session ID. If the ancestry does not fit, the oldest ancestors are removed first and `… ›` marks the omission; the selected identity remains visible. The header never displays `Path:`, child UUIDs, or routing identities.
 
-Rows are clipped by terminal display width after grapheme-aware plain-text selection and before theme colors are applied. This preserves composed Unicode characters and prevents ANSI reset sequences from leaking into the parent widget style.
+The second row shows status and the initial prompt. The third row shows available elapsed time, model ID, and token usage relative to the context window. While the selected invocation is active, its elapsed time is derived from `startedAtMs` and refreshed once per second. Terminal sessions show the finalized `elapsedMs`. Single-line header fields fold ASCII spaces and terminal spacing characters into one ordinary space before width clipping. Elapsed time is rounded down to whole seconds and uses seconds below one minute, `mm:ss` below one hour, and `h:mm:ss` from one hour. Token values below 1,000 are shown as integers; values of 1,000 or more use `k` with at most one decimal place, such as `34k/190k`. Elapsed time and model ID are each omitted when unavailable. Token usage appears only when both the used-token count and context-window size are available; otherwise the complete token/context value is omitted without a synthetic `0/...`, `?/...`, or context-window-only placeholder. While the invocation is active, the header uses usage from the latest loaded assistant response only when its model matches the invocation model. Terminal invocation metadata takes precedence. A continuation on another model does not reuse usage measured by the prior model.
 
-## Historical tool rendering
+### Responsive layout
 
-Collapsed calls show `Name` from `taskName` and a wrapped `Task` preview from `prompt`, without progress rows. The `Name:` and `Task:` labels are bold; their values use the theme's `muted` color. After a new session is allocated, the `run_subagent` header adds `#N`. A `resume_subagent` call immediately shows the persisted agent and requested `#N`; an unknown session shows only `#N` until execution reports the session error. Runtime resolution adds the model and thinking level, while the final result adds context usage and elapsed time. Expanded calls retain the header and `Name`, omit the `Task` preview, and show the complete prompt once under `Prompt`. Completed calls also show the final answer, failure, or abort result. Expanded calls do not show the intermediate event timeline or a separate stderr section.
+Wide mode reserves at least 24 terminal columns for the hierarchy and 40 for the selected-session pane, excluding the two outer borders and the separator. A total width of 67 columns is therefore the first wide layout. At 66 columns or fewer, the screen uses one pane.
 
-## Child session logs
+Wide mode shows the hierarchy on the left and the selected header, conversation, and editor on the right. Every new overlay starts with hierarchy focus; in one-pane mode it always opens on the hierarchy. Confirming a selected node opens its full-width conversation and editor. `Escape` returns from that pane to the hierarchy; another `Escape` closes the overlay. In wide mode, `Escape` closes the overlay directly.
 
-A `run_subagent` call starts child `pi` with a saved JSONL session. A `resume_subagent` call continues the saved session at its active leaf.
+### Conversation presentation
 
-Child sessions are stored outside the normal project session list:
+The conversation shows the selected saved session's active root-to-leaf branch in chronological order. Selecting another node replaces the conversation and moves its viewport to the latest content. Context-projection custom entries are excluded, and custom entries with `display: false` are not shown.
+
+#### Live runtime status
+
+An active selected session shows the child Pi runtime status between the conversation and editor:
+
+- `Working...`
+- retry countdown;
+- manual, automatic, or context-overflow compaction;
+- branch summarization.
+
+The status is transient projection state, not a synthetic session entry, so it never appears in saved history. The active invocation retains the latest state and includes it in each selected-session snapshot. Opening or switching selection therefore does not require the original event to arrive again.
+
+The row uses Pi's public `Loader`. It does not advertise a cancellation key because `Escape` remains owned by overlay navigation and closing.
+
+Presentation uses Pi's public conversation components:
+
+- User messages use `UserMessageComponent`.
+- Assistant messages use `AssistantMessageComponent`, including Pi's assistant text and thinking presentation.
+- Tool calls and their matching results use `ToolExecutionComponent`.
+- Displayable custom messages use `CustomMessageComponent` with its standard custom-type text or Markdown presentation.
+
+The management pane removes `OSC 133;A/B/C` shell-history markers from nested component rows before composition. These terminal-global markers corrupt Ghostty when an overlay redraw emits them again. Visible text, SGR styling, and OSC 8 hyperlinks are preserved.
+
+Tool presentation follows three paths:
+
+- Pi built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`) use Pi's built-in tool definition.
+- Package tools publish their exact call, result, and shell presentation through Pi's shared extension event bus. The management pane resolves these presentations by tool name, independent of extension load order and Jiti module isolation. This covers the four Subagents tools, MCP wrapper tools, `consult_advisor`, and `convene_council`.
+- Other tool names use the universal presentation: the JSON call preview starts on the tool-name row and occupies at most two visual lines; collapsed results occupy at most five visual lines and include a hidden-line count with the configured expansion key; expanded results use full Markdown; failures use error styling; and Pi supplies the normal tool shell.
+- Collapsed arbitrary text uses the same whitespace, JSON-string, and terminal-control normalization as MCP tool previews. Expanded result text remains unchanged.
+
+`Ctrl+O`, the default `app.tools.expand` binding, toggles all tool and custom-message expansion states regardless of focus. Each overlay samples Pi's current main-conversation tool-expansion state when that overlay opens. Toggling expansion inside the overlay changes only that open overlay and does not change the main conversation.
+
+Conversation scrolling uses the configured up, down, page-up, and page-down bindings and counts wrapped visual rows. New content remains visible while the viewport is at the bottom. After the user scrolls upward, new content does not move the viewport. The pane does not show a scroll percentage.
+
+Selection loads the complete saved root-to-leaf branch through Pi's public `SessionManager` after an asynchronous file preflight, then publishes its latest dependency-complete user turn. The screen reveals preceding turns from that in-memory branch until Pi's rendered rows fill the current conversation viewport. `Loading earlier messages…` marks the upper boundary of an incomplete preview. Its scroll column uses `⋮` and `▒` instead of a proportional thumb because the visible row count is still growing. Adding earlier entries preserves the top visible component and its row offset. When the root turn becomes visible, the normal proportional scroll thumb replaces the loading track.
+
+### Focus, editing, and message routing
+
+`Tab` and `Shift+Tab` cycle through the focus zones available in the current layout. Wide mode offers hierarchy, conversation, and editor focus when a session is selected. Narrow hierarchy mode has only hierarchy focus; narrow conversation mode cycles between conversation and editor. These keys, tool expansion, navigation, and `Escape` are consumed by the overlay rather than sent to the child session.
+
+With hierarchy focus:
+
+- Up and down move through visible nodes in creation order.
+- Left collapses an expanded branch; otherwise it selects the direct parent.
+- Right expands a collapsed branch; otherwise it selects the first child.
+
+With conversation focus, up and down scroll by visual row and page-up and page-down scroll by page. With editor focus, Pi's editor owns text navigation, paste, multiline input, and submission.
+
+Submitting an empty editor is a no-op. Pi clears submitted text while acceptance is pending. If the selected session accepts the message, the editor stays clear and the selected branch refreshes. If routing rejects the message or throws an error, the exact submitted text is restored and Pi shows an error notification.
+
+The overlay can message any selected descendant, including one whose numeric ID repeats elsewhere. Routing uses the selected session's complete owner-qualified identity. An active invocation receives the message as steering; a terminal session starts a continuation of the same saved logical session.
+
+### Updates, errors, restoration, and disposal
+
+Session creation, status changes, continuations, and selected-conversation activity update the overlay without changing a still-valid selection. A continuation updates the existing logical-session node instead of adding another node. Active selection requests the complete append-order entry set through Pi RPC `get_entries` and combines it with the supervisor's latest transient runtime status. The response's `leafId` selects the current branch without reading the concurrently written session file. Later refreshes request only entries after the last received entry ID. Activity received while the initial request is in flight schedules an incremental refresh after the selected loader owns that snapshot, so an entry appended after the opening snapshot was produced does not wait for another activity event. If one valid response exceeds the normal RPC line buffer, it is parsed as a stream. Scalar entry strings longer than 4,096 characters in that oversized response retain their first 4,095 characters followed by `…`. When an active session terminates, its final saved branch is loaded through `SessionManager`.
+
+The installed Pi version owns saved-session parsing and migration; the extension does not interpret Pi's storage format. Only the selected complete saved branch or complete active entry set is retained in memory. Changing selection discards its conversation payload. An in-flight saved-session load is allowed to finish because `SessionManager.open()` can migrate the file, but its stale result cannot publish after another session becomes selected. Concurrent requests for the same saved file share one loading operation. If a selected-conversation refresh fails, Pi shows an error notification and the last successfully loaded conversation remains visible.
+
+Reopening the overlay in the same extension runtime retains expanded hierarchy branches and the selected session only while those sessions still exist. The conversation payload is reloaded instead of retained while the overlay is closed. Independently, every reopened overlay resamples Pi's current main-conversation tool-expansion state; tool-expansion changes from the prior overlay are not retained. Hierarchy scroll resets to the top, focus and one-pane state reset to the hierarchy. If the retained selection is missing or invalid, the first visible root is selected.
+
+Closing the overlay returns to the unchanged main conversation editor and viewport, clears the selected-conversation payload, and stops applying background refreshes. An in-flight `SessionManager.open()` operation finishes without publishing its result. Shutting down the owning runtime performs the same cleanup.
+
+## Tool requests
+
+Every request is a closed object. Extra properties are rejected.
+
+### `subagent_start`
+
+Starts a callable agent in a new saved logical session.
+
+| Name | Required | Type or shape | Meaning |
+| --- | --- | --- | --- |
+| `agentId` | Yes | String | ID of an available callable agent. |
+| `taskName` | Yes | String containing 3–60 Unicode code points | Short name for the delegated task. |
+| `prompt` | Yes | String containing at least one non-whitespace Unicode code point | Initial child prompt. |
+
+After the child accepts the prompt, the tool returns:
+
+```json
+{
+  "outcome": "accepted",
+  "sessionId": 1
+}
+```
+
+The child can remain active after this result. If the request fails before acceptance, no logical session, persistence record, feedback, or owner-history message is created.
+
+### `subagent_steer`
+
+Sends a prompt to a directly owned logical session.
+
+| Name | Required | Type or shape | Meaning |
+| --- | --- | --- | --- |
+| `sessionId` | Yes | Positive integer | Owner-local session ID returned by `subagent_start`. |
+| `prompt` | Yes | String containing at least one non-whitespace Unicode code point | Prompt to deliver. |
+
+After the child accepts the prompt, the tool returns:
+
+```json
+{
+  "outcome": "accepted",
+  "sessionId": 1
+}
+```
+
+For an active session, the current invocation accepts the prompt as steering. For a terminal session, a new invocation continues the same saved logical session. The session ID and saved session identity do not change.
+
+If terminal completion and steering overlap, exactly one invocation accepts the prompt: the active invocation or the next continuation. A successful result never means that the invocation has finished.
+
+### `subagent_wait`
+
+Waits for the first terminal feedback from selected direct children that are active when the wait begins.
+
+| Name | Required | Type or shape | Meaning |
+| --- | --- | --- | --- |
+| `sessionIds` | Yes | Non-empty array of distinct positive integers | Directly owned logical sessions to observe. |
+| `timeoutMs` | Yes | Integer from `1` through `2147483647` | Maximum wait duration in milliseconds. |
+
+Listed terminal sessions are ignored. If none of the listed sessions is active, the tool returns immediately:
+
+```json
+{
+  "outcome": "no_active_sessions"
+}
+```
+
+If selected feedback is observed strictly before the timeout, the tool returns one of these shapes:
+
+```json
+{
+  "outcome": "feedback",
+  "sessionId": 1,
+  "status": "success",
+  "elapsedSeconds": 3,
+  "output": "Final child output"
+}
+```
+
+```json
+{
+  "outcome": "feedback",
+  "sessionId": 1,
+  "status": "failure",
+  "elapsedSeconds": 3,
+  "error": "Failure details"
+}
+```
+
+```json
+{
+  "outcome": "feedback",
+  "sessionId": 1,
+  "status": "abort",
+  "elapsedSeconds": 3,
+  "error": "Abort details"
+}
+```
+
+`elapsedSeconds` is the total child invocation runtime, not the time spent inside the current wait. The value is rounded up to a whole second and has a one-second minimum.
+
+If no selected feedback is observed strictly before the timeout, the tool returns:
+
+```json
+{
+  "outcome": "timeout"
+}
+```
+
+Timeout does not stop or change any child. Feedback observed at the timeout boundary belongs to owner history rather than the timed-out wait.
+
+Each owner can have at most one active wait. When eligible waits overlap, one becomes active and every other call fails with `wait_already_active`. A wait observes only the selected sessions that were active when that wait began.
+
+### `subagent_query`
+
+Asks one auxiliary model a focused question using a directly owned saved child conversation.
+
+| Name | Required | Type or shape | Meaning |
+| --- | --- | --- | --- |
+| `sessionId` | Yes | Positive integer | Owner-local ID of one direct child. |
+| `question` | Yes | String containing at least one non-whitespace Unicode code point | Question XML-escaped and appended after the saved conversation inside one `<question>...</question>` block. |
+
+A successful call returns only the auxiliary model's answer as tool-result text. The default tool shell shows the pending question as a bounded plain-text preview or a complete expanded Markdown section. After completion, the collapsed view shows the elapsed time, clips the normalized question to one visual row without wrapping, and bounds the plain-text answer preview. The expanded view shows the complete question and answer as separate Markdown sections.
+
+The operation does not start, steer, wait for, resume, stop, or invoke the child agent. It reads one saved root-to-leaf branch through Pi's public `SessionManager`, validates every entry, applies only `context-projection` replacements persisted in that branch, appends one XML-escaped `<question>...</question>` block, and sends no tools to the auxiliary model. The child system prompt and the calling agent's project context are not copied.
+
+The auxiliary model request runs in the Pi process of the calling agent. That process supplies the configured or current model, thinking level, authentication, cancellation signal, and cost attribution. A worker process requests only the authorized saved branch from the root runtime; that internal payload contains `sessionId` but not the question, session path, model, credentials, system prompt, answer, usage, or cost.
+
+The query does not retry, truncate the branch, read process-local projection replacements, or merge current loaded-skill state. A missing or empty saved session, invalid branch, unavailable model or authentication, oversized input, provider failure, or empty text response fails with `query_failed`.
+
+## Feedback delivery
+
+Each normally terminal invocation produces one feedback value with status `success`, `failure`, or `abort`. That feedback has one destination:
+
+- The matching active wait returns it once.
+- If no matching active wait can return it, it enters the direct owner's conversation history once.
+
+Feedback returned by a wait is not duplicated in owner history. If several selected children finish before one wait settles, the wait returns one feedback value and the others enter owner history. Those other values cannot be consumed by a later wait.
+
+If normal feedback is selected for a matching wait but the owning runtime stops before that wait can return, the feedback is saved for owner history and delivered once when the owner session reopens.
+
+History delivery includes `Duration: N seconds` between the completion header and child output or error. `N` follows the same total-invocation rounding rule as `elapsedSeconds`.
+
+History delivery follows the owner's turn boundary:
+
+- If the owner is idle, feedback is added without starting a new agent turn.
+- If the owner is processing a turn, feedback is added after the current assistant turn finishes its tool calls and before the next model request.
+
+A timeout, a no-active result, or feedback from an unselected child does not change child execution.
+
+## Pi cancellation
+
+Pi cancellation uses one ordering boundary for each root or nested operation:
+
+- A start or terminal-session steer is ordered against prompt acceptance.
+- An active-session steer is ordered against dispatch reservation.
+- A wait is ordered against feedback, timeout, or no-active settlement.
+- A query cancellation stops its in-flight auxiliary model request without changing the child session.
+
+When cancellation wins:
+
+- A start or terminal-session steer completes process and bridge cleanup without recording a new logical session or continuation.
+- An active-session steer canceled before dispatch sends no steering prompt, applies no prompt, and sends no child abort.
+- A wait removes its admission, timer, resolver, and bridge correlation before cancellation becomes observable. Later child feedback follows normal owner-history delivery.
+- A query returns no answer and no `query_failed` result after caller cancellation wins.
+- The tool call propagates as Pi cancellation. It returns neither a normal Subagents outcome nor a failed Subagents `{ code, message }` result.
+
+Once active-steer dispatch is reserved, cancellation cannot win. If child Pi returns a successful steer response, the call returns the accepted result and applies the prompt exactly once, even when the parent observed cancellation before receiving that response. A rejected child steer response remains `message_rejected`; no child abort is sent in either case.
+
+For a nested active steer, the root cancellation acknowledgment states whether cancellation won before dispatch. When dispatch won, the worker waits for the original steer response, returns that accepted or failed outcome, and closes the original and cancellation correlations once.
+
+For start or terminal-session steer, prompt acceptance first keeps the accepted result and tracked logical-session or invocation state. For a wait, settlement first keeps its feedback, timeout, or no-active result and any selected feedback destination. Later cancellation does not undo a completed outcome.
+
+## Session identity
+
+`sessionId` is a positive integer local to the direct owner. Different owners, including owners in separate branches, can use the same number for different logical sessions. Therefore, `subagent_steer`, `subagent_wait`, and `subagent_query` can address only the caller's direct children.
+
+Accepted session IDs increase within each saved owner session and remain stable across later continuations. A failed start can consume a candidate number, so accepted IDs can contain gaps. A skipped number identifies no logical session.
+
+The original callable agent identity remains attached to the saved logical session. A terminal continuation uses that agent's current definition resolved for the owning runtime's working directory.
+
+## Process lifetime and terminal outcomes
+
+Each active invocation runs in a separate saved child Pi process owned by the Pi runtime that started it. The process remains supervised after start or steer acceptance and does not outlive its owning runtime.
+
+Normal completion produces exactly one terminal state and one feedback disposition:
+
+- successful completion becomes terminal success;
+- failed completion becomes terminal failure;
+- child abort becomes terminal abort.
+
+Normal child completion uses Pi RPC `agent_settled`. A low-level `agent_end` is not terminal because Pi can still perform an automatic retry, compact the context and retry, or process a queued continuation. Parent cancellation, transport failure, and process exit remain independent terminal boundaries because they can prevent `agent_settled` from arriving.
+
+If an accepted child process exits before a normal terminal event, the invocation becomes terminal failure. Its failure feedback states that the child exited without a terminal event and includes the available exit code, signal, or both. The saved logical session remains available for later continuation.
+
+When the owning Pi runtime stops first:
+
+- every active child invocation owned by that runtime becomes terminal abort;
+- active waits cease;
+- runtime-forced abort feedback is not returned by a wait or added to owner history;
+- child processes and invocations started beneath them are stopped;
+- saved logical sessions remain available for reopening and later continuation.
+
+If communication between an owning runtime and a child runtime fails, the affected runtime fails closed: its active work is stopped, its waits cease, and no reconnect or response retry is attempted. Feedback already selected for normal delivery keeps its one destination instead of being delivered twice or lost.
+
+At a completion, process-exit, runtime-stop, or fail-stop boundary, the first observed outcome wins. Later competing observations do not replace the terminal state or create another feedback destination.
+
+## Persistence and reopening
+
+Child sessions are stored under:
 
 ```text
 ~/.pi/agent/agent-suite/run-subagent/sessions/
 ```
 
-If `PI_AGENT_SUITE_DIR` is set, the same `run-subagent/sessions/` path is created under that suite directory.
+When `PI_AGENT_SUITE_DIR` is set, the same `run-subagent/sessions/` path is used under that suite directory.
 
-The tool result `details` includes:
+The owning Pi session saves logical-session identity, direct-owner relationships, accepted continuations, terminal outcomes, and whether feedback was returned by a wait or added to history. This state remains outside model context. Reopening recursively restores every saved descendant with the same owner-local ID and saved child conversation, regardless of the current `maxDepth`. Lowering `maxDepth` prevents deeper `subagent_start` calls but does not hide historical sessions.
 
-| Field | Meaning |
-| --- | --- |
-| `formatVersion` | Persisted widget-details format version. |
-| `sessionId` | Short positive integer used by `resumeSession` and displayed as `#N` within the owning session. |
-| `isResume` | `true` for `resume_subagent` invocations and `false` for new sessions. |
-| `childSessionId` | Pi-compatible UUIDv7 assigned to the child session. |
-| `childSessionDir` | Directory passed to child `pi` through `--session-dir`. |
-| `childSessionPath` | JSONL session file path when the file is found after child exit. |
+A saved invocation that was active but has no saved terminal outcome reopens as terminal abort. Its logical session remains continuable through `subagent_steer` with the same owner-local ID.
 
-## Tool input
+Reopening also completes delivery for terminal feedback interrupted by shutdown. Feedback already returned by a wait or added to history keeps that destination. Otherwise, feedback is added to owner history once. Repeated reopening does not duplicate the history message or change the selected terminal state.
 
-`run_subagent` starts a new session:
+## Failed tool results
 
-| Name | Required | Type or shape | Meaning |
-| --- | --- | --- | --- |
-| `agentId` | Yes | String | Callable agent ID to run. |
-| `taskName` | Yes | String with 3–60 characters | Unique 2–6 word action-and-object name for this invocation. Concurrent calls use distinct names based on task focus. |
-| `prompt` | Yes | String | Complete task prompt for an independent child conversation. |
+Failed calls use Pi's failed-tool channel with `{ code, message }` and no normal `outcome`. Known causes use concise stable messages without process or storage details. An unavailable saved query conversation returns `Subagent is not ready, please try again after some time`. Unknown causes retain a bounded prefix of their original message after terminal-control and bidirectional-control removal, single-line whitespace normalization, and grapheme-safe truncation to 2,000 UTF-16 code units. An empty sanitized message becomes `Unknown error`. The same safety boundary applies to failure and abort feedback returned by `subagent_wait`.
 
-`resume_subagent` continues an existing session:
+| Code | Applies to | Meaning and retry condition |
+| --- | --- | --- |
+| `invalid_request` | All four tools | The closed request contract is violated. Retry with corrected input. |
+| `agent_unavailable` | `subagent_start` | `agentId` does not identify an available subagent. Retry after availability changes. |
+| `unknown_session` | `subagent_steer`, `subagent_wait`, `subagent_query` | No addressed ID is known as a non-owned session, and at least one addressed ID is unknown. Retry with corrected input. |
+| `not_owner` | `subagent_steer`, `subagent_wait`, `subagent_query` | An addressed session is known but is not directly owned by the caller. For a wait containing unknown and known non-owned IDs, this code takes precedence. Retry with corrected input. |
+| `message_rejected` | `subagent_start`, `subagent_steer` | A structurally valid initial or steering prompt was rejected. A start or steer may be retried in a later call. |
+| `start_failed` | `subagent_start`, terminal-session `subagent_steer` | The required invocation could not start or exited before accepting its prompt. A later call may retry. |
+| `query_failed` | `subagent_query` | The saved branch or auxiliary model request could not produce an answer. Retry after correcting the identified session, configuration, context size, authentication, or provider issue. |
+| `wait_already_active` | `subagent_wait` | The owner already has the one permitted active wait, or this call lost an overlapping admission. Retry after the active wait ends. |
 
-| Name | Required | Type or shape | Meaning |
-| --- | --- | --- | --- |
-| `resumeSession` | Yes | Positive integer | Short session ID returned by an earlier invocation in the current owning session. |
-| `taskName` | Yes | String with 3–60 characters | New action-and-object name for this follow-up invocation. |
-| `prompt` | Yes | String | Changed requirements, review findings, decisions, and acceptance criteria needed for the follow-up. |
-
-Both tools expose closed root object schemas with `additionalProperties: false`. Calling models receive all required properties without a root union.
-
-### Tool availability
-
-- Agent tool lists must explicitly allow `resume_subagent`; allowing `run_subagent` does not add it automatically.
-- `run_subagent` is the master capability. If it is not active, `resume_subagent` is removed even when listed.
-- Reaching `maxDepth` removes both tools and their callable-agent guidance.
-- Removing delegation tools does not change any other tool selected by the child definition.
-- Setting `enabled` to `false` prevents both tools from being registered.
-
-## Session continuation
-
-Every child run that starts returns its short ID before the child response:
-
-```text
-Subagent session: 1
-
-<child response>
-```
-
-Use `resume_subagent` with the returned number to send follow-up work to the same conversation:
-
-```json
-{
-  "resumeSession": 1,
-  "taskName": "Repair review findings",
-  "prompt": "Apply the reviewer findings and rerun the affected checks."
-}
-```
-
-Continuation follows these rules:
-
-- The saved mapping supplies the original `agentId`; callers cannot replace it during continuation.
-- The working directory must match the original run.
-- The saved JSONL file must still exist and pass Pi session validation.
-- One main-agent runtime cannot start two child processes for the same session concurrently.
-- Missing, conflicting, foreign, or active session IDs fail without starting a new session.
-- A resumed run uses the current model, thinking level, tools, and instructions configured for the same agent.
-- When an invocation is aborted, descendant snapshots still marked as running are finalized as aborted before persistence. Resuming the parent retains those descendants as terminal history instead of showing them as active.
-- The resumed child resolves the current tool patterns against its own runtime catalog, not the resuming caller's catalog.
-
-The numeric alias, child UUID, child session directory, `agentId`, and working directory are persisted as a Pi custom session entry. The current main-session branch also retains versioned invocation-start and browser-selection entries. Terminal tool-result details rebuild completed widget state; a start without a later terminal result reopens as `aborted`. Unknown or malformed widget records reset only the affected reconstructed widget or selection state. They do not invalidate the child-session registry or modify child JSONL files.
-
-Custom entries do not participate in LLM context. Provider adapters build model-facing tool results from `content`, which contains the short numeric ID but not the UUID, directory, or registry mapping.
+Structural request violations produce `invalid_request` before session, ownership, availability, or runtime checks. Each failed call returns one applicable code. A retry is a new call and does not retroactively change the failed call.
