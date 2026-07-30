@@ -68,7 +68,7 @@ make release-minor
 make release-major
 ```
 
-The command updates `pi-package/package.json`, syncs `README.md` to `pi-package/README.md`, runs validation, and checks the npm tarball.
+The command updates `pi-package/package.json`, runs validation, temporarily copies `README.md` into `pi-package/`, checks the npm tarball, and removes the temporary copy.
 
 Print the remaining manual steps:
 
@@ -80,7 +80,7 @@ Commit release files:
 
 ```bash
 VERSION=$(node -p "require('./pi-package/package.json').version")
-git add package.json pi-package/package.json README.md pi-package/README.md .github/workflows/npm-publish.yml Makefile docs/PUBLISHING.md
+git add package.json pi-package/package.json README.md .github/workflows/npm-publish.yml Makefile docs/PUBLISHING.md
 git commit -m "Release v$VERSION"
 ```
 
@@ -105,7 +105,7 @@ This runs:
 - `bun run verify`
 - `npm pack --dry-run` inside `pi-package/`
 
-The publish workflow runs `bun run verify:ci` because the runtime integration test depends on local pi CLI behavior and is covered by `make release-check` before the release commit.
+The publish workflow runs `bun run verify:ci` because the runtime integration test depends on local pi CLI behavior and is covered by `make release-check` before the release commit. Before checking and publishing the npm package, the workflow copies the root `README.md` into `pi-package/`.
 
 ## Version and tag rule
 

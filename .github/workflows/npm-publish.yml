@@ -42,6 +42,9 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare package README
+        run: cp README.md pi-package/README.md
+
       - name: Check npm package contents
         working-directory: pi-package
         run: npm pack --dry-run

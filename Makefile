@@ -56,7 +56,7 @@ release-next-steps:
 	@echo "Tag: $(TAG)"
 	@echo ""
 	@echo "Commit release files:"
-	@echo "  git add package.json $(PACKAGE_DIR)/package.json README.md $(PACKAGE_DIR)/README.md .github/workflows/npm-publish.yml Makefile docs/PUBLISHING.md"
+	@echo "  git add package.json $(PACKAGE_DIR)/package.json README.md .github/workflows/npm-publish.yml Makefile docs/PUBLISHING.md"
 	@echo "  git commit -m \"Release $(TAG)\""
 	@echo ""
 	@echo "Create and push tag:"
