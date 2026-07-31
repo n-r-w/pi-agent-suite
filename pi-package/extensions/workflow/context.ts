@@ -49,7 +49,7 @@ function renderWorkflowContext(
 	return sections.join("\n\n");
 }
 
-/** Renders the current catalog or the approved self-closing empty element. */
+/** Renders the non-empty activation options supplied by availability resolution. */
 function renderActivationOptions(
 	workflows: readonly WorkflowDefinition[],
 ): string {

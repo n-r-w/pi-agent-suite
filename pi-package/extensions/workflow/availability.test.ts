@@ -111,6 +111,29 @@ describe("workflow availability", () => {
 	});
 
 	/**
+	 * Proves a case-only catalog rename cannot expose the active logical workflow for reactivation.
+	 * Input and expected output: saved ID DELIVERY and catalog ID delivery produce no activation option.
+	 * Edge case: transition remains available for the projected saved state.
+	 * Dependencies: case-insensitive workflow identity and the pure availability resolver.
+	 */
+	test("excludes the active catalog workflow case-insensitively", () => {
+		const state = activateWorkflow(workflow("DELIVERY"));
+		const result = resolveWorkflowAvailability({
+			catalog: [workflow("delivery")],
+			catalogValid: true,
+			policy: { kind: "resolved", policy: ["delivery"] },
+			state,
+		});
+
+		expect(result.projectedState).toBe(state);
+		expect(result.activationOptions).toEqual([]);
+		expect(toolNames(result)).toEqual([
+			WORKFLOW_CREATE_TOOL,
+			WORKFLOW_TRANSITION_TOOL,
+		]);
+	});
+
+	/**
 	 * Proves the workflows allowlist restricts catalog state but never dynamic state.
 	 * Input and expected output: workflows: [] hides catalog state while preserving dynamic state and transition.
 	 * Edge case: the same policy is evaluated against both explicit state sources.

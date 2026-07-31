@@ -132,7 +132,7 @@ A successful call validates the whole graph, stores one `created` snapshot, and 
 
 ### `workflow_activate`
 
-`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. Activation replaces prior workflow state. The tool is unavailable when policy filtering and exclusion of the active workflow leave no activation options.
+`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. Activation replaces prior workflow state. The active workflow is excluded from options case-insensitively. The tool is unavailable when policy filtering and that exclusion leave no activation options.
 
 ### `workflow_transition`
 
@@ -167,7 +167,7 @@ The extension computes tool availability independently:
 
 The agent's `tools` policy remains a second gate. The extension never restores a tool removed by that policy.
 
-When at least one workflow tool is active, `<workflow_guidelines>` contains only universal workflow rules. `<workflow_activation_options>` is included only when `workflow_activate` is active and at least one option exists. An empty or self-closing activation-options element is not emitted.
+`<workflow_guidelines>` contains only universal workflow rules. Context is projected while at least one workflow tool is active. An allowed active workflow also remains projected when the extension temporarily suppresses the last workflow tool granted by the agent policy. A policy reset that removes that tool permission stops the projection without deleting the saved workflow snapshot. `<workflow_activation_options>` is included only when `workflow_activate` is active and at least one option exists. An empty or self-closing activation-options element is not emitted.
 
 An active workflow projects shared workflow guidance before the current stage guidance:
 

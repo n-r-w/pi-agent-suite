@@ -1,5 +1,6 @@
 import {
 	isWorkflowAllowed,
+	toWorkflowMatchKey,
 	type WorkflowPolicyResolution,
 } from "../../shared/workflow-policy.ts";
 import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
@@ -55,9 +56,13 @@ export function resolveWorkflowAvailability(
 			? input.state
 			: undefined;
 
-	// The active catalog workflow is not a replacement candidate for itself.
+	// Case-only catalog renames retain identity and cannot reset the active route.
+	const activeWorkflowKey =
+		projectedState === undefined
+			? undefined
+			: toWorkflowMatchKey(projectedState.workflow.id);
 	const activationOptions = allowedCatalog.filter(
-		({ id }) => id !== projectedState?.workflow.id,
+		({ id }) => toWorkflowMatchKey(id) !== activeWorkflowKey,
 	);
 	const availableToolNames = new Set<WorkflowToolName>();
 	if (input.catalogValid) {

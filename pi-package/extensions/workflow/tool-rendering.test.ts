@@ -16,6 +16,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Box, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { createToolRenderContext } from "../../../test/support/tool-render-context.ts";
+import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment.ts";
+import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../shared/subagent-environment.ts";
 import { createToolPresentationRegistry } from "../run-subagent/tool-rendering.ts";
 import workflowExtension from "./index.ts";
 
@@ -49,6 +51,8 @@ interface ExecutedTool {
 
 const temporaryDirectories: string[] = [];
 const originalSuiteDirectory = process.env["PI_AGENT_SUITE_DIR"];
+const originalChildMarker = process.env[CHILD_AGENT_PROCESS_ENV];
+const originalChildWorkflowIds = process.env[SUBAGENT_WORKFLOW_IDS_ENV];
 
 /** Creates one workflow catalog whose descriptions are the user-visible names. */
 async function createWorkflowSuite(
@@ -249,8 +253,10 @@ function createArguments(
 	};
 }
 
-/** Initializes the global theme used by Pi's public tool execution component. */
+/** Initializes theme and isolates main-agent fixtures from ambient child policy. */
 beforeEach(() => {
+	delete process.env[CHILD_AGENT_PROCESS_ENV];
+	delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
 	initTheme(undefined, false);
 });
 
@@ -259,6 +265,16 @@ afterEach(async () => {
 		delete process.env["PI_AGENT_SUITE_DIR"];
 	} else {
 		process.env["PI_AGENT_SUITE_DIR"] = originalSuiteDirectory;
+	}
+	if (originalChildMarker === undefined) {
+		delete process.env[CHILD_AGENT_PROCESS_ENV];
+	} else {
+		process.env[CHILD_AGENT_PROCESS_ENV] = originalChildMarker;
+	}
+	if (originalChildWorkflowIds === undefined) {
+		delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+	} else {
+		process.env[SUBAGENT_WORKFLOW_IDS_ENV] = originalChildWorkflowIds;
 	}
 	await Promise.all(
 		temporaryDirectories
@@ -289,6 +305,40 @@ describe("workflow semantic tool rendering", () => {
 		expect(execution.result.content).toEqual([
 			{ type: "text", text: '{"success":true}' },
 		]);
+	});
+
+	/**
+	 * Proves streaming arguments cannot freeze an empty workflow reference in renderer state.
+	 * Input and expected output: an incomplete empty ID followed by complete Coding renders Workflow: Coding.
+	 * Edge case: both render calls reuse the same tool-row state, matching Pi streaming behavior.
+	 * Dependencies: Pi ToolRenderContext.argsComplete and the workflow activation renderer.
+	 */
+	test("waits for complete activation arguments before caching identity", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const definition = fixture.tools.find(
+			({ name }) => name === "workflow_activate",
+		);
+		if (definition?.renderCall === undefined) {
+			throw new Error("workflow_activate renderer missing");
+		}
+		const context = createToolRenderContext({
+			args: { workflowId: "" },
+			expanded: false,
+			isError: false,
+		});
+		context.argsComplete = false;
+		const partial = definition
+			.renderCall({ workflowId: "" }, PLAIN_THEME, context)
+			.render(80);
+		expect(partial).toEqual(["workflow_activate"]);
+
+		context.argsComplete = true;
+		const completed = definition
+			.renderCall({ workflowId: "Coding" }, PLAIN_THEME, context)
+			.render(80)
+			.map((line) => line.trimEnd());
+		expect(completed).toEqual(["workflow_activate", "Workflow: Coding"]);
 	});
 
 	/**

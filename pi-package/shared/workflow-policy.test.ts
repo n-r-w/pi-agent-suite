@@ -110,8 +110,9 @@ describe("workflow policy boundary", () => {
 		expect(isWorkflowAllowed(undefined, "removed")).toBe(true);
 		expect(isWorkflowAllowed([], "Review")).toBe(false);
 		expect(isWorkflowAllowed(["Review"], "Review")).toBe(true);
-		expect(isWorkflowAllowed(["Review"], "review")).toBe(false);
+		expect(isWorkflowAllowed(["Review"], "review")).toBe(true);
 		expect(hasAllowedWorkflowSource(undefined, [], "removed")).toBe(true);
+		expect(hasAllowedWorkflowSource(["Review"], [], "review")).toBe(true);
 		expect(hasAllowedWorkflowSource([], ["Review"], "Review")).toBe(false);
 		expect(hasAllowedWorkflowSource(["Review"], ["delivery"], "Review")).toBe(
 			true,

@@ -469,6 +469,33 @@ describe("workflow extension lifecycle", () => {
 		expect(content).toContain('<transition to="start" type="rework" />');
 	});
 
+	/**
+	 * Proves system suppression does not erase active workflow guidance granted by agent policy.
+	 * Input and expected output: an activate-only agent activates its sole option, loses the unusable tool, and retains active context.
+	 * Edge case: activation options remain absent after the sole workflow becomes active.
+	 * Dependencies: extension-owned suppression, provider-context gating, and catalog activation.
+	 */
+	test("keeps active context after suppressing the sole activation tool", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		fake.activeTools = ["read", "workflow_activate"];
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await activate.execute("activate", { workflowId: "delivery" });
+		expect(fake.activeTools).toEqual(["read"]);
+		const context = await runContext(fake, []);
+		const content = String(
+			(context as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
+		);
+		expect(content).toContain(
+			'<active_workflow id="delivery" active_stage_id="start"',
+		);
+		expect(content).toContain("<active_stage_guidelines>\nStart work");
+		expect(content).not.toContain("<workflow_activation_options");
+	});
+
 	/** Proves invalid arguments and append failures preserve prior state. */
 	test("validates tool boundaries and preserves state on append failure", async () => {
 		await createSuite(validYaml());

@@ -253,10 +253,14 @@ function registerWorkflowRuntime(
 	});
 	pi.on("context", (event) => {
 		const activeNames = pi.getActiveTools();
-		if (!hasAnyWorkflowTool(activeNames)) {
+		const availability = resolveAvailability();
+		// Suppression preserves policy entitlement only while an allowed active state exists.
+		const hasSuppressedWorkflowPermission =
+			availability.projectedState !== undefined &&
+			hasAnyWorkflowTool([...runtime.selfSuppressedNames]);
+		if (!hasAnyWorkflowTool(activeNames) && !hasSuppressedWorkflowPermission) {
 			return undefined;
 		}
-		const availability = resolveAvailability();
 		const activationOptions = activeNames.includes(WORKFLOW_ACTIVATE_TOOL)
 			? availability.activationOptions
 			: [];

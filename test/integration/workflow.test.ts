@@ -1,12 +1,22 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflowExtension from "../../pi-package/extensions/workflow/index";
+import { CHILD_AGENT_PROCESS_ENV } from "../../pi-package/shared/child-agent-environment.ts";
+import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../pi-package/shared/subagent-environment.ts";
 
 const temporaryDirectories: string[] = [];
 const originalSuiteDirectory = process.env["PI_AGENT_SUITE_DIR"];
+const originalChildMarker = process.env[CHILD_AGENT_PROCESS_ENV];
+const originalChildWorkflowIds = process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+
+/** Isolates the main-agent integration fixture from ambient child policy. */
+beforeEach(() => {
+	delete process.env[CHILD_AGENT_PROCESS_ENV];
+	delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+});
 
 /**
  * Proves the real entry composes catalog loading, registration, persistence, and active-stage instructions.
@@ -98,6 +108,16 @@ afterEach(async () => {
 		delete process.env["PI_AGENT_SUITE_DIR"];
 	} else {
 		process.env["PI_AGENT_SUITE_DIR"] = originalSuiteDirectory;
+	}
+	if (originalChildMarker === undefined) {
+		delete process.env[CHILD_AGENT_PROCESS_ENV];
+	} else {
+		process.env[CHILD_AGENT_PROCESS_ENV] = originalChildMarker;
+	}
+	if (originalChildWorkflowIds === undefined) {
+		delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+	} else {
+		process.env[SUBAGENT_WORKFLOW_IDS_ENV] = originalChildWorkflowIds;
 	}
 	await Promise.all(
 		temporaryDirectories

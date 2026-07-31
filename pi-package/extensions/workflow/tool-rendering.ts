@@ -166,7 +166,11 @@ export function primeWorkflowRenderState(
 	presentation: WorkflowToolPresentationDetails | undefined,
 ): void {
 	const state = context.state as WorkflowRenderState;
-	if (state.presentation === undefined && presentation !== undefined) {
+	if (
+		context.argsComplete &&
+		state.presentation === undefined &&
+		presentation !== undefined
+	) {
 		state.presentation = presentation;
 	}
 }
@@ -459,7 +463,7 @@ function readInputString(value: unknown, key: string): string | undefined {
 		return undefined;
 	}
 	const field = value[key];
-	return typeof field === "string" ? field : undefined;
+	return isNonEmptyString(field) ? field : undefined;
 }
 
 /** Narrows persisted values to plain key-value objects. */

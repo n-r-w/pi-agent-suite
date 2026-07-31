@@ -1044,7 +1044,7 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 				(message) => message.customType === "workflow",
 			);
 			const expectedWorkflowTools =
-				runtimeCase.mode === "main-reset"
+				runtimeCase.mode === "main-reset" || !runtimeCase.projectsWorkflow
 					? []
 					: runtimeCase.policyTools.filter((name) =>
 							name.startsWith("workflow_"),
@@ -1067,18 +1067,22 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 					"WORKFLOW_RUNTIME_GUIDELINES",
 				);
 				const workflowContent = String(workflowMessages[0]?.content);
-				expect(workflowContent).toContain("<workflow_activation_options>");
-				const expectedWorkflowIds = new Set<string>(
-					"expectedWorkflowIds" in runtimeCase
-						? runtimeCase.expectedWorkflowIds
-						: [],
-				);
-				for (const workflowId of ["delivery", "review"]) {
-					if (expectedWorkflowIds.has(workflowId)) {
-						expect(workflowContent).toContain(`id="${workflowId}"`);
-					} else {
-						expect(workflowContent).not.toContain(`id="${workflowId}"`);
+				if (expectedWorkflowTools.includes("workflow_activate")) {
+					expect(workflowContent).toContain("<workflow_activation_options>");
+					const expectedWorkflowIds = new Set<string>(
+						"expectedWorkflowIds" in runtimeCase
+							? runtimeCase.expectedWorkflowIds
+							: [],
+					);
+					for (const workflowId of ["delivery", "review"]) {
+						if (expectedWorkflowIds.has(workflowId)) {
+							expect(workflowContent).toContain(`id="${workflowId}"`);
+						} else {
+							expect(workflowContent).not.toContain(`id="${workflowId}"`);
+						}
 					}
+				} else {
+					expect(workflowContent).not.toContain("<workflow_activation_options");
 				}
 			} else {
 				expect(workflowMessages).toHaveLength(0);

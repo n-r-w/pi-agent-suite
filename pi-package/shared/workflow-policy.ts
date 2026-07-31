@@ -114,7 +114,11 @@ export function isWorkflowAllowed(
 	policy: ResolvedWorkflowPolicy,
 	id: string,
 ): boolean {
-	return policy === undefined || policy.includes(id);
+	if (policy === undefined) {
+		return true;
+	}
+	const idKey = toWorkflowMatchKey(id);
+	return policy.some((allowedId) => toWorkflowMatchKey(allowedId) === idKey);
 }
 
 /** Requires at least one allowed current or saved workflow source for projection. */
