@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { SubagentNormalResult, SubagentStartRequest } from "./contracts";
+import {
+	type SubagentNormalResult,
+	type SubagentStartRequest,
+	SubagentToolError,
+} from "./contracts";
 import { SubagentCoordinator } from "./coordinator";
 import type {
 	JournalRecord,
@@ -8,12 +12,13 @@ import type {
 	SessionKey,
 	SubagentFeedback,
 } from "./domain";
-import type {
-	InvocationAcceptance,
-	InvocationControl,
-	InvocationEvent,
-	InvocationSteerScope,
-	NewInvocationRequest,
+import {
+	type InvocationAcceptance,
+	type InvocationControl,
+	type InvocationEvent,
+	InvocationStartError,
+	type InvocationSteerScope,
+	type NewInvocationRequest,
 } from "./invocation-contracts";
 import type { OwnerSessionStore } from "./persistence";
 import { recoverRuntimeFailure } from "./runtime-failure";
@@ -102,7 +107,12 @@ class CatalogFake implements SessionCatalogState {
 /** Keeps invocation acceptance controllable without a child process. */
 class InvocationControlFake implements InvocationControl {
 	public active = false;
-	public rejectNextStart = false;
+	/** Supplies one supervised start failure to the coordinator boundary. */
+	public nextStartError: Error | undefined;
+	/** Supplies one supervised continuation failure to the coordinator boundary. */
+	public nextContinueError: Error | undefined;
+	/** Supplies one supervised active-steer failure to the coordinator boundary. */
+	public nextSteerError: Error | undefined;
 	public startCalls = 0;
 	public startGate: Promise<void> | undefined;
 	public continueGate: Promise<void> | undefined;
@@ -129,9 +139,10 @@ class InvocationControlFake implements InvocationControl {
 		_request: NewInvocationRequest,
 	): Promise<InvocationAcceptance> {
 		this.startCalls += 1;
-		if (this.rejectNextStart) {
-			this.rejectNextStart = false;
-			throw new Error("controlled start rejection");
+		if (this.nextStartError !== undefined) {
+			const error = this.nextStartError;
+			this.nextStartError = undefined;
+			throw error;
 		}
 		await this.startGate;
 		this.active = true;
@@ -144,6 +155,11 @@ class InvocationControlFake implements InvocationControl {
 		prompt: string,
 	): Promise<InvocationAcceptance> {
 		this.continueCalls.push(prompt);
+		if (this.nextContinueError !== undefined) {
+			const error = this.nextContinueError;
+			this.nextContinueError = undefined;
+			throw error;
+		}
 		await this.continueGate;
 		this.active = true;
 		return this.nextAcceptance;
@@ -159,6 +175,11 @@ class InvocationControlFake implements InvocationControl {
 		scope.signal?.throwIfAborted();
 		scope.beforeDispatch?.();
 		this.steerCalls.push(prompt);
+		if (this.nextSteerError !== undefined) {
+			const error = this.nextSteerError;
+			this.nextSteerError = undefined;
+			throw error;
+		}
 		await this.steerResponseGate;
 	}
 
@@ -841,7 +862,9 @@ describe("SubagentCoordinator", () => {
 		// Edge case: the failed candidate remains absent from the catalog and journal.
 		// Dependencies: deterministic invocation rejection and in-memory coordinator ports.
 		const harness = createHarness();
-		harness.invocations.rejectNextStart = true;
+		harness.invocations.nextStartError = new Error(
+			"controlled start rejection",
+		);
 		const request: SubagentStartRequest = {
 			agentId: "SubAgentCoder",
 			taskName: "Start candidate",
@@ -1103,6 +1126,9 @@ describe("SubagentCoordinator", () => {
 		const harness = createHarness();
 		harness.catalog.add(activeSession());
 		const outcomes: string[] = [];
+		let overlappingFailure:
+			| { readonly code: string; readonly message: string }
+			| undefined;
 		const first = harness.coordinator
 			.wait(
 				OWNER,
@@ -1121,13 +1147,20 @@ describe("SubagentCoordinator", () => {
 			)
 			.then((result) => outcomes.push(result.outcome))
 			.catch((error: unknown) => {
-				outcomes.push(readFailureCode(error));
+				overlappingFailure = readFailureDetails(error);
+				outcomes.push(overlappingFailure.code);
 			});
 		await Promise.resolve();
 		harness.waits.settle(OWNER, { outcome: "timeout" });
 		await Promise.allSettled([first, second]);
 
-		expect([...outcomes].sort()).toEqual(["timeout", "wait_already_active"]);
+		expect({ outcomes: [...outcomes].sort(), overlappingFailure }).toEqual({
+			outcomes: ["timeout", "wait_already_active"],
+			overlappingFailure: {
+				code: "wait_already_active",
+				message: "the calling agent already has an active subagent wait",
+			},
+		});
 	});
 
 	test("cancels one exact wait before later feedback routes to history", async () => {
@@ -1591,6 +1624,57 @@ describe("SubagentCoordinator", () => {
 		});
 	});
 
+	test("preserves sanitized failure and abort diagnostics in wait feedback", async () => {
+		// Purpose: terminal failures selected by subagent_wait must keep safe diagnostics instead of replacing their meaning.
+		// Input and expected output: failure text is normalized to one line, while a controls-only abort becomes Unknown error in the wait result.
+		// Edge case: failure and abort use the same public feedback boundary but retain distinct statuses.
+		// Dependencies: public coordinator wait and terminal observation.
+		const failureHarness = createHarness();
+		failureHarness.catalog.add(activeSession());
+		const failureWait = failureHarness.coordinator.wait(
+			OWNER,
+			{ sessionIds: [1], timeoutMs: 100 },
+			{ toolCallId: "wait-failure", requestId: "request-failure" },
+		);
+		await Promise.resolve();
+		await failureHarness.coordinator.observeInvocation({
+			kind: "terminal",
+			invocationId: "invocation-1",
+			status: "failure",
+			text: "provider\u001b[31m failed\u001b[0m\n\u202e safely",
+		});
+		const failureResult = await failureWait;
+
+		const abortHarness = createHarness();
+		abortHarness.catalog.add(activeSession());
+		const abortWait = abortHarness.coordinator.wait(
+			OWNER,
+			{ sessionIds: [1], timeoutMs: 100 },
+			{ toolCallId: "wait-abort", requestId: "request-abort" },
+		);
+		await Promise.resolve();
+		await abortHarness.coordinator.observeInvocation({
+			kind: "terminal",
+			invocationId: "invocation-1",
+			status: "abort",
+			text: "\u001b[31m\u001b[0m\u202e",
+		});
+		const abortResult = await abortWait;
+
+		expect({ failureResult, abortResult }).toMatchObject({
+			failureResult: {
+				outcome: "feedback",
+				status: "failure",
+				error: "provider failed safely",
+			},
+			abortResult: {
+				outcome: "feedback",
+				status: "abort",
+				error: "Unknown error",
+			},
+		});
+	});
+
 	test("selects accepted exit before terminal", async () => {
 		// Purpose: accepted process exit observed first must select one terminal-failure outcome.
 		// Input and expected output: exit code 9 precedes a late normal success event and creates one failure feedback obligation.
@@ -1683,6 +1767,86 @@ describe("SubagentCoordinator", () => {
 			steerCalls: ["Change direction"],
 			continueCalls: ["Continue saved work"],
 			sessions: [{ id: 1, invocationId: "invocation-2", state: "active" }],
+		});
+	});
+
+	test("preserves supervised diagnostics across start and steering routes", async () => {
+		// Purpose: invocation routing codes must not replace unclassified supervisor diagnostics at the public coordinator boundary.
+		// Input and expected output: start, initial prompt rejection, active steer, and terminal continuation retain sanitized source messages and their original codes.
+		// Edge case: the same start route carries both start_failed and message_rejected without treating either code as message classification.
+		// Dependencies: real InvocationStartError values, public coordinator methods, and the existing invocation-control fake.
+		const startHarness = createHarness();
+		startHarness.invocations.nextStartError = new InvocationStartError(
+			"start_failed",
+			"startup\u001b[31m failure\u001b[0m\n\u202edetails",
+		);
+		const startFailure = await startHarness.coordinator
+			.start(OWNER, {
+				agentId: "SubAgentCoder",
+				taskName: "Startup failure",
+				prompt: "Start once",
+			})
+			.catch(readFailureDetails);
+
+		const promptHarness = createHarness();
+		promptHarness.invocations.nextStartError = new InvocationStartError(
+			"message_rejected",
+			"child\u001b[31m rejected\u001b[0m\n\u202eprompt",
+		);
+		const promptFailure = await promptHarness.coordinator
+			.start(OWNER, {
+				agentId: "SubAgentCoder",
+				taskName: "Prompt rejection",
+				prompt: "Reject once",
+			})
+			.catch(readFailureDetails);
+
+		const activeHarness = createHarness();
+		activeHarness.catalog.add(activeSession());
+		activeHarness.invocations.nextSteerError = new InvocationStartError(
+			"message_rejected",
+			"child\u001b[31m rejected\u001b[0m\n\u202esteer",
+		);
+		const activeFailure = await activeHarness.coordinator
+			.steer(OWNER, { sessionId: 1, prompt: "Reject steer" })
+			.catch(readFailureDetails);
+
+		const continuationHarness = createHarness();
+		continuationHarness.catalog.add({
+			...activeSession(),
+			state: "terminal-success",
+		});
+		continuationHarness.invocations.nextContinueError =
+			new InvocationStartError(
+				"start_failed",
+				"continuation\u001b[31m failed\u001b[0m\n\u202ebefore start",
+			);
+		const continuationFailure = await continuationHarness.coordinator
+			.steer(OWNER, { sessionId: 1, prompt: "Continue once" })
+			.catch(readFailureDetails);
+
+		expect({
+			startFailure,
+			promptFailure,
+			activeFailure,
+			continuationFailure,
+		}).toEqual({
+			startFailure: {
+				code: "start_failed",
+				message: "startup failure details",
+			},
+			promptFailure: {
+				code: "message_rejected",
+				message: "child rejected prompt",
+			},
+			activeFailure: {
+				code: "message_rejected",
+				message: "child rejected steer",
+			},
+			continuationFailure: {
+				code: "start_failed",
+				message: "continuation failed before start",
+			},
 		});
 	});
 
@@ -2474,19 +2638,35 @@ describe("SubagentCoordinator", () => {
 				ownerLocalSessionId: 1,
 			},
 		});
-		let code = "";
+		let failure:
+			| { readonly code: string; readonly message: string }
+			| undefined;
 		try {
 			await harness.coordinator.steer(OWNER, {
 				sessionId: 1,
 				prompt: "Do not accept",
 			});
 		} catch (error) {
-			code = readFailureCode(error);
+			failure = readFailureDetails(error);
 		}
 
-		expect(code).toBe("not_owner");
+		expect(failure).toEqual({
+			code: "not_owner",
+			message: "session 1 is not directly owned by the caller",
+		});
 	});
 });
+
+/** Extracts public failure details from one rejected coordinator operation. */
+function readFailureDetails(error: unknown): {
+	readonly code: string;
+	readonly message: string;
+} {
+	if (error instanceof SubagentToolError) {
+		return error.details;
+	}
+	throw error;
+}
 
 /** Reads a stable coordinator failure code without asserting message prose. */
 function readFailureCode(error: unknown): string {
