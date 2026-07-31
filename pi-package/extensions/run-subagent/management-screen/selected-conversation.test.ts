@@ -53,8 +53,18 @@ test("reloads each terminal file revision after repeated continuations", async (
 	const continued = userEntry("continued", first.id, "continued");
 	const finalized = userEntry("finalized", continued.id, "finalized");
 	const pages = [
-		{ entries: [first], leafId: first.id, liveStatus: undefined },
-		{ entries: [continued], leafId: continued.id, liveStatus: undefined },
+		{
+			entries: [first],
+			leafId: first.id,
+			liveStatus: undefined,
+			projectionSavedTokens: undefined,
+		},
+		{
+			entries: [continued],
+			leafId: continued.id,
+			liveStatus: undefined,
+			projectionSavedTokens: undefined,
+		},
 	];
 	let terminalReads = 0;
 	let terminalBranch: readonly SessionEntry[] = [first];
@@ -119,7 +129,12 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 			/** Records the initial RPC boundary and returns the complete public branch. */
 			async readActiveEntries(_invocationId: string, since?: string) {
 				boundaries.push(since);
-				return { entries: branch, leafId, liveStatus: undefined };
+				return {
+					entries: branch,
+					leafId,
+					liveStatus: undefined,
+					projectionSavedTokens: undefined,
+				};
 			},
 		};
 		const loader = await SelectedConversationLoader.open({
@@ -134,6 +149,7 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 			entries: branch,
 			complete: true,
 			liveStatus: undefined,
+			projectionSavedTokens: undefined,
 		});
 		await loader.dispose();
 	} finally {
@@ -147,7 +163,12 @@ test("publishes a live status change without new conversation entries", async ()
 	// Edge case: neither the branch identity nor leaf identity changes between active reads.
 	// Dependencies: the selected-conversation loader and controlled active snapshots.
 	const pages = [
-		{ entries: [], leafId: null, liveStatus: { kind: "working" } as const },
+		{
+			entries: [],
+			leafId: null,
+			liveStatus: { kind: "working" } as const,
+			projectionSavedTokens: undefined,
+		},
 		{
 			entries: [],
 			leafId: null,
@@ -157,6 +178,7 @@ test("publishes a live status change without new conversation entries", async ()
 				maxAttempts: 3,
 				deadlineAtMs: 5_000,
 			} as const,
+			projectionSavedTokens: undefined,
 		},
 	];
 	const session = sessionRevision("active", "active-invocation");
@@ -189,6 +211,61 @@ test("publishes a live status change without new conversation entries", async ()
 				maxAttempts: 3,
 				deadlineAtMs: 5_000,
 			},
+			projectionSavedTokens: undefined,
+		},
+	});
+	await loader.dispose();
+});
+
+test("publishes projection savings changes without new conversation entries", async () => {
+	// Purpose: the selected active snapshot must revise when only projection savings change.
+	// Inputs and expected output: identical empty pages change from 139k saved tokens to an explicit clear.
+	// Edge case: messages, leaf identity, and unrelated live status remain unchanged.
+	// Dependencies: the selected-conversation loader and controlled active snapshots.
+	// ARRANGE: open one active page with savings and queue a clear-only page.
+	const liveStatus = { kind: "working" } as const;
+	const pages = [
+		{
+			entries: [],
+			leafId: null,
+			liveStatus,
+			projectionSavedTokens: 139_000,
+		},
+		{
+			entries: [],
+			leafId: null,
+			liveStatus,
+			projectionSavedTokens: undefined,
+		},
+	];
+	const session = sessionRevision("active", "active-invocation");
+	const loader = await SelectedConversationLoader.open({
+		session,
+		controller: new AbortController(),
+		activeConversations: {
+			/** Returns the next savings-only active snapshot. */
+			async readActiveEntries() {
+				const page = pages.shift();
+				if (page === undefined) {
+					throw new Error("active projection fixture is exhausted");
+				}
+				return page;
+			},
+		},
+		readInactiveBranch: () => [],
+	});
+
+	// ACT: refresh without appending a conversation entry.
+	const changed = await loader.refresh(session);
+
+	// ASSERT: the explicit clear creates a new snapshot and removes only savings.
+	expect({ changed, snapshot: loader.getSnapshot() }).toEqual({
+		changed: true,
+		snapshot: {
+			entries: [],
+			complete: true,
+			liveStatus,
+			projectionSavedTokens: undefined,
 		},
 	});
 	await loader.dispose();
@@ -219,18 +296,21 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		entries: [third],
 		complete: false,
 		liveStatus: undefined,
+		projectionSavedTokens: undefined,
 	});
 	expect(await loader.loadEarlier()).toBe(false);
 	expect(loader.getSnapshot()).toEqual({
 		entries: [second, third],
 		complete: false,
 		liveStatus: undefined,
+		projectionSavedTokens: undefined,
 	});
 	expect(await loader.loadEarlier()).toBe(true);
 	expect(loader.getSnapshot()).toEqual({
 		entries: branch,
 		complete: true,
 		liveStatus: undefined,
+		projectionSavedTokens: undefined,
 	});
 	await loader.dispose();
 });
@@ -262,6 +342,7 @@ test("completes an inactive preview during background refresh", async () => {
 		entries: branch,
 		complete: true,
 		liveStatus: undefined,
+		projectionSavedTokens: undefined,
 	});
 	await loader.dispose();
 });

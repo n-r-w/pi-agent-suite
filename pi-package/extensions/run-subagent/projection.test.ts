@@ -236,6 +236,7 @@ describe("HierarchyConversationProjection", () => {
 			version: 1,
 			complete: false,
 			liveStatus: { kind: "working" },
+			projectionSavedTokens: 139_000,
 		});
 		const repeatedConversation = projection.updateConversation({
 			sessionKey: nestedSession.key,
@@ -248,6 +249,7 @@ describe("HierarchyConversationProjection", () => {
 				maxAttempts: 2,
 				deadlineAtMs: 1_000,
 			},
+			projectionSavedTokens: undefined,
 		});
 
 		// ASSERT: only selected conversation entries are exposed and prior revisions remain unchanged.
@@ -267,6 +269,7 @@ describe("HierarchyConversationProjection", () => {
 			liveConversationComplete:
 				conversationUpdated.selectedConversationComplete,
 			liveStatus: conversationUpdated.selectedLiveStatus,
+			projectionSavedTokens: conversationUpdated.selectedProjectionSavedTokens,
 			priorConversationIds: updated.selectedConversation.map(
 				(entry) => entry.id,
 			),
@@ -284,6 +287,7 @@ describe("HierarchyConversationProjection", () => {
 			liveConversationIds: ["nested-user", "feedback", "nested-live"],
 			liveConversationComplete: false,
 			liveStatus: { kind: "working" },
+			projectionSavedTokens: 139_000,
 			priorConversationIds: ["nested-user", "feedback"],
 			repeatedRevisionIdentity: true,
 		});

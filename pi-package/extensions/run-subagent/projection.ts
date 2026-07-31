@@ -56,6 +56,7 @@ export interface ManagementProjectionView {
 	/** Distinguishes a complete branch from a selected suffix with unread ancestors. */
 	readonly selectedConversationComplete: boolean;
 	readonly selectedLiveStatus: LiveAgentStatus | undefined;
+	readonly selectedProjectionSavedTokens: number | undefined;
 	readonly affectedStableKeys: readonly string[];
 }
 
@@ -64,6 +65,7 @@ interface ConversationSnapshot {
 	readonly version: number;
 	readonly complete: boolean;
 	readonly liveStatus: LiveAgentStatus | undefined;
+	readonly projectionSavedTokens: number | undefined;
 }
 
 /** Supplies one selected conversation revision without positional argument coupling. */
@@ -73,6 +75,7 @@ interface ConversationUpdate {
 	readonly version: number;
 	readonly complete: boolean;
 	readonly liveStatus: LiveAgentStatus | undefined;
+	readonly projectionSavedTokens: number | undefined;
 }
 
 /** Encodes complete owner-local identity without relying on a global numeric ID. */
@@ -95,6 +98,7 @@ export class HierarchyConversationProjection {
 		selectedConversation: [],
 		selectedConversationComplete: true,
 		selectedLiveStatus: undefined,
+		selectedProjectionSavedTokens: undefined,
 		affectedStableKeys: [],
 	});
 
@@ -118,12 +122,13 @@ export class HierarchyConversationProjection {
 		this.conversations.clear();
 		for (const branch of sources.conversations ?? []) {
 			const key = projectionStableKey(branch.sessionKey);
-			const next = createConversationSnapshot(
-				filterConversationEntries(branch.entries),
-				0,
-				true,
-				undefined,
-			);
+			const next = createConversationSnapshot({
+				entries: filterConversationEntries(branch.entries),
+				version: 0,
+				complete: true,
+				liveStatus: undefined,
+				projectionSavedTokens: undefined,
+			});
 			this.conversations.set(key, next);
 			changedConversationKeys.add(key);
 		}
@@ -148,12 +153,13 @@ export class HierarchyConversationProjection {
 		this.conversations.clear();
 		this.conversations.set(
 			key,
-			createConversationSnapshot(
-				filterConversationEntries(update.entries),
-				update.version,
-				update.complete,
-				update.liveStatus,
-			),
+			createConversationSnapshot({
+				entries: filterConversationEntries(update.entries),
+				version: update.version,
+				complete: update.complete,
+				liveStatus: update.liveStatus,
+				projectionSavedTokens: update.projectionSavedTokens,
+			}),
 		);
 		return this.rebuild(new Set([key]));
 	}
@@ -184,6 +190,7 @@ export class HierarchyConversationProjection {
 			selectedConversation: this.getSelectedConversation(),
 			selectedConversationComplete: this.getSelectedConversationComplete(),
 			selectedLiveStatus: this.getSelectedLiveStatus(),
+			selectedProjectionSavedTokens: this.getSelectedProjectionSavedTokens(),
 			affectedStableKeys: affected,
 		});
 		return this.view;
@@ -259,6 +266,7 @@ export class HierarchyConversationProjection {
 			selectedConversation: this.getSelectedConversation(),
 			selectedConversationComplete: this.getSelectedConversationComplete(),
 			selectedLiveStatus: this.getSelectedLiveStatus(),
+			selectedProjectionSavedTokens: this.getSelectedProjectionSavedTokens(),
 			affectedStableKeys: orderAffectedKeys(affected, nextNodes),
 		});
 		return this.view;
@@ -288,6 +296,13 @@ export class HierarchyConversationProjection {
 		return this.selectedStableKey === null
 			? undefined
 			: this.conversations.get(this.selectedStableKey)?.liveStatus;
+	}
+
+	/** Returns the selected active conversation's current projection savings. */
+	private getSelectedProjectionSavedTokens(): number | undefined {
+		return this.selectedStableKey === null
+			? undefined
+			: this.conversations.get(this.selectedStableKey)?.projectionSavedTokens;
 	}
 }
 
@@ -405,23 +420,21 @@ function filterConversationEntries(
 
 /** Clones one selected branch so later source mutation cannot alter published revisions. */
 function createConversationSnapshot(
-	entries: readonly ConversationProjectionEntry[],
-	version: number,
-	complete: boolean,
-	liveStatus: LiveAgentStatus | undefined,
+	source: ConversationSnapshot,
 ): ConversationSnapshot {
 	const frozenEntries = Object.freeze(
-		entries.map((entry) => freezeRecursively(structuredClone(entry))),
+		source.entries.map((entry) => freezeRecursively(structuredClone(entry))),
 	);
 	const frozenLiveStatus =
-		liveStatus === undefined
+		source.liveStatus === undefined
 			? undefined
-			: freezeRecursively(structuredClone(liveStatus));
+			: freezeRecursively(structuredClone(source.liveStatus));
 	return Object.freeze({
 		entries: frozenEntries,
-		version,
-		complete,
+		version: source.version,
+		complete: source.complete,
 		liveStatus: frozenLiveStatus,
+		projectionSavedTokens: source.projectionSavedTokens,
 	});
 }
 

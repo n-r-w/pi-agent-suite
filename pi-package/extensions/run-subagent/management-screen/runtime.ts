@@ -339,6 +339,7 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 			version: this.nextConversationVersion(),
 			complete: snapshot.complete,
 			liveStatus: snapshot.liveStatus,
+			projectionSavedTokens: snapshot.projectionSavedTokens,
 		});
 		this.publishRevision(before, next);
 	}

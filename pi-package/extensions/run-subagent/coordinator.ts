@@ -1312,12 +1312,7 @@ function mapInvocationError(
 		return error;
 	}
 	if (error instanceof InvocationStartError) {
-		return new SubagentToolError(
-			error.code,
-			error.code === "message_rejected"
-				? "Subagent could not accept the message"
-				: "Subagent could not start",
-		);
+		return new SubagentToolError(error.code, error.message);
 	}
 	return new SubagentToolError(fallback, errorMessage(error));
 }

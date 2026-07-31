@@ -53,6 +53,7 @@ import { SessionStore, SUBAGENT_JOURNAL_CUSTOM_TYPE } from "./persistence";
 import { projectionStableKey } from "./projection";
 import { RuntimeFailureRecoveryTracker } from "./runtime-recovery-tracker";
 import { SessionCatalog } from "./session-catalog";
+import { SessionSnapshotLoader } from "./session-snapshot-loader";
 import { createToolPresentationRegistry } from "./tool-rendering";
 
 const SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -321,7 +322,7 @@ describe("subagents entry", () => {
 		expect({ details: result?.details, outcome: readOutcome(result) }).toEqual({
 			details: {
 				code: "invalid_request",
-				message: expect.any(String),
+				message: "subagent_start request fields are invalid",
 			},
 			outcome: undefined,
 		});
@@ -1148,6 +1149,100 @@ describe("subagents entry", () => {
 		}
 	});
 
+	test("preserves unknown query diagnostics and Pi cancellation", async () => {
+		// Purpose: the registered query boundary must preserve safe unknown diagnostics while leaving Pi cancellation outside failed-tool results.
+		// Input and expected output: an unknown branch-load error returns query_failed with cleaned text, while a pre-aborted query rejects with the exact Pi reason.
+		// Edge case: both calls use the same saved child and neither invokes the auxiliary model.
+		// Dependencies: persisted root ownership, production query registration, a one-call snapshot-loader failure, and AbortController.
+		const child = createPersistedSession(join(suiteDir, "query-error-child"), {
+			id: "query-error-child-pi",
+			text: "saved child context",
+		});
+		const childFile = child.getSessionFile();
+		if (childFile === undefined) {
+			throw new Error("query error child did not create a session file");
+		}
+		const parent = createPersistedSession(
+			join(suiteDir, "query-error-parent"),
+			{
+				id: "owner-pi",
+				text: "parent context",
+			},
+		);
+		parent.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+			kind: "session-accepted",
+			session: {
+				key: {
+					ownerPiSessionId: parent.getSessionId(),
+					ownerLocalSessionId: 1,
+				},
+				childPiSessionId: child.getSessionId(),
+				childSessionDir: child.getSessionDir(),
+				childSessionFile: childFile,
+				agentId: "SubAgentCoder",
+				taskName: "Query error child",
+				creationOrder: 1,
+				invocationId: "query-error-invocation",
+				runtimeLeaseId: "query-error-lease",
+				invocationMetadata: TEST_INVOCATION_METADATA,
+				state: "active",
+			},
+		} satisfies JournalRecord);
+		const pi = createPiFake();
+		const ctx = {
+			...createContext(suiteDir, [], {
+				authenticated: true,
+				model: TEST_MODEL,
+			}),
+			sessionManager: parent,
+		} as ExtensionContext;
+		const snapshotLoad = spyOn(SessionSnapshotLoader.prototype, "load");
+		snapshotLoad.mockImplementationOnce(async () => {
+			throw new Error("query\u001b[31m failed\u001b[0m\n\u202e safely");
+		});
+		try {
+			await subagents(pi, {
+				completeSimple: async () => {
+					throw new Error("query completion must not run");
+				},
+			});
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const queryTool = getTool(pi, "subagent_query");
+			const failure = await queryTool
+				.execute(
+					"query-failure",
+					{ sessionId: 1, question: "What failed?" },
+					undefined,
+					undefined,
+					ctx,
+				)
+				.then(
+					() => undefined,
+					(error: unknown) => readFailureDetails(error),
+				);
+
+			const controller = new AbortController();
+			const cancellationReason = new Error("cancel registered query");
+			controller.abort(cancellationReason);
+			const cancellation = queryTool.execute(
+				"query-cancelled",
+				{ sessionId: 1, question: "Do not answer" },
+				controller.signal,
+				undefined,
+				ctx,
+			);
+
+			expect(failure).toEqual({
+				code: "query_failed",
+				message: "query failed safely",
+			});
+			await expect(cancellation).rejects.toBe(cancellationReason);
+		} finally {
+			snapshotLoad.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
+
 	test("keeps accepted presentation evidence out of model-visible tool JSON", async () => {
 		// Purpose: accepted root execution must persist replayable presentation details without changing the model result contract.
 		// Input and expected output: one accepted start returns exact public JSON plus agent, task, model, and thinking in non-model-visible details.
@@ -1498,14 +1593,14 @@ describe("subagents entry", () => {
 				ctx,
 			),
 		];
-		const codes = await Promise.all(
+		const failures = await Promise.all(
 			operations.map((operation) =>
 				operation
-					.then(() => "unexpected_success")
-					.catch((error: unknown) => {
-						const details = readFailureDetails(error);
-						return readCode(details);
-					}),
+					.then(() => ({
+						code: "unexpected_success",
+						message: "operation unexpectedly succeeded",
+					}))
+					.catch((error: unknown) => readFailureDetails(error)),
 			),
 		);
 		const promptResults = await pi.emit(
@@ -1516,8 +1611,15 @@ describe("subagents entry", () => {
 		await pi.emit("message_end", { type: "message_end" }, ctx);
 		await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 
-		expect({ codes, promptResults }).toMatchObject({
-			codes: ["agent_unavailable", "unknown_session", "unknown_session"],
+		expect({ failures, promptResults }).toMatchObject({
+			failures: [
+				{
+					code: "agent_unavailable",
+					message: "Subagent MissingAgent is unavailable",
+				},
+				{ code: "unknown_session", message: "session 1 is unknown" },
+				{ code: "unknown_session", message: "session 1 is unknown" },
+			],
 			promptResults: [
 				{
 					systemPrompt: expect.stringContaining(

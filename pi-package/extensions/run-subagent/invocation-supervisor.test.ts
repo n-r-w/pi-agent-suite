@@ -830,8 +830,8 @@ describe("InvocationSupervisor", () => {
 
 	test("reads active conversation pages through documented get_entries RPC", async () => {
 		// Purpose: management projection must read live child entries without opening its active session file.
-		// Input and expected output: get_entries returns validated entries and leaf identity for caller-owned branch caching.
-		// Edge case: live activity notifies subscribers, while the get_entries response itself is not activity.
+		// Input and expected output: get_entries returns validated entries, leaf identity, and current projection savings for caller-owned branch caching.
+		// Edge case: a later non-positive projection status clears savings while preserving unrelated live activity.
 		// Dependencies: documented Pi RPC response shape and controlled child JSONL transport.
 		// ARRANGE: accept one live invocation and subscribe to its session activity.
 		const child = createChildProcess();
@@ -848,6 +848,7 @@ describe("InvocationSupervisor", () => {
 				'{"type":"auto_retry_start","attempt":8,"maxAttempts":10,"delayMs":96000}\n',
 			),
 		);
+		emitProjectionStatus(child, "~139k");
 
 		// ACT: request one complete page whose selected leaf excludes one sibling.
 		const pending = supervisor.readActiveEntries(acceptance.invocationId);
@@ -920,6 +921,7 @@ describe("InvocationSupervisor", () => {
 			),
 		);
 		const page = await pending;
+		emitProjectionStatus(child, "~0");
 		const incremental = supervisor.readActiveEntries(
 			acceptance.invocationId,
 			"abandoned-1",
@@ -950,6 +952,7 @@ describe("InvocationSupervisor", () => {
 			entryIds: page.entries.map((entry) => entry.id),
 			leafId: page.leafId,
 			liveStatus: page.liveStatus,
+			projectionSavedTokens: page.projectionSavedTokens,
 			deadlineValid:
 				page.liveStatus?.kind === "retrying" &&
 				page.liveStatus.deadlineAtMs >= retryObservedAfterMs + 96_000,
@@ -965,13 +968,19 @@ describe("InvocationSupervisor", () => {
 			entryIds: ["user-1", "assistant-1", "abandoned-1"],
 			leafId: "assistant-1",
 			liveStatus: page.liveStatus,
+			projectionSavedTokens: 139_000,
 			deadlineValid: true,
 			incrementalPage: {
 				entries: [],
 				leafId: "assistant-1",
 				liveStatus: page.liveStatus,
+				projectionSavedTokens: undefined,
 			},
-			activity: [acceptance.invocationId],
+			activity: [
+				acceptance.invocationId,
+				acceptance.invocationId,
+				acceptance.invocationId,
+			],
 		});
 	});
 
