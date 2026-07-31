@@ -12,14 +12,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
-import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
-import { SUBAGENT_AGENT_ID_ENV } from "../../../pi-package/shared/subagent-environment";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import { SUBAGENT_AGENT_ID_ENV } from "../../shared/subagent-environment";
+import { publishWorkflowCatalogPolicy } from "../../shared/workflow-policy";
+import mainAgentSelection from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const FRONTMATTER_MODEL_KEY = "model";
 const FRONTMATTER_TOOLS_KEY = "tools";
+const FRONTMATTER_WORKFLOWS_KEY = "workflows";
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 
 interface RegisteredHandler {
@@ -102,6 +104,7 @@ interface AgentFixture {
 	readonly type?: "main" | "subagent" | "both";
 	readonly model?: { readonly id?: string; readonly thinking?: string };
 	readonly tools?: readonly string[];
+	readonly workflows?: readonly string[];
 }
 
 /** Creates the ExtensionAPI fake needed to observe command, shortcut, event, model, and tool calls. */
@@ -294,6 +297,9 @@ async function writeAgentToDirectory(
 	}
 	if (agent.tools !== undefined) {
 		frontmatter[FRONTMATTER_TOOLS_KEY] = agent.tools;
+	}
+	if (agent.workflows !== undefined) {
+		frontmatter[FRONTMATTER_WORKFLOWS_KEY] = agent.workflows;
 	}
 
 	const lines = [
@@ -539,6 +545,57 @@ async function writeSelectedAgentStateToDirectory(
 	await writeFile(
 		join(stateDir, selectedAgentStateFileName(cwd)),
 		typeof state === "string" ? state : JSON.stringify(state),
+	);
+}
+
+/** Enables isolated runtime diagnostics so lifecycle tests can distinguish attempted from applied selection. */
+async function enableRuntimeDiagnostics(agentDir: string): Promise<void> {
+	const configDirectory = join(agentDir, "agent-suite", "agent-selection");
+	await mkdir(configDirectory, { recursive: true });
+	await writeFile(
+		join(configDirectory, "config.json"),
+		JSON.stringify({ diagnosticsEnabled: true }),
+	);
+}
+
+/** Reads diagnostic event names appended by the isolated main-agent extension. */
+async function readRuntimeDiagnosticEvents(
+	agentDir: string,
+): Promise<string[]> {
+	const path = join(
+		agentDir,
+		"agent-suite",
+		"agent-selection",
+		"runtime-diagnostics.jsonl",
+	);
+	try {
+		const content = await readFile(path, "utf8");
+		return content
+			.split("\n")
+			.filter((line) => line.length > 0)
+			.map((line) => JSON.parse(line) as { readonly event?: unknown })
+			.flatMap(({ event }) => (typeof event === "string" ? [event] : []));
+	} catch (error) {
+		if (isFileNotFoundError(error)) {
+			return [];
+		}
+		throw error;
+	}
+}
+
+/** Reads exact selected-state bytes so rejected lifecycle paths cannot rewrite equivalent JSON. */
+async function readSelectedStateBytes(
+	agentDir: string,
+	cwd: string,
+): Promise<Buffer> {
+	return readFile(
+		join(
+			agentDir,
+			"agent-suite",
+			"agent-selection",
+			"state",
+			selectedAgentStateFileName(cwd),
+		),
 	);
 }
 
@@ -961,6 +1018,242 @@ describe("main-agent-selection", () => {
 			expect(result).toEqual({
 				systemPrompt: "Base prompt\n\nBuilder system prompt",
 			});
+		});
+	});
+
+	test("publishes canonical workflow policy for selected main agent", async () => {
+		// Purpose: main runtime metadata must carry canonical workflow IDs resolved before other agent side effects.
+		// Input and expected output: mixed-case Review selection publishes the catalog spelling while applying the agent normally.
+		// Edge case: workflow policy remains independent from the selected tool list.
+		// Dependencies: this test uses the shared per-Pi workflow catalog publication and isolated agent state.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Reviewer",
+				description: "Reviews",
+				body: "Reviewer prompt",
+				tools: ["read"],
+				workflows: ["rEvIeW"],
+			});
+			const pi = createExtensionApiFake();
+			publishWorkflowCatalogPolicy(pi, { ids: ["Review", "Delivery"] });
+			const ctx = createCommandContext("/tmp/project");
+			mainAgentSelection(pi);
+
+			await getCommand(pi, "agent").handler("Reviewer", ctx);
+
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+					?.workflows,
+			).toEqual(["Review"]);
+			expect(pi.activeToolCalls).toEqual([["read"]]);
+			expect(await readOnlyStateFile(agentDir)).toEqual({
+				cwd: "/tmp/project",
+				activeAgentId: "Reviewer",
+			});
+		});
+	});
+
+	test("rejects unknown main-agent workflow before application side effects", async () => {
+		// Purpose: an unknown explicit workflow must reject main-agent activation atomically.
+		// Input and expected output: Missing fails without replacing an active agent's model, thinking, tools, contribution, or persisted state.
+		// Edge case: a valid model and tool policy prove workflow validation owns the first failure while prior state remains authoritative.
+		// Dependencies: this test uses isolated agent files and the shared catalog publication.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = createModel("openai", "gpt-test");
+			await writeAgent(agentDir, {
+				id: "Stable",
+				description: "Stable policy",
+				body: "Stable prompt",
+				tools: ["read"],
+				workflows: ["Review"],
+			});
+			await writeAgent(agentDir, {
+				id: "Broken",
+				description: "Broken policy",
+				body: "Broken prompt",
+				model: { id: "openai/gpt-test", thinking: "high" },
+				tools: ["read"],
+				workflows: ["Missing"],
+			});
+			const pi = createExtensionApiFake();
+			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
+			mainAgentSelection(pi);
+			await getCommand(pi, "agent").handler("Stable", ctx);
+			const contributionBeforeRejection =
+				getAgentRuntimeComposition(pi).getMainAgentContribution();
+			const activeToolCallsBeforeRejection = [...pi.activeToolCalls];
+
+			await getCommand(pi, "agent").handler("Broken", ctx);
+
+			expect(pi.setModelCalls).toEqual([]);
+			expect(pi.thinkingCalls).toEqual([]);
+			expect(pi.activeToolCalls).toEqual(activeToolCallsBeforeRejection);
+			expect(getAgentRuntimeComposition(pi).getMainAgentContribution()).toBe(
+				contributionBeforeRejection,
+			);
+			expect(ctx.notifications[0]?.message).toContain("Missing");
+			expect(await readOnlyStateFile(agentDir)).toEqual({
+				cwd: "/tmp/project",
+				activeAgentId: "Stable",
+			});
+		});
+	});
+
+	test("rejects invalid workflow policy during persisted restore atomically", async () => {
+		// Purpose: reload must not partially replace an active selection when its persisted agent policy becomes invalid.
+		// Input and expected output: Stable is active, its workflow becomes unknown, and reload preserves every prior runtime value and exact state bytes.
+		// Edge case: diagnostics distinguish a rejected application attempt from an applied restore.
+		// Dependencies: isolated agent files, persisted state, runtime composition, and runtime diagnostics.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await enableRuntimeDiagnostics(agentDir);
+			const model = createModel("openai", "gpt-test");
+			const stableAgent = {
+				id: "Stable",
+				description: "Stable policy",
+				body: "Stable prompt",
+				model: { id: "openai/gpt-test", thinking: "high" as const },
+				tools: ["read"],
+				workflows: ["Review"],
+			};
+			await writeAgent(agentDir, stableAgent);
+			const pi = createExtensionApiFake({
+				activeTools: ["read", "bash"],
+				allTools: ["read", "bash", "write"],
+			});
+			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
+			mainAgentSelection(pi);
+			await getCommand(pi, "agent").handler("Stable", ctx);
+
+			const contribution =
+				getAgentRuntimeComposition(pi).getMainAgentContribution();
+			const modelCalls = [...pi.setModelCalls];
+			const thinkingCalls = [...pi.thinkingCalls];
+			const activeToolCalls = pi.activeToolCalls.map((names) => [...names]);
+			const stateBytes = await readSelectedStateBytes(agentDir, "/tmp/project");
+			const diagnosticOffset = (await readRuntimeDiagnosticEvents(agentDir))
+				.length;
+			await writeAgent(agentDir, {
+				...stableAgent,
+				workflows: ["Missing"],
+			});
+
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "reload" },
+				ctx,
+			);
+
+			expect(pi.setModelCalls).toEqual(modelCalls);
+			expect(pi.thinkingCalls).toEqual(thinkingCalls);
+			expect(pi.activeToolCalls).toEqual(activeToolCalls);
+			expect(getAgentRuntimeComposition(pi).getMainAgentContribution()).toBe(
+				contribution,
+			);
+			expect(await readSelectedStateBytes(agentDir, "/tmp/project")).toEqual(
+				stateBytes,
+			);
+			const lifecycleEvents = (
+				await readRuntimeDiagnosticEvents(agentDir)
+			).slice(diagnosticOffset);
+			expect(lifecycleEvents).not.toContain(
+				"main-agent-selection.apply.resolved",
+			);
+			expect(lifecycleEvents).not.toContain(
+				"main-agent-selection.restore.applied",
+			);
+			expect(ctx.notifications.at(-1)?.message).toContain("Missing");
+		});
+	});
+
+	test("rejects invalid workflow policy during session replacement handoff atomically", async () => {
+		// Purpose: replacement handoff must not partially replace runtime state when the handed-off agent policy becomes invalid.
+		// Input and expected output: Guard is active in the replacement runtime, rejected Stable leaves Guard and exact persisted bytes unchanged.
+		// Edge case: the handoff is consumed while application diagnostics still record no successful resolution.
+		// Dependencies: fresh extension instances, process-wide handoff storage, isolated state, and runtime diagnostics.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await enableRuntimeDiagnostics(agentDir);
+			const model = createModel("openai", "gpt-test");
+			const stableAgent = {
+				id: "Stable",
+				description: "Stable policy",
+				body: "Stable prompt",
+				model: { id: "openai/gpt-test", thinking: "high" as const },
+				tools: ["read"],
+				workflows: ["Review"],
+			};
+			await writeAgent(agentDir, stableAgent);
+			await writeAgent(agentDir, {
+				id: "Guard",
+				description: "Replacement guard",
+				body: "Guard prompt",
+				model: { id: "openai/gpt-test", thinking: "low" },
+				tools: ["write"],
+				workflows: ["Review"],
+			});
+			const oldPi = createExtensionApiFake({
+				activeTools: ["read", "bash"],
+				allTools: ["read", "bash", "write"],
+			});
+			publishWorkflowCatalogPolicy(oldPi, { ids: ["Review"] });
+			const oldCtx = createCommandContext("/tmp/project", undefined, [model]);
+			const oldFactory = await importFreshMainAgentSelection();
+			oldFactory(oldPi);
+			await getCommand(oldPi, "agent").handler("Stable", oldCtx);
+			await getHandler(oldPi, "session_shutdown")(
+				{ type: "session_shutdown", reason: "new" },
+				oldCtx,
+			);
+			await writeAgent(agentDir, {
+				...stableAgent,
+				workflows: ["Missing"],
+			});
+
+			const newPi = createExtensionApiFake({
+				activeTools: ["read", "bash"],
+				allTools: ["read", "bash", "write"],
+			});
+			publishWorkflowCatalogPolicy(newPi, { ids: ["Review"] });
+			const newCtx = createCommandContext("/tmp/project", undefined, [model]);
+			const newFactory = await importFreshMainAgentSelection();
+			newFactory(newPi);
+			await getCommand(newPi, "agent").handler("Guard", newCtx);
+			const contribution =
+				getAgentRuntimeComposition(newPi).getMainAgentContribution();
+			const modelCalls = [...newPi.setModelCalls];
+			const thinkingCalls = [...newPi.thinkingCalls];
+			const activeToolCalls = newPi.activeToolCalls.map((names) => [...names]);
+			const stateBytes = await readSelectedStateBytes(agentDir, "/tmp/project");
+			const diagnosticOffset = (await readRuntimeDiagnosticEvents(agentDir))
+				.length;
+
+			await getHandler(newPi, "session_start")(
+				{ type: "session_start", reason: "new" },
+				newCtx,
+			);
+
+			expect(newPi.setModelCalls).toEqual(modelCalls);
+			expect(newPi.thinkingCalls).toEqual(thinkingCalls);
+			expect(newPi.activeToolCalls).toEqual(activeToolCalls);
+			expect(getAgentRuntimeComposition(newPi).getMainAgentContribution()).toBe(
+				contribution,
+			);
+			expect(await readSelectedStateBytes(agentDir, "/tmp/project")).toEqual(
+				stateBytes,
+			);
+			const lifecycleEvents = (
+				await readRuntimeDiagnosticEvents(agentDir)
+			).slice(diagnosticOffset);
+			expect(lifecycleEvents).not.toContain(
+				"main-agent-selection.apply.resolved",
+			);
+			expect(lifecycleEvents).not.toContain(
+				"main-agent-selection.restore.applied",
+			);
+			expect(lifecycleEvents).not.toContain(
+				"main-agent-selection.session-start.handoff-restored",
+			);
+			expect(newCtx.notifications.at(-1)?.message).toContain("Missing");
 		});
 	});
 

@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -19,6 +20,7 @@ const CHILD_AGENT_PROCESS_ENV = "PI_AGENT_SUITE_CHILD_AGENT_PROCESS";
 const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_TOOL_PATTERNS_ENV = "PI_SUBAGENT_TOOL_PATTERNS";
+const SUBAGENT_WORKFLOW_IDS_ENV = "PI_SUBAGENT_WORKFLOW_IDS";
 /** Matches Pi diagnostics that report extension loading or execution failures. */
 const PI_EXTENSION_ERROR_PATTERN =
 	/(?:Extension error|Failed to load extension|Extension failed)/i;
@@ -48,6 +50,17 @@ interface RuntimeDump {
 	readonly activeTools: readonly string[];
 	readonly toolDescriptions: Readonly<Record<string, string>>;
 	readonly tools: readonly string[];
+	readonly systemPrompt: string;
+}
+
+interface WorkflowRuntimeDump {
+	readonly activeTools: readonly string[];
+	readonly activeToolDescriptions: Readonly<Record<string, string>>;
+	readonly contextMessages: readonly {
+		readonly role: string;
+		readonly customType?: string;
+		readonly content: unknown;
+	}[];
 	readonly systemPrompt: string;
 }
 
@@ -144,6 +157,57 @@ function writePromptDumpExtension(directory: string): string {
 			"\t\tconst dumpFile = process.env.PI_PROMPT_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_PROMPT_DUMP_FILE is required");',
 			"\t\twriteFileSync(dumpFile, event.systemPrompt);",
+			"\t\tprocess.exit(23);",
+			"\t});",
+			"}",
+		].join("\n"),
+	);
+	return extensionPath;
+}
+
+/** Writes a debug extension that exits from context before any provider request. */
+function writeWorkflowRuntimeDumpExtension(
+	directory: string,
+	mainContributionReset?: {
+		readonly runtimeCompositionUrl: string;
+		readonly tools: readonly string[];
+	},
+): string {
+	const extensionPath = join(directory, "dump-workflow-runtime.ts");
+	writeFileSync(
+		extensionPath,
+		[
+			'import { writeFileSync } from "node:fs";',
+			...(mainContributionReset === undefined
+				? []
+				: [
+						`import { getAgentRuntimeComposition } from ${JSON.stringify(mainContributionReset.runtimeCompositionUrl)};`,
+					]),
+			"",
+			"export default function dumpWorkflowRuntime(pi) {",
+			...RUNTIME_TEST_PROVIDER_LINES,
+			...(mainContributionReset === undefined
+				? []
+				: [
+						'\tpi.on("session_start", () => {',
+						`\t\tgetAgentRuntimeComposition(pi).setMainAgentContribution({ prompt: "Runtime reset", tools: ${JSON.stringify(mainContributionReset.tools)} });`,
+						"\t});",
+					]),
+			'\tlet systemPrompt = "";',
+			'\tpi.on("before_agent_start", (event) => {',
+			"\t\tsystemPrompt = event.systemPrompt;",
+			"\t});",
+			'\tpi.on("context", (event) => {',
+			"\t\tconst dumpFile = process.env.PI_WORKFLOW_RUNTIME_DUMP_FILE;",
+			'\t\tif (dumpFile === undefined) throw new Error("PI_WORKFLOW_RUNTIME_DUMP_FILE is required");',
+			"\t\tconst activeTools = pi.getActiveTools();",
+			"\t\tconst descriptions = Object.fromEntries(pi.getAllTools().map((tool) => [tool.name, tool.description]));",
+			"\t\twriteFileSync(dumpFile, JSON.stringify({",
+			"\t\t\tactiveTools,",
+			"\t\t\tactiveToolDescriptions: Object.fromEntries(activeTools.map((name) => [name, descriptions[name]])),",
+			"\t\t\tcontextMessages: event.messages,",
+			"\t\t\tsystemPrompt,",
+			"\t\t}, null, 2));",
 			"\t\tprocess.exit(23);",
 			"\t});",
 			"}",
@@ -771,3 +835,271 @@ test("runtime package loading exposes convene_council when enabled", () => {
 		rmSync(scratchDir, { recursive: true, force: true });
 	}
 });
+
+const MAIN_WORKFLOW_POLICY_CASES = [
+	{
+		mode: "main",
+		policyTools: ["workflow_activate", "workflow_transition"],
+		projectsWorkflow: true,
+		expectedWorkflowIds: ["delivery", "review"],
+	},
+	{
+		mode: "main",
+		policyTools: ["workflow_activate"],
+		workflowPolicy: ["DELIVERY"],
+		projectsWorkflow: true,
+		expectedWorkflowIds: ["delivery"],
+	},
+	{
+		mode: "main",
+		policyTools: ["workflow_activate"],
+		workflowPolicy: [],
+		projectsWorkflow: false,
+	},
+	{ mode: "main", policyTools: ["read"], projectsWorkflow: false },
+	{
+		mode: "main-reset",
+		policyTools: ["workflow_activate", "workflow_transition"],
+		projectsWorkflow: false,
+	},
+] as const;
+
+const CHILD_WORKFLOW_POLICY_CASES = [
+	{
+		mode: "child",
+		policyTools: ["workflow_activate", "workflow_transition"],
+		projectsWorkflow: true,
+		expectedWorkflowIds: ["delivery", "review"],
+	},
+	{
+		mode: "child",
+		policyTools: ["workflow_transition"],
+		workflowPolicy: ["REVIEW"],
+		projectsWorkflow: true,
+		expectedWorkflowIds: ["review"],
+	},
+	{
+		mode: "child",
+		policyTools: ["workflow_transition"],
+		workflowPolicy: [],
+		projectsWorkflow: false,
+	},
+	{ mode: "child", policyTools: ["read"], projectsWorkflow: false },
+] as const;
+
+type WorkflowPolicyCase =
+	| (typeof MAIN_WORKFLOW_POLICY_CASES)[number]
+	| (typeof CHILD_WORKFLOW_POLICY_CASES)[number];
+
+/** Runs isolated real-Pi policy cases and checks active tools plus provider context. */
+function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
+	const repositoryDir = process.cwd();
+	for (const runtimeCase of cases) {
+		const projectDir = realpathSync(
+			mkdtempSync(join(tmpdir(), "pi-workflow-policy-project-")),
+		);
+		const scratchDir = mkdtempSync(join(tmpdir(), "pi-workflow-policy-dump-"));
+		const agentDir = createIsolatedAgentDir(projectDir);
+		const suiteDir = join(agentDir, "agent-suite");
+		const workflowDir = join(suiteDir, "workflow");
+		const workflowsDir = join(workflowDir, "workflows");
+		const runtimeDumpFile = join(scratchDir, "workflow-runtime.json");
+		const debugExtensionPath = writeWorkflowRuntimeDumpExtension(
+			scratchDir,
+			runtimeCase.mode === "main-reset"
+				? {
+						runtimeCompositionUrl: pathToFileURL(
+							join(
+								repositoryDir,
+								"pi-package/shared/agent-runtime-composition.ts",
+							),
+						).href,
+						tools: ["read"],
+					}
+				: undefined,
+		);
+		const activatePromptFile = join(scratchDir, "activate.md");
+		const transitionPromptFile = join(scratchDir, "transition.md");
+		const extensionPromptFile = join(scratchDir, "extension.md");
+		mkdirSync(workflowsDir, { recursive: true });
+		const workflowYaml =
+			"stages:\n  - id: start\n    description: Start\n    initial: true\n  - id: done\n    description: Done\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n";
+		writeFileSync(
+			join(workflowsDir, "delivery.yaml"),
+			`description: Runtime delivery\n${workflowYaml}`,
+		);
+		writeFileSync(
+			join(workflowsDir, "review.yaml"),
+			`description: Runtime review\n${workflowYaml}`,
+		);
+		writeFileSync(activatePromptFile, "WORKFLOW_ACTIVATE_RUNTIME_DESCRIPTION");
+		writeFileSync(
+			transitionPromptFile,
+			"WORKFLOW_TRANSITION_RUNTIME_DESCRIPTION",
+		);
+		writeFileSync(extensionPromptFile, "WORKFLOW_RUNTIME_GUIDELINES");
+		writeFileSync(
+			join(workflowDir, "config.json"),
+			JSON.stringify({
+				extensionDescriptionPromptFile: extensionPromptFile,
+				activateDescriptionPromptFile: activatePromptFile,
+				transitionDescriptionPromptFile: transitionPromptFile,
+			}),
+		);
+
+		if (runtimeCase.mode === "main" || runtimeCase.mode === "main-reset") {
+			writeAgent(
+				agentDir,
+				"TestAgent.md",
+				[
+					"---",
+					"description: Workflow main policy",
+					"type: main",
+					`tools: ${JSON.stringify(runtimeCase.policyTools)}`,
+					...("workflowPolicy" in runtimeCase
+						? [`workflows: ${JSON.stringify(runtimeCase.workflowPolicy)}`]
+						: []),
+					"---",
+					"Workflow main prompt",
+				].join("\n"),
+			);
+		}
+		if (runtimeCase.mode === "child" && "workflowPolicy" in runtimeCase) {
+			writeAgent(
+				agentDir,
+				"SubAgentExtractor.md",
+				[
+					"---",
+					"description: Workflow child policy",
+					"type: subagent",
+					`workflows: ${JSON.stringify(runtimeCase.workflowPolicy)}`,
+					"---",
+					"Workflow child prompt",
+				].join("\n"),
+			);
+		}
+
+		const childEnv: Record<string, string | undefined> = {
+			...process.env,
+			PI_CODING_AGENT_DIR: agentDir,
+			PI_AGENT_SUITE_DIR: suiteDir,
+			PI_WORKFLOW_RUNTIME_DUMP_FILE: runtimeDumpFile,
+		};
+		if (runtimeCase.mode === "child") {
+			childEnv[CHILD_AGENT_PROCESS_ENV] = "1";
+			childEnv[SUBAGENT_AGENT_ID_ENV] = "SubAgentExtractor";
+			childEnv[SUBAGENT_DEPTH_ENV] = "0";
+			childEnv[SUBAGENT_TOOL_PATTERNS_ENV] = JSON.stringify(
+				runtimeCase.policyTools,
+			);
+			if ("workflowPolicy" in runtimeCase) {
+				childEnv[SUBAGENT_WORKFLOW_IDS_ENV] = JSON.stringify(
+					"expectedWorkflowIds" in runtimeCase
+						? runtimeCase.expectedWorkflowIds
+						: [],
+				);
+			} else {
+				delete childEnv[SUBAGENT_WORKFLOW_IDS_ENV];
+			}
+		} else {
+			delete childEnv[CHILD_AGENT_PROCESS_ENV];
+			delete childEnv[SUBAGENT_AGENT_ID_ENV];
+			delete childEnv[SUBAGENT_DEPTH_ENV];
+			delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
+			delete childEnv[SUBAGENT_WORKFLOW_IDS_ENV];
+		}
+
+		try {
+			const result = spawnSync(
+				"pi",
+				[
+					"--no-session",
+					"--no-extensions",
+					"--model",
+					RUNTIME_TEST_MODEL,
+					"-p",
+					"-e",
+					join(repositoryDir, "pi-package"),
+					"-e",
+					debugExtensionPath,
+					"capture workflow policy runtime",
+				],
+				{
+					cwd: projectDir,
+					encoding: "utf8",
+					env: childEnv,
+					timeout: 30_000,
+				},
+			);
+			expect(result.error).toBeUndefined();
+			expect(result.signal).toBeNull();
+			expect(result.status).toBe(23);
+			expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+				PI_EXTENSION_ERROR_PATTERN,
+			);
+			const runtime = JSON.parse(
+				readFileSync(runtimeDumpFile, "utf8"),
+			) as WorkflowRuntimeDump;
+			const workflowMessages = runtime.contextMessages.filter(
+				(message) => message.customType === "workflow",
+			);
+			const expectedWorkflowTools =
+				runtimeCase.mode === "main-reset"
+					? []
+					: runtimeCase.policyTools.filter((name) =>
+							name.startsWith("workflow_"),
+						);
+			for (const [name, description] of [
+				["workflow_activate", "WORKFLOW_ACTIVATE_RUNTIME_DESCRIPTION"],
+				["workflow_transition", "WORKFLOW_TRANSITION_RUNTIME_DESCRIPTION"],
+			] as const) {
+				if (expectedWorkflowTools.includes(name)) {
+					expect(runtime.activeTools).toContain(name);
+					expect(runtime.activeToolDescriptions[name]).toBe(description);
+				} else {
+					expect(runtime.activeTools).not.toContain(name);
+					expect(runtime.activeToolDescriptions[name]).toBeUndefined();
+				}
+			}
+			if (runtimeCase.projectsWorkflow) {
+				expect(workflowMessages).toHaveLength(1);
+				expect(String(workflowMessages[0]?.content)).toContain(
+					"WORKFLOW_RUNTIME_GUIDELINES",
+				);
+				const workflowContent = String(workflowMessages[0]?.content);
+				expect(workflowContent).toContain("<workflow_activation_options>");
+				const expectedWorkflowIds = new Set<string>(
+					"expectedWorkflowIds" in runtimeCase
+						? runtimeCase.expectedWorkflowIds
+						: [],
+				);
+				for (const workflowId of ["delivery", "review"]) {
+					if (expectedWorkflowIds.has(workflowId)) {
+						expect(workflowContent).toContain(`id="${workflowId}"`);
+					} else {
+						expect(workflowContent).not.toContain(`id="${workflowId}"`);
+					}
+				}
+			} else {
+				expect(workflowMessages).toHaveLength(0);
+				expect(JSON.stringify(runtime.contextMessages)).not.toContain(
+					"<workflow_",
+				);
+			}
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+			rmSync(projectDir, { recursive: true, force: true });
+			rmSync(scratchDir, { recursive: true, force: true });
+		}
+	}
+}
+
+/** Proves main-agent single, combined, absent, and post-start reset policies. */
+test("workflow visibility follows real main-agent tool policy", () => {
+	verifyWorkflowPolicyCases(MAIN_WORKFLOW_POLICY_CASES);
+}, 30_000);
+
+/** Proves child single, combined, and absent policies before provider access. */
+test("workflow visibility follows real child tool policy", () => {
+	verifyWorkflowPolicyCases(CHILD_WORKFLOW_POLICY_CASES);
+}, 30_000);

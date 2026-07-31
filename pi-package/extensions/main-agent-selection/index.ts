@@ -30,6 +30,10 @@ import {
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
 import { resolveToolPolicy } from "../../shared/tool-policy";
+import {
+	type ResolvedWorkflowPolicy,
+	resolveWorkflowPolicy,
+} from "../../shared/workflow-policy";
 import { isChildSubagentProcess } from "./environment";
 
 const COMMAND_NAME = "agent";
@@ -121,6 +125,11 @@ interface SessionReplacementHandoffCarrier {
 type SessionReplacementHandoff =
 	| { readonly found: false }
 	| { readonly found: true; readonly activeAgentId: string | null };
+
+/** Separates consumed handoffs from successful agent application for runtime diagnostics. */
+type SessionReplacementRestoreResult =
+	| { readonly handled: false }
+	| { readonly handled: true; readonly applied: boolean };
 
 interface SearchableAgentSelectorOptions {
 	readonly options: readonly SelectItem[];
@@ -360,16 +369,23 @@ async function handleSessionStart(
 		return;
 	}
 
-	if (await restoreSessionReplacementMainAgent(pi, event, mainContext)) {
-		writeRuntimeDiagnostic(
-			"main-agent-selection.session-start.handoff-restored",
-			{
-				reason: (event as SessionStartEventLike).reason ?? null,
-				activeAgentId:
-					getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
-						?.id ?? null,
-			},
-		);
+	const replacementRestore = await restoreSessionReplacementMainAgent(
+		pi,
+		event,
+		mainContext,
+	);
+	if (replacementRestore.handled) {
+		if (replacementRestore.applied) {
+			writeRuntimeDiagnostic(
+				"main-agent-selection.session-start.handoff-restored",
+				{
+					reason: (event as SessionStartEventLike).reason ?? null,
+					activeAgentId:
+						getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+							?.id ?? null,
+				},
+			);
+		}
 		return;
 	}
 
@@ -443,10 +459,10 @@ async function restoreSessionReplacementMainAgent(
 	pi: ExtensionAPI,
 	event: unknown,
 	mainContext: MainAgentContext,
-): Promise<boolean> {
+): Promise<SessionReplacementRestoreResult> {
 	const handoffKey = getSessionReplacementStartHandoffKey(event, mainContext);
 	if (handoffKey === undefined) {
-		return false;
+		return { handled: false };
 	}
 
 	const handoff = consumeSessionReplacementHandoff(handoffKey);
@@ -456,11 +472,11 @@ async function restoreSessionReplacementMainAgent(
 		activeAgentId: handoff.found ? handoff.activeAgentId : null,
 	});
 	if (!handoff.found) {
-		return false;
+		return { handled: false };
 	}
 	if (handoff.activeAgentId === null) {
 		getAgentRuntimeComposition(pi).clearMainAgentContribution();
-		return true;
+		return { handled: true, applied: true };
 	}
 
 	const activeAgentId = handoff.activeAgentId;
@@ -474,11 +490,11 @@ async function restoreSessionReplacementMainAgent(
 			`selected agent ${handoff.activeAgentId} was not found`,
 		);
 		getAgentRuntimeComposition(pi).clearMainAgentContribution();
-		return true;
+		return { handled: true, applied: true };
 	}
 
-	await applyAgentSelection(pi, mainContext, agent);
-	return true;
+	const application = await applyAgentSelection(pi, mainContext, agent);
+	return { handled: true, applied: application === "applied" };
 }
 
 /** Returns true when pi replaces the runtime without changing the current main-agent selection. */
@@ -614,7 +630,10 @@ async function restoreSelectedMainAgent(
 		return;
 	}
 
-	await applyAgentSelection(pi, mainContext, agent);
+	const application = await applyAgentSelection(pi, mainContext, agent);
+	if (application !== "applied") {
+		return;
+	}
 	writeRuntimeDiagnostic("main-agent-selection.restore.applied", {
 		activeAgentId: agent.id,
 		activeTools: pi.getActiveTools(),
@@ -647,8 +666,11 @@ async function selectMainAgent(
 	}
 
 	const normalizedCwd = normalizeCwd(ctx.cwd);
-	const applied = await applyAgentSelection(pi, ctx, agent);
-	if (!applied) {
+	const application = await applyAgentSelection(pi, ctx, agent);
+	if (application === "workflow-policy-error") {
+		return;
+	}
+	if (application === "application-error") {
 		await writeSelectedAgentState({
 			cwd: normalizedCwd,
 			activeAgentId: null,
@@ -748,35 +770,25 @@ async function applyAgentSelection(
 	pi: ExtensionAPI,
 	ctx: MainAgentContext,
 	agent: AgentDefinition,
-): Promise<boolean> {
+): Promise<"applied" | "workflow-policy-error" | "application-error"> {
 	writeRuntimeDiagnostic("main-agent-selection.apply.started", {
 		agentId: agent.id,
 		promptLength: agent.prompt.length,
 		configuredTools: agent.tools ?? null,
+		configuredWorkflows: agent.workflows ?? null,
 		configuredSubagents: agent.agents ?? null,
 		availableTools: pi.getAllTools().map((tool) => tool.name),
 	});
-	const resolvedTools = resolveMainAgentTools(pi, agent);
-	if ("issue" in resolvedTools) {
-		clearMainAgentSelection(pi);
-		reportIssue(ctx, resolvedTools.issue);
-		return false;
+	const policies = resolveMainAgentPolicies(pi, ctx, agent);
+	if (policies.kind === "error") {
+		return policies.outcome;
 	}
 
-	if (agent.model?.id !== undefined) {
-		const model = resolveModel(ctx, agent.model.id);
-		if (model === undefined) {
-			clearMainAgentSelection(pi);
-			reportIssue(ctx, `model ${agent.model.id} was not found`);
-			return false;
-		}
-
-		const modelApplied = await pi.setModel(model);
-		if (!modelApplied) {
-			clearMainAgentSelection(pi);
-			reportIssue(ctx, `model ${agent.model.id} could not be applied`);
-			return false;
-		}
+	const modelIssue = await applyConfiguredModel(pi, ctx, agent);
+	if (modelIssue !== undefined) {
+		clearMainAgentSelection(pi);
+		reportIssue(ctx, modelIssue);
+		return "application-error";
 	}
 
 	if (agent.model?.thinking !== undefined) {
@@ -785,23 +797,79 @@ async function applyAgentSelection(
 
 	writeRuntimeDiagnostic("main-agent-selection.apply.resolved", {
 		agentId: agent.id,
-		resolvedTools: resolvedTools.tools ?? null,
+		resolvedTools: policies.tools ?? null,
+		resolvedWorkflows: policies.workflows ?? null,
 		configuredSubagents: agent.agents ?? null,
 	});
 	getAgentRuntimeComposition(pi).setMainAgentContribution({
 		prompt: agent.prompt,
 		agent: {
 			id: agent.id,
-			...(resolvedTools.tools !== undefined
-				? { tools: resolvedTools.tools }
-				: {}),
+			...(policies.tools !== undefined ? { tools: policies.tools } : {}),
+			...workflowPolicyMetadata(policies.workflows),
 			...(agent.agents !== undefined ? { agents: agent.agents } : {}),
 		},
-		...(resolvedTools.tools !== undefined
-			? { tools: resolvedTools.tools }
-			: {}),
+		...(policies.tools !== undefined ? { tools: policies.tools } : {}),
 	});
-	return true;
+	return "applied";
+}
+
+/** Applies one optional configured model and returns a precise failure issue. */
+async function applyConfiguredModel(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+	agent: AgentDefinition,
+): Promise<string | undefined> {
+	if (agent.model?.id === undefined) {
+		return undefined;
+	}
+	const model = resolveModel(ctx, agent.model.id);
+	if (model === undefined) {
+		return `model ${agent.model.id} was not found`;
+	}
+	return (await pi.setModel(model))
+		? undefined
+		: `model ${agent.model.id} could not be applied`;
+}
+
+/** Resolves tool and workflow policy before model or runtime-composition side effects. */
+function resolveMainAgentPolicies(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+	agent: AgentDefinition,
+):
+	| {
+			readonly kind: "resolved";
+			readonly tools?: readonly string[];
+			readonly workflows: ResolvedWorkflowPolicy;
+	  }
+	| {
+			readonly kind: "error";
+			readonly outcome: "workflow-policy-error" | "application-error";
+	  } {
+	const workflows = resolveWorkflowPolicy(pi, agent.workflows);
+	if (workflows.kind === "error") {
+		reportIssue(ctx, workflows.issue);
+		return { kind: "error", outcome: "workflow-policy-error" };
+	}
+	const tools = resolveMainAgentTools(pi, agent);
+	if ("issue" in tools) {
+		clearMainAgentSelection(pi);
+		reportIssue(ctx, tools.issue);
+		return { kind: "error", outcome: "application-error" };
+	}
+	return {
+		kind: "resolved",
+		...(tools.tools === undefined ? {} : { tools: tools.tools }),
+		workflows: workflows.policy,
+	};
+}
+
+/** Omits unrestricted policy while preserving empty and explicit canonical IDs. */
+function workflowPolicyMetadata(policy: ResolvedWorkflowPolicy): {
+	readonly workflows?: readonly string[];
+} {
+	return policy === undefined ? {} : { workflows: policy };
 }
 
 /** Resolves a main-agent tool policy through the same exact-name and wildcard rules used by subagents. */

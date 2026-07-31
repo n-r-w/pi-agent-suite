@@ -68,6 +68,7 @@ You are a code review agent. Check correctness, risks, and missing validation.
 | `model.id` | String in `provider/model` form | No | Not set | Selects the model for this main agent. |
 | `model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | No | Not set | Sets the thinking level for this main agent. |
 | `tools` | Array of unique non-empty strings | No | Not set | Allows exact tool names or wildcard tool patterns for this main agent. The full wildcard `*` is not allowed. |
+| `workflows` | Array of unique non-empty workflow IDs | No | Not set | Restricts access to the listed workflows. Matching is case-insensitive; `[]` denies every workflow, while omission allows all workflows. |
 | `agents` | Array of unique non-empty strings | No | Not set | Allows the listed subagents when this main agent is selected. |
 | Markdown body | Markdown text after frontmatter | No | Empty after trimming | Becomes the main-agent prompt. |
 

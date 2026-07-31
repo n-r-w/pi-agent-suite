@@ -84,6 +84,7 @@ export interface InvocationLaunchConfiguration {
 	readonly provider: string;
 	readonly thinking: string;
 	readonly toolPatterns?: readonly string[];
+	readonly workflowIds?: readonly string[];
 	readonly depth: number;
 	readonly parentAuthVerified: boolean;
 	readonly runtimeFacts: ChildRpcRuntimeFacts;

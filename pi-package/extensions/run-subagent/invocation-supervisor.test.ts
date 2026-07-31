@@ -5,11 +5,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
+import type { AgentDefinition } from "../../shared/agent-registry";
 import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
+	SUBAGENT_WORKFLOW_IDS_ENV,
 } from "../../shared/subagent-environment";
+import { publishWorkflowCatalogPolicy } from "../../shared/workflow-policy";
+import { resolveLaunchConfiguration } from "./agent-policy";
 import { SubagentCoordinator } from "./coordinator";
 import type {
 	JournalRecord,
@@ -226,6 +234,11 @@ function createSupervisor(
 	return createSupervisorHarness([child], events).supervisor;
 }
 
+interface SupervisorHarnessOptions {
+	readonly resolveLaunch?: InvocationSupervisorOptions["resolveLaunch"];
+	readonly onSpawnEnvironment?: (environment: NodeJS.ProcessEnv) => void;
+}
+
 /** Creates one supervisor whose successive launches consume controlled child processes. */
 function createSupervisorHarness(
 	children: readonly ControlledChild[],
@@ -233,6 +246,7 @@ function createSupervisorHarness(
 	eventSink?: (event: InvocationEvent) => Promise<void> | void,
 	runtimeRequestSink?: RuntimeRequestSink,
 	emitReady = true,
+	options: SupervisorHarnessOptions = {},
 ): SupervisorHarness {
 	let spawnCount = 0;
 	const supervisor = new InvocationSupervisor({
@@ -244,21 +258,24 @@ function createSupervisorHarness(
 		...(runtimeRequestSink === undefined
 			? {}
 			: { onRuntimeRequest: runtimeRequestSink }),
-		resolveLaunch: async () => ({
-			cwd: "/tmp",
-			modelId: "openai/test-model",
-			provider: "openai",
-			thinking: "off",
-			depth: 1,
-			parentAuthVerified: true,
-			runtimeFacts: {
-				modelProvider: "openai",
-				modelId: "test-model",
-				contextWindow: 128_000,
-			},
-		}),
+		resolveLaunch:
+			options.resolveLaunch ??
+			(async () => ({
+				cwd: "/tmp",
+				modelId: "openai/test-model",
+				provider: "openai",
+				thinking: "off",
+				depth: 1,
+				parentAuthVerified: true,
+				runtimeFacts: {
+					modelProvider: "openai",
+					modelId: "test-model",
+					contextWindow: 128_000,
+				},
+			})),
 		sessionsDir: "/tmp",
-		spawnProcess: (_command, _args, options) => {
+		spawnProcess: (_command, _args, spawnOptions) => {
+			options.onSpawnEnvironment?.(spawnOptions.env);
 			const child = children[spawnCount];
 			if (child === undefined) {
 				throw new Error("controlled child process queue is exhausted");
@@ -268,8 +285,8 @@ function createSupervisorHarness(
 				queueMicrotask(() => {
 					child.emit("message", {
 						kind: "subagents-ready",
-						runtimeLeaseId: options.env[SUBAGENT_RUNTIME_LEASE_ENV],
-						ownerPiSessionId: options.env[SUBAGENT_OWNER_SESSION_ENV],
+						runtimeLeaseId: spawnOptions.env[SUBAGENT_RUNTIME_LEASE_ENV],
+						ownerPiSessionId: spawnOptions.env[SUBAGENT_OWNER_SESSION_ENV],
 						ownerSessionFile: "/tmp/child-session.jsonl",
 					});
 				});
@@ -491,6 +508,83 @@ function readGracefulOwnerFacts(manager: SessionManager): {
 }
 
 describe("InvocationSupervisor", () => {
+	test.each([
+		[undefined, undefined],
+		[[], "[]"],
+		[["rEvIeW"], '["Review"]'],
+	] as const)("connects workflow resolver policy %j to the child environment", async (configuredWorkflows, expectedEnvironment) => {
+		// Purpose: one accepted launch must carry the resolver result through the supervisor instead of testing either seam in isolation.
+		// Input and expected output: absent, empty, and mixed-case Review become absent, [], and the catalog's exact Review ID.
+		// Edge case: inherited workflow transport is stripped before launch-owned policy is applied.
+		// Dependencies: production resolver, workflow catalog boundary, supervisor spawn environment, and a controlled child without provider requests.
+		const previous = process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+		process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["stale"]';
+		const child = createChildProcess();
+		const environments: NodeJS.ProcessEnv[] = [];
+		const model = {
+			provider: "openai",
+			id: "test-model",
+			contextWindow: 128_000,
+		} as NonNullable<ExtensionContext["model"]>;
+		const pi = {
+			events: new EventEmitter(),
+			getThinkingLevel: () => "off",
+		} as unknown as ExtensionAPI;
+		publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+		let authCalls = 0;
+		const ctx = {
+			cwd: "/tmp",
+			model,
+			modelRegistry: {
+				getApiKeyAndHeaders: async () => {
+					authCalls += 1;
+					return { ok: true };
+				},
+			},
+		} as unknown as ExtensionContext;
+		const agent: AgentDefinition = {
+			id: "SubAgentCoder",
+			description: "Codes",
+			type: "subagent",
+			prompt: "Code",
+			...(configuredWorkflows === undefined
+				? {}
+				: { workflows: configuredWorkflows }),
+		};
+		const harness = createSupervisorHarness(
+			[child],
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				resolveLaunch: (request) =>
+					resolveLaunchConfiguration({
+						pi,
+						ctx,
+						agents: [agent],
+						supervisor: undefined,
+						request,
+					}),
+				onSpawnEnvironment: (environment) => environments.push(environment),
+			},
+		);
+		try {
+			await acceptStart(harness.supervisor, child);
+			expect(authCalls).toBe(1);
+			expect(environments[0]?.[SUBAGENT_WORKFLOW_IDS_ENV]).toBe(
+				expectedEnvironment,
+			);
+		} finally {
+			child.emitClose();
+			if (previous === undefined) {
+				delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+			} else {
+				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = previous;
+			}
+		}
+	});
+
 	test("rejects pre-aborted start before spawning a child", async () => {
 		// Purpose: cancellation already owned by Pi must prevent all process and runtime-lease creation.
 		// Input and expected output: a pre-aborted signal rejects with its original reason and spawn count stays zero.

@@ -7,6 +7,7 @@ import {
 	isFileNotFoundError,
 } from "./agent-suite-storage";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
+import { findCaseInsensitiveWorkflowDuplicate } from "./workflow-policy";
 
 const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
 const AGENTS_DIR = "agents";
@@ -17,6 +18,7 @@ const TOP_LEVEL_KEYS = [
 	"type",
 	"model",
 	"tools",
+	"workflows",
 	"agents",
 ] as const;
 const MODEL_KEYS = ["id", "thinking"] as const;
@@ -47,6 +49,7 @@ export interface AgentDefinition {
 		readonly thinking?: ReasoningLevel;
 	};
 	readonly tools?: readonly string[];
+	readonly workflows?: readonly string[];
 	readonly agents?: readonly string[];
 }
 
@@ -192,6 +195,7 @@ function parseAgentDefinition(
 		description,
 		model: rawModel,
 		tools: rawTools,
+		workflows: rawWorkflows,
 		agents: rawAgents,
 	} = frontmatter;
 	const type = rawType ?? "main";
@@ -213,6 +217,11 @@ function parseAgentDefinition(
 		return undefined;
 	}
 
+	const workflows = parseWorkflowList(rawWorkflows);
+	if (workflows === false) {
+		return undefined;
+	}
+
 	const agents = parseStringList(rawAgents);
 	if (agents === false) {
 		return undefined;
@@ -225,6 +234,7 @@ function parseAgentDefinition(
 		prompt: parsed.body.trim(),
 		...(model !== undefined ? { model } : {}),
 		...(tools !== undefined ? { tools } : {}),
+		...(workflows !== undefined ? { workflows } : {}),
 		...(agents !== undefined ? { agents } : {}),
 	};
 }
@@ -261,6 +271,20 @@ function isModelId(value: unknown): value is string {
 
 	const separatorIndex = value.indexOf("/");
 	return separatorIndex > 0 && separatorIndex < value.length - 1;
+}
+
+/** Parses workflow names and rejects duplicates under case-insensitive matching. */
+function parseWorkflowList(
+	value: unknown,
+): readonly string[] | undefined | false {
+	const workflows = parseStringList(value);
+	if (workflows === false || workflows === undefined) {
+		return workflows;
+	}
+	if (findCaseInsensitiveWorkflowDuplicate(workflows) !== undefined) {
+		return false;
+	}
+	return workflows;
 }
 
 /** Parses optional unique non-empty string lists from frontmatter. */

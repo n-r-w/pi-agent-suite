@@ -27,6 +27,7 @@ import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
+	SUBAGENT_WORKFLOW_IDS_ENV,
 } from "../../shared/subagent-environment";
 import {
 	readField,
@@ -424,6 +425,11 @@ export class InvocationSupervisor implements InvocationControl {
 				? {}
 				: {
 						[SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify(launch.toolPatterns),
+					}),
+			...(launch?.workflowIds === undefined
+				? {}
+				: {
+						[SUBAGENT_WORKFLOW_IDS_ENV]: JSON.stringify(launch.workflowIds),
 					}),
 		});
 		return this.spawnProcess(this.options.command ?? "pi", args, {

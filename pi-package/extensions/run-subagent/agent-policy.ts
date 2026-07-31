@@ -15,6 +15,7 @@ import {
 } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import { resolveToolPolicy } from "../../shared/tool-policy";
+import { resolveWorkflowPolicy } from "../../shared/workflow-policy";
 import {
 	AVAILABLE_SUBAGENTS_PROMPT_CLOSING_TAG,
 	AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
@@ -57,6 +58,10 @@ export async function resolveLaunchConfiguration(
 			`Subagent ${request.agentId} is unavailable`,
 		);
 	}
+	const workflows = resolveWorkflowPolicy(pi, agent.workflows);
+	if (workflows.kind === "error") {
+		throw new InvocationStartError("start_failed", workflows.issue);
+	}
 	const model = resolveAgentModel(agent, ctx);
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	const parentDepth =
@@ -70,6 +75,9 @@ export async function resolveLaunchConfiguration(
 		provider: model.provider,
 		thinking: agent.model?.thinking ?? pi.getThinkingLevel(),
 		...(agent.tools === undefined ? {} : { toolPatterns: agent.tools }),
+		...(workflows.policy === undefined
+			? {}
+			: { workflowIds: workflows.policy }),
 		depth: parentDepth + 1,
 		parentAuthVerified: auth.ok,
 		runtimeFacts: {

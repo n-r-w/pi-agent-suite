@@ -86,9 +86,11 @@ The root agent has depth `0`. With the default `maxDepth` of `1`, the root can s
 
 Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended or replaced by definitions under `<cwd>/.pi/agents`.
 
-A project agent definition supplies the child prompt, model, thinking level, tool patterns, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
+A project agent definition supplies the child prompt, model, thinking level, tool patterns, workflow policy, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
 
 An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.
+
+The optional `workflows` frontmatter field restricts the child to listed workflow IDs. Matching is case-insensitive; omission allows all workflows, and `workflows: []` denies every workflow. Unknown or duplicate names reject the launch before authorization and process startup. The launcher sends canonical IDs to the child through its owned environment; callers do not configure this transport directly.
 
 ## Startup acceptance
 

@@ -4,6 +4,7 @@ import { writeRuntimeDiagnostic } from "./agent-runtime-diagnostics";
 export interface MainAgentRuntimeInfo {
 	readonly id: string;
 	readonly tools?: readonly string[];
+	readonly workflows?: readonly string[];
 	readonly agents?: readonly string[];
 }
 

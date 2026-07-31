@@ -40,6 +40,7 @@
 			"./extensions/cmux/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
+			"./extensions/workflow/index.ts",
 			"./extensions/structured-prompt/index.ts",
 			"./extensions/ask-llm/index.ts",
 			"./extensions/consult-advisor/index.ts",
@@ -59,6 +60,7 @@
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.1",
-		"stream-json": "^2.1.0"
+		"stream-json": "^2.1.0",
+		"yaml": "^2.9.0"
 	}
 }

@@ -69,6 +69,65 @@ describe("agent registry project overlay", () => {
 		});
 	});
 
+	test("preserves absent, empty, and explicit workflow policies", async () => {
+		// Purpose: agent frontmatter must preserve the three workflow policy states before catalog resolution.
+		// Input and expected output: absent, empty, and mixed-case explicit lists become undefined, [], and original names.
+		// Edge case: frontmatter names remain unnormalized until the shared catalog resolver runs.
+		// Dependencies: this test uses only temporary suite and project directories.
+		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
+			await writeFile(
+				join(globalAgentsDir, "Unrestricted.md"),
+				"---\ntype: main\n---\nUnrestricted",
+			);
+			await writeFile(
+				join(globalAgentsDir, "Empty.md"),
+				"---\ntype: main\nworkflows: []\n---\nEmpty",
+			);
+			await writeFile(
+				join(globalAgentsDir, "Explicit.md"),
+				"---\ntype: both\nworkflows: [Review, DELIVERY]\n---\nExplicit",
+			);
+			await writeFile(
+				join(globalAgentsDir, "Spaced.md"),
+				'---\ntype: main\nworkflows: [" Review"]\n---\nSpaced',
+			);
+
+			const agents = await loadAgentDefinitions(projectDir);
+
+			expect(findAgent(agents, "Unrestricted")?.workflows).toBeUndefined();
+			expect(findAgent(agents, "Empty")?.workflows).toEqual([]);
+			expect(findAgent(agents, "Explicit")?.workflows).toEqual([
+				"Review",
+				"DELIVERY",
+			]);
+			expect(findAgent(agents, "Spaced")?.workflows).toEqual([" Review"]);
+		});
+	});
+
+	test.each([
+		["case-insensitive duplicates", "[Review, review]"],
+		["wrong primitive", "review"],
+		["empty item", '[Review, ""]'],
+		["whitespace item", '[Review, "   "]'],
+	])("rejects invalid workflows frontmatter: %s", async (_case, workflows) => {
+		// Purpose: malformed workflow policy must make only that agent unavailable.
+		// Input and expected output: each invalid workflows value produces no parsed agent.
+		// Edge case: duplicate detection is case-insensitive while other agent files remain loadable.
+		// Dependencies: this test uses only temporary suite and project directories.
+		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
+			await writeFile(
+				join(globalAgentsDir, "Invalid.md"),
+				`---\ntype: main\nworkflows: ${workflows}\n---\nInvalid`,
+			);
+			await writeAgent(globalAgentsDir, "Valid.md", "main", "Valid");
+
+			const agents = await loadAgentDefinitions(projectDir);
+
+			expect(findAgent(agents, "Invalid")).toBeUndefined();
+			expect(findAgent(agents, "Valid")).toBeDefined();
+		});
+	});
+
 	test("keeps an invalid project override unavailable while loading unrelated agents", async () => {
 		// Purpose: a broken project override must not silently expose the global agent that it intended to replace.
 		// Input and expected output: malformed local HELPER hides global helper, while valid global and project agents remain available.
