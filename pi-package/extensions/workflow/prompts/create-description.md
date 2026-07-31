@@ -11,3 +11,4 @@
 6. A `rework` transition MAY target only a strict `advance` ancestor.
 7. If completing a stage may require changing an `advance` ancestor’s output, a path consisting only of `rework` transitions MUST exist from that stage to that ancestor.
 8. A stage’s completion criteria MUST be satisfiable using outputs available at that stage and its `advance` ancestors; they MUST NOT depend on outputs produced only by its `advance` descendants.
+9. If you understand that your current workflow does not fit goals, you MUST IMMEDIATELY create a new, suitable workflow.
