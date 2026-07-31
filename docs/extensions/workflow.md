@@ -147,6 +147,7 @@ The default Pi tool shell renders workflow references instead of displaying inte
 ```text
 workflow_create
 Workflow: task-delivery · Task-specific delivery workflow
+Stage: implementation · Implement the approved change
 
 workflow_activate
 Workflow: delivery · Software delivery

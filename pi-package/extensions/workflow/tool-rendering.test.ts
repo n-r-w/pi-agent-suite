@@ -342,8 +342,8 @@ describe("workflow semantic tool rendering", () => {
 	});
 
 	/**
-	 * Proves creation keeps its caller-provided identity in active and reconstructed session rendering.
-	 * Input and expected output: successful and rejected create calls show the submitted ID and description in both screens.
+	 * Proves creation keeps its workflow and initial-stage identities in active and reconstructed session rendering.
+	 * Input and expected output: successful and rejected create calls show both submitted references in both screens.
 	 * Edge case: a case-insensitive catalog collision still persists semantic details before execution fails.
 	 * Dependencies: workflow presentation events, package registry reconstruction, and create tool execution.
 	 */
@@ -364,6 +364,7 @@ describe("workflow semantic tool rendering", () => {
 			call: [
 				"workflow_create",
 				"Workflow: dynamic-delivery · Dynamic delivery process",
+				"Stage: implementation · Implementation stage",
 			],
 			result: [],
 		});
@@ -383,6 +384,7 @@ describe("workflow semantic tool rendering", () => {
 		expect(activeRejected.call).toEqual([
 			"workflow_create",
 			"Workflow: DELIVERY · Conflicting delivery process",
+			"Stage: implementation · Implementation stage",
 		]);
 		expect(activeRejected.result.join("\n")).toContain("Error:");
 		expect(sessionRejected).toEqual(activeRejected);

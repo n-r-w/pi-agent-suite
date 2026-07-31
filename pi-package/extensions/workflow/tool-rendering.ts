@@ -32,6 +32,7 @@ interface WorkflowCreatePresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
 	readonly toolName: "workflow_create";
 	readonly workflow: WorkflowPresentationReference;
+	readonly stage?: WorkflowPresentationReference;
 }
 
 /** Persists activation identity for replayed tool rows. */
@@ -98,16 +99,16 @@ function createWorkflowCreatePresentation(
 	args: unknown,
 ): WorkflowCreatePresentation | undefined {
 	const workflowId = readInputString(args, "id");
-	return workflowId === undefined
-		? undefined
-		: {
-				presentationKind: PRESENTATION_KIND,
-				toolName: "workflow_create",
-				workflow: createReference(
-					workflowId,
-					readInputString(args, "description"),
-				),
-			};
+	if (workflowId === undefined) {
+		return undefined;
+	}
+	const presentation: WorkflowCreatePresentation = {
+		presentationKind: PRESENTATION_KIND,
+		toolName: "workflow_create",
+		workflow: createReference(workflowId, readInputString(args, "description")),
+	};
+	const stage = findInitialStageReference(args);
+	return stage === undefined ? presentation : { ...presentation, stage };
 }
 
 /** Resolves activation descriptions from catalog or saved state before replacement. */
@@ -182,17 +183,16 @@ export function renderWorkflowCreateCall(
 	context: WorkflowToolRenderContext,
 ): Component {
 	const presentation = readCreatePresentation(context);
-	const workflowId = readInputString(args, "id");
-	const fallback =
-		workflowId === undefined
-			? undefined
-			: createReference(workflowId, readInputString(args, "description"));
-	return renderWorkflowReferenceCall(
-		"workflow_create",
-		presentation?.workflow ?? fallback,
+	const fallback = createWorkflowCreatePresentation(args);
+	return renderWorkflowReferenceCall({
+		toolName: "workflow_create",
+		workflow: presentation?.workflow ?? fallback?.workflow,
+		stage:
+			presentation?.stage ??
+			(context.argsComplete ? fallback?.stage : undefined),
 		theme,
 		context,
-	);
+	});
 }
 
 /** Renders one workflow activation with a bounded or complete reference section. */
@@ -205,31 +205,42 @@ export function renderWorkflowActivateCall(
 	const workflow =
 		presentation?.workflow ??
 		createOptionalReference(readInputString(args, "workflowId"));
-	return renderWorkflowReferenceCall(
-		"workflow_activate",
+	return renderWorkflowReferenceCall({
+		toolName: "workflow_activate",
 		workflow,
+		stage: undefined,
 		theme,
 		context,
-	);
+	});
 }
 
 /** Shares bounded workflow-reference rows between create and activate calls. */
-function renderWorkflowReferenceCall(
-	toolName: "workflow_create" | "workflow_activate",
-	workflow: WorkflowPresentationReference | undefined,
-	theme: Theme,
-	context: WorkflowToolRenderContext,
-): Component {
+function renderWorkflowReferenceCall(options: {
+	readonly toolName: "workflow_create" | "workflow_activate";
+	readonly workflow: WorkflowPresentationReference | undefined;
+	readonly stage: WorkflowPresentationReference | undefined;
+	readonly theme: Theme;
+	readonly context: WorkflowToolRenderContext;
+}): Component {
 	return new WorkflowRows((width) => [
-		renderToolName(toolName, width, theme),
-		...(workflow === undefined
+		renderToolName(options.toolName, width, options.theme),
+		...(options.workflow === undefined
 			? []
 			: renderReference({
 					label: "Workflow",
-					reference: workflow,
-					expanded: context.expanded,
+					reference: options.workflow,
+					expanded: options.context.expanded,
 					width,
-					theme,
+					theme: options.theme,
+				})),
+		...(options.stage === undefined
+			? []
+			: renderReference({
+					label: "Stage",
+					reference: options.stage,
+					expanded: options.context.expanded,
+					width,
+					theme: options.theme,
 				})),
 	]);
 }
@@ -322,7 +333,13 @@ function parseWorkflowReferencePresentation(
 		return undefined;
 	}
 	if (toolName === "workflow_create") {
-		return { presentationKind: PRESENTATION_KIND, toolName, workflow };
+		const stage = parseReference(value["stage"]);
+		const presentation: WorkflowCreatePresentation = {
+			presentationKind: PRESENTATION_KIND,
+			toolName,
+			workflow,
+		};
+		return stage === undefined ? presentation : { ...presentation, stage };
 	}
 	return { presentationKind: PRESENTATION_KIND, toolName, workflow };
 }
@@ -382,7 +399,7 @@ function renderToolName(toolName: string, width: number, theme: Theme): string {
 
 /** Selects the complete section or Pi's standard bounded collapsed preview. */
 function renderReference(options: {
-	readonly label: "Workflow" | "From" | "To";
+	readonly label: "Workflow" | "Stage" | "From" | "To";
 	readonly reference: WorkflowPresentationReference;
 	readonly expanded: boolean;
 	readonly width: number;
@@ -441,6 +458,24 @@ function findStageDescription(
 	stageId: string,
 ): string | undefined {
 	return workflow.stages.find(({ id }) => id === stageId)?.description;
+}
+
+function findInitialStageReference(
+	args: unknown,
+): WorkflowPresentationReference | undefined {
+	if (!isRecord(args) || !Array.isArray(args["stages"])) {
+		return undefined;
+	}
+	const stage = args["stages"].find(
+		(value) => isRecord(value) && value["initial"] === true,
+	);
+	if (!isRecord(stage)) {
+		return undefined;
+	}
+	const stageId = readInputString(stage, "id");
+	return stageId === undefined
+		? undefined
+		: createReference(stageId, readInputString(stage, "description"));
 }
 
 /** Parses one persisted reference with an optional non-empty description. */
