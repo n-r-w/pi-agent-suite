@@ -1,1 +1,1 @@
-Transition the active workflow to an available target stage.
+Transition active workflow to available target stage
