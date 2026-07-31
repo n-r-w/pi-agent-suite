@@ -126,7 +126,7 @@ Set `PI_AGENT_SUITE_DIR` to use another suite directory.
 
 ## Agent files
 
-Agent files define reusable work modes and subagents for `main-agent-selection` and `run-subagent`.
+Agent files define reusable work modes and subagents for `main-agent-selection` and `run-subagent`. More details: [docs/extensions/main-agent-selection.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/main-agent-selection.md)
 
 Global location:
 

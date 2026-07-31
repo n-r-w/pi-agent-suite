@@ -21,6 +21,7 @@ export interface WorkflowTransition {
 export interface WorkflowDefinition {
 	readonly id: string;
 	readonly description: string;
+	readonly prompt?: string;
 	readonly stages: readonly WorkflowStage[];
 	readonly transitions: readonly WorkflowTransition[];
 }
@@ -31,12 +32,13 @@ export interface WorkflowState {
 	readonly route: readonly string[];
 }
 
-const ROOT_KEYS = new Set(["description", "stages", "transitions"]);
+const ROOT_KEYS = new Set(["description", "prompt", "stages", "transitions"]);
 const STAGE_KEYS = new Set(["id", "description", "prompt", "initial", "final"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set([
 	"id",
 	"description",
+	"prompt",
 	"stages",
 	"transitions",
 ]);
@@ -52,6 +54,7 @@ export function validateWorkflowDefinition(
 		assertText(id, "workflow id");
 		const root = requireObject(value, "workflow", ROOT_KEYS);
 		const description = readText(root, "description");
+		const prompt = readOptionalPromptText(root, "prompt");
 		const rawStages = requireArray(Reflect.get(root, "stages"), "stages");
 		const rawTransitions = requireArray(
 			Reflect.get(root, "transitions"),
@@ -61,7 +64,10 @@ export function validateWorkflowDefinition(
 		const transitions = rawTransitions.map((transition, index) =>
 			parseTransition(transition, index),
 		);
-		const workflow = { id, description, stages, transitions };
+		const workflow =
+			prompt === undefined
+				? { id, description, stages, transitions }
+				: { id, description, prompt, stages, transitions };
 		validateGraph(workflow);
 		return workflow;
 	} catch (error) {
@@ -209,6 +215,7 @@ function validateSavedWorkflow(value: unknown): WorkflowDefinition {
 		id,
 		{
 			description: Reflect.get(saved, "description"),
+			prompt: Reflect.get(saved, "prompt"),
 			stages: Reflect.get(saved, "stages"),
 			transitions: Reflect.get(saved, "transitions"),
 		},
@@ -433,6 +440,22 @@ function readText(value: object, key: string): string {
 	const text = Reflect.get(value, key);
 	assertText(text, key);
 	return text;
+}
+
+/** Normalizes optional prompt text and omits content empty after trimming. */
+function readOptionalPromptText(
+	value: object,
+	key: string,
+): string | undefined {
+	const text = Reflect.get(value, key);
+	if (text === undefined) {
+		return undefined;
+	}
+	if (typeof text !== "string") {
+		throw new Error(`${key} must be a string`);
+	}
+	const normalized = text.trim();
+	return normalized.length === 0 ? undefined : normalized;
 }
 
 /** Normalizes required prompt text while preserving its internal line structure. */

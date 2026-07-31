@@ -95,6 +95,13 @@ function renderActiveWorkflow(state: WorkflowState): string {
 	);
 	return [
 		`<active_workflow id="${escapeXml(state.workflow.id)}" active_stage_id="${escapeXml(activeStageId)}">`,
+		...(state.workflow.prompt === undefined
+			? []
+			: [
+					"  <guidelines>",
+					escapeXml(state.workflow.prompt),
+					"  </guidelines>",
+				]),
 		"  <active_stage_guidelines>",
 		escapeXml(activeStage.prompt),
 		"  </active_stage_guidelines>",

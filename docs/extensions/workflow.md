@@ -14,6 +14,8 @@ When `PI_AGENT_SUITE_DIR` is set, the extension uses `<PI_AGENT_SUITE_DIR>/workf
 
 ```yaml
 description: Use for software delivery
+prompt: |
+  Follow these guidelines throughout the workflow.
 stages:
   - id: implementation
     description: Implement the approved change
@@ -37,6 +39,7 @@ transitions:
 Each workflow requires:
 - one initial stage and at least one final stage;
 - a non-empty `prompt` for every stage; surrounding whitespace is removed when the catalog loads;
+- an optional root `prompt` for guidelines that apply to every stage; surrounding whitespace is removed, and an omitted or empty result means that the workflow has no shared guidelines;
 - unique stage IDs and valid transition endpoints;
 - an acyclic `advance` graph in which every stage is reachable;
 - no outgoing `advance` from final stages;
@@ -53,7 +56,7 @@ Main-agent and subagent frontmatter can restrict workflow access independently f
 ---
 description: Delivery agent
 type: main
-tools: [workflow_activate, workflow_transition]
+tools: [workflow_*]
 workflows: [delivery, review]
 ---
 ```
@@ -116,10 +119,13 @@ Both tools run sequentially. They persist state in the Pi session tree only afte
 
 The current main-agent or subagent policy must enable at least one workflow tool. Either `workflow_activate` or `workflow_transition` enables the complete workflow projection. The `workflows` policy must also allow at least one current catalog entry or the saved active snapshot. When either condition fails, the extension adds no workflow guidelines, activation options, active workflow, or other workflow data to that agent's provider context.
 
-An active workflow projects the current stage prompt as the first child of its runtime state:
+An active workflow projects shared workflow guidelines before the current stage guidelines:
 
 ```xml
 <active_workflow id="delivery" active_stage_id="implementation">
+  <guidelines>
+Follow these guidelines throughout the workflow.
+  </guidelines>
   <active_stage_guidelines>
 Implement only the approved scope.
 Follow the project testing rules.
@@ -128,7 +134,7 @@ Follow the project testing rules.
 </active_workflow>
 ```
 
-Only the active stage prompt is projected. A transition replaces it with the target stage prompt on the next context request.
+The root workflow prompt is projected in `<guidelines>` for every active stage. The section is omitted when the prompt is absent or empty after trimming. Only the active stage prompt is projected in `<active_stage_guidelines>`; a transition replaces it with the target stage prompt on the next context request.
 
 Activation options include only workflows allowed by `workflows`. A saved snapshot is projected and can transition only when the policy allows its ID. Both tools enforce this rule before appending session state or changing memory. Tool and workflow policies remain independent, and later main-agent policy changes apply to the next context request and tool call.
 

@@ -14,6 +14,7 @@ const SOURCE = "/tmp/workflow.yaml";
 function validValue(): unknown {
 	return {
 		description: "Software delivery",
+		prompt: "\nFollow shared rules.\n  Preserve this indentation.\n",
 		stages: [
 			{ id: "a", description: "A", prompt: "Prompt A", initial: true },
 			{
@@ -50,6 +51,9 @@ describe("workflow definition validation", () => {
 			SOURCE,
 		);
 		expect(workflow.id).toBe("delivery");
+		expect(workflow.prompt).toBe(
+			"Follow shared rules.\n  Preserve this indentation.",
+		);
 		expect(workflow.stages[1]).toEqual({
 			id: "b",
 			description: "B",
@@ -57,6 +61,36 @@ describe("workflow definition validation", () => {
 			initial: false,
 			final: false,
 		});
+	});
+
+	/**
+	 * Proves optional workflow prompt normalization distinguishes absent guidance from invalid input.
+	 * Input and expected output: omitted and whitespace-only prompts are omitted; a non-string prompt is rejected.
+	 * Edge case: whitespace-only multiline text becomes absence after trimming.
+	 * Dependencies: the workflow YAML-domain validator only.
+	 */
+	test("normalizes an optional workflow prompt", () => {
+		expect(
+			validateWorkflowDefinition(
+				"delivery",
+				changedValue({ prompt: " \n\t " }),
+				SOURCE,
+			),
+		).not.toHaveProperty("prompt");
+		expect(
+			validateWorkflowDefinition(
+				"delivery",
+				changedValue({ prompt: undefined }),
+				SOURCE,
+			),
+		).not.toHaveProperty("prompt");
+		expect(() =>
+			validateWorkflowDefinition(
+				"delivery",
+				changedValue({ prompt: 1 }),
+				SOURCE,
+			),
+		).toThrow("prompt must be a string");
 	});
 
 	/**
@@ -294,7 +328,11 @@ describe("workflow state", () => {
 				data: { kind: "transitioned", route: ["a", "c"] },
 			},
 		];
-		expect(replayWorkflowState(entries)?.route).toEqual(["a", "c"]);
+		const replayed = replayWorkflowState(entries);
+		expect(replayed?.route).toEqual(["a", "c"]);
+		expect(replayed?.workflow.prompt).toBe(
+			"Follow shared rules.\n  Preserve this indentation.",
+		);
 		expect(() =>
 			replayWorkflowState([
 				...entries,

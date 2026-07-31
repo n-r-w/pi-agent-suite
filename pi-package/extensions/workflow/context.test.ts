@@ -16,11 +16,13 @@ const prompts = {
 /** Creates a graph whose text and identifiers prove XML text and attribute escaping. */
 function workflow(
 	id = "delivery",
+	prompt: unknown = "Follow <global> & stay safe.",
 ): ReturnType<typeof validateWorkflowDefinition> {
 	return validateWorkflowDefinition(
 		id,
 		{
 			description: "Build & review",
+			prompt,
 			stages: [
 				{
 					id: "start",
@@ -80,9 +82,9 @@ describe("workflow context projection", () => {
 	});
 
 	/**
-	 * Proves active context contains only the current stage prompt alongside state and transitions.
-	 * Input and expected output: activation projects the escaped start prompt, then transition replaces it with the done prompt.
-	 * Edge case: XML metacharacters in both prompts remain data inside the guidelines element.
+	 * Proves active context contains persistent workflow guidance and only the current stage prompt.
+	 * Input and expected output: activation projects both escaped prompts, then transition retains workflow guidance and replaces the stage prompt.
+	 * Edge case: XML metacharacters in both prompts remain element text.
 	 * Dependencies: validated workflow state and context projection.
 	 */
 	test("projects one active snapshot without exposing its route", () => {
@@ -96,7 +98,7 @@ describe("workflow context projection", () => {
 			)[0],
 		);
 		expect(initialContent).toContain(
-			"<active_stage_guidelines>\nStart &lt;carefully&gt;\n  </active_stage_guidelines>",
+			"<guidelines>\nFollow &lt;global&gt; &amp; stay safe.\n  </guidelines>\n  <active_stage_guidelines>\nStart &lt;carefully&gt;\n  </active_stage_guidelines>",
 		);
 
 		const state = transitionWorkflow(activateWorkflow(activeWorkflow), "done");
@@ -113,7 +115,7 @@ describe("workflow context projection", () => {
 		);
 		expect(content).not.toContain('<workflow id="delivery" description=');
 		expect(content).toContain(
-			'<active_workflow id="delivery" active_stage_id="done">\n  <active_stage_guidelines>\nReview &amp; finish\n  </active_stage_guidelines>',
+			'<active_workflow id="delivery" active_stage_id="done">\n  <guidelines>\nFollow &lt;global&gt; &amp; stay safe.\n  </guidelines>\n  <active_stage_guidelines>\nReview &amp; finish\n  </active_stage_guidelines>',
 		);
 		expect(content).not.toContain("Start &lt;carefully&gt;");
 		expect(content).toContain(
@@ -124,6 +126,26 @@ describe("workflow context projection", () => {
 		);
 		expect(content).toContain('<transition to="start" type="rework" />');
 		expect(content).not.toContain("<route");
+	});
+
+	/**
+	 * Proves absent workflow guidance emits no empty XML section.
+	 * Input and expected output: a whitespace-only workflow prompt projects the active stage without `<guidelines>`.
+	 * Edge case: normalization happens before projection rather than rendering whitespace.
+	 * Dependencies: workflow validation and context projection.
+	 */
+	test("omits empty workflow guidelines", () => {
+		const activeWorkflow = workflow("empty", " \n\t ");
+		const content = customContent(
+			projectWorkflowContext(
+				[],
+				prompts,
+				[activeWorkflow],
+				activateWorkflow(activeWorkflow),
+			)[0],
+		);
+		expect(content).not.toContain("<guidelines>");
+		expect(content).toContain("<active_stage_guidelines>");
 	});
 
 	/** Proves a saved snapshot remains projectable with an explicitly empty current catalog. */
