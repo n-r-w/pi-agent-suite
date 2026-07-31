@@ -55,7 +55,7 @@ async function createWorkflowSuite(): Promise<void> {
 	await mkdir(workflowDirectory, { recursive: true });
 	await writeFile(
 		join(workflowDirectory, "delivery.yaml"),
-		"description: Delivery process\nstages:\n  - id: implementation\n    description: Implementation stage\n    initial: true\n  - id: review\n    description: Review stage\n    final: true\ntransitions:\n  - from: implementation\n    to: review\n    type: advance\n",
+		"description: Delivery process\nstages:\n  - id: implementation\n    description: Implementation stage\n    prompt: Implement the change\n    initial: true\n  - id: review\n    description: Review stage\n    prompt: Review the change\n    final: true\ntransitions:\n  - from: implementation\n    to: review\n    type: advance\n",
 	);
 	process.env["PI_AGENT_SUITE_DIR"] = root;
 }

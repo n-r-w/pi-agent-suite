@@ -923,7 +923,7 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 		const extensionPromptFile = join(scratchDir, "extension.md");
 		mkdirSync(workflowsDir, { recursive: true });
 		const workflowYaml =
-			"stages:\n  - id: start\n    description: Start\n    initial: true\n  - id: done\n    description: Done\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n";
+			"stages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n";
 		writeFileSync(
 			join(workflowsDir, "delivery.yaml"),
 			`description: Runtime delivery\n${workflowYaml}`,

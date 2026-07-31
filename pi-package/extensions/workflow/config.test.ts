@@ -15,7 +15,7 @@ async function createTemporaryDirectory(): Promise<string> {
 
 /** Creates one minimal valid workflow YAML document. */
 function workflowYaml(description: string): string {
-	return `description: ${description}\nstages:\n  - id: start\n    description: Start\n    initial: true\n  - id: done\n    description: Done\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n`;
+	return `description: ${description}\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n`;
 }
 
 afterEach(async () => {

@@ -574,8 +574,8 @@ async function readSummaryPrompts(
 /** Reads one prompt file and rejects empty content. */
 async function readPromptFile(path: string): Promise<string | undefined> {
 	try {
-		const prompt = await readFile(path, "utf8");
-		return prompt.trim().length === 0 ? undefined : prompt;
+		const prompt = (await readFile(path, "utf8")).trim();
+		return prompt.length === 0 ? undefined : prompt;
 	} catch {
 		return undefined;
 	}

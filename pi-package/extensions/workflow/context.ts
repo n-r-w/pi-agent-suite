@@ -72,6 +72,12 @@ function renderActiveWorkflow(state: WorkflowState): string {
 	if (activeStageId === undefined) {
 		throw new Error("active workflow route must be non-empty");
 	}
+	const activeStage = state.workflow.stages.find(
+		(stage) => stage.id === activeStageId,
+	);
+	if (activeStage === undefined) {
+		throw new Error("active workflow stage must exist");
+	}
 	const stages = state.workflow.stages.map((stage) => {
 		const flags = [
 			stage.initial ? ' initial="true"' : "",
@@ -89,6 +95,9 @@ function renderActiveWorkflow(state: WorkflowState): string {
 	);
 	return [
 		`<active_workflow id="${escapeXml(state.workflow.id)}" active_stage_id="${escapeXml(activeStageId)}">`,
+		"  <active_stage_guidelines>",
+		escapeXml(activeStage.prompt),
+		"  </active_stage_guidelines>",
 		"  <stages>",
 		...stages,
 		"  </stages>",

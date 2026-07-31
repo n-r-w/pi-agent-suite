@@ -54,7 +54,7 @@ async function createSuite(yaml?: string): Promise<string> {
 
 /** Returns one workflow that supports an advance followed by route-based rework. */
 function validYaml(): string {
-	return "description: Delivery\nstages:\n  - id: start\n    description: Start\n    initial: true\n  - id: done\n    description: Done\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
+	return "description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
 }
 
 /** Creates one validated saved state entry independent of the current catalog. */
@@ -64,8 +64,18 @@ function activatedEntry(): unknown {
 		{
 			description: "Delivery",
 			stages: [
-				{ id: "start", description: "Start", initial: true },
-				{ id: "done", description: "Done", final: true },
+				{
+					id: "start",
+					description: "Start",
+					prompt: "Start work",
+					initial: true,
+				},
+				{
+					id: "done",
+					description: "Done",
+					prompt: "Finish work",
+					final: true,
+				},
 			],
 			transitions: [{ from: "start", to: "done", type: "advance" }],
 		},

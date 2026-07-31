@@ -5,6 +5,7 @@ export type WorkflowStageStatus = "not_started" | "in_progress" | "completed";
 export interface WorkflowStage {
 	readonly id: string;
 	readonly description: string;
+	readonly prompt: string;
 	readonly initial: boolean;
 	readonly final: boolean;
 }
@@ -31,7 +32,7 @@ export interface WorkflowState {
 }
 
 const ROOT_KEYS = new Set(["description", "stages", "transitions"]);
-const STAGE_KEYS = new Set(["id", "description", "initial", "final"]);
+const STAGE_KEYS = new Set(["id", "description", "prompt", "initial", "final"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set([
 	"id",
@@ -255,6 +256,7 @@ function parseStage(value: unknown, index: number): WorkflowStage {
 	return {
 		id: readText(stage, "id"),
 		description: readText(stage, "description"),
+		prompt: readPromptText(stage, "prompt"),
 		initial: readOptionalBoolean(stage, "initial"),
 		final: readOptionalBoolean(stage, "final"),
 	};
@@ -431,6 +433,19 @@ function readText(value: object, key: string): string {
 	const text = Reflect.get(value, key);
 	assertText(text, key);
 	return text;
+}
+
+/** Normalizes required prompt text while preserving its internal line structure. */
+function readPromptText(value: object, key: string): string {
+	const text = Reflect.get(value, key);
+	if (typeof text !== "string") {
+		throw new Error(`${key} must be a non-empty string`);
+	}
+	const normalized = text.trim();
+	if (normalized.length === 0) {
+		throw new Error(`${key} must be a non-empty string`);
+	}
+	return normalized;
 }
 
 /** Enforces the shared text rule for IDs and descriptions. */

@@ -15,11 +15,11 @@ function validValue(): unknown {
 	return {
 		description: "Software delivery",
 		stages: [
-			{ id: "a", description: "A", initial: true },
-			{ id: "b", description: "B" },
-			{ id: "c", description: "C" },
-			{ id: "d", description: "D" },
-			{ id: "f", description: "F", final: true },
+			{ id: "a", description: "A", prompt: "Prompt A", initial: true },
+			{ id: "b", description: "B", prompt: "\nPrompt B\n" },
+			{ id: "c", description: "C", prompt: "Prompt C" },
+			{ id: "d", description: "D", prompt: "Prompt D" },
+			{ id: "f", description: "F", prompt: "Prompt F", final: true },
 		],
 		transitions: [
 			{ from: "a", to: "b", type: "advance" },
@@ -49,9 +49,37 @@ describe("workflow definition validation", () => {
 		expect(workflow.stages[1]).toEqual({
 			id: "b",
 			description: "B",
+			prompt: "Prompt B",
 			initial: false,
 			final: false,
 		});
+	});
+
+	/**
+	 * Proves every stage must provide prompt text before graph validation.
+	 * Input and expected output: a valid single-stage graph without prompt is rejected with a prompt error.
+	 * Edge case: the same stage is both initial and final, so no unrelated graph rule can cause rejection.
+	 * Dependencies: the workflow YAML-domain validator only.
+	 */
+	test("requires a prompt for every stage", () => {
+		expect(() =>
+			validateWorkflowDefinition(
+				"single",
+				{
+					description: "Single stage",
+					stages: [
+						{
+							id: "only",
+							description: "Only stage",
+							initial: true,
+							final: true,
+						},
+					],
+					transitions: [],
+				},
+				SOURCE,
+			),
+		).toThrow("prompt");
 	});
 
 	/** Proves every approved graph invariant rejects the whole definition with its source. */
@@ -59,18 +87,26 @@ describe("workflow definition validation", () => {
 		["unknown root field", changedValue({ extra: true })],
 		[
 			"one initial stage",
-			changedValue({ stages: [{ id: "a", description: "A", final: true }] }),
+			changedValue({
+				stages: [
+					{ id: "a", description: "A", prompt: "Prompt A", final: true },
+				],
+			}),
 		],
 		[
 			"at least one final stage",
-			changedValue({ stages: [{ id: "a", description: "A", initial: true }] }),
+			changedValue({
+				stages: [
+					{ id: "a", description: "A", prompt: "Prompt A", initial: true },
+				],
+			}),
 		],
 		[
 			"unique stage ids",
 			changedValue({
 				stages: [
 					...(validValue() as { stages: unknown[] }).stages,
-					{ id: "a", description: "Again" },
+					{ id: "a", description: "Again", prompt: "Again prompt" },
 				],
 			}),
 		],
@@ -102,8 +138,8 @@ describe("workflow definition validation", () => {
 			"reachable from initial",
 			changedValue({
 				stages: [
-					{ id: "a", description: "A", initial: true },
-					{ id: "b", description: "B", final: true },
+					{ id: "a", description: "A", prompt: "Prompt A", initial: true },
+					{ id: "b", description: "B", prompt: "Prompt B", final: true },
 				],
 				transitions: [],
 			}),
@@ -121,9 +157,9 @@ describe("workflow definition validation", () => {
 			"non-final stage has advance",
 			changedValue({
 				stages: [
-					{ id: "a", description: "A", initial: true },
-					{ id: "b", description: "B" },
-					{ id: "f", description: "F", final: true },
+					{ id: "a", description: "A", prompt: "Prompt A", initial: true },
+					{ id: "b", description: "B", prompt: "Prompt B" },
+					{ id: "f", description: "F", prompt: "Prompt F", final: true },
 				],
 				transitions: [{ from: "a", to: "f", type: "advance" }],
 			}),
@@ -148,7 +184,39 @@ describe("workflow definition validation", () => {
 		changedValue({ description: " padded" }),
 		changedValue({ description: "two\nlines" }),
 		changedValue({
-			stages: [{ id: "a", description: "A", initial: "true", final: true }],
+			stages: [
+				{
+					id: "a",
+					description: "A",
+					prompt: "Prompt A",
+					initial: "true",
+					final: true,
+				},
+			],
+		}),
+		changedValue({
+			stages: [
+				{
+					id: "a",
+					description: "A",
+					prompt: 1,
+					initial: true,
+					final: true,
+				},
+			],
+			transitions: [],
+		}),
+		changedValue({
+			stages: [
+				{
+					id: "a",
+					description: "A",
+					prompt: " \n ",
+					initial: true,
+					final: true,
+				},
+			],
+			transitions: [],
 		}),
 	])("rejects invalid scalar shapes", (value) => {
 		expect(() =>

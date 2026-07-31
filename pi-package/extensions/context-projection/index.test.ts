@@ -1589,8 +1589,8 @@ describe("context-projection", () => {
 
 	test("uses a generated summary as the projection replacement for large projected tool results", async () => {
 		// Purpose: summary-enabled projection should preserve a short result summary through an isolated provider session.
-		// Input and expected output: one eligible tool result is summarized with a Pi-compatible UUIDv7 and persisted.
-		// Edge case: summary uses separate prompts, with the user instruction placed after the tool result data.
+		// Input and expected output: one eligible tool result is summarized with a Pi-compatible UUIDv7, while surrounding prompt whitespace is removed.
+		// Edge case: summary uses separately padded prompts, with the normalized user instruction placed after the tool result data.
 		// Dependencies: isolated config, custom prompt files, fake completion function, fake model registry, context hook, and helper cost entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const systemPromptFile = join(agentDir, "config", "summary-system.md");
@@ -1598,11 +1598,11 @@ describe("context-projection", () => {
 			await mkdir(join(agentDir, "config"), { recursive: true });
 			await writeFile(
 				systemPromptFile,
-				"You are responsible for summarizing tool results.",
+				" \nYou are responsible for summarizing tool results.\n ",
 			);
 			await writeFile(
 				userPromptFile,
-				"<task>\nSummarize the tool result now.\n</task>",
+				" \n<task>\nSummarize the tool result now.\n</task>\n ",
 			);
 			await writeCustomConfig(
 				agentDir,
@@ -1681,21 +1681,27 @@ describe("context-projection", () => {
 			expect(completion.calls[0]?.context.systemPrompt).toBe(
 				"You are responsible for summarizing tool results.",
 			);
-			const summaryUserMessage = JSON.stringify(
-				completion.calls[0]?.context.messages,
-			);
-			expect(summaryUserMessage).toContain("<tool_call>");
-			expect(summaryUserMessage).toContain("echo test");
-			expect(summaryUserMessage).toContain("</tool_call>");
-			expect(summaryUserMessage).toContain("<tool_result>");
-			expect(summaryUserMessage).toContain("</tool_result>");
-			expect(summaryUserMessage).toContain("<task>");
-			expect(summaryUserMessage).toContain("Summarize the tool result now.");
-			expect(summaryUserMessage.indexOf("<tool_call>")).toBeLessThan(
-				summaryUserMessage.indexOf("<tool_result>"),
-			);
-			expect(summaryUserMessage.indexOf("<tool_result>")).toBeLessThan(
-				summaryUserMessage.indexOf("<task>"),
+			const summaryPromptMessage = completion.calls[0]?.context.messages[0];
+			if (
+				summaryPromptMessage?.role !== "user" ||
+				!Array.isArray(summaryPromptMessage.content)
+			) {
+				throw new Error("expected summary user message");
+			}
+			const summaryPromptText = summaryPromptMessage.content[0];
+			if (summaryPromptText?.type !== "text") {
+				throw new Error("expected summary prompt text");
+			}
+			expect(summaryPromptText.text).toContain("<tool_call>");
+			expect(summaryPromptText.text).toContain("echo test");
+			expect(summaryPromptText.text).toContain("</tool_call>");
+			expect(
+				summaryPromptText.text.endsWith(
+					"</tool_result>\n\n<task>\nSummarize the tool result now.\n</task>",
+				),
+			).toBe(true);
+			expect(summaryPromptText.text.indexOf("<tool_call>")).toBeLessThan(
+				summaryPromptText.text.indexOf("<tool_result>"),
 			);
 			expect(completion.calls[0]?.options).toMatchObject({
 				apiKey: "summary-api-key",

@@ -22,8 +22,18 @@ function workflow(
 		{
 			description: "Build & review",
 			stages: [
-				{ id: "start", description: 'Start "now"', initial: true },
-				{ id: "done", description: "Done", final: true },
+				{
+					id: "start",
+					description: 'Start "now"',
+					prompt: "Start <carefully>",
+					initial: true,
+				},
+				{
+					id: "done",
+					description: "Done",
+					prompt: "Review & finish",
+					final: true,
+				},
 			],
 			transitions: [
 				{ from: "start", to: "done", type: "advance" },
@@ -69,9 +79,26 @@ describe("workflow context projection", () => {
 		expect(content).not.toContain("<active_workflow");
 	});
 
-	/** Proves saved-state status, availability, conditional flags, and active-catalog exclusion. */
+	/**
+	 * Proves active context contains only the current stage prompt alongside state and transitions.
+	 * Input and expected output: activation projects the escaped start prompt, then transition replaces it with the done prompt.
+	 * Edge case: XML metacharacters in both prompts remain data inside the guidelines element.
+	 * Dependencies: validated workflow state and context projection.
+	 */
 	test("projects one active snapshot without exposing its route", () => {
 		const activeWorkflow = workflow();
+		const initialContent = customContent(
+			projectWorkflowContext(
+				[],
+				prompts,
+				[activeWorkflow],
+				activateWorkflow(activeWorkflow),
+			)[0],
+		);
+		expect(initialContent).toContain(
+			"<active_stage_guidelines>\nStart &lt;carefully&gt;\n  </active_stage_guidelines>",
+		);
+
 		const state = transitionWorkflow(activateWorkflow(activeWorkflow), "done");
 		const other = workflow("other");
 		const projected = projectWorkflowContext(
@@ -86,8 +113,9 @@ describe("workflow context projection", () => {
 		);
 		expect(content).not.toContain('<workflow id="delivery" description=');
 		expect(content).toContain(
-			'<active_workflow id="delivery" active_stage_id="done">',
+			'<active_workflow id="delivery" active_stage_id="done">\n  <active_stage_guidelines>\nReview &amp; finish\n  </active_stage_guidelines>',
 		);
+		expect(content).not.toContain("Start &lt;carefully&gt;");
 		expect(content).toContain(
 			'id="start" description="Start &quot;now&quot;" status="completed" initial="true"',
 		);
