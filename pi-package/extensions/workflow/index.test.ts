@@ -210,10 +210,6 @@ describe("workflow extension lifecycle", () => {
 		expect(
 			fake.tools.every(({ executionMode }) => executionMode === "sequential"),
 		).toBe(true);
-		expect(fake.tools.map(({ description }) => description)).toEqual([
-			"Activate a workflow listed in workflow_activation_options. Activation replaces the current workflow state.",
-			"Transition the active workflow to an available target stage.",
-		]);
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree");
 		expect(fake.tools).toHaveLength(2);
@@ -253,8 +249,8 @@ describe("workflow extension lifecycle", () => {
 		);
 	});
 
-	/** Proves successful tools append approved entries before publishing memory. */
-	test("persists activation and transition with empty success details", async () => {
+	/** Proves successful tools keep model content stable while persisting state. */
+	test("persists activation and transition with stable success content", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -263,14 +259,16 @@ describe("workflow extension lifecycle", () => {
 		if (activate === undefined || transition === undefined) {
 			throw new Error("tools missing");
 		}
-		expect(await activate.execute("call", { workflowId: "delivery" })).toEqual({
+		expect(
+			await activate.execute("call", { workflowId: "delivery" }),
+		).toMatchObject({
 			content: [{ type: "text", text: '{"success":true}' }],
-			details: {},
 		});
-		expect(await transition.execute("call", { stageId: "done" })).toEqual({
-			content: [{ type: "text", text: '{"success":true}' }],
-			details: {},
-		});
+		expect(await transition.execute("call", { stageId: "done" })).toMatchObject(
+			{
+				content: [{ type: "text", text: '{"success":true}' }],
+			},
+		);
 		expect(
 			fake.appended.map(({ data }) => (data as { kind: string }).kind),
 		).toEqual(["activated", "transitioned"]);

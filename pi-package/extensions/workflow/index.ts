@@ -23,6 +23,14 @@ import {
 import { projectWorkflowContext } from "./context";
 import { readWorkflowPolicyEnvironment } from "./environment";
 import {
+	createWorkflowPresentationDetails,
+	primeWorkflowRenderState,
+	renderWorkflowActivateCall,
+	renderWorkflowResult,
+	renderWorkflowTransitionCall,
+	type WorkflowToolPresentationDetails,
+} from "./tool-rendering.ts";
+import {
 	activateWorkflow,
 	replayWorkflowState,
 	transitionWorkflow,
@@ -161,6 +169,7 @@ function registerWorkflowRuntime(
 	runtime: WorkflowRuntime,
 	getPolicy: () => WorkflowPolicyResolution,
 ): void {
+	registerWorkflowPresentationRuntime(pi, runtime);
 	registerWorkflowTools({
 		pi,
 		prompts,
@@ -188,6 +197,40 @@ function registerWorkflowRuntime(
 			messages: projectWorkflowContext(event.messages, prompts, catalog, state),
 		};
 	});
+}
+
+/** Persists row-local UI evidence so live and replayed sessions render identically. */
+function registerWorkflowPresentationRuntime(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+): void {
+	const pending = new Map<string, WorkflowToolPresentationDetails>();
+	pi.on("tool_execution_start", (event) => {
+		if (!WORKFLOW_TOOL_NAMES.has(event.toolName)) {
+			return;
+		}
+		const presentation = createWorkflowPresentationDetails(
+			event.toolName,
+			event.args,
+			runtime.catalog,
+			runtime.state,
+		);
+		if (presentation !== undefined) {
+			pending.set(event.toolCallId, presentation);
+		}
+	});
+	pi.on("tool_result", (event) => {
+		if (!WORKFLOW_TOOL_NAMES.has(event.toolName)) {
+			return undefined;
+		}
+		const presentation = pending.get(event.toolCallId);
+		pending.delete(event.toolCallId);
+		return presentation === undefined ? undefined : { details: presentation };
+	});
+	const clearPending = (): void => pending.clear();
+	pi.on("session_start", clearPending);
+	pi.on("session_tree", clearPending);
+	pi.on("session_shutdown", clearPending);
 }
 
 /** Checks tool eligibility and whether policy leaves any current or saved source. */
@@ -267,6 +310,14 @@ async function loadPromptsForInitialization(
 
 /** Registers both sequential definitions through the package presentation registry. */
 function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
+	registerWorkflowActivateTool(options);
+	registerWorkflowTransitionTool(options);
+}
+
+/** Registers activation behavior and its semantic presentation. */
+function registerWorkflowActivateTool(
+	options: RegisterWorkflowToolsOptions,
+): void {
 	const { pi, prompts, getCatalog, getState, getPolicy, setState } = options;
 	registerPackageTool(pi, {
 		name: ACTIVATE_TOOL,
@@ -277,6 +328,19 @@ function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
 			{ additionalProperties: false },
 		),
 		executionMode: "sequential",
+		renderCall(args, theme, context) {
+			primeWorkflowRenderState(
+				context,
+				createWorkflowPresentationDetails(
+					ACTIVATE_TOOL,
+					args,
+					getCatalog(),
+					getState(),
+				),
+			);
+			return renderWorkflowActivateCall(args, theme, context);
+		},
+		renderResult: renderWorkflowResult,
 		async execute(_toolCallId, params) {
 			const workflowId = readExactStringArgument(params, "workflowId");
 			requireWorkflowAllowed(getPolicy(), workflowId);
@@ -302,6 +366,13 @@ function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
 			return SUCCESS_RESULT;
 		},
 	});
+}
+
+/** Registers transition behavior and its source-to-target presentation. */
+function registerWorkflowTransitionTool(
+	options: RegisterWorkflowToolsOptions,
+): void {
+	const { pi, prompts, getCatalog, getState, getPolicy, setState } = options;
 	registerPackageTool(pi, {
 		name: TRANSITION_TOOL,
 		label: "Transition workflow",
@@ -311,6 +382,19 @@ function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
 			{ additionalProperties: false },
 		),
 		executionMode: "sequential",
+		renderCall(args, theme, context) {
+			primeWorkflowRenderState(
+				context,
+				createWorkflowPresentationDetails(
+					TRANSITION_TOOL,
+					args,
+					getCatalog(),
+					getState(),
+				),
+			);
+			return renderWorkflowTransitionCall(args, theme, context);
+		},
+		renderResult: renderWorkflowResult,
 		async execute(_toolCallId, params) {
 			const stageId = readExactStringArgument(params, "stageId");
 			const current = getState();

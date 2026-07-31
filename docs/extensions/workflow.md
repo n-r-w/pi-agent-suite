@@ -80,6 +80,18 @@ Each configured path must be absolute and reference a readable, non-empty file. 
 - `workflow_activate` activates one workflow listed in `workflow_activation_options`. Activation replaces prior workflow state.
 - `workflow_transition` moves the active workflow to one target listed in `available_transitions`.
 
+The default Pi tool shell uses semantic rows instead of displaying the internal success JSON:
+
+```text
+workflow_activate delivery · Software delivery
+
+workflow_transition
+From: implementation · Implement the approved change
+To: review · Review the implementation
+```
+
+A failed call keeps the semantic identity captured before execution and adds `Error: <message>`. Tool names and `Error:` use Pi's bright tool-title style; identifiers, available descriptions, separators, and error messages use the muted style. Presentation evidence is stored in result `details`, so the active screen and subagent session screen render the same rows. Model-visible success content remains `{"success":true}`.
+
 Both tools run sequentially. They persist state in the Pi session tree only after all input and transition checks succeed.
 
 The current main-agent or subagent policy must enable at least one workflow tool. Either `workflow_activate` or `workflow_transition` enables the complete workflow projection. The `workflows` policy must also allow at least one current catalog entry or the saved active snapshot. When either condition fails, the extension adds no workflow guidelines, activation options, active workflow, or other workflow data to that agent's provider context.
