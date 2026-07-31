@@ -1695,11 +1695,9 @@ describe("context-projection", () => {
 			expect(summaryPromptText.text).toContain("<tool_call>");
 			expect(summaryPromptText.text).toContain("echo test");
 			expect(summaryPromptText.text).toContain("</tool_call>");
-			expect(
-				summaryPromptText.text.endsWith(
-					"</tool_result>\n\n<task>\nSummarize the tool result now.\n</task>",
-				),
-			).toBe(true);
+			expect(summaryPromptText.text).toEndWith(
+				"</tool_result>\n\n<task>\nSummarize the tool result now.\n</task>",
+			);
 			expect(summaryPromptText.text.indexOf("<tool_call>")).toBeLessThan(
 				summaryPromptText.text.indexOf("<tool_result>"),
 			);

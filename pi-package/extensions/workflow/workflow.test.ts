@@ -16,7 +16,11 @@ function validValue(): unknown {
 		description: "Software delivery",
 		stages: [
 			{ id: "a", description: "A", prompt: "Prompt A", initial: true },
-			{ id: "b", description: "B", prompt: "\nPrompt B\n" },
+			{
+				id: "b",
+				description: "B",
+				prompt: "\nFirst line\n  indented second line\n",
+			},
 			{ id: "c", description: "C", prompt: "Prompt C" },
 			{ id: "d", description: "D", prompt: "Prompt D" },
 			{ id: "f", description: "F", prompt: "Prompt F", final: true },
@@ -49,7 +53,7 @@ describe("workflow definition validation", () => {
 		expect(workflow.stages[1]).toEqual({
 			id: "b",
 			description: "B",
-			prompt: "Prompt B",
+			prompt: "First line\n  indented second line",
 			initial: false,
 			final: false,
 		});
