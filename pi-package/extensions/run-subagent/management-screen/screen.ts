@@ -17,7 +17,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import type { InvocationMetadata } from "../domain";
+import type { InvocationMetadata, LogicalSession } from "../domain";
 import { errorMessage } from "../error-message";
 import type { LiveAgentStatus } from "../live-status";
 import type { ManagementProjectionView, ProjectionNode } from "../projection";
@@ -934,10 +934,14 @@ export class ManagementScreen implements Component, Focusable {
 		// Active conversation entries can report usage before the durable invocation reaches a terminal state.
 		const conversationMetadata = this.conversation.getMetadata();
 		const headerMetadata = withLiveElapsed(
-			withLiveContextTokens(
-				selectedNode.invocationMetadata,
-				conversationMetadata.modelId,
-				conversationMetadata.contextTokens,
+			withLiveProjectionSavedTokens(
+				withLiveContextTokens(
+					selectedNode.invocationMetadata,
+					conversationMetadata.modelId,
+					conversationMetadata.contextTokens,
+				),
+				selectedNode.state,
+				this.view.selectedProjectionSavedTokens,
 			),
 			selectedNode.state,
 		);
@@ -1140,6 +1144,31 @@ function withLiveContextTokens(
 		return metadata;
 	}
 	return { ...metadata, contextTokens: liveContextTokens };
+}
+
+/** Applies current projection savings only while the selected invocation remains active. */
+function withLiveProjectionSavedTokens(
+	metadata: InvocationMetadata | undefined,
+	state: LogicalSession["state"],
+	liveProjectionSavedTokens: number | undefined,
+): InvocationMetadata | undefined {
+	// Terminal metadata remains authoritative after the coordinator commits the final invocation state.
+	if (metadata === undefined || state !== "active") {
+		return metadata;
+	}
+	if (liveProjectionSavedTokens !== undefined) {
+		return {
+			...metadata,
+			projectionSavedTokens: liveProjectionSavedTokens,
+		};
+	}
+	if (metadata.projectionSavedTokens === undefined) {
+		return metadata;
+	}
+	// An active clear removes a stale prefix without changing context usage or final metadata.
+	const { projectionSavedTokens: _clearedProjectionSavedTokens, ...cleared } =
+		metadata;
+	return cleared;
 }
 
 /** Resolves one projected node by stable identity. */

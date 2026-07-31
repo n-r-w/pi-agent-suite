@@ -163,7 +163,9 @@ function conversationEntry(text: string): UserConversationEntry {
 }
 
 /** Creates one projected assistant message with model and context metadata. */
-function assistantConversationEntry(): ConversationProjectionEntry {
+function assistantConversationEntry(
+	totalTokens = 120,
+): ConversationProjectionEntry {
 	const message: AssistantMessage = {
 		role: "assistant",
 		content: [{ type: "text", text: "assistant metadata" }],
@@ -175,7 +177,7 @@ function assistantConversationEntry(): ConversationProjectionEntry {
 			output: 20,
 			cacheRead: 0,
 			cacheWrite: 0,
-			totalTokens: 120,
+			totalTokens,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
@@ -212,6 +214,7 @@ class ViewSourceFake implements ManagementViewSource {
 				node === null ? [] : [conversationEntry("initial conversation")],
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
+			selectedProjectionSavedTokens: undefined,
 			affectedStableKeys: node === null ? [] : [node.stableKey],
 		};
 	}
@@ -261,6 +264,7 @@ class ViewSourceFake implements ManagementViewSource {
 class ActiveConversationSourceFake {
 	public entries: readonly SessionEntry[] = [conversationEntry("active")];
 	public liveStatus: ManagementProjectionView["selectedLiveStatus"];
+	public projectionSavedTokens: number | undefined;
 	public error: Error | undefined;
 	public readCalls = 0;
 	public readonly sinceValues: Array<string | undefined> = [];
@@ -274,6 +278,7 @@ class ActiveConversationSourceFake {
 		readonly entries: readonly SessionEntry[];
 		readonly leafId: string | null;
 		readonly liveStatus: ManagementProjectionView["selectedLiveStatus"];
+		readonly projectionSavedTokens: number | undefined;
 	}> {
 		this.readCalls += 1;
 		this.sinceValues.push(since);
@@ -292,6 +297,7 @@ class ActiveConversationSourceFake {
 				since === undefined ? this.entries : this.entries.slice(sinceIndex + 1),
 			leafId: this.entries.at(-1)?.id ?? null,
 			liveStatus: this.liveStatus,
+			projectionSavedTokens: this.projectionSavedTokens,
 		};
 	}
 
@@ -817,6 +823,49 @@ describe("management screen", () => {
 		fixture.screen.dispose();
 	});
 
+	test("shows and clears live projection savings in the active header", () => {
+		// Purpose: the selected active header must react to projection savings without waiting for another message.
+		// Inputs and expected output: 139k savings prefix 344k/372k usage, then an explicit clear removes only the prefix.
+		// Edge case: the selected conversation and invocation context usage remain unchanged across the clear.
+		// Dependencies: selected projection state, live assistant usage, and selected-header rendering.
+		// ARRANGE: mount one active invocation with matching live model usage.
+		const node = {
+			...selectedNode(),
+			invocationMetadata: {
+				startedAtMs: 1_700_000_000_000,
+				elapsedMs: 2_000,
+				modelId: "openai-codex/gpt-5.6-sol",
+				contextWindow: 372_000,
+			},
+		};
+		const fixture = createScreen({ node });
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedConversation: [assistantConversationEntry(344_000)],
+			selectedProjectionSavedTokens: 139_000,
+			affectedStableKeys: [node.stableKey],
+		});
+
+		// ACT: render the positive value, then publish a savings-only clear.
+		const projectedRows = fixture.screen.render(120);
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 3,
+			selectedProjectionSavedTokens: undefined,
+			affectedStableKeys: [node.stableKey],
+		});
+		const clearedRows = fixture.screen.render(120);
+
+		// ASSERT: clearing savings preserves the current/window context value.
+		expect({
+			projected: projectedRows.some((line) => line.includes("~139k/344k/372k")),
+			cleared: clearedRows.some((line) => line.includes("344k/372k")),
+			stalePrefix: clearedRows.some((line) => line.includes("~139k/")),
+		}).toEqual({ projected: true, cleared: true, stalePrefix: false });
+		fixture.screen.dispose();
+	});
+
 	test("updates selected active elapsed time until the invocation terminates", () => {
 		// Purpose: the selected header must advance elapsed time while work remains active without mutating invocation snapshots.
 		// Inputs and expected output: a one-second accepted snapshot renders as three seconds after the presentation clock advances and as the fixed terminal duration after completion.
@@ -1279,6 +1328,7 @@ describe("management screen", () => {
 			selectedConversation: [conversationEntry("initial conversation")],
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
+			selectedProjectionSavedTokens: undefined,
 			affectedStableKeys: nodes.map((node) => node.stableKey),
 		});
 		const topRows = fixture.screen.render(80);
@@ -1296,6 +1346,7 @@ describe("management screen", () => {
 			),
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
+			selectedProjectionSavedTokens: undefined,
 			affectedStableKeys: [],
 		});
 		fixture.screen.render(80);
@@ -1767,8 +1818,8 @@ describe("management screen", () => {
 
 	test("projects selected live updates and disposes runtime readers", async () => {
 		// Purpose: the root management source must subscribe to accepted catalog facts and refresh only the selected active branch.
-		// Inputs and expected output: initial selection reads RPC, child activity replaces conversation, and terminal status switches to the public inactive reader.
-		// Edge case: activity emitted after disposal performs no read or publication.
+		// Inputs and expected output: initial selection reads RPC, child activity replaces conversation and savings, and terminal status switches to the public inactive reader.
+		// Edge case: terminal selection clears live savings, and activity emitted after disposal performs no read or publication.
 		// Dependencies: ManagementProjectionRuntime, SessionCatalog subscription, and active-conversation source.
 		// ARRANGE: seed one active root session and create its runtime-local projection source.
 		const catalog = new SessionCatalog();
@@ -1805,6 +1856,7 @@ describe("management screen", () => {
 		// ACT: select, refresh from activity, terminalize, and emit once after disposal.
 		const stableKey = runtime.getView().nodes[0]?.stableKey ?? null;
 		await runtime.select(stableKey);
+		active.projectionSavedTokens = 139_000;
 		active.entries = [
 			conversationEntry("active"),
 			{
@@ -1844,6 +1896,8 @@ describe("management screen", () => {
 					? [entry.message.content]
 					: [],
 			),
+			liveProjectionSavedTokens: liveView.selectedProjectionSavedTokens,
+			terminalProjectionSavedTokens: terminalView.selectedProjectionSavedTokens,
 			conversation: terminalView.selectedConversation.flatMap((entry) =>
 				entry.type === "message" && entry.message.role === "user"
 					? [entry.message.content]
@@ -1861,6 +1915,8 @@ describe("management screen", () => {
 			selected: stableKey,
 			state: "terminal-success",
 			liveConversation: ["active", "active update"],
+			liveProjectionSavedTokens: 139_000,
+			terminalProjectionSavedTokens: undefined,
 			conversation: ["active", "inactive terminal"],
 			activeReads: readsBeforeDispose,
 			readsBeforeDispose: 2,
