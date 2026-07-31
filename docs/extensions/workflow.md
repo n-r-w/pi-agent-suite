@@ -85,17 +85,32 @@ Each configured path must be absolute and reference a readable, non-empty file. 
 - `workflow_activate` activates one workflow listed in `workflow_activation_options`. Activation replaces prior workflow state.
 - `workflow_transition` moves the active workflow to one target listed in `available_transitions`.
 
-The default Pi tool shell uses semantic rows instead of displaying the internal success JSON:
+The default Pi tool shell renders workflow references instead of displaying the internal success JSON. Collapsed mode removes display-only whitespace, wraps text to the available width, and shows at most four content rows per reference. Additional rows are replaced by Pi's standard expansion hint:
 
 ```text
-workflow_activate delivery · Software delivery
+workflow_activate
+Workflow: delivery · Software delivery
 
 workflow_transition
 From: implementation · Implement the approved change
 To: review · Review the implementation
 ```
 
-A failed call keeps the semantic identity captured before execution and adds `Error: <message>`. Tool names and `Error:` use Pi's bright tool-title style; identifiers, available descriptions, separators, and error messages use the muted style. Presentation evidence is stored in result `details`, so the active screen and subagent session screen render the same rows. Model-visible success content remains `{"success":true}`.
+Expanded mode shows every reference without collapsed-text normalization or line limits:
+
+```text
+workflow_activate
+--- Workflow ---
+delivery · Software delivery
+
+workflow_transition
+--- From ---
+implementation · Implement the approved change
+--- To ---
+review · Review the implementation
+```
+
+A failed call keeps the semantic identity captured before execution and adds `Error: <message>`. Tool names and `Error:` use Pi's bright tool-title style. Collapsed references and expanded reference text use the standard tool-output style; section headings, expansion hints, and error messages use the muted style. Presentation evidence is stored in result `details`, so the active screen and subagent session screen render the same content in both modes. Model-visible success content remains `{"success":true}`.
 
 Both tools run sequentially. They persist state in the Pi session tree only after all input and transition checks succeed.
 

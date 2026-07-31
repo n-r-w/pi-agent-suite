@@ -4,17 +4,18 @@ import type {
 	ToolDefinition,
 	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import {
-	type Component,
-	Container,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { sliceTextByWidth } from "../../shared/display-width.ts";
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
-import { getToolResultText } from "../../shared/tool-presentation/bounded.ts";
+import {
+	BoundedToolResult,
+	getToolResultText,
+} from "../../shared/tool-presentation/bounded.ts";
 import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
 
 const PRESENTATION_KIND = "workflow-tool";
+/** Matches the standard four-row collapsed content budget used by package tools. */
+const COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT = 4;
 
 type WorkflowToolRenderContext = Parameters<
 	NonNullable<ToolDefinition["renderCall"]>
@@ -125,7 +126,7 @@ export function primeWorkflowRenderState(
 	}
 }
 
-/** Renders one workflow activation as a compact semantic header. */
+/** Renders one workflow activation with a bounded or complete reference section. */
 export function renderWorkflowActivateCall(
 	args: unknown,
 	theme: Theme,
@@ -137,12 +138,21 @@ export function renderWorkflowActivateCall(
 			presentation?.workflow ??
 			createOptionalReference(readInputString(args, "workflowId"));
 		return [
-			renderActivationHeader("workflow_activate", workflow, width, theme),
+			renderToolName("workflow_activate", width, theme),
+			...(workflow === undefined
+				? []
+				: renderReference({
+						label: "Workflow",
+						reference: workflow,
+						expanded: context.expanded,
+						width,
+						theme,
+					})),
 		];
 	});
 }
 
-/** Renders one workflow transition with explicit source and target rows. */
+/** Renders one workflow transition with bounded or complete endpoint sections. */
 export function renderWorkflowTransitionCall(
 	args: unknown,
 	theme: Theme,
@@ -157,8 +167,22 @@ export function renderWorkflowTransitionCall(
 			renderToolName("workflow_transition", width, theme),
 			...(presentation?.from === undefined
 				? []
-				: [renderEvidenceRow("From:", presentation.from, width, theme)]),
-			...(to === undefined ? [] : [renderEvidenceRow("To:", to, width, theme)]),
+				: renderReference({
+						label: "From",
+						reference: presentation.from,
+						expanded: context.expanded,
+						width,
+						theme,
+					})),
+			...(to === undefined
+				? []
+				: renderReference({
+						label: "To",
+						reference: to,
+						expanded: context.expanded,
+						width,
+						theme,
+					})),
 		];
 	});
 }
@@ -245,39 +269,42 @@ function readTransitionPresentation(
 		: undefined;
 }
 
-/** Renders the bright tool name followed by muted activation evidence. */
-function renderActivationHeader(
-	toolName: string,
-	workflow: WorkflowPresentationReference | undefined,
-	width: number,
-	theme: Theme,
-): string {
-	const clippedTool = sliceTextByWidth(toolName, width);
-	const styledTool = theme.fg("toolTitle", theme.bold(clippedTool));
-	if (workflow === undefined) {
-		return styledTool;
-	}
-	const remaining = Math.max(0, width - visibleWidth(clippedTool));
-	const evidence = sliceTextByWidth(` ${formatReference(workflow)}`, remaining);
-	return `${styledTool}${theme.fg("muted", evidence)}`;
-}
-
 /** Renders one standalone bright workflow tool name. */
 function renderToolName(toolName: string, width: number, theme: Theme): string {
 	return theme.fg("toolTitle", theme.bold(sliceTextByWidth(toolName, width)));
 }
 
-/** Renders one muted transition endpoint without exceeding its shell row. */
-function renderEvidenceRow(
-	label: "From:" | "To:",
-	reference: WorkflowPresentationReference,
-	width: number,
-	theme: Theme,
-): string {
-	return theme.fg(
-		"muted",
-		sliceTextByWidth(`${label} ${formatReference(reference)}`, width),
-	);
+/** Selects the complete section or Pi's standard bounded collapsed preview. */
+function renderReference(options: {
+	readonly label: "Workflow" | "From" | "To";
+	readonly reference: WorkflowPresentationReference;
+	readonly expanded: boolean;
+	readonly width: number;
+	readonly theme: Theme;
+}): readonly string[] {
+	if (options.expanded) {
+		return [
+			...new Text(
+				options.theme.fg("muted", `--- ${options.label} ---`),
+				0,
+				0,
+			).render(options.width),
+			...new Text(
+				options.theme.fg("toolOutput", formatReference(options.reference)),
+				0,
+				0,
+			).render(options.width),
+		];
+	}
+	return new BoundedToolResult({
+		text: `${options.label}: ${formatReference(options.reference)}`,
+		theme: options.theme,
+		isError: false,
+		expanded: false,
+		collapsedContentLineLimit: COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT,
+		showHiddenLineHint: true,
+		showExpandedErrorLabel: false,
+	}).render(options.width);
 }
 
 /** Formats optional description only when validated evidence contains it. */

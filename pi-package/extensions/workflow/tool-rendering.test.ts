@@ -27,6 +27,9 @@ const MARKED_THEME = {
 	bold: (value: string) => `<bold>${value}</bold>`,
 	fg: (color: string, value: string) => `<${color}>${value}</${color}>`,
 } as Theme;
+/** Matches Pi's standard summary for wrapped lines hidden in collapsed mode. */
+const HIDDEN_LINE_HINT =
+	/^\.\.\. \(\d+ more lines?, \d+ total, .* to expand\)$/;
 
 interface WorkflowRenderingFixture {
 	readonly api: ExtensionAPI;
@@ -48,14 +51,18 @@ const temporaryDirectories: string[] = [];
 const originalSuiteDirectory = process.env["PI_AGENT_SUITE_DIR"];
 
 /** Creates one workflow catalog whose descriptions are the user-visible names. */
-async function createWorkflowSuite(): Promise<void> {
+async function createWorkflowSuite(
+	workflowDescription = "Delivery process",
+	implementationDescription = "Implementation stage",
+	reviewDescription = "Review stage",
+): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "pi-workflow-rendering-"));
 	temporaryDirectories.push(root);
 	const workflowDirectory = join(root, "workflow", "workflows");
 	await mkdir(workflowDirectory, { recursive: true });
 	await writeFile(
 		join(workflowDirectory, "delivery.yaml"),
-		"description: Delivery process\nstages:\n  - id: implementation\n    description: Implementation stage\n    prompt: Implement the change\n    initial: true\n  - id: review\n    description: Review stage\n    prompt: Review the change\n    final: true\ntransitions:\n  - from: implementation\n    to: review\n    type: advance\n",
+		`description: ${JSON.stringify(workflowDescription)}\nstages:\n  - id: implementation\n    description: ${JSON.stringify(implementationDescription)}\n    prompt: Implement the change\n    initial: true\n  - id: review\n    description: ${JSON.stringify(reviewDescription)}\n    prompt: Review the change\n    final: true\ntransitions:\n  - from: implementation\n    to: review\n    type: advance\n`,
 	);
 	process.env["PI_AGENT_SUITE_DIR"] = root;
 }
@@ -182,12 +189,13 @@ function resolveSessionDefinition(
 	return resolution.definition;
 }
 
-/** Renders a completed tool row after its result restores persisted row evidence. */
+/** Renders a completed tool row in the selected mode after restoring persisted evidence. */
 function renderCompletedTool(
 	definition: ToolDefinition,
 	execution: ExecutedTool,
 	theme: Theme = PLAIN_THEME,
 	width = 100,
+	expanded = false,
 ): { readonly call: readonly string[]; readonly result: readonly string[] } {
 	if (
 		definition.renderCall === undefined ||
@@ -197,18 +205,21 @@ function renderCompletedTool(
 	}
 	const context = createToolRenderContext({
 		args: execution.args,
-		expanded: false,
+		expanded,
 		isError: execution.isError,
 	});
 	const result = definition.renderResult(
 		execution.result,
-		{ expanded: false, isPartial: false },
+		{ expanded, isPartial: false },
 		theme,
 		context,
 	);
 	return {
-		call: definition.renderCall(execution.args, theme, context).render(width),
-		result: result.render(width),
+		call: definition
+			.renderCall(execution.args, theme, context)
+			.render(width)
+			.map((line) => line.trimEnd()),
+		result: result.render(width).map((line) => line.trimEnd()),
 	};
 }
 
@@ -245,7 +256,7 @@ describe("workflow semantic tool rendering", () => {
 		);
 
 		expect(active).toEqual({
-			call: ["workflow_activate delivery · Delivery process"],
+			call: ["workflow_activate", "Workflow: delivery · Delivery process"],
 			result: [],
 		});
 		expect(session).toEqual(active);
@@ -302,6 +313,130 @@ describe("workflow semantic tool rendering", () => {
 		expect(componentText).not.toContain('{"success":true}');
 	});
 
+	/** Proves both tools normalize, wrap, and summarize long references in collapsed mode. */
+	test("bounds collapsed workflow references in active and subagent screens", async () => {
+		await createWorkflowSuite(
+			"Delivery    process with enough detail to wrap while preserving the complete workflow reference for expansion "
+				.repeat(3)
+				.trim(),
+			"Implementation    stage with enough detail to wrap while preserving the complete source reference for expansion "
+				.repeat(3)
+				.trim(),
+			"Review    stage with enough detail to wrap while preserving the complete target reference for expansion "
+				.repeat(3)
+				.trim(),
+		);
+		const fixture = await createFixture();
+		const activation = await executeTool(fixture, "workflow_activate", {
+			workflowId: "delivery",
+		});
+		const transition = await executeTool(fixture, "workflow_transition", {
+			stageId: "review",
+		});
+		const activeActivation = renderCompletedTool(
+			activation.definition,
+			activation,
+			PLAIN_THEME,
+			60,
+		);
+		const sessionActivation = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_activate"),
+			activation,
+			PLAIN_THEME,
+			60,
+		);
+		const activeTransition = renderCompletedTool(
+			transition.definition,
+			transition,
+			PLAIN_THEME,
+			60,
+		);
+		const sessionTransition = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_transition"),
+			transition,
+			PLAIN_THEME,
+			60,
+		);
+
+		expect(sessionActivation).toEqual(activeActivation);
+		expect(sessionTransition).toEqual(activeTransition);
+		expect(activeActivation.call).toHaveLength(6);
+		expect(activeActivation.call[0]).toBe("workflow_activate");
+		expect(activeActivation.call[1]).toStartWith(
+			"Workflow: delivery · Delivery",
+		);
+		expect(activeActivation.call[5]).toMatch(HIDDEN_LINE_HINT);
+		expect(activeTransition.call).toHaveLength(11);
+		expect(activeTransition.call[0]).toBe("workflow_transition");
+		expect(activeTransition.call[1]).toStartWith("From: implementation ·");
+		expect(activeTransition.call[5]).toMatch(HIDDEN_LINE_HINT);
+		expect(activeTransition.call[6]).toStartWith("To: review · Review stage");
+		expect(activeTransition.call[10]).toMatch(HIDDEN_LINE_HINT);
+		expect(activeActivation.call.join("\n")).not.toContain("    ");
+		expect(activeTransition.call.join("\n")).not.toContain("    ");
+	});
+
+	/** Proves both tools expose every reference under semantic section headings when expanded. */
+	test("renders complete expanded workflow references in active and subagent screens", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const activation = await executeTool(fixture, "workflow_activate", {
+			workflowId: "delivery",
+		});
+		const transition = await executeTool(fixture, "workflow_transition", {
+			stageId: "review",
+		});
+		const activeActivation = renderCompletedTool(
+			activation.definition,
+			activation,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		const sessionActivation = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_activate"),
+			activation,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		const activeTransition = renderCompletedTool(
+			transition.definition,
+			transition,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		const sessionTransition = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_transition"),
+			transition,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+
+		expect(activeActivation).toEqual({
+			call: [
+				"workflow_activate",
+				"--- Workflow ---",
+				"delivery · Delivery process",
+			],
+			result: [],
+		});
+		expect(sessionActivation).toEqual(activeActivation);
+		expect(activeTransition).toEqual({
+			call: [
+				"workflow_transition",
+				"--- From ---",
+				"implementation · Implementation stage",
+				"--- To ---",
+				"review · Review stage",
+			],
+			result: [],
+		});
+		expect(sessionTransition).toEqual(activeTransition);
+	});
+
 	/** Proves failed transitions retain semantic rows and use the approved color roles. */
 	test("renders transition errors with a bright label and muted evidence", async () => {
 		await createWorkflowSuite();
@@ -324,8 +459,8 @@ describe("workflow semantic tool rendering", () => {
 
 		expect(rendered.call).toEqual([
 			"<toolTitle><bold>workflow_transition</bold></toolTitle>",
-			"<muted>From: implementation · Implementation stage</muted>",
-			"<muted>To: implementation · Implementation stage</muted>",
+			"<toolOutput>From: implementation · Implementation stage</toolOutput>",
+			"<toolOutput>To: implementation · Implementation stage</toolOutput>",
 		]);
 		expect(rendered.result).toEqual([
 			"<toolTitle><bold>Error:</bold></toolTitle><muted> transition to implementation is not allowed; available transitions: review</muted>",

@@ -193,6 +193,37 @@ describe("universal tool presentation", () => {
 		).toBe(true);
 	});
 
+	test("summarizes content beyond four collapsed visual lines", () => {
+		// Purpose: the standard preview must reserve a separate hint row after four content rows.
+		// Input and expected output: five visual lines produce four content rows followed by a one-line summary.
+		// Edge case: the first hidden line sits exactly one row beyond the content budget.
+		// Dependencies: the universal result renderer uses Pi's shared keybinding registry.
+		const definition = createUniversalToolDefinition("third_party_tool");
+		const contentLines = ["1", "2", "3", "4", "5"].map((value) =>
+			value.repeat(79),
+		);
+		const result: AgentToolResult<unknown> = {
+			content: [{ type: "text", text: contentLines.join(" ") }],
+			details: undefined,
+		};
+		const expansionKeys = getKeybindings()
+			.getKeys("app.tools.expand")
+			.join("/");
+
+		const lines = renderResult(
+			definition,
+			result,
+			{ expanded: false, isError: false },
+			80,
+			PLAIN_THEME,
+		).map((line) => line.trimEnd());
+
+		expect(lines).toEqual([
+			...contentLines.slice(0, 4),
+			`... (1 more line, 5 total, ${expansionKeys} to expand)`,
+		]);
+	});
+
 	test("starts unknown tool arguments on the label row", () => {
 		// Purpose: unknown tools must use available label-row width before wrapping serialized arguments.
 		// Input and expected output: a long JSON argument starts immediately after the tool name and continues on later rows.

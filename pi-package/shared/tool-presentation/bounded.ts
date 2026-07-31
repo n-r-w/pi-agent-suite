@@ -18,7 +18,7 @@ interface BoundedToolResultOptions {
 	readonly theme: Theme;
 	readonly isError: boolean;
 	readonly expanded: boolean;
-	readonly collapsedLineLimit: number;
+	readonly collapsedContentLineLimit: number;
 	readonly showHiddenLineHint: boolean;
 	readonly showExpandedErrorLabel: boolean;
 }
@@ -74,15 +74,14 @@ export class BoundedToolResult implements Component {
 		).render(width);
 		if (
 			!this.options.showHiddenLineHint ||
-			visualLines.length <= this.options.collapsedLineLimit
+			visualLines.length <= this.options.collapsedContentLineLimit
 		) {
-			return visualLines.slice(0, this.options.collapsedLineLimit);
+			return visualLines.slice(0, this.options.collapsedContentLineLimit);
 		}
-		const contentLineLimit = this.options.collapsedLineLimit - 1;
 		return [
-			...visualLines.slice(0, contentLineLimit),
+			...visualLines.slice(0, this.options.collapsedContentLineLimit),
 			this.renderHiddenLineHint(
-				visualLines.length - contentLineLimit,
+				visualLines.length - this.options.collapsedContentLineLimit,
 				visualLines.length,
 				width,
 			),

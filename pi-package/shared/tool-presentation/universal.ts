@@ -8,7 +8,7 @@ import {
 } from "./bounded.ts";
 
 const CALL_VISUAL_LINE_LIMIT = 2;
-const COLLAPSED_RESULT_VISUAL_LINE_LIMIT = 5;
+const COLLAPSED_RESULT_CONTENT_LINE_LIMIT = 4;
 
 /** Creates the bounded public default-shell definition for one unknown third-party tool. */
 export function createUniversalToolDefinition(
@@ -29,7 +29,7 @@ export function createUniversalToolDefinition(
 				theme,
 				isError: context.isError,
 				expanded: options.expanded,
-				collapsedLineLimit: COLLAPSED_RESULT_VISUAL_LINE_LIMIT,
+				collapsedContentLineLimit: COLLAPSED_RESULT_CONTENT_LINE_LIMIT,
 				showHiddenLineHint: true,
 				showExpandedErrorLabel: true,
 			});
