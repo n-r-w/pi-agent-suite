@@ -18,6 +18,9 @@ const ANSI_SGR_PATTERN = new RegExp(
 /** Matches positive compact projection savings such as `~65k`. */
 const POSITIVE_PROJECTION_STATUS_PATTERN = /^~(\d+(?:\.\d+)?)(k?)$/;
 
+/** Converts a compact thousands suffix to a complete token count. */
+const TOKENS_PER_THOUSAND = 1_000;
+
 /** Keeps only positive projection savings and removes child theme escape codes. */
 export function normalizePositiveProjectionStatus(
 	statusText: string | undefined,
@@ -42,4 +45,23 @@ export function normalizePositiveProjectionStatus(
 	}
 
 	return `~${match[1]}${match[2] ?? ""}`;
+}
+
+/** Converts one positive projection status into its approximate saved-token count. */
+export function projectionSavedTokensFromStatus(
+	statusText: string | undefined,
+): number | undefined {
+	const normalized = normalizePositiveProjectionStatus(statusText);
+	if (normalized === undefined) {
+		return undefined;
+	}
+
+	const usesThousands = normalized.endsWith("k");
+	const numericText = normalized.slice(1, usesThousands ? -1 : undefined);
+	const savedTokens = Math.round(
+		Number(numericText) * (usesThousands ? TOKENS_PER_THOUSAND : 1),
+	);
+	return Number.isSafeInteger(savedTokens) && savedTokens > 0
+		? savedTokens
+		: undefined;
 }

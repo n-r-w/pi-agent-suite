@@ -12,6 +12,7 @@ export interface SelectedConversationActiveSource {
 		readonly entries: readonly SessionEntry[];
 		readonly leafId: string | null;
 		readonly liveStatus: LiveAgentStatus | undefined;
+		readonly projectionSavedTokens: number | undefined;
 	}>;
 }
 
@@ -25,6 +26,7 @@ export interface SelectedConversationSnapshot {
 	readonly entries: readonly SessionEntry[];
 	readonly complete: boolean;
 	readonly liveStatus: LiveAgentStatus | undefined;
+	readonly projectionSavedTokens: number | undefined;
 }
 
 /** Configures one selected-only progressive branch loader. */
@@ -47,6 +49,7 @@ export class SelectedConversationLoader {
 	private inactiveStartIndex = 0;
 	private complete = false;
 	private liveStatus: LiveAgentStatus | undefined;
+	private projectionSavedTokens: number | undefined;
 	private lastState: LogicalSession["state"];
 	private disposed = false;
 
@@ -85,6 +88,7 @@ export class SelectedConversationLoader {
 			entries: this.branch,
 			complete: this.complete,
 			liveStatus: this.liveStatus,
+			projectionSavedTokens: this.projectionSavedTokens,
 		};
 	}
 
@@ -139,6 +143,11 @@ export class SelectedConversationLoader {
 				this.liveStatus = page.liveStatus;
 				changed = true;
 			}
+			// Projection savings are a live snapshot value, so an explicit clear must also publish a revision.
+			if (this.projectionSavedTokens !== page.projectionSavedTokens) {
+				this.projectionSavedTokens = page.projectionSavedTokens;
+				changed = true;
+			}
 			if (changed) {
 				this.branch = this.resolveBranch();
 			}
@@ -181,6 +190,7 @@ export class SelectedConversationLoader {
 		this.leafId = page.leafId;
 		this.complete = true;
 		this.liveStatus = page.liveStatus;
+		this.projectionSavedTokens = page.projectionSavedTokens;
 		this.branch = this.resolveBranch();
 	}
 
@@ -215,12 +225,16 @@ export class SelectedConversationLoader {
 	private replaceTerminalBranch(entries: readonly SessionEntry[]): boolean {
 		const contentChanged =
 			!this.complete || !branchesHaveSameEntryIds(this.branch, entries);
-		const changed = contentChanged || this.liveStatus !== undefined;
+		const changed =
+			contentChanged ||
+			this.liveStatus !== undefined ||
+			this.projectionSavedTokens !== undefined;
 		if (contentChanged) {
 			this.replaceCompleteBranch(entries);
 		} else {
 			// Terminal snapshots cannot retain presentation state from the stopped writer.
 			this.liveStatus = undefined;
+			this.projectionSavedTokens = undefined;
 		}
 		return changed;
 	}
@@ -235,6 +249,7 @@ export class SelectedConversationLoader {
 		this.inactiveStartIndex = 0;
 		this.complete = true;
 		this.liveStatus = undefined;
+		this.projectionSavedTokens = undefined;
 		this.branch = Object.freeze([...entries]);
 	}
 

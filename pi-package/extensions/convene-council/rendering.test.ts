@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
+	COUNCIL_PROGRESS_DETAILS_TYPE,
+	type CouncilRunDetails,
+} from "./progress.ts";
+import {
 	renderConveneCouncilCall,
 	renderConveneCouncilResult,
 } from "./rendering.ts";
@@ -9,6 +13,21 @@ const THEME = {
 	bold: (value: string) => value,
 	fg: (_name: string, value: string) => value,
 };
+
+/** Renders one council result through the public test boundary at a stable width. */
+function renderCouncilResult(
+	result: AgentToolResult<unknown>,
+	expanded: boolean,
+): string {
+	return renderConveneCouncilResult(
+		result,
+		{ expanded },
+		THEME as never,
+		{ isError: false } as never,
+	)
+		.render(200)
+		.join("\n");
+}
 
 describe("convene-council collapsed text normalization", () => {
 	test("normalizes only the collapsed question", () => {
@@ -44,26 +63,66 @@ describe("convene-council collapsed text normalization", () => {
 			details: undefined,
 		};
 
-		const collapsed = renderConveneCouncilResult(
-			result,
-			{ expanded: false },
-			THEME as never,
-			{ isError: false },
-		)
-			.render(200)
-			.join("\n");
-		const expanded = renderConveneCouncilResult(
-			result,
-			{ expanded: true },
-			THEME as never,
-			{ isError: false },
-		)
-			.render(200)
-			.join("\n");
+		const collapsed = renderCouncilResult(result, false);
+		const expanded = renderCouncilResult(result, true);
 
 		expect(collapsed).toContain('"body":"first second third"');
 		expect(collapsed).toContain(String.raw`"regex":"\\n+"`);
 		expect(collapsed).not.toContain(String.raw`first\n\tsecond`);
 		expect(expanded).toContain(String.raw`first\n\tsecond  third`);
+	});
+
+	test("combines participant projection savings with context usage", () => {
+		// Purpose: council participant rows must preserve the shared positive projection status beside current context usage.
+		// Inputs and expected output: 65k savings and 120k/372k usage render as one ~65k/120k/372k value.
+		// Edge case: omitting projection savings leaves the existing current/window value without a leading separator.
+		// Dependencies: serialized council progress details and the public collapsed result renderer.
+		// ARRANGE: build equivalent participant details with and without positive projection savings.
+		const participant = {
+			label: "A",
+			displayName: "Socrates",
+			participantId: "llm1",
+			modelId: "test-model",
+			thinking: "medium",
+			display: "test-model/medium",
+			contextWindow: 372_000,
+			status: "running",
+			elapsedMs: 1_000,
+			contextUsage: {
+				tokens: 120_000,
+				contextWindow: 372_000,
+				percent: 32,
+			},
+		} as const;
+		const details: CouncilRunDetails = {
+			type: COUNCIL_PROGRESS_DETAILS_TYPE,
+			runId: "run-1",
+			question: "Compare",
+			status: "running",
+			phase: "Collecting opinions",
+			elapsedMs: 1_000,
+			iteration: 1,
+			iterationLimit: 1,
+			participants: [{ ...participant, contextProjectionStatus: "~65k" }],
+			events: [],
+			omittedEventCount: 0,
+		};
+		const projectedResult: AgentToolResult<unknown> = {
+			content: [{ type: "text", text: "" }],
+			details,
+		};
+		const plainResult: AgentToolResult<unknown> = {
+			content: [{ type: "text", text: "" }],
+			details: { ...details, participants: [participant] },
+		};
+
+		// ACT: render both participant states through the public collapsed result path.
+		const projected = renderCouncilResult(projectedResult, false);
+		const plain = renderCouncilResult(plainResult, false);
+
+		// ASSERT: only the positive status adds the savings prefix.
+		expect(projected).toContain("~65k/120k/372k");
+		expect(plain).toContain("120k/372k");
+		expect(plain).not.toContain("~65k/");
 	});
 });

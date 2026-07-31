@@ -19,7 +19,7 @@ import {
 } from "../../shared/child-startup-gate";
 import {
 	CONTEXT_PROJECTION_STATUS_KEY,
-	normalizePositiveProjectionStatus,
+	projectionSavedTokensFromStatus,
 } from "../../shared/context-projection-status";
 import {
 	SUBAGENT_AGENT_ID_ENV,
@@ -64,8 +64,6 @@ import { parseConversationSessionEntry } from "./session-entry-validation";
 
 const PROMPT_COMMAND_ID = "prompt";
 const WORKER_READY_TIMEOUT_MS = 10_000;
-/** Converts compact k-suffixed projection counts to complete token counts. */
-const TOKENS_PER_THOUSAND = 1_000;
 
 interface RpcPending {
 	readonly command: "prompt" | "steer" | "get_entries";
@@ -73,17 +71,18 @@ interface RpcPending {
 	readonly reject: (error: Error) => void;
 }
 
-/** One validated append-order page and its current transient runtime status. */
+/** One validated append-order page and its current transient runtime state. */
 export interface ActiveConversationEntries {
 	readonly entries: readonly SessionEntry[];
 	readonly leafId: string | null;
 	readonly liveStatus: LiveAgentStatus | undefined;
+	readonly projectionSavedTokens: number | undefined;
 }
 
 /** One validated append-order page returned directly by Pi's get_entries RPC command. */
 type ActiveConversationRpcEntries = Omit<
 	ActiveConversationEntries,
-	"liveStatus"
+	"liveStatus" | "projectionSavedTokens"
 >;
 
 /** Carries one prompt-bearing RPC and its optional dispatch reservation. */
@@ -158,7 +157,11 @@ export class InvocationSupervisor implements InvocationControl {
 			`${JSON.stringify({ id: requestId, type: "get_entries", ...(since === undefined ? {} : { since }) })}\n`,
 		);
 		const entries = activeEntriesFromRpcData(await data);
-		return { ...entries, liveStatus: handle.liveStatus };
+		return {
+			...entries,
+			liveStatus: handle.liveStatus,
+			projectionSavedTokens: handle.projectionSavedTokens,
+		};
 	}
 
 	/** Subscribes one read-only listener to live child session activity. */
@@ -667,6 +670,10 @@ export class InvocationSupervisor implements InvocationControl {
 			value,
 			Date.now(),
 		);
+		const projectionUpdate = readProjectionUpdate(value);
+		if (projectionUpdate !== undefined) {
+			handle.projectionSavedTokens = projectionUpdate.savedTokens;
+		}
 		if (type === "extension_error" && !handle.accepted) {
 			const startupError = readString(value, "error");
 			if (startupError !== undefined) {
@@ -685,10 +692,6 @@ export class InvocationSupervisor implements InvocationControl {
 			for (const listener of this.activityListeners) {
 				listener(handle.acceptance.invocationId);
 			}
-		}
-		const projectionUpdate = readProjectionUpdate(value);
-		if (projectionUpdate !== undefined) {
-			handle.projectionSavedTokens = projectionUpdate.savedTokens;
 		}
 		if (type === "message_end") {
 			const message = readField(value, "message");
@@ -876,21 +879,10 @@ function readProjectionUpdate(
 	) {
 		return undefined;
 	}
-	const normalized = normalizePositiveProjectionStatus(
+	const savedTokens = projectionSavedTokensFromStatus(
 		readString(value, "statusText"),
 	);
-	if (normalized === undefined) {
-		return {};
-	}
-	const usesThousands = normalized.endsWith("k");
-	const numericText = normalized.slice(1, usesThousands ? -1 : undefined);
-	const numericValue = Number(numericText);
-	const tokens = Math.round(
-		numericValue * (usesThousands ? TOKENS_PER_THOUSAND : 1),
-	);
-	return Number.isSafeInteger(tokens) && tokens > 0
-		? { savedTokens: tokens }
-		: {};
+	return savedTokens === undefined ? {} : { savedTokens };
 }
 
 /** Reads finalized assistant context usage from the documented Pi RPC message. */

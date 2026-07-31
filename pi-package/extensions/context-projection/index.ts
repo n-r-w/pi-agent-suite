@@ -29,6 +29,7 @@ import {
 	resetPendingProjectionSavings,
 	setPendingProjectionSavings,
 } from "../../shared/context-projection";
+import { CONTEXT_PROJECTION_STATUS_KEY } from "../../shared/context-projection-status";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import { createToolResultProjectionSummaries } from "../../shared/tool-result-projection";
 import {
@@ -38,9 +39,6 @@ import {
 	type ToolResultSummaryCompleteSimple,
 } from "../../shared/tool-result-summary";
 import { createToolResultSummaryDiagnosticRecorder } from "../../shared/tool-result-summary-diagnostic";
-
-/** Footer status key owned by this extension. */
-const CONTEXT_PROJECTION_STATUS_KEY = "context-projection";
 
 /** Footer status text for an invalid projection config. */
 const INVALID_STATUS_TEXT = "CP!";

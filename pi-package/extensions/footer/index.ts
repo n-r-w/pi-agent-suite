@@ -17,6 +17,7 @@ import {
 	CODEX_FAST_STATUS_KEY,
 } from "../../shared/codex-fast-status";
 import { getProjectionAwareContextUsage } from "../../shared/context-projection";
+import { CONTEXT_PROJECTION_STATUS_KEY } from "../../shared/context-projection-status";
 import {
 	sliceTextByWidth,
 	sliceTextSuffixByWidth,
@@ -32,9 +33,6 @@ const LEGACY_AGENT_STATUS_KEY = "agent";
 
 /** Status key used by the Codex quota extension for quota text. */
 const CODEX_QUOTA_STATUS_KEY = "codex-quota";
-
-/** Status key used by the context-projection extension for provider-context projection state. */
-const CONTEXT_PROJECTION_STATUS_KEY = "context-projection";
 
 /** Status keys already represented by dedicated primary-line segments. */
 const PRIMARY_LINE_STATUS_KEYS = new Set([
