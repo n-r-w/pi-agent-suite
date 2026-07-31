@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
 	activateWorkflow,
+	createWorkflow,
 	getAvailableTransitions,
 	getStageStatuses,
 	replayWorkflowState,
 	transitionWorkflow,
+	validateCreatedWorkflowDefinition,
 	validateWorkflowDefinition,
 } from "./workflow";
 
@@ -61,6 +63,46 @@ describe("workflow definition validation", () => {
 			initial: false,
 			final: false,
 		});
+	});
+
+	/**
+	 * Proves workflow_create accepts one closed object and delegates graph rules to the workflow validator.
+	 * Input and expected output: a valid object including id becomes one normalized definition; unknown keys and invalid graphs fail.
+	 * Edge cases: the dynamic root rejects both an unknown field and a padded id.
+	 * Dependencies: the shared workflow definition and graph validators.
+	 */
+	test("validates complete dynamic workflow definitions", () => {
+		const created = validateCreatedWorkflowDefinition(
+			{ id: "delivery", ...(validValue() as Record<string, unknown>) },
+			"workflow_create",
+		);
+		expect(created.id).toBe("delivery");
+		expect(created.stages).toHaveLength(5);
+		expect(() =>
+			validateCreatedWorkflowDefinition(
+				{
+					id: "delivery",
+					...(validValue() as Record<string, unknown>),
+					extra: true,
+				},
+				"workflow_create",
+			),
+		).toThrow("workflow_create");
+		expect(() =>
+			validateCreatedWorkflowDefinition(
+				{ id: " delivery", ...(validValue() as Record<string, unknown>) },
+				"workflow_create",
+			),
+		).toThrow("id must be");
+		expect(() =>
+			validateCreatedWorkflowDefinition(
+				{
+					id: "delivery",
+					...(changedValue({ transitions: [] }) as Record<string, unknown>),
+				},
+				"workflow_create",
+			),
+		).toThrow("workflow_create");
 	});
 
 	/**
@@ -272,6 +314,7 @@ describe("workflow state", () => {
 			SOURCE,
 		);
 		const activated = activateWorkflow(workflow);
+		expect(activated).toHaveProperty("source", "catalog");
 		expect(activated.route).toEqual(["a"]);
 		expect(getAvailableTransitions(activated).map(({ to }) => to)).toEqual([
 			"b",
@@ -289,6 +332,13 @@ describe("workflow state", () => {
 		});
 		expect(getAvailableTransitions(atFinal).map(({ to }) => to)).toEqual(["b"]);
 		expect(transitionWorkflow(atFinal, "b").route).toEqual(["a", "b"]);
+
+		const created = createWorkflow(workflow);
+		expect(created).toHaveProperty("source", "dynamic");
+		expect(["b", "d"].reduce(transitionWorkflow, created)).toHaveProperty(
+			"source",
+			"dynamic",
+		);
 	});
 
 	/** Proves a graph ancestor absent from the actual route cannot be a rework target. */
@@ -329,10 +379,32 @@ describe("workflow state", () => {
 			},
 		];
 		const replayed = replayWorkflowState(entries);
+		expect(replayed).toHaveProperty("source", "catalog");
 		expect(replayed?.route).toEqual(["a", "c"]);
 		expect(replayed?.workflow.prompt).toBe(
 			"Follow shared rules.\n  Preserve this indentation.",
 		);
+
+		const dynamicWorkflow = { ...workflow, id: "dynamic-delivery" };
+		const dynamicReplay = replayWorkflowState([
+			...entries,
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow: dynamicWorkflow,
+					route: ["a"],
+				},
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["a", "b"] },
+			},
+		]);
+		expect(dynamicReplay).toHaveProperty("source", "dynamic");
+		expect(dynamicReplay?.route).toEqual(["a", "b"]);
 		expect(() =>
 			replayWorkflowState([
 				...entries,
@@ -349,6 +421,20 @@ describe("workflow state", () => {
 					type: "assistant",
 					customType: "workflow-state",
 					data: entries[1],
+				},
+			]),
+		).toThrow("workflow-state");
+		expect(() =>
+			replayWorkflowState([
+				{
+					type: "custom",
+					customType: "workflow-state",
+					data: {
+						kind: "created",
+						workflow: dynamicWorkflow,
+						route: ["a"],
+						source: "dynamic",
+					},
 				},
 			]),
 		).toThrow("workflow-state");

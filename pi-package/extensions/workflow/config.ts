@@ -15,12 +15,14 @@ export interface WorkflowCatalogResult {
 /** Model-facing prompt text required whenever the subsystem is active. */
 export interface WorkflowPrompts {
 	readonly extensionDescription: string;
+	readonly createDescription: string;
 	readonly activateDescription: string;
 	readonly transitionDescription: string;
 }
 
 const CONFIG_KEYS = new Set([
 	"extensionDescriptionPromptFile",
+	"createDescriptionPromptFile",
 	"activateDescriptionPromptFile",
 	"transitionDescriptionPromptFile",
 ]);
@@ -109,7 +111,7 @@ async function readCatalogFile(
 	}
 }
 
-/** Loads the closed optional prompt config and resolves all three files as one result. */
+/** Loads the closed optional prompt config and resolves all four files as one result. */
 export async function loadWorkflowPrompts(
 	configPath: string,
 	bundledDirectory: string,
@@ -121,6 +123,11 @@ export async function loadWorkflowPrompts(
 				config["extensionDescriptionPromptFile"] ??
 					join(bundledDirectory, "extension-description.md"),
 				"extensionDescriptionPromptFile",
+			),
+			createDescription: await readPrompt(
+				config["createDescriptionPromptFile"] ??
+					join(bundledDirectory, "create-description.md"),
+				"createDescriptionPromptFile",
 			),
 			activateDescription: await readPrompt(
 				config["activateDescriptionPromptFile"] ??

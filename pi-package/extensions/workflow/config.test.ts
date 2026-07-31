@@ -79,21 +79,23 @@ describe("workflow prompt configuration", () => {
 			join(bundled, "extension-description.md"),
 			" guidelines \n",
 		);
+		await writeFile(join(bundled, "create-description.md"), " create \n");
 		await writeFile(join(bundled, "activate-description.md"), " activate \n");
 		await writeFile(
 			join(bundled, "transition-description.md"),
 			" transition \n",
 		);
 		const override = join(root, "override.md");
-		await writeFile(override, " custom activation \n");
+		await writeFile(override, " custom creation \n");
 		const configPath = join(root, "config.json");
 		await writeFile(
 			configPath,
-			JSON.stringify({ activateDescriptionPromptFile: override }),
+			JSON.stringify({ createDescriptionPromptFile: override }),
 		);
 		expect(await loadWorkflowPrompts(configPath, bundled)).toEqual({
 			extensionDescription: "guidelines",
-			activateDescription: "custom activation",
+			createDescription: "custom creation",
+			activateDescription: "activate",
 			transitionDescription: "transition",
 		});
 	});
@@ -104,7 +106,7 @@ describe("workflow prompt configuration", () => {
 		["unknown key", JSON.stringify({ unknown: "/tmp/x" })],
 		[
 			"relative path",
-			JSON.stringify({ activateDescriptionPromptFile: "relative.md" }),
+			JSON.stringify({ createDescriptionPromptFile: "relative.md" }),
 		],
 	])("rejects %s", async (_case, config) => {
 		const root = await createTemporaryDirectory();
@@ -112,6 +114,7 @@ describe("workflow prompt configuration", () => {
 		await mkdir(bundled);
 		for (const file of [
 			"extension-description.md",
+			"create-description.md",
 			"activate-description.md",
 			"transition-description.md",
 		]) {
@@ -122,5 +125,38 @@ describe("workflow prompt configuration", () => {
 		await expect(loadWorkflowPrompts(configPath, bundled)).rejects.toThrow(
 			configPath,
 		);
+	});
+
+	/**
+	 * Proves createDescriptionPromptFile uses the shared readability and non-empty-content contract.
+	 * Input and expected output: missing and whitespace-only absolute files reject the complete prompt load.
+	 * Edge case: both failures are attributed to the configuration file path.
+	 * Dependencies: isolated temporary files and the workflow prompt loader.
+	 */
+	test("rejects unreadable and empty create description overrides", async () => {
+		const root = await createTemporaryDirectory();
+		const bundled = join(root, "bundled");
+		await mkdir(bundled);
+		for (const file of [
+			"extension-description.md",
+			"create-description.md",
+			"activate-description.md",
+			"transition-description.md",
+		]) {
+			await writeFile(join(bundled, file), "default");
+		}
+		const configPath = join(root, "config.json");
+		for (const override of [join(root, "missing.md"), join(root, "empty.md")]) {
+			if (override.endsWith("empty.md")) {
+				await writeFile(override, " \n\t ");
+			}
+			await writeFile(
+				configPath,
+				JSON.stringify({ createDescriptionPromptFile: override }),
+			);
+			await expect(loadWorkflowPrompts(configPath, bundled)).rejects.toThrow(
+				configPath,
+			);
+		}
 	});
 });

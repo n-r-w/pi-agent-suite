@@ -11,12 +11,12 @@ import {
 export function projectWorkflowContext(
 	messages: readonly AgentMessage[],
 	prompts: WorkflowPrompts,
-	catalog: readonly WorkflowDefinition[],
+	activationOptions: readonly WorkflowDefinition[],
 	state: WorkflowState | undefined,
 ): AgentMessage[] {
 	const content = renderWorkflowContext(
 		prompts.extensionDescription,
-		catalog,
+		activationOptions,
 		state,
 	);
 	return [
@@ -34,14 +34,15 @@ export function projectWorkflowContext(
 /** Renders guidelines, activation options, and the optional saved snapshot. */
 function renderWorkflowContext(
 	guidelines: string,
-	catalog: readonly WorkflowDefinition[],
+	activationOptions: readonly WorkflowDefinition[],
 	state: WorkflowState | undefined,
 ): string {
-	const options = catalog.filter(({ id }) => id !== state?.workflow.id);
 	const sections = [
 		`<workflow_guidelines>\n${escapeXml(guidelines)}\n</workflow_guidelines>`,
-		renderActivationOptions(options),
 	];
+	if (activationOptions.length > 0) {
+		sections.push(renderActivationOptions(activationOptions));
+	}
 	if (state !== undefined) {
 		sections.push(renderActiveWorkflow(state));
 	}
@@ -52,9 +53,6 @@ function renderWorkflowContext(
 function renderActivationOptions(
 	workflows: readonly WorkflowDefinition[],
 ): string {
-	if (workflows.length === 0) {
-		return "<workflow_activation_options />";
-	}
 	return [
 		"<workflow_activation_options>",
 		...workflows.map(

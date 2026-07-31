@@ -9,12 +9,20 @@ import {
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
 import {
-	hasAllowedWorkflowSource,
 	isWorkflowAllowed,
 	parseChildWorkflowPolicy,
 	publishWorkflowCatalogPolicy,
+	toWorkflowMatchKey,
 	type WorkflowPolicyResolution,
 } from "../../shared/workflow-policy";
+import {
+	resolveWorkflowAvailability,
+	WORKFLOW_ACTIVATE_TOOL,
+	WORKFLOW_CREATE_TOOL,
+	WORKFLOW_TRANSITION_TOOL,
+	type WorkflowAvailability,
+	type WorkflowToolName,
+} from "./availability.ts";
 import {
 	loadWorkflowCatalog,
 	loadWorkflowPrompts,
@@ -26,27 +34,66 @@ import {
 	createWorkflowPresentationDetails,
 	primeWorkflowRenderState,
 	renderWorkflowActivateCall,
+	renderWorkflowCreateCall,
 	renderWorkflowResult,
 	renderWorkflowTransitionCall,
 	type WorkflowToolPresentationDetails,
 } from "./tool-rendering.ts";
 import {
 	activateWorkflow,
+	createWorkflow,
 	replayWorkflowState,
 	transitionWorkflow,
+	validateCreatedWorkflowDefinition,
 	type WorkflowDefinition,
 	type WorkflowState,
 } from "./workflow";
 
 const EXTENSION_DIRECTORY = "workflow";
 const WORKFLOW_STATE_ENTRY = "workflow-state";
-const ACTIVATE_TOOL = "workflow_activate";
-const TRANSITION_TOOL = "workflow_transition";
-const WORKFLOW_TOOL_NAMES = new Set([ACTIVATE_TOOL, TRANSITION_TOOL]);
+const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set([
+	WORKFLOW_CREATE_TOOL,
+	WORKFLOW_ACTIVATE_TOOL,
+	WORKFLOW_TRANSITION_TOOL,
+]);
 const SUCCESS_RESULT = {
 	content: [{ type: "text" as const, text: '{"success":true}' }],
 	details: {},
 };
+
+/** Closed workflow_create stage shape exposed to Pi tool validation. */
+const WORKFLOW_STAGE_SCHEMA = Type.Object(
+	{
+		id: Type.String(),
+		description: Type.String(),
+		prompt: Type.String(),
+		initial: Type.Optional(Type.Boolean()),
+		final: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: false },
+);
+
+/** Closed workflow_create transition shape exposed to Pi tool validation. */
+const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
+	{
+		from: Type.String(),
+		to: Type.String(),
+		type: Type.Union([Type.Literal("advance"), Type.Literal("rework")]),
+	},
+	{ additionalProperties: false },
+);
+
+/** Complete workflow_create boundary shape; graph invariants remain domain validation. */
+const WORKFLOW_CREATE_SCHEMA = Type.Object(
+	{
+		id: Type.String(),
+		description: Type.String(),
+		prompt: Type.Optional(Type.String()),
+		stages: Type.Array(WORKFLOW_STAGE_SCHEMA),
+		transitions: Type.Array(WORKFLOW_TRANSITION_SCHEMA),
+	},
+	{ additionalProperties: false },
+);
 
 /** Provides the contribution event used after main-agent policy replaces active tools. */
 interface WorkflowEventBus {
@@ -64,16 +111,28 @@ interface RegisterWorkflowToolsOptions {
 	readonly pi: ExtensionAPI;
 	readonly prompts: WorkflowPrompts;
 	readonly getCatalog: () => readonly WorkflowDefinition[];
+	readonly getCatalogError: () => Error | undefined;
 	readonly getState: () => WorkflowState | undefined;
 	readonly getPolicy: () => WorkflowPolicyResolution;
+	readonly resolveAvailability: () => WorkflowAvailability;
 	readonly setState: (state: WorkflowState) => void;
 }
 
 interface WorkflowRuntime {
 	catalog: readonly WorkflowDefinition[];
+	catalogError: Error | undefined;
+	promptError: Error | undefined;
 	state: WorkflowState | undefined;
-	usable: boolean;
 	readonly selfSuppressedNames: Set<string>;
+}
+
+/** Groups runtime registration dependencies without widening the tool boundary. */
+interface RegisterWorkflowRuntimeOptions {
+	readonly pi: ExtensionAPI;
+	readonly prompts: WorkflowPrompts;
+	readonly runtime: WorkflowRuntime;
+	readonly getPolicy: () => WorkflowPolicyResolution;
+	readonly refreshTools: (trigger: ReconciliationTrigger) => void;
 }
 
 interface SynchronizeWorkflowRuntimeOptions {
@@ -106,15 +165,29 @@ export default async function workflowExtension(
 			: { workflows: [], error: catalogPublication.error };
 	const runtime: WorkflowRuntime = {
 		catalog: catalogResult.error === undefined ? catalogResult.workflows : [],
+		catalogError: catalogResult.error,
+		promptError: promptResult.error,
 		state: undefined,
-		usable:
-			promptResult.error === undefined && catalogResult.workflows.length > 0,
 		selfSuppressedNames: new Set<string>(),
 	};
 	const getPolicy = createWorkflowPolicyReader(pi);
+	const refreshTools = (trigger: ReconciliationTrigger): void => {
+		reconcileTools(
+			pi,
+			resolveRuntimeAvailability(runtime, getPolicy()).availableToolNames,
+			runtime.selfSuppressedNames,
+			trigger,
+		);
+	};
 
 	if (promptResult.error === undefined) {
-		registerWorkflowRuntime(pi, promptResult.prompts, runtime, getPolicy);
+		registerWorkflowRuntime({
+			pi,
+			prompts: promptResult.prompts,
+			runtime,
+			getPolicy,
+			refreshTools,
+		});
 	}
 	const synchronize = (ctx: {
 		readonly sessionManager: { getBranch(): readonly unknown[] };
@@ -131,12 +204,7 @@ export default async function workflowExtension(
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
 	).on(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
-		reconcileTools(
-			pi,
-			runtime.usable,
-			runtime.selfSuppressedNames,
-			"policy-reset",
-		);
+		refreshTools("policy-reset");
 	});
 
 	pi.on("session_start", (_event, ctx) => synchronize(ctx));
@@ -164,37 +232,41 @@ function createWorkflowPolicyReader(
 
 /** Registers tools and one filtered context projection over shared runtime state. */
 function registerWorkflowRuntime(
-	pi: ExtensionAPI,
-	prompts: WorkflowPrompts,
-	runtime: WorkflowRuntime,
-	getPolicy: () => WorkflowPolicyResolution,
+	options: RegisterWorkflowRuntimeOptions,
 ): void {
+	const { pi, prompts, runtime, getPolicy, refreshTools } = options;
 	registerWorkflowPresentationRuntime(pi, runtime);
+	const resolveAvailability = (): WorkflowAvailability =>
+		resolveRuntimeAvailability(runtime, getPolicy());
 	registerWorkflowTools({
 		pi,
 		prompts,
 		getCatalog: () => runtime.catalog,
+		getCatalogError: () => runtime.catalogError,
 		getState: () => runtime.state,
 		getPolicy,
+		resolveAvailability,
 		setState: (state) => {
 			runtime.state = state;
+			refreshTools("lifecycle");
 		},
 	});
 	pi.on("context", (event) => {
-		const policy = getPolicy();
-		if (!canProjectWorkflowContext(pi, runtime, policy)) {
+		const activeNames = pi.getActiveTools();
+		if (!hasAnyWorkflowTool(activeNames)) {
 			return undefined;
 		}
-		const catalog = runtime.catalog.filter(({ id }) =>
-			isWorkflowAllowed(policy.policy, id),
-		);
-		const state =
-			runtime.state !== undefined &&
-			isWorkflowAllowed(policy.policy, runtime.state.workflow.id)
-				? runtime.state
-				: undefined;
+		const availability = resolveAvailability();
+		const activationOptions = activeNames.includes(WORKFLOW_ACTIVATE_TOOL)
+			? availability.activationOptions
+			: [];
 		return {
-			messages: projectWorkflowContext(event.messages, prompts, catalog, state),
+			messages: projectWorkflowContext(
+				event.messages,
+				prompts,
+				activationOptions,
+				availability.projectedState,
+			),
 		};
 	});
 }
@@ -233,22 +305,25 @@ function registerWorkflowPresentationRuntime(
 	pi.on("session_shutdown", clearPending);
 }
 
-/** Checks tool eligibility and whether policy leaves any current or saved source. */
-function canProjectWorkflowContext(
-	pi: ExtensionAPI,
+/** Resolves the current system capabilities without mutating Pi active tools. */
+function resolveRuntimeAvailability(
 	runtime: WorkflowRuntime,
 	policy: WorkflowPolicyResolution,
-): policy is Extract<WorkflowPolicyResolution, { readonly kind: "resolved" }> {
-	return (
-		runtime.usable &&
-		policy.kind === "resolved" &&
-		hasAnyWorkflowTool(pi.getActiveTools()) &&
-		hasAllowedWorkflowSource(
-			policy.policy,
-			runtime.catalog.map(({ id }) => id),
-			runtime.state?.workflow.id,
-		)
-	);
+): WorkflowAvailability {
+	// Prompt loading is atomic, so one prompt error disables every registered capability.
+	if (runtime.promptError !== undefined) {
+		return {
+			activationOptions: [],
+			projectedState: undefined,
+			availableToolNames: new Set(),
+		};
+	}
+	return resolveWorkflowAvailability({
+		catalog: runtime.catalog,
+		catalogValid: runtime.catalogError === undefined,
+		policy,
+		state: runtime.state,
+	});
 }
 
 /** Replays one branch and reconciles only suppression owned by this extension. */
@@ -262,24 +337,30 @@ function synchronizeWorkflowRuntime(
 	} catch (error) {
 		runtime.state = undefined;
 		runtime.catalog = [];
-		runtime.usable = false;
-		reconcileTools(pi, false, runtime.selfSuppressedNames, "lifecycle");
+		runtime.catalogError =
+			error instanceof Error ? error : new Error(String(error));
+		reconcileTools(pi, new Set(), runtime.selfSuppressedNames, "lifecycle");
 		throw error;
-	}
-	const policy = getPolicy();
-	if (policy.kind === "error") {
-		runtime.catalog = [];
-		runtime.usable = false;
-		reconcileTools(pi, false, runtime.selfSuppressedNames, "lifecycle");
-		throw new Error(policy.issue);
 	}
 	runtime.catalog =
 		catalogResult.error === undefined ? catalogResult.workflows : [];
-	const hasWorkflowSource =
-		runtime.state !== undefined || runtime.catalog.length > 0;
-	runtime.usable = promptError === undefined && hasWorkflowSource;
-	reconcileTools(pi, runtime.usable, runtime.selfSuppressedNames, "lifecycle");
-	if (promptError !== undefined && hasWorkflowSource) {
+	runtime.catalogError = catalogResult.error;
+	runtime.promptError = promptError;
+	const policy = getPolicy();
+	const availability = resolveRuntimeAvailability(runtime, policy);
+	reconcileTools(
+		pi,
+		availability.availableToolNames,
+		runtime.selfSuppressedNames,
+		"lifecycle",
+	);
+	if (policy.kind === "error") {
+		throw new Error(policy.issue);
+	}
+	if (
+		promptError !== undefined &&
+		(catalogResult.error === undefined || runtime.state !== undefined)
+	) {
 		throw promptError;
 	}
 	if (catalogResult.error !== undefined && runtime.state === undefined) {
@@ -308,19 +389,103 @@ async function loadPromptsForInitialization(
 	}
 }
 
-/** Registers both sequential definitions through the package presentation registry. */
+/** Registers all sequential definitions through the package presentation registry. */
 function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
 	registerWorkflowActivateTool(options);
 	registerWorkflowTransitionTool(options);
+	registerWorkflowCreateTool(options);
+}
+
+/** Registers dynamic creation as one validated, persisted, and activated operation. */
+function registerWorkflowCreateTool(
+	options: RegisterWorkflowToolsOptions,
+): void {
+	const {
+		pi,
+		prompts,
+		getCatalog,
+		getCatalogError,
+		getState,
+		getPolicy,
+		resolveAvailability,
+		setState,
+	} = options;
+	registerPackageTool(pi, {
+		name: WORKFLOW_CREATE_TOOL,
+		label: "Create workflow",
+		description: prompts.createDescription,
+		parameters: WORKFLOW_CREATE_SCHEMA,
+		executionMode: "sequential",
+		renderCall(args, theme, context) {
+			primeWorkflowRenderState(
+				context,
+				createWorkflowPresentationDetails(
+					WORKFLOW_CREATE_TOOL,
+					args,
+					getCatalog(),
+					getState(),
+				),
+			);
+			return renderWorkflowCreateCall(args, theme, context);
+		},
+		renderResult: renderWorkflowResult,
+		async execute(_toolCallId, params) {
+			const workflow = validateCreatedWorkflowDefinition(
+				params,
+				WORKFLOW_CREATE_TOOL,
+			);
+			const policy = getPolicy();
+			if (policy.kind === "error") {
+				throw new Error(policy.issue);
+			}
+			if (!resolveAvailability().availableToolNames.has(WORKFLOW_CREATE_TOOL)) {
+				throw (
+					getCatalogError() ?? new Error("workflow creation is unavailable")
+				);
+			}
+			const workflowKey = toWorkflowMatchKey(workflow.id);
+			const catalogMatch = getCatalog().find(
+				({ id }) => toWorkflowMatchKey(id) === workflowKey,
+			);
+			if (catalogMatch !== undefined) {
+				throw new Error(
+					`workflow ${workflow.id} conflicts with catalog workflow ${catalogMatch.id}`,
+				);
+			}
+			const current = getState();
+			if (
+				current?.source === "dynamic" &&
+				toWorkflowMatchKey(current.workflow.id) === workflowKey
+			) {
+				throw new Error(`workflow ${workflow.id} is already active`);
+			}
+			const candidate = createWorkflow(workflow);
+			pi.appendEntry(WORKFLOW_STATE_ENTRY, {
+				kind: "created",
+				workflow: candidate.workflow,
+				route: candidate.route,
+			});
+			setState(candidate);
+			return SUCCESS_RESULT;
+		},
+	});
 }
 
 /** Registers activation behavior and its semantic presentation. */
 function registerWorkflowActivateTool(
 	options: RegisterWorkflowToolsOptions,
 ): void {
-	const { pi, prompts, getCatalog, getState, getPolicy, setState } = options;
+	const {
+		pi,
+		prompts,
+		getCatalog,
+		getState,
+		getPolicy,
+		resolveAvailability,
+		setState,
+	} = options;
 	registerPackageTool(pi, {
-		name: ACTIVATE_TOOL,
+		name: WORKFLOW_ACTIVATE_TOOL,
 		label: "Activate workflow",
 		description: prompts.activateDescription,
 		parameters: Type.Object(
@@ -332,7 +497,7 @@ function registerWorkflowActivateTool(
 			primeWorkflowRenderState(
 				context,
 				createWorkflowPresentationDetails(
-					ACTIVATE_TOOL,
+					WORKFLOW_ACTIVATE_TOOL,
 					args,
 					getCatalog(),
 					getState(),
@@ -344,13 +509,10 @@ function registerWorkflowActivateTool(
 		async execute(_toolCallId, params) {
 			const workflowId = readExactStringArgument(params, "workflowId");
 			requireWorkflowAllowed(getPolicy(), workflowId);
-			// The active workflow is excluded from activation options, so accepting it would reset progress.
-			if (getState()?.workflow.id === workflowId) {
-				throw new Error(
-					`workflow ${workflowId} is not available for activation`,
-				);
-			}
-			const workflow = getCatalog().find(({ id }) => id === workflowId);
+			// Availability excludes the active workflow and every policy-denied catalog entry.
+			const workflow = resolveAvailability().activationOptions.find(
+				({ id }) => id === workflowId,
+			);
 			if (workflow === undefined) {
 				throw new Error(
 					`workflow ${workflowId} is not available for activation`,
@@ -372,9 +534,17 @@ function registerWorkflowActivateTool(
 function registerWorkflowTransitionTool(
 	options: RegisterWorkflowToolsOptions,
 ): void {
-	const { pi, prompts, getCatalog, getState, getPolicy, setState } = options;
+	const {
+		pi,
+		prompts,
+		getCatalog,
+		getState,
+		getPolicy,
+		resolveAvailability,
+		setState,
+	} = options;
 	registerPackageTool(pi, {
-		name: TRANSITION_TOOL,
+		name: WORKFLOW_TRANSITION_TOOL,
 		label: "Transition workflow",
 		description: prompts.transitionDescription,
 		parameters: Type.Object(
@@ -386,7 +556,7 @@ function registerWorkflowTransitionTool(
 			primeWorkflowRenderState(
 				context,
 				createWorkflowPresentationDetails(
-					TRANSITION_TOOL,
+					WORKFLOW_TRANSITION_TOOL,
 					args,
 					getCatalog(),
 					getState(),
@@ -401,7 +571,16 @@ function registerWorkflowTransitionTool(
 			if (current === undefined) {
 				throw new Error("no workflow is active");
 			}
-			requireWorkflowAllowed(getPolicy(), current.workflow.id);
+			const policy = getPolicy();
+			if (policy.kind === "error") {
+				throw new Error(policy.issue);
+			}
+			if (current.source === "catalog") {
+				requireWorkflowAllowed(policy, current.workflow.id);
+			}
+			if (resolveAvailability().projectedState !== current) {
+				throw new Error(`workflow ${current.workflow.id} is not available`);
+			}
 			const candidate = transitionWorkflow(current, stageId);
 			pi.appendEntry(WORKFLOW_STATE_ENTRY, {
 				kind: "transitioned",
@@ -450,45 +629,54 @@ function readExactStringArgument(value: unknown, key: string): string {
 /** Reconciles workflow-owned suppression without overriding agent policy. */
 function reconcileTools(
 	pi: ExtensionAPI,
-	usable: boolean,
+	availableToolNames: ReadonlySet<WorkflowToolName>,
 	selfSuppressedNames: Set<string>,
 	trigger: ReconciliationTrigger,
 ): void {
 	const activeNames = pi.getActiveTools();
-	if (usable) {
-		if (trigger === "policy-reset") {
-			selfSuppressedNames.clear();
-			return;
-		}
-		const restoredNames = [...selfSuppressedNames].filter(
-			(name) => !activeNames.includes(name),
-		);
-		selfSuppressedNames.clear();
-		if (restoredNames.length > 0) {
-			pi.setActiveTools([...activeNames, ...restoredNames]);
-		}
-		return;
-	}
-
-	const removedNames = activeNames.filter((name) =>
-		WORKFLOW_TOOL_NAMES.has(name),
-	);
+	// A policy reset replaces the agent-owned tool set, so prior suppression ownership is stale.
 	if (trigger === "policy-reset") {
 		selfSuppressedNames.clear();
 	}
+
+	// The extension records only names it removes for current system availability.
+	const removedNames = activeNames
+		.filter(isWorkflowToolName)
+		.filter((name) => !availableToolNames.has(name));
 	for (const name of removedNames) {
 		selfSuppressedNames.add(name);
 	}
-	if (removedNames.length > 0) {
-		pi.setActiveTools(
-			activeNames.filter((name) => !WORKFLOW_TOOL_NAMES.has(name)),
-		);
+
+	// Ordinary lifecycle changes may restore only names previously removed by this extension.
+	const restoredNames =
+		trigger === "lifecycle"
+			? [...selfSuppressedNames]
+					.filter(isWorkflowToolName)
+					.filter(
+						(name) =>
+							availableToolNames.has(name) && !activeNames.includes(name),
+					)
+			: [];
+	for (const name of restoredNames) {
+		selfSuppressedNames.delete(name);
 	}
+
+	const removedNameSet: ReadonlySet<string> = new Set(removedNames);
+	const nextNames = [
+		...activeNames.filter((name) => !removedNameSet.has(name)),
+		...restoredNames,
+	];
+	if (removedNames.length > 0 || restoredNames.length > 0) {
+		pi.setActiveTools(nextNames);
+	}
+}
+
+/** Narrows arbitrary Pi tool names to the workflow-owned finite set. */
+function isWorkflowToolName(name: string): name is WorkflowToolName {
+	return WORKFLOW_TOOL_NAMES.has(name);
 }
 
 /** Enables projection when the current agent can call at least one workflow tool. */
 function hasAnyWorkflowTool(activeNames: readonly string[]): boolean {
-	return (
-		activeNames.includes(ACTIVATE_TOOL) || activeNames.includes(TRANSITION_TOOL)
-	);
+	return activeNames.some(isWorkflowToolName);
 }

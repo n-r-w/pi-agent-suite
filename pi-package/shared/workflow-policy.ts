@@ -158,6 +158,6 @@ export function findCaseInsensitiveWorkflowDuplicate(
 }
 
 /** Normalizes workflow identity without changing the published canonical spelling. */
-function toWorkflowMatchKey(name: string): string {
+export function toWorkflowMatchKey(name: string): string {
 	return name.toLowerCase();
 }

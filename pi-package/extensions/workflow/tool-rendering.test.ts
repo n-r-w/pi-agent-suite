@@ -123,7 +123,7 @@ async function applyToolResultHandlers(
 /** Executes one workflow tool through the same start/result event boundaries as Pi. */
 async function executeTool(
 	fixture: WorkflowRenderingFixture,
-	name: "workflow_activate" | "workflow_transition",
+	name: "workflow_activate" | "workflow_transition" | "workflow_create",
 	args: Record<string, unknown>,
 ): Promise<ExecutedTool> {
 	const definition = fixture.tools.find((candidate) => candidate.name === name);
@@ -174,7 +174,7 @@ async function executeTool(
 /** Resolves the renderer used by the subagent session screen. */
 function resolveSessionDefinition(
 	fixture: WorkflowRenderingFixture,
-	name: "workflow_activate" | "workflow_transition",
+	name: "workflow_activate" | "workflow_transition" | "workflow_create",
 ): ToolDefinition {
 	const resolution = createToolPresentationRegistry(
 		"/tmp",
@@ -223,6 +223,32 @@ function renderCompletedTool(
 	};
 }
 
+/** Builds one complete dynamic definition whose identity is visible before execution. */
+function createArguments(
+	id: string,
+	description: string,
+): Record<string, unknown> {
+	return {
+		id,
+		description,
+		stages: [
+			{
+				id: "implementation",
+				description: "Implementation stage",
+				prompt: "Implement the change",
+				initial: true,
+			},
+			{
+				id: "review",
+				description: "Review stage",
+				prompt: "Review the change",
+				final: true,
+			},
+		],
+		transitions: [{ from: "implementation", to: "review", type: "advance" }],
+	};
+}
+
 /** Initializes the global theme used by Pi's public tool execution component. */
 beforeEach(() => {
 	initTheme(undefined, false);
@@ -263,6 +289,53 @@ describe("workflow semantic tool rendering", () => {
 		expect(execution.result.content).toEqual([
 			{ type: "text", text: '{"success":true}' },
 		]);
+	});
+
+	/**
+	 * Proves creation keeps its caller-provided identity in active and reconstructed session rendering.
+	 * Input and expected output: successful and rejected create calls show the submitted ID and description in both screens.
+	 * Edge case: a case-insensitive catalog collision still persists semantic details before execution fails.
+	 * Dependencies: workflow presentation events, package registry reconstruction, and create tool execution.
+	 */
+	test("renders workflow creation before and after execution", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const created = await executeTool(
+			fixture,
+			"workflow_create",
+			createArguments("dynamic-delivery", "Dynamic delivery process"),
+		);
+		const activeCreated = renderCompletedTool(created.definition, created);
+		const sessionCreated = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_create"),
+			created,
+		);
+		expect(activeCreated).toEqual({
+			call: [
+				"workflow_create",
+				"Workflow: dynamic-delivery · Dynamic delivery process",
+			],
+			result: [],
+		});
+		expect(sessionCreated).toEqual(activeCreated);
+
+		const rejected = await executeTool(
+			fixture,
+			"workflow_create",
+			createArguments("DELIVERY", "Conflicting delivery process"),
+		);
+		expect(rejected.isError).toBe(true);
+		const activeRejected = renderCompletedTool(rejected.definition, rejected);
+		const sessionRejected = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_create"),
+			rejected,
+		);
+		expect(activeRejected.call).toEqual([
+			"workflow_create",
+			"Workflow: DELIVERY · Conflicting delivery process",
+		]);
+		expect(activeRejected.result.join("\n")).toContain("Error:");
+		expect(sessionRejected).toEqual(activeRejected);
 	});
 
 	/** Proves the transition snapshot keeps the source stage after state mutation. */

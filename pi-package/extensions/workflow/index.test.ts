@@ -57,6 +57,42 @@ function validYaml(): string {
 	return "description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
 }
 
+/** Creates one complete workflow_create argument object with a caller-owned identity. */
+function createArguments(id = "dynamic-delivery"): Record<string, unknown> {
+	return {
+		id,
+		description: "Dynamic delivery",
+		prompt: "Follow the dynamic workflow.",
+		stages: [
+			{
+				id: "start",
+				description: "Start",
+				prompt: "Start dynamic work",
+				initial: true,
+			},
+			{
+				id: "done",
+				description: "Done",
+				prompt: "Finish dynamic work",
+				final: true,
+			},
+		],
+		transitions: [
+			{ from: "start", to: "done", type: "advance" },
+			{ from: "done", to: "start", type: "rework" },
+		],
+	};
+}
+
+/** Returns a registered workflow tool or fails the fixture with its missing identity. */
+function requireTool(fake: FakePi, name: string): FakeTool {
+	const tool = fake.tools.find((candidate) => candidate.name === name);
+	if (tool === undefined) {
+		throw new Error(`${name} tool missing`);
+	}
+	return tool;
+}
+
 /** Creates one validated saved state entry independent of the current catalog. */
 function activatedEntry(): unknown {
 	const workflow = validateWorkflowDefinition(
@@ -210,19 +246,136 @@ afterEach(async () => {
 
 describe("workflow extension lifecycle", () => {
 	/** Proves configured definitions exist before lifecycle policy resolution. */
-	test("registers the two sequential workflow tools during initialization", async () => {
+	test("registers the three sequential workflow tools during initialization", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		expect(fake.tools.map(({ name }) => name)).toEqual([
 			"workflow_activate",
 			"workflow_transition",
+			"workflow_create",
 		]);
 		expect(
 			fake.tools.every(({ executionMode }) => executionMode === "sequential"),
 		).toBe(true);
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree");
-		expect(fake.tools).toHaveLength(2);
+		expect(fake.tools).toHaveLength(3);
+	});
+
+	/**
+	 * Proves a valid empty catalog keeps workflow_create and universal guidance without activation options.
+	 * Input and expected output: no YAML and no saved state leave only workflow_create active and project guidelines only.
+	 * Edge case: workflow_activate and workflow_transition are system-suppressed independently.
+	 * Dependencies: lifecycle reconciliation, prompt loading, and provider-context projection.
+	 */
+	test("keeps creation active for an empty catalog", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+
+		expect(fake.activeTools).toEqual(["read", "workflow_create"]);
+		const context = await runContext(fake, []);
+		const content = String(
+			(context as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
+		);
+		expect(content).toContain("<workflow_guidelines>");
+		expect(content).not.toContain("<workflow_activation_options");
+		expect(content).not.toContain("<active_workflow");
+	});
+
+	/**
+	 * Proves dynamic creation and transition remain independent from the catalog workflows allowlist.
+	 * Input and expected output: workflows: [] permits create, restores policy-enabled transition, and advances dynamic state.
+	 * Edge case: no activation options are projected before or after creation.
+	 * Dependencies: per-tool reconciliation, dynamic snapshots, and source-aware policy checks.
+	 */
+	test("creates and transitions a dynamic workflow under an empty allowlist", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		setMainWorkflowPolicy(fake, []);
+		await runLifecycle(fake, "session_start");
+		const create = requireTool(fake, "workflow_create");
+		const transition = requireTool(fake, "workflow_transition");
+
+		expect(await create.execute("create", createArguments())).toMatchObject({
+			content: [{ type: "text", text: '{"success":true}' }],
+		});
+		expect(fake.activeTools).toEqual([
+			"read",
+			"workflow_create",
+			"workflow_transition",
+		]);
+		expect(
+			await transition.execute("transition", { stageId: "done" }),
+		).toMatchObject({
+			content: [{ type: "text", text: '{"success":true}' }],
+		});
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["created", "transitioned"]);
+		const context = await runContext(fake, []);
+		const content = String(
+			(context as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
+		);
+		expect(content).toContain(
+			'<active_workflow id="dynamic-delivery" active_stage_id="done"',
+		);
+		expect(content).not.toContain("<workflow_activation_options");
+	});
+
+	/**
+	 * Proves workflow IDs use one case-insensitive identity rule and rejected creates are atomic.
+	 * Input and expected output: catalog and active-dynamic case variants reject before append; a different ID replaces state.
+	 * Edge case: append failure retains the prior catalog route before a later successful replacement.
+	 * Dependencies: catalog normalization, dynamic state identity, and append-before-memory ordering.
+	 */
+	test("rejects duplicate IDs and atomically replaces a different workflow", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const create = requireTool(fake, "workflow_create");
+		const activate = requireTool(fake, "workflow_activate");
+		const transition = requireTool(fake, "workflow_transition");
+
+		await expect(
+			create.execute("create", createArguments("DELIVERY")),
+		).rejects.toThrow("delivery");
+		await activate.execute("activate", { workflowId: "delivery" });
+		await transition.execute("transition", { stageId: "done" });
+		fake.appendError = new Error("append failed");
+		await expect(
+			create.execute("create", createArguments("new-delivery")),
+		).rejects.toThrow("append failed");
+		fake.appendError = undefined;
+		const retained = String(
+			(
+				(await runContext(fake, [])) as {
+					messages: Array<{ content: unknown }>;
+				}
+			).messages[0]?.content,
+		);
+		expect(retained).toContain(
+			'<active_workflow id="delivery" active_stage_id="done"',
+		);
+
+		await create.execute("create", createArguments("new-delivery"));
+		const entriesBeforeDuplicate = [...fake.appended];
+		await expect(
+			create.execute("create", createArguments("NEW-DELIVERY")),
+		).rejects.toThrow("already active");
+		expect(fake.appended).toEqual(entriesBeforeDuplicate);
+		const replaced = String(
+			(
+				(await runContext(fake, [])) as {
+					messages: Array<{ content: unknown }>;
+				}
+			).messages[0]?.content,
+		);
+		expect(replaced).toContain(
+			'<active_workflow id="new-delivery" active_stage_id="start"',
+		);
 	});
 
 	/** Proves an invalid configured override prevents temporary or fallback registration. */
@@ -402,7 +555,14 @@ describe("workflow extension lifecycle", () => {
 		const entriesBeforeDeny = [...fake.appended];
 
 		setMainWorkflowPolicy(fake, []);
-		expect(await runContext(fake, [])).toBeUndefined();
+		const deniedContext = await runContext(fake, []);
+		const deniedContent = String(
+			(deniedContext as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
+		);
+		expect(deniedContent).toContain("<workflow_guidelines>");
+		expect(deniedContent).not.toContain("<active_workflow");
+		expect(deniedContent).not.toContain("<workflow_activation_options");
 		await expect(
 			transition.execute("call", { stageId: "start" }),
 		).rejects.toThrow("not allowed");
@@ -492,17 +652,9 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.activeTools).toEqual(["read"]);
 
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
-		expect(fake.activeTools).toEqual([
-			"read",
-			"workflow_activate",
-			"workflow_transition",
-		]);
+		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
-		expect(fake.activeTools).toEqual([
-			"read",
-			"workflow_activate",
-			"workflow_transition",
-		]);
+		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
 	});
 
 	/** Proves a main-agent policy reset replaces stale suppression ownership. */
@@ -512,7 +664,7 @@ describe("workflow extension lifecycle", () => {
 		fake.activeTools = ["read", "workflow_activate", "workflow_transition"];
 		await runLifecycle(fake, "session_start");
 
-		fake.activeTools = ["read", "workflow_activate"];
+		fake.activeTools = ["read", "workflow_transition"];
 		for (const listener of fake.listeners.get(
 			MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 		) ?? []) {
@@ -520,17 +672,17 @@ describe("workflow extension lifecycle", () => {
 		}
 		expect(fake.activeTools).toEqual(["read"]);
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
-		expect(fake.activeTools).toEqual(["read", "workflow_activate"]);
+		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
 	});
 
 	/** Proves usable policy resets clear stale ownership without changing active names. */
 	test("clears stale suppression after a usable main-agent policy change", async () => {
 		await createSuite();
 		const fake = await createFakePi();
-		fake.activeTools = ["read", "workflow_activate"];
+		fake.activeTools = ["read", "workflow_transition"];
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
-		expect(fake.activeTools).toEqual(["read", "workflow_activate"]);
+		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
 
 		fake.activeTools = ["read"];
 		for (const listener of fake.listeners.get(
@@ -591,7 +743,7 @@ describe("workflow extension lifecycle", () => {
 				(initialContext as { messages: Array<{ content: unknown }> })
 					.messages[0]?.content,
 			);
-			expect(initialContent).toContain("<workflow_activation_options />");
+			expect(initialContent).not.toContain("<workflow_activation_options");
 			expect(initialContent).toContain(
 				'<active_workflow id="delivery" active_stage_id="start"',
 			);
@@ -608,7 +760,17 @@ describe("workflow extension lifecycle", () => {
 			return;
 		}
 
-		expect(initialContext).toBeUndefined();
+		if (catalogKind === "removed") {
+			const deniedContent = String(
+				(initialContext as { messages: Array<{ content: unknown }> })
+					.messages[0]?.content,
+			);
+			expect(deniedContent).toContain("<workflow_guidelines>");
+			expect(deniedContent).not.toContain("<active_workflow");
+			expect(deniedContent).not.toContain("<workflow_activation_options");
+		} else {
+			expect(initialContext).toBeUndefined();
+		}
 		await expect(
 			transition.execute("call", { stageId: "done" }),
 		).rejects.toThrow("not allowed");

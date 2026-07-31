@@ -69,6 +69,7 @@ test("workflow entry activates a configured workflow and projects its initial st
 	expect(tools.map(({ name }) => name)).toEqual([
 		"workflow_activate",
 		"workflow_transition",
+		"workflow_create",
 	]);
 	const activate = tools[0];
 	if (activate === undefined) {

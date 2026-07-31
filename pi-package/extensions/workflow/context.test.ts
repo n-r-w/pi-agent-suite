@@ -9,6 +9,7 @@ import {
 
 const prompts = {
 	extensionDescription: "Use <stages> & choose safely.",
+	createDescription: "create",
 	activateDescription: "activate",
 	transitionDescription: "transition",
 };
@@ -93,7 +94,7 @@ describe("workflow context projection", () => {
 			projectWorkflowContext(
 				[],
 				prompts,
-				[activeWorkflow],
+				[],
 				activateWorkflow(activeWorkflow),
 			)[0],
 		);
@@ -103,12 +104,7 @@ describe("workflow context projection", () => {
 
 		const state = transitionWorkflow(activateWorkflow(activeWorkflow), "done");
 		const other = workflow("other");
-		const projected = projectWorkflowContext(
-			[],
-			prompts,
-			[activeWorkflow, other],
-			state,
-		);
+		const projected = projectWorkflowContext([], prompts, [other], state);
 		const content = customContent(projected[0]);
 		expect(content).toContain(
 			'<workflow id="other" description="Build &amp; review" />',
@@ -140,7 +136,7 @@ describe("workflow context projection", () => {
 			projectWorkflowContext(
 				[],
 				prompts,
-				[activeWorkflow],
+				[],
 				activateWorkflow(activeWorkflow),
 			)[0],
 		);
@@ -148,13 +144,25 @@ describe("workflow context projection", () => {
 		expect(content).toContain("<active_stage_guidelines>");
 	});
 
-	/** Proves a saved snapshot remains projectable with an explicitly empty current catalog. */
-	test("renders self-closing activation options for a saved-only state", () => {
+	/**
+	 * Proves empty activation options are omitted while universal guidance and saved state remain projectable.
+	 * Input and expected output: no options first produces guidelines only, then saved state adds active_workflow.
+	 * Edge case: neither context shape contains a self-closing activation element.
+	 * Dependencies: context projection and one validated catalog state.
+	 */
+	test("omits empty activation options", () => {
+		const guidelinesOnly = customContent(
+			projectWorkflowContext([], prompts, [], undefined)[0],
+		);
+		expect(guidelinesOnly).toContain("<workflow_guidelines>");
+		expect(guidelinesOnly).not.toContain("<workflow_activation_options");
+		expect(guidelinesOnly).not.toContain("<active_workflow");
+
 		const state = activateWorkflow(workflow());
-		const content = customContent(
+		const savedContent = customContent(
 			projectWorkflowContext([], prompts, [], state)[0],
 		);
-		expect(content).toContain("<workflow_activation_options />");
-		expect(content).toContain("<active_workflow");
+		expect(savedContent).not.toContain("<workflow_activation_options");
+		expect(savedContent).toContain("<active_workflow");
 	});
 });

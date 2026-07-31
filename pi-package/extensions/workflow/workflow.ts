@@ -1,5 +1,6 @@
 export type WorkflowTransitionType = "advance" | "rework";
 export type WorkflowStageStatus = "not_started" | "in_progress" | "completed";
+export type WorkflowSource = "catalog" | "dynamic";
 
 /** One normalized workflow stage with explicit boolean flags. */
 export interface WorkflowStage {
@@ -26,13 +27,15 @@ export interface WorkflowDefinition {
 	readonly transitions: readonly WorkflowTransition[];
 }
 
-/** The only mutable workflow state: one saved definition and its actual route. */
+/** The only mutable workflow state: one saved definition, its source, and its actual route. */
 export interface WorkflowState {
+	readonly source: WorkflowSource;
 	readonly workflow: WorkflowDefinition;
 	readonly route: readonly string[];
 }
 
 const ROOT_KEYS = new Set(["description", "prompt", "stages", "transitions"]);
+const CREATED_ROOT_KEYS = new Set(["id", ...ROOT_KEYS]);
 const STAGE_KEYS = new Set(["id", "description", "prompt", "initial", "final"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set([
@@ -53,35 +56,46 @@ export function validateWorkflowDefinition(
 	try {
 		assertText(id, "workflow id");
 		const root = requireObject(value, "workflow", ROOT_KEYS);
-		const description = readText(root, "description");
-		const prompt = readOptionalPromptText(root, "prompt");
-		const rawStages = requireArray(Reflect.get(root, "stages"), "stages");
-		const rawTransitions = requireArray(
-			Reflect.get(root, "transitions"),
-			"transitions",
-		);
-		const stages = rawStages.map((stage, index) => parseStage(stage, index));
-		const transitions = rawTransitions.map((transition, index) =>
-			parseTransition(transition, index),
-		);
-		const workflow =
-			prompt === undefined
-				? { id, description, stages, transitions }
-				: { id, description, prompt, stages, transitions };
-		validateGraph(workflow);
-		return workflow;
+		return parseWorkflowDefinition(id, root);
 	} catch (error) {
 		throw new Error(`${source}: ${errorMessage(error)}`);
 	}
 }
 
-/** Starts a workflow at its sole initial stage. */
+/** Validates a complete workflow_create boundary object. */
+export function validateCreatedWorkflowDefinition(
+	value: unknown,
+	source: string,
+): WorkflowDefinition {
+	try {
+		const root = requireObject(value, "workflow", CREATED_ROOT_KEYS);
+		const id = readText(root, "id");
+		return parseWorkflowDefinition(id, root);
+	} catch (error) {
+		throw new Error(`${source}: ${errorMessage(error)}`);
+	}
+}
+
+/** Starts a catalog workflow at its sole initial stage. */
 export function activateWorkflow(workflow: WorkflowDefinition): WorkflowState {
+	return startWorkflow(workflow, "catalog");
+}
+
+/** Starts a dynamic workflow at its sole initial stage. */
+export function createWorkflow(workflow: WorkflowDefinition): WorkflowState {
+	return startWorkflow(workflow, "dynamic");
+}
+
+/** Starts a validated workflow without conflating its policy source. */
+function startWorkflow(
+	workflow: WorkflowDefinition,
+	source: WorkflowSource,
+): WorkflowState {
 	const initial = workflow.stages.find((stage) => stage.initial);
 	if (initial === undefined) {
 		throw new Error("validated workflow has no initial stage");
 	}
-	return { workflow, route: [initial.id] };
+	return { source, workflow, route: [initial.id] };
 }
 
 /** Applies one currently available transition without mutating the prior state. */
@@ -161,40 +175,48 @@ export function replayWorkflowState(
 			continue;
 		}
 		try {
-			if (Reflect.get(entry, "type") !== "custom") {
-				throw new Error("entry type must be custom");
-			}
-			const data = requireObject(
-				Reflect.get(entry, "data"),
-				"workflow-state data",
-			);
-			const kind = Reflect.get(data, "kind");
-			if (kind === "activated") {
-				assertExactKeys(
-					data,
-					new Set(["kind", "workflow", "route"]),
-					"activated entry",
-				);
-				const workflow = validateSavedWorkflow(Reflect.get(data, "workflow"));
-				const route = validateRoute(workflow, Reflect.get(data, "route"));
-				state = { workflow, route };
-			} else if (kind === "transitioned") {
-				assertExactKeys(data, new Set(["kind", "route"]), "transitioned entry");
-				if (state === undefined) {
-					throw new Error("transitioned entry has no activated snapshot");
-				}
-				state = {
-					...state,
-					route: validateRoute(state.workflow, Reflect.get(data, "route")),
-				};
-			} else {
-				throw new Error("entry kind must be activated or transitioned");
-			}
+			state = replayWorkflowStateEntry(state, entry);
 		} catch (error) {
 			throw new Error(`invalid workflow-state entry: ${errorMessage(error)}`);
 		}
 	}
 	return state;
+}
+
+/** Applies one exact saved entry while preserving source across route-only updates. */
+function replayWorkflowStateEntry(
+	state: WorkflowState | undefined,
+	entry: object,
+): WorkflowState {
+	if (Reflect.get(entry, "type") !== "custom") {
+		throw new Error("entry type must be custom");
+	}
+	const data = requireObject(Reflect.get(entry, "data"), "workflow-state data");
+	const kind = Reflect.get(data, "kind");
+	if (kind === "activated" || kind === "created") {
+		assertExactKeys(
+			data,
+			new Set(["kind", "workflow", "route"]),
+			`${kind} entry`,
+		);
+		const workflow = validateSavedWorkflow(Reflect.get(data, "workflow"));
+		return {
+			source: kind === "activated" ? "catalog" : "dynamic",
+			workflow,
+			route: validateRoute(workflow, Reflect.get(data, "route")),
+		};
+	}
+	if (kind === "transitioned") {
+		assertExactKeys(data, new Set(["kind", "route"]), "transitioned entry");
+		if (state === undefined) {
+			throw new Error("transitioned entry has no active snapshot");
+		}
+		return {
+			...state,
+			route: validateRoute(state.workflow, Reflect.get(data, "route")),
+		};
+	}
+	throw new Error("entry kind must be activated, created, or transitioned");
 }
 
 /** Identifies every entry claiming workflow ownership before outer-shape validation. */
@@ -255,6 +277,30 @@ function validateRoute(
 		}
 	}
 	return ids;
+}
+
+/** Parses one exact-key workflow object and applies the shared graph rules. */
+function parseWorkflowDefinition(
+	id: string,
+	root: Readonly<Record<string, unknown>>,
+): WorkflowDefinition {
+	const description = readText(root, "description");
+	const prompt = readOptionalPromptText(root, "prompt");
+	const rawStages = requireArray(Reflect.get(root, "stages"), "stages");
+	const rawTransitions = requireArray(
+		Reflect.get(root, "transitions"),
+		"transitions",
+	);
+	const stages = rawStages.map((stage, index) => parseStage(stage, index));
+	const transitions = rawTransitions.map((transition, index) =>
+		parseTransition(transition, index),
+	);
+	const workflow =
+		prompt === undefined
+			? { id, description, stages, transitions }
+			: { id, description, prompt, stages, transitions };
+	validateGraph(workflow);
+	return workflow;
 }
 
 /** Parses one stage with closed keys and explicit defaults. */
@@ -406,14 +452,14 @@ function requireObject(
 	value: unknown,
 	field: string,
 	keys?: ReadonlySet<string>,
-): object {
+): Record<string, unknown> {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new Error(`${field} must be an object`);
 	}
 	if (keys !== undefined) {
 		assertExactKeys(value, keys, field);
 	}
-	return value;
+	return value as Record<string, unknown>;
 }
 
 /** Rejects unknown keys while allowing required-key checks to remain field-specific. */
