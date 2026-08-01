@@ -50,9 +50,21 @@ export interface SubagentFailureDetails {
 /** Declares the exact public start request boundary. */
 export const SubagentStartParameters = Type.Object(
 	{
-		agentId: Type.String(),
-		taskName: Type.String({ pattern: TASK_NAME_CODE_POINT_PATTERN }),
-		prompt: Type.String(),
+		agentId: Type.String({
+			description: "Subagent ID listed in <available_subagents>",
+			minLength: 1,
+		}),
+		taskName: Type.String({
+			description: "Short task name for subagent session",
+			minLength: 3,
+			maxLength: 60,
+			pattern: TASK_NAME_CODE_POINT_PATTERN,
+		}),
+		prompt: Type.String({
+			description: "Instructions for subagent",
+			minLength: 1,
+			maxLength: 32768,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -60,8 +72,15 @@ export const SubagentStartParameters = Type.Object(
 /** Declares the exact public steer request boundary. */
 export const SubagentSteerParameters = Type.Object(
 	{
-		sessionId: Type.Integer({ minimum: 1 }),
-		prompt: Type.String(),
+		sessionId: Type.Integer({
+			description: "Session ID returned by subagent_start",
+			minimum: 1,
+		}),
+		prompt: Type.String({
+			description: "Instructions to send to existing subagent session",
+			minLength: 1,
+			maxLength: 32768,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -69,8 +88,15 @@ export const SubagentSteerParameters = Type.Object(
 /** Declares the exact public query request boundary. */
 export const SubagentQueryParameters = Type.Object(
 	{
-		sessionId: Type.Integer({ minimum: 1 }),
-		question: Type.String(),
+		sessionId: Type.Integer({
+			description: "Session ID returned by subagent_start",
+			minimum: 1,
+		}),
+		question: Type.String({
+			description: "Question about specified subagent session",
+			minLength: 1,
+			maxLength: 4096,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -79,10 +105,16 @@ export const SubagentQueryParameters = Type.Object(
 export const SubagentWaitParameters = Type.Object(
 	{
 		sessionIds: Type.Array(Type.Integer({ minimum: 1 }), {
+			description: "List of unique session IDs returned by subagent_start",
 			minItems: 1,
+			maxItems: 64,
 			uniqueItems: true,
 		}),
-		timeoutMs: Type.Integer({ minimum: 1, maximum: 2_147_483_647 }),
+		timeout: Type.Integer({
+			description: "Maximum wait time in seconds",
+			minimum: 1,
+			maximum: 3600,
+		}),
 	},
 	{ additionalProperties: false },
 );

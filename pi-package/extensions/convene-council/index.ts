@@ -29,6 +29,8 @@ const ConveneCouncilParameters = Type.Object(
 	{
 		question: Type.String({
 			description: "Question to discuss with the council. ENGLISH ONLY",
+			minLength: 1,
+			maxLength: 8192,
 		}),
 	},
 	{ additionalProperties: false },

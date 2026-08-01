@@ -8,15 +8,16 @@ import {
 	SubagentToolError,
 	type SubagentWaitRequest,
 } from "./contracts";
-import type {
-	AcceptedPresentationEvidence,
-	InvocationMetadata,
-	JournalRecord,
-	LogicalSession,
-	OwnerIdentity,
-	SessionKey,
-	SubagentFeedback,
-	WaitFeedbackPresentationEvidence,
+import {
+	type AcceptedPresentationEvidence,
+	type InvocationMetadata,
+	type JournalRecord,
+	type LogicalSession,
+	MILLISECONDS_PER_SECOND,
+	type OwnerIdentity,
+	type SessionKey,
+	type SubagentFeedback,
+	type WaitFeedbackPresentationEvidence,
 } from "./domain";
 import { errorMessage } from "./error-message";
 import {
@@ -467,7 +468,8 @@ export class SubagentCoordinator {
 				);
 			}
 			const startedAt = this.options.clock.monotonicNow();
-			const expiresAt = startedAt + request.timeoutMs;
+			// Public wait durations use seconds; runtime deadlines use milliseconds.
+			const expiresAt = startedAt + request.timeout * MILLISECONDS_PER_SECOND;
 			const activeWait: ActiveWait = {
 				owner,
 				selectedIds,

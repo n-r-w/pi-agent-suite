@@ -284,7 +284,7 @@ Waits for the first terminal feedback from selected direct children that are act
 | Name | Required | Type or shape | Meaning |
 | --- | --- | --- | --- |
 | `sessionIds` | Yes | Non-empty array of distinct positive integers | Directly owned logical sessions to observe. |
-| `timeoutMs` | Yes | Integer from `1` through `2147483647` | Maximum wait duration in milliseconds. |
+| `timeout` | Yes | Integer from `1` through `3600` | Maximum wait duration in seconds. |
 
 Listed terminal sessions are ignored. If none of the listed sessions is active, the tool returns immediately:
 

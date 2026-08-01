@@ -351,7 +351,7 @@ describe("Subagents semantic rendering", () => {
 		const wait = new ToolExecutionComponent(
 			"subagent_wait",
 			"wait-call",
-			{ sessionIds: [1], timeoutMs: 30_000 },
+			{ sessionIds: [1], timeout: 30 },
 			{},
 			resolveSubagentDefinition("subagent_wait"),
 			ui,
@@ -453,7 +453,7 @@ describe("Subagents semantic rendering", () => {
 		const feedbackEvidence = waitFeedbackDetails();
 		const wait = renderTool({
 			name: "subagent_wait",
-			args: { sessionIds: [1], timeoutMs: 30_000 },
+			args: { sessionIds: [1], timeout: 30 },
 			result: result(feedbackEvidence),
 			theme: MARKED_THEME,
 		}).result;
@@ -527,7 +527,7 @@ describe("Subagents semantic rendering", () => {
 			evidence.feedback.presentation.invocationMetadata.projectionSavedTokens = 10;
 			const card = renderTool({
 				name: "subagent_wait",
-				args: { sessionIds: [1], timeoutMs: 30_000 },
+				args: { sessionIds: [1], timeout: 30 },
 				result: result(evidence),
 				theme: MARKED_THEME,
 				width: 300,
@@ -642,7 +642,7 @@ describe("Subagents semantic rendering", () => {
 		// Input and expected output: feedback shows a terminal snapshot, normal outcomes use muted result text, and tool failures retain error styling.
 		// Edge case: ordered multiple IDs and compact timeout formatting remain stable after result classification.
 		// Dependencies: validated wait evidence, structured failed-tool details, and semantic theme roles.
-		const args = { sessionIds: [1, 3, 8], timeoutMs: 30_000 };
+		const args = { sessionIds: [1, 3, 8], timeout: 30 };
 		const pending = renderTool({ name: "subagent_wait", args });
 		const feedback = renderTool({
 			name: "subagent_wait",

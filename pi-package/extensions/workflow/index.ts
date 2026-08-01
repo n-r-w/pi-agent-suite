@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -71,11 +72,33 @@ const SUCCESS_RESULT = {
 /** Closed workflow_create stage shape exposed to Pi tool validation. */
 const WORKFLOW_STAGE_SCHEMA = Type.Object(
 	{
-		id: Type.String(),
-		description: Type.String(),
-		prompt: Type.String(),
-		initial: Type.Optional(Type.Boolean()),
-		final: Type.Optional(Type.Boolean()),
+		id: Type.String({
+			description: "Unique stage ID referenced by transitions",
+			minLength: 2,
+			maxLength: 16,
+		}),
+		description: Type.String({
+			description: "Short single-line summary of stage outcome",
+			minLength: 10,
+			maxLength: 128,
+		}),
+		prompt: Type.String({
+			description: "Instructions and completion criteria for this stage",
+			minLength: 10,
+			maxLength: 4096,
+		}),
+		initial: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether this is workflow's only initial stage. Exactly one stage must be true",
+			}),
+		),
+		final: Type.Optional(
+			Type.Boolean({
+				description:
+					"Whether this stage may complete workflow. At least one stage must be true",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -83,9 +106,20 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 /** Closed workflow_create transition shape exposed to Pi tool validation. */
 const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 	{
-		from: Type.String(),
-		to: Type.String(),
-		type: Type.Union([Type.Literal("advance"), Type.Literal("rework")]),
+		from: Type.String({
+			description: "Source stage ID",
+			minLength: 2,
+			maxLength: 16,
+		}),
+		to: Type.String({
+			description: "Target stage ID",
+			minLength: 2,
+			maxLength: 16,
+		}),
+		type: StringEnum(["advance", "rework"] as const, {
+			description:
+				"Transition direction: advance for forward progress; rework for return to a strict advance ancestor.",
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -93,11 +127,37 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 /** Complete workflow_create boundary shape; graph invariants remain domain validation. */
 const WORKFLOW_CREATE_SCHEMA = Type.Object(
 	{
-		id: Type.String(),
-		description: Type.String(),
-		prompt: Type.Optional(Type.String()),
-		stages: Type.Array(WORKFLOW_STAGE_SCHEMA),
-		transitions: Type.Array(WORKFLOW_TRANSITION_SCHEMA),
+		id: Type.String({
+			description:
+				"Unique workflow ID. Must not match any other workflow ID case-insensitively",
+			minLength: 3,
+			maxLength: 32,
+		}),
+		description: Type.String({
+			description: "Short single-line summary of workflow's purpose",
+			minLength: 3,
+			maxLength: 256,
+		}),
+		prompt: Type.Optional(
+			Type.String({
+				description:
+					"Optional workflow-level instructions applied throughout all stages",
+				minLength: 10,
+				maxLength: 8192,
+			}),
+		),
+		stages: Type.Array(WORKFLOW_STAGE_SCHEMA, {
+			description:
+				"Complete list of workflow stages. Exactly one stage must be initial and at least one must be final",
+			minItems: 2,
+			maxItems: 64,
+		}),
+		transitions: Type.Array(WORKFLOW_TRANSITION_SCHEMA, {
+			description:
+				"Directed stage transitions. Use advance for forward progress and rework only toward an advance ancestor",
+			minItems: 1,
+			maxItems: 256,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -532,7 +592,12 @@ function registerWorkflowActivateTool(
 		label: "Activate workflow",
 		description: prompts.activateDescription,
 		parameters: Type.Object(
-			{ workflowId: Type.String() },
+			{
+				workflowId: Type.String({
+					description: "ID of workflow listed in <workflow_activation_options>",
+					minLength: 1,
+				}),
+			},
 			{ additionalProperties: false },
 		),
 		executionMode: "sequential",
@@ -591,7 +656,12 @@ function registerWorkflowTransitionTool(
 		label: "Transition workflow",
 		description: prompts.transitionDescription,
 		parameters: Type.Object(
-			{ stageId: Type.String() },
+			{
+				stageId: Type.String({
+					description: "Target stage ID listed in <available_transitions>",
+					minLength: 1,
+				}),
+			},
 			{ additionalProperties: false },
 		),
 		executionMode: "sequential",

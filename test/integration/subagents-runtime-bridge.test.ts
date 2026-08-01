@@ -253,7 +253,7 @@ test("establishes production worker IPC and settles one response", async () => {
 		const pendingWait = coordinator
 			.wait(
 				parentOwner,
-				{ sessionIds: [1], timeoutMs: 30_000 },
+				{ sessionIds: [1], timeout: 30 },
 				{
 					toolCallId: "wait-tool",
 					requestId: "nested-wait",

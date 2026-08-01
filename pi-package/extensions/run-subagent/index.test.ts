@@ -662,7 +662,7 @@ describe("subagents entry", () => {
 			const pending = getTool(pi, "subagent_wait")
 				.execute(
 					"nested-abort-tool",
-					{ sessionIds: [1], timeoutMs: 2_147_483_647 },
+					{ sessionIds: [1], timeout: 3600 },
 					controller.signal,
 					undefined,
 					ctx,
@@ -1524,7 +1524,7 @@ describe("subagents entry", () => {
 			}),
 			unicodeCodePointsValid: Check(SubagentStartParameters, {
 				agentId: "SubAgentCoder",
-				taskName: "a\u0301b",
+				taskName: "😀😀😀",
 				prompt: "Inspect runtime",
 			}),
 			startExtraRejected: Check(SubagentStartParameters, {
@@ -1548,11 +1548,11 @@ describe("subagents entry", () => {
 			}),
 			waitDuplicateRejected: Check(SubagentWaitParameters, {
 				sessionIds: [1, 1],
-				timeoutMs: 1,
+				timeout: 1,
 			}),
 			waitZeroRejected: Check(SubagentWaitParameters, {
 				sessionIds: [1],
-				timeoutMs: 0,
+				timeout: 0,
 			}),
 		}).toEqual({
 			startValid: true,
@@ -1606,7 +1606,7 @@ describe("subagents entry", () => {
 			),
 			getTool(pi, "subagent_wait").execute(
 				"wait-semantic",
-				{ sessionIds: [1], timeoutMs: 1 },
+				{ sessionIds: [1], timeout: 1 },
 				undefined,
 				undefined,
 				ctx,
@@ -1691,7 +1691,7 @@ describe("subagents entry", () => {
 			const first = tool
 				.execute(
 					"root-abort-1",
-					{ sessionIds: [1], timeoutMs: 2_147_483_647 },
+					{ sessionIds: [1], timeout: 3600 },
 					firstController.signal,
 					undefined,
 					ctx,
@@ -1712,7 +1712,7 @@ describe("subagents entry", () => {
 			const second = tool
 				.execute(
 					"root-abort-2",
-					{ sessionIds: [1], timeoutMs: 2_147_483_647 },
+					{ sessionIds: [1], timeout: 3600 },
 					secondController.signal,
 					undefined,
 					ctx,
@@ -2549,7 +2549,7 @@ describe("subagents entry", () => {
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		const result = await getTool(pi, "subagent_wait").execute(
 			"wait-terminal",
-			{ sessionIds: [1], timeoutMs: 1 },
+			{ sessionIds: [1], timeout: 1 },
 			undefined,
 			undefined,
 			ctx,
@@ -3081,7 +3081,7 @@ describe("subagents entry", () => {
 		const code = await getTool(pi, "subagent_wait")
 			.execute(
 				"disabled-wait",
-				{ sessionIds: [1], timeoutMs: 1 },
+				{ sessionIds: [1], timeout: 1 },
 				undefined,
 				undefined,
 				ctx,

@@ -169,7 +169,7 @@ async function startAbortProbeServer(): Promise<{
 						name: "subagent_wait",
 						arguments: JSON.stringify({
 							sessionIds: [1],
-							timeoutMs: 2_147_483_647,
+							timeout: 3600,
 						}),
 					},
 				},

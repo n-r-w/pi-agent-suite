@@ -210,7 +210,7 @@ describe("agent operation wire parser", () => {
 			request: parseAgentOperationPayload({
 				toolName: "subagent_wait",
 				toolCallId: "tool-2",
-				params: { sessionIds: [1], timeoutMs: 1 },
+				params: { sessionIds: [1], timeout: 1 },
 			}),
 			success: parseAgentOperationResponse({
 				kind: "ok",
@@ -240,7 +240,7 @@ describe("agent operation wire parser", () => {
 			request: {
 				toolName: "subagent_wait",
 				toolCallId: "tool-2",
-				params: { sessionIds: [1], timeoutMs: 1 },
+				params: { sessionIds: [1], timeout: 1 },
 			},
 			success: { kind: "ok", result: { outcome: "timeout" } },
 			acceptedEvidence: {

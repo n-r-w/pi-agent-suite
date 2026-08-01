@@ -1846,7 +1846,7 @@ describe("InvocationSupervisor", () => {
 		const pendingWait = coordinator
 			.wait(
 				ownerB,
-				{ sessionIds: [1], timeoutMs: 30_000 },
+				{ sessionIds: [1], timeout: 30 },
 				{
 					toolCallId: "b-pending-wait",
 					requestId: "b-pending-wait",
@@ -2079,7 +2079,7 @@ describe("InvocationSupervisor", () => {
 			const pendingWait = coordinator
 				.wait(
 					ownerB,
-					{ sessionIds: [1], timeoutMs: 30_000 },
+					{ sessionIds: [1], timeout: 30 },
 					{
 						toolCallId: "handoff-wait",
 						requestId: "handoff-wait",
