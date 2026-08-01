@@ -5,10 +5,6 @@ import { sanitizePublicSubagentErrorMessage } from "./public-error";
 
 const TASK_NAME_MIN_CODE_POINTS = 3;
 const TASK_NAME_MAX_CODE_POINTS = 60;
-const HIGH_SURROGATE_PATTERN = "[\\uD800-\\uDBFF]";
-const LOW_SURROGATE_PATTERN = "[\\uDC00-\\uDFFF]";
-const NON_SURROGATE_PATTERN = "[^\\uD800-\\uDFFF]";
-const TASK_NAME_CODE_POINT_PATTERN = `^(?:(?:${HIGH_SURROGATE_PATTERN}${LOW_SURROGATE_PATTERN}|${NON_SURROGATE_PATTERN})){3,60}$`;
 const UNICODE_WHITE_SPACE_CODE_POINT = /^\p{White_Space}$/u;
 
 /** Names the complete public subagent tool set. */
@@ -58,7 +54,6 @@ export const SubagentStartParameters = Type.Object(
 			description: "Short task name for subagent session",
 			minLength: 3,
 			maxLength: 60,
-			pattern: TASK_NAME_CODE_POINT_PATTERN,
 		}),
 		prompt: Type.String({
 			description: "Instructions for subagent",

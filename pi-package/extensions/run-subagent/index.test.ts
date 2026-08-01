@@ -1514,17 +1514,11 @@ describe("subagents entry", () => {
 	test("publishes exact subagent schemas", () => {
 		// Purpose: all public request schemas must remain closed and machine-readable.
 		// Input and expected output: one valid request per tool passes while an extra property, duplicate wait ID, and zero timeout fail.
-		// Edge case: Unicode code-point bounds remain distinct from UTF-16 code units.
 		// Dependencies: exported production TypeBox schemas.
 		expect({
 			startValid: Check(SubagentStartParameters, {
 				agentId: "SubAgentCoder",
 				taskName: "Trace runtime",
-				prompt: "Inspect runtime",
-			}),
-			unicodeCodePointsValid: Check(SubagentStartParameters, {
-				agentId: "SubAgentCoder",
-				taskName: "😀😀😀",
 				prompt: "Inspect runtime",
 			}),
 			startExtraRejected: Check(SubagentStartParameters, {
@@ -1556,7 +1550,6 @@ describe("subagents entry", () => {
 			}),
 		}).toEqual({
 			startValid: true,
-			unicodeCodePointsValid: true,
 			startExtraRejected: false,
 			steerValid: true,
 			queryValid: true,
