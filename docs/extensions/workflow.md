@@ -54,7 +54,7 @@ One invalid `.yaml` file rejects the catalog atomically. Catalog IDs must be uni
 
 ### Agent workflow policy
 
-Main-agent and subagent frontmatter can restrict ready-made workflows independently from `tools`:
+Main-agent and subagent frontmatter can restrict ready-made workflow activation independently from `tools`:
 
 ```yaml
 ---
@@ -65,10 +65,10 @@ workflows: [delivery, review]
 ---
 ```
 
-- Omit `workflows` to allow every catalog workflow.
-- Use `workflows: []` to deny every catalog workflow.
-- Use a non-empty list to allow only exact catalog IDs after NFC normalization. Runtime metadata uses the catalog's spelling.
-- Dynamic workflow state is not filtered by `workflows`. Creation and transitions still require their respective tool permissions.
+- Omit `workflows` to allow activation of every catalog workflow.
+- Use `workflows: []` to allow no catalog workflow activation.
+- Use a non-empty list to allow activation of only exact catalog IDs after NFC normalization. Runtime metadata uses the catalog's spelling.
+- A resolved policy does not hide or block the current active workflow. Creation, activation, and transitions still require their respective tool permissions.
 
 NFC-equivalent duplicates, unknown names, and NFC-equivalent catalog ID collisions reject the policy before the agent changes model or runtime state. A non-empty policy also fails when the catalog is invalid; omitted and empty policies remain valid.
 
@@ -128,7 +128,7 @@ All workflow tools run sequentially and return model-visible success content `{"
 }
 ```
 
-A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
+A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. A replaced dynamic workflow cannot be reactivated. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
 
 The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets.
 
@@ -142,7 +142,7 @@ The `workflow_create` TypeBox schema adds LLM-facing length and collection-size 
 
 `workflow_transition` moves the active workflow to one target listed in `<available_transitions>`. Permission for `workflow_create` does not grant transition permission.
 
-Every tool rechecks its input, policy, and current state before appending a session entry. Validation or persistence errors leave the previous workflow state unchanged.
+Every tool rechecks its input and current state before appending a session entry. Creation and activation also recheck the policy information they require. A malformed policy blocks all workflow operations. Validation or persistence errors leave the previous workflow state unchanged.
 
 ## Compact session status panel
 
@@ -154,7 +154,7 @@ Workflow: TuiBrainstorming · Generate and discuss TUI concepts
 
 The row contains the workflow ID and active stage description. It never includes stage IDs or transitions. The shared separator and the complete Workflow row use Pi's dim color. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed. The row is clipped to the terminal width and ends with `…` when content is hidden.
 
-Creation, activation, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row; those policies affect tool and provider-context availability only. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
+Creation, activation, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row or the saved active workflow. The agent's tool policy still controls provider-context availability. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
 
 ## Tool presentation
 
@@ -210,7 +210,7 @@ The extension computes tool availability independently:
 
 The agent's `tools` policy remains a second gate. The extension never restores a tool removed by that policy.
 
-`<workflow_guidelines>` contains only universal workflow rules. Context is projected while at least one workflow tool is active. An allowed active workflow also remains projected when the extension temporarily suppresses the last workflow tool granted by the agent policy. A policy reset that removes that tool permission stops the projection without deleting the saved workflow snapshot. `<workflow_activation_options>` is included only when `workflow_activate` is active and at least one option exists. An empty or self-closing activation-options element is not emitted.
+`<workflow_guidelines>` contains only universal workflow rules. Context is projected while at least one workflow tool is active. The current active workflow also remains projected when the extension temporarily suppresses the last workflow tool granted by the agent policy. A policy reset that removes that tool permission stops the projection without deleting the saved workflow snapshot. `<workflow_activation_options>` is included only when `workflow_activate` is active and at least one option exists. An empty or self-closing activation-options element is not emitted.
 
 An active workflow projects shared workflow guidance before the current stage guidance:
 
@@ -229,7 +229,7 @@ Follow the project testing rules.
 
 The root workflow prompt is projected in `<guidelines>` for every active stage and omitted when absent. Only the active stage prompt is projected in `<active_stage_guidelines>`; a transition replaces it on the next context request.
 
-Catalog activation options and catalog-backed active state are filtered through `workflows`. Dynamic active state remains projectable and transitionable independently from that catalog allowlist.
+Catalog activation options are filtered through `workflows`. The current active state remains projectable and transitionable under every resolved policy, regardless of whether it came from catalog activation or `workflow_create`.
 
 ## Session snapshots
 
@@ -240,4 +240,4 @@ The active branch reconstructs state on session start and branch changes:
 - `created` restores dynamic state;
 - `transitioned` updates the route of the preceding snapshot.
 
-A valid catalog-backed snapshot remains available after its file is removed or the catalog becomes invalid when `workflows` permits its ID. A dynamic snapshot remains available regardless of `workflows`. An invalid catalog prevents new creation and activation but does not erase a valid dynamic snapshot or block its permitted transitions.
+The latest valid active snapshot remains available under every resolved policy after its catalog file is removed or the catalog becomes invalid. An invalid catalog prevents new creation and activation but does not block transitions of that saved active workflow. Earlier replaced dynamic workflows do not appear in activation options and cannot be reactivated.

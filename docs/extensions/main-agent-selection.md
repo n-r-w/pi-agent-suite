@@ -69,7 +69,7 @@ You are a code review agent. Check correctness, risks, and missing validation.
 | `model.id` | String in `provider/model` form | No | Not set | Selects the model for this main agent. |
 | `model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | No | Not set | Sets the thinking level for this main agent. |
 | `tools` | Array of unique non-empty strings | No | Not set | Allows exact tool names or wildcard tool patterns for this main agent. The full wildcard `*` is not allowed. |
-| `workflows` | Array of unique single-line workflow IDs | No | Not set | Restricts access to exact NFC-normalized workflows; `[]` denies every workflow, while omission allows all workflows. |
+| `workflows` | Array of unique single-line workflow IDs | No | Not set | Allows activation of exact NFC-normalized catalog workflows; `[]` allows no new activation, while omission allows all catalog workflows. This field does not block the current active workflow; `tools` still controls workflow operations. |
 | `agents` | Array of unique single-line agent IDs | No | Not set | Allows the listed exact NFC-normalized subagents when this main agent is selected. |
 | Markdown body | Markdown text after frontmatter | No | Empty after trimming | Becomes the main-agent prompt. |
 

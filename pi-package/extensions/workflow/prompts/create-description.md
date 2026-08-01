@@ -1,6 +1,7 @@
 **DESCRIPTION**:
 1. Create and immediately activate a task-specific workflow when no ready-made workflow fits user's task.
-2. Creation replaces current workflow state.
+2. If a workflow created through workflow_create is replaced, it cannot be reactivated.
+3. Creation replaces current workflow state.
 
 **RULES**:
 1. Submit complete workflow definition in one call. Use an ID that does not match a ready-made workflow ID case-insensitively.

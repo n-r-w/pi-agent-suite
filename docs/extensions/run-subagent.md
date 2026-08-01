@@ -90,7 +90,7 @@ A project agent definition supplies the child prompt, model, thinking level, too
 
 An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.
 
-The optional `workflows` frontmatter field restricts the child to listed workflow IDs. Matching is exact and case-sensitive after NFC normalization; omission allows all workflows, and `workflows: []` denies every workflow. Unknown or NFC-equivalent duplicate names reject the launch before authorization and process startup. The launcher sends canonical IDs to the child through its owned environment; callers do not configure this transport directly.
+The optional `workflows` frontmatter field restricts which catalog workflows the child can activate. Matching is exact and case-sensitive after NFC normalization; omission allows activation of every catalog workflow, and `workflows: []` allows no catalog activation. This field does not block the current active workflow; child tools still control workflow operations. Unknown or NFC-equivalent duplicate names reject the launch before authorization and process startup. The launcher sends canonical IDs to the child through its owned environment; callers do not configure this transport directly.
 
 ## Startup acceptance
 

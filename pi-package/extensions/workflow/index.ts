@@ -87,7 +87,19 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 			maxLength: 128,
 		}),
 		prompt: Type.String({
-			description: "Instructions and completion criteria for this stage",
+			description: `Instructions for this stage. Format:
+\`\`\`
+Goal: [Stage-specific goal]
+
+Rules:
+1. [Stage-specific instructions]
+2. ...
+
+Completion criteria:
+1. [Stage-specific criteria]
+2. ...
+\`\`\`
+`,
 			minLength: 10,
 			maxLength: 8192,
 		}),
@@ -357,7 +369,7 @@ function registerWorkflowRuntime(
 	pi.on("context", (event) => {
 		const activeNames = pi.getActiveTools();
 		const availability = resolveAvailability();
-		// Suppression preserves policy entitlement only while an allowed active state exists.
+		// Suppression preserves a tool permission only while an active state remains projectable.
 		const hasSuppressedWorkflowPermission =
 			availability.projectedState !== undefined &&
 			hasAnyWorkflowTool([...runtime.selfSuppressedNames]);
@@ -691,9 +703,6 @@ function registerWorkflowTransitionTool(
 			const policy = getPolicy();
 			if (policy.kind === "error") {
 				throw new Error(policy.issue);
-			}
-			if (current.source === "catalog") {
-				requireWorkflowAllowed(policy, current.workflow.id);
 			}
 			if (resolveAvailability().projectedState !== current) {
 				throw new Error(`workflow ${current.workflow.id} is not available`);

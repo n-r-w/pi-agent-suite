@@ -48,13 +48,8 @@ export function resolveWorkflowAvailability(
 		? input.catalog.filter(({ id }) => isWorkflowAllowed(policy, id))
 		: [];
 
-	// The workflows allowlist applies only to catalog state; dynamic state remains projectable.
-	const projectedState =
-		input.state !== undefined &&
-		(input.state.source === "dynamic" ||
-			isWorkflowAllowed(policy, input.state.workflow.id))
-			? input.state
-			: undefined;
+	// A resolved workflow policy restricts new catalog activation, not the saved active state.
+	const projectedState = input.state;
 
 	// Only the exact NFC workflow identity is excluded from activation options.
 	const activeWorkflowKey =

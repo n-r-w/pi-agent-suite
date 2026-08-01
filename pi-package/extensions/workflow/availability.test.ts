@@ -111,9 +111,9 @@ describe("workflow availability", () => {
 	});
 
 	/**
-	 * Proves case variants remain separate workflow identities.
-	 * Input and expected output: policy delivery hides saved DELIVERY and exposes catalog delivery for activation.
-	 * Edge case: catalog availability still exposes transition because one allowed workflow exists.
+	 * Proves case variants remain separate activation identities without hiding active state.
+	 * Input and expected output: policy delivery preserves active DELIVERY and exposes catalog delivery for activation.
+	 * Edge case: the active case variant does not exclude the allowed catalog identity.
 	 * Dependencies: exact NFC workflow identity and the pure availability resolver.
 	 */
 	test("keeps case variants as separate workflow identities", () => {
@@ -126,7 +126,7 @@ describe("workflow availability", () => {
 			state,
 		});
 
-		expect(result.projectedState).toBeUndefined();
+		expect(result.projectedState).toBe(state);
 		expect(result.activationOptions).toEqual([delivery]);
 		expect(toolNames(result)).toEqual([
 			WORKFLOW_ACTIVATE_TOOL,
@@ -136,35 +136,41 @@ describe("workflow availability", () => {
 	});
 
 	/**
-	 * Proves the workflows allowlist restricts catalog state but never dynamic state.
-	 * Input and expected output: workflows: [] hides catalog state while preserving dynamic state and transition.
-	 * Edge case: the same policy is evaluated against both explicit state sources.
-	 * Dependencies: source assignment and catalog policy membership.
+	 * Proves the workflows allowlist restricts new activation but never active state.
+	 * Input and expected output: policy review preserves active delivery and exposes only review for activation.
+	 * Edge case: dynamic state remains projectable when the policy allows no catalog workflow.
+	 * Dependencies: state-source assignment, catalog membership, and activation filtering.
 	 */
-	test("keeps dynamic state independent from the catalog allowlist", () => {
+	test("keeps active state independent from the catalog allowlist", () => {
 		const delivery = workflow("delivery");
-		const policy = { kind: "resolved", policy: [] } as const;
-		const catalogState = resolveWorkflowAvailability({
-			catalog: [delivery],
+		const review = workflow("review");
+		const catalogState = activateWorkflow(delivery);
+		const catalogResult = resolveWorkflowAvailability({
+			catalog: [delivery, review],
 			catalogValid: true,
-			policy,
-			state: activateWorkflow(delivery),
+			policy: { kind: "resolved", policy: ["review"] },
+			state: catalogState,
 		});
 		const dynamicState = createWorkflow({ ...delivery, id: "dynamic" });
 		const dynamicResult = resolveWorkflowAvailability({
 			catalog: [delivery],
 			catalogValid: true,
-			policy,
+			policy: { kind: "resolved", policy: [] },
 			state: dynamicState,
 		});
 
-		expect(toolNames(catalogState)).toEqual([WORKFLOW_CREATE_TOOL]);
-		expect(catalogState.projectedState).toBeUndefined();
-		expect(toolNames(dynamicResult)).toEqual([
+		expect(catalogResult.projectedState).toBe(catalogState);
+		expect(catalogResult.activationOptions).toEqual([review]);
+		expect(toolNames(catalogResult)).toEqual([
+			WORKFLOW_ACTIVATE_TOOL,
 			WORKFLOW_CREATE_TOOL,
 			WORKFLOW_TRANSITION_TOOL,
 		]);
 		expect(dynamicResult.projectedState).toBe(dynamicState);
+		expect(toolNames(dynamicResult)).toEqual([
+			WORKFLOW_CREATE_TOOL,
+			WORKFLOW_TRANSITION_TOOL,
+		]);
 	});
 
 	/**

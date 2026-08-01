@@ -412,6 +412,32 @@ describe("workflow extension lifecycle", () => {
 		);
 	});
 
+	/**
+	 * Proves replacement never makes a dynamic workflow reactivatable.
+	 * Input and expected output: dynamic A followed by catalog activation or dynamic B rejects activation of A.
+	 * Edge case: recreating A after its first replacement starts a new snapshot that a later B still replaces.
+	 * Dependencies: create replacement, catalog-only activation options, and direct activation validation.
+	 */
+	test("does not reactivate replaced dynamic workflows", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const create = requireTool(fake, "workflow_create");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await create.execute("create-a", createArguments("dynamic-a"));
+		await activate.execute("activate-catalog", { workflowId: "delivery" });
+		await expect(
+			activate.execute("reactivate-a", { workflowId: "dynamic-a" }),
+		).rejects.toThrow("not available for activation");
+
+		await create.execute("recreate-a", createArguments("dynamic-a"));
+		await create.execute("create-b", createArguments("dynamic-b"));
+		await expect(
+			activate.execute("reactivate-replaced-a", { workflowId: "dynamic-a" }),
+		).rejects.toThrow("not available for activation");
+	});
+
 	/** Proves an invalid configured override prevents temporary or fallback registration. */
 	test("retains prompt initialization errors without registering tools", async () => {
 		const root = await createSuite(validYaml());
@@ -583,8 +609,13 @@ describe("workflow extension lifecycle", () => {
 		expect(await runContext(fake, incoming)).toBeUndefined();
 	});
 
-	/** Proves canonical agent policy filters context and protects both tools without deleting saved state. */
-	test("enforces main-agent workflow policy across context and tools", async () => {
+	/**
+	 * Proves main-agent policy changes filter new activation without hiding active state.
+	 * Input and expected output: active delivery continues after policy changes to review, which remains activatable.
+	 * Edge case: review is rejected before the policy change and allowed afterward.
+	 * Dependencies: runtime composition events, active-state projection, activation filtering, and transition authorization.
+	 */
+	test("keeps active workflow available across main-agent policy changes", async () => {
 		const root = await createSuite(validYaml());
 		await writeFile(
 			join(root, "workflow", "workflows", "review.yaml"),
@@ -593,53 +624,46 @@ describe("workflow extension lifecycle", () => {
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
 		setMainWorkflowPolicy(fake, ["delivery"]);
+		const activate = requireTool(fake, "workflow_activate");
+		const transition = requireTool(fake, "workflow_transition");
 
-		const initialContext = await runContext(fake, []);
-		const initialContent = String(
-			(initialContext as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
-		expect(initialContent).toContain('id="delivery"');
-		expect(initialContent).not.toContain('id="review"');
-
-		const activate = fake.tools[0];
-		const transition = fake.tools[1];
-		if (activate === undefined || transition === undefined) {
-			throw new Error("tools missing");
-		}
 		await expect(
-			activate.execute("call", { workflowId: "review" }),
+			activate.execute("reject-review", { workflowId: "review" }),
 		).rejects.toThrow("not allowed");
-		expect(fake.appended).toEqual([]);
-		await activate.execute("call", { workflowId: "delivery" });
-		await transition.execute("call", { stageId: "done" });
-		const entriesBeforeDeny = [...fake.appended];
+		await activate.execute("activate-delivery", { workflowId: "delivery" });
+		await transition.execute("finish-delivery", { stageId: "done" });
 
-		setMainWorkflowPolicy(fake, []);
-		const deniedContext = await runContext(fake, []);
-		const deniedContent = String(
-			(deniedContext as { messages: Array<{ content: unknown }> }).messages[0]
+		setMainWorkflowPolicy(fake, ["review"]);
+		const switchedContext = await runContext(fake, []);
+		const switchedContent = String(
+			(switchedContext as { messages: Array<{ content: unknown }> }).messages[0]
 				?.content,
 		);
-		expect(deniedContent).toContain("<workflow_guidelines>");
-		expect(deniedContent).not.toContain("<active_workflow");
-		expect(deniedContent).not.toContain("<workflow_activation_options");
-		await expect(
-			transition.execute("call", { stageId: "start" }),
-		).rejects.toThrow("not allowed");
-		expect(fake.appended).toEqual(entriesBeforeDeny);
+		expect(switchedContent).toContain(
+			'<active_workflow id="delivery" active_stage_id="done"',
+		);
+		expect(switchedContent).toContain("<workflow_activation_options>");
+		expect(switchedContent).toContain('id="review"');
 
-		setMainWorkflowPolicy(fake, ["delivery"]);
-		const restoredContext = await runContext(fake, []);
-		const restoredContent = String(
-			(restoredContext as { messages: Array<{ content: unknown }> }).messages[0]
+		await transition.execute("reopen-delivery", { stageId: "start" });
+		await activate.execute("activate-review", { workflowId: "review" });
+		const replacedContext = await runContext(fake, []);
+		const replacedContent = String(
+			(replacedContext as { messages: Array<{ content: unknown }> }).messages[0]
 				?.content,
 		);
-		expect(restoredContent).toContain('active_stage_id="done"');
+		expect(replacedContent).toContain(
+			'<active_workflow id="review" active_stage_id="start"',
+		);
 	});
 
-	/** Proves child transport applies canonical explicit policy from its dedicated environment. */
-	test("enforces valid child workflow policy from its dedicated environment", async () => {
+	/**
+	 * Proves child policy filters new activation without hiding saved active state.
+	 * Input and expected output: child policy review preserves and advances saved delivery while exposing review.
+	 * Edge case: immutable child transport uses the same continuation semantics as main-agent policy.
+	 * Dependencies: child environment parsing, saved-state replay, activation filtering, and transition authorization.
+	 */
+	test("keeps saved workflow available under child policy", async () => {
 		const root = await createSuite(validYaml());
 		await writeFile(
 			join(root, "workflow", "workflows", "review.yaml"),
@@ -648,14 +672,30 @@ describe("workflow extension lifecycle", () => {
 		process.env[CHILD_AGENT_PROCESS_ENV] = "1";
 		process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["review"]';
 		const fake = await createFakePi();
-		await runLifecycle(fake, "session_start");
-		const result = await runContext(fake, []);
-		const content = String(
-			(result as { messages: Array<{ content: unknown }> }).messages[0]
+		await runLifecycle(fake, "session_start", [activatedEntry()]);
+		const transition = requireTool(fake, "workflow_transition");
+		const activate = requireTool(fake, "workflow_activate");
+
+		const initialContext = await runContext(fake, []);
+		const initialContent = String(
+			(initialContext as { messages: Array<{ content: unknown }> }).messages[0]
 				?.content,
 		);
-		expect(content).toContain('id="review"');
-		expect(content).not.toContain('id="delivery"');
+		expect(initialContent).toContain(
+			'<active_workflow id="delivery" active_stage_id="start"',
+		);
+		expect(initialContent).toContain('id="review"');
+
+		await transition.execute("finish-delivery", { stageId: "done" });
+		await activate.execute("activate-review", { workflowId: "review" });
+		const replacedContext = await runContext(fake, []);
+		const replacedContent = String(
+			(replacedContext as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
+		);
+		expect(replacedContent).toContain(
+			'<active_workflow id="review" active_stage_id="start"',
+		);
 	});
 
 	/** Proves invalid child policy disables provider behavior without deleting replayed state. */
@@ -663,8 +703,8 @@ describe("workflow extension lifecycle", () => {
 		["malformed", "{", "valid JSON"],
 		["unknown", '["missing"]', "missing"],
 	] as const)("fails closed for %s child workflow policy", async (_case, rawPolicy, expectedIssue) => {
-		// Purpose: policy rejection must remove both callable workflow names and suppress every provider-facing path.
-		// Input and expected output: malformed or unknown transport throws, hides context, appends nothing, and disables both tools.
+		// Purpose: policy rejection must remove all workflow tool names and suppress every provider-facing path.
+		// Input and expected output: malformed or unknown transport throws, hides context, appends nothing, and disables all workflow tools.
 		// Edge case: transition still reaches the retained replayed snapshot before returning the cached policy error.
 		// Dependencies: production child environment parsing, lifecycle replay, tool reconciliation, context gating, and transition authorization.
 		await createSuite(validYaml());
@@ -770,83 +810,48 @@ describe("workflow extension lifecycle", () => {
 		);
 	});
 
-	/** Proves saved-snapshot precedence across removed and invalid catalogs for every policy state. */
+	/** Proves resolved policies preserve saved snapshots across removed and invalid catalogs. */
 	test.each([
-		["removed", "unrestricted", undefined, true],
-		["removed", "empty", [], false],
-		["removed", "matching explicit", ["delivery"], true],
-		["removed", "non-matching explicit", ["review"], false],
-		["invalid", "unrestricted", undefined, true],
-		["invalid", "empty", [], false],
-		["invalid", "matching explicit", ["delivery"], true],
-		["invalid", "non-matching explicit", ["review"], false],
-	] as const)("keeps a saved snapshot with %s catalog and %s policy", async (catalogKind, _policyName, policy, allowed) => {
-		// Purpose: catalog failure or removal must not bypass snapshot filtering or direct transition authorization.
-		// Input and expected output: each policy either exposes and advances Delivery or hides and rejects it without append.
-		// Edge case: a rejected transition must retain replayed state so a later unrestricted policy sees the original start stage.
-		// Dependencies: production lifecycle replay, context filtering, transition enforcement, and isolated catalog fixtures.
+		["removed", "unrestricted", undefined],
+		["removed", "empty", []],
+		["removed", "matching explicit", ["delivery"]],
+		["removed", "non-matching explicit", ["review"]],
+		["invalid", "unrestricted", undefined],
+		["invalid", "empty", []],
+		["invalid", "matching explicit", ["delivery"]],
+		["invalid", "non-matching explicit", ["review"]],
+	] as const)("keeps a saved snapshot with %s catalog and %s policy", async (catalogKind, _policyName, policy) => {
+		// Purpose: a complete saved snapshot remains continuable independently from catalog and activation policy.
+		// Input and expected output: every resolved policy exposes and advances saved Delivery without new activation options.
+		// Edge case: invalid and removed catalogs still cannot provide new activation definitions.
+		// Dependencies: production lifecycle replay, active-state projection, transition enforcement, and isolated catalog fixtures.
 		await createSuite(
 			catalogKind === "invalid" ? "invalid: true\n" : undefined,
 		);
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start", [activatedEntry()]);
 		setMainWorkflowPolicy(fake, policy);
-		const transition = fake.tools.find(
-			({ name }) => name === "workflow_transition",
-		);
-		if (transition === undefined) {
-			throw new Error("transition tool missing");
-		}
+		const transition = requireTool(fake, "workflow_transition");
 
 		const initialContext = await runContext(fake, []);
-		if (allowed) {
-			const initialContent = String(
-				(initialContext as { messages: Array<{ content: unknown }> })
-					.messages[0]?.content,
-			);
-			expect(initialContent).not.toContain("<workflow_activation_options");
-			expect(initialContent).toContain(
-				'<active_workflow id="delivery" active_stage_id="start"',
-			);
-			await transition.execute("call", { stageId: "done" });
-			expect(fake.appended).toHaveLength(1);
-			const transitionedContent = String(
-				(
-					(await runContext(fake, [])) as {
-						messages: Array<{ content: unknown }>;
-					}
-				).messages[0]?.content,
-			);
-			expect(transitionedContent).toContain('active_stage_id="done"');
-			return;
-		}
-
-		if (catalogKind === "removed") {
-			const deniedContent = String(
-				(initialContext as { messages: Array<{ content: unknown }> })
-					.messages[0]?.content,
-			);
-			expect(deniedContent).toContain("<workflow_guidelines>");
-			expect(deniedContent).not.toContain("<active_workflow");
-			expect(deniedContent).not.toContain("<workflow_activation_options");
-		} else {
-			expect(initialContext).toBeUndefined();
-		}
-		await expect(
-			transition.execute("call", { stageId: "done" }),
-		).rejects.toThrow("not allowed");
-		expect(fake.appended).toEqual([]);
-		setMainWorkflowPolicy(fake, undefined);
-		const retainedContent = String(
-			(
-				(await runContext(fake, [])) as {
-					messages: Array<{ content: unknown }>;
-				}
-			).messages[0]?.content,
+		expect(initialContext).toBeDefined();
+		const initialContent = String(
+			(initialContext as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
 		);
-		expect(retainedContent).toContain(
+		expect(initialContent).not.toContain("<workflow_activation_options");
+		expect(initialContent).toContain(
 			'<active_workflow id="delivery" active_stage_id="start"',
 		);
+
+		await transition.execute("finish-delivery", { stageId: "done" });
+		expect(fake.appended).toHaveLength(1);
+		const transitionedContext = await runContext(fake, []);
+		const transitionedContent = String(
+			(transitionedContext as { messages: Array<{ content: unknown }> })
+				.messages[0]?.content,
+		);
+		expect(transitionedContent).toContain('active_stage_id="done"');
 	});
 
 	test("does not publish workflow status outside TUI mode", async () => {
