@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
 	getAgentRuntimeComposition,
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
@@ -11,6 +17,9 @@ import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment";
 import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../shared/subagent-environment";
 import workflowExtension from "./index";
 import { activateWorkflow, validateWorkflowDefinition } from "./workflow";
+
+type WidgetFactory = (tui: TUI, theme: Theme) => Component;
+type WidgetContent = string[] | WidgetFactory | undefined;
 
 interface FakeTool {
 	readonly name: string;
@@ -27,6 +36,8 @@ interface FakePi {
 	activeTools: string[];
 	appendError: Error | undefined;
 	api: ExtensionAPI | undefined;
+	readonly ui: ExtensionContext["ui"];
+	readonly widgetUpdates: Array<{ key: string; content: WidgetContent }>;
 }
 
 const temporaryDirectories: string[] = [];
@@ -127,6 +138,12 @@ function activatedEntry(): unknown {
 
 /** Captures only Pi APIs owned by the workflow entry point. */
 async function createFakePi(): Promise<FakePi> {
+	const widgetUpdates: Array<{ key: string; content: WidgetContent }> = [];
+	const ui = {
+		setWidget(key: string, content: WidgetContent): void {
+			widgetUpdates.push({ key, content });
+		},
+	} as unknown as ExtensionContext["ui"];
 	const fake: FakePi = {
 		handlers: new Map(),
 		listeners: new Map(),
@@ -135,6 +152,8 @@ async function createFakePi(): Promise<FakePi> {
 		activeTools: ["read"],
 		appendError: undefined,
 		api: undefined,
+		ui,
+		widgetUpdates,
 	};
 	const api = {
 		on(event: string, handler: (...args: unknown[]) => unknown) {
@@ -198,6 +217,7 @@ async function runLifecycle(
 	fake: FakePi,
 	event: "session_start" | "session_tree" | "session_shutdown",
 	branch: readonly unknown[] = [],
+	mode: ExtensionContext["mode"] = "tui",
 ): Promise<void> {
 	const handler = fake.handlers.get(event);
 	if (handler === undefined) {
@@ -205,8 +225,24 @@ async function runLifecycle(
 	}
 	await handler(
 		{ type: event },
-		{ sessionManager: { getBranch: () => branch } },
+		{ mode, ui: fake.ui, sessionManager: { getBranch: () => branch } },
 	);
+}
+
+/** Renders the latest shared status widget or fails with its missing state. */
+function renderLatestStatus(fake: FakePi, width: number): string[] {
+	const factory = fake.widgetUpdates.at(-1)?.content;
+	if (typeof factory !== "function") {
+		throw new Error("workflow status widget factory is missing");
+	}
+	const theme = {
+		fg: (_color: string, text: string) => text,
+		bg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	} as Theme;
+	return factory({} as TUI, theme)
+		.render(width)
+		.map((row) => stripVTControlCharacters(row));
 }
 
 /** Invokes the context handler and returns its optional replacement. */
@@ -813,6 +849,59 @@ describe("workflow extension lifecycle", () => {
 		expect(retainedContent).toContain(
 			'<active_workflow id="delivery" active_stage_id="start"',
 		);
+	});
+
+	test("does not publish workflow status outside TUI mode", async () => {
+		// Purpose: print and RPC sessions must not create the interactive shared status panel.
+		// Inputs and expected output: an RPC session restores an active workflow without any setWidget call.
+		// Edge case: provider context and workflow tools remain independent from TUI presentation.
+		// Dependencies: Pi lifecycle mode and saved workflow replay.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+
+		await runLifecycle(fake, "session_start", [activatedEntry()], "rpc");
+		await runLifecycle(fake, "session_shutdown", [], "rpc");
+
+		expect(fake.widgetUpdates).toEqual([]);
+	});
+
+	test("keeps saved workflow status when agent policy stops allowing it", async () => {
+		// Purpose: changing the selected agent must not hide workflow state persisted in the session branch.
+		// Inputs and expected output: delivery is restored while allowed, then remains visible after policy changes to another workflow.
+		// Edge case: tool and provider-context availability may change without deleting the saved active workflow.
+		// Dependencies: saved workflow replay, main-agent contribution changes, and independent status presentation.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		setMainWorkflowPolicy(fake, ["delivery"]);
+		await runLifecycle(fake, "session_start", [activatedEntry()]);
+
+		setMainWorkflowPolicy(fake, ["another-workflow"]);
+		const rows = renderLatestStatus(fake, 120);
+		await runLifecycle(fake, "session_shutdown");
+
+		expect(rows[1]).toBe("Workflow: delivery · Start");
+	});
+
+	test("publishes workflow status across branch and tool lifecycle", async () => {
+		// Purpose: the shared compact row must track effective state restored from a branch and changed by workflow tools.
+		// Inputs and expected output: session_tree restores start, workflow_transition replaces it with done, and shutdown clears the row.
+		// Edge case: session_start without active state must not leave a visible Workflow row.
+		// Dependencies: validated session replay, the common tool setState path, and shared panel cleanup.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		const transition = requireTool(fake, "workflow_transition");
+
+		await runLifecycle(fake, "session_start");
+		await runLifecycle(fake, "session_tree", [activatedEntry()]);
+		const resumedRows = renderLatestStatus(fake, 120);
+		await transition.execute("call", { stageId: "done" });
+		const transitionedRows = renderLatestStatus(fake, 120);
+		await runLifecycle(fake, "session_shutdown");
+		const cleared = fake.widgetUpdates.at(-1)?.content;
+
+		expect(resumedRows[1]).toBe("Workflow: delivery · Start");
+		expect(transitionedRows[1]).toBe("Workflow: delivery · Done");
+		expect(cleared).toBeUndefined();
 	});
 
 	/** Proves malformed matching entries fail closed and remove only workflow names. */

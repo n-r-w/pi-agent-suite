@@ -2974,7 +2974,7 @@ describe("subagents entry", () => {
 
 	test("opens one management screen from both TUI entries", async () => {
 		// Purpose: the command and shortcut must share one full-terminal factory only in interactive TUI mode.
-		// Inputs and expected output: /subagents and Ctrl+Shift+G pass the same component factory and exact overlay sizing without installing a widget.
+		// Inputs and expected output: /subagents and Ctrl+Shift+G pass the same component factory and exact overlay sizing while an empty Agents row stays hidden.
 		// Edge case: a separate non-interactive runtime registers no management entry and constructs no custom screen.
 		// Dependencies: public Pi command, shortcut, lifecycle, and ctx.ui.custom contracts.
 		// ARRANGE: create separate interactive and RPC runtimes with observable UI entry points.
@@ -3020,7 +3020,7 @@ describe("subagents entry", () => {
 				tuiCustomCalls[0]?.[0] !== undefined &&
 				tuiCustomCalls[0]?.[0] === tuiCustomCalls[1]?.[0],
 			overlayOptions: tuiCustomCalls.map((call) => call[1]),
-			widgetCalls: tuiWidgetCalls.length,
+			widgetVisible: tuiWidgetCalls.some((call) => call[1] !== undefined),
 			rpcCommands: rpcPi.commands.length,
 			rpcShortcuts: rpcPi.shortcuts.length,
 			rpcCustomCalls: rpcCustomCalls.length,
@@ -3047,7 +3047,7 @@ describe("subagents entry", () => {
 					},
 				},
 			],
-			widgetCalls: 0,
+			widgetVisible: false,
 			rpcCommands: 0,
 			rpcShortcuts: 0,
 			rpcCustomCalls: 0,

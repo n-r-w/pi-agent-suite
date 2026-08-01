@@ -753,6 +753,7 @@ async function createRootRuntime(
 	const management =
 		ctx.mode === "tui"
 			? createRootManagementRuntime({
+					pi,
 					ctx,
 					presentationEvents: pi.events,
 					owner,
@@ -860,6 +861,7 @@ function createRootCoordinator(options: {
 
 /** Creates one TUI-only projection, submission adapter, and stable screen factory. */
 function createRootManagementRuntime(options: {
+	readonly pi: ExtensionAPI;
 	readonly ctx: ExtensionContext;
 	readonly presentationEvents: PackagePresentationEventBus;
 	readonly owner: OwnerIdentity;
@@ -877,6 +879,7 @@ function createRootManagementRuntime(options: {
 		onError: (error) => options.ctx.ui.notify(error.message, "error"),
 	});
 	const disposeStatusIndicator = installSubagentStatusIndicator(
+		options.pi,
 		options.ctx.ui,
 		projection,
 	);

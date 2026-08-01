@@ -119,6 +119,18 @@ Default configuration:
 
 Each attempt appends a `child-auth-startup-diagnostic` session entry containing the launcher, provider, attempt counts, stage, prompt-acceptance state, decision, fixed reason code, and duration. The record excludes credentials and `auth.json` content. Exhausted recovery returns the original sanitized failure followed by the final recovery reason and retains the structured attempt records on `ChildAuthStartupRecoveryError`.
 
+## Compact session status panel
+
+In interactive root TUI mode, the extension publishes an `Agents` row above Pi's editor after the session owns at least one direct or nested subagent:
+
+```text
+Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Shift+G
+```
+
+The row counts running, successful, failed, and aborted sessions across the complete owned hierarchy. It shares one panel and one upper separator with other package status producers. When the hierarchy becomes empty, only the `Agents` row disappears; other rows remain visible. Every row is clipped to the terminal width and ends with `…` when content is hidden.
+
+RPC and print modes do not construct or publish the interactive status panel.
+
 ## Interactive management screen
 
 In interactive TUI mode, either entry opens the same full-terminal overlay:
@@ -126,7 +138,7 @@ In interactive TUI mode, either entry opens the same full-terminal overlay:
 - `/subagents`
 - `Ctrl+Shift+G`
 
-The overlay is available only after the interactive root runtime starts. RPC and print modes do not construct the management screen or register its command and shortcut. The extension does not install a subagent widget in the normal conversation view.
+The overlay is available only after the interactive root runtime starts. RPC and print modes do not construct the management screen or register its command and shortcut.
 
 ### Hierarchy and selected-session header
 

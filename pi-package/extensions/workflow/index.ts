@@ -1,6 +1,9 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
 	getAgentRuntimeComposition,
@@ -30,6 +33,10 @@ import {
 } from "./config";
 import { projectWorkflowContext } from "./context";
 import { readWorkflowPolicyEnvironment } from "./environment";
+import {
+	installWorkflowStatusIndicator,
+	type WorkflowStatusIndicator,
+} from "./status-indicator";
 import {
 	createWorkflowPresentationDetails,
 	primeWorkflowRenderState,
@@ -144,6 +151,28 @@ interface SynchronizeWorkflowRuntimeOptions {
 	readonly getPolicy: () => WorkflowPolicyResolution;
 }
 
+/** Creates the initial mutable workflow state from atomic catalog and prompt loading. */
+function createWorkflowRuntimeState(
+	catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>,
+	promptError: Error | undefined,
+): WorkflowRuntime {
+	return {
+		catalog: catalogResult.error === undefined ? catalogResult.workflows : [],
+		catalogError: catalogResult.error,
+		promptError,
+		state: undefined,
+		selfSuppressedNames: new Set<string>(),
+	};
+}
+
+/** Publishes saved session state independently from the selected agent's workflow policy. */
+function publishWorkflowStatus(
+	indicator: WorkflowStatusIndicator | undefined,
+	runtime: WorkflowRuntime,
+): void {
+	indicator?.publish(runtime.state);
+}
+
 /** Registers definitions before lifecycle policies and then follows their active-name decisions. */
 export default async function workflowExtension(
 	pi: ExtensionAPI,
@@ -163,21 +192,18 @@ export default async function workflowExtension(
 		catalogPublication.error === undefined
 			? loadedCatalog
 			: { workflows: [], error: catalogPublication.error };
-	const runtime: WorkflowRuntime = {
-		catalog: catalogResult.error === undefined ? catalogResult.workflows : [],
-		catalogError: catalogResult.error,
-		promptError: promptResult.error,
-		state: undefined,
-		selfSuppressedNames: new Set<string>(),
-	};
+	const runtime = createWorkflowRuntimeState(catalogResult, promptResult.error);
+	let statusIndicator: WorkflowStatusIndicator | undefined;
 	const getPolicy = createWorkflowPolicyReader(pi);
 	const refreshTools = (trigger: ReconciliationTrigger): void => {
+		const availability = resolveRuntimeAvailability(runtime, getPolicy());
 		reconcileTools(
 			pi,
-			resolveRuntimeAvailability(runtime, getPolicy()).availableToolNames,
+			availability.availableToolNames,
 			runtime.selfSuppressedNames,
 			trigger,
 		);
+		publishWorkflowStatus(statusIndicator, runtime);
 	};
 
 	if (promptResult.error === undefined) {
@@ -190,16 +216,25 @@ export default async function workflowExtension(
 		});
 	}
 	const synchronize = (ctx: {
+		readonly mode: ExtensionContext["mode"];
+		readonly ui: ExtensionContext["ui"];
 		readonly sessionManager: { getBranch(): readonly unknown[] };
 	}): void => {
-		synchronizeWorkflowRuntime({
-			pi,
-			branch: ctx.sessionManager.getBranch(),
-			runtime,
-			catalogResult,
-			promptError: promptResult.error,
-			getPolicy,
-		});
+		if (ctx.mode === "tui") {
+			statusIndicator ??= installWorkflowStatusIndicator(pi, ctx.ui);
+		}
+		try {
+			synchronizeWorkflowRuntime({
+				pi,
+				branch: ctx.sessionManager.getBranch(),
+				runtime,
+				catalogResult,
+				promptError: promptResult.error,
+				getPolicy,
+			});
+		} finally {
+			publishWorkflowStatus(statusIndicator, runtime);
+		}
 	};
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
@@ -209,7 +244,11 @@ export default async function workflowExtension(
 
 	pi.on("session_start", (_event, ctx) => synchronize(ctx));
 	pi.on("session_tree", (_event, ctx) => synchronize(ctx));
-	pi.on("session_shutdown", () => unsubscribeFromAgentChanges());
+	pi.on("session_shutdown", () => {
+		unsubscribeFromAgentChanges();
+		statusIndicator?.dispose();
+		statusIndicator = undefined;
+	});
 }
 
 /** Reads immutable child transport or the current canonical main-agent metadata. */

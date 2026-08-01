@@ -140,6 +140,18 @@ A successful call validates the whole graph, stores one `created` snapshot, and 
 
 Every tool rechecks its input, policy, and current state before appending a session entry. Validation or persistence errors leave the previous workflow state unchanged.
 
+## Compact session status panel
+
+In interactive TUI mode, the active workflow saved in the current session publishes one row in the shared panel above Pi's editor:
+
+```text
+Workflow: TuiBrainstorming · Generate and discuss TUI concepts
+```
+
+The row contains the workflow ID and active stage description. It never includes stage IDs or transitions. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed. The row is clipped to the terminal width and ends with `…` when content is hidden.
+
+Creation, activation, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row; those policies affect tool and provider-context availability only. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
+
 ## Tool presentation
 
 The default Pi tool shell renders workflow references instead of displaying internal success JSON:
