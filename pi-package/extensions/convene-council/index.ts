@@ -4,6 +4,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import { createChildAuthStartupDiagnosticRecorder } from "../../shared/child-auth-startup-diagnostic";
+import { readChildStartupConfig } from "../../shared/child-startup-config";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
 import { readConveneCouncilRegistrationState } from "./config";
@@ -14,7 +16,7 @@ import {
 	renderConveneCouncilCall,
 	renderConveneCouncilResult,
 } from "./rendering";
-import { createRpcParticipantRunner } from "./runner";
+import { createRpcParticipantRunnerFactory } from "./runner";
 import { resolveChildStartupPlan } from "./startup";
 import type {
 	ConveneCouncilDependencies,
@@ -37,13 +39,20 @@ export default function conveneCouncil(
 	pi: ExtensionAPI,
 	dependencies: ConveneCouncilDependencies = {},
 ): void {
+	const childStartupConfig = readChildStartupConfig();
+	const recordChildStartupAttempt =
+		createChildAuthStartupDiagnosticRecorder(pi);
 	const registrationState = readConveneCouncilRegistrationState();
 	if (registrationState.kind === "disabled") {
 		return;
 	}
 
 	const createParticipantRunner =
-		dependencies.createParticipantRunner ?? createRpcParticipantRunner;
+		dependencies.createParticipantRunner ??
+		createRpcParticipantRunnerFactory({
+			childStartupConfig,
+			recordChildStartupAttempt,
+		});
 	const resolveStartupPlan =
 		dependencies.resolveStartupPlan ?? resolveChildStartupPlan;
 	let contextFiles: readonly ProjectContextFile[] = [];

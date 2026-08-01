@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import {
 	withIsolatedAgentDir,
@@ -20,6 +22,26 @@ import {
 import { executeCouncil } from "./support/tool";
 
 describe("convene-council config", () => {
+	test("rejects invalid shared child startup configuration during extension loading", async () => {
+		// Purpose: both child launchers must reject the same invalid recovery policy before tool use.
+		// Input and expected output: an unsupported child-startup key throws from council registration.
+		// Edge case: the council-specific configuration remains absent and would otherwise disable the tool.
+		// Dependencies: the production council entry and an isolated suite configuration file.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const directory = join(agentDir, "agent-suite", "child-startup");
+			await mkdir(directory, { recursive: true });
+			await writeFile(
+				join(directory, "config.json"),
+				JSON.stringify({ unsupported: true }),
+				"utf8",
+			);
+
+			expect(() => conveneCouncil(createExtensionApiFake())).toThrow(
+				"configuration contains unsupported keys",
+			);
+		});
+	});
+
 	test("does not register convene_council when config is missing", async () => {
 		// Purpose: missing config must keep the high-cost council tool disabled by default.
 		// Input and expected output: no config file registers no convene_council tool.

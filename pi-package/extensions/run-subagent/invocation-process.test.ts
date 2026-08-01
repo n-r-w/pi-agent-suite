@@ -62,7 +62,8 @@ describe("invocation process helpers", () => {
 			provider: "openai",
 			thinking: "off",
 			depth: 1,
-			parentAuthVerified: true,
+			providerConfigured: true,
+			checkParentAuth: async () => ({ ok: true }),
 			runtimeFacts: defaultRuntimeFacts(),
 		};
 

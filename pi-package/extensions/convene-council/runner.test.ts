@@ -5,11 +5,18 @@ import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
 } from "../../shared/child-agent-environment";
+import type { ChildAuthStartupAttemptRecord } from "../../shared/child-auth-startup";
+import {
+	CHILD_AUTH_STARTUP_DIAGNOSTIC_CUSTOM_TYPE,
+	createChildAuthStartupDiagnosticRecorder,
+} from "../../shared/child-auth-startup-diagnostic";
+import type { ChildStartupConfig } from "../../shared/child-startup-config";
 import { ChildStartupGate } from "../../shared/child-startup-gate";
 import {
 	COUNCIL_RPC_ABORT_GRACE_MS,
 	COUNCIL_RPC_TERM_GRACE_MS,
 	createParticipantRunnerFactory,
+	type ParticipantRunnerFactoryDependencies,
 } from "./runner";
 import type { ParticipantRunnerFactory } from "./types";
 
@@ -27,36 +34,43 @@ interface FakeProcess {
 	readonly killedSignals: string[];
 	kill(signal?: string): boolean;
 	on(
-		event: "error" | "exit",
+		event: "error" | "exit" | "close",
 		handler: ((error: Error) => void) | (() => void),
 	): unknown;
 	error(error: Error): void;
 	exit(): void;
+	close(): void;
 }
 
 /** Creates one fake child process with writable stdin and evented stdout/stderr. */
-function createFakeProcess(): FakeProcess {
+function createFakeProcess(
+	options: { readonly exitOnSignal?: string } = {},
+): FakeProcess {
 	const stdin = new EventEmitter() as FakeStdin;
 	Object.defineProperty(stdin, "writes", { value: [] });
 	stdin.write = function write(chunk: string): boolean {
 		this.writes.push(chunk);
+		this.emit("write", chunk);
 		return true;
 	};
 	const stdout = new EventEmitter();
 	stdout.on("error", () => {});
 	const stderr = new EventEmitter();
 	const killedSignals: string[] = [];
-	return {
+	const process: FakeProcess = {
 		stdin,
 		stdout,
 		stderr,
 		killedSignals,
 		kill(signal = "SIGTERM"): boolean {
 			killedSignals.push(signal);
+			if (signal === options.exitOnSignal) {
+				queueMicrotask(() => process.exit());
+			}
 			return true;
 		},
 		on(
-			event: "error" | "exit",
+			event: "error" | "exit" | "close",
 			handler: ((error: Error) => void) | (() => void),
 		): unknown {
 			return stdout.on(event, handler);
@@ -67,7 +81,11 @@ function createFakeProcess(): FakeProcess {
 		exit(): void {
 			stdout.emit("exit");
 		},
+		close(): void {
+			stdout.emit("close");
+		},
 	};
+	return process;
 }
 
 /** Builds a runner factory backed by fake child processes. */
@@ -109,22 +127,25 @@ function createFakeScheduler(): {
 	};
 }
 
-function createFakeRunnerFactory(
-	scheduler = createFakeScheduler(),
-	onSpawn?: (process: FakeProcess, attempt: number) => void,
-	startupGate: ChildStartupGate = new ChildStartupGate(),
-): {
-	readonly factory: ParticipantRunnerFactory;
-	readonly spawned: Array<{
-		readonly command: string;
-		readonly args: readonly string[];
-		readonly options: {
-			readonly cwd: string;
-			readonly env: Record<string, string>;
-		};
-		readonly process: FakeProcess;
-	}>;
-} {
+interface FakeRunnerFactoryOptions {
+	readonly scheduler?: ReturnType<typeof createFakeScheduler>;
+	readonly onSpawn?: (process: FakeProcess, attempt: number) => void;
+	readonly startupGate?: ChildStartupGate;
+	readonly childStartupConfig?: ChildStartupConfig;
+	readonly exitOnSignal?: string | null;
+	readonly recordChildStartupAttempt?: ParticipantRunnerFactoryDependencies["recordChildStartupAttempt"];
+}
+
+function createFakeRunnerFactory(options: FakeRunnerFactoryOptions = {}) {
+	const scheduler = options.scheduler ?? createFakeScheduler();
+	const startupGate = options.startupGate ?? new ChildStartupGate();
+	const childStartupConfig = options.childStartupConfig ?? {
+		authRetry: { maxRetries: 10, delayMs: 1 },
+	};
+	const exitOnSignal =
+		options.exitOnSignal === null
+			? undefined
+			: (options.exitOnSignal ?? "SIGTERM");
 	const spawned: Array<{
 		readonly command: string;
 		readonly args: readonly string[];
@@ -139,11 +160,16 @@ function createFakeRunnerFactory(
 		factory: createParticipantRunnerFactory({
 			setTimeout: scheduler.setTimeout,
 			startupGate,
+			childStartupConfig,
+			recordChildStartupAttempt:
+				options.recordChildStartupAttempt ?? (() => undefined),
 			clearTimeout: scheduler.clearTimeout,
-			spawnPi(command, args, options) {
-				const process = createFakeProcess();
-				spawned.push({ command, args, options, process });
-				onSpawn?.(process, spawned.length);
+			spawnPi(command, args, spawnOptions) {
+				const process = createFakeProcess(
+					exitOnSignal === undefined ? {} : { exitOnSignal },
+				);
+				spawned.push({ command, args, options: spawnOptions, process });
+				options.onSpawn?.(process, spawned.length);
 				return process;
 			},
 		}),
@@ -151,7 +177,17 @@ function createFakeRunnerFactory(
 }
 
 /** Returns a minimal runner factory input for lifecycle tests. */
-function createRunnerOptions() {
+function createRunnerOptions(
+	modelRegistry: unknown = {
+		find(provider: string, modelId: string) {
+			return provider === "openai" && modelId === "model-a"
+				? createModel("openai", "model-a")
+				: undefined;
+		},
+		hasConfiguredAuth: () => true,
+		getApiKeyAndHeaders: async () => ({ ok: true as const }),
+	},
+) {
 	return {
 		participantId: "llm1" as const,
 		runtime: {
@@ -177,13 +213,7 @@ function createRunnerOptions() {
 		tools: [],
 		ctx: {
 			cwd: "/tmp/project",
-			modelRegistry: {
-				find(provider: string, modelId: string) {
-					return provider === "openai" && modelId === "model-a"
-						? createModel("openai", "model-a")
-						: undefined;
-				},
-			},
+			modelRegistry,
 		} as never,
 		signal: undefined,
 	};
@@ -239,9 +269,19 @@ async function startRunnerPrompt(
 }> {
 	const runner = await fake.factory(options);
 	const prompt = runner.prompt(task, signal);
-	await Promise.resolve();
+	await waitForSpawnCount(fake, 1);
 	const child = fake.spawned.at(-1)?.process as FakeProcess;
 	return { runner, child, prompt };
+}
+
+/** Waits until the fake factory records the requested number of child processes. */
+async function waitForSpawnCount(
+	fake: ReturnType<typeof createFakeRunnerFactory>,
+	count: number,
+): Promise<void> {
+	while (fake.spawned.length < count) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
 }
 
 describe("ParticipantRunner lifecycle", () => {
@@ -255,7 +295,7 @@ describe("ParticipantRunner lifecycle", () => {
 		expect(fake.spawned).toHaveLength(0);
 
 		const prompt = runner.prompt("first task", undefined);
-		await Promise.resolve();
+		await waitForSpawnCount(fake, 1);
 		const child = fake.spawned[0]?.process;
 		expect(child).toBeDefined();
 		expect(fake.spawned[0]).toMatchObject({
@@ -308,7 +348,7 @@ describe("ParticipantRunner lifecycle", () => {
 		const runner = await fake.factory(createRunnerOptions());
 
 		const prompt = runner.prompt("///review /tmp/input", undefined);
-		await Promise.resolve();
+		await waitForSpawnCount(fake, 1);
 		const child = fake.spawned[0]?.process as FakeProcess;
 		const promptCommand = JSON.parse(child.stdin.writes[0] ?? "{}") as {
 			readonly message?: string;
@@ -337,12 +377,12 @@ describe("ParticipantRunner lifecycle", () => {
 
 		const firstPrompt = firstRunner.prompt("first task", undefined);
 		const secondPrompt = secondRunner.prompt("second task", undefined);
-		await Promise.resolve();
+		await waitForSpawnCount(fake, 1);
 		expect(fake.spawned).toHaveLength(1);
 
 		const firstChild = fake.spawned[0]?.process as FakeProcess;
 		respond(firstChild, "1", "prompt");
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await waitForSpawnCount(fake, 2);
 		expect(fake.spawned).toHaveLength(2);
 
 		const secondChild = fake.spawned[1]?.process as FakeProcess;
@@ -358,16 +398,68 @@ describe("ParticipantRunner lifecycle", () => {
 		await Promise.all([firstRunner.dispose(), secondRunner.dispose()]);
 	});
 
-	test("retries a first-prompt auth race with a fresh participant process", async () => {
-		// Purpose: a child-only OAuth miss must recover after the parent runtime already resolved credentials.
-		// Input and expected output: the first process rejects prompt auth, the replacement completes with the same session arguments.
-		// Edge case: the failed process emits no session events before prompt rejection.
+	test("rechecks parent authentication before every participant startup attempt", async () => {
+		// Purpose: council participants must use the same per-attempt parent credential check as subagents.
+		// Input and expected output: two transient auth misses occur before one child process is accepted.
+		// Edge case: unavailable parent credentials never spawn or stop a participant process.
+		// Dependencies: the production participant runner, shared retry policy, and a model-registry fake.
+		let authChecks = 0;
+		const fake = createFakeRunnerFactory({
+			scheduler: createFakeScheduler(),
+			startupGate: new ChildStartupGate(),
+			childStartupConfig: {
+				authRetry: { maxRetries: 2, delayMs: 1 },
+			},
+		});
+		const runner = await fake.factory(
+			createRunnerOptions({
+				find: () => createModel("openai", "model-a"),
+				hasConfiguredAuth: () => true,
+				getApiKeyAndHeaders: async () => {
+					authChecks += 1;
+					return authChecks < 3
+						? {
+								ok: false as const,
+								error: "OAuth storage is temporarily unavailable",
+							}
+						: { ok: true as const };
+				},
+			}),
+		);
+
+		const prompt = runner.prompt("first task", undefined);
+		await waitForSpawnCount(fake, 1);
+		const child = fake.spawned[0]?.process as FakeProcess;
+		respond(child, "1", "prompt");
+		completePrompt(child, "answer");
+		await prompt;
+
+		expect(authChecks).toBe(3);
+		expect(fake.spawned).toHaveLength(1);
+		await runner.dispose();
+	});
+
+	test("retries a first-prompt auth race despite service activity", async () => {
+		// Purpose: service events must not override the direct first-prompt acceptance boundary.
+		// Input and expected output: the first process emits status, rejects prompt auth, and a fresh process succeeds.
+		// Edge case: the service event arrives before the failed prompt response.
 		// Dependencies: sequential fake RPC transcripts and the shared bounded retry policy.
-		const fake = createFakeRunnerFactory(
-			createFakeScheduler(),
-			(process, attempt) => {
-				queueMicrotask(() => {
+		const diagnosticEntries: Array<{ type: string; data: unknown }> = [];
+		const recordChildStartupAttempt = createChildAuthStartupDiagnosticRecorder({
+			appendEntry(type: string, data?: unknown): void {
+				diagnosticEntries.push({ type, data });
+			},
+		});
+		const fake = createFakeRunnerFactory({
+			scheduler: createFakeScheduler(),
+			recordChildStartupAttempt,
+			onSpawn: (process, attempt) => {
+				process.stdin.once("write", () => {
 					if (attempt === 1) {
+						process.stdout.emit(
+							"data",
+							`${JSON.stringify({ type: "agent_start" })}\n`,
+						);
 						rejectPrompt(process, NO_OPENAI_API_KEY_ERROR);
 						return;
 					}
@@ -375,7 +467,7 @@ describe("ParticipantRunner lifecycle", () => {
 					completePrompt(process, "recovered answer");
 				});
 			},
-		);
+		});
 		const runner = await fake.factory(createRunnerOptions());
 
 		const result = await runner.prompt("recover auth", undefined);
@@ -386,23 +478,52 @@ describe("ParticipantRunner lifecycle", () => {
 		expect(fake.spawned).toHaveLength(2);
 		expect(fake.spawned[0]?.process.killedSignals).toEqual(["SIGTERM"]);
 		expect(fake.spawned[1]?.args).toEqual(fake.spawned[0]?.args);
+		expect(
+			diagnosticEntries.map(({ type, data }) => ({
+				type,
+				owner: (data as ChildAuthStartupAttemptRecord).owner,
+				provider: (data as ChildAuthStartupAttemptRecord).provider,
+				decision: (data as ChildAuthStartupAttemptRecord).decision,
+				reason: (data as ChildAuthStartupAttemptRecord).reason,
+			})),
+		).toEqual([
+			{
+				type: CHILD_AUTH_STARTUP_DIAGNOSTIC_CUSTOM_TYPE,
+				owner: "convene-council",
+				provider: "openai",
+				decision: "retry",
+				reason: "prompt_auth_unavailable",
+			},
+			{
+				type: CHILD_AUTH_STARTUP_DIAGNOSTIC_CUSTOM_TYPE,
+				owner: "convene-council",
+				provider: "openai",
+				decision: "accepted",
+				reason: "prompt_accepted",
+			},
+		]);
 		await runner.dispose();
 	});
 
-	test("stops after three retries when participant auth startup keeps failing", async () => {
+	test("stops after ten retries when participant auth startup keeps failing", async () => {
 		// Purpose: child auth recovery must remain bounded when every fresh process misses OAuth credentials.
-		// Input and expected output: four identical prompt preflight failures return the original auth error.
-		// Edge case: every failed process is terminated before the next launch.
-		// Dependencies: repeating fake RPC failure and the shared retry limit.
-		const fake = createFakeRunnerFactory(createFakeScheduler(), (process) => {
-			queueMicrotask(() => rejectPrompt(process, NO_OPENAI_API_KEY_ERROR));
+		// Input and expected output: eleven identical prompt preflight failures return the original auth error and report.
+		// Edge case: every failed process exits before the next launch.
+		// Dependencies: repeating fake RPC failure and the shared configured retry limit.
+		const fake = createFakeRunnerFactory({
+			scheduler: createFakeScheduler(),
+			onSpawn: (process) => {
+				process.stdin.once("write", () =>
+					rejectPrompt(process, NO_OPENAI_API_KEY_ERROR),
+				);
+			},
 		});
 		const runner = await fake.factory(createRunnerOptions());
 
 		await expect(runner.prompt("recover auth", undefined)).rejects.toThrow(
-			NO_OPENAI_API_KEY_ERROR,
+			"No API key found for openai. Use /login to log into a provider via OAuth or API key.\nChild startup recovery stopped after 11/11 attempts: prompt_auth_unavailable.",
 		);
-		expect(fake.spawned).toHaveLength(4);
+		expect(fake.spawned).toHaveLength(11);
 		expect(
 			fake.spawned.every(({ process }) =>
 				process.killedSignals.includes("SIGTERM"),
@@ -415,8 +536,13 @@ describe("ParticipantRunner lifecycle", () => {
 		// Input and expected output: a non-auth prompt rejection is returned after one process attempt.
 		// Edge case: the failure occurs before prompt preflight succeeds.
 		// Dependencies: one fake RPC rejection.
-		const fake = createFakeRunnerFactory(createFakeScheduler(), (process) => {
-			queueMicrotask(() => rejectPrompt(process, "prompt rejected"));
+		const fake = createFakeRunnerFactory({
+			scheduler: createFakeScheduler(),
+			onSpawn: (process) => {
+				process.stdin.once("write", () =>
+					rejectPrompt(process, "prompt rejected"),
+				);
+			},
 		});
 		const runner = await fake.factory(createRunnerOptions());
 
@@ -462,11 +588,10 @@ describe("ParticipantRunner lifecycle", () => {
 				return release;
 			}
 		}
-		const fake = createFakeRunnerFactory(
-			createFakeScheduler(),
-			undefined,
-			new AbortAfterAcquireGate(),
-		);
+		const fake = createFakeRunnerFactory({
+			scheduler: createFakeScheduler(),
+			startupGate: new AbortAfterAcquireGate(),
+		});
 		const runner = await fake.factory(createRunnerOptions());
 
 		await expect(
@@ -482,8 +607,13 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: no child process is active when cancellation arrives.
 		// Dependencies: AbortController and one automatic fake RPC rejection.
 		const controller = new AbortController();
-		const fake = createFakeRunnerFactory(createFakeScheduler(), (process) => {
-			queueMicrotask(() => rejectPrompt(process, NO_OPENAI_API_KEY_ERROR));
+		const fake = createFakeRunnerFactory({
+			scheduler: createFakeScheduler(),
+			onSpawn: (process) => {
+				process.stdin.once("write", () =>
+					rejectPrompt(process, NO_OPENAI_API_KEY_ERROR),
+				);
+			},
 		});
 		const runner = await fake.factory(createRunnerOptions());
 		const prompt = runner.prompt("recover auth", controller.signal);
@@ -594,7 +724,7 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: SIGKILL is conditional on the child still running.
 		// Dependencies: fake child process and fake scheduler.
 		const scheduler = createFakeScheduler();
-		const fake = createFakeRunnerFactory(scheduler);
+		const fake = createFakeRunnerFactory({ scheduler });
 		const abortController = new AbortController();
 		const { child, prompt } = await startRunnerPrompt(
 			fake,
@@ -630,7 +760,7 @@ describe("ParticipantRunner lifecycle", () => {
 		// Edge case: process emits exit between escalation stages.
 		// Dependencies: fake child process and fake scheduler.
 		const scheduler = createFakeScheduler();
-		const fake = createFakeRunnerFactory(scheduler);
+		const fake = createFakeRunnerFactory({ scheduler });
 		const abortController = new AbortController();
 		const { child, prompt } = await startRunnerPrompt(
 			fake,
@@ -687,6 +817,51 @@ describe("ParticipantRunner lifecycle", () => {
 		child.error(new Error("spawn failure"));
 
 		await expect(result).rejects.toThrow("spawn failure");
+	});
+
+	test("preserves a spawn failure when close occurs without exit", async () => {
+		// Purpose: Node spawn failures must remain actionable instead of becoming false termination timeouts.
+		// Input and expected output: error followed by close rejects with the original ENOENT failure.
+		// Edge case: the process never emits exit and does not auto-exit after termination signals.
+		// Dependencies: Node-like fake process events, fake termination timers, and first-prompt startup recovery.
+		const scheduler = createFakeScheduler();
+		const failure = new Error("spawn pi ENOENT");
+		const fake = createFakeRunnerFactory({
+			scheduler,
+			onSpawn: (process) => {
+				process.stdin.once("write", () => {
+					process.error(failure);
+					process.close();
+				});
+			},
+			startupGate: new ChildStartupGate(),
+			childStartupConfig: {
+				authRetry: { maxRetries: 0, delayMs: 1 },
+			},
+			exitOnSignal: "NEVER",
+		});
+		const runner = await fake.factory(createRunnerOptions());
+		let settled = false;
+		const outcomePromise = runner
+			.prompt("spawn failure", undefined)
+			.catch((error: unknown) => error)
+			.then((outcome) => {
+				settled = true;
+				return outcome;
+			});
+		await waitForSpawnCount(fake, 1);
+		for (let index = 0; index < 10 && !settled; index += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			if (scheduler.scheduled.length > 0) {
+				scheduler.runNext();
+			}
+		}
+
+		const outcome = await outcomePromise;
+
+		expect(settled).toBe(true);
+		expect(outcome).toMatchObject({ message: failure.message });
+		expect(fake.spawned[0]?.process.killedSignals).toEqual([]);
 	});
 
 	test("rejects active prompt when child stdin errors during recovery wait", async () => {

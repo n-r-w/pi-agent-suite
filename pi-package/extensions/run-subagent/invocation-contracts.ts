@@ -1,5 +1,10 @@
 import type { ChildProcess } from "node:child_process";
+import type {
+	ChildAuthStartupAttemptRecord,
+	ChildParentAuthResult,
+} from "../../shared/child-auth-startup";
 import type { ChildRpcRuntimeFacts } from "../../shared/child-rpc-completion";
+import type { ChildStartupConfig } from "../../shared/child-startup-config";
 import type { ChildStartupGate } from "../../shared/child-startup-gate";
 import type { SubagentFailedCode } from "./contracts";
 import type { LogicalSession, OwnerIdentity, SessionKey } from "./domain";
@@ -86,7 +91,8 @@ export interface InvocationLaunchConfiguration {
 	readonly toolPatterns?: readonly string[];
 	readonly workflowIds?: readonly string[];
 	readonly depth: number;
-	readonly parentAuthVerified: boolean;
+	readonly providerConfigured: boolean;
+	readonly checkParentAuth: () => Promise<ChildParentAuthResult>;
 	readonly runtimeFacts: ChildRpcRuntimeFacts;
 }
 
@@ -118,6 +124,10 @@ export interface InvocationSupervisorOptions {
 	readonly packagePath?: string;
 	readonly command?: string;
 	readonly childEnvironment?: Readonly<Record<string, string>>;
+	readonly childStartupConfig: ChildStartupConfig;
+	readonly recordChildStartupAttempt: (
+		record: ChildAuthStartupAttemptRecord,
+	) => void;
 	readonly startupGate?: ChildStartupGate;
 	readonly spawnProcess?: (
 		command: string,

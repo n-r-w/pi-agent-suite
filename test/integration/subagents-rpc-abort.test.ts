@@ -284,6 +284,10 @@ test("production Pi RPC abort cancels one pending nested wait", async () => {
 		});
 		supervisor = new InvocationSupervisor({
 			bridge,
+			childStartupConfig: {
+				authRetry: { maxRetries: 10, delayMs: 1 },
+			},
+			recordChildStartupAttempt: () => undefined,
 			packagePath: join(
 				process.cwd(),
 				"pi-package/extensions/run-subagent/index.ts",
@@ -379,7 +383,8 @@ test("production Pi RPC abort cancels one pending nested wait", async () => {
 				thinking: "off",
 				toolPatterns: ["subagent_start", "subagent_steer", "subagent_wait"],
 				depth: 1,
-				parentAuthVerified: true,
+				providerConfigured: true,
+				checkParentAuth: async () => ({ ok: true }),
 				runtimeFacts: {
 					modelProvider: "runtime-wait",
 					modelId: "wait",

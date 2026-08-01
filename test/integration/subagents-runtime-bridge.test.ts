@@ -118,6 +118,10 @@ test("establishes production worker IPC and settles one response", async () => {
 		const catalog = new SessionCatalog();
 		const supervisor = new InvocationSupervisor({
 			bridge,
+			childStartupConfig: {
+				authRetry: { maxRetries: 10, delayMs: 1 },
+			},
+			recordChildStartupAttempt: () => undefined,
 			childEnvironment: {
 				PI_AGENT_SUITE_DIR: suiteDir,
 				PI_CODING_AGENT_DIR: agentDir,

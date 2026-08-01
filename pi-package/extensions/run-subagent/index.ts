@@ -8,6 +8,11 @@ import type {
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
+import { createChildAuthStartupDiagnosticRecorder } from "../../shared/child-auth-startup-diagnostic";
+import {
+	type ChildStartupConfig,
+	readChildStartupConfig,
+} from "../../shared/child-startup-config";
 import {
 	type PackagePresentationEventBus,
 	registerPackageTool,
@@ -134,6 +139,10 @@ interface RootRuntime {
 interface RuntimeState {
 	readonly resolveConfig: () => Promise<SubagentsConfig>;
 	readonly failures: Map<string, SubagentFailureDetails>;
+	readonly childStartupConfig: ChildStartupConfig;
+	readonly recordChildStartupAttempt: ReturnType<
+		typeof createChildAuthStartupDiagnosticRecorder
+	>;
 	config: SubagentsConfig | undefined;
 	initialization: Promise<void> | undefined;
 	workerBridge: WorkerRuntimeBridge | undefined;
@@ -164,18 +173,23 @@ interface SubagentsDependencies {
 }
 
 /** Registers stable subagent tools before session runtime performs asynchronous work. */
-export default function subagents(
+export default async function subagents(
 	pi: ExtensionAPI,
 	dependencies: SubagentsDependencies = {
 		completeSimple: defaultCompleteSimple,
 	},
 ): Promise<void> {
+	const childStartupConfig = readChildStartupConfig();
+	const recordChildStartupAttempt =
+		createChildAuthStartupDiagnosticRecorder(pi);
 	let configReady: Promise<SubagentsConfig> | undefined;
 	const state: RuntimeState = {
 		resolveConfig: () =>
 			configReady ??
 			Promise.reject(new Error("subagent configuration is initializing")),
 		failures: new Map(),
+		childStartupConfig,
+		recordChildStartupAttempt,
 		config: undefined,
 		initialization: undefined,
 		workerBridge: undefined,
@@ -204,13 +218,12 @@ export default function subagents(
 	registerLifecycleHandlers(pi, state);
 	configReady = readConfig();
 	// Pi awaits the factory promise before copying definitions into its first agent snapshot.
-	return configReady.then((config) => {
-		registrations.start.description =
-			config.startDescription ?? START_DESCRIPTION;
-		registrations.steer.description =
-			config.steerDescription ?? STEER_DESCRIPTION;
-		registrations.wait.description = config.waitDescription ?? WAIT_DESCRIPTION;
-	});
+	const config = await configReady;
+	registrations.start.description =
+		config.startDescription ?? START_DESCRIPTION;
+	registrations.steer.description =
+		config.steerDescription ?? STEER_DESCRIPTION;
+	registrations.wait.description = config.waitDescription ?? WAIT_DESCRIPTION;
 }
 
 /** Resolves the runtime initialized by the current session_start event. */
@@ -282,7 +295,7 @@ async function handleSessionStart(
 	state.workerBridge ??= installWorkerRuntimeBridge();
 	if (state.workerBridge === undefined) {
 		state.rootRuntime?.management?.dispose();
-		state.rootRuntime = await createRootRuntime(pi, ctx);
+		state.rootRuntime = await createRootRuntime(pi, ctx, state);
 		registerManagementEntries(pi, state, ctx);
 		return;
 	}
@@ -371,7 +384,7 @@ function registerStartTool(
 						signal,
 					);
 				}
-				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				state.rootRuntime ??= await createRootRuntime(pi, ctx, state);
 				const result = await state.rootRuntime.coordinator.start(
 					state.rootRuntime.owner,
 					request,
@@ -419,7 +432,7 @@ function registerSteerTool(
 						signal,
 					);
 				}
-				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				state.rootRuntime ??= await createRootRuntime(pi, ctx, state);
 				const result = await state.rootRuntime.coordinator.steer(
 					state.rootRuntime.owner,
 					request,
@@ -468,7 +481,7 @@ function registerWaitTool(
 					);
 					return response;
 				}
-				state.rootRuntime ??= await createRootRuntime(pi, ctx);
+				state.rootRuntime ??= await createRootRuntime(pi, ctx, state);
 				const result = await executeRootWait({
 					coordinator: state.rootRuntime.coordinator,
 					owner: state.rootRuntime.owner,
@@ -587,7 +600,7 @@ async function loadRootQueryBranch(
 	state: RuntimeState,
 	sessionId: number,
 ) {
-	state.rootRuntime ??= await createRootRuntime(pi, ctx);
+	state.rootRuntime ??= await createRootRuntime(pi, ctx, state);
 	return state.rootRuntime.queryBranches.load(
 		state.rootRuntime.owner,
 		sessionId,
@@ -701,6 +714,7 @@ async function executeTool(
 async function createRootRuntime(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
+	state: Pick<RuntimeState, "childStartupConfig" | "recordChildStartupAttempt">,
 ): Promise<RootRuntime> {
 	const owner = ownerFromContext(ctx);
 	const writer = createActiveWriter(pi, ctx, owner);
@@ -722,6 +736,8 @@ async function createRootRuntime(
 		store,
 		recoveries,
 		queryBranches,
+		childStartupConfig: state.childStartupConfig,
+		recordChildStartupAttempt: state.recordChildStartupAttempt,
 		getCoordinator: () => requireCoordinator(coordinator),
 	});
 	coordinator = createRootCoordinator({
@@ -767,11 +783,17 @@ function createRootSupervisor(options: {
 	readonly store: SessionStore;
 	readonly recoveries: RuntimeFailureRecoveryTracker;
 	readonly queryBranches: QueryBranchAccess;
+	readonly childStartupConfig: ChildStartupConfig;
+	readonly recordChildStartupAttempt: ReturnType<
+		typeof createChildAuthStartupDiagnosticRecorder
+	>;
 	readonly getCoordinator: () => SubagentCoordinator;
 }): InvocationSupervisor {
 	let supervisor: InvocationSupervisor;
 	supervisor = new InvocationSupervisor({
 		bridge: options.bridge,
+		childStartupConfig: options.childStartupConfig,
+		recordChildStartupAttempt: options.recordChildStartupAttempt,
 		sessionsDir: join(
 			getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR),
 			"sessions",

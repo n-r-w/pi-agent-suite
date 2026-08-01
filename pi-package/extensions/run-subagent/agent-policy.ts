@@ -63,7 +63,8 @@ export async function resolveLaunchConfiguration(
 		throw new InvocationStartError("start_failed", workflows.issue);
 	}
 	const model = resolveAgentModel(agent, ctx);
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	// Model registration and credential resolution are separate facts during OAuth file contention.
+	const providerConfigured = ctx.modelRegistry.hasConfiguredAuth(model);
 	const parentDepth =
 		request.ownerRuntimeLeaseId === undefined
 			? readCurrentDepth()
@@ -79,7 +80,11 @@ export async function resolveLaunchConfiguration(
 			? {}
 			: { workflowIds: workflows.policy }),
 		depth: parentDepth + 1,
-		parentAuthVerified: auth.ok,
+		providerConfigured,
+		checkParentAuth: async () => {
+			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+			return auth.ok ? { ok: true } : { ok: false, error: auth.error };
+		},
 		runtimeFacts: {
 			modelProvider: model.provider,
 			modelId: model.id,

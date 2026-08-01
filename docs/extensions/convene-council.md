@@ -62,13 +62,17 @@ Unsupported keys make the config invalid.
 
 ## Authentication startup recovery
 
-Before creating participant processes, `convene-council` resolves both configured model credentials sequentially through the parent model registry. A parent authentication failure returns without starting child Pi.
+Each participant model must report configured authorization through `ModelRegistry.hasConfiguredAuth(model)`. An unconfigured participant returns an authentication error without creating a child process or retry. Every recovery attempt acquires the package-wide FIFO startup slot and calls `ModelRegistry.getApiKeyAndHeaders(model)`. An unavailable credential result releases the slot and waits before another attempt without starting Pi.
 
-All child launchers in the package share one FIFO startup gate within the parent process. The gate allows one child process at a time to start and complete RPC prompt preflight, including credential loading. A prompt response releases the gate while an accepted participant continues generating its answer, so model execution remains parallel.
+The FIFO slot covers credential resolution, process start, and the successful or failed RPC response for the first `prompt`. A successful response releases the slot while the participant continues generating its answer, so accepted participants can run in parallel. Before RPC delivery, all contiguous leading `/` characters are removed from every participant prompt. An empty result is rejected.
 
-Before RPC delivery, all contiguous leading `/` characters are removed from every participant prompt. An empty result is rejected, so participant tasks cannot enter Pi's extension-command path.
+Only a failed first-`prompt` RPC response whose first error line is exactly `No API key found for <provider>.` for the selected provider can replace a child. Status, projection, extension, and other service events before that response do not block recovery. The failed process exits before the FIFO slot is released. Every replacement after such a rejection creates a new process with the same participant session paths. A successful prompt response, cancellation, a later participant turn, a transport failure, or another error prevents replacement.
 
-After successful parent authentication, a fresh participant process can still temporarily miss OAuth credentials when another Pi process holds the shared `auth.json` lock. `convene-council` uses the shared recovery policy and retries only a provider-matching `No API key found for <provider>` RPC prompt rejection received before observable child RPC activity. Each retry creates a new process with the same participant session paths and re-enters the startup gate. The original attempt and up to three retries use exponential randomized delays. Cancellation, later participant turns, failures after session activity, transport failures, and other errors are not retried.
+The shared policy reads one configuration file during extension startup. When `PI_AGENT_SUITE_DIR` is not set, it appends `agent-suite/child-startup/config.json` to Pi's agent directory. Pi resolves that directory from `PI_CODING_AGENT_DIR` when set, otherwise from `~/.pi/agent`. When `PI_AGENT_SUITE_DIR` is set, the file is `$PI_AGENT_SUITE_DIR/child-startup/config.json`. No other configuration path is checked.
+
+`authRetry.maxRetries` is a non-negative integer with default `10`; `authRetry.delayMs` is a positive integer with default `2000`. The delay is fixed without exponential growth or randomization. A missing file or omitted field uses the defaults. An unreadable file, malformed JSON, unsupported key, or invalid value rejects extension loading.
+
+Each attempt appends a `child-auth-startup-diagnostic` session entry with the launcher, provider, attempt counts, stage, prompt-acceptance state, decision, fixed reason code, and duration. Entries exclude credentials and `auth.json` content. Exhausted recovery returns the sanitized original error plus the final recovery reason.
 
 ## Tool input
 

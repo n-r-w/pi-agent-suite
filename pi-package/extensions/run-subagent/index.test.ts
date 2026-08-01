@@ -234,6 +234,7 @@ function createContext(
 		},
 		modelRegistry: {
 			find: () => options.model,
+			hasConfiguredAuth: () => options.model !== undefined,
 			getApiKeyAndHeaders: async () => {
 				options.onAuthRequest?.();
 				return options.authenticated === true
@@ -292,6 +293,24 @@ afterEach(() => {
 });
 
 describe("subagents entry", () => {
+	test("rejects invalid shared child startup configuration during extension loading", async () => {
+		// Purpose: child launchers must fail before tool use when their shared recovery policy is invalid.
+		// Input and expected output: an unsupported child-startup key rejects the extension factory.
+		// Edge case: the ordinary subagents configuration and agent catalog remain valid.
+		// Dependencies: the production extension entry and an isolated suite configuration file.
+		const childStartupDirectory = join(suiteDir, "child-startup");
+		mkdirSync(childStartupDirectory, { recursive: true });
+		writeFileSync(
+			join(childStartupDirectory, "config.json"),
+			JSON.stringify({ unsupported: true }),
+			"utf8",
+		);
+
+		await expect(subagents(createPiFake())).rejects.toThrow(
+			"configuration contains unsupported keys",
+		);
+	});
+
 	test("rejects structurally invalid subagent requests", async () => {
 		// Purpose: structural request violations must fail before semantic agent checks.
 		// Input and expected output: whitespace-only subagent_start.prompt fails with invalid_request and no normal outcome.
