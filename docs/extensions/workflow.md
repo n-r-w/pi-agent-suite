@@ -50,7 +50,7 @@ Every catalog or dynamic workflow requires:
 
 Surrounding prompt whitespace is removed. An omitted or empty root prompt means that the workflow has no shared guidance.
 
-One invalid `.yaml` file rejects the catalog atomically. Catalog IDs must be unique after NFC normalization and remain case-sensitive. A missing or empty workflow directory is a valid empty catalog. The catalog is read when the extension loads.
+Each invalid or unreadable `.yaml` file is excluded independently, while valid sibling workflows remain available. At session start, Pi shows one warning that lists every excluded file and its validation issue when UI notifications are available. Catalog IDs must be unique after NFC normalization and remain case-sensitive. An unreadable workflow directory or an NFC-equivalent catalog ID collision rejects the catalog. A missing or empty workflow directory is a valid empty catalog. The catalog is read when the extension loads.
 
 ### Agent workflow policy
 

@@ -33,6 +33,7 @@ interface FakePi {
 	readonly listeners: Map<string, Set<(...args: unknown[]) => void>>;
 	readonly tools: FakeTool[];
 	readonly appended: Array<{ customType: string; data: unknown }>;
+	readonly notifications: Array<{ message: string; type: string | undefined }>;
 	activeTools: string[];
 	appendError: Error | undefined;
 	api: ExtensionAPI | undefined;
@@ -139,7 +140,12 @@ function activatedEntry(): unknown {
 /** Captures only Pi APIs owned by the workflow entry point. */
 async function createFakePi(): Promise<FakePi> {
 	const widgetUpdates: Array<{ key: string; content: WidgetContent }> = [];
+	const notifications: Array<{ message: string; type: string | undefined }> =
+		[];
 	const ui = {
+		notify(message: string, type?: string): void {
+			notifications.push({ message, type });
+		},
 		setWidget(key: string, content: WidgetContent): void {
 			widgetUpdates.push({ key, content });
 		},
@@ -149,6 +155,7 @@ async function createFakePi(): Promise<FakePi> {
 		listeners: new Map(),
 		tools: [],
 		appended: [],
+		notifications,
 		activeTools: ["read"],
 		appendError: undefined,
 		api: undefined,
@@ -225,7 +232,12 @@ async function runLifecycle(
 	}
 	await handler(
 		{ type: event },
-		{ mode, ui: fake.ui, sessionManager: { getBranch: () => branch } },
+		{
+			mode,
+			hasUI: mode === "tui" || mode === "rpc",
+			ui: fake.ui,
+			sessionManager: { getBranch: () => branch },
+		},
 	);
 }
 
@@ -318,6 +330,46 @@ describe("workflow extension lifecycle", () => {
 		expect(content).toContain("<workflow_guidelines>");
 		expect(content).not.toContain("<workflow_activation_options");
 		expect(content).not.toContain("<active_workflow");
+	});
+
+	/**
+	 * Proves invalid catalog workflows cannot fail startup or suppress valid siblings.
+	 * Inputs and expected output: one valid and two invalid YAML files keep activation available and produce one warning naming both invalid files.
+	 * Edge case: session-tree reconciliation does not repeat the startup warning.
+	 * Dependencies: isolated catalog files, real lifecycle synchronization, and the captured Pi notification API.
+	 */
+	test("skips invalid catalog workflows and reports one startup warning", async () => {
+		const root = await createSuite(validYaml());
+		const workflowDirectory = join(root, "workflow", "workflows");
+		const malformedPath = join(workflowDirectory, "malformed.yaml");
+		const invalidGraphPath = join(workflowDirectory, "invalid-graph.yaml");
+		await Promise.all([
+			writeFile(malformedPath, "stages: ["),
+			writeFile(
+				invalidGraphPath,
+				"description: Invalid\nstages: []\ntransitions: []\n",
+			),
+		]);
+		const fake = await createFakePi();
+
+		await runLifecycle(fake, "session_start");
+		await runLifecycle(fake, "session_tree");
+
+		expect(fake.activeTools).toContain("workflow_activate");
+		expect(fake.notifications).toHaveLength(1);
+		const notification = fake.notifications[0];
+		if (notification === undefined) {
+			throw new Error("workflow warning missing");
+		}
+		expect(notification.type).toBe("warning");
+		expect(notification.message).toContain(malformedPath);
+		expect(notification.message).toContain(invalidGraphPath);
+		expect(notification.message).toContain(
+			"workflow must have exactly one initial stage",
+		);
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate-valid", { workflowId: "delivery" });
+		expect(fake.appended).toHaveLength(1);
 	});
 
 	/**

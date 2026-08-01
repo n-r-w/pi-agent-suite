@@ -50,22 +50,72 @@ describe("workflow catalog configuration", () => {
 		expect(result.workflows.map(({ id }) => id)).toEqual(["a", "b"]);
 	});
 
-	/** Proves one malformed, unknown-field, or invalid graph file rejects the catalog atomically. */
+	/**
+	 * Proves invalid workflow files do not suppress valid catalog siblings.
+	 * Inputs and expected output: one valid file plus one malformed, unknown-field, or invalid-graph file returns the valid workflow and one repair-relevant warning.
+	 * Edge case: invalid files sort both before and after the valid file.
+	 * Dependencies: isolated catalog files, YAML parsing, and workflow graph validation.
+	 */
 	test.each([
-		["malformed", "bad.yaml", "stages: ["],
-		["unknown field", "bad.yaml", `${workflowYaml("Bad")}extra: true\n`],
+		["malformed after valid", "z-bad.yaml", "stages: [", undefined],
 		[
-			"mixed catalog",
+			"unknown field before valid",
+			"bad.yaml",
+			`${workflowYaml("Bad")}extra: true\n`,
+			"workflow contains an unsupported key",
+		],
+		[
+			"invalid graph before valid",
 			"bad.yaml",
 			"description: Bad\nstages: []\ntransitions: []\n",
+			"workflow must have exactly one initial stage",
 		],
-	])("rejects %s with the file path", async (_case, fileName, content) => {
+	] as const)("skips %s without rejecting valid siblings", async (_case, fileName, content, expectedIssue) => {
 		const root = await createTemporaryDirectory();
+		const filePath = join(root, fileName);
 		await writeFile(join(root, "good.yaml"), workflowYaml("Good"));
-		await writeFile(join(root, fileName), content);
+		await writeFile(filePath, content);
 		const result = await loadWorkflowCatalog(root);
-		expect(result.workflows).toEqual([]);
-		expect(result.error?.message).toContain(join(root, fileName));
+		expect(result.workflows.map(({ id }) => id)).toEqual(["good"]);
+		expect(result.error).toBeUndefined();
+		expect(result.warnings).toHaveLength(1);
+		const warning = result.warnings?.[0];
+		if (warning === undefined) {
+			throw new Error("workflow warning missing");
+		}
+		expect(warning.message).toContain(filePath);
+		expect(warning.message.replace(filePath, "").trim().length).toBeGreaterThan(
+			0,
+		);
+		if (expectedIssue !== undefined) {
+			// Stable validation rules prove repair details without coupling to YAML parser wording.
+			expect(warning.message).toContain(expectedIssue);
+		}
+	});
+
+	/**
+	 * Proves a per-entry read failure disables only the unreadable workflow.
+	 * Inputs and expected output: a readable valid file and a directory named as YAML return the valid workflow plus one warning with the unreadable path and issue.
+	 * Edge case: the workflow directory itself remains readable, so the failure belongs to one catalog entry.
+	 * Dependencies: isolated filesystem entries and catalog file reading.
+	 */
+	test("skips an unreadable workflow entry", async () => {
+		const root = await createTemporaryDirectory();
+		const unreadablePath = join(root, "unreadable.yaml");
+		await writeFile(join(root, "good.yaml"), workflowYaml("Good"));
+		await mkdir(unreadablePath);
+		const result = await loadWorkflowCatalog(root);
+		expect(result.workflows.map(({ id }) => id)).toEqual(["good"]);
+		expect(result.error).toBeUndefined();
+		expect(result.warnings).toHaveLength(1);
+		const warning = result.warnings?.[0];
+		if (warning === undefined) {
+			throw new Error("unreadable workflow warning missing");
+		}
+		expect(warning.message).toContain(unreadablePath);
+		expect(
+			warning.message.replace(unreadablePath, "").trim().length,
+		).toBeGreaterThan(0);
 	});
 });
 

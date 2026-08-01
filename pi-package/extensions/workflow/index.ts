@@ -227,7 +227,7 @@ interface SynchronizeWorkflowRuntimeOptions {
 	readonly getPolicy: () => WorkflowPolicyResolution;
 }
 
-/** Creates the initial mutable workflow state from atomic catalog and prompt loading. */
+/** Creates the initial mutable workflow state from catalog-wide and prompt loading results. */
 function createWorkflowRuntimeState(
 	catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>,
 	promptError: Error | undefined,
@@ -247,6 +247,22 @@ function publishWorkflowStatus(
 	runtime: WorkflowRuntime,
 ): void {
 	indicator?.publish(runtime.state);
+}
+
+/** Reports all skipped catalog workflows in one startup notification. */
+function reportWorkflowCatalogWarnings(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	warnings: readonly Error[] | undefined,
+): void {
+	if (warnings === undefined || warnings.length === 0 || ctx.hasUI === false) {
+		return;
+	}
+
+	const details = warnings.map(({ message }) => `- ${message}`).join("\n");
+	ctx.ui.notify(
+		`[workflow] disabled invalid catalog workflows:\n${details}`,
+		"warning",
+	);
 }
 
 /** Registers definitions before lifecycle policies and then follows their active-name decisions. */
@@ -318,7 +334,10 @@ export default async function workflowExtension(
 		refreshTools("policy-reset");
 	});
 
-	pi.on("session_start", (_event, ctx) => synchronize(ctx));
+	pi.on("session_start", (_event, ctx) => {
+		synchronize(ctx);
+		reportWorkflowCatalogWarnings(ctx, loadedCatalog.warnings);
+	});
 	pi.on("session_tree", (_event, ctx) => synchronize(ctx));
 	pi.on("session_shutdown", () => {
 		unsubscribeFromAgentChanges();

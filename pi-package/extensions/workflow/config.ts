@@ -6,9 +6,10 @@ import {
 	type WorkflowDefinition,
 } from "./workflow";
 
-/** Atomic catalog result that keeps a configuration error separate from saved state. */
+/** Catalog result that separates directory-wide errors from skipped workflow warnings. */
 export interface WorkflowCatalogResult {
 	readonly workflows: readonly WorkflowDefinition[];
+	readonly warnings?: readonly Error[];
 	readonly error?: Error;
 }
 
@@ -41,7 +42,7 @@ type CatalogFileRead =
 			readonly error: unknown;
 	  };
 
-/** Loads every .yaml file in lexical order and rejects the catalog atomically. */
+/** Loads valid .yaml workflows in lexical order and reports invalid files separately. */
 export async function loadWorkflowCatalog(
 	directory: string,
 ): Promise<WorkflowCatalogResult> {
@@ -65,6 +66,7 @@ export async function loadWorkflowCatalog(
 		entries.map((fileName) => readCatalogFile(directory, fileName)),
 	);
 	const workflows: WorkflowDefinition[] = [];
+	const warnings: Error[] = [];
 	for (const file of files) {
 		try {
 			if (file.kind === "error") {
@@ -79,18 +81,21 @@ export async function loadWorkflowCatalog(
 				),
 			);
 		} catch (error) {
+			// A file-level failure disables only that workflow so valid siblings remain usable.
 			const message = errorMessage(error);
-			return {
-				workflows: [],
-				error: new Error(
+			warnings.push(
+				new Error(
 					message.includes(file.filePath)
 						? message
 						: `${file.filePath}: ${message}`,
 				),
-			};
+			);
 		}
 	}
-	return { workflows };
+	if (warnings.length === 0) {
+		return { workflows };
+	}
+	return { workflows, warnings };
 }
 
 /** Reads one catalog file while preserving its lexical identity for later validation. */
