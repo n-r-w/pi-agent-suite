@@ -14,7 +14,15 @@ import {
 	initTheme,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Box, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	Box,
+	KeybindingsManager,
+	setKeybindings,
+	type TUI,
+	TUI_KEYBINDINGS,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
+import { parse } from "yaml";
 import { createToolRenderContext } from "../../../test/support/tool-render-context.ts";
 import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment.ts";
 import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../shared/subagent-environment.ts";
@@ -235,6 +243,7 @@ function createArguments(
 	return {
 		id,
 		description,
+		prompt: "Follow delivery rules",
 		stages: [
 			{
 				id: "implementation",
@@ -261,6 +270,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+	// Restore Pi's global keybinding registry after renderer-specific bindings.
+	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 	if (originalSuiteDirectory === undefined) {
 		delete process.env["PI_AGENT_SUITE_DIR"];
 	} else {
@@ -342,12 +353,21 @@ describe("workflow semantic tool rendering", () => {
 	});
 
 	/**
-	 * Proves creation keeps its workflow and initial-stage identities in active and reconstructed session rendering.
-	 * Input and expected output: successful and rejected create calls show both submitted references in both screens.
-	 * Edge case: an exact catalog collision still persists semantic details before execution fails.
-	 * Dependencies: workflow presentation events, package registry reconstruction, and create tool execution.
+	 * Proves creation shows complete semantic content in active and reconstructed session rendering.
+	 * Input and expected output: collapsed calls show references and the configured expansion binding; expanded calls show catalog-shaped YAML.
+	 * Edge case: an exact catalog collision retains the submitted identity and configurable hint.
+	 * Dependencies: presentation events, package registry reconstruction, Pi keybindings, and create tool execution.
 	 */
 	test("renders workflow creation before and after execution", async () => {
+		setKeybindings(
+			new KeybindingsManager({
+				...TUI_KEYBINDINGS,
+				"app.tools.expand": {
+					defaultKeys: "ctrl+e",
+					description: "Expand collapsed tool output",
+				},
+			}),
+		);
 		await createWorkflowSuite();
 		const fixture = await createFixture();
 		const created = await executeTool(
@@ -365,10 +385,45 @@ describe("workflow semantic tool rendering", () => {
 				"workflow_create",
 				"Workflow: dynamic-delivery · Dynamic delivery process",
 				"Stage: implementation · Implementation stage",
+				"Content: ctrl+e to show",
 			],
 			result: [],
 		});
 		expect(sessionCreated).toEqual(activeCreated);
+
+		const activeExpanded = renderCompletedTool(
+			created.definition,
+			created,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		const sessionExpanded = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_create"),
+			created,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		expect(activeExpanded.result).toEqual([]);
+		expect(activeExpanded.call.slice(0, 6)).toEqual([
+			"workflow_create",
+			"--- Workflow ---",
+			"dynamic-delivery · Dynamic delivery process",
+			"--- Stage ---",
+			"implementation · Implementation stage",
+			"--- Content ---",
+		]);
+		expect(activeExpanded.call.join("\n")).toContain(
+			"description: Dynamic delivery process\nprompt: Follow delivery rules\nstages:\n  - id: implementation",
+		);
+		expect(activeExpanded.call.join("\n")).toContain(
+			"transitions:\n  - from: implementation\n    to: review\n    type: advance",
+		);
+		expect(activeExpanded.call.join("\n")).not.toContain(
+			"id: dynamic-delivery",
+		);
+		expect(sessionExpanded).toEqual(activeExpanded);
 
 		const rejected = await executeTool(
 			fixture,
@@ -385,6 +440,7 @@ describe("workflow semantic tool rendering", () => {
 			"workflow_create",
 			"Workflow: delivery · Conflicting delivery process",
 			"Stage: implementation · Implementation stage",
+			"Content: ctrl+e to show",
 		]);
 		expect(activeRejected.result.join("\n")).toContain("Error:");
 		expect(sessionRejected).toEqual(activeRejected);
@@ -592,7 +648,7 @@ describe("workflow semantic tool rendering", () => {
 		]);
 	});
 
-	/** Proves semantic rows honor the child width supplied by Pi's default tool shell. */
+	/** Proves semantic references, hints, and expanded YAML honor Pi's default tool-shell child width. */
 	test("keeps workflow rows inside the default shell width", async () => {
 		await createWorkflowSuite();
 		const fixture = await createFixture();
@@ -607,8 +663,53 @@ describe("workflow semantic tool rendering", () => {
 			PLAIN_THEME,
 			22,
 		);
+		const creationArgs = createArguments(
+			"dynamic-delivery",
+			"Dynamic delivery process",
+		);
+		const creation = await executeTool(
+			fixture,
+			"workflow_create",
+			creationArgs,
+		);
+		const creationDefinition = resolveSessionDefinition(
+			fixture,
+			"workflow_create",
+		);
+		const collapsedCreation = renderCompletedTool(
+			creationDefinition,
+			creation,
+			PLAIN_THEME,
+			22,
+		);
+		const expandedCreation = renderCompletedTool(
+			creationDefinition,
+			creation,
+			PLAIN_THEME,
+			20,
+			true,
+		);
+		const contentIndex = expandedCreation.call.indexOf("--- Content ---");
+		const yamlLines = expandedCreation.call.slice(contentIndex + 1);
+		const { description, prompt, stages, transitions } = creationArgs;
+		expect(parse(yamlLines.join("\n"))).toEqual({
+			description,
+			prompt,
+			stages,
+			transitions,
+		});
+		for (const line of yamlLines) {
+			expect(visibleWidth(stripVTControlCharacters(line))).toBeLessThanOrEqual(
+				20,
+			);
+		}
 		const shell = new Box(1, 1);
-		for (const line of [...rendered.call, ...rendered.result]) {
+		for (const line of [
+			...rendered.call,
+			...rendered.result,
+			...collapsedCreation.call,
+			...expandedCreation.call,
+		]) {
 			shell.addChild({ render: () => [line], invalidate: () => {} });
 		}
 

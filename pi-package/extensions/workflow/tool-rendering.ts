@@ -1,10 +1,17 @@
-import type {
-	AgentToolResult,
-	Theme,
-	ToolDefinition,
-	ToolRenderResultOptions,
+import {
+	type AgentToolResult,
+	keyText,
+	type Theme,
+	type ToolDefinition,
+	type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import { type Component, Container, Text } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	Text,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
+import { stringify } from "yaml";
 import { sliceTextByWidth } from "../../shared/display-width.ts";
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
 import {
@@ -16,6 +23,8 @@ import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
 const PRESENTATION_KIND = "workflow-tool";
 /** Matches the standard four-row collapsed content budget used by package tools. */
 const COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT = 4;
+/** Reserves indentation, quotes, and continuation markers around wrapped YAML scalars. */
+const YAML_SYNTAX_WIDTH_RESERVE = 8;
 
 type WorkflowToolRenderContext = Parameters<
 	NonNullable<ToolDefinition["renderCall"]>
@@ -25,6 +34,14 @@ type WorkflowToolRenderContext = Parameters<
 interface WorkflowPresentationReference {
 	readonly id: string;
 	readonly description?: string;
+}
+
+/** Contains the fields represented by one catalog workflow YAML file. */
+interface WorkflowContent {
+	readonly description: string;
+	readonly prompt?: string;
+	readonly stages: readonly unknown[];
+	readonly transitions: readonly unknown[];
 }
 
 /** Persists creation identity supplied before validation or state replacement. */
@@ -190,6 +207,7 @@ export function renderWorkflowCreateCall(
 		stage:
 			presentation?.stage ??
 			(context.argsComplete ? fallback?.stage : undefined),
+		content: context.argsComplete ? createWorkflowContent(args) : undefined,
 		theme,
 		context,
 	});
@@ -219,6 +237,7 @@ function renderWorkflowReferenceCall(options: {
 	readonly toolName: "workflow_create" | "workflow_activate";
 	readonly workflow: WorkflowPresentationReference | undefined;
 	readonly stage: WorkflowPresentationReference | undefined;
+	readonly content?: WorkflowContent | undefined;
 	readonly theme: Theme;
 	readonly context: WorkflowToolRenderContext;
 }): Component {
@@ -238,6 +257,14 @@ function renderWorkflowReferenceCall(options: {
 			: renderReference({
 					label: "Stage",
 					reference: options.stage,
+					expanded: options.context.expanded,
+					width,
+					theme: options.theme,
+				})),
+		...(options.content === undefined
+			? []
+			: renderWorkflowContent({
+					content: options.content,
 					expanded: options.context.expanded,
 					width,
 					theme: options.theme,
@@ -397,6 +424,33 @@ function renderToolName(toolName: string, width: number, theme: Theme): string {
 	return theme.fg("toolTitle", theme.bold(sliceTextByWidth(toolName, width)));
 }
 
+/** Renders catalog-shaped workflow YAML or its configurable expansion hint. */
+function renderWorkflowContent(options: {
+	readonly content: WorkflowContent;
+	readonly expanded: boolean;
+	readonly width: number;
+	readonly theme: Theme;
+}): readonly string[] {
+	if (options.expanded) {
+		return [
+			...new Text(options.theme.fg("muted", "--- Content ---"), 0, 0).render(
+				options.width,
+			),
+			...serializeWorkflowContent(options.content, options.width).map((line) =>
+				options.theme.fg("toolOutput", line),
+			),
+		];
+	}
+	return new Text(
+		options.theme.fg(
+			"muted",
+			`Content: ${keyText("app.tools.expand")} to show`,
+		),
+		0,
+		0,
+	).render(options.width);
+}
+
 /** Selects the complete section or Pi's standard bounded collapsed preview. */
 function renderReference(options: {
 	readonly label: "Workflow" | "Stage" | "From" | "To";
@@ -490,6 +544,67 @@ function parseReference(
 		return undefined;
 	}
 	return createReference(value["id"], description);
+}
+
+/** Selects YAML serialization that fits without display-layer line wrapping. */
+function serializeWorkflowContent(
+	content: WorkflowContent,
+	width: number,
+): readonly string[] {
+	const renderWidth = Math.max(1, Math.floor(width));
+	const defaultLines = yamlLines(stringify(content));
+	if (defaultLines.every((line) => visibleWidth(line) <= renderWidth)) {
+		return defaultLines;
+	}
+	let narrowestLines = defaultLines;
+	for (
+		let lineWidth = Math.max(1, renderWidth - YAML_SYNTAX_WIDTH_RESERVE);
+		lineWidth >= 1;
+		lineWidth--
+	) {
+		narrowestLines = yamlLines(
+			stringify(content, {
+				defaultKeyType: "PLAIN",
+				defaultStringType: "QUOTE_DOUBLE",
+				lineWidth,
+				minContentWidth: 0,
+			}),
+		);
+		if (narrowestLines.every((line) => visibleWidth(line) <= renderWidth)) {
+			return narrowestLines;
+		}
+	}
+	return narrowestLines;
+}
+
+/** Removes only the serializer's final newline before row rendering. */
+function yamlLines(content: string): readonly string[] {
+	return content.trimEnd().split("\n");
+}
+
+/** Selects the definition fields owned by catalog workflow YAML files. */
+function createWorkflowContent(args: unknown): WorkflowContent | undefined {
+	if (!isRecord(args)) {
+		return undefined;
+	}
+	const description = args["description"];
+	const prompt = args["prompt"];
+	const stages = args["stages"];
+	const transitions = args["transitions"];
+	if (
+		typeof description !== "string" ||
+		(prompt !== undefined && typeof prompt !== "string") ||
+		!Array.isArray(stages) ||
+		!Array.isArray(transitions)
+	) {
+		return undefined;
+	}
+	return {
+		description,
+		...(prompt === undefined ? {} : { prompt }),
+		stages,
+		transitions,
+	};
 }
 
 /** Reads one exact string field without normalizing tool arguments. */

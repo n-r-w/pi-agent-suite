@@ -158,12 +158,13 @@ Creation, activation, transition, session start, and branch changes replace the 
 
 ## Tool presentation
 
-The default Pi tool shell renders workflow references instead of displaying internal success JSON:
+The default Pi tool shell renders workflow references instead of displaying internal success JSON. Collapsed `workflow_create` output also identifies the configured `app.tools.expand` binding:
 
 ```text
 workflow_create
 Workflow: task-delivery · Task-specific delivery workflow
 Stage: implementation · Implement the approved change
+Content: ctrl+o to show
 
 workflow_activate
 Workflow: delivery · Software delivery
@@ -173,7 +174,32 @@ From: implementation · Implement the approved change
 To: review · Review the implementation
 ```
 
-Collapsed mode wraps references to the available width and shows at most four content rows per reference. Expanded mode shows the complete references. A failed call keeps the identity captured before execution and adds `Error: <message>`. Presentation evidence is stored in result `details`, so the active screen and subagent session screen render the same content.
+Expanded `workflow_create` output shows catalog-shaped YAML. The workflow ID remains in the `Workflow` section because catalog files derive it from the file name:
+
+```text
+workflow_create
+--- Workflow ---
+task-delivery · Task-specific delivery workflow
+--- Stage ---
+implementation · Implement the approved change
+--- Content ---
+description: Task-specific delivery workflow
+stages:
+  - id: implementation
+    description: Implement the approved change
+    prompt: Implement and test the change
+    initial: true
+  - id: review
+    description: Review the result
+    prompt: Review the implementation
+    final: true
+transitions:
+  - from: implementation
+    to: review
+    type: advance
+```
+
+Collapsed mode wraps references to the available width and shows at most four content rows per reference. Expanded mode shows complete references and creation YAML. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage references are stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These two stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 
