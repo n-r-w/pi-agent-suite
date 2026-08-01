@@ -58,7 +58,7 @@ const TOOL_NAMES = [
 	"subagent_query",
 ] as const;
 const EXPAND_HINT_PATTERN =
-	/^\.\.\. \(\d+ more lines, \d+ total, ctrl\+o to expand\)$/;
+	/^\.\.\. \(\d+ more lines, \d+ total, alt\+x to expand\)$/;
 /** Maps each subagent tool name to the renderers registered by its extension entry point. */
 const SUBAGENT_PRESENTATIONS = {
 	subagent_start: {
@@ -721,13 +721,16 @@ describe("Subagents semantic rendering", () => {
 		// Edge case: every line remains inside Pi's default Box(1,1) shell contract at a narrow width.
 		// Dependencies: public Text, Markdown, Box, keybinding, and visible-width APIs.
 		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+o",
-					description: "Expand collapsed tool output",
+			new KeybindingsManager(
+				{
+					...TUI_KEYBINDINGS,
+					"app.tools.expand": {
+						defaultKeys: "ctrl+o",
+						description: "Expand collapsed tool output",
+					},
 				},
-			}),
+				{ "app.tools.expand": "alt+x" },
+			),
 		);
 		const args = {
 			agentId: "SubAgentCoder",
@@ -781,13 +784,16 @@ describe("Subagents semantic rendering", () => {
 		// Edge case: a long question preserves the shell width and reports hidden visual lines.
 		// Dependencies: shared semantic headers, bounded previews, Markdown sections, and the static query presentation registry.
 		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+o",
-					description: "Expand collapsed tool output",
+			new KeybindingsManager(
+				{
+					...TUI_KEYBINDINGS,
+					"app.tools.expand": {
+						defaultKeys: "ctrl+o",
+						description: "Expand collapsed tool output",
+					},
 				},
-			}),
+				{ "app.tools.expand": "alt+x" },
+			),
 		);
 		const args = {
 			sessionId: 7,
@@ -823,13 +829,16 @@ describe("Subagents semantic rendering", () => {
 		// Edge case: neither collapsed nor expanded content exceeds the narrow default shell width.
 		// Dependencies: query result presentation details, standard duration formatting, semantic clipping, and Markdown sections.
 		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+o",
-					description: "Expand collapsed tool output",
+			new KeybindingsManager(
+				{
+					...TUI_KEYBINDINGS,
+					"app.tools.expand": {
+						defaultKeys: "ctrl+o",
+						description: "Expand collapsed tool output",
+					},
 				},
-			}),
+				{ "app.tools.expand": "alt+x" },
+			),
 		);
 		const args = {
 			sessionId: 7,
