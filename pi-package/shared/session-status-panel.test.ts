@@ -39,16 +39,26 @@ function theme(): Theme {
 	} as Theme;
 }
 
+/** Marks theme colors without changing row order or content. */
+function markedTheme(): Theme {
+	return {
+		fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+		bg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	} as Theme;
+}
+
 /** Renders the latest installed widget factory or fails with its missing state. */
 function renderLatest(
 	updates: readonly { key: string; content: WidgetContent }[],
 	width: number,
+	selectedTheme: Theme = theme(),
 ): string[] {
 	const factory = updates.at(-1)?.content;
 	if (typeof factory !== "function") {
 		throw new Error("session status widget factory is missing");
 	}
-	return factory({} as TUI, theme()).render(width);
+	return factory({} as TUI, selectedTheme).render(width);
 }
 
 /** Imports an isolated module instance against the same process event carrier. */
@@ -83,12 +93,12 @@ describe("shared session status panel", () => {
 			() => "Workflow: TuiBrainstorming · Generate and discuss TUI concepts",
 		);
 		agents.set(() => "Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Shift+G");
-		const rows = renderLatest(fake.updates, 100);
+		const rows = renderLatest(fake.updates, 100, markedTheme());
 		workflow.dispose();
 		agents.dispose();
 
 		expect(rows).toEqual([
-			"─".repeat(100),
+			`<dim>${"─".repeat(100)}</dim>`,
 			"Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Shift+G",
 			"Workflow: TuiBrainstorming · Generate and discuss TUI concepts",
 		]);

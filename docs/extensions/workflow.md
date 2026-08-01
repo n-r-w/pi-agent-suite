@@ -148,7 +148,7 @@ In interactive TUI mode, the active workflow saved in the current session publis
 Workflow: TuiBrainstorming · Generate and discuss TUI concepts
 ```
 
-The row contains the workflow ID and active stage description. It never includes stage IDs or transitions. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed. The row is clipped to the terminal width and ends with `…` when content is hidden.
+The row contains the workflow ID and active stage description. It never includes stage IDs or transitions. The shared separator and the complete Workflow row use Pi's dim color. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed. The row is clipped to the terminal width and ends with `…` when content is hidden.
 
 Creation, activation, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row; those policies affect tool and provider-context availability only. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
 

@@ -65,7 +65,7 @@ class SessionStatusPanelComponent implements Component {
 			return [];
 		}
 		return [
-			"─".repeat(width),
+			this.theme.fg("dim", "─".repeat(width)),
 			...this.rows.map((row) => truncateToWidth(row(this.theme), width, "…")),
 		];
 	}

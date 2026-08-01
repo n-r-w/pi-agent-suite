@@ -38,6 +38,15 @@ function theme(): Theme {
 	} as Theme;
 }
 
+/** Marks theme colors without changing status text. */
+function markedTheme(): Theme {
+	return {
+		fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+		bg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	} as Theme;
+}
+
 /** Creates one dynamic workflow state with caller-controlled display text and route. */
 function workflowState(
 	description: string,
@@ -77,12 +86,13 @@ function workflowState(
 function renderLatest(
 	updates: readonly { key: string; content: WidgetContent }[],
 	width: number,
+	selectedTheme: Theme = theme(),
 ): string[] {
 	const factory = updates.at(-1)?.content;
 	if (typeof factory !== "function") {
 		throw new Error("workflow status widget factory is missing");
 	}
-	return factory({} as TUI, theme()).render(width);
+	return factory({} as TUI, selectedTheme).render(width);
 }
 
 describe("workflow session status indicator", () => {
@@ -103,12 +113,16 @@ describe("workflow session status indicator", () => {
 		const narrowRows = renderLatest(fake.updates, 36).map((row) =>
 			stripVTControlCharacters(row),
 		);
+		const styledRows = renderLatest(fake.updates, 120, markedTheme());
 		indicator.dispose();
 
 		expect(fullRows).toEqual([
 			"─".repeat(120),
 			"Workflow: TuiBrainstorming · Generate and discuss TUI concepts",
 		]);
+		expect(styledRows[1]).toBe(
+			"<dim>Workflow: TuiBrainstorming · Generate and discuss TUI concepts</dim>",
+		);
 		expect(narrowRows[1]?.endsWith("…")).toBe(true);
 		expect(visibleWidth(narrowRows[1] ?? "")).toBe(36);
 	});

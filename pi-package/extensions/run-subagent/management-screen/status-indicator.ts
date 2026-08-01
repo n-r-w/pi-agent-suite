@@ -25,7 +25,17 @@ export interface SubagentStatusSource {
 
 /** Builds the themed Agents row from one immutable hierarchy count snapshot. */
 function renderAgentsStatus(counts: AgentStatusCounts, theme: Theme): string {
-	return `Agents: ${theme.fg("accent", AGENT_STATUS_ICONS.running)} ${counts.running} · ${theme.fg("success", AGENT_STATUS_ICONS.done)} ${counts.done} · ${theme.fg("error", AGENT_STATUS_ICONS.failed)} ${counts.failed} · ${theme.fg("warning", AGENT_STATUS_ICONS.aborted)} ${counts.aborted} · Ctrl+Shift+G`;
+	return [
+		theme.fg("dim", "Agents: "),
+		theme.fg("accent", AGENT_STATUS_ICONS.running),
+		theme.fg("dim", ` ${counts.running} · `),
+		theme.fg("success", AGENT_STATUS_ICONS.done),
+		theme.fg("dim", ` ${counts.done} · `),
+		theme.fg("error", AGENT_STATUS_ICONS.failed),
+		theme.fg("dim", ` ${counts.failed} · `),
+		theme.fg("warning", AGENT_STATUS_ICONS.aborted),
+		theme.fg("dim", ` ${counts.aborted} · Ctrl+Shift+G`),
+	].join("");
 }
 
 /** Installs the Agents row and returns its subscription and row cleanup. */

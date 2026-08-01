@@ -55,7 +55,7 @@ export function installWorkflowStatusIndicator(
 				return;
 			}
 			const status = renderWorkflowStatus(state);
-			row.set(() => status);
+			row.set((theme) => theme.fg("dim", status));
 		},
 		dispose: () => row.dispose(),
 	};

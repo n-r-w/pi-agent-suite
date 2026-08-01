@@ -127,7 +127,7 @@ In interactive root TUI mode, the extension publishes an `Agents` row above Pi's
 Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Shift+G
 ```
 
-The row counts running, successful, failed, and aborted sessions across the complete owned hierarchy. It shares one panel and one upper separator with other package status producers. When the hierarchy becomes empty, only the `Agents` row disappears; other rows remain visible. Every row is clipped to the terminal width and ends with `…` when content is hidden.
+The row counts running, successful, failed, and aborted sessions across the complete owned hierarchy. It shares one panel and one upper separator with other package status producers. The separator and ordinary row text use Pi's dim color; the four agent icons retain their semantic accent, success, error, and warning colors. When the hierarchy becomes empty, only the `Agents` row disappears; other rows remain visible. Every row is clipped to the terminal width and ends with `…` when content is hidden.
 
 RPC and print modes do not construct or publish the interactive status panel.
 

@@ -194,7 +194,7 @@ describe("subagent main-window status indicator", () => {
 		dispose();
 
 		expect(status).toContain(
-			"Agents: <accent>⧗</accent> 1 · <success>✓</success> 1 · <error>✗</error> 1 · <warning>■</warning> 1 · Ctrl+Shift+G",
+			"<dim>Agents: </dim><accent>⧗</accent><dim> 1 · </dim><success>✓</success><dim> 1 · </dim><error>✗</error><dim> 1 · </dim><warning>■</warning><dim> 1 · Ctrl+Shift+G</dim>",
 		);
 	});
 
