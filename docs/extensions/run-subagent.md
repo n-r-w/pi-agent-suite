@@ -102,7 +102,7 @@ The selected model is resolved once before recovery. `ModelRegistry.hasConfigure
 
 Only a failed RPC response for the first `prompt` can trigger child replacement. Its first error line must be exactly `No API key found for <provider>.` for the selected provider, and the prompt must not have been accepted. Status, projection, extension, and other service events do not block recovery. A failed process exits before the FIFO slot is released. A successful prompt response permanently ends recovery for that operation. Initial starts and terminal-session continuations use this policy; active steering does not start a process and does not use it.
 
-The shared policy reads one configuration file during extension startup. When `PI_AGENT_SUITE_DIR` is not set, it appends `agent-suite/child-startup/config.json` to Pi's agent directory. Pi resolves that directory from `PI_CODING_AGENT_DIR` when set, otherwise from `~/.pi/agent`. When `PI_AGENT_SUITE_DIR` is set, the file is `$PI_AGENT_SUITE_DIR/child-startup/config.json`. No other configuration path is checked.
+The shared policy reads one configuration file during extension startup. When `PI_AGENT_SUITE_DIR` is empty or unset, it appends `agent-suite/child-startup/config.json` to Pi's agent directory. Pi resolves that directory from a non-empty `PI_CODING_AGENT_DIR`, otherwise from `~/.pi/agent`. When `PI_AGENT_SUITE_DIR` is non-empty, the file is `$PI_AGENT_SUITE_DIR/child-startup/config.json`. No other configuration path is checked.
 
 Default configuration:
 
