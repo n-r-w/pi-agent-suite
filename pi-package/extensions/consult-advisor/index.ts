@@ -73,7 +73,7 @@ const ConsultAdvisorParameters = Type.Object(
 		question: Type.String({
 			description: "Focused question to ask the advisor. ENGLISH ONLY",
 			minLength: 1,
-			maxLength: 2048,
+			maxLength: 8192,
 		}),
 	},
 	{ additionalProperties: false },

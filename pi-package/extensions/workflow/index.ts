@@ -78,18 +78,18 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 	{
 		id: technicalIdentifierSchema({
 			description: "Unique stage ID referenced by transitions",
-			minLength: 2,
-			maxLength: 16,
+			minLength: 1,
+			maxLength: 32,
 		}),
 		description: singleLineTextSchema({
 			description: "Short single-line summary of stage outcome",
-			minLength: 10,
+			minLength: 1,
 			maxLength: 128,
 		}),
 		prompt: Type.String({
 			description: "Instructions and completion criteria for this stage",
 			minLength: 10,
-			maxLength: 4096,
+			maxLength: 8192,
 		}),
 		initial: Type.Optional(
 			Type.Boolean({
@@ -112,13 +112,13 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 	{
 		from: technicalIdentifierSchema({
 			description: "Source stage ID",
-			minLength: 2,
-			maxLength: 16,
+			minLength: 1,
+			maxLength: 32,
 		}),
 		to: technicalIdentifierSchema({
 			description: "Target stage ID",
-			minLength: 2,
-			maxLength: 16,
+			minLength: 1,
+			maxLength: 32,
 		}),
 		type: StringEnum(["advance", "rework"] as const, {
 			description:
@@ -134,19 +134,19 @@ const WORKFLOW_CREATE_SCHEMA = Type.Object(
 		id: singleLineTextSchema({
 			description:
 				"Unique workflow ID. Must not match any other workflow ID after NFC normalization",
-			minLength: 3,
+			minLength: 6,
 			maxLength: 32,
 		}),
 		description: singleLineTextSchema({
 			description: "Single-line summary of workflow's purpose",
-			minLength: 3,
+			minLength: 1,
 			maxLength: 256,
 		}),
 		prompt: Type.Optional(
 			Type.String({
 				description:
 					"Optional workflow-level instructions applied throughout all stages",
-				minLength: 10,
+				minLength: 1,
 				maxLength: 8192,
 			}),
 		),
