@@ -344,7 +344,7 @@ describe("workflow semantic tool rendering", () => {
 	/**
 	 * Proves creation keeps its workflow and initial-stage identities in active and reconstructed session rendering.
 	 * Input and expected output: successful and rejected create calls show both submitted references in both screens.
-	 * Edge case: a case-insensitive catalog collision still persists semantic details before execution fails.
+	 * Edge case: an exact catalog collision still persists semantic details before execution fails.
 	 * Dependencies: workflow presentation events, package registry reconstruction, and create tool execution.
 	 */
 	test("renders workflow creation before and after execution", async () => {
@@ -373,7 +373,7 @@ describe("workflow semantic tool rendering", () => {
 		const rejected = await executeTool(
 			fixture,
 			"workflow_create",
-			createArguments("DELIVERY", "Conflicting delivery process"),
+			createArguments("delivery", "Conflicting delivery process"),
 		);
 		expect(rejected.isError).toBe(true);
 		const activeRejected = renderCompletedTool(rejected.definition, rejected);
@@ -383,7 +383,7 @@ describe("workflow semantic tool rendering", () => {
 		);
 		expect(activeRejected.call).toEqual([
 			"workflow_create",
-			"Workflow: DELIVERY · Conflicting delivery process",
+			"Workflow: delivery · Conflicting delivery process",
 			"Stage: implementation · Implementation stage",
 		]);
 		expect(activeRejected.result.join("\n")).toContain("Error:");

@@ -90,7 +90,7 @@ A project agent definition supplies the child prompt, model, thinking level, too
 
 An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.
 
-The optional `workflows` frontmatter field restricts the child to listed workflow IDs. Matching is case-insensitive; omission allows all workflows, and `workflows: []` denies every workflow. Unknown or duplicate names reject the launch before authorization and process startup. The launcher sends canonical IDs to the child through its owned environment; callers do not configure this transport directly.
+The optional `workflows` frontmatter field restricts the child to listed workflow IDs. Matching is exact and case-sensitive after NFC normalization; omission allows all workflows, and `workflows: []` denies every workflow. Unknown or NFC-equivalent duplicate names reject the launch before authorization and process startup. The launcher sends canonical IDs to the child through its owned environment; callers do not configure this transport directly.
 
 ## Startup acceptance
 
@@ -240,8 +240,8 @@ Starts a callable agent in a new saved logical session.
 
 | Name | Required | Type or shape | Meaning |
 | --- | --- | --- | --- |
-| `agentId` | Yes | String | ID of an available callable agent. |
-| `taskName` | Yes | String containing 3–60 Unicode code points | Short name for the delegated task. |
+| `agentId` | Yes | Trimmed single-line Unicode string | Exact NFC-normalized ID of an available callable agent. |
+| `taskName` | Yes | Trimmed single-line string with schema length 3–60 | Short name for the delegated task. |
 | `prompt` | Yes | String containing at least one non-whitespace Unicode code point | Initial child prompt. |
 
 After the child accepts the prompt, the tool returns:

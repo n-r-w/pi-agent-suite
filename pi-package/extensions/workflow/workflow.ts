@@ -1,3 +1,8 @@
+import {
+	isSingleLineText,
+	isTechnicalIdentifier,
+} from "../../shared/text-contracts";
+
 export type WorkflowTransitionType = "advance" | "rework";
 export type WorkflowStageStatus = "not_started" | "in_progress" | "completed";
 export type WorkflowSource = "catalog" | "dynamic";
@@ -45,7 +50,6 @@ const SAVED_WORKFLOW_KEYS = new Set([
 	"stages",
 	"transitions",
 ]);
-const LINE_BREAK_PATTERN = /[\r\n]/u;
 
 /** Validates YAML-derived data before it enters workflow domain logic. */
 export function validateWorkflowDefinition(
@@ -54,9 +58,10 @@ export function validateWorkflowDefinition(
 	source: string,
 ): WorkflowDefinition {
 	try {
-		assertText(id, "workflow id");
+		const normalizedId = id.normalize("NFC");
+		assertSingleLineText(normalizedId, "workflow id");
 		const root = requireObject(value, "workflow", ROOT_KEYS);
-		return parseWorkflowDefinition(id, root);
+		return parseWorkflowDefinition(normalizedId, root);
 	} catch (error) {
 		throw new Error(`${source}: ${errorMessage(error)}`);
 	}
@@ -69,7 +74,7 @@ export function validateCreatedWorkflowDefinition(
 ): WorkflowDefinition {
 	try {
 		const root = requireObject(value, "workflow", CREATED_ROOT_KEYS);
-		const id = readText(root, "id");
+		const id = readSingleLineText(root, "id").normalize("NFC");
 		return parseWorkflowDefinition(id, root);
 	} catch (error) {
 		throw new Error(`${source}: ${errorMessage(error)}`);
@@ -103,7 +108,7 @@ export function transitionWorkflow(
 	state: WorkflowState,
 	stageId: string,
 ): WorkflowState {
-	assertText(stageId, "stageId");
+	assertTechnicalIdentifier(stageId, "stageId");
 	const availableTransitions = getAvailableTransitions(state);
 	const transition = availableTransitions.find(
 		(candidate) => candidate.to === stageId,
@@ -232,7 +237,7 @@ function isWorkflowStateEntry(value: unknown): value is object {
 /** Revalidates a persisted definition instead of trusting session JSON. */
 function validateSavedWorkflow(value: unknown): WorkflowDefinition {
 	const saved = requireObject(value, "saved workflow", SAVED_WORKFLOW_KEYS);
-	const id = readText(saved, "id");
+	const id = readSingleLineText(saved, "id").normalize("NFC");
 	return validateWorkflowDefinition(
 		id,
 		{
@@ -284,7 +289,7 @@ function parseWorkflowDefinition(
 	id: string,
 	root: Readonly<Record<string, unknown>>,
 ): WorkflowDefinition {
-	const description = readText(root, "description");
+	const description = readSingleLineText(root, "description");
 	const prompt = readOptionalPromptText(root, "prompt");
 	const rawStages = requireArray(Reflect.get(root, "stages"), "stages");
 	const rawTransitions = requireArray(
@@ -307,8 +312,8 @@ function parseWorkflowDefinition(
 function parseStage(value: unknown, index: number): WorkflowStage {
 	const stage = requireObject(value, `stages[${index}]`, STAGE_KEYS);
 	return {
-		id: readText(stage, "id"),
-		description: readText(stage, "description"),
+		id: readTechnicalIdentifier(stage, "id"),
+		description: readSingleLineText(stage, "description"),
 		prompt: readPromptText(stage, "prompt"),
 		initial: readOptionalBoolean(stage, "initial"),
 		final: readOptionalBoolean(stage, "final"),
@@ -327,8 +332,8 @@ function parseTransition(value: unknown, index: number): WorkflowTransition {
 		throw new Error(`transitions[${index}].type must be advance or rework`);
 	}
 	return {
-		from: readText(transition, "from"),
-		to: readText(transition, "to"),
+		from: readTechnicalIdentifier(transition, "from"),
+		to: readTechnicalIdentifier(transition, "to"),
 		type,
 	};
 }
@@ -481,10 +486,17 @@ function requireArray(value: unknown, field: string): readonly unknown[] {
 	return value;
 }
 
-/** Reads a required non-empty trimmed single-line string. */
-function readText(value: object, key: string): string {
+/** Reads one human-readable single-line field without applying LLM budgets. */
+function readSingleLineText(value: object, key: string): string {
 	const text = Reflect.get(value, key);
-	assertText(text, key);
+	assertSingleLineText(text, key);
+	return text;
+}
+
+/** Reads one technical identifier without applying LLM budgets. */
+function readTechnicalIdentifier(value: object, key: string): string {
+	const text = Reflect.get(value, key);
+	assertTechnicalIdentifier(text, key);
 	return text;
 }
 
@@ -517,15 +529,23 @@ function readPromptText(value: object, key: string): string {
 	return normalized;
 }
 
-/** Enforces the shared text rule for IDs and descriptions. */
-function assertText(value: unknown, field: string): asserts value is string {
-	if (
-		typeof value !== "string" ||
-		value.length === 0 ||
-		value.trim() !== value ||
-		LINE_BREAK_PATTERN.test(value)
-	) {
+/** Rejects invalid human-readable text at workflow runtime boundaries. */
+function assertSingleLineText(
+	value: unknown,
+	field: string,
+): asserts value is string {
+	if (!isSingleLineText(value)) {
 		throw new Error(`${field} must be a non-empty trimmed single-line string`);
+	}
+}
+
+/** Rejects whitespace-bearing technical references at workflow runtime boundaries. */
+function assertTechnicalIdentifier(
+	value: unknown,
+	field: string,
+): asserts value is string {
+	if (!isTechnicalIdentifier(value)) {
+		throw new Error(`${field} must be a non-empty string without whitespace`);
 	}
 }
 

@@ -7,7 +7,7 @@ import {
 	isFileNotFoundError,
 } from "./agent-suite-storage";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
-import { findCaseInsensitiveWorkflowDuplicate } from "./workflow-policy";
+import { isSingleLineText } from "./text-contracts";
 
 const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
 const AGENTS_DIR = "agents";
@@ -203,7 +203,7 @@ function parseAgentDefinition(
 		return undefined;
 	}
 
-	if (description !== undefined && typeof description !== "string") {
+	if (description !== undefined && !isSingleLineText(description)) {
 		return undefined;
 	}
 
@@ -217,18 +217,23 @@ function parseAgentDefinition(
 		return undefined;
 	}
 
-	const workflows = parseWorkflowList(rawWorkflows);
+	const workflows = parseIdentityList(rawWorkflows);
 	if (workflows === false) {
 		return undefined;
 	}
 
-	const agents = parseStringList(rawAgents);
+	const agents = parseIdentityList(rawAgents);
 	if (agents === false) {
 		return undefined;
 	}
 
+	const id = basename(fileName, AGENT_FILE_EXTENSION).normalize("NFC");
+	if (!isSingleLineText(id)) {
+		return undefined;
+	}
+
 	return {
-		id: basename(fileName, AGENT_FILE_EXTENSION),
+		id,
 		description: description ?? "",
 		type,
 		prompt: parsed.body.trim(),
@@ -273,18 +278,31 @@ function isModelId(value: unknown): value is string {
 	return separatorIndex > 0 && separatorIndex < value.length - 1;
 }
 
-/** Parses workflow names and rejects duplicates under case-insensitive matching. */
-function parseWorkflowList(
+/** Parses an optional list of normalized Unicode identity names. */
+function parseIdentityList(
 	value: unknown,
 ): readonly string[] | undefined | false {
-	const workflows = parseStringList(value);
-	if (workflows === false || workflows === undefined) {
-		return workflows;
+	if (value === undefined) {
+		return undefined;
 	}
-	if (findCaseInsensitiveWorkflowDuplicate(workflows) !== undefined) {
+	if (!Array.isArray(value)) {
 		return false;
 	}
-	return workflows;
+
+	const identities: string[] = [];
+	const seen = new Set<string>();
+	for (const item of value) {
+		if (!isSingleLineText(item)) {
+			return false;
+		}
+		const identity = item.normalize("NFC");
+		if (seen.has(identity)) {
+			return false;
+		}
+		seen.add(identity);
+		identities.push(identity);
+	}
+	return identities;
 }
 
 /** Parses optional unique non-empty string lists from frontmatter. */

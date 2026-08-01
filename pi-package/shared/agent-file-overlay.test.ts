@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { selectAgentFiles } from "./agent-file-overlay";
 
 describe("agent file overlay", () => {
-	test("excludes one ambiguous project ID without affecting unrelated files", () => {
-		// Purpose: project files that normalize to one ID must not gain an order-dependent winner.
-		// Input and expected output: K and Kelvin-sign files both normalize to k, so global k and both project candidates are excluded.
+	test("excludes one NFC-ambiguous project ID without folding case", () => {
+		// Purpose: project files with one NFC identity must not gain an order-dependent winner or hide a differently cased global agent.
+		// Input and expected output: K and Kelvin-sign files normalize to K and are excluded, while lowercase global k remains distinct.
 		// Edge case: unrelated global and project agents remain selected in deterministic order.
-		// Dependencies: the pure selector avoids filesystem case-folding differences between macOS and Linux.
+		// Dependencies: the pure selector avoids filesystem normalization differences between macOS and Linux.
 		expect(
 			selectAgentFiles(
 				["k.md", "GlobalOnly.md"],
@@ -14,6 +14,7 @@ describe("agent file overlay", () => {
 			),
 		).toEqual([
 			{ source: "global", entry: "GlobalOnly.md" },
+			{ source: "global", entry: "k.md" },
 			{ source: "project", entry: "ProjectOnly.md" },
 		]);
 	});

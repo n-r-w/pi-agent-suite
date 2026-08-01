@@ -140,12 +140,13 @@ Project extension and overrides:
 <project>/.pi/agents/
 ```
 
-Project agent IDs replace matching global IDs case-insensitively. Invalid or ambiguous project definitions make only the matching ID unavailable.
+Project agent IDs replace global IDs only when their NFC-normalized names match exactly, including case. Invalid or ambiguous project definitions make only that exact identity unavailable.
 
 Basic rules:
 
 - Each agent is one `.md` file.
-- The agent ID is the file name without `.md`.
+- The agent ID is the NFC-normalized file name without `.md`.
+- Agent IDs may use any Unicode language, internal spaces, and punctuation. They must be non-empty, trimmed, and single-line.
 - The settings block goes at the top between `---` lines.
 - The Markdown text after the settings block is the agent prompt.
 - `type` can be `main`, `subagent`, or `both`.

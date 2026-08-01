@@ -362,12 +362,12 @@ describe("workflow extension lifecycle", () => {
 	});
 
 	/**
-	 * Proves workflow IDs use one case-insensitive identity rule and rejected creates are atomic.
-	 * Input and expected output: catalog and active-dynamic case variants reject before append; a different ID replaces state.
+	 * Proves workflow IDs use exact NFC identity and rejected creates are atomic.
+	 * Input and expected output: a catalog case variant remains distinct, an exact active ID rejects, and a different ID replaces state.
 	 * Edge case: append failure retains the prior catalog route before a later successful replacement.
 	 * Dependencies: catalog normalization, dynamic state identity, and append-before-memory ordering.
 	 */
-	test("rejects duplicate IDs and atomically replaces a different workflow", async () => {
+	test("uses exact workflow IDs and atomically replaces a different workflow", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -375,9 +375,7 @@ describe("workflow extension lifecycle", () => {
 		const activate = requireTool(fake, "workflow_activate");
 		const transition = requireTool(fake, "workflow_transition");
 
-		await expect(
-			create.execute("create", createArguments("DELIVERY")),
-		).rejects.toThrow("delivery");
+		await create.execute("create", createArguments("DELIVERY"));
 		await activate.execute("activate", { workflowId: "delivery" });
 		await transition.execute("transition", { stageId: "done" });
 		fake.appendError = new Error("append failed");
@@ -399,7 +397,7 @@ describe("workflow extension lifecycle", () => {
 		await create.execute("create", createArguments("new-delivery"));
 		const entriesBeforeDuplicate = [...fake.appended];
 		await expect(
-			create.execute("create", createArguments("NEW-DELIVERY")),
+			create.execute("create", createArguments("new-delivery")),
 		).rejects.toThrow("already active");
 		expect(fake.appended).toEqual(entriesBeforeDuplicate);
 		const replaced = String(

@@ -37,8 +37,8 @@ describe("Subagents contracts", () => {
 		// Dependencies: production boundary parsers only.
 		expect({
 			start: parseSubagentStartRequest({
-				agentId: "SubAgentCoder",
-				taskName: "a\u0301b",
+				agentId: "Team Lead",
+				taskName: "Trace runtime",
 				prompt: "work",
 			}),
 			steer: parseSubagentSteerRequest({ sessionId: 2, prompt: "change" }),
@@ -60,6 +60,27 @@ describe("Subagents contracts", () => {
 					sessionId: 3,
 					question: "What changed?",
 					extra: true,
+				}),
+			),
+			paddedAgentId: failureCode(() =>
+				parseSubagentStartRequest({
+					agentId: " Team Lead",
+					taskName: "Trace runtime",
+					prompt: "work",
+				}),
+			),
+			paddedTaskName: failureCode(() =>
+				parseSubagentStartRequest({
+					agentId: "Team Lead",
+					taskName: " Trace runtime",
+					prompt: "work",
+				}),
+			),
+			multilineTaskName: failureCode(() =>
+				parseSubagentStartRequest({
+					agentId: "Team Lead",
+					taskName: "Trace\u2028runtime",
+					prompt: "work",
 				}),
 			),
 			blankPrompt: failureCode(() =>
@@ -86,8 +107,8 @@ describe("Subagents contracts", () => {
 			),
 		}).toEqual({
 			start: {
-				agentId: "SubAgentCoder",
-				taskName: "a\u0301b",
+				agentId: "Team Lead",
+				taskName: "Trace runtime",
 				prompt: "work",
 			},
 			steer: { sessionId: 2, prompt: "change" },
@@ -97,6 +118,9 @@ describe("Subagents contracts", () => {
 			missing: "invalid_request",
 			extra: "invalid_request",
 			queryExtra: "invalid_request",
+			paddedAgentId: "invalid_request",
+			paddedTaskName: "invalid_request",
+			multilineTaskName: "invalid_request",
 			blankPrompt: "invalid_request",
 			blankQuestion: "invalid_request",
 			duplicate: "invalid_request",

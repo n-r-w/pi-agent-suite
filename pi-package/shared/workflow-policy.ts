@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isSingleLineText } from "./text-contracts";
 
 /** Canonical workflow IDs, with undefined preserving unrestricted policy. */
 export type ResolvedWorkflowPolicy = readonly string[] | undefined;
@@ -21,12 +22,12 @@ interface WorkflowCatalogPolicyCarrier {
 	[WORKFLOW_CATALOG_POLICY_PROPERTY]?: WorkflowCatalogPolicy;
 }
 
-/** Publishes canonical catalog identity after rejecting case-insensitive collisions. */
+/** Publishes canonical catalog identity after rejecting NFC-equivalent collisions. */
 export function publishWorkflowCatalogPolicy(
 	pi: Pick<ExtensionAPI, "events">,
 	catalog: WorkflowCatalogPolicy,
 ): WorkflowCatalogPolicy {
-	const collision = findCaseInsensitiveWorkflowDuplicate(catalog.ids);
+	const collision = findWorkflowDuplicate(catalog.ids);
 	const publication: WorkflowCatalogPolicy =
 		collision === undefined
 			? {
@@ -36,7 +37,7 @@ export function publishWorkflowCatalogPolicy(
 			: {
 					ids: [],
 					error: new Error(
-						`workflow catalog IDs collide case-insensitively: ${collision}`,
+						`workflow catalog IDs collide after NFC normalization: ${collision}`,
 					),
 				};
 	const carrier = pi.events as unknown as WorkflowCatalogPolicyCarrier;
@@ -44,7 +45,7 @@ export function publishWorkflowCatalogPolicy(
 	return publication;
 }
 
-/** Resolves optional agent names through the currently published canonical catalog. */
+/** Resolves optional workflow names through the currently published canonical catalog. */
 export function resolveWorkflowPolicy(
 	pi: Pick<ExtensionAPI, "events">,
 	names: readonly string[] | undefined,
@@ -55,11 +56,17 @@ export function resolveWorkflowPolicy(
 	if (names.length === 0) {
 		return { kind: "resolved", policy: [] };
 	}
-	const duplicate = findCaseInsensitiveWorkflowDuplicate(names);
+	if (names.some((name) => !isSingleLineText(name))) {
+		return {
+			kind: "error",
+			issue: "workflow policy names must be single-line strings",
+		};
+	}
+	const duplicate = findWorkflowDuplicate(names);
 	if (duplicate !== undefined) {
 		return {
 			kind: "error",
-			issue: `workflow policy contains a case-insensitive duplicate: ${duplicate}`,
+			issue: `workflow policy contains an NFC-equivalent duplicate: ${duplicate}`,
 		};
 	}
 	const catalog = readWorkflowCatalogPolicy(pi);
@@ -94,16 +101,10 @@ export function parseChildWorkflowPolicy(
 	} catch {
 		return { kind: "error", issue: "child workflow policy must be valid JSON" };
 	}
-	if (
-		!Array.isArray(value) ||
-		value.some(
-			(item) =>
-				typeof item !== "string" || item.length === 0 || item.trim() !== item,
-		)
-	) {
+	if (!Array.isArray(value) || value.some((item) => !isSingleLineText(item))) {
 		return {
 			kind: "error",
-			issue: "child workflow policy must be an array of non-empty strings",
+			issue: "child workflow policy must be an array of single-line strings",
 		};
 	}
 	return resolveWorkflowPolicy(pi, value);
@@ -146,8 +147,8 @@ function readWorkflowCatalogPolicy(
 	);
 }
 
-/** Returns the first colliding spelling under workflow identity matching. */
-export function findCaseInsensitiveWorkflowDuplicate(
+/** Returns the first duplicate under exact NFC workflow identity. */
+export function findWorkflowDuplicate(
 	names: readonly string[],
 ): string | undefined {
 	const seen = new Set<string>();
@@ -161,7 +162,7 @@ export function findCaseInsensitiveWorkflowDuplicate(
 	return undefined;
 }
 
-/** Normalizes workflow identity without changing the published canonical spelling. */
+/** Normalizes workflow identity without folding case. */
 export function toWorkflowMatchKey(name: string): string {
-	return name.toLowerCase();
+	return name.normalize("NFC");
 }

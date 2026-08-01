@@ -924,10 +924,10 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("uses the current project's main-agent override", async () => {
-		// Purpose: main-agent selection must resolve project-local definitions against the command cwd.
-		// Input and expected output: local builder replaces global Builder case-insensitively and contributes the local prompt.
-		// Edge case: the stored local ID casing differs from the explicit command argument and global file.
+	test("selects an exact project agent beside a case-variant global agent", async () => {
+		// Purpose: main-agent selection must resolve project-local definitions against the command cwd without folding distinct names.
+		// Input and expected output: exact local builder contributes its prompt while global Builder remains a separate choice.
+		// Edge case: the command must use the selected agent's exact case.
 		// Dependencies: this test uses isolated suite and project agent files plus runtime composition fakes.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const projectDir = join(agentDir, "project");
@@ -946,7 +946,7 @@ describe("main-agent-selection", () => {
 			const ctx = createCommandContext(projectDir);
 			mainAgentSelection(pi);
 
-			await getCommand(pi, "agent").handler("BUILDER", ctx);
+			await getCommand(pi, "agent").handler("builder", ctx);
 			const result = await getBeforeAgentStartHandler(pi)(
 				{ type: "before_agent_start", systemPrompt: "Base prompt" },
 				ctx,
@@ -996,7 +996,7 @@ describe("main-agent-selection", () => {
 			const ctx = createCommandContext("/tmp/project", undefined, [model]);
 			mainAgentSelection(pi);
 
-			await getCommand(pi, "agent").handler("builder", ctx);
+			await getCommand(pi, "agent").handler("Builder", ctx);
 
 			expect(await readOnlyStateFile(agentDir)).toEqual({
 				cwd: "/tmp/project",
@@ -1023,7 +1023,7 @@ describe("main-agent-selection", () => {
 
 	test("publishes canonical workflow policy for selected main agent", async () => {
 		// Purpose: main runtime metadata must carry canonical workflow IDs resolved before other agent side effects.
-		// Input and expected output: mixed-case Review selection publishes the catalog spelling while applying the agent normally.
+		// Input and expected output: exact Review selection publishes the catalog spelling while applying the agent normally.
 		// Edge case: workflow policy remains independent from the selected tool list.
 		// Dependencies: this test uses the shared per-Pi workflow catalog publication and isolated agent state.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1032,7 +1032,7 @@ describe("main-agent-selection", () => {
 				description: "Reviews",
 				body: "Reviewer prompt",
 				tools: ["read"],
-				workflows: ["rEvIeW"],
+				workflows: ["Review"],
 			});
 			const pi = createExtensionApiFake();
 			publishWorkflowCatalogPolicy(pi, { ids: ["Review", "Delivery"] });
@@ -1304,8 +1304,8 @@ describe("main-agent-selection", () => {
 
 	test("reload rereads selected-agent state and updates runtime contribution", async () => {
 		// Purpose: /reload must be the boundary where persisted selected-agent state affects the running session.
-		// Input and expected output: missing state at startup then lowercase Sage state before reload publishes Sage prompt after reload.
-		// Edge case: reload preserves the stored agent ID casing in runtime contribution.
+		// Input and expected output: missing state at startup then exact Sage state before reload publishes Sage prompt after reload.
+		// Edge case: reload preserves the stored agent ID spelling in runtime contribution.
 		// Dependencies: this test writes only isolated agent definitions and selected-agent state files.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -1329,7 +1329,7 @@ describe("main-agent-selection", () => {
 			});
 			await writeSuiteSelectedAgentState(agentDir, "/tmp/project", {
 				cwd: "/tmp/project",
-				activeAgentId: "sage",
+				activeAgentId: "Sage",
 			});
 
 			await sessionStart({ type: "session_start", reason: "reload" }, ctx);

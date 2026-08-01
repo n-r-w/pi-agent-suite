@@ -324,7 +324,7 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 test("runtime child loading removes subagent context at maxDepth", () => {
 	// Purpose: a child at maxDepth must keep its selected-agent prompt while receiving no subagent tools or prompt sections.
 	// Input and expected output: the project agent prompt wins, every transported subagent tool is removed, and only the unrelated read tool stays active.
-	// Edge case: the child agent ID keeps global casing while the project override and tool policy remain independent of caller tools.
+	// Edge case: the project override uses the exact NFC agent ID while its tool policy remains independent of caller tools.
 	// Dependencies: local Pi CLI, isolated agent files and config, package lifecycle handlers, and a debug extension that exits before model access.
 	const repositoryDir = process.cwd();
 	const projectDir = realpathSync(
@@ -348,7 +348,7 @@ test("runtime child loading removes subagent context at maxDepth", () => {
 	);
 	writeProjectAgent(
 		projectDir,
-		"subagentextractor.md",
+		"SubAgentExtractor.md",
 		[
 			"---",
 			"description: Project extractor",
@@ -846,7 +846,7 @@ const MAIN_WORKFLOW_POLICY_CASES = [
 	{
 		mode: "main",
 		policyTools: ["workflow_activate"],
-		workflowPolicy: ["DELIVERY"],
+		workflowPolicy: ["delivery"],
 		projectsWorkflow: true,
 		expectedWorkflowIds: ["delivery"],
 	},
@@ -874,7 +874,7 @@ const CHILD_WORKFLOW_POLICY_CASES = [
 	{
 		mode: "child",
 		policyTools: ["workflow_transition"],
-		workflowPolicy: ["REVIEW"],
+		workflowPolicy: ["review"],
 		projectsWorkflow: true,
 		expectedWorkflowIds: ["review"],
 	},

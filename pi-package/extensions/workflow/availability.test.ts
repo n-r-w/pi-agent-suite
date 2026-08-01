@@ -111,23 +111,25 @@ describe("workflow availability", () => {
 	});
 
 	/**
-	 * Proves a case-only catalog rename cannot expose the active logical workflow for reactivation.
-	 * Input and expected output: saved ID DELIVERY and catalog ID delivery produce no activation option.
-	 * Edge case: transition remains available for the projected saved state.
-	 * Dependencies: case-insensitive workflow identity and the pure availability resolver.
+	 * Proves case variants remain separate workflow identities.
+	 * Input and expected output: policy delivery hides saved DELIVERY and exposes catalog delivery for activation.
+	 * Edge case: catalog availability still exposes transition because one allowed workflow exists.
+	 * Dependencies: exact NFC workflow identity and the pure availability resolver.
 	 */
-	test("excludes the active catalog workflow case-insensitively", () => {
+	test("keeps case variants as separate workflow identities", () => {
 		const state = activateWorkflow(workflow("DELIVERY"));
+		const delivery = workflow("delivery");
 		const result = resolveWorkflowAvailability({
-			catalog: [workflow("delivery")],
+			catalog: [delivery],
 			catalogValid: true,
 			policy: { kind: "resolved", policy: ["delivery"] },
 			state,
 		});
 
-		expect(result.projectedState).toBe(state);
-		expect(result.activationOptions).toEqual([]);
+		expect(result.projectedState).toBeUndefined();
+		expect(result.activationOptions).toEqual([delivery]);
 		expect(toolNames(result)).toEqual([
+			WORKFLOW_ACTIVATE_TOOL,
 			WORKFLOW_CREATE_TOOL,
 			WORKFLOW_TRANSITION_TOOL,
 		]);

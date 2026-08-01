@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { toAgentIdMatchKey } from "./agent-id";
 import { type AgentDefinition, loadAgentDefinitions } from "./agent-registry";
 import { AGENT_SUITE_DIR_ENV } from "./agent-suite-storage";
 
@@ -22,10 +21,10 @@ afterEach(async () => {
 });
 
 describe("agent registry project overlay", () => {
-	test("merges project agents of every type and overrides global IDs case-insensitively", async () => {
-		// Purpose: one project registry must extend both main-agent selection and Subagents without separate formats.
-		// Input and expected output: project main, subagent, and both definitions extend the global set, and local builder replaces global Builder.
-		// Edge case: override matching ignores file-name case while preserving the selected local agent ID.
+	test("merges project agents while preserving exact case variants", async () => {
+		// Purpose: one project registry must extend both main-agent selection and Subagents without collapsing distinct agent names.
+		// Input and expected output: project main, subagent, and both definitions extend the global set, while builder and Builder remain separate agents.
+		// Edge case: exact case-sensitive identity still permits a project file to override an NFC-equivalent global name.
 		// Dependencies: this test uses only temporary suite and project directories.
 		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
 			await writeAgent(globalAgentsDir, "Builder.md", "main", "Global builder");
@@ -57,6 +56,11 @@ describe("agent registry project overlay", () => {
 
 			const agents = await loadAgentDefinitions(projectDir);
 
+			expect(findAgent(agents, "Builder")).toMatchObject({
+				id: "Builder",
+				type: "main",
+				prompt: "Global builder",
+			});
 			expect(findAgent(agents, "builder")).toMatchObject({
 				id: "builder",
 				type: "main",
@@ -65,14 +69,14 @@ describe("agent registry project overlay", () => {
 			expect(findAgent(agents, "GlobalOnly")?.type).toBe("subagent");
 			expect(findAgent(agents, "ProjectWorker")?.type).toBe("subagent");
 			expect(findAgent(agents, "ProjectHybrid")?.type).toBe("both");
-			expect(agents).toHaveLength(4);
+			expect(agents).toHaveLength(5);
 		});
 	});
 
-	test("preserves absent, empty, and explicit workflow policies", async () => {
-		// Purpose: agent frontmatter must preserve the three workflow policy states before catalog resolution.
-		// Input and expected output: absent, empty, and mixed-case explicit lists become undefined, [], and original names.
-		// Edge case: frontmatter names remain unnormalized until the shared catalog resolver runs.
+	test("preserves valid workflow policies and rejects padded names", async () => {
+		// Purpose: agent frontmatter must preserve valid policy states without admitting names outside the shared single-line contract.
+		// Input and expected output: absent, empty, and mixed-case explicit lists remain available, while a padded name invalidates its agent.
+		// Edge case: case remains significant while identity values normalize only canonical Unicode composition.
 		// Dependencies: this test uses only temporary suite and project directories.
 		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
 			await writeFile(
@@ -100,19 +104,19 @@ describe("agent registry project overlay", () => {
 				"Review",
 				"DELIVERY",
 			]);
-			expect(findAgent(agents, "Spaced")?.workflows).toEqual([" Review"]);
+			expect(findAgent(agents, "Spaced")).toBeUndefined();
 		});
 	});
 
 	test.each([
-		["case-insensitive duplicates", "[Review, review]"],
+		["NFC-equivalent duplicates", "[Café, Café]"],
 		["wrong primitive", "review"],
 		["empty item", '[Review, ""]'],
 		["whitespace item", '[Review, "   "]'],
 	])("rejects invalid workflows frontmatter: %s", async (_case, workflows) => {
 		// Purpose: malformed workflow policy must make only that agent unavailable.
 		// Input and expected output: each invalid workflows value produces no parsed agent.
-		// Edge case: duplicate detection is case-insensitive while other agent files remain loadable.
+		// Edge case: duplicate detection normalizes Unicode without folding case while other agent files remain loadable.
 		// Dependencies: this test uses only temporary suite and project directories.
 		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
 			await writeFile(
@@ -128,10 +132,10 @@ describe("agent registry project overlay", () => {
 		});
 	});
 
-	test("keeps an invalid project override unavailable while loading unrelated agents", async () => {
-		// Purpose: a broken project override must not silently expose the global agent that it intended to replace.
-		// Input and expected output: malformed local HELPER hides global helper, while valid global and project agents remain available.
-		// Edge case: the local file must reserve its normalized ID before frontmatter parsing fails.
+	test("keeps a differently cased global agent beside an invalid project file", async () => {
+		// Purpose: a broken project definition must reserve only its exact NFC identity.
+		// Input and expected output: malformed local HELPER does not hide distinct global helper, while unrelated agents remain available.
+		// Edge case: case-sensitive identity prevents an invalid name variant from suppressing another agent.
 		// Dependencies: this test uses only temporary suite and project directories.
 		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
 			await writeAgent(
@@ -156,7 +160,7 @@ describe("agent registry project overlay", () => {
 
 			const agents = await loadAgentDefinitions(projectDir);
 
-			expect(findAgent(agents, "helper")).toBeUndefined();
+			expect(findAgent(agents, "helper")).toBeDefined();
 			expect(findAgent(agents, "GlobalOnly")).toBeDefined();
 			expect(findAgent(agents, "ProjectOnly")).toBeDefined();
 		});
@@ -205,11 +209,11 @@ async function writeAgent(
 	);
 }
 
-/** Finds one logical agent ID using the registry's case-insensitive matching rule. */
+/** Finds one logical agent ID using exact NFC identity. */
 function findAgent(
 	agents: readonly AgentDefinition[],
 	agentId: string,
 ): AgentDefinition | undefined {
-	const matchKey = toAgentIdMatchKey(agentId);
-	return agents.find((agent) => toAgentIdMatchKey(agent.id) === matchKey);
+	const matchKey = agentId.normalize("NFC");
+	return agents.find((agent) => agent.id.normalize("NFC") === matchKey);
 }

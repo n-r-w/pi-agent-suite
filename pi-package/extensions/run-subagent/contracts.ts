@@ -1,10 +1,12 @@
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
+import {
+	isSingleLineText,
+	singleLineTextSchema,
+} from "../../shared/text-contracts";
 import { invocationElapsedSeconds, type SubagentFeedback } from "./domain";
 import { sanitizePublicSubagentErrorMessage } from "./public-error";
 
-const TASK_NAME_MIN_CODE_POINTS = 3;
-const TASK_NAME_MAX_CODE_POINTS = 60;
 const UNICODE_WHITE_SPACE_CODE_POINT = /^\p{White_Space}$/u;
 
 /** Names the complete public subagent tool set. */
@@ -46,11 +48,11 @@ export interface SubagentFailureDetails {
 /** Declares the exact public start request boundary. */
 export const SubagentStartParameters = Type.Object(
 	{
-		agentId: Type.String({
+		agentId: singleLineTextSchema({
 			description: "Subagent ID listed in <available_subagents>",
 			minLength: 1,
 		}),
-		taskName: Type.String({
+		taskName: singleLineTextSchema({
 			description: "Short task name for subagent session",
 			minLength: 3,
 			maxLength: 60,
@@ -165,10 +167,8 @@ export function parseSubagentStartRequest(
 	const taskName = value["taskName"];
 	const prompt = value["prompt"];
 	if (
-		typeof agentId !== "string" ||
-		typeof taskName !== "string" ||
-		codePointLength(taskName) < TASK_NAME_MIN_CODE_POINTS ||
-		codePointLength(taskName) > TASK_NAME_MAX_CODE_POINTS ||
+		!isSingleLineText(agentId) ||
+		!isSingleLineText(taskName) ||
 		typeof prompt !== "string" ||
 		!hasNonWhitespaceCodePoint(prompt)
 	) {
@@ -355,11 +355,6 @@ function isOutcomeOnlyResult(
 		(outcome === "timeout" || outcome === "no_active_sessions") &&
 		isExactRecord(value, ["outcome"])
 	);
-}
-
-/** Counts Unicode code points instead of UTF-16 code units or grapheme clusters. */
-function codePointLength(value: string): number {
-	return Array.from(value).length;
 }
 
 /** Requires at least one Unicode code point outside the whitespace class. */

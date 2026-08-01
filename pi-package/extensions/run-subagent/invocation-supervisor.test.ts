@@ -528,10 +528,10 @@ describe("InvocationSupervisor", () => {
 	test.each([
 		[undefined, undefined],
 		[[], "[]"],
-		[["rEvIeW"], '["Review"]'],
+		[["Review"], '["Review"]'],
 	] as const)("connects workflow resolver policy %j to the child environment", async (configuredWorkflows, expectedEnvironment) => {
 		// Purpose: one accepted launch must carry the resolver result through the supervisor instead of testing either seam in isolation.
-		// Input and expected output: absent, empty, and mixed-case Review become absent, [], and the catalog's exact Review ID.
+		// Input and expected output: absent, empty, and exact Review become absent, [], and the catalog's exact Review ID.
 		// Edge case: inherited workflow transport is stripped before launch-owned policy is applied.
 		// Dependencies: production resolver, workflow catalog boundary, supervisor spawn environment, and a controlled child without provider requests.
 		const previous = process.env[SUBAGENT_WORKFLOW_IDS_ENV];

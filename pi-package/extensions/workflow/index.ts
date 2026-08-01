@@ -11,6 +11,10 @@ import {
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
+import {
+	singleLineTextSchema,
+	technicalIdentifierSchema,
+} from "../../shared/text-contracts";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
 import {
 	isWorkflowAllowed,
@@ -72,12 +76,12 @@ const SUCCESS_RESULT = {
 /** Closed workflow_create stage shape exposed to Pi tool validation. */
 const WORKFLOW_STAGE_SCHEMA = Type.Object(
 	{
-		id: Type.String({
+		id: technicalIdentifierSchema({
 			description: "Unique stage ID referenced by transitions",
 			minLength: 2,
 			maxLength: 16,
 		}),
-		description: Type.String({
+		description: singleLineTextSchema({
 			description: "Short single-line summary of stage outcome",
 			minLength: 10,
 			maxLength: 128,
@@ -106,12 +110,12 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 /** Closed workflow_create transition shape exposed to Pi tool validation. */
 const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 	{
-		from: Type.String({
+		from: technicalIdentifierSchema({
 			description: "Source stage ID",
 			minLength: 2,
 			maxLength: 16,
 		}),
-		to: Type.String({
+		to: technicalIdentifierSchema({
 			description: "Target stage ID",
 			minLength: 2,
 			maxLength: 16,
@@ -127,14 +131,14 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 /** Complete workflow_create boundary shape; graph invariants remain domain validation. */
 const WORKFLOW_CREATE_SCHEMA = Type.Object(
 	{
-		id: Type.String({
+		id: singleLineTextSchema({
 			description:
-				"Unique workflow ID. Must not match any other workflow ID case-insensitively",
+				"Unique workflow ID. Must not match any other workflow ID after NFC normalization",
 			minLength: 3,
 			maxLength: 32,
 		}),
-		description: Type.String({
-			description: "Short single-line summary of workflow's purpose",
+		description: singleLineTextSchema({
+			description: "Single-line summary of workflow's purpose",
 			minLength: 3,
 			maxLength: 256,
 		}),
@@ -593,7 +597,7 @@ function registerWorkflowActivateTool(
 		description: prompts.activateDescription,
 		parameters: Type.Object(
 			{
-				workflowId: Type.String({
+				workflowId: singleLineTextSchema({
 					description: "ID of workflow listed in <workflow_activation_options>",
 					minLength: 1,
 				}),
@@ -657,7 +661,7 @@ function registerWorkflowTransitionTool(
 		description: prompts.transitionDescription,
 		parameters: Type.Object(
 			{
-				stageId: Type.String({
+				stageId: technicalIdentifierSchema({
 					description: "Target stage ID listed in <available_transitions>",
 					minLength: 1,
 				}),

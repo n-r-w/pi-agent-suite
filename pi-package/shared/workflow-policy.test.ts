@@ -15,9 +15,11 @@ function createPolicyPi(): Pick<ExtensionAPI, "events"> {
 
 describe("workflow policy boundary", () => {
 	/** Proves absent, empty, and explicit configured policies keep distinct meanings. */
-	test("resolves configured names to canonical catalog IDs", () => {
+	test("resolves exact and NFC-equivalent names to canonical catalog IDs", () => {
 		const pi = createPolicyPi();
-		publishWorkflowCatalogPolicy(pi, { ids: ["Review", "delivery"] });
+		publishWorkflowCatalogPolicy(pi, {
+			ids: ["Review", "delivery", "Café"],
+		});
 
 		expect(resolveWorkflowPolicy(pi, undefined)).toEqual({
 			kind: "resolved",
@@ -27,27 +29,38 @@ describe("workflow policy boundary", () => {
 			kind: "resolved",
 			policy: [],
 		});
-		expect(resolveWorkflowPolicy(pi, ["review", "DELIVERY"])).toEqual({
+		expect(
+			resolveWorkflowPolicy(pi, ["Review", "delivery", "Cafe\u0301"]),
+		).toEqual({
 			kind: "resolved",
-			policy: ["Review", "delivery"],
+			policy: ["Review", "delivery", "Café"],
 		});
 	});
 
-	/** Proves case-insensitive catalog collisions invalidate explicit resolution. */
-	test("rejects colliding canonical catalog IDs", () => {
+	/** Proves exact case variants remain distinct while NFC-equivalent catalog IDs collide. */
+	test("uses exact NFC workflow identity", () => {
 		const pi = createPolicyPi();
-		const publication = publishWorkflowCatalogPolicy(pi, {
+		const caseVariants = publishWorkflowCatalogPolicy(pi, {
 			ids: ["Review", "review"],
 		});
-		expect(publication.error?.message.toLowerCase()).toContain("review");
-		expect(resolveWorkflowPolicy(pi, ["review"]).kind).toBe("error");
+		expect(caseVariants.error).toBeUndefined();
+		expect(resolveWorkflowPolicy(pi, ["review"])).toEqual({
+			kind: "resolved",
+			policy: ["review"],
+		});
+
+		const canonicalVariants = publishWorkflowCatalogPolicy(pi, {
+			ids: ["Café", "Cafe\u0301"],
+		});
+		expect(canonicalVariants.error?.message).toContain("Cafe\u0301");
+		expect(resolveWorkflowPolicy(pi, ["Café"]).kind).toBe("error");
 	});
 
 	/** Proves invalid names and duplicates fail without returning partial canonical IDs. */
 	test.each([
-		[["review", "missing"], "missing"],
-		[["Review", "review"], "duplicate"],
-		[[" Review"], "unknown"],
+		[["Review", "missing"], "missing"],
+		[["Review", "Review"], "duplicate"],
+		[[" Review"], "single-line"],
 	])("rejects configured workflow policy %j", (names, issue) => {
 		const pi = createPolicyPi();
 		publishWorkflowCatalogPolicy(pi, { ids: ["Review", "delivery"] });
@@ -110,9 +123,11 @@ describe("workflow policy boundary", () => {
 		expect(isWorkflowAllowed(undefined, "removed")).toBe(true);
 		expect(isWorkflowAllowed([], "Review")).toBe(false);
 		expect(isWorkflowAllowed(["Review"], "Review")).toBe(true);
-		expect(isWorkflowAllowed(["Review"], "review")).toBe(true);
+		expect(isWorkflowAllowed(["Review"], "review")).toBe(false);
+		expect(isWorkflowAllowed(["Café"], "Cafe\u0301")).toBe(true);
 		expect(hasAllowedWorkflowSource(undefined, [], "removed")).toBe(true);
-		expect(hasAllowedWorkflowSource(["Review"], [], "review")).toBe(true);
+		expect(hasAllowedWorkflowSource(["Review"], [], "review")).toBe(false);
+		expect(hasAllowedWorkflowSource(["Review"], [], "Review")).toBe(true);
 		expect(hasAllowedWorkflowSource([], ["Review"], "Review")).toBe(false);
 		expect(hasAllowedWorkflowSource(["Review"], ["delivery"], "Review")).toBe(
 			true,

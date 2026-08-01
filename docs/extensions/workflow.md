@@ -10,7 +10,7 @@ Create ready-made `.yaml` files under:
 ~/.pi/agent/agent-suite/workflow/workflows/
 ```
 
-When `PI_AGENT_SUITE_DIR` is set, the extension uses `<PI_AGENT_SUITE_DIR>/workflow/workflows/` instead. The file name without `.yaml` is the workflow ID.
+When `PI_AGENT_SUITE_DIR` is set, the extension uses `<PI_AGENT_SUITE_DIR>/workflow/workflows/` instead. The NFC-normalized file name without `.yaml` is the workflow ID. Workflow IDs may use any Unicode language, internal spaces, and punctuation. They must be non-empty, trimmed, and single-line.
 
 ```yaml
 description: Use for software delivery
@@ -38,6 +38,8 @@ transitions:
 
 Every catalog or dynamic workflow requires:
 - one initial stage and at least one final stage;
+- non-empty stage IDs without spaces, tabs, line breaks, or other Unicode whitespace;
+- trimmed single-line workflow and stage descriptions;
 - a non-empty `prompt` for every stage;
 - an optional root `prompt` for guidance that applies to every stage;
 - unique stage IDs and valid transition endpoints;
@@ -48,7 +50,7 @@ Every catalog or dynamic workflow requires:
 
 Surrounding prompt whitespace is removed. An omitted or empty root prompt means that the workflow has no shared guidance.
 
-One invalid `.yaml` file rejects the catalog atomically. Catalog IDs must be unique case-insensitively. A missing or empty workflow directory is a valid empty catalog. The catalog is read when the extension loads.
+One invalid `.yaml` file rejects the catalog atomically. Catalog IDs must be unique after NFC normalization and remain case-sensitive. A missing or empty workflow directory is a valid empty catalog. The catalog is read when the extension loads.
 
 ### Agent workflow policy
 
@@ -65,10 +67,10 @@ workflows: [delivery, review]
 
 - Omit `workflows` to allow every catalog workflow.
 - Use `workflows: []` to deny every catalog workflow.
-- Use a non-empty list to allow only those catalog IDs. Names resolve case-insensitively and runtime metadata uses the catalog's exact IDs.
+- Use a non-empty list to allow only exact catalog IDs after NFC normalization. Runtime metadata uses the catalog's spelling.
 - Dynamic workflow state is not filtered by `workflows`. Creation and transitions still require their respective tool permissions.
 
-Duplicate names, unknown names, and case-insensitive catalog ID collisions reject the policy before the agent changes model or runtime state. A non-empty policy also fails when the catalog is invalid; omitted and empty policies remain valid.
+NFC-equivalent duplicates, unknown names, and NFC-equivalent catalog ID collisions reject the policy before the agent changes model or runtime state. A non-empty policy also fails when the catalog is invalid; omitted and empty policies remain valid.
 
 For child Pi processes, the launcher transports the resolved catalog policy in `PI_SUBAGENT_WORKFLOW_IDS`. This variable is owned by the launcher and should not be configured manually.
 
@@ -126,13 +128,15 @@ All workflow tools run sequentially and return model-visible success content `{"
 }
 ```
 
-A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. The new ID must not match a catalog ID or the active dynamic ID case-insensitively. Reusing the active dynamic ID is rejected without resetting its route.
+A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
+
+The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets.
 
 `workflow_create` remains available with a missing or empty catalog when the agent's `tools` policy permits it. A catalog error blocks creation because ID collisions cannot be checked against an incomplete namespace. Dynamic workflows are never written to YAML.
 
 ### `workflow_activate`
 
-`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. Activation replaces prior workflow state. The active workflow is excluded from options case-insensitively. The tool is unavailable when policy filtering and that exclusion leave no activation options.
+`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. Activation replaces prior workflow state. Only the exact active workflow ID after NFC normalization is excluded from options. The tool is unavailable when policy filtering and that exclusion leave no activation options.
 
 ### `workflow_transition`
 

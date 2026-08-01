@@ -56,7 +56,7 @@ export function resolveWorkflowAvailability(
 			? input.state
 			: undefined;
 
-	// Case-only catalog renames retain identity and cannot reset the active route.
+	// Only the exact NFC workflow identity is excluded from activation options.
 	const activeWorkflowKey =
 		projectedState === undefined
 			? undefined

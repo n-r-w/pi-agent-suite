@@ -29,6 +29,7 @@ import {
 	getSuiteExtensionDir,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { isSingleLineText } from "../../shared/text-contracts";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import {
 	type ResolvedWorkflowPolicy,
@@ -977,14 +978,22 @@ function parseSelectedAgentState(
 			issue: "selected-agent state cwd must be a string",
 		};
 	}
-	if (!(typeof activeAgentId === "string" || activeAgentId === null)) {
+	if (!(isSingleLineText(activeAgentId) || activeAgentId === null)) {
 		return {
 			kind: "invalid",
-			issue: "selected-agent state activeAgentId must be a string or null",
+			issue:
+				"selected-agent state activeAgentId must be a single-line string or null",
 		};
 	}
 
-	return { kind: "valid", state: { cwd, activeAgentId } };
+	return {
+		kind: "valid",
+		state: {
+			cwd,
+			activeAgentId:
+				activeAgentId === null ? null : activeAgentId.normalize("NFC"),
+		},
+	};
 }
 
 /** Persists selected-agent state without runtime model, thinking, or tool data. */
