@@ -65,7 +65,7 @@ function assistantWithTools(): AssistantMessage {
 				type: "toolCall",
 				id: "tool-package",
 				name: "subagent_wait",
-				arguments: { sessionIds: [1], timeoutMs: 1000 },
+				arguments: { sessionIds: [1], timeout: 1 },
 			},
 			{
 				type: "toolCall",

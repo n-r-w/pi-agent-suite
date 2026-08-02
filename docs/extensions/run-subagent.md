@@ -86,9 +86,11 @@ The root agent has depth `0`. With the default `maxDepth` of `1`, the root can s
 
 Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended or replaced by definitions under `<cwd>/.pi/agents`.
 
-A project agent definition supplies the child prompt, model, thinking level, tool patterns, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
+A project agent definition supplies the child prompt, model, thinking level, tool patterns, workflow policy, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
 
 An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.
+
+The optional `workflows` frontmatter field restricts which catalog workflows the child can activate. Matching is exact and case-sensitive after NFC normalization; omission allows activation of every catalog workflow, and `workflows: []` allows no catalog activation. This field does not block the current active workflow; child tools still control workflow operations. Unknown or NFC-equivalent duplicate names reject the launch before authorization and process startup. The launcher sends canonical IDs to the child through its owned environment; callers do not configure this transport directly.
 
 ## Startup acceptance
 
@@ -96,7 +98,38 @@ Child prompt startup is serialized across package child launchers until each ini
 
 Before delivery, leading `/` characters are removed from a child prompt. If no non-whitespace text remains, the prompt is rejected. This prevents a child prompt from entering Pi's extension-command path.
 
-After parent authentication succeeds, a provider-matching missing-credential rejection can be retried only before the child shows other activity. The original attempt and up to three retries each use a fresh process. Cancellation, other startup failures, failures after child activity, and runtime transport failures are not retried.
+The selected model is resolved once before recovery. `ModelRegistry.hasConfiguredAuth(model)` must report configured authorization; otherwise no child process or retry is created. Every attempt then acquires the package-wide FIFO startup slot and calls `ModelRegistry.getApiKeyAndHeaders(model)`. An unavailable credential result releases the slot and waits before another attempt without creating a process.
+
+Only a failed RPC response for the first `prompt` can trigger child replacement. Its first error line must be exactly `No API key found for <provider>.` for the selected provider, and the prompt must not have been accepted. Status, projection, extension, and other service events do not block recovery. A failed process exits before the FIFO slot is released. A successful prompt response permanently ends recovery for that operation. Initial starts and terminal-session continuations use this policy; active steering does not start a process and does not use it.
+
+The shared policy reads one configuration file during extension startup. When `PI_AGENT_SUITE_DIR` is empty or unset, it appends `agent-suite/child-startup/config.json` to Pi's agent directory. Pi resolves that directory from a non-empty `PI_CODING_AGENT_DIR`, otherwise from `~/.pi/agent`. When `PI_AGENT_SUITE_DIR` is non-empty, the file is `$PI_AGENT_SUITE_DIR/child-startup/config.json`. No other configuration path is checked.
+
+Default configuration:
+
+```json
+{
+  "authRetry": {
+    "maxRetries": 10,
+    "delayMs": 2000
+  }
+}
+```
+
+`maxRetries` is a non-negative integer and counts retries after the first attempt. `delayMs` is a positive integer and applies as a fixed delay without exponential growth or randomization. A missing file or omitted field uses the displayed defaults. An unreadable file, malformed JSON, unsupported key, or invalid value rejects extension loading.
+
+Each attempt appends a `child-auth-startup-diagnostic` session entry containing the launcher, provider, attempt counts, stage, prompt-acceptance state, decision, fixed reason code, and duration. The record excludes credentials and `auth.json` content. Exhausted recovery returns the original sanitized failure followed by the final recovery reason and retains the structured attempt records on `ChildAuthStartupRecoveryError`.
+
+## Compact session status panel
+
+In interactive root TUI mode, the extension publishes an `Agents` row above Pi's editor after the session owns at least one direct or nested subagent:
+
+```text
+Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Shift+G
+```
+
+The row counts running, successful, failed, and aborted sessions across the complete owned hierarchy. It shares one panel and one upper separator with other package status producers. The separator and ordinary row text use Pi's dim color; the four agent icons retain their semantic accent, success, error, and warning colors. When the hierarchy becomes empty, only the `Agents` row disappears; other rows remain visible. Every row is clipped to the terminal width and ends with `…` when content is hidden.
+
+RPC and print modes do not construct or publish the interactive status panel.
 
 ## Interactive management screen
 
@@ -105,7 +138,7 @@ In interactive TUI mode, either entry opens the same full-terminal overlay:
 - `/subagents`
 - `Ctrl+Shift+G`
 
-The overlay is available only after the interactive root runtime starts. RPC and print modes do not construct the management screen or register its command and shortcut. The extension does not install a subagent widget in the normal conversation view.
+The overlay is available only after the interactive root runtime starts. RPC and print modes do not construct the management screen or register its command and shortcut.
 
 ### Hierarchy and selected-session header
 
@@ -207,8 +240,8 @@ Starts a callable agent in a new saved logical session.
 
 | Name | Required | Type or shape | Meaning |
 | --- | --- | --- | --- |
-| `agentId` | Yes | String | ID of an available callable agent. |
-| `taskName` | Yes | String containing 3–60 Unicode code points | Short name for the delegated task. |
+| `agentId` | Yes | Trimmed single-line Unicode string | Exact NFC-normalized ID of an available callable agent. |
+| `taskName` | Yes | Trimmed single-line string with schema length 3–60 | Short name for the delegated task. |
 | `prompt` | Yes | String containing at least one non-whitespace Unicode code point | Initial child prompt. |
 
 After the child accepts the prompt, the tool returns:
@@ -251,7 +284,7 @@ Waits for the first terminal feedback from selected direct children that are act
 | Name | Required | Type or shape | Meaning |
 | --- | --- | --- | --- |
 | `sessionIds` | Yes | Non-empty array of distinct positive integers | Directly owned logical sessions to observe. |
-| `timeoutMs` | Yes | Integer from `1` through `2147483647` | Maximum wait duration in milliseconds. |
+| `timeout` | Yes | Integer from `1` through `3600` | Maximum wait duration in seconds. |
 
 Listed terminal sessions are ignored. If none of the listed sessions is active, the tool returns immediately:
 

@@ -713,10 +713,10 @@ describe("convene-council loop", () => {
 		});
 	});
 
-	test("fails before participant startup when parent model auth is unavailable", async () => {
-		// Purpose: a real parent authentication failure must not be classified as a child-only startup race.
-		// Input and expected output: parent auth rejects the configured model and no participant runner is created.
-		// Edge case: the error uses the same wording accepted only for child startup recovery.
+	test("delegates temporarily unavailable parent auth to participant startup", async () => {
+		// Purpose: each participant runner must own the retryable parent-auth check inside shared startup recovery.
+		// Input and expected output: an unavailable registry result does not block runner creation, and prompt failure remains visible.
+		// Edge case: the failure text matches the child startup pattern but is produced by the injected runner boundary.
 		// Dependencies: auth-aware execution context and custom participant runner factory.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeEnabledConfig(agentDir, {});
@@ -727,17 +727,27 @@ describe("convene-council loop", () => {
 			conveneCouncil(pi, {
 				async createParticipantRunner() {
 					runnerStarts += 1;
-					throw new Error("runner must not start");
+					return {
+						async prompt() {
+							throw new Error(authError);
+						},
+						async dispose() {},
+					};
 				},
 			});
 			const ctx = createContext([model], [], {
 				authResult: { ok: false, error: authError },
 			});
 
-			await expect(executeCouncil(pi, ctx, "Auth failure")).rejects.toThrow(
-				authError,
-			);
-			expect(runnerStarts).toBe(0);
+			const result = await executeCouncil(pi, ctx, "Auth failure");
+
+			const firstContent = result.content[0];
+			expect(firstContent?.type).toBe("text");
+			if (firstContent?.type !== "text") {
+				throw new Error("expected text council failure content");
+			}
+			expect(firstContent.text).toContain(authError);
+			expect(runnerStarts).toBe(2);
 		});
 	});
 

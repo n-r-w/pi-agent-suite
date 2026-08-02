@@ -68,11 +68,16 @@ const DEFAULT_ADVISOR_PROMPT_FILE = join(
 	"advisor.md",
 );
 
-const ConsultAdvisorParameters = Type.Object({
-	question: Type.String({
-		description: "Question to ask the advisor. ENGLISH ONLY",
-	}),
-});
+const ConsultAdvisorParameters = Type.Object(
+	{
+		question: Type.String({
+			description: "Focused question to ask the advisor. ENGLISH ONLY",
+			minLength: 1,
+			maxLength: 8192,
+		}),
+	},
+	{ additionalProperties: false },
+);
 
 type Thinking = ReasoningLevel;
 

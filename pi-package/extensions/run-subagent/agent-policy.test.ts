@@ -6,12 +6,14 @@ import {
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../shared/subagent-environment";
+import { publishWorkflowCatalogPolicy } from "../../shared/workflow-policy";
 import {
 	applyChildToolPolicy,
 	isAgentAvailableForCaller,
 	publishPromptContribution,
 	resolveCallerSelectedAgentId,
 	resolveEffectiveCallableAgentPolicy,
+	resolveLaunchConfiguration,
 } from "./agent-policy";
 import type { LogicalSession, OwnerIdentity } from "./domain";
 import { SessionCatalog } from "./session-catalog";
@@ -67,6 +69,62 @@ function parentSession(): LogicalSession {
 }
 
 describe("effective callable-agent policy", () => {
+	test("rejects unknown child workflow policy before auth", async () => {
+		// Purpose: child workflow policy must fail before model auth or launch admission side effects.
+		// Input and expected output: Missing against Review rejects start and leaves auth call count at zero.
+		// Edge case: model and tool policy are otherwise valid, isolating workflow resolution order.
+		// Dependencies: shared workflow catalog publication and launch configuration resolution.
+		let authCalls = 0;
+		const pi = {
+			events: {},
+			getThinkingLevel: () => "medium",
+		} as unknown as ExtensionAPI;
+		publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+		const agents: readonly AgentDefinition[] = [
+			{
+				id: "Worker",
+				description: "Worker",
+				type: "subagent",
+				prompt: "Worker prompt",
+				workflows: ["Missing"],
+			},
+		];
+		const ctx = {
+			cwd: "/tmp/project",
+			model: {
+				provider: "test",
+				id: "model",
+				contextWindow: 1000,
+			},
+			modelRegistry: {
+				async getApiKeyAndHeaders() {
+					authCalls += 1;
+					return { ok: true };
+				},
+			},
+		};
+
+		await expect(
+			resolveLaunchConfiguration({
+				pi,
+				ctx: ctx as never,
+				agents,
+				supervisor: undefined,
+				request: {
+					owner: ROOT_OWNER,
+					sessionKey: {
+						ownerPiSessionId: ROOT_OWNER.ownerPiSessionId,
+						ownerLocalSessionId: 1,
+					},
+					agentId: "Worker",
+					taskName: "Worker task",
+					prompt: "work",
+				},
+			}),
+		).rejects.toThrow("Missing");
+		expect(authCalls).toBe(0);
+	});
+
 	test("reports only the unmatched child tool pattern", () => {
 		// Purpose: child startup errors must state the actionable pattern mismatch without an internal subsystem prefix.
 		// Input and expected output: obsolete run_subagent against one subagent tool throws the shared policy issue verbatim.

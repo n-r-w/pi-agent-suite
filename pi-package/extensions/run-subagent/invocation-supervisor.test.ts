@@ -5,11 +5,25 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
+import type { AgentDefinition } from "../../shared/agent-registry";
+import type { ChildAuthStartupAttemptRecord } from "../../shared/child-auth-startup";
+import {
+	CHILD_AUTH_STARTUP_DIAGNOSTIC_CUSTOM_TYPE,
+	createChildAuthStartupDiagnosticRecorder,
+} from "../../shared/child-auth-startup-diagnostic";
+import type { ChildStartupConfig } from "../../shared/child-startup-config";
 import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
+	SUBAGENT_WORKFLOW_IDS_ENV,
 } from "../../shared/subagent-environment";
+import { publishWorkflowCatalogPolicy } from "../../shared/workflow-policy";
+import { resolveLaunchConfiguration } from "./agent-policy";
 import { SubagentCoordinator } from "./coordinator";
 import type {
 	JournalRecord,
@@ -226,6 +240,15 @@ function createSupervisor(
 	return createSupervisorHarness([child], events).supervisor;
 }
 
+interface SupervisorHarnessOptions {
+	readonly resolveLaunch?: InvocationSupervisorOptions["resolveLaunch"];
+	readonly onSpawnEnvironment?: (environment: NodeJS.ProcessEnv) => void;
+	readonly childStartupConfig?: ChildStartupConfig;
+	readonly recordChildStartupAttempt?: (
+		record: ChildAuthStartupAttemptRecord,
+	) => void;
+}
+
 /** Creates one supervisor whose successive launches consume controlled child processes. */
 function createSupervisorHarness(
 	children: readonly ControlledChild[],
@@ -233,9 +256,10 @@ function createSupervisorHarness(
 	eventSink?: (event: InvocationEvent) => Promise<void> | void,
 	runtimeRequestSink?: RuntimeRequestSink,
 	emitReady = true,
+	options: SupervisorHarnessOptions = {},
 ): SupervisorHarness {
 	let spawnCount = 0;
-	const supervisor = new InvocationSupervisor({
+	const supervisorOptions: InvocationSupervisorOptions = {
 		bridge: new RootRuntimeBridge(),
 		onEvent: (event) => {
 			events.push(event);
@@ -244,21 +268,25 @@ function createSupervisorHarness(
 		...(runtimeRequestSink === undefined
 			? {}
 			: { onRuntimeRequest: runtimeRequestSink }),
-		resolveLaunch: async () => ({
-			cwd: "/tmp",
-			modelId: "openai/test-model",
-			provider: "openai",
-			thinking: "off",
-			depth: 1,
-			parentAuthVerified: true,
-			runtimeFacts: {
-				modelProvider: "openai",
-				modelId: "test-model",
-				contextWindow: 128_000,
-			},
-		}),
+		resolveLaunch:
+			options.resolveLaunch ??
+			(async () => ({
+				cwd: "/tmp",
+				modelId: "openai/test-model",
+				provider: "openai",
+				thinking: "off",
+				depth: 1,
+				providerConfigured: true,
+				checkParentAuth: async () => ({ ok: true as const }),
+				runtimeFacts: {
+					modelProvider: "openai",
+					modelId: "test-model",
+					contextWindow: 128_000,
+				},
+			})),
 		sessionsDir: "/tmp",
-		spawnProcess: (_command, _args, options) => {
+		spawnProcess: (_command, _args, spawnOptions) => {
+			options.onSpawnEnvironment?.(spawnOptions.env);
 			const child = children[spawnCount];
 			if (child === undefined) {
 				throw new Error("controlled child process queue is exhausted");
@@ -268,15 +296,21 @@ function createSupervisorHarness(
 				queueMicrotask(() => {
 					child.emit("message", {
 						kind: "subagents-ready",
-						runtimeLeaseId: options.env[SUBAGENT_RUNTIME_LEASE_ENV],
-						ownerPiSessionId: options.env[SUBAGENT_OWNER_SESSION_ENV],
+						runtimeLeaseId: spawnOptions.env[SUBAGENT_RUNTIME_LEASE_ENV],
+						ownerPiSessionId: spawnOptions.env[SUBAGENT_OWNER_SESSION_ENV],
 						ownerSessionFile: "/tmp/child-session.jsonl",
 					});
 				});
 			}
 			return child;
 		},
-	});
+		childStartupConfig: options.childStartupConfig ?? {
+			authRetry: { maxRetries: 10, delayMs: 1 },
+		},
+		recordChildStartupAttempt:
+			options.recordChildStartupAttempt ?? (() => undefined),
+	};
+	const supervisor = new InvocationSupervisor(supervisorOptions);
 	return { supervisor, spawnCount: () => spawnCount };
 }
 
@@ -491,6 +525,229 @@ function readGracefulOwnerFacts(manager: SessionManager): {
 }
 
 describe("InvocationSupervisor", () => {
+	test.each([
+		[undefined, undefined],
+		[[], "[]"],
+		[["Review"], '["Review"]'],
+	] as const)("connects workflow resolver policy %j to the child environment", async (configuredWorkflows, expectedEnvironment) => {
+		// Purpose: one accepted launch must carry the resolver result through the supervisor instead of testing either seam in isolation.
+		// Input and expected output: absent, empty, and exact Review become absent, [], and the catalog's exact Review ID.
+		// Edge case: inherited workflow transport is stripped before launch-owned policy is applied.
+		// Dependencies: production resolver, workflow catalog boundary, supervisor spawn environment, and a controlled child without provider requests.
+		const previous = process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+		process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["stale"]';
+		const child = createChildProcess();
+		const environments: NodeJS.ProcessEnv[] = [];
+		const model = {
+			provider: "openai",
+			id: "test-model",
+			contextWindow: 128_000,
+		} as NonNullable<ExtensionContext["model"]>;
+		const pi = {
+			events: new EventEmitter(),
+			getThinkingLevel: () => "off",
+		} as unknown as ExtensionAPI;
+		publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+		let authCalls = 0;
+		const ctx = {
+			cwd: "/tmp",
+			model,
+			modelRegistry: {
+				hasConfiguredAuth: () => true,
+				getApiKeyAndHeaders: async () => {
+					authCalls += 1;
+					return { ok: true };
+				},
+			},
+		} as unknown as ExtensionContext;
+		const agent: AgentDefinition = {
+			id: "SubAgentCoder",
+			description: "Codes",
+			type: "subagent",
+			prompt: "Code",
+			...(configuredWorkflows === undefined
+				? {}
+				: { workflows: configuredWorkflows }),
+		};
+		const harness = createSupervisorHarness(
+			[child],
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				resolveLaunch: (request) =>
+					resolveLaunchConfiguration({
+						pi,
+						ctx,
+						agents: [agent],
+						supervisor: undefined,
+						request,
+					}),
+				onSpawnEnvironment: (environment) => environments.push(environment),
+			},
+		);
+		try {
+			await acceptStart(harness.supervisor, child);
+			expect(authCalls).toBe(1);
+			expect(environments[0]?.[SUBAGENT_WORKFLOW_IDS_ENV]).toBe(
+				expectedEnvironment,
+			);
+		} finally {
+			child.emitClose();
+			if (previous === undefined) {
+				delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+			} else {
+				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = previous;
+			}
+		}
+	});
+
+	test("rechecks parent authentication before every startup attempt", async () => {
+		// Purpose: the supervisor adapter must delegate per-attempt parent credential checks to shared recovery.
+		// Input and expected output: two transient auth misses occur before one child is spawned and accepted.
+		// Edge case: unavailable parent credentials never create a process.
+		// Dependencies: the production supervisor, shared retry policy, and one controlled child process.
+		const child = createChildProcess();
+		let authChecks = 0;
+		const harness = createSupervisorHarness(
+			[child],
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				childStartupConfig: {
+					authRetry: { maxRetries: 2, delayMs: 1 },
+				},
+				resolveLaunch: async () => ({
+					cwd: "/tmp",
+					modelId: "openai/test-model",
+					provider: "openai",
+					thinking: "off",
+					depth: 1,
+					providerConfigured: true,
+					checkParentAuth: async () => {
+						authChecks += 1;
+						return authChecks < 3
+							? {
+									ok: false as const,
+									error: "OAuth storage is temporarily unavailable",
+								}
+							: { ok: true as const };
+					},
+					runtimeFacts: {
+						modelProvider: "openai",
+						modelId: "test-model",
+						contextWindow: 128_000,
+					},
+				}),
+			},
+		);
+
+		const acceptance = await acceptStart(harness.supervisor, child);
+
+		expect(acceptance.modelId).toBe("openai/test-model");
+		expect(authChecks).toBe(3);
+		expect(harness.spawnCount()).toBe(1);
+		child.emitClose();
+	});
+
+	test("restarts a child after exact first-prompt authentication rejections", async () => {
+		// Purpose: the run-subagent adapter must replace only children that reject the first prompt for the selected provider.
+		// Input and expected output: two rejected processes stop before a third process accepts the same invocation request.
+		// Edge case: retry count is configured independently from the supervisor process queue.
+		// Dependencies: the production supervisor, shared startup recovery, and three controlled child processes.
+		const children = [
+			createChildProcess(),
+			createChildProcess(),
+			createChildProcess(),
+		] as const;
+		const diagnosticEntries: Array<{ type: string; data: unknown }> = [];
+		const recordChildStartupAttempt = createChildAuthStartupDiagnosticRecorder({
+			appendEntry(type: string, data?: unknown): void {
+				diagnosticEntries.push({ type, data });
+			},
+		} as Pick<ExtensionAPI, "appendEntry">);
+		const harness = createSupervisorHarness(
+			children,
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				childStartupConfig: {
+					authRetry: { maxRetries: 2, delayMs: 1 },
+				},
+				recordChildStartupAttempt,
+			},
+		);
+		const pending = harness.supervisor.start({
+			owner: {
+				ownerPiSessionId: "owner-1",
+				ownerSessionFile: "/tmp/owner-1.jsonl",
+			},
+			sessionKey: { ownerPiSessionId: "owner-1", ownerLocalSessionId: 1 },
+			agentId: "SubAgentCoder",
+			taskName: "Recover auth",
+			prompt: "Inspect runtime",
+		});
+		for (const child of children.slice(0, 2)) {
+			await waitForWriteCount(child, 1);
+			child.stdout?.emit(
+				"data",
+				Buffer.from(
+					'{"id":"prompt","type":"response","command":"prompt","success":false,"error":"No API key found for openai."}\n',
+				),
+			);
+		}
+		await waitForWriteCount(children[2], 1);
+		children[2].stdout?.emit(
+			"data",
+			Buffer.from(
+				'{"id":"prompt","type":"response","command":"prompt","success":true}\n',
+			),
+		);
+
+		const acceptance = await pending;
+
+		expect(acceptance.modelId).toBe("openai/test-model");
+		expect(harness.spawnCount()).toBe(3);
+		expect(children.slice(0, 2).map((child) => child.exitCode)).toEqual([0, 0]);
+		expect(
+			diagnosticEntries.map(({ type, data }) => ({
+				type,
+				owner: (data as ChildAuthStartupAttemptRecord).owner,
+				provider: (data as ChildAuthStartupAttemptRecord).provider,
+				decision: (data as ChildAuthStartupAttemptRecord).decision,
+				reason: (data as ChildAuthStartupAttemptRecord).reason,
+			})),
+		).toEqual([
+			{
+				type: CHILD_AUTH_STARTUP_DIAGNOSTIC_CUSTOM_TYPE,
+				owner: "run-subagent",
+				provider: "openai",
+				decision: "retry",
+				reason: "prompt_auth_unavailable",
+			},
+			{
+				type: CHILD_AUTH_STARTUP_DIAGNOSTIC_CUSTOM_TYPE,
+				owner: "run-subagent",
+				provider: "openai",
+				decision: "retry",
+				reason: "prompt_auth_unavailable",
+			},
+			{
+				type: CHILD_AUTH_STARTUP_DIAGNOSTIC_CUSTOM_TYPE,
+				owner: "run-subagent",
+				provider: "openai",
+				decision: "accepted",
+				reason: "prompt_accepted",
+			},
+		]);
+		await harness.supervisor.terminateLease(acceptance.runtimeLeaseId);
+	});
+
 	test("rejects pre-aborted start before spawning a child", async () => {
 		// Purpose: cancellation already owned by Pi must prevent all process and runtime-lease creation.
 		// Input and expected output: a pre-aborted signal rejects with its original reason and spawn count stays zero.
@@ -692,11 +949,19 @@ describe("InvocationSupervisor", () => {
 
 	test("stops a child when cancellation follows prompt acceptance before publication", async () => {
 		// Purpose: a prompt accepted by child Pi must not become an orphan when cancellation wins before coordinator publication.
-		// Input and expected output: prompt response followed immediately by abort rejects with the Pi reason and closes the accepted handle.
-		// Edge case: the child response resolves before the retry wrapper performs its post-attempt signal check.
-		// Dependencies: production supervisor, child RPC response parsing, retry boundary, and controlled process teardown.
+		// Input and expected output: prompt response followed immediately by abort records acceptance, rejects with the Pi reason, and closes the handle.
+		// Edge case: the authoritative RPC response arrives before the awaiting continuation resumes.
+		// Dependencies: production supervisor, child RPC response parsing, shared acceptance recording, and controlled process teardown.
 		const child = createChildProcess();
-		const harness = createSupervisorHarness([child], []);
+		const attempts: ChildAuthStartupAttemptRecord[] = [];
+		const harness = createSupervisorHarness(
+			[child],
+			[],
+			undefined,
+			undefined,
+			true,
+			{ recordChildStartupAttempt: (attempt) => attempts.push(attempt) },
+		);
 		const controller = new AbortController();
 		const reason = new Error("cancel after child prompt acceptance");
 		const pending = harness.supervisor
@@ -727,10 +992,22 @@ describe("InvocationSupervisor", () => {
 			originalReason: outcome === reason,
 			childStopped: child.exitCode !== null,
 			spawnCount: harness.spawnCount(),
+			attempts: attempts.map(({ promptAccepted, decision, reason }) => ({
+				promptAccepted,
+				decision,
+				reason,
+			})),
 		}).toEqual({
 			originalReason: true,
 			childStopped: true,
 			spawnCount: 1,
+			attempts: [
+				{
+					promptAccepted: true,
+					decision: "accepted",
+					reason: "prompt_accepted",
+				},
+			],
 		});
 	});
 
@@ -1569,7 +1846,7 @@ describe("InvocationSupervisor", () => {
 		const pendingWait = coordinator
 			.wait(
 				ownerB,
-				{ sessionIds: [1], timeoutMs: 30_000 },
+				{ sessionIds: [1], timeout: 30 },
 				{
 					toolCallId: "b-pending-wait",
 					requestId: "b-pending-wait",
@@ -1802,7 +2079,7 @@ describe("InvocationSupervisor", () => {
 			const pendingWait = coordinator
 				.wait(
 					ownerB,
-					{ sessionIds: [1], timeoutMs: 30_000 },
+					{ sessionIds: [1], timeout: 30 },
 					{
 						toolCallId: "handoff-wait",
 						requestId: "handoff-wait",

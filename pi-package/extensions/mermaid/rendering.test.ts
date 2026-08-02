@@ -62,13 +62,16 @@ describe("Mermaid entry rendering", () => {
 	test("renders collapsed and expanded ASCII previews", () => {
 		// Arrange
 		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+o",
-					description: "Expand collapsed output",
+			new KeybindingsManager(
+				{
+					...TUI_KEYBINDINGS,
+					"app.tools.expand": {
+						defaultKeys: "ctrl+o",
+						description: "Expand collapsed output",
+					},
 				},
-			}),
+				{ "app.tools.expand": "alt+x" },
+			),
 		);
 		const entry: MermaidRenderEntry = {
 			status: "rendered",
@@ -82,7 +85,8 @@ describe("Mermaid entry rendering", () => {
 		// Assert
 		expect(collapsed.join("\n")).toContain("row 10");
 		expect(collapsed.join("\n")).not.toContain("row 11");
-		expect(collapsed.join("\n")).toContain("ctrl+o");
+		expect(collapsed.join("\n")).toContain("alt+x to expand");
+		expect(collapsed.join("\n")).not.toContain("ctrl+o");
 		expect(expanded.join("\n")).toContain("row 12");
 		expectRowsToFit(collapsed, WIDTH);
 		expectRowsToFit(expanded, WIDTH);

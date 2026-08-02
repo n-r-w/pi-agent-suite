@@ -32,17 +32,21 @@ function failureCode(operation: () => unknown): string {
 describe("Subagents contracts", () => {
 	test("validates structural requests before semantic coordination", () => {
 		// Purpose: each agent operation must receive one closed, normalized request shape.
-		// Input and expected output: valid requests round-trip while missing, extra, whitespace, duplicate, and range violations return invalid_request.
-		// Edge case: taskName counts Unicode code points rather than UTF-16 code units.
+		// Input and expected output: valid requests round-trip while missing, extra, whitespace, duplicate, legacy, and range violations return invalid_request.
+		// Edge cases: taskName counts Unicode code points, and wait timeout accepts the inclusive 1–3600 second range.
 		// Dependencies: production boundary parsers only.
 		expect({
 			start: parseSubagentStartRequest({
-				agentId: "SubAgentCoder",
-				taskName: "a\u0301b",
+				agentId: "Team Lead",
+				taskName: "Trace runtime",
 				prompt: "work",
 			}),
 			steer: parseSubagentSteerRequest({ sessionId: 2, prompt: "change" }),
-			wait: parseSubagentWaitRequest({ sessionIds: [2, 1], timeoutMs: 1 }),
+			wait: parseSubagentWaitRequest({ sessionIds: [2, 1], timeout: 1 }),
+			waitUpperBound: parseSubagentWaitRequest({
+				sessionIds: [2, 1],
+				timeout: 3600,
+			}),
 			missing: failureCode(() => parseSubagentStartRequest({})),
 			query: parseSubagentQueryRequest({
 				sessionId: 3,
@@ -58,6 +62,27 @@ describe("Subagents contracts", () => {
 					extra: true,
 				}),
 			),
+			paddedAgentId: failureCode(() =>
+				parseSubagentStartRequest({
+					agentId: " Team Lead",
+					taskName: "Trace runtime",
+					prompt: "work",
+				}),
+			),
+			paddedTaskName: failureCode(() =>
+				parseSubagentStartRequest({
+					agentId: "Team Lead",
+					taskName: " Trace runtime",
+					prompt: "work",
+				}),
+			),
+			multilineTaskName: failureCode(() =>
+				parseSubagentStartRequest({
+					agentId: "Team Lead",
+					taskName: "Trace\u2028runtime",
+					prompt: "work",
+				}),
+			),
 			blankPrompt: failureCode(() =>
 				parseSubagentStartRequest({
 					agentId: "SubAgentCoder",
@@ -69,26 +94,38 @@ describe("Subagents contracts", () => {
 				parseSubagentQueryRequest({ sessionId: 3, question: "\u0085" }),
 			),
 			duplicate: failureCode(() =>
-				parseSubagentWaitRequest({ sessionIds: [1, 1], timeoutMs: 1 }),
+				parseSubagentWaitRequest({ sessionIds: [1, 1], timeout: 1 }),
+			),
+			legacyTimeout: failureCode(() =>
+				parseSubagentWaitRequest({ sessionIds: [1], timeoutMs: 1000 }),
+			),
+			zeroTimeout: failureCode(() =>
+				parseSubagentWaitRequest({ sessionIds: [1], timeout: 0 }),
 			),
 			outOfRange: failureCode(() =>
-				parseSubagentWaitRequest({ sessionIds: [1], timeoutMs: 2_147_483_648 }),
+				parseSubagentWaitRequest({ sessionIds: [1], timeout: 3601 }),
 			),
 		}).toEqual({
 			start: {
-				agentId: "SubAgentCoder",
-				taskName: "a\u0301b",
+				agentId: "Team Lead",
+				taskName: "Trace runtime",
 				prompt: "work",
 			},
 			steer: { sessionId: 2, prompt: "change" },
-			wait: { sessionIds: [2, 1], timeoutMs: 1 },
+			wait: { sessionIds: [2, 1], timeout: 1 },
+			waitUpperBound: { sessionIds: [2, 1], timeout: 3600 },
 			query: { sessionId: 3, question: "What changed?" },
 			missing: "invalid_request",
 			extra: "invalid_request",
 			queryExtra: "invalid_request",
+			paddedAgentId: "invalid_request",
+			paddedTaskName: "invalid_request",
+			multilineTaskName: "invalid_request",
 			blankPrompt: "invalid_request",
 			blankQuestion: "invalid_request",
 			duplicate: "invalid_request",
+			legacyTimeout: "invalid_request",
+			zeroTimeout: "invalid_request",
 			outOfRange: "invalid_request",
 		});
 	});

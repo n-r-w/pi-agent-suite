@@ -234,6 +234,7 @@ function createContext(
 		},
 		modelRegistry: {
 			find: () => options.model,
+			hasConfiguredAuth: () => options.model !== undefined,
 			getApiKeyAndHeaders: async () => {
 				options.onAuthRequest?.();
 				return options.authenticated === true
@@ -292,6 +293,24 @@ afterEach(() => {
 });
 
 describe("subagents entry", () => {
+	test("rejects invalid shared child startup configuration during extension loading", async () => {
+		// Purpose: child launchers must fail before tool use when their shared recovery policy is invalid.
+		// Input and expected output: an unsupported child-startup key rejects the extension factory.
+		// Edge case: the ordinary subagents configuration and agent catalog remain valid.
+		// Dependencies: the production extension entry and an isolated suite configuration file.
+		const childStartupDirectory = join(suiteDir, "child-startup");
+		mkdirSync(childStartupDirectory, { recursive: true });
+		writeFileSync(
+			join(childStartupDirectory, "config.json"),
+			JSON.stringify({ unsupported: true }),
+			"utf8",
+		);
+
+		await expect(subagents(createPiFake())).rejects.toThrow(
+			"configuration contains unsupported keys",
+		);
+	});
+
 	test("rejects structurally invalid subagent requests", async () => {
 		// Purpose: structural request violations must fail before semantic agent checks.
 		// Input and expected output: whitespace-only subagent_start.prompt fails with invalid_request and no normal outcome.
@@ -643,7 +662,7 @@ describe("subagents entry", () => {
 			const pending = getTool(pi, "subagent_wait")
 				.execute(
 					"nested-abort-tool",
-					{ sessionIds: [1], timeoutMs: 2_147_483_647 },
+					{ sessionIds: [1], timeout: 3600 },
 					controller.signal,
 					undefined,
 					ctx,
@@ -1495,17 +1514,11 @@ describe("subagents entry", () => {
 	test("publishes exact subagent schemas", () => {
 		// Purpose: all public request schemas must remain closed and machine-readable.
 		// Input and expected output: one valid request per tool passes while an extra property, duplicate wait ID, and zero timeout fail.
-		// Edge case: Unicode code-point bounds remain distinct from UTF-16 code units.
 		// Dependencies: exported production TypeBox schemas.
 		expect({
 			startValid: Check(SubagentStartParameters, {
 				agentId: "SubAgentCoder",
 				taskName: "Trace runtime",
-				prompt: "Inspect runtime",
-			}),
-			unicodeCodePointsValid: Check(SubagentStartParameters, {
-				agentId: "SubAgentCoder",
-				taskName: "a\u0301b",
 				prompt: "Inspect runtime",
 			}),
 			startExtraRejected: Check(SubagentStartParameters, {
@@ -1529,15 +1542,14 @@ describe("subagents entry", () => {
 			}),
 			waitDuplicateRejected: Check(SubagentWaitParameters, {
 				sessionIds: [1, 1],
-				timeoutMs: 1,
+				timeout: 1,
 			}),
 			waitZeroRejected: Check(SubagentWaitParameters, {
 				sessionIds: [1],
-				timeoutMs: 0,
+				timeout: 0,
 			}),
 		}).toEqual({
 			startValid: true,
-			unicodeCodePointsValid: true,
 			startExtraRejected: false,
 			steerValid: true,
 			queryValid: true,
@@ -1587,7 +1599,7 @@ describe("subagents entry", () => {
 			),
 			getTool(pi, "subagent_wait").execute(
 				"wait-semantic",
-				{ sessionIds: [1], timeoutMs: 1 },
+				{ sessionIds: [1], timeout: 1 },
 				undefined,
 				undefined,
 				ctx,
@@ -1672,7 +1684,7 @@ describe("subagents entry", () => {
 			const first = tool
 				.execute(
 					"root-abort-1",
-					{ sessionIds: [1], timeoutMs: 2_147_483_647 },
+					{ sessionIds: [1], timeout: 3600 },
 					firstController.signal,
 					undefined,
 					ctx,
@@ -1693,7 +1705,7 @@ describe("subagents entry", () => {
 			const second = tool
 				.execute(
 					"root-abort-2",
-					{ sessionIds: [1], timeoutMs: 2_147_483_647 },
+					{ sessionIds: [1], timeout: 3600 },
 					secondController.signal,
 					undefined,
 					ctx,
@@ -2530,7 +2542,7 @@ describe("subagents entry", () => {
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		const result = await getTool(pi, "subagent_wait").execute(
 			"wait-terminal",
-			{ sessionIds: [1], timeoutMs: 1 },
+			{ sessionIds: [1], timeout: 1 },
 			undefined,
 			undefined,
 			ctx,
@@ -2955,7 +2967,7 @@ describe("subagents entry", () => {
 
 	test("opens one management screen from both TUI entries", async () => {
 		// Purpose: the command and shortcut must share one full-terminal factory only in interactive TUI mode.
-		// Inputs and expected output: /subagents and Ctrl+Shift+G pass the same component factory and exact overlay sizing without installing a widget.
+		// Inputs and expected output: /subagents and Ctrl+Shift+G pass the same component factory and exact overlay sizing while an empty Agents row stays hidden.
 		// Edge case: a separate non-interactive runtime registers no management entry and constructs no custom screen.
 		// Dependencies: public Pi command, shortcut, lifecycle, and ctx.ui.custom contracts.
 		// ARRANGE: create separate interactive and RPC runtimes with observable UI entry points.
@@ -3001,7 +3013,7 @@ describe("subagents entry", () => {
 				tuiCustomCalls[0]?.[0] !== undefined &&
 				tuiCustomCalls[0]?.[0] === tuiCustomCalls[1]?.[0],
 			overlayOptions: tuiCustomCalls.map((call) => call[1]),
-			widgetCalls: tuiWidgetCalls.length,
+			widgetVisible: tuiWidgetCalls.some((call) => call[1] !== undefined),
 			rpcCommands: rpcPi.commands.length,
 			rpcShortcuts: rpcPi.shortcuts.length,
 			rpcCustomCalls: rpcCustomCalls.length,
@@ -3028,7 +3040,7 @@ describe("subagents entry", () => {
 					},
 				},
 			],
-			widgetCalls: 0,
+			widgetVisible: false,
 			rpcCommands: 0,
 			rpcShortcuts: 0,
 			rpcCustomCalls: 0,
@@ -3062,7 +3074,7 @@ describe("subagents entry", () => {
 		const code = await getTool(pi, "subagent_wait")
 			.execute(
 				"disabled-wait",
-				{ sessionIds: [1], timeoutMs: 1 },
+				{ sessionIds: [1], timeout: 1 },
 				undefined,
 				undefined,
 				ctx,

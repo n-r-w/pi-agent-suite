@@ -3,9 +3,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
-	createChildAuthStartupRetryError,
 	normalizeChildPrompt,
-	withChildAuthStartupRetry,
+	runChildAuthStartup,
 } from "../../shared/child-auth-startup";
 import {
 	type ChildRpcPromptCompletion,
@@ -27,6 +26,7 @@ import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
+	SUBAGENT_WORKFLOW_IDS_ENV,
 } from "../../shared/subagent-environment";
 import {
 	readField,
@@ -69,6 +69,7 @@ interface RpcPending {
 	readonly command: "prompt" | "steer" | "get_entries";
 	readonly resolve: (data?: unknown) => void;
 	readonly reject: (error: Error) => void;
+	readonly onAccepted?: (() => void) | undefined;
 }
 
 /** One validated append-order page and its current transient runtime state. */
@@ -91,6 +92,7 @@ interface PromptRpcCommand {
 	readonly command: "prompt" | "steer";
 	readonly message: string;
 	readonly beforeDispatch?: () => void;
+	readonly onAccepted?: () => void;
 }
 
 interface InvocationHandle {
@@ -105,7 +107,6 @@ interface InvocationHandle {
 	readonly rejectStartupFailure: (error: Error) => void;
 	processing: Promise<void>;
 	accepted: boolean;
-	activityObserved: boolean;
 	terminalObserved: boolean;
 	teardown: Promise<void> | undefined;
 	lastAssistantText: string;
@@ -208,64 +209,59 @@ export class InvocationSupervisor implements InvocationControl {
 		savedSession?: LogicalSession,
 	): Promise<InvocationAcceptance> {
 		const launch = await this.requireLaunch(request);
+		const signal = request.signal;
 		let acceptedHandle: InvocationHandle | undefined;
 		try {
-			return await withChildAuthStartupRetry(
-				async () => {
-					const release = requireStartupRelease(
-						await this.startupGate.acquire(request.signal),
-					);
-					let handle: InvocationHandle | undefined;
-					try {
-						handle = await this.launchWorkerProcess(
-							{
-								...request,
-								...(savedSession === undefined
-									? {}
-									: {
-											childPiSessionId: savedSession.childPiSessionId,
-											childSessionDir: savedSession.childSessionDir,
-											childSessionFile: savedSession.childSessionFile,
-										}),
-								launchConfiguration: launch,
+			return await runChildAuthStartup({
+				owner: "run-subagent",
+				provider: launch.provider,
+				providerConfigured: launch.providerConfigured,
+				retry: this.options.childStartupConfig.authRetry,
+				startupGate: this.startupGate,
+				signal,
+				...(signal === undefined
+					? {}
+					: { cancellationError: () => readCancellationError(signal) }),
+				checkParentAuth: launch.checkParentAuth,
+				start: () =>
+					this.launchWorkerProcess(
+						{
+							...request,
+							...(savedSession === undefined
+								? {}
+								: {
+										childPiSessionId: savedSession.childPiSessionId,
+										childSessionDir: savedSession.childSessionDir,
+										childSessionFile: savedSession.childSessionFile,
+									}),
+							launchConfiguration: launch,
+						},
+						signal,
+					),
+				prompt: async (handle, onAccepted) => {
+					await awaitWithSignal(
+						this.sendRpc(handle, {
+							id: PROMPT_COMMAND_ID,
+							command: "prompt",
+							message: normalizeChildPrompt(request.prompt),
+							onAccepted: () => {
+								acceptedHandle = handle;
+								onAccepted();
 							},
-							request.signal,
-						);
-						await awaitWithSignal(
-							this.sendRpc(handle, {
-								id: PROMPT_COMMAND_ID,
-								command: "prompt",
-								message: normalizeChildPrompt(request.prompt),
-							}),
-							request.signal,
-						);
-						handle.accepted = true;
-						acceptedHandle = handle;
-						return handle.acceptance;
-					} catch (error) {
-						if (handle !== undefined) {
-							await this.stopHandle(handle);
-						}
-						if (request.signal?.aborted) {
-							throw readCancellationError(request.signal);
-						}
-						const failure = toInvocationStartError(error);
-						const retry = createChildAuthStartupRetryError({
-							activityObserved: handle?.activityObserved ?? false,
-							failure,
-							parentAuthVerified: launch.parentAuthVerified,
-							provider: launch.provider,
-						});
-						throw retry ?? failure;
-					} finally {
-						release();
-					}
+						}),
+						signal,
+					);
+					return handle.acceptance;
 				},
-				{ signal: request.signal },
-			);
+				stop: (handle) => this.stopHandle(handle),
+				recordAttempt: this.options.recordChildStartupAttempt,
+			});
 		} catch (error) {
 			if (acceptedHandle !== undefined) {
 				await this.stopHandle(acceptedHandle);
+			}
+			if (signal?.aborted) {
+				throw readCancellationError(signal);
 			}
 			throw error;
 		}
@@ -390,7 +386,6 @@ export class InvocationSupervisor implements InvocationControl {
 			rejectStartupFailure,
 			processing: Promise.resolve(),
 			accepted: false,
-			activityObserved: false,
 			terminalObserved: false,
 			teardown: undefined,
 			lastAssistantText: "",
@@ -427,6 +422,11 @@ export class InvocationSupervisor implements InvocationControl {
 				? {}
 				: {
 						[SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify(launch.toolPatterns),
+					}),
+			...(launch?.workflowIds === undefined
+				? {}
+				: {
+						[SUBAGENT_WORKFLOW_IDS_ENV]: JSON.stringify(launch.workflowIds),
 					}),
 		});
 		return this.spawnProcess(this.options.command ?? "pi", args, {
@@ -584,6 +584,9 @@ export class InvocationSupervisor implements InvocationControl {
 				command: request.command,
 				resolve: () => resolve(),
 				reject,
+				...(request.onAccepted === undefined
+					? {}
+					: { onAccepted: request.onAccepted }),
 			});
 		});
 		handle.process.stdin.write(
@@ -688,7 +691,6 @@ export class InvocationSupervisor implements InvocationControl {
 			return;
 		}
 		if (type !== undefined) {
-			handle.activityObserved = true;
 			for (const listener of this.activityListeners) {
 				listener(handle.acceptance.invocationId);
 			}
@@ -724,6 +726,7 @@ export class InvocationSupervisor implements InvocationControl {
 		if (readField(value, "success") === true) {
 			if (command === "prompt") {
 				handle.accepted = true;
+				pending.onAccepted?.();
 			}
 			pending.resolve(readField(value, "data"));
 			return;
@@ -827,24 +830,6 @@ export class InvocationSupervisor implements InvocationControl {
 		}
 		return this.options.sessionsDir;
 	}
-}
-
-/** Converts queued startup cancellation to one explicit pre-acceptance failure. */
-function requireStartupRelease(release: (() => void) | undefined): () => void {
-	if (release === undefined) {
-		throw new InvocationStartError(
-			"start_failed",
-			"child startup was cancelled before process launch",
-		);
-	}
-	return release;
-}
-
-/** Converts any pre-acceptance failure to one approved public class. */
-function toInvocationStartError(error: unknown): InvocationStartError {
-	return error instanceof InvocationStartError
-		? error
-		: new InvocationStartError("start_failed", errorMessage(error));
 }
 
 /** Validates documented get_entries data for caller-owned incremental branch assembly. */

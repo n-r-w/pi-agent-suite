@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.0 - 2026-08-02
+
+- Added YAML workflow extension with stage-aware prompts, transitions, activation policies, and runtime context.
+- Added dynamic workflow creation and bundled workflows for coding, analysis, and information extraction.
+- Added a shared session status panel for workflows and subagents.
+- Improved child-agent authentication recovery, startup diagnostics, schemas, timeout handling, and Unicode text validation.
+- Updated agent definitions, tests, examples, and extension documentation.
+
 ## v2.0.0 - 2026-07-29
 
 - Breaking change: completely new subagent management system. The `/subagents` screen now shows all active subagents, their status, and allows steering or waiting for them. Subagents can be started, steered, and waited on asynchronously, and their results are integrated into the main agent's workflow.

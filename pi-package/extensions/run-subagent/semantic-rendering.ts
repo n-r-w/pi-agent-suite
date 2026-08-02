@@ -8,10 +8,11 @@ import type {
 import { Box, type Component, Container } from "@earendil-works/pi-tui";
 import { getToolResultText } from "../../shared/tool-presentation/bounded.ts";
 import { parseAgentOperationEvidence } from "./agent-operation-wire.ts";
-import type {
-	AcceptedPresentationEvidence,
-	SubagentFeedback,
-	WaitFeedbackPresentationEvidence,
+import {
+	type AcceptedPresentationEvidence,
+	MILLISECONDS_PER_SECOND,
+	type SubagentFeedback,
+	type WaitFeedbackPresentationEvidence,
 } from "./domain.ts";
 import { parseFeedback } from "./journal-codec.ts";
 import {
@@ -187,7 +188,11 @@ export function renderSubagentWaitCall(
 			return [];
 		}
 		const ids = readSessionIds(args);
-		const timeoutMs = readNonNegativeInteger(args, "timeoutMs");
+		const timeoutSeconds = readNonNegativeInteger(args, "timeout");
+		const timeoutMs =
+			timeoutSeconds === undefined
+				? undefined
+				: timeoutSeconds * MILLISECONDS_PER_SECOND;
 		return [
 			renderHeader(
 				"subagent_wait",
@@ -218,7 +223,11 @@ export function renderSubagentWaitResult(
 ): Component {
 	setPhase(context, "settled");
 	const ids = readSessionIds(context.args);
-	const timeoutMs = readNonNegativeInteger(context.args, "timeoutMs");
+	const timeoutSeconds = readNonNegativeInteger(context.args, "timeout");
+	const timeoutMs =
+		timeoutSeconds === undefined
+			? undefined
+			: timeoutSeconds * MILLISECONDS_PER_SECOND;
 	if (context.isError) {
 		return renderWaitCard(
 			[{ value: formatIds(ids), role: "primary" }],

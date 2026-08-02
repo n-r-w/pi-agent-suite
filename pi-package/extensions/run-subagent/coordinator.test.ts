@@ -444,7 +444,7 @@ async function exerciseCanceledWaitReadmission(
 	const firstWait = harness.coordinator
 		.wait(
 			OWNER,
-			{ sessionIds: [1], timeoutMs: 100 },
+			{ sessionIds: [1], timeout: 1 },
 			{
 				toolCallId: "cancelled-wait",
 				requestId: "cancelled-request",
@@ -465,7 +465,7 @@ async function exerciseCanceledWaitReadmission(
 	harness.coordinator.registerOwner(OWNER);
 	const resumedWait = harness.coordinator.wait(
 		OWNER,
-		{ sessionIds: [2], timeoutMs: 100 },
+		{ sessionIds: [2], timeout: 1 },
 		{ toolCallId: "resumed-wait", requestId: "resumed-request" },
 	);
 	await Promise.resolve();
@@ -1132,7 +1132,7 @@ describe("SubagentCoordinator", () => {
 		const first = harness.coordinator
 			.wait(
 				OWNER,
-				{ sessionIds: [1], timeoutMs: 100 },
+				{ sessionIds: [1], timeout: 1 },
 				{ toolCallId: "wait-1", requestId: "request-1" },
 			)
 			.then((result) => outcomes.push(result.outcome))
@@ -1142,7 +1142,7 @@ describe("SubagentCoordinator", () => {
 		const second = harness.coordinator
 			.wait(
 				OWNER,
-				{ sessionIds: [1], timeoutMs: 100 },
+				{ sessionIds: [1], timeout: 1 },
 				{ toolCallId: "wait-2", requestId: "request-2" },
 			)
 			.then((result) => outcomes.push(result.outcome))
@@ -1179,7 +1179,7 @@ describe("SubagentCoordinator", () => {
 		};
 		const firstReason = new Error("cancel first wait");
 		const first = harness.coordinator
-			.wait(OWNER, { sessionIds: [1], timeoutMs: 100 }, firstExecution)
+			.wait(OWNER, { sessionIds: [1], timeout: 1 }, firstExecution)
 			.then(() => "normal")
 			.catch((error: unknown) => error);
 		await Promise.resolve();
@@ -1207,7 +1207,7 @@ describe("SubagentCoordinator", () => {
 		};
 		const secondReason = new Error("cancel second wait");
 		const second = harness.coordinator
-			.wait(OWNER, { sessionIds: [1], timeoutMs: 100 }, secondExecution)
+			.wait(OWNER, { sessionIds: [1], timeout: 1 }, secondExecution)
 			.then(() => "normal")
 			.catch((error: unknown) => error);
 		await Promise.resolve();
@@ -1264,7 +1264,7 @@ describe("SubagentCoordinator", () => {
 		};
 		const wait = harness.coordinator.wait(
 			OWNER,
-			{ sessionIds: [1], timeoutMs: 100 },
+			{ sessionIds: [1], timeout: 1 },
 			execution,
 		);
 		await Promise.resolve();
@@ -1435,7 +1435,7 @@ describe("SubagentCoordinator", () => {
 			try {
 				await harness.coordinator.wait(
 					OWNER,
-					{ sessionIds, timeoutMs: 100 },
+					{ sessionIds, timeout: 1 },
 					{
 						toolCallId: `wait-${index}`,
 						requestId: `request-${index}`,
@@ -1497,7 +1497,7 @@ describe("SubagentCoordinator", () => {
 		harness.coordinator
 			.wait(
 				OWNER,
-				{ sessionIds: [1], timeoutMs: 100 },
+				{ sessionIds: [1], timeout: 1 },
 				{ toolCallId: "wait-latency", requestId: "request-latency" },
 			)
 			.catch(() => undefined);
@@ -1552,7 +1552,7 @@ describe("SubagentCoordinator", () => {
 		} as unknown as LogicalSession);
 		const wait = harness.coordinator.wait(
 			OWNER,
-			{ sessionIds: [1], timeoutMs: 100 },
+			{ sessionIds: [1], timeout: 1 },
 			{ toolCallId: "wait-1", requestId: "request-1" },
 		);
 		await Promise.resolve();
@@ -1633,7 +1633,7 @@ describe("SubagentCoordinator", () => {
 		failureHarness.catalog.add(activeSession());
 		const failureWait = failureHarness.coordinator.wait(
 			OWNER,
-			{ sessionIds: [1], timeoutMs: 100 },
+			{ sessionIds: [1], timeout: 1 },
 			{ toolCallId: "wait-failure", requestId: "request-failure" },
 		);
 		await Promise.resolve();
@@ -1649,7 +1649,7 @@ describe("SubagentCoordinator", () => {
 		abortHarness.catalog.add(activeSession());
 		const abortWait = abortHarness.coordinator.wait(
 			OWNER,
-			{ sessionIds: [1], timeoutMs: 100 },
+			{ sessionIds: [1], timeout: 1 },
 			{ toolCallId: "wait-abort", requestId: "request-abort" },
 		);
 		await Promise.resolve();
@@ -1935,7 +1935,7 @@ describe("SubagentCoordinator", () => {
 		const waitResult = harness.coordinator
 			.wait(
 				OWNER,
-				{ sessionIds: [1], timeoutMs: 1 },
+				{ sessionIds: [1], timeout: 1 },
 				{ toolCallId: "wait-stopped", requestId: "wait-stopped" },
 			)
 			.then((result) => {
@@ -2252,7 +2252,7 @@ describe("SubagentCoordinator", () => {
 		const stoppedWait = harness.coordinator
 			.wait(
 				OWNER,
-				{ sessionIds: [1], timeoutMs: 100 },
+				{ sessionIds: [1], timeout: 1 },
 				{
 					toolCallId: "stopped-wait",
 					requestId: "stopped-wait",
@@ -2442,9 +2442,9 @@ describe("SubagentCoordinator", () => {
 	});
 
 	test("routes feedback at the timeout boundary to history", async () => {
-		// Purpose: feedback observed at expiresAt must lose to timeout and cannot settle the wait.
-		// Input and expected output: selected child completes at time 110 for a wait admitted at 10 with timeout 100.
-		// Edge case: history receives the feedback once and the wait later resolves only as timeout.
+		// Purpose: a public timeout in seconds must establish the equivalent millisecond deadline.
+		// Input and expected output: selected child completes at time 1010 for a wait admitted at 10 with timeout 1.
+		// Edge case: feedback at the exact converted boundary goes to history and the wait resolves as timeout.
 		// Dependencies: mutable monotonic clock and explicit fake deadline callback.
 		let now = 10;
 		const harness = createHarness(() => now);
@@ -2452,11 +2452,12 @@ describe("SubagentCoordinator", () => {
 		harness.coordinator.registerOwner(OWNER);
 		const wait = harness.coordinator.wait(
 			OWNER,
-			{ sessionIds: [1], timeoutMs: 100 },
+			{ sessionIds: [1], timeout: 1 },
 			{ toolCallId: "wait-boundary", requestId: "request-boundary" },
 		);
 		await Promise.resolve();
-		now = 110;
+		expect(harness.waits.admission?.expiresAt).toBe(1010);
+		now = 1010;
 		await harness.coordinator.observeInvocation({
 			kind: "terminal",
 			invocationId: "invocation-1",

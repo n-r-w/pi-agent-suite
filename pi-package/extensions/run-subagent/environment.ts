@@ -5,6 +5,7 @@ import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
+	SUBAGENT_WORKFLOW_IDS_ENV,
 } from "../../shared/subagent-environment";
 
 /** Safe diagnostic returned for every malformed child tool-pattern payload. */
@@ -95,6 +96,7 @@ function isSubagentOwnedEnvKey(key: string): boolean {
 		key === SUBAGENT_DEPTH_ENV ||
 		key === SUBAGENT_OWNER_SESSION_ENV ||
 		key === SUBAGENT_RUNTIME_LEASE_ENV ||
-		key === SUBAGENT_TOOL_PATTERNS_ENV
+		key === SUBAGENT_TOOL_PATTERNS_ENV ||
+		key === SUBAGENT_WORKFLOW_IDS_ENV
 	);
 }

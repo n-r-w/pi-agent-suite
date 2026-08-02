@@ -97,7 +97,7 @@ describe("runtime wire parser", () => {
 				{
 					toolName: "subagent_wait",
 					toolCallId: "tool-matrix",
-					params: { sessionIds: [1], timeoutMs: 1 },
+					params: { sessionIds: [1], timeout: 1 },
 				},
 			],
 			[

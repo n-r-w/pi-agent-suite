@@ -7,6 +7,7 @@ import {
 	isFileNotFoundError,
 } from "./agent-suite-storage";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
+import { isSingleLineText } from "./text-contracts";
 
 const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
 const AGENTS_DIR = "agents";
@@ -17,6 +18,7 @@ const TOP_LEVEL_KEYS = [
 	"type",
 	"model",
 	"tools",
+	"workflows",
 	"agents",
 ] as const;
 const MODEL_KEYS = ["id", "thinking"] as const;
@@ -47,6 +49,7 @@ export interface AgentDefinition {
 		readonly thinking?: ReasoningLevel;
 	};
 	readonly tools?: readonly string[];
+	readonly workflows?: readonly string[];
 	readonly agents?: readonly string[];
 }
 
@@ -192,6 +195,7 @@ function parseAgentDefinition(
 		description,
 		model: rawModel,
 		tools: rawTools,
+		workflows: rawWorkflows,
 		agents: rawAgents,
 	} = frontmatter;
 	const type = rawType ?? "main";
@@ -199,7 +203,7 @@ function parseAgentDefinition(
 		return undefined;
 	}
 
-	if (description !== undefined && typeof description !== "string") {
+	if (description !== undefined && !isSingleLineText(description)) {
 		return undefined;
 	}
 
@@ -213,18 +217,29 @@ function parseAgentDefinition(
 		return undefined;
 	}
 
-	const agents = parseStringList(rawAgents);
+	const workflows = parseIdentityList(rawWorkflows);
+	if (workflows === false) {
+		return undefined;
+	}
+
+	const agents = parseIdentityList(rawAgents);
 	if (agents === false) {
 		return undefined;
 	}
 
+	const id = basename(fileName, AGENT_FILE_EXTENSION).normalize("NFC");
+	if (!isSingleLineText(id)) {
+		return undefined;
+	}
+
 	return {
-		id: basename(fileName, AGENT_FILE_EXTENSION),
+		id,
 		description: description ?? "",
 		type,
 		prompt: parsed.body.trim(),
 		...(model !== undefined ? { model } : {}),
 		...(tools !== undefined ? { tools } : {}),
+		...(workflows !== undefined ? { workflows } : {}),
 		...(agents !== undefined ? { agents } : {}),
 	};
 }
@@ -261,6 +276,33 @@ function isModelId(value: unknown): value is string {
 
 	const separatorIndex = value.indexOf("/");
 	return separatorIndex > 0 && separatorIndex < value.length - 1;
+}
+
+/** Parses an optional list of normalized Unicode identity names. */
+function parseIdentityList(
+	value: unknown,
+): readonly string[] | undefined | false {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (!Array.isArray(value)) {
+		return false;
+	}
+
+	const identities: string[] = [];
+	const seen = new Set<string>();
+	for (const item of value) {
+		if (!isSingleLineText(item)) {
+			return false;
+		}
+		const identity = item.normalize("NFC");
+		if (seen.has(identity)) {
+			return false;
+		}
+		seen.add(identity);
+		identities.push(identity);
+	}
+	return identities;
 }
 
 /** Parses optional unique non-empty string lists from frontmatter. */

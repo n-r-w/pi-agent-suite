@@ -1,5 +1,5 @@
-/** Converts milliseconds to seconds for model-visible invocation duration. */
-const MILLISECONDS_PER_SECOND = 1_000;
+/** Converts between model-visible seconds and runtime milliseconds. */
+export const MILLISECONDS_PER_SECOND = 1_000;
 
 /** Identifies the Pi session that directly owns logical child IDs. */
 export interface OwnerIdentity {

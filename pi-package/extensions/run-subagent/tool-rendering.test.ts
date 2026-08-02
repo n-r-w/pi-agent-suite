@@ -58,7 +58,7 @@ const TOOL_NAMES = [
 	"subagent_query",
 ] as const;
 const EXPAND_HINT_PATTERN =
-	/^\.\.\. \(\d+ more lines, \d+ total, ctrl\+o to expand\)$/;
+	/^\.\.\. \(\d+ more lines, \d+ total, alt\+x to expand\)$/;
 /** Maps each subagent tool name to the renderers registered by its extension entry point. */
 const SUBAGENT_PRESENTATIONS = {
 	subagent_start: {
@@ -351,7 +351,7 @@ describe("Subagents semantic rendering", () => {
 		const wait = new ToolExecutionComponent(
 			"subagent_wait",
 			"wait-call",
-			{ sessionIds: [1], timeoutMs: 30_000 },
+			{ sessionIds: [1], timeout: 30 },
 			{},
 			resolveSubagentDefinition("subagent_wait"),
 			ui,
@@ -453,7 +453,7 @@ describe("Subagents semantic rendering", () => {
 		const feedbackEvidence = waitFeedbackDetails();
 		const wait = renderTool({
 			name: "subagent_wait",
-			args: { sessionIds: [1], timeoutMs: 30_000 },
+			args: { sessionIds: [1], timeout: 30 },
 			result: result(feedbackEvidence),
 			theme: MARKED_THEME,
 		}).result;
@@ -527,7 +527,7 @@ describe("Subagents semantic rendering", () => {
 			evidence.feedback.presentation.invocationMetadata.projectionSavedTokens = 10;
 			const card = renderTool({
 				name: "subagent_wait",
-				args: { sessionIds: [1], timeoutMs: 30_000 },
+				args: { sessionIds: [1], timeout: 30 },
 				result: result(evidence),
 				theme: MARKED_THEME,
 				width: 300,
@@ -642,7 +642,7 @@ describe("Subagents semantic rendering", () => {
 		// Input and expected output: feedback shows a terminal snapshot, normal outcomes use muted result text, and tool failures retain error styling.
 		// Edge case: ordered multiple IDs and compact timeout formatting remain stable after result classification.
 		// Dependencies: validated wait evidence, structured failed-tool details, and semantic theme roles.
-		const args = { sessionIds: [1, 3, 8], timeoutMs: 30_000 };
+		const args = { sessionIds: [1, 3, 8], timeout: 30 };
 		const pending = renderTool({ name: "subagent_wait", args });
 		const feedback = renderTool({
 			name: "subagent_wait",
@@ -721,13 +721,16 @@ describe("Subagents semantic rendering", () => {
 		// Edge case: every line remains inside Pi's default Box(1,1) shell contract at a narrow width.
 		// Dependencies: public Text, Markdown, Box, keybinding, and visible-width APIs.
 		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+o",
-					description: "Expand collapsed tool output",
+			new KeybindingsManager(
+				{
+					...TUI_KEYBINDINGS,
+					"app.tools.expand": {
+						defaultKeys: "ctrl+o",
+						description: "Expand collapsed tool output",
+					},
 				},
-			}),
+				{ "app.tools.expand": "alt+x" },
+			),
 		);
 		const args = {
 			agentId: "SubAgentCoder",
@@ -781,13 +784,16 @@ describe("Subagents semantic rendering", () => {
 		// Edge case: a long question preserves the shell width and reports hidden visual lines.
 		// Dependencies: shared semantic headers, bounded previews, Markdown sections, and the static query presentation registry.
 		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+o",
-					description: "Expand collapsed tool output",
+			new KeybindingsManager(
+				{
+					...TUI_KEYBINDINGS,
+					"app.tools.expand": {
+						defaultKeys: "ctrl+o",
+						description: "Expand collapsed tool output",
+					},
 				},
-			}),
+				{ "app.tools.expand": "alt+x" },
+			),
 		);
 		const args = {
 			sessionId: 7,
@@ -823,13 +829,16 @@ describe("Subagents semantic rendering", () => {
 		// Edge case: neither collapsed nor expanded content exceeds the narrow default shell width.
 		// Dependencies: query result presentation details, standard duration formatting, semantic clipping, and Markdown sections.
 		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+o",
-					description: "Expand collapsed tool output",
+			new KeybindingsManager(
+				{
+					...TUI_KEYBINDINGS,
+					"app.tools.expand": {
+						defaultKeys: "ctrl+o",
+						description: "Expand collapsed tool output",
+					},
 				},
-			}),
+				{ "app.tools.expand": "alt+x" },
+			),
 		);
 		const args = {
 			sessionId: 7,

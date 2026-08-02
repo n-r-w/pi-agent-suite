@@ -8,7 +8,7 @@
 		"typecheck": "tsc --noEmit",
 		"check": "biome check package.json pi-package/package.json tsconfig.json pi-package test",
 		"verify": "bun test && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test",
-		"verify:ci": "bun test ./test/extensions ./test/shared && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test",
+		"verify:ci": "bun test ./pi-package ./test/extensions ./test/shared && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test",
 		"release:check": "sh -c 'trap \"rm -f pi-package/README.md\" EXIT; cp README.md pi-package/README.md; bun run verify && (cd pi-package && npm pack --dry-run)'",
 		"release:prepare:patch": "cd pi-package && npm version patch --no-git-tag-version && cd .. && bun run release:check",
 		"release:prepare:minor": "cd pi-package && npm version minor --no-git-tag-version && cd .. && bun run release:check",
@@ -30,6 +30,7 @@
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.1",
-		"stream-json": "^2.1.0"
+		"stream-json": "^2.1.0",
+		"yaml": "^2.9.0"
 	}
 }

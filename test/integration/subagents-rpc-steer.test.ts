@@ -201,6 +201,10 @@ test("real Pi keeps queued active steering accepted when its response is delayed
 		});
 		supervisor = new InvocationSupervisor({
 			bridge: new RootRuntimeBridge(),
+			childStartupConfig: {
+				authRetry: { maxRetries: 10, delayMs: 1 },
+			},
+			recordChildStartupAttempt: () => undefined,
 			packagePath: join(
 				process.cwd(),
 				"pi-package/extensions/run-subagent/index.ts",
@@ -229,7 +233,8 @@ test("real Pi keeps queued active steering accepted when its response is delayed
 				thinking: "off",
 				toolPatterns: [],
 				depth: 1,
-				parentAuthVerified: true,
+				providerConfigured: true,
+				checkParentAuth: async () => ({ ok: true }),
 				runtimeFacts: {
 					modelProvider: "runtime-steer",
 					modelId: "steer",

@@ -1,14 +1,12 @@
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
+import {
+	isSingleLineText,
+	singleLineTextSchema,
+} from "../../shared/text-contracts";
 import { invocationElapsedSeconds, type SubagentFeedback } from "./domain";
 import { sanitizePublicSubagentErrorMessage } from "./public-error";
 
-const TASK_NAME_MIN_CODE_POINTS = 3;
-const TASK_NAME_MAX_CODE_POINTS = 60;
-const HIGH_SURROGATE_PATTERN = "[\\uD800-\\uDBFF]";
-const LOW_SURROGATE_PATTERN = "[\\uDC00-\\uDFFF]";
-const NON_SURROGATE_PATTERN = "[^\\uD800-\\uDFFF]";
-const TASK_NAME_CODE_POINT_PATTERN = `^(?:(?:${HIGH_SURROGATE_PATTERN}${LOW_SURROGATE_PATTERN}|${NON_SURROGATE_PATTERN})){3,60}$`;
 const UNICODE_WHITE_SPACE_CODE_POINT = /^\p{White_Space}$/u;
 
 /** Names the complete public subagent tool set. */
@@ -50,9 +48,20 @@ export interface SubagentFailureDetails {
 /** Declares the exact public start request boundary. */
 export const SubagentStartParameters = Type.Object(
 	{
-		agentId: Type.String(),
-		taskName: Type.String({ pattern: TASK_NAME_CODE_POINT_PATTERN }),
-		prompt: Type.String(),
+		agentId: singleLineTextSchema({
+			description: "Subagent ID listed in <available_subagents>",
+			minLength: 1,
+		}),
+		taskName: singleLineTextSchema({
+			description: "Short task name for subagent session",
+			minLength: 3,
+			maxLength: 60,
+		}),
+		prompt: Type.String({
+			description: "Instructions for subagent",
+			minLength: 1,
+			maxLength: 32768,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -60,8 +69,15 @@ export const SubagentStartParameters = Type.Object(
 /** Declares the exact public steer request boundary. */
 export const SubagentSteerParameters = Type.Object(
 	{
-		sessionId: Type.Integer({ minimum: 1 }),
-		prompt: Type.String(),
+		sessionId: Type.Integer({
+			description: "Session ID returned by subagent_start",
+			minimum: 1,
+		}),
+		prompt: Type.String({
+			description: "Instructions to send to existing subagent session",
+			minLength: 1,
+			maxLength: 32768,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -69,8 +85,15 @@ export const SubagentSteerParameters = Type.Object(
 /** Declares the exact public query request boundary. */
 export const SubagentQueryParameters = Type.Object(
 	{
-		sessionId: Type.Integer({ minimum: 1 }),
-		question: Type.String(),
+		sessionId: Type.Integer({
+			description: "Session ID returned by subagent_start",
+			minimum: 1,
+		}),
+		question: Type.String({
+			description: "Question about specified subagent session",
+			minLength: 1,
+			maxLength: 4096,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -79,10 +102,16 @@ export const SubagentQueryParameters = Type.Object(
 export const SubagentWaitParameters = Type.Object(
 	{
 		sessionIds: Type.Array(Type.Integer({ minimum: 1 }), {
+			description: "List of unique session IDs returned by subagent_start",
 			minItems: 1,
+			maxItems: 64,
 			uniqueItems: true,
 		}),
-		timeoutMs: Type.Integer({ minimum: 1, maximum: 2_147_483_647 }),
+		timeout: Type.Integer({
+			description: "Maximum wait time in seconds",
+			minimum: 1,
+			maximum: 3600,
+		}),
 	},
 	{ additionalProperties: false },
 );
@@ -138,10 +167,8 @@ export function parseSubagentStartRequest(
 	const taskName = value["taskName"];
 	const prompt = value["prompt"];
 	if (
-		typeof agentId !== "string" ||
-		typeof taskName !== "string" ||
-		codePointLength(taskName) < TASK_NAME_MIN_CODE_POINTS ||
-		codePointLength(taskName) > TASK_NAME_MAX_CODE_POINTS ||
+		!isSingleLineText(agentId) ||
+		!isSingleLineText(taskName) ||
 		typeof prompt !== "string" ||
 		!hasNonWhitespaceCodePoint(prompt)
 	) {
@@ -328,11 +355,6 @@ function isOutcomeOnlyResult(
 		(outcome === "timeout" || outcome === "no_active_sessions") &&
 		isExactRecord(value, ["outcome"])
 	);
-}
-
-/** Counts Unicode code points instead of UTF-16 code units or grapheme clusters. */
-function codePointLength(value: string): number {
-	return Array.from(value).length;
 }
 
 /** Requires at least one Unicode code point outside the whitespace class. */

@@ -1,6 +1,9 @@
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
+import { acquireSessionStatusRow } from "../../../shared/session-status-panel";
 import type { ManagementProjectionView } from "../projection";
 import {
 	AGENT_STATUS_ICONS,
@@ -8,7 +11,11 @@ import {
 	countAgentStatuses,
 } from "./status-summary";
 
-const STATUS_WIDGET_KEY = "subagents-status";
+/** Identifies the Agents producer inside the shared session-status panel. */
+const AGENTS_STATUS_ROW_KEY = "agents";
+
+/** Keeps the Agents row above later session-specific status rows. */
+const AGENTS_STATUS_ROW_ORDER = 10;
 
 /** Supplies immutable hierarchy revisions to the main-window status indicator. */
 export interface SubagentStatusSource {
@@ -16,54 +23,44 @@ export interface SubagentStatusSource {
 	subscribe(listener: (view: ManagementProjectionView) => void): () => void;
 }
 
-/** Renders the upper separator and one width-bounded status row above Pi's editor. */
-class SubagentStatusComponent implements Component {
-	public constructor(
-		private readonly counts: AgentStatusCounts,
-		private readonly theme: Theme,
-	) {}
-
-	/** Derives both rows from the current terminal width without retaining layout state. */
-	public render(width: number): string[] {
-		if (width <= 0) {
-			return [];
-		}
-		const status = `Agents: ${this.theme.fg("accent", AGENT_STATUS_ICONS.running)} ${this.counts.running} · ${this.theme.fg("success", AGENT_STATUS_ICONS.done)} ${this.counts.done} · ${this.theme.fg("error", AGENT_STATUS_ICONS.failed)} ${this.counts.failed} · ${this.theme.fg("warning", AGENT_STATUS_ICONS.aborted)} ${this.counts.aborted} · Ctrl+Shift+G`;
-		return ["─".repeat(width), truncateToWidth(status, width, "…")];
-	}
-
-	/** Invalidates no cache because every render uses the supplied width directly. */
-	public invalidate(): void {}
+/** Builds the themed Agents row from one immutable hierarchy count snapshot. */
+function renderAgentsStatus(counts: AgentStatusCounts, theme: Theme): string {
+	return [
+		theme.fg("dim", "Agents: "),
+		theme.fg("accent", AGENT_STATUS_ICONS.running),
+		theme.fg("dim", ` ${counts.running} · `),
+		theme.fg("success", AGENT_STATUS_ICONS.done),
+		theme.fg("dim", ` ${counts.done} · `),
+		theme.fg("error", AGENT_STATUS_ICONS.failed),
+		theme.fg("dim", ` ${counts.failed} · `),
+		theme.fg("warning", AGENT_STATUS_ICONS.aborted),
+		theme.fg("dim", ` ${counts.aborted} · Ctrl+Shift+G`),
+	].join("");
 }
 
-/** Installs the main-window indicator and returns its lifecycle cleanup. */
+/** Installs the Agents row and returns its subscription and row cleanup. */
 export function installSubagentStatusIndicator(
+	pi: ExtensionAPI,
 	ui: ExtensionContext["ui"],
 	source: SubagentStatusSource,
 ): () => void {
-	let visible = false;
+	const row = acquireSessionStatusRow(pi, ui, {
+		key: AGENTS_STATUS_ROW_KEY,
+		order: AGENTS_STATUS_ROW_ORDER,
+	});
 	const publish = (view: ManagementProjectionView): void => {
 		if (view.nodes.length === 0) {
-			if (visible) {
-				ui.setWidget(STATUS_WIDGET_KEY, undefined);
-				visible = false;
-			}
+			row.set(undefined);
 			return;
 		}
 		const counts = countAgentStatuses(view.nodes);
-		ui.setWidget(
-			STATUS_WIDGET_KEY,
-			(_tui, theme) => new SubagentStatusComponent(counts, theme),
-		);
-		visible = true;
+		row.set((theme) => renderAgentsStatus(counts, theme));
 	};
 
 	publish(source.getView());
 	const unsubscribe = source.subscribe(publish);
 	return () => {
 		unsubscribe();
-		if (visible) {
-			ui.setWidget(STATUS_WIDGET_KEY, undefined);
-		}
+		row.dispose();
 	};
 }

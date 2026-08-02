@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { LogicalSession } from "../domain";
@@ -76,16 +80,18 @@ function node(
 
 /** Captures public Pi widget updates without rendering the full application. */
 function createUiFake(): {
+	readonly pi: ExtensionAPI;
 	readonly ui: ExtensionContext["ui"];
 	readonly updates: Array<{ key: string; content: WidgetContent }>;
 } {
 	const updates: Array<{ key: string; content: WidgetContent }> = [];
+	const pi = { events: {} } as unknown as ExtensionAPI;
 	const ui = {
 		setWidget(key: string, content: WidgetContent): void {
 			updates.push({ key, content });
 		},
 	} as unknown as ExtensionContext["ui"];
-	return { ui, updates };
+	return { pi, ui, updates };
 }
 
 /** Provides marker-free theme methods required by the public widget factory. */
@@ -123,7 +129,7 @@ describe("subagent main-window status indicator", () => {
 		const fake = createUiFake();
 
 		// ACT: install from the resumed view, publish a replacement, and render both public widget factories.
-		const dispose = installSubagentStatusIndicator(fake.ui, source);
+		const dispose = installSubagentStatusIndicator(fake.pi, fake.ui, source);
 		const resumedFactory = fake.updates.at(-1)?.content;
 		source.publish(
 			view([
@@ -179,7 +185,7 @@ describe("subagent main-window status indicator", () => {
 		);
 		const fake = createUiFake();
 
-		const dispose = installSubagentStatusIndicator(fake.ui, source);
+		const dispose = installSubagentStatusIndicator(fake.pi, fake.ui, source);
 		const factory = fake.updates.at(-1)?.content;
 		if (typeof factory !== "function") {
 			throw new Error("subagent status widget factory is missing");
@@ -188,7 +194,7 @@ describe("subagent main-window status indicator", () => {
 		dispose();
 
 		expect(status).toContain(
-			"Agents: <accent>⧗</accent> 1 · <success>✓</success> 1 · <error>✗</error> 1 · <warning>■</warning> 1 · Ctrl+Shift+G",
+			"<dim>Agents: </dim><accent>⧗</accent><dim> 1 · </dim><success>✓</success><dim> 1 · </dim><error>✗</error><dim> 1 · </dim><warning>■</warning><dim> 1 · Ctrl+Shift+G</dim>",
 		);
 	});
 
@@ -200,7 +206,7 @@ describe("subagent main-window status indicator", () => {
 		const source = new StatusSourceFake(view([]));
 		const fake = createUiFake();
 
-		const dispose = installSubagentStatusIndicator(fake.ui, source);
+		const dispose = installSubagentStatusIndicator(fake.pi, fake.ui, source);
 		const initialContent = fake.updates.at(-1)?.content;
 		source.publish(view([node(1, "starting")]));
 		const startedContent = fake.updates.at(-1)?.content;

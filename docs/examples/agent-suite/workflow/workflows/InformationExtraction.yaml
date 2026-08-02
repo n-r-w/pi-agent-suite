@@ -1,0 +1,65 @@
+description: Use for source-based extraction without adding unsupported facts or recommendations
+prompt: |-
+  1. Use global temporary directory for temporary files and downloaded resources.
+  2. Follow active extractor's source, interpretation, filtering, image, and output-format rules.
+  3. Preserve exact identifiers, values, references, and evidence required by request.
+  4. Do not add unsupported facts, recommendations, or conclusions.
+stages:
+  - id: define_target
+    description: Define requested extraction result
+    prompt: |-
+      1. Identify exact information requested, required scope, output destination, and output shape.
+      2. Identify exclusions and interpretation limits imposed by active extractor.
+      3. Record unresolved ambiguities that can change extraction target.
+    initial: true
+  - id: identify_sources
+    description: Identify relevant source locations
+    prompt: |-
+      1. Identify direct and indirect sources that may contain requested information.
+      2. Select sources using active extractor's source-specific rules and tools.
+      3. Avoid sources outside requested scope.
+  - id: retrieve_content
+    description: Retrieve requested source content
+    prompt: |-
+      1. Use targeted tools or commands to retrieve required content.
+      2. Preserve source references, identifiers, values, and evidence.
+      3. Process documents, attachments, and images according to active extractor's rules.
+      4. Store temporary resources only in global temporary directory.
+  - id: verify_extraction
+    description: Verify relevance and completeness
+    prompt: |-
+      1. Verify that extracted content directly addresses request.
+      2. Remove unsupported, duplicate, empty, or out-of-scope content according to active extractor rules.
+      3. Identify missing information, retrieval errors, and unresolved source gaps.
+      4. Return to source identification when additional sources are required.
+  - id: compile_result
+    description: Compile and deliver extraction result
+    prompt: |-
+      1. Compile result using active extractor's required structure and level of detail.
+      2. Preserve required evidence and source references.
+      3. Include only permitted interpretation, decisions, and open questions.
+      4. Deliver result through requested output or active collaboration channel.
+      5. Return to content retrieval when feedback identifies missing source material.
+    final: true
+transitions:
+  - from: define_target
+    to: identify_sources
+    type: advance
+  - from: identify_sources
+    to: retrieve_content
+    type: advance
+  - from: retrieve_content
+    to: verify_extraction
+    type: advance
+  - from: verify_extraction
+    to: compile_result
+    type: advance
+  - from: verify_extraction
+    to: identify_sources
+    type: rework
+  - from: compile_result
+    to: retrieve_content
+    type: rework
+  - from: compile_result
+    to: define_target
+    type: rework

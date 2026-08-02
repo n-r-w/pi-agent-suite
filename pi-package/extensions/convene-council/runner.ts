@@ -2,21 +2,21 @@ import { spawn } from "node:child_process";
 import { env as processEnv } from "node:process";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
-	ChildAuthStartupRetryError,
-	createChildAuthStartupRetryError,
+	type ChildAuthStartupAttemptRecord,
+	type ChildParentAuthResult,
 	normalizeChildPrompt,
-	withChildAuthStartupRetry,
+	runChildAuthStartup,
 } from "../../shared/child-auth-startup";
 import { resolveChildRpcRuntimeFacts } from "../../shared/child-rpc-runtime-facts";
+import type {
+	ChildStartupAuthRetryConfig,
+	ChildStartupConfig,
+} from "../../shared/child-startup-config";
 import {
 	type ChildStartupGate,
 	sharedChildStartupGate,
 } from "../../shared/child-startup-gate";
-import {
-	CouncilRpcClient,
-	CouncilRpcCommandError,
-	type CouncilRpcTransport,
-} from "./rpc-client";
+import { CouncilRpcClient, type CouncilRpcTransport } from "./rpc-client";
 import { buildChildParticipantStartupFromToolArgs } from "./startup";
 import type { ParticipantRunner, ParticipantRunnerFactory } from "./types";
 
@@ -35,7 +35,7 @@ export interface SpawnedParticipantProcess {
 		on(event: "data", handler: (chunk: unknown) => void): unknown;
 	};
 	on(event: "error", handler: (error: Error) => void): unknown;
-	on(event: "exit", handler: () => void): unknown;
+	on(event: "exit" | "close", handler: () => void): unknown;
 	kill(signal?: string): boolean;
 }
 
@@ -43,6 +43,8 @@ export interface ParticipantRunnerFactoryDependencies {
 	setTimeout?: (callback: () => void, delayMs: number) => unknown;
 	clearTimeout?: (handle: unknown) => void;
 	startupGate?: ChildStartupGate;
+	childStartupConfig: ChildStartupConfig;
+	recordChildStartupAttempt: (record: ChildAuthStartupAttemptRecord) => void;
 	spawnPi(
 		command: string,
 		args: readonly string[],
@@ -68,6 +70,7 @@ export function createParticipantRunnerFactory(
 			modelId: `${options.runtime.model.provider}/${options.runtime.model.id}`,
 			modelRegistry: options.ctx.modelRegistry,
 		});
+		const model = options.runtime.model;
 		return new RpcParticipantRunner({
 			launch(onSessionEvent) {
 				const child = dependencies.spawnPi("pi", startup.args, {
@@ -84,7 +87,14 @@ export function createParticipantRunnerFactory(
 				};
 			},
 			startupGate,
-			provider: options.runtime.model.provider,
+			provider: model.provider,
+			providerConfigured: options.ctx.modelRegistry.hasConfiguredAuth(model),
+			checkParentAuth: async () => {
+				const auth = await options.ctx.modelRegistry.getApiKeyAndHeaders(model);
+				return auth.ok ? { ok: true } : { ok: false, error: auth.error };
+			},
+			retry: dependencies.childStartupConfig.authRetry,
+			recordChildStartupAttempt: dependencies.recordChildStartupAttempt,
 			onSessionEvent: options.onSessionEvent,
 			timers: {
 				setTimeout: dependencies.setTimeout ?? globalThis.setTimeout,
@@ -96,23 +106,30 @@ export function createParticipantRunnerFactory(
 	};
 }
 
-/** Creates the production RPC participant runner. */
-export const createRpcParticipantRunner: ParticipantRunnerFactory =
-	createParticipantRunnerFactory({
-		spawnPi(command, args, options) {
+/** Creates the production RPC participant runner with startup-owned dependencies. */
+export function createRpcParticipantRunnerFactory(options: {
+	readonly childStartupConfig: ChildStartupConfig;
+	readonly recordChildStartupAttempt: (
+		record: ChildAuthStartupAttemptRecord,
+	) => void;
+}): ParticipantRunnerFactory {
+	return createParticipantRunnerFactory({
+		...options,
+		spawnPi(command, args, spawnOptions) {
 			return spawn(command, [...args], {
-				cwd: options.cwd,
-				env: { ...filterProcessEnv(), ...options.env },
+				cwd: spawnOptions.cwd,
+				env: { ...filterProcessEnv(), ...spawnOptions.env },
 				stdio: ["pipe", "pipe", "pipe"],
 			}) as unknown as SpawnedParticipantProcess;
 		},
 	});
+}
 
 /** Holds mutable lifecycle state for one participant process attempt. */
 interface ActiveParticipantProcess {
-	readonly activity: { observed: boolean };
 	readonly child: SpawnedParticipantProcess;
 	readonly client: CouncilRpcClient;
+	readonly exitWaiters: Set<() => void>;
 	abortTimer: unknown;
 	exited: boolean;
 	termTimer: unknown;
@@ -135,6 +152,12 @@ interface RpcParticipantRunnerOptions {
 	readonly launch: LaunchParticipantProcess;
 	readonly startupGate: ChildStartupGate;
 	readonly provider: string;
+	readonly providerConfigured: boolean;
+	readonly checkParentAuth: () => Promise<ChildParentAuthResult>;
+	readonly retry: ChildStartupAuthRetryConfig;
+	readonly recordChildStartupAttempt: (
+		record: ChildAuthStartupAttemptRecord,
+	) => void;
 	readonly onSessionEvent: ((event: unknown) => void) | undefined;
 	readonly timers: ParticipantRunnerTimers;
 }
@@ -169,75 +192,45 @@ class RpcParticipantRunner implements ParticipantRunner {
 		}
 	}
 
-	/** Retries only a fresh child auth miss before prompt preflight or session activity. */
-	private async startFirstPrompt(
+	/** Delegates the first prompt lifecycle to shared authentication recovery. */
+	private startFirstPrompt(
 		task: string,
 		signal: AbortSignal | undefined,
 	): Promise<AssistantMessage> {
-		try {
-			return await withChildAuthStartupRetry(
-				async () => this.runFirstPromptAttempt(task, signal),
-				{ signal },
-			);
-		} catch (error) {
-			if (error instanceof ChildAuthStartupRetryError) {
-				throw error.failure;
-			}
-			throw error;
-		}
-	}
-
-	/** Owns one serialized process launch and its prompt preflight result. */
-	private async runFirstPromptAttempt(
-		task: string,
-		signal: AbortSignal | undefined,
-	): Promise<AssistantMessage> {
-		const releaseStartup = await this.options.startupGate.acquire(signal);
-		if (releaseStartup === undefined) {
-			throw new Error("participant request aborted");
-		}
-		try {
-			if (signal?.aborted) {
-				throw new Error("participant request aborted");
-			}
-			if (this.disposed) {
-				throw new Error("participant runner disposed");
-			}
-			const active = this.activate();
-			try {
-				return await this.promptActive(active, task, signal, releaseStartup);
-			} catch (error) {
-				const retryError =
-					error instanceof CouncilRpcCommandError && error.command === "prompt"
-						? createChildAuthStartupRetryError({
-								activityObserved: active.activity.observed,
-								failure: error,
-								parentAuthVerified: true,
-								provider: this.options.provider,
-							})
-						: undefined;
-				if (retryError !== undefined) {
-					this.disposeActive(active);
-					throw retryError;
+		return runChildAuthStartup({
+			owner: "convene-council",
+			provider: this.options.provider,
+			providerConfigured: this.options.providerConfigured,
+			retry: this.options.retry,
+			startupGate: this.options.startupGate,
+			signal,
+			cancellationError: () => new Error("participant request aborted"),
+			checkParentAuth: this.options.checkParentAuth,
+			start: async () => {
+				if (signal?.aborted) {
+					throw new Error("participant request aborted");
 				}
-				throw error;
-			}
-		} finally {
-			releaseStartup();
-		}
+				if (this.disposed) {
+					throw new Error("participant runner disposed");
+				}
+				return this.activate();
+			},
+			prompt: (active, onAccepted) =>
+				this.promptActive(active, task, signal, onAccepted),
+			stop: (active) => this.stopFailedAttempt(active),
+			recordAttempt: this.options.recordChildStartupAttempt,
+		});
 	}
 
 	/** Creates one persistent child process after startup ownership is granted. */
 	private activate(): ActiveParticipantProcess {
-		const activity = { observed: false };
 		const launched = this.options.launch((event) => {
-			activity.observed = true;
 			this.options.onSessionEvent?.(event);
 		});
 		const active: ActiveParticipantProcess = {
-			activity,
 			child: launched.child,
 			client: launched.client,
+			exitWaiters: new Set(),
 			abortTimer: undefined,
 			exited: false,
 			termTimer: undefined,
@@ -245,6 +238,7 @@ class RpcParticipantRunner implements ParticipantRunner {
 		this.active = active;
 		active.child.on("error", (error) => this.markProcessError(active, error));
 		active.child.on("exit", () => this.markExited(active));
+		active.child.on("close", () => this.markExited(active));
 		return active;
 	}
 
@@ -266,13 +260,66 @@ class RpcParticipantRunner implements ParticipantRunner {
 		});
 	}
 
-	/** Closes one process attempt without affecting a replacement process. */
+	/** Stops a failed startup process before shared recovery can launch a replacement. */
+	private async stopFailedAttempt(
+		active: ActiveParticipantProcess,
+	): Promise<void> {
+		this.clearEscalationTimers(active);
+		active.client.close();
+		if (!active.exited) {
+			const gracefulExit = this.waitForExit(active, COUNCIL_RPC_TERM_GRACE_MS);
+			active.child.kill("SIGTERM");
+			if (!(await gracefulExit)) {
+				const forcedExit = this.waitForExit(active, COUNCIL_RPC_TERM_GRACE_MS);
+				active.child.kill("SIGKILL");
+				if (!(await forcedExit)) {
+					throw new Error("participant process remained active after SIGKILL");
+				}
+			}
+		}
+		this.detachActive(active);
+	}
+
+	/** Waits for one process exit with a bounded owner-supplied timer. */
+	private waitForExit(
+		active: ActiveParticipantProcess,
+		timeoutMs: number,
+	): Promise<boolean> {
+		if (active.exited) {
+			return Promise.resolve(true);
+		}
+		return new Promise((resolve) => {
+			let settled = false;
+			let timer: unknown;
+			const finish = (exited: boolean): void => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				active.exitWaiters.delete(onExit);
+				if (exited) {
+					this.options.timers.clearTimeout(timer);
+				}
+				resolve(exited);
+			};
+			const onExit = (): void => finish(true);
+			active.exitWaiters.add(onExit);
+			timer = this.options.timers.setTimeout(() => finish(false), timeoutMs);
+		});
+	}
+
+	/** Closes one process without waiting when the whole runner is being disposed. */
 	private disposeActive(active: ActiveParticipantProcess): void {
 		this.clearEscalationTimers(active);
 		active.client.close();
 		if (!active.exited) {
 			active.child.kill("SIGTERM");
 		}
+		this.detachActive(active);
+	}
+
+	/** Removes one attempt only when it still owns the persistent runner slot. */
+	private detachActive(active: ActiveParticipantProcess): void {
 		if (this.active === active) {
 			this.active = undefined;
 		}
@@ -301,8 +348,15 @@ class RpcParticipantRunner implements ParticipantRunner {
 
 	/** Records process exit and rejects RPC work still waiting on that process. */
 	private markExited(active: ActiveParticipantProcess): void {
+		if (active.exited) {
+			return;
+		}
 		active.exited = true;
 		this.clearEscalationTimers(active);
+		for (const waiter of active.exitWaiters) {
+			waiter();
+		}
+		active.exitWaiters.clear();
 		active.client.handleTransportFailure(new Error("child process exited"));
 	}
 
