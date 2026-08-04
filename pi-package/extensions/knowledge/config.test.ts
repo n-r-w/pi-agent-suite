@@ -79,6 +79,7 @@ describe("knowledge configuration", () => {
 			},
 		});
 		expect(result.config.extraction.systemPrompt).toBeDefined();
+		expect(result.config.extraction.taskPrompt).toBeDefined();
 		expect(result.config.merge.systemPrompt).toBeDefined();
 	});
 
@@ -87,9 +88,11 @@ describe("knowledge configuration", () => {
 		// ARRANGE
 		const agentSuiteDir = await createSuiteDirectory();
 		const dataDir = join(agentSuiteDir, "catalog");
-		const extractionPrompt = join(agentSuiteDir, "extract.md");
+		const extractionSystemPrompt = join(agentSuiteDir, "extract-system.md");
+		const extractionTaskPrompt = join(agentSuiteDir, "extract-task.md");
 		const mergePrompt = join(agentSuiteDir, "merge.md");
-		await writeFile(extractionPrompt, "Extract durable knowledge.");
+		await writeFile(extractionSystemPrompt, "Extract durable knowledge.");
+		await writeFile(extractionTaskPrompt, "Summarize this branch session.");
 		await writeFile(mergePrompt, "Merge durable knowledge.");
 		const value = {
 			enabled: false,
@@ -100,7 +103,8 @@ describe("knowledge configuration", () => {
 			extraction: {
 				model: "openai/gpt-5.6",
 				thinking: "high",
-				systemPromptFile: extractionPrompt,
+				systemPromptFile: extractionSystemPrompt,
+				taskPromptFile: extractionTaskPrompt,
 				retryCount: 3,
 			},
 			merge: {
@@ -123,6 +127,7 @@ describe("knowledge configuration", () => {
 					model: value.extraction.model,
 					thinking: value.extraction.thinking,
 					systemPrompt: "Extract durable knowledge.",
+					taskPrompt: "Summarize this branch session.",
 					retryCount: value.extraction.retryCount,
 				},
 				merge: {
@@ -161,7 +166,9 @@ describe("knowledge configuration", () => {
 			{ extraction: { thinking: "max" } },
 			{ extraction: { retryCount: -1 } },
 			{ extraction: { systemPromptFile: "relative.md" } },
+			{ extraction: { taskPromptFile: "relative.md" } },
 			{ extraction: { systemPromptFile: emptyPrompt } },
+			{ extraction: { taskPromptFile: emptyPrompt } },
 			{ merge: { unknown: true } },
 			{ merge: { model: "" } },
 			{ merge: { thinking: "unknown" } },

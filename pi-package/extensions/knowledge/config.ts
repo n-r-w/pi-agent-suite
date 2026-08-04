@@ -15,12 +15,17 @@ const TOP_LEVEL_KEYS = [
 	"extraction",
 	"merge",
 ] as const;
-/** Defines the complete strict extraction and merge configuration contract. */
+/** Defines the shared strict operation fields used by extraction and merge. */
 const OPERATION_KEYS = [
 	"model",
 	"thinking",
 	"systemPromptFile",
 	"retryCount",
+] as const;
+/** Defines extraction-only fields beyond the shared operation contract. */
+const EXTRACTION_OPERATION_KEYS = [
+	...OPERATION_KEYS,
+	"taskPromptFile",
 ] as const;
 /** Defines the thinking values accepted by knowledge model operations. */
 const THINKING_LEVELS = [
@@ -41,7 +46,10 @@ const CONFIG_FILE = "config.json";
 const KNOWLEDGE_DIRECTORY = "knowledge";
 const DEFAULT_DATA_DIRECTORY = "data";
 /** Resolves bundled prompts independently from the process working directory. */
-const BUNDLED_EXTRACTION_PROMPT = fileURLToPath(
+const BUNDLED_EXTRACTION_SYSTEM_PROMPT = fileURLToPath(
+	new URL("./prompts/extraction-system.md", import.meta.url),
+);
+const BUNDLED_EXTRACTION_TASK_PROMPT = fileURLToPath(
 	new URL("./prompts/extraction.md", import.meta.url),
 );
 const BUNDLED_MERGE_PROMPT = fileURLToPath(
@@ -52,12 +60,13 @@ type UnknownRecord = Record<string, unknown>;
 
 export type KnowledgeThinking = (typeof THINKING_LEVELS)[number];
 
-/** Holds one operation's resolved model, thinking, prompt, and retry settings. */
+/** Holds one operation's resolved model, prompt, and retry settings. */
 export interface KnowledgeOperationConfig {
 	readonly model: string | undefined;
 	readonly thinking: KnowledgeThinking | undefined;
 	readonly systemPrompt: string;
 	readonly retryCount: number;
+	readonly taskPrompt?: string;
 }
 
 /** Holds the fully resolved knowledge configuration. */
@@ -105,21 +114,24 @@ export function parseKnowledgeConfig(
 	if (typeof primaryBranches === "string") {
 		return invalid(primaryBranches);
 	}
-	const extraction = parseOperationConfig(
-		value["extraction"],
-		BUNDLED_EXTRACTION_PROMPT,
-		DEFAULT_EXTRACTION_RETRIES,
-		"extraction",
-	);
+	const extraction = parseOperationConfig({
+		value: value["extraction"],
+		defaultPromptFile: BUNDLED_EXTRACTION_SYSTEM_PROMPT,
+		defaultRetryCount: DEFAULT_EXTRACTION_RETRIES,
+		fieldName: "extraction",
+		allowedKeys: EXTRACTION_OPERATION_KEYS,
+		defaultTaskPromptFile: BUNDLED_EXTRACTION_TASK_PROMPT,
+	});
 	if (typeof extraction === "string") {
 		return invalid(extraction);
 	}
-	const merge = parseOperationConfig(
-		value["merge"],
-		BUNDLED_MERGE_PROMPT,
-		DEFAULT_MERGE_RETRIES,
-		"merge",
-	);
+	const merge = parseOperationConfig({
+		value: value["merge"],
+		defaultPromptFile: BUNDLED_MERGE_PROMPT,
+		defaultRetryCount: DEFAULT_MERGE_RETRIES,
+		fieldName: "merge",
+		allowedKeys: OPERATION_KEYS,
+	});
 	if (typeof merge === "string") {
 		return invalid(merge);
 	}
@@ -233,47 +245,115 @@ function parsePrimaryBranches(
 	return [...value];
 }
 
+/** Defines one operation parser call with prompt defaults and allowed field set. */
+interface ParseOperationConfigOptions {
+	readonly value: unknown;
+	readonly defaultPromptFile: string;
+	readonly defaultRetryCount: number;
+	readonly fieldName: string;
+	readonly allowedKeys: readonly string[];
+	readonly defaultTaskPromptFile?: string;
+}
+
 /** Resolves one nested operation config while preserving current-runtime defaults. */
 function parseOperationConfig(
-	value: unknown,
-	defaultPromptFile: string,
-	defaultRetryCount: number,
-	fieldName: string,
+	options: ParseOperationConfigOptions,
 ): KnowledgeOperationConfig | string {
-	if (value !== undefined && !isRecord(value)) {
-		return `${fieldName} must be an object`;
+	const parsed = parseOperationRecord(options.value, options.fieldName);
+	if (typeof parsed === "string") {
+		return parsed;
 	}
-	const config = value ?? {};
-	if (!hasOnlyKeys(config, OPERATION_KEYS)) {
-		return `${fieldName} contains unsupported fields`;
+	if (!hasOnlyKeys(parsed, options.allowedKeys)) {
+		return `${options.fieldName} contains unsupported fields`;
 	}
-	const model = config["model"];
+	const model = parsed["model"];
 	if (model !== undefined && !isModelSelectorId(model)) {
-		return `${fieldName}.model must be a non-empty string`;
+		return `${options.fieldName}.model must be a non-empty string`;
 	}
-	const thinking = config["thinking"];
+	const thinking = parsed["thinking"];
 	if (thinking !== undefined && !isThinking(thinking)) {
-		return `${fieldName}.thinking is unsupported`;
+		return `${options.fieldName}.thinking is unsupported`;
 	}
-	const retryCount = config["retryCount"];
+	const retryCount = parsed["retryCount"];
 	if (retryCount !== undefined && !isNonNegativeSafeInteger(retryCount)) {
-		return `${fieldName}.retryCount must be a non-negative safe integer`;
+		return `${options.fieldName}.retryCount must be a non-negative safe integer`;
 	}
-	const promptFile = config["systemPromptFile"] ?? defaultPromptFile;
-	if (typeof promptFile !== "string" || !isAbsolute(promptFile)) {
-		return `${fieldName}.systemPromptFile must be an absolute path`;
+	const systemPrompt = resolveOperationPrompt(
+		parsed,
+		options.fieldName,
+		"systemPromptFile",
+		options.defaultPromptFile,
+	);
+	if (systemPrompt.kind === "invalid") {
+		return systemPrompt.issue;
 	}
-	const prompt = readPromptFile(promptFile);
-	if ("issue" in prompt) {
-		return `${fieldName}.systemPromptFile ${prompt.issue}`;
+	if (options.defaultTaskPromptFile === undefined) {
+		return {
+			model,
+			thinking,
+			systemPrompt: systemPrompt.content,
+			retryCount: retryCount ?? options.defaultRetryCount,
+		};
 	}
-
+	const taskPrompt = resolveOperationPrompt(
+		parsed,
+		options.fieldName,
+		"taskPromptFile",
+		options.defaultTaskPromptFile,
+	);
+	if (taskPrompt.kind === "invalid") {
+		return taskPrompt.issue;
+	}
 	return {
 		model,
 		thinking,
-		systemPrompt: prompt.content,
-		retryCount: retryCount ?? defaultRetryCount,
+		systemPrompt: systemPrompt.content,
+		taskPrompt: taskPrompt.content,
+		retryCount: retryCount ?? options.defaultRetryCount,
 	};
+}
+
+/** Validates one optional nested operation object and returns a normalized record. */
+function parseOperationRecord(
+	value: unknown,
+	fieldName: string,
+): UnknownRecord | string {
+	if (value === undefined) {
+		return {};
+	}
+	if (!isRecord(value)) {
+		return `${fieldName} must be an object`;
+	}
+	return value;
+}
+
+/** Resolves one prompt content field from config or its default bundled path. */
+function resolveOperationPrompt(
+	config: UnknownRecord,
+	fieldName: string,
+	configKey: "systemPromptFile" | "taskPromptFile",
+	defaultPath: string,
+):
+	| { readonly kind: "ok"; readonly content: string }
+	| {
+			readonly kind: "invalid";
+			readonly issue: string;
+	  } {
+	const configuredPath = config[configKey] ?? defaultPath;
+	if (typeof configuredPath !== "string" || !isAbsolute(configuredPath)) {
+		return {
+			kind: "invalid",
+			issue: `${fieldName}.${configKey} must be an absolute path`,
+		};
+	}
+	const prompt = readPromptFile(configuredPath);
+	if ("issue" in prompt) {
+		return {
+			kind: "invalid",
+			issue: `${fieldName}.${configKey} ${prompt.issue}`,
+		};
+	}
+	return { kind: "ok", content: prompt.content };
 }
 
 /** Reads one validated prompt so model calls receive content rather than its path. */

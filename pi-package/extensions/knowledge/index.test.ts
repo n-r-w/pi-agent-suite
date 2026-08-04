@@ -71,6 +71,7 @@ function config(dataDir: string): KnowledgeConfig {
 			model: undefined,
 			thinking: undefined,
 			systemPrompt: "extract system",
+			taskPrompt: "summarize projected session",
 			retryCount: 1,
 		},
 		merge: {

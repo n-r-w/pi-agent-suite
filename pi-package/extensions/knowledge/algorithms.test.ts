@@ -126,6 +126,7 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 			model: undefined,
 			thinking: undefined,
 			systemPrompt: "extract system",
+			taskPrompt: "summarize projected session",
 			retryCount: 1,
 		},
 		merge: {
@@ -210,7 +211,7 @@ function createOptions(options: {
 describe("knowledge accumulation algorithms", () => {
 	/**
 	 * Proves exact NOT_FOUND ends local extraction without merge or storage changes.
-	 * Inputs and expected outputs: projected branch context produces the exact marker and one no-op result.
+	 * Inputs and expected outputs: projected branch context is wrapped as explicit summary source in one extraction user message.
 	 * Edge case: absent stored local knowledge remains absent and identity metadata is not created.
 	 * Dependencies: injected replay proves the current branch is the extraction source.
 	 */
@@ -228,12 +229,20 @@ describe("knowledge accumulation algorithms", () => {
 		// Act: run one local accumulation under an already-granted lease.
 		const result = await runLocalKnowledgeAccumulation(options);
 
-		// Assert: the projected current branch reached extraction and nothing was written.
+		// Assert: extraction receives one explicit task message with wrapped source and no writes happen.
 		expect(result).toEqual({ kind: "noop" });
 		expect(contexts).toHaveLength(1);
-		expect(contexts[0]?.messages).toEqual([
-			{ role: "user", content: "projected current branch", timestamp: 1 },
-		]);
+		expect(contexts[0]?.messages).toHaveLength(1);
+		expect(contexts[0]?.messages[0]?.role).toBe("user");
+		expect(String(contexts[0]?.messages[0]?.content)).toContain(
+			"<summary_source>",
+		);
+		expect(String(contexts[0]?.messages[0]?.content)).toContain(
+			"projected current branch",
+		);
+		expect(String(contexts[0]?.messages[0]?.content)).toContain(
+			"</summary_source>",
+		);
 		expect(owner.events).toEqual([]);
 	});
 

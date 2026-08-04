@@ -48,7 +48,8 @@ All fields are optional.
 | `extraction` | Object | Defaults below | Configures session knowledge extraction. |
 | `extraction.model` | Non-empty string | Current initiating model | Selects the extraction model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `extraction.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects extraction reasoning. |
-| `extraction.systemPromptFile` | Readable non-empty absolute file path | Bundled extraction prompt | Replaces the extraction system prompt. |
+| `extraction.systemPromptFile` | Readable non-empty absolute file path | Bundled extraction system prompt | Replaces the extraction system prompt. |
+| `extraction.taskPromptFile` | Readable non-empty absolute file path | Bundled extraction task prompt | Replaces the extraction task prompt attached after `<summary_source>`. |
 | `extraction.retryCount` | Non-negative safe integer | `1` | Number of format-correction retries after the initial extraction response. |
 | `merge` | Object | Defaults below | Configures local and global knowledge consolidation. |
 | `merge.model` | Non-empty string | Current initiating model | Selects the merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
@@ -135,11 +136,12 @@ Workflow state is saved before triggers run. A failed trigger stops the remainin
 
 ### Local accumulation
 
-1. The extraction model receives the current branch session after existing `context-projection` processing.
-2. Exact `NOT_FOUND` ends without changes.
-3. Empty or contract-invalid output receives format feedback up to `extraction.retryCount`.
-4. Positive Markdown is consolidated with stored local knowledge.
-5. A within-limit result completely replaces the local file.
+1. The extraction model receives one explicit request: `<summary_source> ...projected branch session... </summary_source>` plus the extraction task prompt.
+2. The extraction system prompt and task prompt are configured independently.
+3. Exact `NOT_FOUND` ends without changes.
+4. Empty or contract-invalid output receives format feedback up to `extraction.retryCount`.
+5. Positive Markdown is consolidated with stored local knowledge.
+6. A within-limit result completely replaces the local file.
 
 ### Global accumulation
 
@@ -148,6 +150,8 @@ Workflow state is saved before triggers run. A failed trigger stops the remainin
 3. Changed local knowledge is consolidated with global knowledge.
 4. A within-limit result completely replaces the global file.
 5. The local file remains unchanged, and its digest is recorded only after global replacement succeeds.
+
+Merge consolidation separates knowledge into two categories: strategic (stable high-leverage project knowledge) and tactical (important but volatile operational knowledge). The replacement Markdown must always keep explicit `## Strategic knowledge` and `## Tactical knowledge` sections. The model must preserve strategic foundations without allowing tactical churn to overwrite them, while still keeping enough tactical risk context for near-term work.
 
 When merge output exceeds the target file limit, the model receives the actual tokenizer count and unchanged limit. Exhausting `merge.retryCount` leaves pre-write storage unchanged.
 

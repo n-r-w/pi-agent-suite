@@ -98,9 +98,20 @@ export async function runLocalKnowledgeAccumulation(
 		cwd: options.ctx.cwd,
 		loadedSkillRoots: options.loadedSkillRoots,
 	});
+	const extractionTaskPrompt = extraction.operation.taskPrompt;
+	if (extractionTaskPrompt === undefined) {
+		throw new Error("knowledge extraction task prompt is not configured");
+	}
 	const extractionContext: Context = {
 		systemPrompt: extraction.operation.systemPrompt,
-		messages: convertToLlm(projected),
+		messages: [
+			userMessage(
+				formatExtractionRequest(
+					formatSummarySource(convertToLlm(projected)),
+					extractionTaskPrompt,
+				),
+			),
+		],
 		tools: [],
 	};
 	const extracted = await extractKnowledge(
@@ -343,6 +354,55 @@ async function resolveOperationRuntime(
 			? {}
 			: { resolvedThinking: result.thinking }),
 	};
+}
+
+/** Builds one explicit extraction request that separates source data from task instructions. */
+function formatExtractionRequest(source: string, taskPrompt: string): string {
+	return ["<summary_source>", source, "</summary_source>", "", taskPrompt].join(
+		"\n",
+	);
+}
+
+/** Serializes projected branch dialogue into one stable source payload. */
+function formatSummarySource(
+	messages: ReturnType<typeof convertToLlm>,
+): string {
+	return messages
+		.map((message, index) =>
+			[
+				`<message index="${index}" role="${message.role}">`,
+				serializeSummaryContent(message.content),
+				"</message>",
+			].join("\n"),
+		)
+		.join("\n\n");
+}
+
+/** Serializes one projected message payload without dropping text evidence. */
+function serializeSummaryContent(content: unknown): string {
+	if (typeof content === "string") {
+		return content;
+	}
+	if (Array.isArray(content)) {
+		return content
+			.map((part) => {
+				if (isRecord(part) && part["type"] === "text") {
+					const text = part["text"];
+					return typeof text === "string" ? text : JSON.stringify(part);
+				}
+				return JSON.stringify(part);
+			})
+			.join("\n");
+	}
+	if (isRecord(content)) {
+		return JSON.stringify(content);
+	}
+	return String(content);
+}
+
+/** Narrows unknown values to generic string-key records. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
 }
 
 /** Builds the explicit opaque-Markdown merge request shared by local and global accumulation. */
