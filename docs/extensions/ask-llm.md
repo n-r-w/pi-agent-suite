@@ -22,7 +22,7 @@ Full configuration example:
 {
   "enabled": true,
   "model": {
-    "id": "provider/model",
+    "id": "analyst-complex",
     "thinking": "medium"
   },
   "systemPromptFile": "/absolute/path/to/system.md",
@@ -40,7 +40,7 @@ All configuration parameters are optional. If the configuration file is missing,
 | --- | --- | --- | --- | --- |
 | `enabled` | boolean | No | `true` | Enables or disables the `/ask` command. Set to `false` to disable the command. |
 | `model` | object | No | Current session model and thinking level | Groups model selection options. |
-| `model.id` | string in `provider/model` format | No | Current session model | Selects the model used by `/ask`. |
+| `model.id` | non-empty string | No | Current session model | Selects the model used by `/ask`. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | string enum | No | Current thinking level | Selects the thinking level used by `/ask`. |
 | `systemPromptFile` | non-empty absolute path string | No | Bundled system prompt | Uses a custom system prompt file. The file must be readable and non-empty. |
 | `retry` | object | No | Default retry settings | Groups retry options for retryable provider failures. |

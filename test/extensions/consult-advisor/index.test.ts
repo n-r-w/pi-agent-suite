@@ -2009,12 +2009,12 @@ describe("consult-advisor", () => {
 		}
 	});
 
-	test("rejects malformed model id during config validation", async () => {
-		// Purpose: malformed model.id values must be classified as config errors.
-		// Input and expected output: malformed provider/model strings report model.id format warning and skip completeSimple.
-		// Edge case: model IDs are split at first slash, but provider and model parts must both exist.
+	test("rejects empty model id during config validation", async () => {
+		// Purpose: empty model.id values must be classified as config errors.
+		// Input and expected output: an empty model.id reports a validation warning and skips completeSimple.
+		// Edge case: non-empty non-provider model IDs are treated as aliases and validated at runtime.
 		// Dependencies: temp config and fake completion function.
-		for (const modelId of ["advisor", "/advisor", "openai/"]) {
+		for (const modelId of [""]) {
 			await withIsolatedAgentDir(async (agentDir) => {
 				await writeConfig(agentDir, {
 					enabled: true,
@@ -2031,7 +2031,7 @@ describe("consult-advisor", () => {
 				expect(completion.calls).toEqual([]);
 				expect(ctx.notifications).toEqual([
 					{
-						message: "[consult-advisor] model.id must use provider/model",
+						message: "[consult-advisor] model.id must be a non-empty string",
 						type: "warning",
 					},
 				]);

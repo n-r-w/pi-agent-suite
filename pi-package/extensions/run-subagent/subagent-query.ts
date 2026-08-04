@@ -85,8 +85,9 @@ export async function executeSubagentQuery({
 		};
 	}
 
+	const effectiveThinking = runtimeResult.thinking ?? thinking;
 	const options = buildAuxiliaryLlmOptions(
-		thinking,
+		effectiveThinking,
 		signal,
 		runtimeResult.runtime,
 	);

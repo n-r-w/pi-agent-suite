@@ -40,7 +40,7 @@ Each description file must be readable and contain non-whitespace text after tri
 
 | Name | Required | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `model.id` | No | `provider/model` string | Calling agent's current model | Selects a model from the calling Pi process's registry. |
+| `model.id` | No | Non-empty string | Calling agent's current model | Selects a model from the calling Pi process's registry. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Calling agent's current thinking level | Selects reasoning for the auxiliary request. `off` omits the provider reasoning option. |
 | `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Supplies trimmed non-empty text as the auxiliary system prompt. |
 
@@ -68,7 +68,7 @@ Example:
   "waitDescriptionPromptFile": "/absolute/path/to/subagent-wait.md",
   "query": {
     "model": {
-      "id": "provider/model",
+      "id": "analyst-complex",
       "thinking": "medium"
     },
     "systemPromptFile": "/absolute/path/to/subagent-query-system.md"

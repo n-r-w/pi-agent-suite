@@ -14,9 +14,14 @@ export interface ModelSettings {
 	readonly thinking?: ReasoningLevel;
 }
 
+/** Returns true when a model selector identifier is a non-empty string. */
+export function isModelSelectorId(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
 /** Returns true when a model identifier contains non-empty provider and model parts. */
 export function isModelId(value: unknown): value is string {
-	if (typeof value !== "string") {
+	if (!isModelSelectorId(value)) {
 		return false;
 	}
 
@@ -67,7 +72,7 @@ export function isModelSettings(value: unknown): value is ModelSettings {
 
 	const { id, thinking } = value;
 	return (
-		(id === undefined || isModelId(id)) &&
+		(id === undefined || isModelSelectorId(id)) &&
 		(thinking === undefined || isReasoningLevel(thinking))
 	);
 }
@@ -92,8 +97,8 @@ export function parseModelSettings(
 	}
 
 	const { id, thinking } = value;
-	if (id !== undefined && !isModelId(id)) {
-		throw new Error(`${fieldPath}.id must use provider/model`);
+	if (id !== undefined && !isModelSelectorId(id)) {
+		throw new Error(`${fieldPath}.id must be a non-empty string`);
 	}
 	if (thinking !== undefined && !isReasoningLevel(thinking)) {
 		throw new Error(`${fieldPath}.thinking is invalid`);

@@ -36,6 +36,7 @@ import {
 	isReasoningLevel,
 	type ReasoningLevel,
 } from "../../shared/reasoning-levels";
+import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import {
 	type AdaptiveCompactionProgressEvent,
 	type AdaptiveCompactionRequest,
@@ -445,15 +446,20 @@ function resolveRuntime(
 	config: CustomCompactionConfig,
 	currentThinkingLevel: unknown,
 ): CustomCompactionRuntime | string {
+	const resolvedSettings = resolveModelSettingsWithAliasesSync({
+		...(config.model === undefined ? {} : { id: config.model }),
+		...(config.reasoning === undefined ? {} : { thinking: config.reasoning }),
+	});
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+
 	let model = session.model;
-	if (config.model !== undefined) {
-		const modelId = splitModelId(config.model);
-		if (modelId === undefined) {
-			return "model must use provider/model";
-		}
-		model = session.modelRegistry.find(modelId.provider, modelId.id);
+	if (resolvedSettings.settings.id !== undefined) {
+		const { provider, id } = splitModelId(resolvedSettings.settings.id);
+		model = session.modelRegistry.find(provider, id);
 		if (model === undefined) {
-			return `model ${config.model} was not found`;
+			return `model ${resolvedSettings.settings.id} was not found`;
 		}
 	}
 	if (model === undefined) {
@@ -461,7 +467,7 @@ function resolveRuntime(
 	}
 
 	const reasoning =
-		config.reasoning ??
+		resolvedSettings.settings.thinking ??
 		(isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined);
 	if (reasoning !== undefined) {
 		try {

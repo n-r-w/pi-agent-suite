@@ -90,8 +90,8 @@ Agent file location: `~/.pi/agent/agent-suite/agent-selection/agents/<agent_name
     - `subagent` - an agent that can be called only by other agents and is not directly available to the user
     - `both` - an agent that can be called by both the user and other agents
 - `model` - the model used by the agent. Parameters:
-    - `id` - model identifier
-    - `thinking` - model reasoning level (low, medium, high)
+    - `id` - model identifier (`provider/model`) or alias from `model-aliases/config.json`.
+    - `thinking` - model reasoning level (low, medium, high).
 - `tools` - the list of tools the agent can use to solve a task.
     - The `*` wildcard is allowed.
     - If the tools field is omitted, the agent will use all available tools.
@@ -140,7 +140,7 @@ File: `~/.pi/agent/agent-suite/run-subagent/config.json`
 
 | Name | Required | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `model.id` | No | `provider/model` string | Agent's current model | Custom model identifier |
+| `model.id` | No | Non-empty string | Agent's current model | Custom model identifier (`provider/model`) or alias from `model-aliases/config.json` |
 | `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Agent's current thinking level | Custom thinking level |
 | `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Custom system prompt for `subagent_query` tool. |
 
@@ -476,6 +476,7 @@ Parameters:
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/cmux.md) |
 | `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/main-agent-selection.md) |
 | `run-subagent` | Enabled | Adds `subagent_start`, `subagent_steer`, `subagent_wait`, and saved-session `subagent_query` tools, an `Agents` row in the shared session status panel, and the `/subagents` (`Ctrl+Shift+G`) management screen. | `run-subagent/config.json`: `enabled`, `maxDepth`, descriptions, and query model/system prompt. | [docs/extensions/run-subagent.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/run-subagent.md) |
+| `model-aliases` | Optional shared config | Defines global model aliases that map to `provider/model` and optional default `thinking`. Used by all suite model selectors. | `model-aliases/config.json`: alias entries keyed by alias name. | [docs/extensions/model-aliases.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/model-aliases.md) |
 | `structured-prompt` | Enabled | Adds `/prompt` and `Ctrl+Alt+P` for building structured user requests. | `structured-prompt/config.json`: `enabled`. | [docs/extensions/structured-prompt.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/structured-prompt.md) |
 | `ask-llm` | Enabled | Adds `/ask` for one-off model questions that are not saved to the current session. | `ask-llm/config.json`: `enabled`, `model`, `systemPromptFile`, `retry`. | [docs/extensions/ask-llm.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/ask-llm.md) |
 | `consult-advisor` | Enabled | Adds the `consult_advisor` tool for an independent model opinion. | `consult-advisor/config.json`: `enabled`, `model`, `promptFile`, `debugPayloadFile`, `retry`. | [docs/extensions/consult-advisor.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/consult-advisor.md) |

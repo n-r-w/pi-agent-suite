@@ -76,7 +76,7 @@ If multiple projection levels use the same remaining-token threshold, the extens
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `summary.enabled` | No | Boolean | `false` | Enables generated summaries for newly projected tool results. |
-| `summary.model` | No | `null` or string in `provider/model` format | Current main model | Model used to generate summaries. `null` has the same effect as omitting the parameter. |
+| `summary.model` | No | `null` or non-empty string | Current main model | Model used to generate summaries. Accepts either `provider/model` or an alias from `model-aliases/config.json`. `null` has the same effect as omitting the parameter. |
 | `summary.thinking` | No | `null`, `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current thinking level | Thinking level used for summary requests. `null` has the same effect as omitting the parameter. |
 | `summary.maxConcurrency` | No | Positive integer | `1` | Maximum number of summary requests that can run at the same time. |
 | `summary.retryCount` | No | Non-negative integer | `1` | Number of retry attempts after the first summary request fails. |

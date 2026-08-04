@@ -40,11 +40,11 @@ import {
 	createFileAutocompleteProvider,
 	resolveFdPathFromPathValue,
 } from "../../shared/file-autocomplete";
-import { isModelId } from "../../shared/model-settings";
 import {
 	appendKnowledgeBlock,
 	readKnowledgeBlock,
 } from "../../shared/knowledge-runtime";
+import { isModelSelectorId } from "../../shared/model-settings";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -351,11 +351,16 @@ async function executeAskLlm({
 		};
 	}
 
+	const effectiveThinking = runtimeResult.thinking ?? thinking;
 	const response = await executeAskLlmModelWithRetry({
 		completeSimple,
 		runtime: runtimeResult.runtime,
 		context,
-		options: buildAuxiliaryLlmOptions(thinking, signal, runtimeResult.runtime),
+		options: buildAuxiliaryLlmOptions(
+			effectiveThinking,
+			signal,
+			runtimeResult.runtime,
+		),
 		retry: configResult.config.retry,
 	});
 	if ("issue" in response) {
@@ -598,8 +603,8 @@ function validateModelConfig(model: unknown): string | undefined {
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
 		return "model.id must be a non-empty string";
 	}
-	if (typeof id === "string" && !isModelId(id)) {
-		return "model.id must use provider/model";
+	if (typeof id === "string" && !isModelSelectorId(id)) {
+		return "model.id must be a non-empty string";
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
 		return `model.thinking must be one of ${REASONING_LEVELS.join(", ")}`;

@@ -31,7 +31,6 @@ import {
 } from "../../shared/agent-suite-storage";
 import {
 	assertThinkingLevelSupported,
-	isModelId,
 	splitModelId,
 } from "../../shared/model-settings";
 import { isSingleLineText } from "../../shared/text-contracts";
@@ -40,6 +39,7 @@ import {
 	type ResolvedWorkflowPolicy,
 	resolveWorkflowPolicy,
 } from "../../shared/workflow-policy";
+import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import { isChildSubagentProcess } from "./environment";
 
 const COMMAND_NAME = "agent";
@@ -837,18 +837,22 @@ function validateConfiguredThinking(
 	ctx: MainAgentContext,
 	agent: AgentDefinition,
 ): string | undefined {
-	const thinking = agent.model?.thinking;
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+	const thinking = resolvedSettings.settings.thinking;
 	if (thinking === undefined) {
 		return undefined;
 	}
 	const model =
-		agent.model?.id === undefined
+		resolvedSettings.settings.id === undefined
 			? ctx.model
-			: resolveModel(ctx, agent.model.id);
+			: resolveModel(ctx, resolvedSettings.settings.id);
 	if (model === undefined) {
-		return agent.model?.id === undefined
+		return resolvedSettings.settings.id === undefined
 			? "current model is unavailable"
-			: `model ${agent.model.id} was not found`;
+			: `model ${resolvedSettings.settings.id} was not found`;
 	}
 	try {
 		assertThinkingLevelSupported(model, thinking);
@@ -863,7 +867,11 @@ function applyConfiguredThinking(
 	pi: ExtensionAPI,
 	agent: AgentDefinition,
 ): string | undefined {
-	const thinking = agent.model?.thinking;
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+	const thinking = resolvedSettings.settings.thinking;
 	if (thinking === undefined) {
 		return undefined;
 	}
@@ -884,16 +892,20 @@ async function applyConfiguredModel(
 	ctx: MainAgentContext,
 	agent: AgentDefinition,
 ): Promise<string | undefined> {
-	if (agent.model?.id === undefined) {
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+	if (resolvedSettings.settings.id === undefined) {
 		return undefined;
 	}
-	const model = resolveModel(ctx, agent.model.id);
+	const model = resolveModel(ctx, resolvedSettings.settings.id);
 	if (model === undefined) {
-		return `model ${agent.model.id} was not found`;
+		return `model ${resolvedSettings.settings.id} was not found`;
 	}
 	return (await pi.setModel(model))
 		? undefined
-		: `model ${agent.model.id} could not be applied`;
+		: `model ${resolvedSettings.settings.id} could not be applied`;
 }
 
 /** Resolves tool and workflow policy before model or runtime-composition side effects. */
@@ -959,9 +971,6 @@ function resolveModel(
 	ctx: MainAgentContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	if (!isModelId(modelId)) {
-		return undefined;
-	}
 	const { provider, id } = splitModelId(modelId);
 	return ctx.modelRegistry.find(provider, id);
 }

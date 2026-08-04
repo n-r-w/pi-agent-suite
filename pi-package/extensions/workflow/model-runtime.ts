@@ -9,6 +9,7 @@ import {
 	splitModelId,
 } from "../../shared/model-settings";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
+import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import type { WorkflowDefinition } from "./workflow";
 
 type ModelRegistry = ExtensionContext["modelRegistry"];
@@ -47,15 +48,23 @@ export function resolveWorkflowModelSettings(
 	}
 
 	const configuredModelId = stage.model?.id ?? workflow.model?.id;
-	const effectiveModelId = configuredModelId ?? agentSettings?.id;
 	const explicitThinking =
 		stage.model?.thinking ??
 		workflow.model?.thinking ??
 		agentSettings?.thinking;
+	const selectedModelId = configuredModelId ?? agentSettings?.id;
+	const resolvedSettings = resolveModelSettingsWithAliasesSync({
+		...(typeof selectedModelId === "string" ? { id: selectedModelId } : {}),
+		...(explicitThinking === undefined ? {} : { thinking: explicitThinking }),
+	});
+	if ("issue" in resolvedSettings) {
+		throw new Error(resolvedSettings.issue);
+	}
+	const effectiveModelId = resolvedSettings.settings.id;
 	return {
 		...(configuredModelId === undefined ? {} : { configuredModelId }),
 		...(effectiveModelId === undefined ? {} : { effectiveModelId }),
-		thinking: explicitThinking ?? currentThinking,
+		thinking: resolvedSettings.settings.thinking ?? currentThinking,
 		shouldApplyModel: effectiveModelId !== undefined,
 		shouldApplyThinking:
 			explicitThinking !== undefined || configuredModelId !== undefined,

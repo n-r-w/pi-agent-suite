@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { getSuiteConfigLocation } from "../../shared/agent-suite-storage";
-import { isModelId } from "../../shared/model-settings";
+import { isModelSelectorId } from "../../shared/model-settings";
 import { REASONING_LEVELS } from "../../shared/reasoning-levels";
 import {
 	CONVENE_COUNCIL_EXTENSION_DIR,
@@ -243,8 +243,8 @@ function validateModelConfig(
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
 		return `${fieldPath}.id must be a non-empty string`;
 	}
-	if (typeof id === "string" && !isModelId(id)) {
-		return `${fieldPath}.id must use provider/model`;
+	if (typeof id === "string" && !isModelSelectorId(id)) {
+		return `${fieldPath}.id must be a non-empty string`;
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
 		return `${fieldPath}.thinking must be one of ${REASONING_LEVELS.join(", ")}`;

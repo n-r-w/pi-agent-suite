@@ -1,9 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	assertThinkingLevelSupported,
-	isModelId,
 	splitModelId,
 } from "../../shared/model-settings";
+import { resolveModelSettingsWithAliases } from "../model-aliases/config";
 import type {
 	ConveneCouncilConfig,
 	CouncilContext,
@@ -52,19 +52,26 @@ async function resolveParticipantRuntime(
 ): Promise<
 	{ readonly runtime: ParticipantRuntime } | { readonly issue: string }
 > {
+	const resolvedSettings = await resolveModelSettingsWithAliases(config.model);
+	if ("issue" in resolvedSettings) {
+		return { issue: `${participantId} ${resolvedSettings.issue}` };
+	}
 	const model =
-		config.model?.id === undefined
+		resolvedSettings.settings.id === undefined
 			? ctx.model
-			: resolveConfiguredModel(ctx, config.model.id);
+			: resolveConfiguredModel(ctx, resolvedSettings.settings.id);
 	if (model === undefined) {
 		return {
 			issue:
-				config.model?.id === undefined
+				resolvedSettings.settings.id === undefined
 					? "current model is unavailable"
-					: `${participantId} model ${config.model.id} was not found`,
+					: `${participantId} model ${resolvedSettings.settings.id} was not found`,
 		};
 	}
-	const thinking = resolveThinking(config.model?.thinking, currentThinking);
+	const thinking = resolveThinking(
+		resolvedSettings.settings.thinking,
+		currentThinking,
+	);
 	if (thinking.thinking !== undefined) {
 		try {
 			assertThinkingLevelSupported(model, thinking.thinking);
@@ -97,9 +104,6 @@ function resolveConfiguredModel(
 	ctx: CouncilContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	if (!isModelId(modelId)) {
-		return undefined;
-	}
 	const { provider, id } = splitModelId(modelId);
 	return ctx.modelRegistry.find(provider, id);
 }

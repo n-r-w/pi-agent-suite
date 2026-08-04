@@ -24,7 +24,7 @@ If the config file is missing, the extension is enabled and uses the current ses
 {
   "enabled": true,
   "model": {
-    "id": "provider/model",
+    "id": "analyst-complex",
     "thinking": "high"
   },
   "promptFile": "/Users/me/.pi/advisor-prompt.md",
@@ -43,7 +43,7 @@ If the config file is missing, the extension is enabled and uses the current ses
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables or disables the `consult_advisor` tool. Set to `false` to disable it. |
 | `model` | No | Object with optional `id` and `thinking` fields | Current session model and current thinking level | Selects the advisor model settings. |
-| `model.id` | No | Non-empty string in `provider/model` format | Current session model | Selects the model used by the advisor. |
+| `model.id` | No | Non-empty string | Current session model | Selects the model used by the advisor. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | No | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | Current thinking level | Selects the advisor thinking level. |
 | `promptFile` | No | Non-empty absolute file path | Bundled advisor prompt | Uses a custom advisor prompt file. The file must be readable and non-empty. |
 | `retry` | No | Object with optional `enabled`, `maxRetries`, and `baseDelayMs` fields | Retry defaults | Controls retry behavior for retryable advisor provider failures. |

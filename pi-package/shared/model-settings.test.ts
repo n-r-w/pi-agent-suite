@@ -3,6 +3,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	assertThinkingLevelSupported,
 	isModelId,
+	isModelSelectorId,
 	isModelSettings,
 	parseModelSettings,
 	splitModelId,
@@ -34,6 +35,8 @@ describe("model settings contract", () => {
 		});
 		expect(isModelId("openai/gpt-test")).toBe(true);
 		expect(isModelId("missing-provider")).toBe(false);
+		expect(isModelSelectorId("missing-provider")).toBe(true);
+		expect(isModelSelectorId("")).toBe(false);
 	});
 
 	/** Verifies optional model fields share one closed validation contract. */
@@ -42,9 +45,10 @@ describe("model settings contract", () => {
 			thinking: "max",
 		});
 		expect(isModelSettings({ id: "openai/gpt-test" })).toBe(true);
+		expect(isModelSettings({ id: "model-alias" })).toBe(true);
 		expect(isModelSettings({ id: "openai/gpt-test", extra: true })).toBe(false);
-		expect(() => parseModelSettings({ id: "gpt-test" }, "model")).toThrow(
-			"model.id must use provider/model",
+		expect(() => parseModelSettings({ id: "" }, "model")).toThrow(
+			"model.id must be a non-empty string",
 		);
 	});
 

@@ -23,6 +23,7 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { resolveAuxiliaryLlmRuntime } from "../../shared/auxiliary-llm";
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	collectLoadedSkillRoots,
@@ -34,11 +35,7 @@ import {
 	appendKnowledgeBlock,
 	readKnowledgeBlock,
 } from "../../shared/knowledge-runtime";
-import {
-	assertThinkingLevelSupported,
-	isModelId,
-	splitModelId,
-} from "../../shared/model-settings";
+import { isModelSelectorId } from "../../shared/model-settings";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -254,8 +251,9 @@ async function executeConsultAdvisor({
 		return errorResult(ADVISOR_CONTEXT_TOO_LARGE_ERROR);
 	}
 
+	const effectiveThinking = runtimeResult.thinking ?? thinking;
 	const options = buildAdvisorOptions(
-		thinking,
+		effectiveThinking,
 		signal,
 		runtimeResult.runtime,
 		createAuxiliaryLlmSessionId(),
@@ -444,8 +442,8 @@ function validateAdvisorModelConfig(
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
 		return { issue: "model.id must be a non-empty string" };
 	}
-	if (typeof id === "string" && !isModelId(id)) {
-		return { issue: "model.id must use provider/model" };
+	if (typeof id === "string" && !isModelSelectorId(id)) {
+		return { issue: "model.id must be a non-empty string" };
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
 		return {
@@ -612,51 +610,29 @@ async function resolveAdvisorRuntime(
 	ctx: AdvisorContext,
 	modelId: string | undefined,
 	thinking: Thinking | undefined,
-): Promise<{ readonly runtime: AdvisorRuntime } | { readonly issue: string }> {
-	const model =
-		modelId === undefined
-			? ctx.model
-			: resolveConfiguredAdvisorModel(ctx, modelId);
-	if (model === undefined) {
+): Promise<
+	| { readonly runtime: AdvisorRuntime; readonly thinking?: Thinking }
+	| { readonly issue: string }
+> {
+	const runtimeResult = await resolveAuxiliaryLlmRuntime(
+		ctx,
+		modelId,
+		thinking,
+	);
+	if ("issue" in runtimeResult) {
 		return {
-			issue:
-				modelId === undefined
-					? "current model is unavailable"
-					: `model ${modelId} was not found`,
+			issue: runtimeResult.issue.startsWith("model auth unavailable: ")
+				? `advisor ${runtimeResult.issue}`
+				: runtimeResult.issue,
 		};
-	}
-	if (thinking !== undefined) {
-		try {
-			assertThinkingLevelSupported(model, thinking);
-		} catch (error) {
-			return { issue: error instanceof Error ? error.message : String(error) };
-		}
-	}
-
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		return { issue: `advisor model auth unavailable: ${auth.error}` };
 	}
 
 	return {
-		runtime: {
-			model,
-			...(auth.apiKey !== undefined ? { apiKey: auth.apiKey } : {}),
-			...(auth.headers !== undefined ? { headers: auth.headers } : {}),
-		},
+		runtime: runtimeResult.runtime,
+		...(runtimeResult.thinking === undefined
+			? {}
+			: { thinking: runtimeResult.thinking }),
 	};
-}
-
-/** Resolves a configured advisor model ID through the model registry. */
-function resolveConfiguredAdvisorModel(
-	ctx: AdvisorContext,
-	modelId: string,
-): Model<Api> | undefined {
-	if (!isModelId(modelId)) {
-		return undefined;
-	}
-	const { provider, id } = splitModelId(modelId);
-	return ctx.modelRegistry.find(provider, id);
 }
 
 /** Builds completion options while treating `off` as no reasoning option. */

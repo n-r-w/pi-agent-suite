@@ -27,7 +27,7 @@ Missing configuration keeps custom compaction enabled with defaults. The extensi
   "fileCandidatesPromptFile": "/absolute/path/to/compaction-file-candidates.md",
   "reductionSystemPromptFile": "/absolute/path/to/compaction-reduction-system.md",
   "reductionPromptFile": "/absolute/path/to/compaction-reduction.md",
-  "model": "provider/model",
+  "model": "analyst-complex",
   "reasoning": "medium",
   "retry": {
     "enabled": true,
@@ -52,7 +52,7 @@ Breaking change: `summary` and `turnPrefixPromptFile` are removed. Adaptive comp
 | `fileCandidatesPromptFile` | No | Non-empty absolute path | Bundled file-candidate prompt | Optional final-prompt fragment that asks the model to select relevant file-operation paths for `must_read_after_compaction`. |
 | `reductionSystemPromptFile` | No | Non-empty absolute path | Bundled reduction system prompt | System prompt used for preliminary, fragment, normalization, and merge requests. |
 | `reductionPromptFile` | No | Non-empty absolute path | Bundled reduction prompt | User prompt used for preliminary, fragment, normalization, and merge requests. |
-| `model` | No | String in `provider/model` format | Current main model | Model used for direct, preliminary, fragment, normalization, merge, and final requests. Model IDs may contain additional slashes after the provider. |
+| `model` | No | Non-empty string | Current main model | Model used for direct, preliminary, fragment, normalization, merge, and final requests. Accepts either `provider/model` or an alias from `model-aliases/config.json`. Model IDs may contain additional slashes after the provider. |
 | `reasoning` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current thinking level | Reasoning level used for adaptive compaction requests. |
 | `retry` | No | Object | `{ "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }` | Retry settings for provider failures and invalid summarization responses. |
 | `retry.enabled` | No | Boolean | `true` | Enables retry. |

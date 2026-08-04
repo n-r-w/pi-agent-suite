@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isFileNotFoundError } from "../../shared/agent-suite-storage";
+import { isModelSelectorId } from "../../shared/model-settings";
 
 /** Defines the complete strict top-level configuration contract. */
 const TOP_LEVEL_KEYS = [
@@ -247,8 +248,8 @@ function parseOperationConfig(
 		return `${fieldName} contains unsupported fields`;
 	}
 	const model = config["model"];
-	if (model !== undefined && !hasProviderModelShape(model)) {
-		return `${fieldName}.model must use provider/model`;
+	if (model !== undefined && !isModelSelectorId(model)) {
+		return `${fieldName}.model must be a non-empty string`;
 	}
 	const thinking = config["thinking"];
 	if (thinking !== undefined && !isThinking(thinking)) {
@@ -294,15 +295,6 @@ export function isGitBranchName(name: string): boolean {
 		stdio: "ignore",
 	});
 	return result.status === 0;
-}
-
-/** Checks the project-wide provider/model identifier shape. */
-function hasProviderModelShape(value: unknown): value is string {
-	if (typeof value !== "string") {
-		return false;
-	}
-	const separator = value.indexOf("/");
-	return separator > 0 && separator < value.length - 1;
 }
 
 /** Checks the closed thinking-level set accepted by knowledge operations. */

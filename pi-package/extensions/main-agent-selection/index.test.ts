@@ -2430,9 +2430,9 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("skips agents with malformed model IDs during registry loading", async () => {
-		// Purpose: agent model IDs must be validated at the shared agent-registry boundary instead of failing later in one extension path.
-		// Input and expected output: an agent with model.id missing provider/model shape is not selectable, while a valid agent remains available.
+	test("reports missing model aliases during agent selection", async () => {
+		// Purpose: model aliases that do not exist in model-aliases config must fail with a clear runtime warning.
+		// Input and expected output: an agent with unresolved alias fails selection, while a valid agent remains selectable.
 		// Edge case: model.thinking-only agents remain valid because model.id is optional.
 		// Dependencies: this test writes temporary Markdown agent files only.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2457,7 +2457,8 @@ describe("main-agent-selection", () => {
 
 			expect(ctx.notifications).toEqual([
 				{
-					message: "[main-agent-selection] agent broken was not found",
+					message:
+						"[main-agent-selection] model alias missing-provider-separator was not found",
 					type: "warning",
 				},
 			]);

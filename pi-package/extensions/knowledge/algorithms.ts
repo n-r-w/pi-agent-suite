@@ -74,6 +74,7 @@ interface ResolvedOperationRuntime {
 		Awaited<ReturnType<typeof resolveAuxiliaryLlmRuntime>>,
 		{ readonly issue: string }
 	>["runtime"];
+	readonly resolvedThinking?: ReasoningLevel;
 }
 
 /** Couples provider response text with the message needed for repair conversation history. */
@@ -302,7 +303,9 @@ async function completeText(
 		operation.runtime,
 		requestContext,
 		buildAuxiliaryLlmOptions(
-			operation.operation.thinking ?? options.currentThinking,
+			operation.operation.thinking ??
+				operation.resolvedThinking ??
+				options.currentThinking,
 			options.signal,
 			operation.runtime,
 		),
@@ -333,7 +336,13 @@ async function resolveOperationRuntime(
 	if ("issue" in result) {
 		throw new Error(`knowledge model unavailable: ${result.issue}`);
 	}
-	return { operation, runtime: result.runtime };
+	return {
+		operation,
+		runtime: result.runtime,
+		...(result.thinking === undefined
+			? {}
+			: { resolvedThinking: result.thinking }),
+	};
 }
 
 /** Builds the explicit opaque-Markdown merge request shared by local and global accumulation. */

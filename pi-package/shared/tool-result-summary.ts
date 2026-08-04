@@ -12,13 +12,14 @@ import type {
 } from "@earendil-works/pi-ai";
 import { extractDiagnosticError } from "@earendil-works/pi-ai";
 import { escapeUTF8 } from "entities";
+import { resolveModelSettingsWithAliasesSync } from "../extensions/model-aliases/config";
 import {
 	countProjectionTextTokens,
 	estimateSerializedInputTokens,
 } from "./context-size";
 import {
 	assertThinkingLevelSupported,
-	isModelId,
+	isModelSelectorId,
 	splitModelId,
 } from "./model-settings";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
@@ -290,13 +291,25 @@ export async function resolveToolResultSummaryRuntimeConfig({
 	readonly currentThinking: string | undefined;
 	readonly signal: AbortSignal | undefined;
 }): Promise<ToolResultSummaryRuntimeConfig | undefined> {
-	const model = selectSummaryModel(currentModel, modelRegistry, config);
+	const resolvedSettings = resolveModelSettingsWithAliasesSync({
+		...(config.model === undefined ? {} : { id: config.model }),
+		...(config.thinking === undefined ? {} : { thinking: config.thinking }),
+	});
+	if ("issue" in resolvedSettings) {
+		return undefined;
+	}
+	const model = selectSummaryModel(
+		currentModel,
+		modelRegistry,
+		resolvedSettings.settings.id,
+	);
 	if (model === undefined) {
 		return undefined;
 	}
 
 	const thinking =
-		config.thinking ?? parseToolResultSummaryThinking(currentThinking);
+		resolvedSettings.settings.thinking ??
+		parseToolResultSummaryThinking(currentThinking);
 	if (thinking !== undefined) {
 		try {
 			assertThinkingLevelSupported(model, thinking);
@@ -553,16 +566,12 @@ function parseEnabledSummaryConfigValues({
 function selectSummaryModel(
 	currentModel: Model<Api> | undefined,
 	modelRegistry: ToolResultSummaryModelRegistry,
-	config: ToolResultSummaryConfig,
+	modelId: string | undefined,
 ): Model<Api> | undefined {
-	if (config.model === undefined) {
+	if (modelId === undefined) {
 		return currentModel;
 	}
-
-	if (!isModelId(config.model)) {
-		return undefined;
-	}
-	const { provider, id } = splitModelId(config.model);
+	const { provider, id } = splitModelId(modelId);
 	return modelRegistry.find(provider, id);
 }
 
@@ -818,17 +827,12 @@ function isOptionalSummaryThinking(
 	return value === undefined || value === null || isSummaryThinking(value);
 }
 
-/** Checks whether an optional runtime value is a provider/model identifier. */
+/** Checks whether an optional runtime value is a non-empty model selector identifier. */
 function isOptionalModelId(value: unknown): value is string | undefined {
 	if (value === undefined || value === null) {
 		return true;
 	}
-	if (typeof value !== "string") {
-		return false;
-	}
-
-	const separatorIndex = value.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < value.length - 1;
+	return isModelSelectorId(value);
 }
 
 /** Checks whether an optional runtime value is a usable string. */

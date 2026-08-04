@@ -125,10 +125,6 @@ describe("convene-council config", () => {
 				error: "llm1.model.id must be a non-empty string",
 			},
 			{
-				config: { llm1: { model: { id: "missing-separator" } } },
-				error: "llm1.model.id must use provider/model",
-			},
-			{
 				config: { llm1: { model: { thinking: "huge" } } },
 				error:
 					"llm1.model.thinking must be one of off, minimal, low, medium, high, xhigh, max",

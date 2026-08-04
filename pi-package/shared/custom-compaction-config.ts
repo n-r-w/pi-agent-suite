@@ -3,7 +3,7 @@ import {
 	readSuiteConfigFile,
 	type StorageFileReadResult,
 } from "./agent-suite-storage";
-import { isModelId } from "./model-settings";
+import { isModelSelectorId } from "./model-settings";
 import {
 	isReasoningLevel,
 	REASONING_LEVELS,
@@ -124,8 +124,8 @@ function parseCustomCompactionConfig(
 	}
 
 	const model = value["model"];
-	if (model !== undefined && !isModelId(model)) {
-		return { kind: "invalid", issue: "model must use provider/model" };
+	if (model !== undefined && !isModelSelectorId(model)) {
+		return { kind: "invalid", issue: "model must be a non-empty string" };
 	}
 
 	const reasoning = value["reasoning"];

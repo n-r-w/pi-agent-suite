@@ -22,13 +22,13 @@ The file is optional. Missing configuration enables the extension with defaults.
   "localTokenLimit": 5000,
   "primaryBranches": ["main", "master"],
   "extraction": {
-    "model": "provider/model",
+    "model": "analyst-complex",
     "thinking": "medium",
     "systemPromptFile": "/absolute/path/to/extraction.md",
     "retryCount": 1
   },
   "merge": {
-    "model": "provider/model",
+    "model": "review-fast",
     "thinking": "medium",
     "systemPromptFile": "/absolute/path/to/merge.md",
     "retryCount": 2
@@ -46,12 +46,12 @@ All fields are optional.
 | `localTokenLimit` | Positive safe integer | `5000` | Maximum tokenizer count for each local branch knowledge file. |
 | `primaryBranches` | Non-empty array of unique Git-valid branch names | `["main", "master"]` | Disables accumulation on every listed branch. |
 | `extraction` | Object | Defaults below | Configures session knowledge extraction. |
-| `extraction.model` | `provider/model` string | Current initiating model | Selects the extraction model. |
+| `extraction.model` | Non-empty string | Current initiating model | Selects the extraction model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `extraction.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects extraction reasoning. |
 | `extraction.systemPromptFile` | Readable non-empty absolute file path | Bundled extraction prompt | Replaces the extraction system prompt. |
 | `extraction.retryCount` | Non-negative safe integer | `1` | Number of format-correction retries after the initial extraction response. |
 | `merge` | Object | Defaults below | Configures local and global knowledge consolidation. |
-| `merge.model` | `provider/model` string | Current initiating model | Selects the merge model. |
+| `merge.model` | Non-empty string | Current initiating model | Selects the merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `merge.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects merge reasoning. |
 | `merge.systemPromptFile` | Readable non-empty absolute file path | Bundled merge prompt | Replaces the merge system prompt. |
 | `merge.retryCount` | Non-negative safe integer | `2` | Number of shortening retries after the initial over-limit merge response. |

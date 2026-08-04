@@ -6,13 +6,10 @@ import type {
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveModelSettingsWithAliases } from "../extensions/model-aliases/config";
 import { createAuxiliaryLlmSessionId } from "./auxiliary-llm-session";
 import { estimateSerializedInputTokens } from "./context-size";
-import {
-	assertThinkingLevelSupported,
-	isModelId,
-	splitModelId,
-} from "./model-settings";
+import { assertThinkingLevelSupported, splitModelId } from "./model-settings";
 import type { ReasoningLevel } from "./reasoning-levels";
 
 /** Provides the caller-local model registry and current model. */
@@ -33,7 +30,10 @@ export interface AuxiliaryLlmRuntime {
 
 /** Reports either an authenticated runtime or one safe resolution issue. */
 type AuxiliaryLlmRuntimeResult =
-	| { readonly runtime: AuxiliaryLlmRuntime }
+	| {
+			readonly runtime: AuxiliaryLlmRuntime;
+			readonly thinking?: ReasoningLevel;
+	  }
 	| { readonly issue: string };
 
 /** Defines the injected one-request completion boundary used by helper tools. */
@@ -49,22 +49,32 @@ export async function resolveAuxiliaryLlmRuntime(
 	modelId: string | undefined,
 	thinking: ReasoningLevel | undefined = undefined,
 ): Promise<AuxiliaryLlmRuntimeResult> {
-	const model =
-		modelId === undefined ? ctx.model : resolveConfiguredModel(ctx, modelId);
+	const resolvedSettings = await resolveModelSettingsWithAliases(
+		modelId === undefined
+			? undefined
+			: {
+					id: modelId,
+					...(thinking === undefined ? {} : { thinking }),
+				},
+	);
+	if ("issue" in resolvedSettings) {
+		return { issue: resolvedSettings.issue };
+	}
+
+	const model = resolveRuntimeModel(ctx, resolvedSettings.settings.id);
 	if (model === undefined) {
 		return {
 			issue:
-				modelId === undefined
+				resolvedSettings.settings.id === undefined
 					? "current model is unavailable"
-					: `model ${modelId} was not found`,
+					: `model ${resolvedSettings.settings.id} was not found`,
 		};
 	}
-	if (thinking !== undefined) {
-		try {
-			assertThinkingLevelSupported(model, thinking);
-		} catch (error) {
-			return { issue: error instanceof Error ? error.message : String(error) };
-		}
+
+	const effectiveThinking = resolvedSettings.settings.thinking;
+	const supportedThinking = ensureThinkingSupported(model, effectiveThinking);
+	if (typeof supportedThinking === "string") {
+		return { issue: supportedThinking };
 	}
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -77,6 +87,7 @@ export async function resolveAuxiliaryLlmRuntime(
 			...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
 			...(auth.headers === undefined ? {} : { headers: auth.headers }),
 		},
+		...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
 	};
 }
 
@@ -139,9 +150,32 @@ function resolveConfiguredModel(
 	ctx: AuxiliaryLlmContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	if (!isModelId(modelId)) {
-		return undefined;
-	}
 	const { provider, id } = splitModelId(modelId);
 	return ctx.modelRegistry.find(provider, id);
+}
+
+/** Resolves either the current model or one configured provider/model identifier. */
+function resolveRuntimeModel(
+	ctx: AuxiliaryLlmContext,
+	modelId: string | undefined,
+): Model<Api> | undefined {
+	return modelId === undefined
+		? ctx.model
+		: resolveConfiguredModel(ctx, modelId);
+}
+
+/** Verifies optional reasoning support and returns the error message when unsupported. */
+function ensureThinkingSupported(
+	model: Model<Api>,
+	thinking: ReasoningLevel | undefined,
+): true | string {
+	if (thinking === undefined) {
+		return true;
+	}
+	try {
+		assertThinkingLevelSupported(model, thinking);
+		return true;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
 }

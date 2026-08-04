@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSuiteConfigFile } from "../../shared/agent-suite-storage";
-import { isModelId } from "../../shared/model-settings";
+import { isModelSelectorId } from "../../shared/model-settings";
 import {
 	isReasoningLevel,
 	type ReasoningLevel,
@@ -181,8 +181,8 @@ function readQueryModelConfig(
 	}
 	const id = Reflect.get(value, "id");
 	const thinking = Reflect.get(value, "thinking");
-	if (id !== undefined && !isModelId(id)) {
-		throw new Error("query.model.id must use provider/model format");
+	if (id !== undefined && !isModelSelectorId(id)) {
+		throw new Error("query.model.id must be a non-empty string");
 	}
 	if (thinking !== undefined && !isReasoningLevel(thinking)) {
 		throw new Error("query.model.thinking is invalid");
