@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSuiteConfigFile } from "../../shared/agent-suite-storage";
+import { isModelId } from "../../shared/model-settings";
 import {
 	isReasoningLevel,
 	type ReasoningLevel,
@@ -180,7 +181,7 @@ function readQueryModelConfig(
 	}
 	const id = Reflect.get(value, "id");
 	const thinking = Reflect.get(value, "thinking");
-	if (id !== undefined && !hasProviderModelShape(id)) {
+	if (id !== undefined && !isModelId(id)) {
 		throw new Error("query.model.id must use provider/model format");
 	}
 	if (thinking !== undefined && !isReasoningLevel(thinking)) {
@@ -225,15 +226,6 @@ function readConfiguredTextFile(
 		throw new Error(`${field} must reference a non-empty file`);
 	}
 	return content;
-}
-
-/** Requires a non-empty provider and model component around the first slash. */
-function hasProviderModelShape(value: unknown): value is string {
-	if (typeof value !== "string") {
-		return false;
-	}
-	const separator = value.indexOf("/");
-	return separator > 0 && separator < value.length - 1;
 }
 
 /** Returns a fail-closed subagent configuration. */

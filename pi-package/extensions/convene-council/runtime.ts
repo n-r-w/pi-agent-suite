@@ -1,5 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { hasProviderModelShape } from "./guards";
+import {
+	assertThinkingLevelSupported,
+	isModelId,
+	splitModelId,
+} from "../../shared/model-settings";
 import type {
 	ConveneCouncilConfig,
 	CouncilContext,
@@ -60,11 +64,19 @@ async function resolveParticipantRuntime(
 					: `${participantId} model ${config.model.id} was not found`,
 		};
 	}
+	const thinking = resolveThinking(config.model?.thinking, currentThinking);
+	if (thinking.thinking !== undefined) {
+		try {
+			assertThinkingLevelSupported(model, thinking.thinking);
+		} catch (error) {
+			return { issue: error instanceof Error ? error.message : String(error) };
+		}
+	}
 
 	return {
 		runtime: {
 			model,
-			...resolveThinking(config.model?.thinking, currentThinking),
+			...thinking,
 		},
 	};
 }
@@ -85,12 +97,9 @@ function resolveConfiguredModel(
 	ctx: CouncilContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	if (!hasProviderModelShape(modelId)) {
+	if (!isModelId(modelId)) {
 		return undefined;
 	}
-	const separatorIndex = modelId.indexOf("/");
-	return ctx.modelRegistry.find(
-		modelId.slice(0, separatorIndex),
-		modelId.slice(separatorIndex + 1),
-	);
+	const { provider, id } = splitModelId(modelId);
+	return ctx.modelRegistry.find(provider, id);
 }

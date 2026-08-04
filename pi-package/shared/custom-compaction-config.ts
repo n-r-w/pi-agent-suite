@@ -3,6 +3,7 @@ import {
 	readSuiteConfigFile,
 	type StorageFileReadResult,
 } from "./agent-suite-storage";
+import { isModelId } from "./model-settings";
 import {
 	isReasoningLevel,
 	REASONING_LEVELS,
@@ -190,15 +191,6 @@ function validatePromptFiles(
 		}
 	}
 	return undefined;
-}
-
-/** Returns whether a value uses the required provider/model identifier shape. */
-function isModelId(value: unknown): value is string {
-	return (
-		typeof value === "string" &&
-		value.indexOf("/") > 0 &&
-		value.indexOf("/") < value.length - 1
-	);
 }
 
 /** Returns whether unknown JSON is a non-array object. */

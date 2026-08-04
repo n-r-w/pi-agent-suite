@@ -57,7 +57,14 @@ export async function executeSubagentQuery({
 		throw readCancellationError(signal);
 	}
 
-	const runtimeResult = await resolveAuxiliaryLlmRuntime(ctx, modelConfig?.id);
+	const thinking =
+		modelConfig?.thinking ??
+		(isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined);
+	const runtimeResult = await resolveAuxiliaryLlmRuntime(
+		ctx,
+		modelConfig?.id,
+		thinking,
+	);
 	if ("issue" in runtimeResult) {
 		return { kind: "issue", issue: "Query model is unavailable" };
 	}
@@ -78,9 +85,6 @@ export async function executeSubagentQuery({
 		};
 	}
 
-	const thinking =
-		modelConfig?.thinking ??
-		(isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined);
 	const options = buildAuxiliaryLlmOptions(
 		thinking,
 		signal,

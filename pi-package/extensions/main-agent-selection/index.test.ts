@@ -77,6 +77,7 @@ interface KeybindingsFake {
 interface CommandContextFake {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
+	readonly model: Model<Api> | undefined;
 	readonly sessionManager: {
 		getSessionFile(): string | undefined;
 	};
@@ -118,6 +119,7 @@ function createExtensionApiFake(
 	const thinkingCalls: string[] = [];
 	const activeToolCalls: string[][] = [];
 	let currentActiveTools = [...(options.activeTools ?? [])];
+	let currentThinkingLevel = "medium";
 	const setModelResults = [...(options.setModelResults ?? [])];
 
 	return {
@@ -176,6 +178,7 @@ function createExtensionApiFake(
 		},
 		setThinkingLevel(level: string): void {
 			thinkingCalls.push(level);
+			currentThinkingLevel = level;
 		},
 		setActiveTools(toolNames: string[]): void {
 			currentActiveTools = [...toolNames];
@@ -198,7 +201,7 @@ function createExtensionApiFake(
 			return [];
 		},
 		getThinkingLevel(): string {
-			return "medium";
+			return currentThinkingLevel;
 		},
 		setLabel(): void {},
 		modelRegistry: undefined,
@@ -247,6 +250,7 @@ function createModel(provider: string, id: string): Model<Api> {
 		api: "fake-api",
 		baseUrl: "https://example.test",
 		reasoning: true,
+		thinkingLevelMap: { xhigh: "xhigh", max: "max" },
 		name: `${provider}/${id}`,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -382,6 +386,7 @@ function createCommandContext(
 
 	return {
 		cwd,
+		model: models[0],
 		sessionManager: {
 			getSessionFile: () => sessionFile,
 		},
@@ -2340,6 +2345,31 @@ describe("main-agent-selection", () => {
 		});
 	});
 
+	test("rejects thinking unsupported by the configured model before application", async () => {
+		// Purpose: unsupported agent thinking must fail before model, thinking, or contribution changes.
+		// Input and expected output: a model without reasoning rejects a high thinking level and emits one warning.
+		// Edge case: the agent supplies both a model ID and thinking level, so capability validation must precede setModel.
+		// Dependencies: this test uses an isolated agent file and a fake model registry.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = { ...createModel("openai", "gpt-test"), reasoning: false };
+			await writeAgent(agentDir, {
+				id: "builder",
+				description: "Builds code",
+				body: "Builder system prompt",
+				model: { id: "openai/gpt-test", thinking: "high" },
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
+			mainAgentSelection(pi);
+
+			await getCommand(pi, "agent").handler("builder", ctx);
+
+			expect(pi.setModelCalls).toEqual([]);
+			expect(pi.thinkingCalls).toEqual([]);
+			expect(ctx.notifications[0]?.type).toBe("warning");
+		});
+	});
+
 	test("fails closed when model application fails", async () => {
 		// Purpose: a selected agent must not publish prompt, tools, thinking, or runtime contribution when its configured model cannot be applied.
 		// Input and expected output: setModel returns false, selection reports a warning, and no runtime contribution is applied.
@@ -2419,7 +2449,8 @@ describe("main-agent-selection", () => {
 				model: { thinking: "high" },
 			});
 			const pi = createExtensionApiFake();
-			const ctx = createCommandContext("/tmp/project");
+			const model = createModel("openai", "gpt-test");
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
 			mainAgentSelection(pi);
 
 			await getCommand(pi, "agent").handler("broken", ctx);

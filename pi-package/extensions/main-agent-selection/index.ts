@@ -29,6 +29,11 @@ import {
 	getSuiteExtensionDir,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import {
+	assertThinkingLevelSupported,
+	isModelId,
+	splitModelId,
+} from "../../shared/model-settings";
 import { isSingleLineText } from "../../shared/text-contracts";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import {
@@ -83,6 +88,7 @@ interface MainAgentSelectorKeybindings {
 interface MainAgentContext {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
+	readonly model: Model<Api> | undefined;
 	readonly sessionManager: {
 		getSessionFile(): string | undefined;
 	};
@@ -785,6 +791,13 @@ async function applyAgentSelection(
 		return policies.outcome;
 	}
 
+	const thinkingIssue = validateConfiguredThinking(ctx, agent);
+	if (thinkingIssue !== undefined) {
+		clearMainAgentSelection(pi);
+		reportIssue(ctx, thinkingIssue);
+		return "application-error";
+	}
+
 	const modelIssue = await applyConfiguredModel(pi, ctx, agent);
 	if (modelIssue !== undefined) {
 		clearMainAgentSelection(pi);
@@ -792,8 +805,11 @@ async function applyAgentSelection(
 		return "application-error";
 	}
 
-	if (agent.model?.thinking !== undefined) {
-		pi.setThinkingLevel(agent.model.thinking);
+	const appliedThinkingIssue = applyConfiguredThinking(pi, agent);
+	if (appliedThinkingIssue !== undefined) {
+		clearMainAgentSelection(pi);
+		reportIssue(ctx, appliedThinkingIssue);
+		return "application-error";
 	}
 
 	writeRuntimeDiagnostic("main-agent-selection.apply.resolved", {
@@ -810,9 +826,56 @@ async function applyAgentSelection(
 			...workflowPolicyMetadata(policies.workflows),
 			...(agent.agents !== undefined ? { agents: agent.agents } : {}),
 		},
+		...(agent.model !== undefined ? { model: agent.model } : {}),
 		...(policies.tools !== undefined ? { tools: policies.tools } : {}),
 	});
 	return "applied";
+}
+
+/** Validates configured thinking against the model that would receive it. */
+function validateConfiguredThinking(
+	ctx: MainAgentContext,
+	agent: AgentDefinition,
+): string | undefined {
+	const thinking = agent.model?.thinking;
+	if (thinking === undefined) {
+		return undefined;
+	}
+	const model =
+		agent.model?.id === undefined
+			? ctx.model
+			: resolveModel(ctx, agent.model.id);
+	if (model === undefined) {
+		return agent.model?.id === undefined
+			? "current model is unavailable"
+			: `model ${agent.model.id} was not found`;
+	}
+	try {
+		assertThinkingLevelSupported(model, thinking);
+		return undefined;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
+/** Applies configured thinking and rejects Pi's silent capability clamping. */
+function applyConfiguredThinking(
+	pi: ExtensionAPI,
+	agent: AgentDefinition,
+): string | undefined {
+	const thinking = agent.model?.thinking;
+	if (thinking === undefined) {
+		return undefined;
+	}
+	try {
+		pi.setThinkingLevel(thinking);
+		if (pi.getThinkingLevel() !== thinking) {
+			return `thinking level ${thinking} could not be applied`;
+		}
+		return undefined;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
 }
 
 /** Applies one optional configured model and returns a precise failure issue. */
@@ -896,13 +959,10 @@ function resolveModel(
 	ctx: MainAgentContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	const separatorIndex = modelId.indexOf("/");
-	if (separatorIndex <= 0 || separatorIndex === modelId.length - 1) {
+	if (!isModelId(modelId)) {
 		return undefined;
 	}
-
-	const provider = modelId.slice(0, separatorIndex);
-	const id = modelId.slice(separatorIndex + 1);
+	const { provider, id } = splitModelId(modelId);
 	return ctx.modelRegistry.find(provider, id);
 }
 

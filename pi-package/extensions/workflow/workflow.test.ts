@@ -76,6 +76,33 @@ describe("workflow definition validation", () => {
 		});
 	});
 
+	/** Proves catalog YAML can define independent workflow and stage model settings. */
+	test("accepts optional model settings at workflow and stage levels", () => {
+		const value = validValue() as {
+			stages: Record<string, unknown>[];
+		};
+		const firstStage = value.stages[0];
+		if (firstStage === undefined) {
+			throw new Error("valid workflow fixture must contain an initial stage");
+		}
+		firstStage["model"] = { thinking: "xhigh" };
+
+		const workflow = validateWorkflowDefinition(
+			"delivery",
+			{
+				...value,
+				model: { id: "openai/gpt-test", thinking: "high" },
+			},
+			SOURCE,
+		);
+
+		expect(workflow.model).toEqual({
+			id: "openai/gpt-test",
+			thinking: "high",
+		});
+		expect(workflow.stages[0]?.model).toEqual({ thinking: "xhigh" });
+	});
+
 	/**
 	 * Proves trigger entries remain closed discriminated objects at the workflow boundary.
 	 * Inputs and expected outputs: unknown types, unknown fields, missing types, arrays, strings, and null are rejected.

@@ -41,6 +41,7 @@ test("workflow entry activates a configured workflow and projects its initial st
 	}> = [];
 	const appended: Array<{ customType: string; data: unknown }> = [];
 	let activeTools = ["read"];
+	let thinkingLevel = "medium";
 	const pi = {
 		on(name: string, handler: (...args: unknown[]) => unknown) {
 			handlers.set(name, handler);
@@ -57,6 +58,12 @@ test("workflow entry activates a configured workflow and projects its initial st
 		},
 		setActiveTools(names: string[]) {
 			activeTools = [...names];
+		},
+		getThinkingLevel() {
+			return thinkingLevel;
+		},
+		setThinkingLevel(level: string) {
+			thinkingLevel = level;
 		},
 		appendEntry(customType: string, data: unknown) {
 			appended.push({ customType, data });

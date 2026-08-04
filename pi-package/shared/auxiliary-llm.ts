@@ -8,6 +8,11 @@ import type {
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAuxiliaryLlmSessionId } from "./auxiliary-llm-session";
 import { estimateSerializedInputTokens } from "./context-size";
+import {
+	assertThinkingLevelSupported,
+	isModelId,
+	splitModelId,
+} from "./model-settings";
 import type { ReasoningLevel } from "./reasoning-levels";
 
 /** Provides the caller-local model registry and current model. */
@@ -42,6 +47,7 @@ export type AuxiliaryLlmCompletion = (
 export async function resolveAuxiliaryLlmRuntime(
 	ctx: AuxiliaryLlmContext,
 	modelId: string | undefined,
+	thinking: ReasoningLevel | undefined = undefined,
 ): Promise<AuxiliaryLlmRuntimeResult> {
 	const model =
 		modelId === undefined ? ctx.model : resolveConfiguredModel(ctx, modelId);
@@ -52,6 +58,13 @@ export async function resolveAuxiliaryLlmRuntime(
 					? "current model is unavailable"
 					: `model ${modelId} was not found`,
 		};
+	}
+	if (thinking !== undefined) {
+		try {
+			assertThinkingLevelSupported(model, thinking);
+		} catch (error) {
+			return { issue: error instanceof Error ? error.message : String(error) };
+		}
 	}
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -126,12 +139,9 @@ function resolveConfiguredModel(
 	ctx: AuxiliaryLlmContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	const separatorIndex = modelId.indexOf("/");
-	if (separatorIndex <= 0 || separatorIndex === modelId.length - 1) {
+	if (!isModelId(modelId)) {
 		return undefined;
 	}
-	return ctx.modelRegistry.find(
-		modelId.slice(0, separatorIndex),
-		modelId.slice(separatorIndex + 1),
-	);
+	const { provider, id } = splitModelId(modelId);
+	return ctx.modelRegistry.find(provider, id);
 }

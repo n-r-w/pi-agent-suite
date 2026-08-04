@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -41,9 +42,13 @@ interface FakePi {
 	readonly tools: FakeTool[];
 	readonly appended: Array<{ customType: string; data: unknown }>;
 	readonly notifications: Array<{ message: string; type: string | undefined }>;
+	readonly modelSetCalls: Model<Api>[];
+	readonly modelRegistry: ExtensionContext["modelRegistry"];
 	activeTools: string[];
 	appendError: Error | undefined;
 	api: ExtensionAPI | undefined;
+	model: Model<Api> | undefined;
+	thinkingLevel: string;
 	readonly ui: ExtensionContext["ui"];
 	readonly widgetUpdates: Array<{ key: string; content: WidgetContent }>;
 }
@@ -74,6 +79,39 @@ async function createSuite(yaml?: string): Promise<string> {
 /** Returns one workflow that supports an advance followed by route-based rework. */
 function validYaml(): string {
 	return "description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
+}
+
+/** Returns a catalog workflow with root and initial-stage model settings. */
+function modelYaml(): string {
+	return "description: Delivery\nmodel:\n  id: openai/workflow-model\n  thinking: high\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n    model:\n      thinking: xhigh\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
+}
+
+/** Returns a workflow whose second stage must fall back to the selected agent model. */
+function agentFallbackYaml(): string {
+	return "description: Delivery\nstages:\n  - id: configured\n    description: Configured\n    prompt: Use the workflow model\n    initial: true\n    model:\n      id: openai/workflow-model\n      thinking: xhigh\n  - id: fallback\n    description: Fallback\n    prompt: Use the agent model\n    final: true\ntransitions:\n  - from: configured\n    to: fallback\n    type: advance\n  - from: fallback\n    to: configured\n    type: rework\n";
+}
+
+/** Creates one model fixture with optional support for model-specific thinking levels. */
+function createModel(
+	provider: string,
+	id: string,
+	extendedThinking = false,
+): Model<Api> {
+	return {
+		provider,
+		id,
+		api: "fake-api",
+		baseUrl: "https://example.test",
+		reasoning: true,
+		...(extendedThinking
+			? { thinkingLevelMap: { xhigh: "xhigh", max: "max" } }
+			: {}),
+		name: `${provider}/${id}`,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100_000,
+		maxTokens: 8_192,
+	};
 }
 
 /** Creates one complete workflow_create argument object with a caller-owned identity. */
@@ -208,15 +246,29 @@ async function createFakePi(): Promise<FakePi> {
 			widgetUpdates.push({ key, content });
 		},
 	} as unknown as ExtensionContext["ui"];
+	const currentModel = createModel("openai", "current-model");
+	const workflowModel = createModel("openai", "workflow-model", true);
+	const agentModel = createModel("openai-codex", "gpt-5.6-luna");
+	const models = [currentModel, workflowModel, agentModel];
 	const fake: FakePi = {
 		handlers: new Map(),
 		listeners: new Map(),
 		tools: [],
 		appended: [],
 		notifications,
+		modelSetCalls: [],
+		modelRegistry: {
+			find(provider: string, id: string) {
+				return models.find(
+					(model) => model.provider === provider && model.id === id,
+				);
+			},
+		} as ExtensionContext["modelRegistry"],
 		activeTools: ["read"],
 		appendError: undefined,
 		api: undefined,
+		model: currentModel,
+		thinkingLevel: "medium",
 		ui,
 		widgetUpdates,
 	};
@@ -233,6 +285,17 @@ async function createFakePi(): Promise<FakePi> {
 		},
 		setActiveTools(names: string[]) {
 			fake.activeTools = [...names];
+		},
+		async setModel(model: Model<Api>) {
+			fake.modelSetCalls.push(model);
+			fake.model = model;
+			return true;
+		},
+		getThinkingLevel() {
+			return fake.thinkingLevel;
+		},
+		setThinkingLevel(level: string) {
+			fake.thinkingLevel = level;
 		},
 		appendEntry(customType: string, data: unknown) {
 			if (fake.appendError !== undefined) {
@@ -294,6 +357,8 @@ async function runLifecycle(
 			mode,
 			hasUI: mode === "tui" || mode === "rpc",
 			ui: fake.ui,
+			model: fake.model,
+			modelRegistry: fake.modelRegistry,
 			sessionManager: { getBranch: () => branch },
 		},
 	);
@@ -766,6 +831,135 @@ describe("workflow extension lifecycle", () => {
 		await expect(runLifecycle(fake, "session_start")).rejects.toThrow(
 			"non-empty",
 		);
+	});
+
+	/** Proves catalog activation applies stage-over-workflow model settings before persistence. */
+	test("applies catalog model settings during activation", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await activate.execute("call", { workflowId: "delivery" });
+
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai/workflow-model"]);
+		expect(fake.thinkingLevel).toBe("xhigh");
+		expect(fake.appended[0]?.data).toMatchObject({
+			kind: "activated",
+			workflow: {
+				model: { id: "openai/workflow-model", thinking: "high" },
+			},
+		});
+
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("call", { stageId: "done" });
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai/workflow-model"]);
+		expect(fake.thinkingLevel).toBe("high");
+	});
+
+	/** Proves a stage without workflow settings applies the selected agent model. */
+	test("applies agent model when returning to a stage without model settings", async () => {
+		await createSuite(agentFallbackYaml());
+		const fake = await createFakePi();
+		if (fake.api === undefined) {
+			throw new Error("extension API missing");
+		}
+		getAgentRuntimeComposition(fake.api).setMainAgentContribution({
+			prompt: "main",
+			model: {
+				id: "openai-codex/gpt-5.6-luna",
+				thinking: "medium",
+			},
+			agent: { id: "Main" },
+		});
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("call", { workflowId: "delivery" });
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("call", { stageId: "fallback" });
+
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai/workflow-model", "openai-codex/gpt-5.6-luna"]);
+		expect(fake.model?.provider).toBe("openai-codex");
+		expect(fake.model?.id).toBe("gpt-5.6-luna");
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
+	/** Rejects unknown workflow models before runtime or session state mutation. */
+	test("rejects unknown model before activation persistence", async () => {
+		await createSuite(
+			modelYaml().replace("openai/workflow-model", "openai/missing"),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await expect(
+			activate.execute("call", { workflowId: "delivery" }),
+		).rejects.toThrow("model openai/missing was not found");
+		expect(fake.modelSetCalls).toEqual([]);
+		expect(fake.appended).toEqual([]);
+	});
+
+	/** Rejects thinking unsupported by the target model before model application. */
+	test("rejects unsupported thinking before activation persistence", async () => {
+		await createSuite(
+			modelYaml().replace("openai/workflow-model", "openai/current-model"),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await expect(
+			activate.execute("call", { workflowId: "delivery" }),
+		).rejects.toThrow("thinking xhigh is not supported");
+		expect(fake.modelSetCalls).toEqual([]);
+		expect(fake.appended).toEqual([]);
+	});
+
+	/** Restores runtime model and thinking when workflow persistence fails. */
+	test("rolls back runtime settings when activation persistence fails", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		fake.appendError = new Error("append failed");
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await expect(
+			activate.execute("call", { workflowId: "delivery" }),
+		).rejects.toThrow("append failed");
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		expect(fake.appended).toEqual([]);
+	});
+
+	/** Proves manual model changes are not overwritten by main-agent policy events. */
+	test("does not reapply workflow settings after manual model selection", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("call", { workflowId: "delivery" });
+		fake.modelSetCalls.length = 0;
+		const manualModel = createModel("openai", "manual-model", true);
+		fake.model = manualModel;
+		fake.thinkingLevel = "low";
+		for (const listener of fake.listeners.get("model_select") ?? []) {
+			listener({ model: manualModel });
+		}
+		setMainWorkflowPolicy(fake, ["delivery"]);
+
+		expect(fake.modelSetCalls).toEqual([]);
+		expect(fake.model?.id).toBe("manual-model");
+		expect(fake.thinkingLevel).toBe("low");
 	});
 
 	/** Proves successful tools keep model content stable while persisting state. */
