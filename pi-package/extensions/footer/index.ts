@@ -51,7 +51,7 @@ const FOOTER_LEGACY_CONFIG_FILE = "footer.json";
 /** Config key that disables or enables the custom footer. */
 const ENABLED_CONFIG_KEY = "enabled";
 
-/** Config key that controls provider visibility in the model display segment. */
+/** Config key that controls provider visibility when model or thinking is hidden. */
 const SHOW_PROVIDER_CONFIG_KEY = "showProvider";
 
 /** Config key that controls model-name visibility in the model display segment. */
@@ -321,8 +321,10 @@ function buildModelDisplaySegment(
 	sessionState: FooterSessionState,
 	theme: FooterTheme,
 ): string | undefined {
+	const showProvider =
+		config.showProvider || (config.showModel && config.showThinkingLevel);
 	const parts = [
-		config.showProvider ? sessionState.model?.provider : undefined,
+		showProvider ? sessionState.model?.provider : undefined,
 		config.showModel ? sessionState.model?.id : undefined,
 		config.showThinkingLevel
 			? formatThinkingLevel(renderState.thinkingLevel, theme)

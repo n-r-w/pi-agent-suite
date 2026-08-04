@@ -29,7 +29,7 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
 | Name | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | boolean | No | `true` | Enables this custom footer. Set to `false` to keep this footer from being installed. |
-| `showProvider` | boolean | No | `true` | Shows the model provider in the model segment. |
+| `showProvider` | boolean | No | `true` | Shows the model provider in the model segment. When `showModel` and `showThinkingLevel` are both `true`, the provider is shown even if `showProvider` is `false`. |
 | `showModel` | boolean | No | `true` | Shows the model name in the model segment. |
 | `showThinkingLevel` | boolean | No | `true` | Shows the model thinking level in the model segment. |
 | `showApiCost` | boolean | No | `true` | Shows the recorded API cost segment. |
