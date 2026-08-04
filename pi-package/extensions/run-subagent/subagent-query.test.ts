@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import type {
 	Api,
 	AssistantMessage,
@@ -6,8 +7,12 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { AuxiliaryLlmContext } from "../../shared/auxiliary-llm";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
+import { registerKnowledgeContextRuntime } from "../../shared/knowledge-runtime";
 import type { SubagentQueryModelConfig } from "./entry-config";
 import { executeSubagentQuery } from "./subagent-query";
 
@@ -73,11 +78,11 @@ function assistantResponse(options?: {
 }
 
 /** Creates caller-local model resolution with deterministic authentication. */
-function createContext(authenticated = true): AuxiliaryLlmContext {
+function createContext(authenticated = true): ExtensionContext {
 	return {
 		model: CURRENT_MODEL,
 		modelRegistry: {
-			find: (provider, id) =>
+			find: (provider: string, id: string) =>
 				provider === "provider" && id === "configured"
 					? CONFIGURED_MODEL
 					: undefined,
@@ -86,7 +91,17 @@ function createContext(authenticated = true): AuxiliaryLlmContext {
 					? { ok: true as const, apiKey: "secret", headers: { x: "header" } }
 					: { ok: false as const, error: "missing auth" },
 		},
-	};
+	} as unknown as ExtensionContext;
+}
+
+/** Creates the extension API context source and cost recorder used by query tests. */
+function createPi(
+	appendEntry: (type: string, data: unknown) => unknown,
+): ExtensionAPI {
+	return {
+		events: new EventEmitter(),
+		appendEntry,
+	} as unknown as ExtensionAPI;
 }
 
 /** Creates a branch whose saved projection replacement differs from live text. */
@@ -160,13 +175,20 @@ describe("executeSubagentQuery", () => {
 		// Dependencies: in-memory branch, model registry fake, completion fake, and append-entry fake.
 		const calls: CompletionCall[] = [];
 		const costs: unknown[] = [];
+		const pi = {
+			events: new EventEmitter(),
+			appendEntry: (_type: string, data: unknown) => costs.push(data),
+		} as unknown as ExtensionAPI;
+		registerKnowledgeContextRuntime(pi, {
+			readBlock: async () => "<knowledge>query knowledge</knowledge>",
+		});
 		const result = await executeSubagentQuery({
 			completeSimple: async (selectedModel, context, options) => {
 				calls.push({ model: selectedModel, context, options });
 				return assistantResponse({ text: "  saved answer  ", cost: 0.25 });
 			},
 			ctx: createContext(),
-			pi: { appendEntry: (_type, data) => costs.push(data) },
+			pi,
 			branchEntries: savedBranch(),
 			question: "What <changed> & why?</question>",
 			systemPrompt: "Answer from saved context.",
@@ -176,7 +198,9 @@ describe("executeSubagentQuery", () => {
 		expect(result).toEqual({ kind: "success", answer: "saved answer" });
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.model).toBe(CURRENT_MODEL);
-		expect(calls[0]?.context.systemPrompt).toBe("Answer from saved context.");
+		expect(calls[0]?.context.systemPrompt).toBe(
+			"Answer from saved context.\n\n<knowledge>query knowledge</knowledge>",
+		);
 		expect(calls[0]?.context.tools).toEqual([]);
 		expect(JSON.stringify(calls[0]?.context.messages)).toContain(
 			"saved replacement",
@@ -218,7 +242,7 @@ describe("executeSubagentQuery", () => {
 				});
 			},
 			ctx: createContext(),
-			pi: { appendEntry: (_type, data) => costs.push(data) },
+			pi: createPi((_type, data) => costs.push(data)),
 			branchEntries: savedBranch(),
 			question: "Question",
 			systemPrompt: "System",
@@ -241,7 +265,7 @@ describe("executeSubagentQuery", () => {
 		// Input and expected output: auth failure, small context, empty response, and aborted completion stop with the required outcomes.
 		// Edge case: only the calls that receive an assistant response may create cost entries.
 		// Dependencies: isolated model, authentication, completion, and abort fakes.
-		const noCostPi = { appendEntry: () => undefined };
+		const noCostPi = createPi(() => undefined);
 		const authFailure = await executeSubagentQuery({
 			completeSimple: async () => assistantResponse({ text: "unused" }),
 			ctx: createContext(false),

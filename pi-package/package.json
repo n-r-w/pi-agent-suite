@@ -40,6 +40,7 @@
 			"./extensions/cmux/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
+			"./extensions/knowledge/index.ts",
 			"./extensions/workflow/index.ts",
 			"./extensions/structured-prompt/index.ts",
 			"./extensions/ask-llm/index.ts",

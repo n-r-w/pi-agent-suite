@@ -31,6 +31,10 @@ import {
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
+	appendKnowledgeBlock,
+	readKnowledgeBlock,
+} from "../../shared/knowledge-runtime";
+import {
 	appendProjectContext,
 	type ProjectContextFile,
 } from "../../shared/project-context-prompt";
@@ -120,6 +124,7 @@ interface AdvisorContext extends ExtensionContext {
 }
 
 interface ExecuteConsultAdvisorOptions {
+	readonly pi: ExtensionAPI;
 	readonly completeSimple: NonNullable<
 		ConsultAdvisorDependencies["completeSimple"]
 	>;
@@ -173,6 +178,7 @@ export default function consultAdvisor(
 		renderResult: renderConsultAdvisorResult,
 		async execute(...[toolCallId, params, signal, _onUpdate, ctx]) {
 			return executeConsultAdvisor({
+				pi,
 				completeSimple,
 				toolCallId,
 				params: params as ConsultAdvisorParams,
@@ -192,6 +198,7 @@ export default function consultAdvisor(
 
 /** Executes one advisor model call after strict config, prompt, and model validation. */
 async function executeConsultAdvisor({
+	pi,
 	completeSimple,
 	toolCallId,
 	params,
@@ -227,6 +234,7 @@ async function executeConsultAdvisor({
 	}
 
 	const context = await buildAdvisorContext({
+		pi,
 		ctx,
 		advisorPrompt: promptResult.prompt,
 		question: params.question,
@@ -517,13 +525,16 @@ async function readAdvisorPrompt(
 
 /** Builds advisor context from current branch while replaying recorded context projection state. */
 async function buildAdvisorContext({
+	pi,
 	ctx,
 	advisorPrompt,
 	question,
 	toolCallId,
 	loadedSkillRoots,
 	contextFiles,
-}: AdvisorContextBuildOptions): Promise<Context> {
+}: AdvisorContextBuildOptions & {
+	readonly pi: ExtensionAPI;
+}): Promise<Context> {
 	const projectedMessages = await replayContextProjection({
 		branchEntries: ctx.sessionManager.getBranch(),
 		cwd: ctx.cwd,
@@ -534,8 +545,13 @@ async function buildAdvisorContext({
 		toolCallId,
 	);
 	messages.push({ role: "user", content: question, timestamp: Date.now() });
+	const projectSystemPrompt = formatAdvisorSystemPrompt(
+		advisorPrompt,
+		contextFiles,
+	);
+	const knowledgeBlock = await readKnowledgeBlock(pi, ctx);
 	return {
-		systemPrompt: formatAdvisorSystemPrompt(advisorPrompt, contextFiles),
+		systemPrompt: appendKnowledgeBlock(projectSystemPrompt, knowledgeBlock),
 		messages,
 		tools: [],
 	};

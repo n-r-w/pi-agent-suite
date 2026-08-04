@@ -2,12 +2,12 @@ import type { Context } from "@earendil-works/pi-ai";
 import {
 	convertToLlm,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { escapeUTF8 } from "entities";
 import {
 	type AuxiliaryLlmCompletion,
-	type AuxiliaryLlmContext,
 	buildAuxiliaryLlmOptions,
 	completeAuxiliaryLlm,
 	doesAuxiliaryLlmInputFitContextWindow,
@@ -16,6 +16,7 @@ import {
 } from "../../shared/auxiliary-llm";
 import { replayPersistedContextProjection } from "../../shared/context-projection";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
+import { readKnowledgeBlock } from "../../shared/knowledge-runtime";
 import { isReasoningLevel } from "../../shared/reasoning-levels";
 import { readCancellationError } from "./cancellation-reason";
 import type { SubagentQueryModelConfig } from "./entry-config";
@@ -30,8 +31,8 @@ type SubagentQueryExecutionResult =
 /** Carries caller-local dependencies and saved context for one query. */
 interface ExecuteSubagentQueryOptions {
 	readonly completeSimple: AuxiliaryLlmCompletion;
-	readonly ctx: AuxiliaryLlmContext;
-	readonly pi: Pick<ExtensionAPI, "appendEntry">;
+	readonly ctx: ExtensionContext;
+	readonly pi: ExtensionAPI;
 	readonly branchEntries: readonly SessionEntry[];
 	readonly question: string;
 	readonly systemPrompt: string;
@@ -61,7 +62,13 @@ export async function executeSubagentQuery({
 		return { kind: "issue", issue: "Query model is unavailable" };
 	}
 
-	const context = buildQueryContext(branchEntries, systemPrompt, question);
+	const context = await buildQueryContext({
+		pi,
+		ctx,
+		branchEntries,
+		systemPrompt,
+		question,
+	});
 	if (
 		!doesAuxiliaryLlmInputFitContextWindow(context, runtimeResult.runtime.model)
 	) {
@@ -117,11 +124,19 @@ export async function executeSubagentQuery({
 }
 
 /** Builds saved model messages before appending the plain query question. */
-function buildQueryContext(
-	branchEntries: readonly SessionEntry[],
-	systemPrompt: string,
-	question: string,
-): Context {
+async function buildQueryContext({
+	pi,
+	ctx,
+	branchEntries,
+	systemPrompt,
+	question,
+}: {
+	readonly pi: ExtensionAPI;
+	readonly ctx: ExtensionContext;
+	readonly branchEntries: readonly SessionEntry[];
+	readonly systemPrompt: string;
+	readonly question: string;
+}): Promise<Context> {
 	const messages = convertToLlm(
 		replayPersistedContextProjection(branchEntries),
 	);
@@ -130,7 +145,15 @@ function buildQueryContext(
 		content: formatQueryQuestion(question),
 		timestamp: Date.now(),
 	});
-	return { systemPrompt, messages, tools: [] };
+	const knowledgeBlock = await readKnowledgeBlock(pi, ctx);
+	return {
+		systemPrompt:
+			knowledgeBlock === null
+				? systemPrompt
+				: `${systemPrompt}\n\n${knowledgeBlock}`,
+		messages,
+		tools: [],
+	};
 }
 
 /** Preserves one question block by escaping tag-like user content. */

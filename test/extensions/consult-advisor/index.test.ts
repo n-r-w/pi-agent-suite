@@ -25,6 +25,7 @@ import mainAgentSelection from "../../../pi-package/extensions/main-agent-select
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../../../pi-package/extensions/run-subagent/contracts";
 import subagents from "../../../pi-package/extensions/run-subagent/index";
 import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
+import { registerKnowledgeContextRuntime } from "../../../pi-package/shared/knowledge-runtime";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -978,6 +979,28 @@ describe("consult-advisor", () => {
 			);
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
 				"Project rule: keep docs current.",
+			);
+		});
+	});
+
+	test("includes applicable knowledge in the advisor system context", async () => {
+		// Purpose: explicit advisor requests must receive the same applicable knowledge as normal agent turns.
+		// Input and expected output: one registered source appends its block to the advisor system prompt.
+		// Edge case: knowledge is read when the explicit request is assembled.
+		// Dependencies: shared knowledge registry and completion recorder.
+		await withIsolatedAgentDir(async () => {
+			const pi = createExtensionApiFake();
+			const ctx = createContext([createModel("openai", "advisor")]);
+			const completion = createCompletionFake();
+			registerKnowledgeContextRuntime(pi, {
+				readBlock: async () => "<knowledge>advisor knowledge</knowledge>",
+			});
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			await executeConsult(pi, ctx, "Use knowledge");
+
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"<knowledge>advisor knowledge</knowledge>",
 			);
 		});
 	});

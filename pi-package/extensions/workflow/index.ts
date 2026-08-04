@@ -24,6 +24,11 @@ import {
 	type WorkflowPolicyResolution,
 } from "../../shared/workflow-policy";
 import {
+	getWorkflowTriggerRunner,
+	type WorkflowTrigger,
+	type WorkflowTriggerRunner,
+} from "../../shared/workflow-trigger-runtime";
+import {
 	resolveWorkflowAvailability,
 	WORKFLOW_ACTIVATE_TOOL,
 	WORKFLOW_CREATE_TOOL,
@@ -73,6 +78,20 @@ const SUCCESS_RESULT = {
 	details: {},
 };
 
+/** Closed trigger shape exposed to Pi tool validation. */
+const WORKFLOW_TRIGGER_SCHEMA = Type.Object(
+	{
+		type: StringEnum(
+			[
+				"local_knowledge_accumulation",
+				"global_knowledge_accumulation",
+			] as const,
+			{ description: "Workflow trigger type invoked on stage entry" },
+		),
+	},
+	{ additionalProperties: false },
+);
+
 /** Closed workflow_create stage shape exposed to Pi tool validation. */
 const WORKFLOW_STAGE_SCHEMA = Type.Object(
 	{
@@ -103,6 +122,11 @@ Completion criteria:
 			minLength: 10,
 			maxLength: 8192,
 		}),
+		triggers: Type.Optional(
+			Type.Array(WORKFLOW_TRIGGER_SCHEMA, {
+				description: "Ordered triggers invoked after this stage is persisted",
+			}),
+		),
 		initial: Type.Optional(
 			Type.Boolean({
 				description:
@@ -218,6 +242,11 @@ interface RegisterWorkflowRuntimeOptions {
 	readonly refreshTools: (trigger: ReconciliationTrigger) => void;
 }
 
+interface TriggerInvocation {
+	readonly ctx: ExtensionContext;
+	readonly signal: AbortSignal | undefined;
+}
+
 interface SynchronizeWorkflowRuntimeOptions {
 	readonly pi: ExtensionAPI;
 	readonly branch: readonly unknown[];
@@ -225,6 +254,55 @@ interface SynchronizeWorkflowRuntimeOptions {
 	readonly catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>;
 	readonly promptError: Error | undefined;
 	readonly getPolicy: () => WorkflowPolicyResolution;
+}
+
+/** Runs the entered stage's triggers sequentially without changing workflow success. */
+async function runEnteredStageTriggers(
+	pi: ExtensionAPI,
+	state: WorkflowState,
+	invocation: TriggerInvocation,
+): Promise<void> {
+	const activeStageId = state.route.at(-1);
+	const stage = state.workflow.stages.find(({ id }) => id === activeStageId);
+	if (stage === undefined || stage.triggers.length === 0) {
+		return;
+	}
+	const runner = getWorkflowTriggerRunner(pi);
+	if (runner !== undefined) {
+		await runTriggerAt(runner, stage.triggers, 0, invocation);
+	}
+}
+
+/** Advances through the ordered trigger list until completion or the first failure. */
+async function runTriggerAt(
+	runner: WorkflowTriggerRunner,
+	triggers: readonly WorkflowTrigger[],
+	index: number,
+	invocation: TriggerInvocation,
+): Promise<void> {
+	const trigger = triggers[index];
+	if (trigger === undefined) {
+		return;
+	}
+	try {
+		const result = await runner.run(trigger, invocation.ctx, invocation.signal);
+		if (result.ok) {
+			await runTriggerAt(runner, triggers, index + 1, invocation);
+		}
+	} catch {
+		// Runner failures are isolated from the persisted workflow operation.
+	}
+}
+
+/** Updates active memory before awaiting the entered stage's triggers. */
+async function setEnteredWorkflowState(
+	pi: ExtensionAPI,
+	setState: (state: WorkflowState) => void,
+	state: WorkflowState,
+	invocation: TriggerInvocation,
+): Promise<void> {
+	setState(state);
+	await runEnteredStageTriggers(pi, state, invocation);
 }
 
 /** Creates the initial mutable workflow state from catalog-wide and prompt loading results. */
@@ -567,7 +645,7 @@ function registerWorkflowCreateTool(
 			return renderWorkflowCreateCall(args, theme, context);
 		},
 		renderResult: renderWorkflowResult,
-		async execute(_toolCallId, params) {
+		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
 			const workflow = validateCreatedWorkflowDefinition(
 				params,
 				WORKFLOW_CREATE_TOOL,
@@ -603,7 +681,7 @@ function registerWorkflowCreateTool(
 				workflow: candidate.workflow,
 				route: candidate.route,
 			});
-			setState(candidate);
+			await setEnteredWorkflowState(pi, setState, candidate, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});
@@ -649,7 +727,7 @@ function registerWorkflowActivateTool(
 			return renderWorkflowActivateCall(args, theme, context);
 		},
 		renderResult: renderWorkflowResult,
-		async execute(_toolCallId, params) {
+		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
 			const workflowId = readExactStringArgument(params, "workflowId");
 			requireWorkflowAllowed(getPolicy(), workflowId);
 			// Availability excludes the active workflow and every policy-denied catalog entry.
@@ -667,7 +745,7 @@ function registerWorkflowActivateTool(
 				workflow: candidate.workflow,
 				route: candidate.route,
 			});
-			setState(candidate);
+			await setEnteredWorkflowState(pi, setState, candidate, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});
@@ -713,7 +791,7 @@ function registerWorkflowTransitionTool(
 			return renderWorkflowTransitionCall(args, theme, context);
 		},
 		renderResult: renderWorkflowResult,
-		async execute(_toolCallId, params) {
+		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
 			const stageId = readExactStringArgument(params, "stageId");
 			const current = getState();
 			if (current === undefined) {
@@ -731,7 +809,7 @@ function registerWorkflowTransitionTool(
 				kind: "transitioned",
 				route: candidate.route,
 			});
-			setState(candidate);
+			await setEnteredWorkflowState(pi, setState, candidate, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});

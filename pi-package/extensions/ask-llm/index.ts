@@ -41,6 +41,10 @@ import {
 	resolveFdPathFromPathValue,
 } from "../../shared/file-autocomplete";
 import {
+	appendKnowledgeBlock,
+	readKnowledgeBlock,
+} from "../../shared/knowledge-runtime";
+import {
 	appendProjectContext,
 	type ProjectContextFile,
 } from "../../shared/project-context-prompt";
@@ -157,6 +161,7 @@ export default function askLlm(
 		description: "Ask a one-off LLM question without writing it to the session",
 		handler: async (args, ctx) => {
 			await handleAskCommand(args, ctx as AskLlmCommandContext, {
+				pi,
 				completeSimple,
 				copyToClipboard,
 				resolveFdPath,
@@ -174,6 +179,7 @@ async function handleAskCommand(
 	args: string,
 	ctx: AskLlmCommandContext,
 	options: {
+		readonly pi: ExtensionAPI;
 		readonly completeSimple: NonNullable<AskLlmDependencies["completeSimple"]>;
 		readonly copyToClipboard: NonNullable<
 			AskLlmDependencies["copyToClipboard"]
@@ -247,6 +253,7 @@ async function runWithLoader(
 	ctx: AskLlmCommandContext,
 	question: string,
 	options: {
+		readonly pi: ExtensionAPI;
 		readonly completeSimple: NonNullable<AskLlmDependencies["completeSimple"]>;
 		readonly currentThinkingLevel: unknown;
 		readonly loadedSkillRoots: readonly string[];
@@ -258,6 +265,7 @@ async function runWithLoader(
 		loader.onAbort = () => done({ kind: "cancelled" });
 
 		executeAskLlm({
+			pi: options.pi,
 			completeSimple: options.completeSimple,
 			question,
 			ctx,
@@ -281,6 +289,7 @@ async function runWithLoader(
 
 /** Executes one direct model call with config, prompt, model, and auth validation. */
 async function executeAskLlm({
+	pi,
 	completeSimple,
 	question,
 	ctx,
@@ -289,6 +298,7 @@ async function executeAskLlm({
 	contextFiles,
 	signal,
 }: {
+	readonly pi: ExtensionAPI;
 	readonly completeSimple: NonNullable<AskLlmDependencies["completeSimple"]>;
 	readonly question: string;
 	readonly ctx: AskLlmCommandContext;
@@ -321,6 +331,7 @@ async function executeAskLlm({
 	}
 
 	const context = await buildContext({
+		pi,
 		ctx,
 		systemPrompt: promptResult.prompt,
 		question,
@@ -371,12 +382,14 @@ async function executeAskLlm({
 
 /** Builds a model context from the current branch without storing the ask command turn. */
 async function buildContext({
+	pi,
 	ctx,
 	systemPrompt,
 	question,
 	loadedSkillRoots,
 	contextFiles,
 }: {
+	readonly pi: ExtensionAPI;
 	readonly ctx: AskLlmCommandContext;
 	readonly systemPrompt: string;
 	readonly question: string;
@@ -395,8 +408,10 @@ async function buildContext({
 		timestamp: Date.now(),
 	});
 
+	const projectSystemPrompt = appendProjectContext(systemPrompt, contextFiles);
+	const knowledgeBlock = await readKnowledgeBlock(pi, ctx);
 	return {
-		systemPrompt: appendProjectContext(systemPrompt, contextFiles),
+		systemPrompt: appendKnowledgeBlock(projectSystemPrompt, knowledgeBlock),
 		messages,
 		tools: [],
 	};

@@ -10,6 +10,8 @@ Run `/ask <question>` to ask a question directly. Run `/ask` without text to ope
 
 The extension uses the current session model and thinking level unless you configure another model or thinking level. Each `/ask` invocation uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session. Retries for one invocation reuse that ID.
 
+When the `knowledge` extension resolves applicable stored knowledge, `/ask` appends the same `<knowledge>` block used by the calling agent to its explicit system context. The question and answer remain absent from the current session.
+
 ## Configuration
 
 Default configuration file: `~/.pi/agent/agent-suite/ask-llm/config.json`.

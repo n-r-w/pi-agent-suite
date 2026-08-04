@@ -84,15 +84,9 @@ A new session uses previously discovered global project knowledge and local know
 ## Assumptions
 
 - An LLM can extract and shorten knowledge without removing the statements required by the evaluation scenarios. Verification: evaluate consolidation using a test corpus built from user-provided real sessions.
-- Clones of one remote repository can be mapped reliably to one project identity. Verification: test the selected identity mechanism with HTTPS, SSH, and multiple remotes.
+- Supported equivalent fetch URL forms can map clones to the same knowledge project while conflicting or unsupported remote evidence prevents knowledge use. Verification: test HTTPS, SSH, multiple fetch URLs, multiple remotes, forks, linked worktrees, and malformed or unsupported URLs.
 - Knowledge supplied to the model influences decisions in the scenarios defined under Success Metrics. Verification: compare equivalent tasks in fresh sessions with and without the supplied knowledge.
 
 ## Open Questions
 
-1. **High priority — requirements:** How is the token budget divided between strategic and tactical sections?
-2. **High priority — requirements:** What happens when consolidation output still exceeds the limit after another compression attempt?
-3. **High priority — identity:** How are HTTPS, SSH, and alternate remotes for one project mapped to one identity?
-4. **Medium priority — lifecycle:** What happens to knowledge after a branch is renamed, merged, or deleted?
-5. **Medium priority — triggers:** Which events initiate knowledge extraction and consolidation?
-
-These questions do not change the problem statement or glossary. They must be resolved in the approved later phases.
+None.

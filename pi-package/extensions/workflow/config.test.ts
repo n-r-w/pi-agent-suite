@@ -51,6 +51,31 @@ describe("workflow catalog configuration", () => {
 	});
 
 	/**
+	 * Proves catalog YAML preserves ordered duplicate trigger objects in normalized workflow state.
+	 * Input and expected output: the initial stage lists local, global, then local triggers in the same order.
+	 * Edge case: the target stage omits triggers and receives an empty list.
+	 * Dependencies: YAML parsing and workflow stage validation.
+	 */
+	test("loads ordered workflow stage triggers", async () => {
+		const root = await createTemporaryDirectory();
+		const yaml = workflowYaml("Triggered").replace(
+			"    initial: true\n",
+			"    initial: true\n    triggers:\n      - type: local_knowledge_accumulation\n      - type: global_knowledge_accumulation\n      - type: local_knowledge_accumulation\n",
+		);
+		await writeFile(join(root, "triggered.yaml"), yaml);
+
+		const result = await loadWorkflowCatalog(root);
+
+		expect(result.error).toBeUndefined();
+		expect(result.workflows[0]?.stages[0]?.triggers).toEqual([
+			{ type: "local_knowledge_accumulation" },
+			{ type: "global_knowledge_accumulation" },
+			{ type: "local_knowledge_accumulation" },
+		]);
+		expect(result.workflows[0]?.stages[1]?.triggers).toEqual([]);
+	});
+
+	/**
 	 * Proves invalid workflow files do not suppress valid catalog siblings.
 	 * Inputs and expected output: one valid file plus one malformed, unknown-field, or invalid-graph file returns the valid workflow and one repair-relevant warning.
 	 * Edge case: invalid files sort both before and after the valid file.

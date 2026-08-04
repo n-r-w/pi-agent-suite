@@ -23,6 +23,11 @@ function validValue(): unknown {
 				id: "b",
 				description: "B",
 				prompt: "\nFirst line\n  indented second line\n",
+				triggers: [
+					{ type: "local_knowledge_accumulation" },
+					{ type: "global_knowledge_accumulation" },
+					{ type: "local_knowledge_accumulation" },
+				],
 			},
 			{ id: "c", description: "C", prompt: "Prompt C" },
 			{ id: "d", description: "D", prompt: "Prompt D" },
@@ -56,13 +61,53 @@ describe("workflow definition validation", () => {
 		expect(workflow.prompt).toBe(
 			"Follow shared rules.\n  Preserve this indentation.",
 		);
+		expect(workflow.stages[0]?.triggers).toEqual([]);
 		expect(workflow.stages[1]).toEqual({
 			id: "b",
 			description: "B",
 			prompt: "First line\n  indented second line",
+			triggers: [
+				{ type: "local_knowledge_accumulation" },
+				{ type: "global_knowledge_accumulation" },
+				{ type: "local_knowledge_accumulation" },
+			],
 			initial: false,
 			final: false,
 		});
+	});
+
+	/**
+	 * Proves trigger entries remain closed discriminated objects at the workflow boundary.
+	 * Inputs and expected outputs: unknown types, unknown fields, missing types, arrays, strings, and null are rejected.
+	 * Edge cases: an explicitly empty trigger list remains valid and equivalent to omission.
+	 * Dependencies: stage parsing and the supported workflow trigger type set.
+	 */
+	test("rejects invalid trigger objects", () => {
+		const invalidTriggers: readonly unknown[] = [
+			[{ type: "unknown" }],
+			[{ type: "local_knowledge_accumulation", extra: true }],
+			[{}],
+			[[{ type: "local_knowledge_accumulation" }]],
+			["local_knowledge_accumulation"],
+			[null],
+		];
+		for (const triggers of invalidTriggers) {
+			const value = validValue() as {
+				stages: Record<string, unknown>[];
+			};
+			value.stages[0] = { ...value.stages[0], triggers };
+			expect(() =>
+				validateWorkflowDefinition("delivery", value, SOURCE),
+			).toThrow("trigger");
+		}
+
+		const value = validValue() as {
+			stages: Record<string, unknown>[];
+		};
+		value.stages[0] = { ...value.stages[0], triggers: [] };
+		expect(
+			validateWorkflowDefinition("delivery", value, SOURCE).stages[0]?.triggers,
+		).toEqual([]);
 	});
 
 	/**
@@ -419,6 +464,11 @@ describe("workflow state", () => {
 		expect(replayed?.workflow.prompt).toBe(
 			"Follow shared rules.\n  Preserve this indentation.",
 		);
+		expect(replayed?.workflow.stages[1]?.triggers).toEqual([
+			{ type: "local_knowledge_accumulation" },
+			{ type: "global_knowledge_accumulation" },
+			{ type: "local_knowledge_accumulation" },
+		]);
 
 		const dynamicWorkflow = { ...workflow, id: "dynamic-delivery" };
 		const dynamicReplay = replayWorkflowState([

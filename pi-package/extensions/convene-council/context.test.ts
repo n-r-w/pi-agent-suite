@@ -121,6 +121,24 @@ function councilContext(entries: readonly SessionEntry[]): CouncilContext {
 }
 
 describe("convene-council external context package", () => {
+	test("includes applicable knowledge in the shared participant package", async () => {
+		// Purpose: every participant must receive the same applicable knowledge through the external context file.
+		// Input and expected output: one knowledge block is inserted inside the shared context package.
+		// Edge case: the block remains separate from active-branch user content.
+		// Dependencies: both participant runners read the same package returned by this builder.
+		const context = await buildExternalCouncilContextPackage({
+			ctx: councilContext([
+				messageEntry("u1", userMessage("question context"), null),
+			]),
+			toolCallId: "call-current",
+			knowledgeBlock: "<knowledge>council knowledge</knowledge>",
+		});
+
+		expect(context).toContain("<knowledge>council knowledge</knowledge>");
+		expect(context.match(/<knowledge>/gu)).toHaveLength(1);
+		expect(context.startsWith("<context>\n")).toBe(true);
+		expect(context.endsWith("\n</context>")).toBe(true);
+	});
 	test("renders raw active-branch decision evidence without projection summaries or metadata", async () => {
 		// Purpose: participant evidence must come from raw active-branch entries, not projection or summary substitution.
 		// Input and expected output: adjacent user/custom text is merged, assistant thinking is included, and metadata-only entries are omitted.

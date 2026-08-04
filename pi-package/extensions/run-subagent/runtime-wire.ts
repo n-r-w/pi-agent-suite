@@ -1,3 +1,7 @@
+import type {
+	KnowledgeMutationLease,
+	KnowledgeSnapshots,
+} from "../../shared/knowledge-runtime";
 import {
 	type AgentOperationPayload,
 	type AgentOperationResponse,
@@ -11,6 +15,11 @@ import {
 } from "./boundary-validation";
 import type { JournalRecord, SubagentFeedback } from "./domain";
 import { parseFeedback, parseJournalRecord } from "./journal-codec";
+import {
+	type KnowledgeRuntimeOperation,
+	parseKnowledgeRuntimeOperation,
+	parseKnowledgeRuntimeResponse,
+} from "./knowledge-wire";
 import {
 	parseQueryBranchRequest,
 	parseQueryBranchResponse,
@@ -38,6 +47,7 @@ interface RuntimeOperationCancellation {
 
 /** Defines one operation-specific payload after boundary validation. */
 type RuntimeOperation =
+	| KnowledgeRuntimeOperation
 	| {
 			readonly operation: "agent_operation";
 			readonly payload: AgentOperationPayload;
@@ -276,6 +286,11 @@ export function parseRuntimeOperationPayload(
 	payload: unknown,
 ): RuntimeOperation | undefined {
 	switch (operation) {
+		case "knowledge_read":
+		case "knowledge_acquire":
+		case "knowledge_release":
+		case "knowledge_cancel":
+			return parseKnowledgeRuntimeOperation(operation, payload);
 		case "agent_operation":
 			try {
 				return { operation, payload: parseAgentOperationPayload(payload) };
@@ -350,6 +365,8 @@ export function parseRuntimeResponseResult(
 ):
 	| AgentOperationResponse
 	| QueryBranchResponse
+	| KnowledgeSnapshots
+	| KnowledgeMutationLease
 	| RuntimeAcknowledgment
 	| RuntimeOperationCancellationAcknowledgment
 	| undefined {
@@ -366,6 +383,14 @@ export function parseRuntimeResponseResult(
 		} catch {
 			return undefined;
 		}
+	}
+	if (
+		operation === "knowledge_read" ||
+		operation === "knowledge_acquire" ||
+		operation === "knowledge_release" ||
+		operation === "knowledge_cancel"
+	) {
+		return parseKnowledgeRuntimeResponse(operation, value);
 	}
 	if (operation === "cancel_operation") {
 		const cancellationWon = readField(value, "cancellationWon");
@@ -391,6 +416,10 @@ function readOperation(
 	value: unknown,
 ): RuntimeRequest["operation"] | undefined {
 	return value === "agent_operation" ||
+		value === "knowledge_read" ||
+		value === "knowledge_acquire" ||
+		value === "knowledge_release" ||
+		value === "knowledge_cancel" ||
 		value === "append_journal" ||
 		value === "append_history" ||
 		value === "query_branch" ||

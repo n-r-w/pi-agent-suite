@@ -6,6 +6,8 @@
 
 The model with the highest "thinking" level and reasoning capabilities is recommended for best results. Each tool call uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session. Retries for one tool call reuse that ID.
 
+When the `knowledge` extension resolves applicable stored knowledge, `consult_advisor` appends the same `<knowledge>` block used by the calling agent to the advisor's explicit system context.
+
 ## Configuration file
 
 Default path:

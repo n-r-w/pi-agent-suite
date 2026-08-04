@@ -7,6 +7,7 @@ import { getAgentRuntimeComposition } from "../../shared/agent-runtime-compositi
 import { createChildAuthStartupDiagnosticRecorder } from "../../shared/child-auth-startup-diagnostic";
 import { readChildStartupConfig } from "../../shared/child-startup-config";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
+import { readKnowledgeBlock } from "../../shared/knowledge-runtime";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
 import { readConveneCouncilRegistrationState } from "./config";
 import { TOOL_NAME } from "./constants";
@@ -80,6 +81,7 @@ export default function conveneCouncil(
 		renderCall: renderConveneCouncilCall,
 		renderResult: renderConveneCouncilResult,
 		async execute(...[toolCallId, params, signal, onUpdate, ctx]) {
+			const knowledgeBlock = await readKnowledgeBlock(pi, ctx);
 			return executeConveneCouncil({
 				createParticipantRunner,
 				resolveStartupPlan,
@@ -89,6 +91,7 @@ export default function conveneCouncil(
 				ctx: ctx as CouncilContext,
 				currentThinkingLevel: pi.getThinkingLevel(),
 				contextFiles,
+				...(knowledgeBlock === null ? {} : { knowledgeBlock }),
 				availableTools: pi.getAllTools(),
 				recordCost: (message) => {
 					recordHelperApiCost(pi, "convene-council", message);

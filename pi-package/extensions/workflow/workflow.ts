@@ -2,6 +2,7 @@ import {
 	isSingleLineText,
 	isTechnicalIdentifier,
 } from "../../shared/text-contracts";
+import type { WorkflowTrigger } from "../../shared/workflow-trigger-runtime";
 
 export type WorkflowTransitionType = "advance" | "rework";
 export type WorkflowStageStatus = "not_started" | "in_progress" | "completed";
@@ -12,6 +13,7 @@ export interface WorkflowStage {
 	readonly id: string;
 	readonly description: string;
 	readonly prompt: string;
+	readonly triggers: readonly WorkflowTrigger[];
 	readonly initial: boolean;
 	readonly final: boolean;
 }
@@ -41,7 +43,15 @@ export interface WorkflowState {
 
 const ROOT_KEYS = new Set(["description", "prompt", "stages", "transitions"]);
 const CREATED_ROOT_KEYS = new Set(["id", ...ROOT_KEYS]);
-const STAGE_KEYS = new Set(["id", "description", "prompt", "initial", "final"]);
+const STAGE_KEYS = new Set([
+	"id",
+	"description",
+	"prompt",
+	"triggers",
+	"initial",
+	"final",
+]);
+const TRIGGER_KEYS = new Set(["type"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set([
 	"id",
@@ -315,9 +325,34 @@ function parseStage(value: unknown, index: number): WorkflowStage {
 		id: readTechnicalIdentifier(stage, "id"),
 		description: readSingleLineText(stage, "description"),
 		prompt: readPromptText(stage, "prompt"),
+		triggers: parseTriggers(Reflect.get(stage, "triggers"), index),
 		initial: readOptionalBoolean(stage, "initial"),
 		final: readOptionalBoolean(stage, "final"),
 	};
+}
+
+/** Parses the optional ordered trigger list without collapsing duplicates. */
+function parseTriggers(value: unknown, stageIndex: number): WorkflowTrigger[] {
+	if (value === undefined) {
+		return [];
+	}
+	return requireArray(value, `stages[${stageIndex}].triggers`).map(
+		(trigger, triggerIndex) =>
+			parseTrigger(trigger, `stages[${stageIndex}].triggers[${triggerIndex}]`),
+	);
+}
+
+/** Validates one closed trigger object against the currently supported types. */
+function parseTrigger(value: unknown, path: string): WorkflowTrigger {
+	const trigger = requireObject(value, path, TRIGGER_KEYS);
+	const type = Reflect.get(trigger, "type");
+	if (
+		type !== "local_knowledge_accumulation" &&
+		type !== "global_knowledge_accumulation"
+	) {
+		throw new Error(`${path}.type must be a supported workflow trigger type`);
+	}
+	return { type };
 }
 
 /** Parses one transition with a closed finite type. */

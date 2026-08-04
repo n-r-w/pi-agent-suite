@@ -8,6 +8,8 @@ Use it when a complex question needs two model participants to compare answers b
 
 The models with the highest "thinking" level and reasoning capabilities are recommended for best results. Each participant runs in an isolated child Pi session with a Pi-compatible UUIDv7 session ID.
 
+When the `knowledge` extension resolves applicable stored knowledge, the shared external context package supplies the same `<knowledge>` block to both participants.
+
 ## Configuration
 
 Default config file: `~/.pi/agent/agent-suite/convene-council/config.json`.

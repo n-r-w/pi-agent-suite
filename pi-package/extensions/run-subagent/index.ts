@@ -13,6 +13,7 @@ import {
 	type ChildStartupConfig,
 	readChildStartupConfig,
 } from "../../shared/child-startup-config";
+import { registerKnowledgeHierarchyClient } from "../../shared/knowledge-runtime";
 import {
 	type PackagePresentationEventBus,
 	registerPackageTool,
@@ -57,6 +58,12 @@ import { readSubagentAgentId } from "./environment";
 import { errorMessage } from "./error-message";
 import { InvocationSupervisor } from "./invocation-supervisor";
 import { parseFeedback, parseJournalRecord } from "./journal-codec";
+import {
+	cancelKnowledgeRuntimeOwner,
+	createWorkerKnowledgeHierarchyClient,
+	handleKnowledgeRuntimeRequest,
+	type KnowledgeRuntimeRequestResult,
+} from "./knowledge-runtime";
 import { ManagementProjectionRuntime } from "./management-screen/runtime";
 import {
 	createManagementRetainedState,
@@ -149,6 +156,7 @@ interface RuntimeState {
 	rootRuntime: RootRuntime | undefined;
 	workerWriter: ActiveOwnerSessionWriter | undefined;
 	workerStore: SessionStore | undefined;
+	disposeKnowledgeHierarchyClient: (() => void) | undefined;
 	promptPublished: boolean;
 	managementRegistered: boolean;
 }
@@ -196,6 +204,7 @@ export default async function subagents(
 		rootRuntime: undefined,
 		workerWriter: undefined,
 		workerStore: undefined,
+		disposeKnowledgeHierarchyClient: undefined,
 		promptPublished: false,
 		managementRegistered: false,
 	};
@@ -308,6 +317,11 @@ async function handleSessionStart(
 	state.workerBridge.activate(owner, (operation, payload) =>
 		handleWorkerCommand(operation, payload, owner, store),
 	);
+	state.disposeKnowledgeHierarchyClient?.();
+	state.disposeKnowledgeHierarchyClient = registerKnowledgeHierarchyClient(
+		pi,
+		createWorkerKnowledgeHierarchyClient(state.workerBridge),
+	);
 	await store.reconcileActive(writer);
 }
 
@@ -338,6 +352,8 @@ async function handleSessionShutdown(
 		try {
 			await state.workerBridge.request("owner_stopping", {});
 		} finally {
+			state.disposeKnowledgeHierarchyClient?.();
+			state.disposeKnowledgeHierarchyClient = undefined;
 			state.workerStore?.unregisterActive(ctx.sessionManager.getSessionId());
 		}
 		return;
@@ -808,15 +824,18 @@ function createRootSupervisor(options: {
 				request,
 			}),
 		onEvent: (event) => options.getCoordinator().observeInvocation(event),
-		onRuntimeFailure: (failure) =>
-			startRuntimeFailureRecovery({
+		onRuntimeFailure: (failure) => {
+			cancelKnowledgeRuntimeOwner(options.pi, failure.runtimeLeaseId);
+			return startRuntimeFailureRecovery({
 				recoveries: options.recoveries,
 				coordinator: options.getCoordinator(),
 				store: options.store,
 				failure,
-			}),
+			});
+		},
 		onRuntimeRequest: (remoteOwner, request) =>
 			handleRootRuntimeRequest({
+				pi: options.pi,
 				coordinator: options.getCoordinator(),
 				store: options.store,
 				queryBranches: options.queryBranches,
@@ -1045,21 +1064,27 @@ async function cancelRootWait(
 
 /** Routes one validated worker request into the root coordination authority. */
 async function handleRootRuntimeRequest({
+	pi,
 	coordinator,
 	store,
 	queryBranches,
 	owner,
 	request,
 }: {
+	readonly pi: ExtensionAPI;
 	readonly coordinator: SubagentCoordinator;
 	readonly store: SessionStore;
 	readonly queryBranches: QueryBranchAccess;
 	readonly owner: OwnerIdentity;
 	readonly request: RuntimeRequest;
 }): Promise<
-	AgentOperationResponse | QueryBranchResponse | { readonly acknowledged: true }
+	| AgentOperationResponse
+	| QueryBranchResponse
+	| KnowledgeRuntimeRequestResult
+	| { readonly acknowledged: true }
 > {
 	if (request.operation === "owner_stopping") {
+		cancelKnowledgeRuntimeOwner(pi, request.runtimeLeaseId);
 		await recoverOwnerShutdown({
 			coordinator,
 			store,
@@ -1067,6 +1092,14 @@ async function handleRootRuntimeRequest({
 			stoppingRuntimeLeaseId: request.runtimeLeaseId,
 		});
 		return { acknowledged: true };
+	}
+	const knowledgeResult = await handleKnowledgeRuntimeRequest(
+		pi,
+		request.runtimeLeaseId,
+		request,
+	);
+	if (knowledgeResult !== undefined) {
+		return knowledgeResult;
 	}
 	if (request.operation === "cancel_operation") {
 		return cancelRootOperation(coordinator, request);
@@ -1080,7 +1113,16 @@ async function handleRootRuntimeRequest({
 	if (request.operation !== "agent_operation") {
 		throw new Error(`worker operation ${request.operation} is not permitted`);
 	}
-	// Wire parsing validates the operation envelope and params before owner state publication.
+	return handleRootAgentOperation(coordinator, store, owner, request);
+}
+
+/** Dispatches one validated worker tool operation after publishing its owner state. */
+async function handleRootAgentOperation(
+	coordinator: SubagentCoordinator,
+	store: SessionStore,
+	owner: OwnerIdentity,
+	request: Extract<RuntimeRequest, { operation: "agent_operation" }>,
+): Promise<AgentOperationResponse> {
 	const operation = request.payload;
 	store.registerRemote(owner, request.runtimeLeaseId);
 	coordinator.registerOwner(owner);

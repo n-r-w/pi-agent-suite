@@ -23,6 +23,8 @@ stages:
       Implement only the approved scope.
       Follow the project testing rules.
     initial: true
+    triggers:
+      - type: local_knowledge_accumulation
   - id: review
     description: Review the implementation
     prompt: Review the implementation and report evidence-backed findings
@@ -42,6 +44,8 @@ Every catalog or dynamic workflow requires:
 - trimmed single-line workflow and stage descriptions;
 - a non-empty `prompt` for every stage;
 - an optional root `prompt` for guidance that applies to every stage;
+- an optional ordered `triggers` list containing only closed trigger objects;
+- supported trigger types `local_knowledge_accumulation` and `global_knowledge_accumulation`;
 - unique stage IDs and valid transition endpoints;
 - an acyclic `advance` graph in which every stage is reachable;
 - no outgoing `advance` from final stages;
@@ -94,6 +98,8 @@ Each configured path must be absolute and reference a readable file with non-emp
 ## Tools
 
 All workflow tools run sequentially and return model-visible success content `{"success":true}`.
+
+After creation, activation, advance, or rework persists the entered stage, its triggers run sequentially in listed order. Duplicate triggers are preserved. A reported or thrown trigger failure stops the remaining stage triggers but does not change workflow success. Restoring an active stage during session start or branch reconstruction runs no triggers.
 
 ### `workflow_create`
 
@@ -233,7 +239,7 @@ Catalog activation options are filtered through `workflows`. The current active 
 
 ## Session snapshots
 
-Catalog activation stores an `activated` snapshot with the validated workflow definition and route. Dynamic creation stores the same data in a `created` snapshot. Later transitions store only the updated route and preserve the workflow source.
+Catalog activation stores an `activated` snapshot with the validated workflow definition and route. Dynamic creation stores the same data in a `created` snapshot. Later transitions store only the updated route and preserve the workflow source. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
 
 The active branch reconstructs state on session start and branch changes:
 - `activated` restores catalog-backed state;
