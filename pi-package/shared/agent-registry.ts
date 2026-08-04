@@ -6,7 +6,7 @@ import {
 	getSuiteExtensionDir,
 	isFileNotFoundError,
 } from "./agent-suite-storage";
-import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
+import { isModelSettings, type ModelSettings } from "./model-settings";
 import { isSingleLineText } from "./text-contracts";
 
 const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
@@ -21,7 +21,6 @@ const TOP_LEVEL_KEYS = [
 	"workflows",
 	"agents",
 ] as const;
-const MODEL_KEYS = ["id", "thinking"] as const;
 const AGENT_TYPES = ["main", "subagent", "both"] as const;
 
 type AgentType = (typeof AGENT_TYPES)[number];
@@ -44,10 +43,7 @@ export interface AgentDefinition {
 	readonly description: string;
 	readonly type: AgentType;
 	readonly prompt: string;
-	readonly model?: {
-		readonly id?: string;
-		readonly thinking?: ReasoningLevel;
-	};
+	readonly model?: ModelSettings;
 	readonly tools?: readonly string[];
 	readonly workflows?: readonly string[];
 	readonly agents?: readonly string[];
@@ -249,35 +245,8 @@ function parseModel(value: unknown): AgentDefinition["model"] | false {
 	if (value === undefined) {
 		return undefined;
 	}
-	if (!isRecord(value) || !hasOnlyKeys(value, MODEL_KEYS)) {
-		return false;
-	}
-
-	const { id, thinking } = value;
-	if (id !== undefined && !isModelId(id)) {
-		return false;
-	}
-
-	if (thinking !== undefined && !isThinkingValue(thinking)) {
-		return false;
-	}
-
-	return {
-		...(typeof id === "string" ? { id } : {}),
-		...(isThinkingValue(thinking) ? { thinking } : {}),
-	};
+	return isModelSettings(value) ? value : false;
 }
-
-/** Returns true when a model ID has provider and model parts separated by the first slash. */
-function isModelId(value: unknown): value is string {
-	if (typeof value !== "string") {
-		return false;
-	}
-
-	const separatorIndex = value.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < value.length - 1;
-}
-
 /** Parses an optional list of normalized Unicode identity names. */
 function parseIdentityList(
 	value: unknown,
@@ -341,11 +310,6 @@ function hasOnlyKeys(
 	return Object.keys(value).every((key) => allowedKeys.includes(key));
 }
 
-/** Returns true when a runtime value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Returns true when a runtime value is a supported agent type. */
 function isAgentType(value: unknown): value is AgentType {
 	return (
@@ -357,9 +321,4 @@ function isAgentType(value: unknown): value is AgentType {
 /** Converts unknown filesystem failures to safe diagnostics without exposing raw objects. */
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-}
-
-/** Returns true when a runtime value is a supported thinking level. */
-function isThinkingValue(value: unknown): value is ReasoningLevel {
-	return isReasoningLevel(value);
 }

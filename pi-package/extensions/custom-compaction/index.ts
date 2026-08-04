@@ -29,6 +29,10 @@ import {
 } from "../../shared/custom-compaction-config";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
+	assertThinkingLevelSupported,
+	splitModelId,
+} from "../../shared/model-settings";
+import {
 	isReasoningLevel,
 	type ReasoningLevel,
 } from "../../shared/reasoning-levels";
@@ -447,7 +451,7 @@ function resolveRuntime(
 		if (modelId === undefined) {
 			return "model must use provider/model";
 		}
-		model = session.modelRegistry.find(modelId.provider, modelId.modelId);
+		model = session.modelRegistry.find(modelId.provider, modelId.id);
 		if (model === undefined) {
 			return `model ${config.model} was not found`;
 		}
@@ -456,14 +460,18 @@ function resolveRuntime(
 		return "current model is unavailable";
 	}
 
-	return {
-		model,
-		reasoning:
-			config.reasoning ??
-			(isReasoningLevel(currentThinkingLevel)
-				? currentThinkingLevel
-				: undefined),
-	};
+	const reasoning =
+		config.reasoning ??
+		(isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined);
+	if (reasoning !== undefined) {
+		try {
+			assertThinkingLevelSupported(model, reasoning);
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	}
+
+	return { model, reasoning };
 }
 
 /** Calls the selected model and records cost for every completed response. */
@@ -605,20 +613,6 @@ function assertConfiguredPromptPathsAreAbsolute(): void {
 			throw error;
 		}
 	}
-}
-
-/** Splits a validated provider/model identifier at its first slash. */
-function splitModelId(
-	value: string,
-): { readonly provider: string; readonly modelId: string } | undefined {
-	const separator = value.indexOf("/");
-	if (separator <= 0 || separator >= value.length - 1) {
-		return undefined;
-	}
-	return {
-		provider: value.slice(0, separator),
-		modelId: value.slice(separator + 1),
-	};
 }
 
 /** Creates one progress reporter that survives failed adaptive attempts. */

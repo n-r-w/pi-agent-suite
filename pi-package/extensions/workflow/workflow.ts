@@ -1,4 +1,8 @@
 import {
+	type ModelSettings,
+	parseModelSettings,
+} from "../../shared/model-settings";
+import {
 	isSingleLineText,
 	isTechnicalIdentifier,
 } from "../../shared/text-contracts";
@@ -14,6 +18,7 @@ export interface WorkflowStage {
 	readonly prompt: string;
 	readonly initial: boolean;
 	readonly final: boolean;
+	readonly model?: ModelSettings;
 }
 
 /** One directed edge in a validated workflow graph. */
@@ -28,6 +33,7 @@ export interface WorkflowDefinition {
 	readonly id: string;
 	readonly description: string;
 	readonly prompt?: string;
+	readonly model?: ModelSettings;
 	readonly stages: readonly WorkflowStage[];
 	readonly transitions: readonly WorkflowTransition[];
 }
@@ -39,17 +45,38 @@ export interface WorkflowState {
 	readonly route: readonly string[];
 }
 
-const ROOT_KEYS = new Set(["description", "prompt", "stages", "transitions"]);
-const CREATED_ROOT_KEYS = new Set(["id", ...ROOT_KEYS]);
-const STAGE_KEYS = new Set(["id", "description", "prompt", "initial", "final"]);
-const TRANSITION_KEYS = new Set(["from", "to", "type"]);
-const SAVED_WORKFLOW_KEYS = new Set([
+const ROOT_KEYS = new Set([
+	"description",
+	"prompt",
+	"model",
+	"stages",
+	"transitions",
+]);
+const CREATED_ROOT_KEYS = new Set([
 	"id",
 	"description",
 	"prompt",
 	"stages",
 	"transitions",
 ]);
+const STAGE_KEYS = new Set([
+	"id",
+	"description",
+	"prompt",
+	"initial",
+	"final",
+	"model",
+]);
+const CREATED_STAGE_KEYS = new Set([
+	"id",
+	"description",
+	"prompt",
+	"initial",
+	"final",
+]);
+const TRANSITION_KEYS = new Set(["from", "to", "type"]);
+const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
+const SAVED_DYNAMIC_WORKFLOW_KEYS = new Set(CREATED_ROOT_KEYS);
 
 /** Validates YAML-derived data before it enters workflow domain logic. */
 export function validateWorkflowDefinition(
@@ -75,7 +102,7 @@ export function validateCreatedWorkflowDefinition(
 	try {
 		const root = requireObject(value, "workflow", CREATED_ROOT_KEYS);
 		const id = readSingleLineText(root, "id").normalize("NFC");
-		return parseWorkflowDefinition(id, root);
+		return parseWorkflowDefinition(id, root, false);
 	} catch (error) {
 		throw new Error(`${source}: ${errorMessage(error)}`);
 	}
@@ -204,7 +231,10 @@ function replayWorkflowStateEntry(
 			new Set(["kind", "workflow", "route"]),
 			`${kind} entry`,
 		);
-		const workflow = validateSavedWorkflow(Reflect.get(data, "workflow"));
+		const workflow = validateSavedWorkflow(
+			Reflect.get(data, "workflow"),
+			kind === "activated",
+		);
 		return {
 			source: kind === "activated" ? "catalog" : "dynamic",
 			workflow,
@@ -235,14 +265,22 @@ function isWorkflowStateEntry(value: unknown): value is object {
 }
 
 /** Revalidates a persisted definition instead of trusting session JSON. */
-function validateSavedWorkflow(value: unknown): WorkflowDefinition {
-	const saved = requireObject(value, "saved workflow", SAVED_WORKFLOW_KEYS);
+function validateSavedWorkflow(
+	value: unknown,
+	allowModelSettings: boolean,
+): WorkflowDefinition {
+	const saved = requireObject(
+		value,
+		"saved workflow",
+		allowModelSettings ? SAVED_WORKFLOW_KEYS : SAVED_DYNAMIC_WORKFLOW_KEYS,
+	);
 	const id = readSingleLineText(saved, "id").normalize("NFC");
 	return validateWorkflowDefinition(
 		id,
 		{
 			description: Reflect.get(saved, "description"),
 			prompt: Reflect.get(saved, "prompt"),
+			...(allowModelSettings ? { model: Reflect.get(saved, "model") } : {}),
 			stages: Reflect.get(saved, "stages"),
 			transitions: Reflect.get(saved, "transitions"),
 		},
@@ -288,35 +326,54 @@ function validateRoute(
 function parseWorkflowDefinition(
 	id: string,
 	root: Readonly<Record<string, unknown>>,
+	allowModelSettings = true,
 ): WorkflowDefinition {
 	const description = readSingleLineText(root, "description");
 	const prompt = readOptionalPromptText(root, "prompt");
+	const model = allowModelSettings
+		? parseModelSettings(Reflect.get(root, "model"), "workflow.model")
+		: undefined;
 	const rawStages = requireArray(Reflect.get(root, "stages"), "stages");
 	const rawTransitions = requireArray(
 		Reflect.get(root, "transitions"),
 		"transitions",
 	);
-	const stages = rawStages.map((stage, index) => parseStage(stage, index));
+	const stages = rawStages.map((stage, index) =>
+		parseStage(stage, index, allowModelSettings),
+	);
 	const transitions = rawTransitions.map((transition, index) =>
 		parseTransition(transition, index),
 	);
+	const modelSettings = model === undefined ? {} : { model };
 	const workflow =
 		prompt === undefined
-			? { id, description, stages, transitions }
-			: { id, description, prompt, stages, transitions };
+			? { id, description, ...modelSettings, stages, transitions }
+			: { id, description, prompt, ...modelSettings, stages, transitions };
 	validateGraph(workflow);
 	return workflow;
 }
 
 /** Parses one stage with closed keys and explicit defaults. */
-function parseStage(value: unknown, index: number): WorkflowStage {
-	const stage = requireObject(value, `stages[${index}]`, STAGE_KEYS);
+function parseStage(
+	value: unknown,
+	index: number,
+	allowModelSettings: boolean,
+): WorkflowStage {
+	const stage = requireObject(
+		value,
+		`stages[${index}]`,
+		allowModelSettings ? STAGE_KEYS : CREATED_STAGE_KEYS,
+	);
+	const model = allowModelSettings
+		? parseModelSettings(Reflect.get(stage, "model"), `stages[${index}].model`)
+		: undefined;
 	return {
 		id: readTechnicalIdentifier(stage, "id"),
 		description: readSingleLineText(stage, "description"),
 		prompt: readPromptText(stage, "prompt"),
 		initial: readOptionalBoolean(stage, "initial"),
 		final: readOptionalBoolean(stage, "final"),
+		...(model === undefined ? {} : { model }),
 	};
 }
 

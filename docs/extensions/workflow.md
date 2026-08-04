@@ -16,6 +16,9 @@ When `PI_AGENT_SUITE_DIR` is set, the extension uses `<PI_AGENT_SUITE_DIR>/workf
 description: Use for software delivery
 prompt: |
   Follow these guidelines throughout the workflow.
+model:
+  id: openai/gpt-5
+  thinking: high
 stages:
   - id: implementation
     description: Implement the approved change
@@ -23,6 +26,8 @@ stages:
       Implement only the approved scope.
       Follow the project testing rules.
     initial: true
+    model:
+      thinking: xhigh
   - id: review
     description: Review the implementation
     prompt: Review the implementation and report evidence-backed findings
@@ -42,6 +47,7 @@ Every catalog or dynamic workflow requires:
 - trimmed single-line workflow and stage descriptions;
 - a non-empty `prompt` for every stage;
 - an optional root `prompt` for guidance that applies to every stage;
+- an optional root `model` object and optional stage `model` objects in catalog YAML;
 - unique stage IDs and valid transition endpoints;
 - an acyclic `advance` graph in which every stage is reachable;
 - no outgoing `advance` from final stages;
@@ -49,6 +55,8 @@ Every catalog or dynamic workflow requires:
 - `rework` transitions only to strict `advance` ancestors.
 
 Surrounding prompt whitespace is removed. An omitted or empty root prompt means that the workflow has no shared guidance.
+
+Catalog YAML model settings use independently optional `id` and `thinking` fields. The effective values are resolved independently with stage settings taking priority over workflow settings, followed by the selected agent and the current Pi runtime value. Unknown models and thinking levels unsupported by the resolved model fail before workflow state is persisted. Settings are applied during activation, stage transitions, and session synchronization. Manual model changes in Pi or main-agent changes are not automatically overwritten.
 
 Each invalid or unreadable `.yaml` file is excluded independently, while valid sibling workflows remain available. At session start, Pi shows one warning that lists every excluded file and its validation issue when UI notifications are available. Catalog IDs must be unique after NFC normalization and remain case-sensitive. An unreadable workflow directory or an NFC-equivalent catalog ID collision rejects the catalog. A missing or empty workflow directory is a valid empty catalog. The catalog is read when the extension loads.
 
@@ -130,7 +138,7 @@ All workflow tools run sequentially and return model-visible success content `{"
 
 A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. A replaced dynamic workflow cannot be reactivated. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
 
-The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets.
+The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets. The `workflow_create` schema remains unchanged and does not expose model settings; model settings are available only in catalog YAML.
 
 `workflow_create` remains available with a missing or empty catalog when the agent's `tools` policy permits it. A catalog error blocks creation because ID collisions cannot be checked against an incomplete namespace. Dynamic workflows are never written to YAML.
 

@@ -31,6 +31,11 @@ import {
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
+	assertThinkingLevelSupported,
+	isModelId,
+	splitModelId,
+} from "../../shared/model-settings";
+import {
 	appendProjectContext,
 	type ProjectContextFile,
 } from "../../shared/project-context-prompt";
@@ -217,9 +222,12 @@ async function executeConsultAdvisor({
 		return errorResult(promptResult.issue);
 	}
 
+	const thinking =
+		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel);
 	const runtimeResult = await resolveAdvisorRuntime(
 		ctx,
 		configResult.config.model?.id,
+		thinking,
 	);
 	if ("issue" in runtimeResult) {
 		reportIssue(ctx, runtimeResult.issue);
@@ -239,7 +247,7 @@ async function executeConsultAdvisor({
 	}
 
 	const options = buildAdvisorOptions(
-		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel),
+		thinking,
 		signal,
 		runtimeResult.runtime,
 		createAuxiliaryLlmSessionId(),
@@ -428,7 +436,7 @@ function validateAdvisorModelConfig(
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
 		return { issue: "model.id must be a non-empty string" };
 	}
-	if (typeof id === "string" && !hasProviderModelShape(id)) {
+	if (typeof id === "string" && !isModelId(id)) {
 		return { issue: "model.id must use provider/model" };
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
@@ -583,16 +591,11 @@ function removePendingAdvisorCall(
 	return result;
 }
 
-/** Returns true when model ID contains provider and model parts separated by the first slash. */
-function hasProviderModelShape(modelId: string): boolean {
-	const separatorIndex = modelId.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < modelId.length - 1;
-}
-
 /** Resolves the advisor model and request auth through the pi model registry. */
 async function resolveAdvisorRuntime(
 	ctx: AdvisorContext,
 	modelId: string | undefined,
+	thinking: Thinking | undefined,
 ): Promise<{ readonly runtime: AdvisorRuntime } | { readonly issue: string }> {
 	const model =
 		modelId === undefined
@@ -605,6 +608,13 @@ async function resolveAdvisorRuntime(
 					? "current model is unavailable"
 					: `model ${modelId} was not found`,
 		};
+	}
+	if (thinking !== undefined) {
+		try {
+			assertThinkingLevelSupported(model, thinking);
+		} catch (error) {
+			return { issue: error instanceof Error ? error.message : String(error) };
+		}
 	}
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -626,15 +636,11 @@ function resolveConfiguredAdvisorModel(
 	ctx: AdvisorContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	const separatorIndex = modelId.indexOf("/");
-	if (separatorIndex <= 0 || separatorIndex === modelId.length - 1) {
+	if (!isModelId(modelId)) {
 		return undefined;
 	}
-
-	return ctx.modelRegistry.find(
-		modelId.slice(0, separatorIndex),
-		modelId.slice(separatorIndex + 1),
-	);
+	const { provider, id } = splitModelId(modelId);
+	return ctx.modelRegistry.find(provider, id);
 }
 
 /** Builds completion options while treating `off` as no reasoning option. */

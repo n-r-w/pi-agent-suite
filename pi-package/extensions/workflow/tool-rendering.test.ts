@@ -87,6 +87,7 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 	>();
 	const tools: ToolDefinition[] = [];
 	const activeTools: string[] = [];
+	let thinkingLevel = "medium";
 	const events = createEventBus();
 	const api = {
 		events,
@@ -107,6 +108,12 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 		},
 		setActiveTools(names: string[]) {
 			activeTools.splice(0, activeTools.length, ...names);
+		},
+		getThinkingLevel() {
+			return thinkingLevel;
+		},
+		setThinkingLevel(level: string) {
+			thinkingLevel = level;
 		},
 		appendEntry(): void {},
 	} as unknown as ExtensionAPI;

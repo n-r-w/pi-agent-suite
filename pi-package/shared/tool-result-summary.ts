@@ -16,6 +16,11 @@ import {
 	countProjectionTextTokens,
 	estimateSerializedInputTokens,
 } from "./context-size";
+import {
+	assertThinkingLevelSupported,
+	isModelId,
+	splitModelId,
+} from "./model-settings";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
 import {
 	buildRetryConfig,
@@ -290,6 +295,16 @@ export async function resolveToolResultSummaryRuntimeConfig({
 		return undefined;
 	}
 
+	const thinking =
+		config.thinking ?? parseToolResultSummaryThinking(currentThinking);
+	if (thinking !== undefined) {
+		try {
+			assertThinkingLevelSupported(model, thinking);
+		} catch {
+			return undefined;
+		}
+	}
+
 	const auth = await modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) {
 		return undefined;
@@ -300,8 +315,6 @@ export async function resolveToolResultSummaryRuntimeConfig({
 		return undefined;
 	}
 
-	const thinking =
-		config.thinking ?? parseToolResultSummaryThinking(currentThinking);
 	const requestOptions: SimpleStreamOptions = {};
 	if (signal !== undefined) {
 		requestOptions.signal = signal;
@@ -546,10 +559,11 @@ function selectSummaryModel(
 		return currentModel;
 	}
 
-	const separatorIndex = config.model.indexOf("/");
-	const provider = config.model.slice(0, separatorIndex);
-	const modelId = config.model.slice(separatorIndex + 1);
-	return modelRegistry.find(provider, modelId);
+	if (!isModelId(config.model)) {
+		return undefined;
+	}
+	const { provider, id } = splitModelId(config.model);
+	return modelRegistry.find(provider, id);
 }
 
 /** Reads configured summary prompts or shared defaults. */

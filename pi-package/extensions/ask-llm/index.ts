@@ -40,6 +40,7 @@ import {
 	createFileAutocompleteProvider,
 	resolveFdPathFromPathValue,
 } from "../../shared/file-autocomplete";
+import { isModelId } from "../../shared/model-settings";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -312,9 +313,12 @@ async function executeAskLlm({
 		return { kind: "issue", issue: promptResult.issue };
 	}
 
+	const thinking =
+		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel);
 	const runtimeResult = await resolveAuxiliaryLlmRuntime(
 		ctx,
 		configResult.config.model?.id,
+		thinking,
 	);
 	if ("issue" in runtimeResult) {
 		return { kind: "issue", issue: runtimeResult.issue };
@@ -340,12 +344,7 @@ async function executeAskLlm({
 		completeSimple,
 		runtime: runtimeResult.runtime,
 		context,
-		options: buildAuxiliaryLlmOptions(
-			configResult.config.model?.thinking ??
-				parseThinking(currentThinkingLevel),
-			signal,
-			runtimeResult.runtime,
-		),
+		options: buildAuxiliaryLlmOptions(thinking, signal, runtimeResult.runtime),
 		retry: configResult.config.retry,
 	});
 	if ("issue" in response) {
@@ -584,7 +583,7 @@ function validateModelConfig(model: unknown): string | undefined {
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
 		return "model.id must be a non-empty string";
 	}
-	if (typeof id === "string" && !hasProviderModelShape(id)) {
+	if (typeof id === "string" && !isModelId(id)) {
 		return "model.id must use provider/model";
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
@@ -706,12 +705,6 @@ function reportIssue(ctx: AskLlmCommandContext, issue: string): void {
 	}
 
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
-}
-
-/** Returns true when a model ID contains provider and model parts separated by slash. */
-function hasProviderModelShape(modelId: string): boolean {
-	const separatorIndex = modelId.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < modelId.length - 1;
 }
 
 /** Returns true when an object contains only supported keys. */

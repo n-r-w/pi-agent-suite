@@ -39,6 +39,11 @@ import {
 import { projectWorkflowContext } from "./context";
 import { readWorkflowPolicyEnvironment } from "./environment";
 import {
+	applyWorkflowModelSettings,
+	resolveWorkflowModelSettings,
+	rollbackWorkflowModelSettings,
+} from "./model-runtime";
+import {
 	installWorkflowStatusIndicator,
 	type WorkflowStatusIndicator,
 } from "./status-indicator";
@@ -193,6 +198,7 @@ type ReconciliationTrigger = "lifecycle" | "policy-reset";
 interface RegisterWorkflowToolsOptions {
 	readonly pi: ExtensionAPI;
 	readonly prompts: WorkflowPrompts;
+	readonly runtime: WorkflowRuntime;
 	readonly getCatalog: () => readonly WorkflowDefinition[];
 	readonly getCatalogError: () => Error | undefined;
 	readonly getState: () => WorkflowState | undefined;
@@ -206,6 +212,8 @@ interface WorkflowRuntime {
 	catalogError: Error | undefined;
 	promptError: Error | undefined;
 	state: WorkflowState | undefined;
+	currentModel: ExtensionContext["model"];
+	modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	readonly selfSuppressedNames: Set<string>;
 }
 
@@ -225,6 +233,25 @@ interface SynchronizeWorkflowRuntimeOptions {
 	readonly catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>;
 	readonly promptError: Error | undefined;
 	readonly getPolicy: () => WorkflowPolicyResolution;
+	readonly model: ExtensionContext["model"];
+	readonly modelRegistry: ExtensionContext["modelRegistry"];
+}
+
+/** Owns the TUI status indicator while lifecycle handlers are registered. */
+interface WorkflowStatusHolder {
+	indicator: WorkflowStatusIndicator | undefined;
+}
+
+/** Groups lifecycle synchronization dependencies without widening the Pi event handlers. */
+interface WorkflowLifecycleOptions {
+	readonly pi: ExtensionAPI;
+	readonly runtime: WorkflowRuntime;
+	readonly catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>;
+	readonly promptError: Error | undefined;
+	readonly getPolicy: () => WorkflowPolicyResolution;
+	readonly refreshTools: (trigger: ReconciliationTrigger) => void;
+	readonly statusHolder: WorkflowStatusHolder;
+	readonly warnings: readonly Error[] | undefined;
 }
 
 /** Creates the initial mutable workflow state from catalog-wide and prompt loading results. */
@@ -237,6 +264,8 @@ function createWorkflowRuntimeState(
 		catalogError: catalogResult.error,
 		promptError,
 		state: undefined,
+		currentModel: undefined,
+		modelRegistry: undefined,
 		selfSuppressedNames: new Set<string>(),
 	};
 }
@@ -285,7 +314,7 @@ export default async function workflowExtension(
 			? loadedCatalog
 			: { workflows: [], error: catalogPublication.error };
 	const runtime = createWorkflowRuntimeState(catalogResult, promptResult.error);
-	let statusIndicator: WorkflowStatusIndicator | undefined;
+	const statusHolder: WorkflowStatusHolder = { indicator: undefined };
 	const getPolicy = createWorkflowPolicyReader(pi);
 	const refreshTools = (trigger: ReconciliationTrigger): void => {
 		const availability = resolveRuntimeAvailability(runtime, getPolicy());
@@ -295,7 +324,7 @@ export default async function workflowExtension(
 			runtime.selfSuppressedNames,
 			trigger,
 		);
-		publishWorkflowStatus(statusIndicator, runtime);
+		publishWorkflowStatus(statusHolder.indicator, runtime);
 	};
 
 	if (promptResult.error === undefined) {
@@ -307,13 +336,39 @@ export default async function workflowExtension(
 			refreshTools,
 		});
 	}
-	const synchronize = (ctx: {
+	registerWorkflowLifecycle({
+		pi,
+		runtime,
+		catalogResult,
+		promptError: promptResult.error,
+		getPolicy,
+		refreshTools,
+		statusHolder,
+		warnings: loadedCatalog.warnings,
+	});
+}
+
+/** Registers session and model lifecycle synchronization without reapplying manual model changes. */
+function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
+	const {
+		pi,
+		runtime,
+		catalogResult,
+		promptError,
+		getPolicy,
+		refreshTools,
+		statusHolder,
+		warnings,
+	} = options;
+	const synchronize = async (ctx: {
 		readonly mode: ExtensionContext["mode"];
 		readonly ui: ExtensionContext["ui"];
+		readonly model: ExtensionContext["model"];
+		readonly modelRegistry: ExtensionContext["modelRegistry"];
 		readonly sessionManager: { getBranch(): readonly unknown[] };
-	}): void => {
+	}): Promise<void> => {
 		if (ctx.mode === "tui") {
-			statusIndicator ??= installWorkflowStatusIndicator(pi, ctx.ui);
+			statusHolder.indicator ??= installWorkflowStatusIndicator(pi, ctx.ui);
 		}
 		try {
 			synchronizeWorkflowRuntime({
@@ -321,28 +376,33 @@ export default async function workflowExtension(
 				branch: ctx.sessionManager.getBranch(),
 				runtime,
 				catalogResult,
-				promptError: promptResult.error,
+				promptError,
 				getPolicy,
+				model: ctx.model,
+				modelRegistry: ctx.modelRegistry,
 			});
+			await synchronizeWorkflowModelRuntime(pi, runtime);
 		} finally {
-			publishWorkflowStatus(statusIndicator, runtime);
+			publishWorkflowStatus(statusHolder.indicator, runtime);
 		}
 	};
+	pi.on("model_select", (event) => {
+		runtime.currentModel = event.model;
+	});
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
 	).on(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
 		refreshTools("policy-reset");
 	});
-
-	pi.on("session_start", (_event, ctx) => {
-		synchronize(ctx);
-		reportWorkflowCatalogWarnings(ctx, loadedCatalog.warnings);
+	pi.on("session_start", async (_event, ctx) => {
+		await synchronize(ctx);
+		reportWorkflowCatalogWarnings(ctx, warnings);
 	});
-	pi.on("session_tree", (_event, ctx) => synchronize(ctx));
+	pi.on("session_tree", async (_event, ctx) => synchronize(ctx));
 	pi.on("session_shutdown", () => {
 		unsubscribeFromAgentChanges();
-		statusIndicator?.dispose();
-		statusIndicator = undefined;
+		statusHolder.indicator?.dispose();
+		statusHolder.indicator = undefined;
 	});
 }
 
@@ -375,6 +435,7 @@ function registerWorkflowRuntime(
 	registerWorkflowTools({
 		pi,
 		prompts,
+		runtime,
 		getCatalog: () => runtime.catalog,
 		getCatalogError: () => runtime.catalogError,
 		getState: () => runtime.state,
@@ -468,8 +529,18 @@ function resolveRuntimeAvailability(
 function synchronizeWorkflowRuntime(
 	options: SynchronizeWorkflowRuntimeOptions,
 ): void {
-	const { pi, branch, runtime, catalogResult, promptError, getPolicy } =
-		options;
+	const {
+		pi,
+		branch,
+		runtime,
+		catalogResult,
+		promptError,
+		getPolicy,
+		model,
+		modelRegistry,
+	} = options;
+	runtime.currentModel = model;
+	runtime.modelRegistry = modelRegistry;
 	try {
 		runtime.state = replayWorkflowState(branch);
 	} catch (error) {
@@ -504,6 +575,75 @@ function synchronizeWorkflowRuntime(
 	if (catalogResult.error !== undefined && runtime.state === undefined) {
 		throw catalogResult.error;
 	}
+}
+
+/** Applies settings for the restored active stage without changing workflow state. */
+async function synchronizeWorkflowModelRuntime(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+): Promise<void> {
+	const state = runtime.state;
+	const stageId = state?.route.at(-1);
+	if (state === undefined || stageId === undefined) {
+		return;
+	}
+	const resolution = resolveWorkflowModelSettings(
+		state.workflow,
+		stageId,
+		getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
+		pi.getThinkingLevel(),
+	);
+	const application = await applyWorkflowModelSettings(
+		pi,
+		runtime.modelRegistry,
+		runtime.currentModel,
+		resolution,
+	);
+	runtime.currentModel = application.currentModel;
+}
+
+/** Applies runtime settings and persists one activation or transition atomically. */
+async function commitWorkflowStateChange(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+	candidate: WorkflowState,
+	data: Record<string, unknown>,
+): Promise<void> {
+	const stageId = candidate.route.at(-1);
+	if (stageId === undefined) {
+		throw new Error("workflow candidate has no active stage");
+	}
+	const resolution = resolveWorkflowModelSettings(
+		candidate.workflow,
+		stageId,
+		getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
+		pi.getThinkingLevel(),
+	);
+	const application = await applyWorkflowModelSettings(
+		pi,
+		runtime.modelRegistry,
+		runtime.currentModel,
+		resolution,
+	);
+	runtime.currentModel = application.currentModel;
+	try {
+		pi.appendEntry(WORKFLOW_STATE_ENTRY, data);
+	} catch (error) {
+		try {
+			await rollbackWorkflowModelSettings(pi, application);
+			runtime.currentModel = application.previousModel;
+		} catch (rollbackError) {
+			throw new Error(
+				`${formatError(error)}; previous model could not be restored: ${formatError(rollbackError)}`,
+			);
+		}
+		throw error;
+	}
+}
+
+/** Converts unknown failures into stable operation messages. */
+function formatError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /** Resolves prompt metadata atomically without falling back from configured errors. */
@@ -616,6 +756,7 @@ function registerWorkflowActivateTool(
 	const {
 		pi,
 		prompts,
+		runtime,
 		getCatalog,
 		getState,
 		getPolicy,
@@ -662,7 +803,7 @@ function registerWorkflowActivateTool(
 				);
 			}
 			const candidate = activateWorkflow(workflow);
-			pi.appendEntry(WORKFLOW_STATE_ENTRY, {
+			await commitWorkflowStateChange(pi, runtime, candidate, {
 				kind: "activated",
 				workflow: candidate.workflow,
 				route: candidate.route,
@@ -680,6 +821,7 @@ function registerWorkflowTransitionTool(
 	const {
 		pi,
 		prompts,
+		runtime,
 		getCatalog,
 		getState,
 		getPolicy,
@@ -727,7 +869,7 @@ function registerWorkflowTransitionTool(
 				throw new Error(`workflow ${current.workflow.id} is not available`);
 			}
 			const candidate = transitionWorkflow(current, stageId);
-			pi.appendEntry(WORKFLOW_STATE_ENTRY, {
+			await commitWorkflowStateChange(pi, runtime, candidate, {
 				kind: "transitioned",
 				route: candidate.route,
 			});

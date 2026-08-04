@@ -20,9 +20,9 @@
 - Add `model?: ModelSettings` to `WorkflowDefinition`.
 - Add `model?: ModelSettings` to `WorkflowStage`.
 - Extend catalog YAML parsing to accept `model` at the workflow and stage levels.
-- Keep `workflow_create` unable to define model settings.
-- Use source-specific parser key sets so dynamic workflow definitions reject `model` at both levels.
-- Validate saved catalog snapshots with model settings and saved dynamic snapshots without them.
+- Leave the `workflow_create` schema unchanged. It continues to expose only its existing workflow and stage fields.
+- Keep the catalog parser key set separate from the existing `workflow_create` parser key set so adding catalog fields does not change the dynamic schema.
+- Validate saved catalog snapshots with model settings and keep saved dynamic snapshots in their existing shape.
 
 Workflow YAML shape:
 
@@ -65,7 +65,8 @@ model:
 - Cache the current model and model registry in workflow runtime state.
 - Update the cached model on Pi's `model_select` event.
 - Synchronize model settings during `session_start` and `session_tree` after replaying workflow state.
-- Extend the existing main-agent contribution listener to reapply active workflow settings after agent changes.
+- Keep the existing main-agent contribution listener limited to workflow policy and tool reconciliation.
+- Do not reapply workflow model or thinking settings after a manual Pi model change or main-agent change; the workflow continues with the manually selected runtime model until the next activation, stage transition, or session synchronization.
 - Reapply settings from the active route instead of persisting a second runtime-settings snapshot.
 
 ### SOL-07: Reuse across other modules
@@ -84,7 +85,7 @@ model:
 ### SOL-08: Validation
 - Add shared-contract tests for model IDs, all seven thinking levels, optional fields, and model capability checks.
 - Add workflow parser tests for workflow-level and stage-level settings.
-- Add tests proving dynamic workflow creation rejects model settings.
+- Keep `workflow_create` schema tests focused on its existing closed shape; catalog model settings are tested through the catalog parser.
 - Add precedence tests for model and thinking independently.
 - Add activation, advance, and rework transition tests.
 - Add failure tests for unknown models, unsupported thinking levels, `setModel() === false`, thrown model-application errors, and persistence errors.
@@ -93,7 +94,7 @@ model:
 
 ## Overengineering and Overspecification Considerations
 - Workflow tool parameters remain unchanged.
-- Dynamic workflows remain excluded.
+- No model fields are added to `workflow_create`; dynamic workflow behavior remains unchanged.
 - No model discovery or provider management is added.
 - No second runtime settings store is introduced.
 - Shared validation is centralized, while API-specific application remains local to avoid a universal adapter with incompatible failure behavior.

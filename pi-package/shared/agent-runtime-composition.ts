@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { writeRuntimeDiagnostic } from "./agent-runtime-diagnostics";
+import type { ModelSettings } from "./model-settings";
 
 export interface MainAgentRuntimeInfo {
 	readonly id: string;
@@ -12,6 +13,7 @@ export interface MainAgentContribution {
 	readonly prompt: string;
 	readonly tools?: readonly string[];
 	readonly agent?: MainAgentRuntimeInfo;
+	readonly model?: ModelSettings;
 }
 
 /** Defines static or dynamic guidance built after runtime tool filtering. */
