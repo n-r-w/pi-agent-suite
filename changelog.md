@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.2.0 - 2026-08-06
+
+- Add cross-session global and branch-local project knowledge with bounded storage, extraction, merging, and workflow triggers
+- Inject applicable knowledge into agents and auxiliary model calls, including subagent runtime transport
+- Add shared model settings and aliases across extensions, plus workflow model/thinking precedence
+- Add `--agent` and workflow trigger CLI controls with ephemeral session behavior
+- Update documentation, validation, footer display, and comprehensive unit/integration coverage
+
 ## v2.1.0 - 2026-08-02
 
 - Added YAML workflow extension with stage-aware prompts, transitions, activation policies, and runtime context.
@@ -75,6 +83,7 @@
 - Removed the obsolete `url-scheme` extension.
 
 ## v0.16.1 - 2026-07-11
+
 - Fixed unavailability of `max` thinking level in some tools.
 
 ## v0.16.0 - 2026-07-11
@@ -101,3 +110,4 @@
 - Refined `context-projection` summaries. Summary prompts now require structured sections, preserve evidence from tool results, and treat tool output as data instead of instructions.
 - Removed square brackets from the default `context-projection` placeholder: `Result omitted. Run tool again if you want to see it`.
 - Refined bundled system and advisor prompts with stricter evidence handling, blocker handling, source-of-truth rules, escalation rules, and refactoring constraints.
+
