@@ -19,7 +19,6 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 4. Keep extension documentation in `docs/extensions/*` up to date.
 5. `README.md` files should be concise. All details in `docs/extensions/*`.
 
-
 ## Testing rules
 1. Use RED-GREEN-REFACTOR for behavior changes:
     1) RED: add or update a failing behavior test.
