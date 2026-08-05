@@ -13,8 +13,8 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 5. Suppressing linter warnings is prohibited without user approval.
 
 ## Project Documentation
-1. Put documentation for new features in `docs/specs/features/`
-2. Put documentation for bugs in `docs/specs/issues/`
+1. Put documentation for new features in `docs/specs/features/{feature-name}/*`
+2. Put documentation for bugs in `docs/specs/issues/{issue-name}/*`
 3. Each new feature/bug must have a separate directory
 4. Keep extension documentation in `docs/extensions/*` up to date.
 5. `README.md` files should be concise. All details in `docs/extensions/*`.
