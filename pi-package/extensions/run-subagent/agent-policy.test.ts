@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentDefinition } from "../../shared/agent-registry";
+import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -123,6 +127,98 @@ describe("effective callable-agent policy", () => {
 			}),
 		).rejects.toThrow("Missing");
 		expect(authCalls).toBe(0);
+	});
+
+	test("resolves subagent model aliases before launch validation", async () => {
+		// Purpose: subagent startup must accept alias model IDs from agent definitions.
+		// Input and expected output: model alias `summarizer` resolves to provider/model and contributes alias default thinking.
+		// Edge case: caller thinking differs and must be overridden by alias thinking when agent thinking is omitted.
+		// Dependencies: suite-owned model-aliases config and launch configuration resolution.
+		const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
+		const suiteDir = mkdtempSync(join(tmpdir(), "run-subagent-model-alias-"));
+		process.env[AGENT_SUITE_DIR_ENV] = suiteDir;
+		mkdirSync(join(suiteDir, "model-aliases"), { recursive: true });
+		writeFileSync(
+			join(suiteDir, "model-aliases", "config.json"),
+			JSON.stringify({
+				summarizer: {
+					id: "provider/model",
+					thinking: "low",
+				},
+			}),
+		);
+		const pi = {
+			getThinkingLevel: () => "high",
+		} as unknown as ExtensionAPI;
+		const ctx = {
+			cwd: "/tmp/project",
+			model: {
+				provider: "current",
+				id: "model",
+				contextWindow: 1000,
+			},
+			modelRegistry: {
+				find(provider: string, id: string) {
+					if (provider === "provider" && id === "model") {
+						return {
+							provider,
+							id,
+							contextWindow: 32000,
+						};
+					}
+					return undefined;
+				},
+				hasConfiguredAuth: () => true,
+				async getApiKeyAndHeaders() {
+					return { ok: true };
+				},
+			},
+		};
+		const agents: readonly AgentDefinition[] = [
+			{
+				id: "Worker",
+				description: "Worker",
+				type: "subagent",
+				prompt: "Worker prompt",
+				model: { id: "summarizer" },
+			},
+		];
+		try {
+			expect(
+				await resolveLaunchConfiguration({
+					pi,
+					ctx: ctx as never,
+					agents,
+					supervisor: undefined,
+					request: {
+						owner: ROOT_OWNER,
+						sessionKey: {
+							ownerPiSessionId: ROOT_OWNER.ownerPiSessionId,
+							ownerLocalSessionId: 1,
+						},
+						agentId: "Worker",
+						taskName: "Worker task",
+						prompt: "work",
+					},
+				}),
+			).toMatchObject({
+				modelId: "provider/model",
+				provider: "provider",
+				thinking: "low",
+				runtimeFacts: {
+					modelProvider: "provider",
+					modelId: "model",
+					contextWindow: 32000,
+				},
+			});
+		} finally {
+			if (previousSuiteDir === undefined) {
+				delete process.env[AGENT_SUITE_DIR_ENV];
+			} else {
+				process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
+			}
+			rmSync(suiteDir, { recursive: true, force: true });
+		}
 	});
 
 	test("reports only the unmatched child tool pattern", () => {

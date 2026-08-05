@@ -14,8 +14,10 @@ import {
 	type MainAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
+import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import { resolveWorkflowPolicy } from "../../shared/workflow-policy";
+import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import {
 	AVAILABLE_SUBAGENTS_PROMPT_CLOSING_TAG,
 	AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
@@ -62,7 +64,8 @@ export async function resolveLaunchConfiguration(
 	if (workflows.kind === "error") {
 		throw new InvocationStartError("start_failed", workflows.issue);
 	}
-	const model = resolveAgentModel(agent, ctx);
+	const resolvedModel = resolveAgentModel(agent, ctx);
+	const model = resolvedModel.model;
 	// Model registration and credential resolution are separate facts during OAuth file contention.
 	const providerConfigured = ctx.modelRegistry.hasConfiguredAuth(model);
 	const parentDepth =
@@ -74,7 +77,7 @@ export async function resolveLaunchConfiguration(
 		cwd: ctx.cwd,
 		modelId: `${model.provider}/${model.id}`,
 		provider: model.provider,
-		thinking: agent.model?.thinking ?? pi.getThinkingLevel(),
+		thinking: resolvedModel.thinking ?? pi.getThinkingLevel(),
 		...(agent.tools === undefined ? {} : { toolPatterns: agent.tools }),
 		...(workflows.policy === undefined
 			? {}
@@ -97,8 +100,15 @@ export async function resolveLaunchConfiguration(
 function resolveAgentModel(
 	agent: AgentDefinition,
 	ctx: ExtensionContext,
-): Model<Api> {
-	const configured = agent.model?.id;
+): {
+	readonly model: Model<Api>;
+	readonly thinking: ReasoningLevel | undefined;
+} {
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
+	if ("issue" in resolvedSettings) {
+		throw new InvocationStartError("start_failed", resolvedSettings.issue);
+	}
+	const configured = resolvedSettings.settings.id;
 	if (configured === undefined) {
 		if (ctx.model === undefined) {
 			throw new InvocationStartError(
@@ -106,15 +116,12 @@ function resolveAgentModel(
 				"no model is available for the child invocation",
 			);
 		}
-		return ctx.model;
+		return {
+			model: ctx.model,
+			thinking: resolvedSettings.settings.thinking,
+		};
 	}
 	const separator = configured.indexOf("/");
-	if (separator <= 0 || separator === configured.length - 1) {
-		throw new InvocationStartError(
-			"start_failed",
-			`agent model ${configured} is invalid`,
-		);
-	}
 	const provider = configured.slice(0, separator);
 	const id = configured.slice(separator + 1);
 	const model = ctx.modelRegistry.find(provider, id);
@@ -124,7 +131,10 @@ function resolveAgentModel(
 			`agent model ${configured} is unavailable`,
 		);
 	}
-	return model;
+	return {
+		model,
+		thinking: resolvedSettings.settings.thinking,
+	};
 }
 
 /** Publishes depth-aware subagent tools and callable-agent guidance after policy filtering. */
