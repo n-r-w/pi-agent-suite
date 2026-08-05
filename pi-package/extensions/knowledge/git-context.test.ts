@@ -179,6 +179,142 @@ describe("knowledge Git context resolution", () => {
 	});
 
 	/**
+	 * Verifies that a configured preferred remote resolves the project identity
+	 * when remotes disagree, instead of returning ambiguous.
+	 */
+	test("resolves from preferred remote when identities differ", () => {
+		// ARRANGE
+		const fake = createGitRunner([
+			success(`${COMMON_GIT_DIR}\n`),
+			success(`${COMMON_GIT_DIR}\n`),
+			success("origin\nupstream\n"),
+			success("https://github.com/example/fork.git\n"),
+			success("https://github.com/example/fork.git\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+			success("false\n"),
+			success("feature/test\n"),
+		]);
+
+		// ACT
+		const result = resolveGitProject({
+			cwd: CWD,
+			primaryBranches: ["main", "master"],
+			preferredRemotes: ["origin"],
+			runGit: fake.run,
+		});
+
+		// ASSERT
+		expect(result.kind).toBe("resolved-read-write");
+		if (result.kind !== "resolved-read-write") {
+			return;
+		}
+		expect(result.identityMetadata.canonicalIdentity).toBe(
+			"github.com/example/fork",
+		);
+	});
+
+	/**
+	 * Verifies that the first matching preferred remote in priority order wins
+	 * when multiple preferred remotes are present.
+	 */
+	test("selects first matching preferred remote by priority", () => {
+		// ARRANGE
+		const fake = createGitRunner([
+			success(`${COMMON_GIT_DIR}\n`),
+			success(`${COMMON_GIT_DIR}\n`),
+			success("origin\nupstream\n"),
+			success("https://github.com/example/fork.git\n"),
+			success("https://github.com/example/fork.git\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+			success("false\n"),
+			success("feature/test\n"),
+		]);
+
+		// ACT
+		const result = resolveGitProject({
+			cwd: CWD,
+			primaryBranches: ["main", "master"],
+			preferredRemotes: ["upstream", "origin"],
+			runGit: fake.run,
+		});
+
+		// ASSERT
+		expect(result.kind).toBe("resolved-read-write");
+		if (result.kind !== "resolved-read-write") {
+			return;
+		}
+		expect(result.identityMetadata.canonicalIdentity).toBe(
+			"github.com/n-r-w/pi-agent-suite",
+		);
+	});
+
+	/**
+	 * Verifies that absent preferred remotes preserve the current ambiguous
+	 * behavior as a fallback.
+	 */
+	test("falls back to ambiguous when no preferred remote matches", () => {
+		// ARRANGE
+		const fake = createGitRunner([
+			success(`${COMMON_GIT_DIR}\n`),
+			success(`${COMMON_GIT_DIR}\n`),
+			success("origin\nupstream\n"),
+			success("https://github.com/example/fork.git\n"),
+			success("https://github.com/example/fork.git\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+		]);
+
+		// ACT
+		const result = resolveGitProject({
+			cwd: CWD,
+			primaryBranches: ["main", "master"],
+			preferredRemotes: ["my-main"],
+			runGit: fake.run,
+		});
+
+		// ASSERT
+		expect(result).toEqual({ kind: "ambiguous" });
+	});
+
+	/**
+	 * Verifies that an unsupported URL on a non-preferred remote is never parsed
+	 * and therefore cannot cause an unsupported outcome.
+	 */
+	test("ignores unsupported URL on non-preferred remote", () => {
+		// ARRANGE
+		const fake = createGitRunner([
+			success(`${COMMON_GIT_DIR}\n`),
+			success(`${COMMON_GIT_DIR}\n`),
+			success("origin\nmirror\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+			success("https://github.com/n-r-w/pi-agent-suite.git\n"),
+			success("file:///tmp/pi-agent-suite\n"),
+			success("file:///tmp/pi-agent-suite\n"),
+			success("false\n"),
+			success("feature/test\n"),
+		]);
+
+		// ACT
+		const result = resolveGitProject({
+			cwd: CWD,
+			primaryBranches: ["main", "master"],
+			preferredRemotes: ["origin"],
+			runGit: fake.run,
+		});
+
+		// ASSERT
+		expect(result.kind).toBe("resolved-read-write");
+		if (result.kind !== "resolved-read-write") {
+			return;
+		}
+		expect(result.identityMetadata.canonicalIdentity).toBe(
+			"github.com/n-r-w/pi-agent-suite",
+		);
+	});
+
+	/**
 	 * Verifies all-fetch-URL consensus, common-directory remote reads, current-
 	 * worktree branch scope, and credential-free identity metadata.
 	 */

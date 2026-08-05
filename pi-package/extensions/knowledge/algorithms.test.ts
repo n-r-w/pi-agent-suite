@@ -129,6 +129,7 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 		globalTokenLimit: 5_000,
 		localTokenLimit: 5_000,
 		primaryBranches: ["main", "master"],
+		preferredRemotes: ["origin"],
 		extraction: {
 			model: undefined,
 			thinking: undefined,

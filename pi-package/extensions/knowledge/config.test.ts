@@ -26,11 +26,12 @@ async function createSuiteDirectory(): Promise<string> {
 	return directory;
 }
 
-/** Creates parse options that validate branch names without consulting real Git state. */
+/** Creates parse options that validate branch and remote names without consulting real Git state. */
 function parseOptions(agentSuiteDir: string): KnowledgeConfigParseOptions {
 	return {
 		agentSuiteDir,
 		isGitBranchName: (name) => name !== "bad branch",
+		isGitRemoteName: (name) => name !== "bad remote",
 	};
 }
 
@@ -67,6 +68,7 @@ describe("knowledge configuration", () => {
 			globalTokenLimit: 5_000,
 			localTokenLimit: 5_000,
 			primaryBranches: ["main", "master"],
+			preferredRemotes: ["origin"],
 			extraction: {
 				model: undefined,
 				thinking: undefined,
@@ -103,6 +105,7 @@ describe("knowledge configuration", () => {
 			globalTokenLimit: 101,
 			localTokenLimit: 202,
 			primaryBranches: ["trunk", "release/stable"],
+			preferredRemotes: ["origin", "upstream"],
 			extraction: {
 				model: "openai/gpt-5.6",
 				thinking: "high",
@@ -166,6 +169,9 @@ describe("knowledge configuration", () => {
 			{ primaryBranches: [] },
 			{ primaryBranches: ["main", "main"] },
 			{ primaryBranches: ["bad branch"] },
+			{ preferredRemotes: [] },
+			{ preferredRemotes: ["origin", "origin"] },
+			{ preferredRemotes: ["bad remote"] },
 			{ extraction: { unknown: true } },
 			{ extraction: { model: "" } },
 			{ extraction: { thinking: "max" } },

@@ -33,6 +33,7 @@ import {
 } from "./algorithms";
 import {
 	isGitBranchName,
+	isGitRemoteName,
 	type KnowledgeConfig,
 	type KnowledgeConfigResult,
 	readKnowledgeConfig,
@@ -99,6 +100,7 @@ export default function knowledgeExtension(
 		readKnowledgeConfig({
 			agentSuiteDir: getAgentSuiteDir(),
 			isGitBranchName,
+			isGitRemoteName,
 		});
 	if (configResult.kind === "invalid") {
 		pi.on("session_start", (_event, ctx) => {
@@ -357,6 +359,7 @@ function resolveKnowledgeScope(
 	const resolution = resolveProject({
 		cwd,
 		primaryBranches: config.primaryBranches,
+		preferredRemotes: config.preferredRemotes,
 	});
 	if (
 		resolution.kind !== "resolved-read-only" &&

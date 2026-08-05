@@ -21,6 +21,7 @@ The file is optional. Missing configuration enables the extension with defaults.
   "globalTokenLimit": 5000,
   "localTokenLimit": 5000,
   "primaryBranches": ["main", "master"],
+  "preferredRemotes": ["origin"],
   "extraction": {
     "model": "analyst-complex",
     "thinking": "medium",
@@ -46,6 +47,7 @@ All fields are optional.
 | `globalTokenLimit` | Positive safe integer | `5000` | Maximum tokenizer count for one global knowledge file. |
 | `localTokenLimit` | Positive safe integer | `5000` | Maximum tokenizer count for each local branch knowledge file. |
 | `primaryBranches` | Non-empty array of unique Git-valid branch names | `["main", "master"]` | Disables accumulation on every listed branch. |
+| `preferredRemotes` | Non-empty array of unique Git-valid remote names | `["origin"]` | Ordered list of remote names for project identity selection. The first matching remote's identity is used; all others are ignored. |
 | `extraction` | Object | Defaults below | Configures session knowledge extraction. |
 | `extraction.model` | Non-empty string | Current initiating model | Selects the extraction model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `extraction.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects extraction reasoning. |
@@ -65,20 +67,21 @@ Configuration is read when the extension loads. Restart Pi to apply changes.
 
 ## Project identity
 
-The extension derives one project key from every effective fetch URL of every remote in the common Git repository configuration:
+The extension derives one project key from effective fetch URLs of remotes in the common Git repository configuration:
 
-1. Git expands `url.*.insteadOf` through `git remote get-url --all`.
-2. Every URL must match `github-v1`, `generic-uri-v1`, or `generic-scp-v1`.
-3. Every parsed URL must produce the same identity profile and standard name.
-4. The extension hashes the versioned identity with SHA-256 and encodes the complete digest as lowercase hexadecimal.
+1. Git expands `url.*.insteadOf` through `git remote get-url --all` for every remote.
+2. If a remote listed in `preferredRemotes` exists, only that remote's URLs are considered; all other remotes are ignored. The first matching remote in the configured order wins. When no configured remote is found, all remotes are considered.
+3. Every considered URL must match `github-v1`, `generic-uri-v1`, or `generic-scp-v1`.
+4. Every parsed URL must produce the same identity profile and standard name.
+5. The extension hashes the versioned identity with SHA-256 and encodes the complete digest as lowercase hexadecimal.
 
 `github-v1` equates the documented GitHub HTTPS, SCP-like SSH, `ssh://git@github.com`, and `ssh://git@ssh.github.com:443` forms. Generic profiles preserve transport and path details instead of assuming provider equivalence.
 
 Project identity fails closed:
 - no fetch URL produces no project;
-- one unsupported URL rejects all evidence;
-- multiple recognized identities are ambiguous;
-- remote names, push URLs, active branch upstream, refs, commits, and history do not select a project.
+- one unsupported URL among considered remotes rejects all evidence;
+- multiple recognized identities among considered remotes are ambiguous;
+- push URLs, active branch upstream, refs, commits, and history do not select a project.
 
 The key is stable across URL forms explicitly supported by one profile. It is not stable across repository rename, transfer, deletion, remote namespace reuse, or other URL identity changes. The extension does not call provider APIs or migrate catalogs between keys.
 

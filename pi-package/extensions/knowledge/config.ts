@@ -12,6 +12,7 @@ const TOP_LEVEL_KEYS = [
 	"globalTokenLimit",
 	"localTokenLimit",
 	"primaryBranches",
+	"preferredRemotes",
 	"extraction",
 	"merge",
 ] as const;
@@ -37,6 +38,7 @@ const DEFAULT_TOKEN_LIMIT = 5_000;
 const DEFAULT_EXTRACTION_RETRIES = 1;
 const DEFAULT_MERGE_RETRIES = 2;
 const DEFAULT_PRIMARY_BRANCHES = ["main", "master"] as const;
+const DEFAULT_PREFERRED_REMOTES = ["origin"] as const;
 /** Defines the agent-suite-relative configuration and catalog locations. */
 const CONFIG_FILE = "config.json";
 const KNOWLEDGE_DIRECTORY = "knowledge";
@@ -75,6 +77,7 @@ export interface KnowledgeConfig {
 	readonly globalTokenLimit: number;
 	readonly localTokenLimit: number;
 	readonly primaryBranches: readonly string[];
+	readonly preferredRemotes: readonly string[];
 	readonly extraction: KnowledgeOperationConfig;
 	readonly merge: KnowledgeOperationConfig;
 }
@@ -88,6 +91,7 @@ export type KnowledgeConfigResult =
 export interface KnowledgeConfigParseOptions {
 	readonly agentSuiteDir: string;
 	readonly isGitBranchName?: (name: string) => boolean;
+	readonly isGitRemoteName?: (name: string) => boolean;
 }
 
 /** Parses and validates one knowledge configuration value. */
@@ -112,6 +116,13 @@ export function parseKnowledgeConfig(
 	);
 	if (typeof primaryBranches === "string") {
 		return invalid(primaryBranches);
+	}
+	const preferredRemotes = parsePreferredRemotes(
+		value["preferredRemotes"],
+		options,
+	);
+	if (typeof preferredRemotes === "string") {
+		return invalid(preferredRemotes);
 	}
 	const extraction = parseOperationConfig({
 		value: value["extraction"],
@@ -141,6 +152,7 @@ export function parseKnowledgeConfig(
 		config: {
 			...scalarFields,
 			primaryBranches,
+			preferredRemotes,
 			extraction,
 			merge,
 		},
@@ -241,6 +253,30 @@ function parsePrimaryBranches(
 	const validateBranch = options.isGitBranchName ?? isGitBranchName;
 	if (!value.every((branch) => validateBranch(branch))) {
 		return "primaryBranches must contain only Git-valid branch names";
+	}
+	return [...value];
+}
+
+/** Validates the configured preferred-remote set without consulting repository remotes. */
+function parsePreferredRemotes(
+	value: unknown,
+	options: KnowledgeConfigParseOptions,
+): readonly string[] | string {
+	if (value === undefined) {
+		return [...DEFAULT_PREFERRED_REMOTES];
+	}
+	if (!Array.isArray(value) || value.length === 0) {
+		return "preferredRemotes must be a non-empty array";
+	}
+	if (!value.every((remote): remote is string => typeof remote === "string")) {
+		return "preferredRemotes must contain only strings";
+	}
+	if (new Set(value).size !== value.length) {
+		return "preferredRemotes must contain unique names";
+	}
+	const validateRemote = options.isGitRemoteName ?? isGitRemoteName;
+	if (!value.every((remote) => validateRemote(remote))) {
+		return "preferredRemotes must contain only Git-valid remote names";
 	}
 	return [...value];
 }
@@ -366,6 +402,19 @@ export function isGitBranchName(name: string): boolean {
 		encoding: "utf8",
 		stdio: "ignore",
 	});
+	return result.status === 0;
+}
+
+/** Delegates exact remote-name grammar to Git without requiring repository state. */
+export function isGitRemoteName(name: string): boolean {
+	const result = spawnSync(
+		"git",
+		["check-ref-format", `refs/remotes/${name}`],
+		{
+			encoding: "utf8",
+			stdio: "ignore",
+		},
+	);
 	return result.status === 0;
 }
 

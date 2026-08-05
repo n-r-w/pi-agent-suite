@@ -59,6 +59,7 @@ export type GitProjectResolution =
 export interface ResolveGitProjectOptions {
 	readonly cwd: string;
 	readonly primaryBranches: readonly string[];
+	readonly preferredRemotes?: readonly string[];
 	readonly runGit?: GitCommandRunner;
 }
 
@@ -96,8 +97,8 @@ export function resolveGitProject(
 	if (evidence.length === 0) {
 		return { kind: "unidentified" };
 	}
-
-	const parsed = evidence.map((item) => parseFetchUrl(item.url));
+	const filtered = filterByPreferredRemotes(evidence, options.preferredRemotes);
+	const parsed = filtered.map((item) => parseFetchUrl(item.url));
 	if (parsed.some((identity) => identity === undefined)) {
 		return { kind: "unsupported" };
 	}
@@ -147,6 +148,26 @@ function runGitCommand(command: GitCommand): GitCommandResult {
 		stdout: result.stdout,
 		stderr: result.stderr,
 	};
+}
+
+/**
+ * Returns evidence for the first remote found in the preferred-remotes list.
+ * Falls back to all evidence when no preferred remote is present or no match is found.
+ */
+function filterByPreferredRemotes(
+	evidence: readonly RemoteUrlEvidence[],
+	preferredRemotes: readonly string[] | undefined,
+): readonly RemoteUrlEvidence[] {
+	if (preferredRemotes === undefined || preferredRemotes.length === 0) {
+		return evidence;
+	}
+	for (const preferred of preferredRemotes) {
+		const matching = evidence.filter((item) => item.remoteName === preferred);
+		if (matching.length > 0) {
+			return matching;
+		}
+	}
+	return evidence;
 }
 
 /** Reads remotes from the common repository and asks Git for expanded fetch URLs. */
