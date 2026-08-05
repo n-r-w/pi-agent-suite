@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import { getPackageToolPresentation } from "../../../pi-package/shared/tool-presentation/registry";
-import { withIsolatedAgentDir, writeEnabledConfig } from "./support/env";
+import {
+	withIsolatedAgentDir,
+	writeEnabledConfig,
+} from "./support/environment";
 import { createExtensionApiFake } from "./support/fakes";
 import { getCouncilTool } from "./support/tool";
 

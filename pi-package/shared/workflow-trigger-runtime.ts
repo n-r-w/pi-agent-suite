@@ -9,6 +9,28 @@ export type WorkflowTriggerType =
 	| "local_knowledge_accumulation"
 	| "global_knowledge_accumulation";
 
+/**
+ * Runtime list of all workflow trigger types.
+ * Mirrors the {@link WorkflowTriggerType} union so consumers can validate
+ * trigger type strings without importing individual values.
+ * Update this array when new trigger types are added to the union.
+ */
+export const WORKFLOW_TRIGGER_TYPES = [
+	"local_knowledge_accumulation",
+	"global_knowledge_accumulation",
+] as const satisfies readonly WorkflowTriggerType[];
+
+/**
+ * Type guard: returns true when value matches a known
+ * {@link WorkflowTriggerType}. Used to validate CLI-provided trigger
+ * type strings before invoking the trigger runner.
+ */
+export function isWorkflowTriggerType(
+	value: string,
+): value is WorkflowTriggerType {
+	return (WORKFLOW_TRIGGER_TYPES as readonly string[]).includes(value);
+}
+
 /** One closed workflow stage trigger. */
 export interface WorkflowTrigger {
 	readonly type: WorkflowTriggerType;

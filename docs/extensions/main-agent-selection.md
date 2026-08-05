@@ -82,3 +82,12 @@ Only `main` and `both` agent definitions appear in the main-agent selector. `sub
 - Run `/agent none` to clear the selected main agent for the current working directory.
 - Press `Ctrl+Shift+A` to open the selector.
 - Agent ID matching is exact and case-sensitive after NFC normalization. Selector text search remains case-insensitive.
+
+## CLI flags
+
+| Flag | Type | Description |
+| --- | --- | --- |
+| `--agent <id>` | String | Applies the agent with the matching ID for the current session only, without persisting to disk. Takes priority over any previously selected agent. |
+| `--agent none` | String | Clears the main agent contribution for the current session without writing to disk. |
+
+When `--agent` is set, disk-based agent restoration at session start is skipped. Invalid agent IDs produce an error visible in all modes, including `-p` (print) mode via stderr. The flag is ignored in child subagent processes.

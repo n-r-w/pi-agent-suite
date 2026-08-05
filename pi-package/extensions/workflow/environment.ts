@@ -16,3 +16,8 @@ export function readWorkflowPolicyEnvironment(): WorkflowPolicyEnvironment {
 		rawPolicy: process.env[SUBAGENT_WORKFLOW_IDS_ENV],
 	};
 }
+
+/** Returns true inside child agent processes where CLI flags are not available. */
+export function isWorkflowChildProcess(): boolean {
+	return isChildAgentProcess(process.env);
+}

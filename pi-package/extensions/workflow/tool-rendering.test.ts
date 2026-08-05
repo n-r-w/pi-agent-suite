@@ -97,6 +97,10 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 			tools.push(definition);
 			activeTools.push(definition.name);
 		},
+		registerFlag(): void {},
+		getFlag(): undefined {
+			return undefined;
+		},
 		getActiveTools() {
 			return [...activeTools];
 		},

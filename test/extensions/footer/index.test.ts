@@ -891,31 +891,34 @@ describe("footer", () => {
 		["showApiCost", "yes"],
 		["showGitBranch", "yes"],
 		["showAdditionalStatusLine", 1],
-	])("does not install footer when %s config is invalid", async (key, value) => {
-		// Purpose: footer config validation must reject non-boolean display settings.
-		// Input and expected output: one invalid display value leaves the session without a custom footer renderer.
-		// Edge case: all other config fields are omitted and would otherwise use defaults.
-		// Dependencies: this test uses an isolated footer config file for each table row.
-		await withIsolatedAgentDir(async (agentDir) => {
-			await writeFooterConfig(agentDir, { [key]: value });
-			const pi = createExtensionApiFake();
-			const ctx = createSessionContextFake();
-			footer(pi);
-			const sessionStartHandler = pi.handlers.find(
-				(handler) => handler.eventName === "session_start",
-			)?.handler;
+	])(
+		"does not install footer when %s config is invalid",
+		async (key, value) => {
+			// Purpose: footer config validation must reject non-boolean display settings.
+			// Input and expected output: one invalid display value leaves the session without a custom footer renderer.
+			// Edge case: all other config fields are omitted and would otherwise use defaults.
+			// Dependencies: this test uses an isolated footer config file for each table row.
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeFooterConfig(agentDir, { [key]: value });
+				const pi = createExtensionApiFake();
+				const ctx = createSessionContextFake();
+				footer(pi);
+				const sessionStartHandler = pi.handlers.find(
+					(handler) => handler.eventName === "session_start",
+				)?.handler;
 
-			expect(sessionStartHandler).toEqual(expect.any(Function));
-			await (
-				sessionStartHandler as (
-					event: unknown,
-					ctx: unknown,
-				) => Promise<void> | void
-			)({}, ctx);
+				expect(sessionStartHandler).toEqual(expect.any(Function));
+				await (
+					sessionStartHandler as (
+						event: unknown,
+						ctx: unknown,
+					) => Promise<void> | void
+				)({}, ctx);
 
-			expect(ctx.installedFooters).toEqual([]);
-		});
-	});
+				expect(ctx.installedFooters).toEqual([]);
+			});
+		},
+	);
 
 	test("renders subscription API cost marker when OAuth subscription is active", async () => {
 		// Purpose: subscription-backed models must expose the same `(sub)` marker as the standard pi footer.

@@ -191,6 +191,10 @@ function createExtensionApiFake(
 			commands.push({ name, handler: options.handler });
 		},
 		registerShortcut(): void {},
+		registerFlag(): void {},
+		getFlag(): undefined {
+			return undefined;
+		},
 		appendEntry(customType: string, data: unknown): void {
 			appendEntryCalls.push({ customType, data });
 		},

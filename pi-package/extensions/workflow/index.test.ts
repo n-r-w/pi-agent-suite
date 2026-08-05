@@ -51,6 +51,8 @@ interface FakePi {
 	thinkingLevel: string;
 	readonly ui: ExtensionContext["ui"];
 	readonly widgetUpdates: Array<{ key: string; content: WidgetContent }>;
+	flagValues: Map<string, boolean | string>;
+	shutdownCalls: number;
 }
 
 const temporaryDirectories: string[] = [];
@@ -271,6 +273,8 @@ async function createFakePi(): Promise<FakePi> {
 		thinkingLevel: "medium",
 		ui,
 		widgetUpdates,
+		flagValues: new Map(),
+		shutdownCalls: 0,
 	};
 	const api = {
 		on(event: string, handler: (...args: unknown[]) => unknown) {
@@ -302,6 +306,20 @@ async function createFakePi(): Promise<FakePi> {
 				throw fake.appendError;
 			}
 			fake.appended.push({ customType, data });
+		},
+		registerFlag(
+			name: string,
+			options: {
+				type: "boolean" | "string";
+				default?: boolean | string;
+			},
+		) {
+			if (options.default !== undefined && !fake.flagValues.has(name)) {
+				fake.flagValues.set(name, options.default);
+			}
+		},
+		getFlag(name: string) {
+			return fake.flagValues.get(name);
 		},
 		events: {
 			emit(event: string, ...args: unknown[]) {
@@ -360,6 +378,9 @@ async function runLifecycle(
 			model: fake.model,
 			modelRegistry: fake.modelRegistry,
 			sessionManager: { getBranch: () => branch },
+			shutdown: () => {
+				fake.shutdownCalls++;
+			},
 		},
 	);
 }
@@ -1430,5 +1451,61 @@ describe("workflow extension lifecycle", () => {
 			]),
 		).rejects.toThrow("workflow-state");
 		expect(fake.activeTools).toEqual(["read"]);
+	});
+
+	describe("--trigger CLI flag", () => {
+		test("invokes trigger runner with correct type and shuts down", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			const runCalls: Array<{ type: string }> = [];
+			if (fake.api === undefined) {
+				throw new Error("extension API missing");
+			}
+			registerWorkflowTriggerRunner(fake.api, {
+				async run(trigger) {
+					runCalls.push(trigger);
+					return { ok: true };
+				},
+			});
+
+			fake.flagValues.set("trigger", "local_knowledge_accumulation");
+
+			await runLifecycle(fake, "session_start");
+
+			expect(runCalls).toEqual([{ type: "local_knowledge_accumulation" }]);
+			expect(fake.shutdownCalls).toBe(1);
+		});
+
+		test("exits with error for unknown trigger type", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			fake.flagValues.set("trigger", "unknown_trigger");
+
+			await runLifecycle(fake, "session_start");
+
+			expect(fake.shutdownCalls).toBe(1);
+		});
+
+		test("exits with error when trigger runner is not registered", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			fake.flagValues.set("trigger", "local_knowledge_accumulation");
+
+			await runLifecycle(fake, "session_start");
+
+			expect(fake.shutdownCalls).toBe(1);
+		});
+
+		test("continues normal session when trigger flag is not set", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			await runLifecycle(fake, "session_start");
+
+			expect(fake.shutdownCalls).toBe(0);
+		});
 	});
 });

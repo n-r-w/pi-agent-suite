@@ -328,6 +328,12 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	writeRuntimeDiagnostic("main-agent-selection.loaded");
 	getAgentRuntimeComposition(pi);
 
+	pi.registerFlag("agent", {
+		description:
+			"Set main agent for this session (ephemeral, not persisted to disk)",
+		type: "string",
+	});
+
 	pi.registerCommand(COMMAND_NAME, {
 		description: "Select the main agent for this working directory",
 		handler: async (args, ctx) => {
@@ -373,6 +379,21 @@ async function handleSessionStart(
 		cwd: mainContext.cwd,
 	});
 	if (isChildSubagentProcess()) {
+		return;
+	}
+
+	const agentFlag = pi.getFlag("agent");
+	if (typeof agentFlag === "string") {
+		await applyEphemeralAgent(pi, mainContext, agentFlag);
+		writeRuntimeDiagnostic(
+			"main-agent-selection.session-start.ephemeral-applied",
+			{
+				agentFlag,
+				activeAgentId:
+					getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+						?.id ?? null,
+			},
+		);
 		return;
 	}
 
@@ -1160,6 +1181,45 @@ function reportIssue(ctx: MainAgentContext, issue: string): void {
 	}
 
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
+}
+
+/**
+ * Reports an agent selection error to the user.
+ * In interactive mode, delegates to {@link reportIssue}.
+ * In print mode (-p), writes to stderr because ctx.ui is unavailable.
+ */
+function reportAgentError(ctx: MainAgentContext, issue: string): void {
+	if (ctx.hasUI === false) {
+		process.stderr.write(`${ISSUE_PREFIX} ${issue}\n`);
+		return;
+	}
+	reportIssue(ctx, issue);
+}
+
+/**
+ * Applies a main agent for the current session only, without persisting
+ * the selection to disk. Used by the --agent CLI flag.
+ * When agentId is "none", clears the main agent contribution.
+ * When the agent ID is not found, reports an error without changing state.
+ */
+async function applyEphemeralAgent(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+	agentId: string,
+): Promise<void> {
+	if (agentId.toLowerCase() === NO_AGENT_ARGUMENT) {
+		getAgentRuntimeComposition(pi).clearMainAgentContribution();
+		return;
+	}
+	const agents = await loadSelectableAgents(ctx.cwd);
+	const agent = agents.find((candidate) =>
+		agentIdMatches(candidate.id, agentId),
+	);
+	if (agent === undefined) {
+		reportAgentError(ctx, `agent ${agentId} was not found`);
+		return;
+	}
+	await applyAgentSelection(pi, ctx, agent);
 }
 
 /** Returns true when an object contains only keys from a finite set. */

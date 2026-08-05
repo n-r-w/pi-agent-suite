@@ -255,3 +255,11 @@ The active branch reconstructs state on session start and branch changes:
 - `transitioned` updates the route of the preceding snapshot.
 
 The latest valid active snapshot remains available under every resolved policy after its catalog file is removed or the catalog becomes invalid. An invalid catalog prevents new creation and activation but does not block transitions of that saved active workflow. Earlier replaced dynamic workflows do not appear in activation options and cannot be reactivated.
+
+## CLI flags
+
+| Flag | Type | Description |
+| --- | --- | --- |
+| `--trigger <type>` | String | Runs a workflow trigger at startup, then exits. The trigger type must match a value used in workflow YAML stage definitions. |
+
+Available trigger types: `local_knowledge_accumulation`, `global_knowledge_accumulation`. When `--trigger` is set, the extension invokes the registered trigger runner at session start. After execution (success or failure), the session shuts down. An unknown trigger type or a missing trigger runner (for example, when the knowledge extension is disabled) produces an error on stderr and exits. The flag is ignored in child agent processes.

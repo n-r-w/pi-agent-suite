@@ -95,28 +95,31 @@ describe("workflow catalog configuration", () => {
 			"description: Bad\nstages: []\ntransitions: []\n",
 			"workflow must have exactly one initial stage",
 		],
-	] as const)("skips %s without rejecting valid siblings", async (_case, fileName, content, expectedIssue) => {
-		const root = await createTemporaryDirectory();
-		const filePath = join(root, fileName);
-		await writeFile(join(root, "good.yaml"), workflowYaml("Good"));
-		await writeFile(filePath, content);
-		const result = await loadWorkflowCatalog(root);
-		expect(result.workflows.map(({ id }) => id)).toEqual(["good"]);
-		expect(result.error).toBeUndefined();
-		expect(result.warnings).toHaveLength(1);
-		const warning = result.warnings?.[0];
-		if (warning === undefined) {
-			throw new Error("workflow warning missing");
-		}
-		expect(warning.message).toContain(filePath);
-		expect(warning.message.replace(filePath, "").trim().length).toBeGreaterThan(
-			0,
-		);
-		if (expectedIssue !== undefined) {
-			// Stable validation rules prove repair details without coupling to YAML parser wording.
-			expect(warning.message).toContain(expectedIssue);
-		}
-	});
+	] as const)(
+		"skips %s without rejecting valid siblings",
+		async (_case, fileName, content, expectedIssue) => {
+			const root = await createTemporaryDirectory();
+			const filePath = join(root, fileName);
+			await writeFile(join(root, "good.yaml"), workflowYaml("Good"));
+			await writeFile(filePath, content);
+			const result = await loadWorkflowCatalog(root);
+			expect(result.workflows.map(({ id }) => id)).toEqual(["good"]);
+			expect(result.error).toBeUndefined();
+			expect(result.warnings).toHaveLength(1);
+			const warning = result.warnings?.[0];
+			if (warning === undefined) {
+				throw new Error("workflow warning missing");
+			}
+			expect(warning.message).toContain(filePath);
+			expect(
+				warning.message.replace(filePath, "").trim().length,
+			).toBeGreaterThan(0);
+			if (expectedIssue !== undefined) {
+				// Stable validation rules prove repair details without coupling to YAML parser wording.
+				expect(warning.message).toContain(expectedIssue);
+			}
+		},
+	);
 
 	/**
 	 * Proves a per-entry read failure disables only the unreadable workflow.

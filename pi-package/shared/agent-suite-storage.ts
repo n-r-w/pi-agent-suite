@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { env } from "node:process";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { readAgentSuiteDirEnv } from "./environment.ts";
 
 /** Environment variable that overrides the pi-agent-suite storage root. */
 export const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -35,7 +35,7 @@ export interface ExtensionConfigLocation {
 
 /** Resolves the suite root from PI_AGENT_SUITE_DIR or the default pi agent directory. */
 export function getAgentSuiteDir(): string {
-	const configuredDir = env[AGENT_SUITE_DIR_ENV];
+	const configuredDir = readAgentSuiteDirEnv();
 	if (configuredDir !== undefined && configuredDir.length > 0) {
 		return expandHomeDirectory(configuredDir);
 	}

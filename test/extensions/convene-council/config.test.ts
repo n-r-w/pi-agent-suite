@@ -7,7 +7,7 @@ import {
 	writeConfig,
 	writeEnabledConfig,
 	writeRawConfig,
-} from "./support/env";
+} from "./support/environment";
 import {
 	createCompletionQueue,
 	createContext,

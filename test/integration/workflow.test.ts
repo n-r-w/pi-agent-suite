@@ -53,6 +53,10 @@ test("workflow entry activates a configured workflow and projects its initial st
 			tools.push(tool);
 			activeTools.push(tool.name);
 		},
+		registerFlag(): void {},
+		getFlag(): undefined {
+			return undefined;
+		},
 		getActiveTools() {
 			return [...activeTools];
 		},

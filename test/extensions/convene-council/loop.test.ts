@@ -24,7 +24,7 @@ import {
 	withIsolatedAgentDir,
 	writeEnabledConfig,
 	writeProjectionConfig,
-} from "./support/env";
+} from "./support/environment";
 import {
 	type CompletionCall,
 	createCompletionQueue,

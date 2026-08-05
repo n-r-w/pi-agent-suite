@@ -55,6 +55,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 	readonly setModelCalls: Model<Api>[];
 	readonly thinkingCalls: string[];
 	readonly activeToolCalls: string[][];
+	readonly flagValues: Map<string, boolean | string>;
 }
 
 interface ExtensionApiFakeOptions {
@@ -62,6 +63,7 @@ interface ExtensionApiFakeOptions {
 	readonly setModelResults?: readonly boolean[];
 	readonly activeTools?: readonly string[];
 	readonly allTools?: readonly string[];
+	readonly flagValues?: ReadonlyMap<string, boolean | string>;
 }
 
 interface CustomComponentFake {
@@ -121,6 +123,9 @@ function createExtensionApiFake(
 	let currentActiveTools = [...(options.activeTools ?? [])];
 	let currentThinkingLevel = "medium";
 	const setModelResults = [...(options.setModelResults ?? [])];
+	const flagValues = new Map<string, boolean | string>(
+		options.flagValues ?? [],
+	);
 
 	return {
 		handlers,
@@ -129,6 +134,7 @@ function createExtensionApiFake(
 		setModelCalls,
 		thinkingCalls,
 		activeToolCalls,
+		flagValues,
 		events: {
 			emit(): void {},
 			on(): () => void {
@@ -204,6 +210,21 @@ function createExtensionApiFake(
 			return currentThinkingLevel;
 		},
 		setLabel(): void {},
+		registerFlag(
+			name: string,
+			flagOptions: {
+				type: "boolean" | "string";
+				default?: boolean | string;
+				description?: string;
+			},
+		): void {
+			if (flagOptions.default !== undefined && !flagValues.has(name)) {
+				flagValues.set(name, flagOptions.default);
+			}
+		},
+		getFlag(name: string): boolean | string | undefined {
+			return flagValues.get(name);
+		},
 		modelRegistry: undefined,
 	} as unknown as ExtensionApiFake;
 }
@@ -2772,6 +2793,117 @@ describe("main-agent-selection", () => {
 			await getCommand(pi, "agent").handler("planner", ctx);
 
 			expect(pi.activeToolCalls).toEqual([["write"], ["read", "bash"]]);
+		});
+	});
+
+	describe("--agent CLI flag (ephemeral selection)", () => {
+		test("applies agent from flag to runtime composition without disk persistence", async () => {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeAgent(agentDir, {
+					id: "reviewer",
+					description: "Reviews code",
+					body: "Reviewer prompt",
+				});
+
+				const pi = createExtensionApiFake({
+					flagValues: new Map([["agent", "reviewer"]]),
+					activeTools: ["read", "bash"],
+				});
+				const ctx = createCommandContext("/tmp/project");
+				mainAgentSelection(pi);
+
+				await getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				);
+
+				const contribution =
+					getAgentRuntimeComposition(pi).getMainAgentContribution();
+				expect(contribution?.agent?.id).toBe("reviewer");
+			});
+		});
+
+		test("clears main agent contribution when flag value is 'none'", async () => {
+			await withIsolatedAgentDir(async () => {
+				const pi = createExtensionApiFake({
+					flagValues: new Map([["agent", "none"]]),
+					activeTools: ["read", "bash"],
+				});
+				const ctx = createCommandContext("/tmp/project");
+				mainAgentSelection(pi);
+
+				await getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				);
+
+				const contribution =
+					getAgentRuntimeComposition(pi).getMainAgentContribution();
+				expect(contribution).toBeUndefined();
+			});
+		});
+
+		test("reports error for unknown agent ID and does not apply any agent", async () => {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeAgent(agentDir, {
+					id: "reviewer",
+					description: "Reviews code",
+					body: "Reviewer prompt",
+				});
+
+				const pi = createExtensionApiFake({
+					flagValues: new Map([["agent", "nonexistent"]]),
+					activeTools: ["read", "bash"],
+				});
+				const ctx = createCommandContext("/tmp/project", undefined, [], false);
+				mainAgentSelection(pi);
+
+				await getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				);
+
+				const contribution =
+					getAgentRuntimeComposition(pi).getMainAgentContribution();
+				expect(contribution).toBeUndefined();
+			});
+		});
+
+		test("does not process flag in child subagent process", async () => {
+			await withIsolatedAgentDir(async (agentDir) => {
+				const previousSubagentId = process.env[SUBAGENT_AGENT_ID_ENV];
+				process.env[SUBAGENT_AGENT_ID_ENV] = "child-subagent";
+
+				try {
+					await writeAgent(agentDir, {
+						id: "reviewer",
+						description: "Reviews code",
+						body: "Reviewer prompt",
+					});
+
+					const pi = createExtensionApiFake({
+						flagValues: new Map([["agent", "reviewer"]]),
+						activeTools: ["read", "bash"],
+					});
+					const ctx = createCommandContext("/tmp/project");
+					mainAgentSelection(pi);
+
+					await getHandler(pi, "session_start")(
+						{ type: "session_start", reason: "startup" },
+						ctx,
+					);
+
+					const contribution =
+						getAgentRuntimeComposition(pi).getMainAgentContribution();
+					expect(contribution).toBeUndefined();
+				} finally {
+					if (previousSubagentId === undefined) {
+						delete process.env[SUBAGENT_AGENT_ID_ENV];
+					} else {
+						process.env[SUBAGENT_AGENT_ID_ENV] = previousSubagentId;
+					}
+				}
+			});
 		});
 	});
 });

@@ -529,79 +529,82 @@ describe("InvocationSupervisor", () => {
 		[undefined, undefined],
 		[[], "[]"],
 		[["Review"], '["Review"]'],
-	] as const)("connects workflow resolver policy %j to the child environment", async (configuredWorkflows, expectedEnvironment) => {
-		// Purpose: one accepted launch must carry the resolver result through the supervisor instead of testing either seam in isolation.
-		// Input and expected output: absent, empty, and exact Review become absent, [], and the catalog's exact Review ID.
-		// Edge case: inherited workflow transport is stripped before launch-owned policy is applied.
-		// Dependencies: production resolver, workflow catalog boundary, supervisor spawn environment, and a controlled child without provider requests.
-		const previous = process.env[SUBAGENT_WORKFLOW_IDS_ENV];
-		process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["stale"]';
-		const child = createChildProcess();
-		const environments: NodeJS.ProcessEnv[] = [];
-		const model = {
-			provider: "openai",
-			id: "test-model",
-			contextWindow: 128_000,
-		} as NonNullable<ExtensionContext["model"]>;
-		const pi = {
-			events: new EventEmitter(),
-			getThinkingLevel: () => "off",
-		} as unknown as ExtensionAPI;
-		publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
-		let authCalls = 0;
-		const ctx = {
-			cwd: "/tmp",
-			model,
-			modelRegistry: {
-				hasConfiguredAuth: () => true,
-				getApiKeyAndHeaders: async () => {
-					authCalls += 1;
-					return { ok: true };
+	] as const)(
+		"connects workflow resolver policy %j to the child environment",
+		async (configuredWorkflows, expectedEnvironment) => {
+			// Purpose: one accepted launch must carry the resolver result through the supervisor instead of testing either seam in isolation.
+			// Input and expected output: absent, empty, and exact Review become absent, [], and the catalog's exact Review ID.
+			// Edge case: inherited workflow transport is stripped before launch-owned policy is applied.
+			// Dependencies: production resolver, workflow catalog boundary, supervisor spawn environment, and a controlled child without provider requests.
+			const previous = process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["stale"]';
+			const child = createChildProcess();
+			const environments: NodeJS.ProcessEnv[] = [];
+			const model = {
+				provider: "openai",
+				id: "test-model",
+				contextWindow: 128_000,
+			} as NonNullable<ExtensionContext["model"]>;
+			const pi = {
+				events: new EventEmitter(),
+				getThinkingLevel: () => "off",
+			} as unknown as ExtensionAPI;
+			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			let authCalls = 0;
+			const ctx = {
+				cwd: "/tmp",
+				model,
+				modelRegistry: {
+					hasConfiguredAuth: () => true,
+					getApiKeyAndHeaders: async () => {
+						authCalls += 1;
+						return { ok: true };
+					},
 				},
-			},
-		} as unknown as ExtensionContext;
-		const agent: AgentDefinition = {
-			id: "SubAgentCoder",
-			description: "Codes",
-			type: "subagent",
-			prompt: "Code",
-			...(configuredWorkflows === undefined
-				? {}
-				: { workflows: configuredWorkflows }),
-		};
-		const harness = createSupervisorHarness(
-			[child],
-			[],
-			undefined,
-			undefined,
-			true,
-			{
-				resolveLaunch: (request) =>
-					resolveLaunchConfiguration({
-						pi,
-						ctx,
-						agents: [agent],
-						supervisor: undefined,
-						request,
-					}),
-				onSpawnEnvironment: (environment) => environments.push(environment),
-			},
-		);
-		try {
-			await acceptStart(harness.supervisor, child);
-			expect(authCalls).toBe(1);
-			expect(environments[0]?.[SUBAGENT_WORKFLOW_IDS_ENV]).toBe(
-				expectedEnvironment,
+			} as unknown as ExtensionContext;
+			const agent: AgentDefinition = {
+				id: "SubAgentCoder",
+				description: "Codes",
+				type: "subagent",
+				prompt: "Code",
+				...(configuredWorkflows === undefined
+					? {}
+					: { workflows: configuredWorkflows }),
+			};
+			const harness = createSupervisorHarness(
+				[child],
+				[],
+				undefined,
+				undefined,
+				true,
+				{
+					resolveLaunch: (request) =>
+						resolveLaunchConfiguration({
+							pi,
+							ctx,
+							agents: [agent],
+							supervisor: undefined,
+							request,
+						}),
+					onSpawnEnvironment: (environment) => environments.push(environment),
+				},
 			);
-		} finally {
-			child.emitClose();
-			if (previous === undefined) {
-				delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
-			} else {
-				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = previous;
+			try {
+				await acceptStart(harness.supervisor, child);
+				expect(authCalls).toBe(1);
+				expect(environments[0]?.[SUBAGENT_WORKFLOW_IDS_ENV]).toBe(
+					expectedEnvironment,
+				);
+			} finally {
+				child.emitClose();
+				if (previous === undefined) {
+					delete process.env[SUBAGENT_WORKFLOW_IDS_ENV];
+				} else {
+					process.env[SUBAGENT_WORKFLOW_IDS_ENV] = previous;
+				}
 			}
-		}
-	});
+		},
+	);
 
 	test("rechecks parent authentication before every startup attempt", async () => {
 		// Purpose: the supervisor adapter must delegate per-attempt parent credential checks to shared recovery.
