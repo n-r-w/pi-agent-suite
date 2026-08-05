@@ -31,7 +31,7 @@
 </category_rules>
 
 <quality_rules>
-  1. Do not retell the session.
+  1. Do not retell session.
   2. Do not list routine implementation steps.
   3. Include only knowledge that would improve future decisions.
   4. Preserve exact names/identifiers when needed for correctness.

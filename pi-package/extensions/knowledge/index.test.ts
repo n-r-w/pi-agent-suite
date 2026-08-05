@@ -248,10 +248,13 @@ describe("knowledge extension lifecycle", () => {
 			undefined,
 		);
 
-		// Assert: workflow receives failure, TUI receives one fixed message, and headless adds none.
+		// Assert: workflow receives failure, TUI receives step progress and one fixed failure message, and headless adds none.
 		expect(tuiResult).toEqual({ ok: false });
 		expect(headlessResult).toEqual({ ok: false });
-		expect(fake.notifications).toEqual(["[knowledge] accumulation failed"]);
+		expect(fake.notifications).toEqual([
+			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] accumulation failed",
+		]);
 		expect(fake.notifications.join(" ")).not.toContain(
 			"private knowledge text",
 		);
@@ -289,6 +292,51 @@ describe("knowledge extension lifecycle", () => {
 		// Assert: the stage trigger fails safely before model or catalog activity.
 		expect(result).toEqual({ ok: false });
 		expect(fake.notifications).toEqual(["[knowledge] accumulation failed"]);
+	});
+
+	/**
+	 * Proves local accumulation reports summary preparation and merge as separate progress events in TUI mode.
+	 * Inputs and expected outputs: one successful extraction and one successful merge yield two ordered info notifications.
+	 * Edge case: workflow success keeps progress messages without any warning notification.
+	 * Dependencies: trigger progress is emitted through the workflow runner boundary.
+	 */
+	test("reports separate local preparation and merge progress", async () => {
+		// ARRANGE
+		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-progress-"));
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async (_model, context) => {
+				const serialized = String(context.messages[0]?.content);
+				if (serialized.includes("<summary_source>")) {
+					return response("## Strategic knowledge\n- Stable rule.");
+				}
+				return response(
+					"## Strategic knowledge\n- Stable rule.\n\n## Tactical knowledge\n- Active debt.",
+				);
+			},
+			runtimeEnv: {},
+		});
+		const runner = getWorkflowTriggerRunner(fake.pi);
+		if (runner === undefined) {
+			throw new Error("workflow trigger runner missing");
+		}
+
+		// ACT
+		const result = await runner.run(
+			{ type: "local_knowledge_accumulation" },
+			createContext(fake.notifications, true),
+			undefined,
+		);
+
+		// ASSERT
+		expect(result).toEqual({ ok: true });
+		expect(fake.notifications).toEqual([
+			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] merging local knowledge...",
+		]);
 	});
 
 	/**
@@ -340,6 +388,9 @@ describe("knowledge extension lifecycle", () => {
 		// ASSERT
 		expect(result).toEqual({ ok: true });
 		expect(replayedSkillRoots).toEqual([resolve("/skills/knowledge")]);
+		expect(fake.notifications).toEqual([
+			"[knowledge] preparing local knowledge summary...",
+		]);
 	});
 
 	/**

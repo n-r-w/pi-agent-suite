@@ -27,6 +27,7 @@ import {
 	type WorkflowTriggerRunner,
 } from "../../shared/workflow-trigger-runtime";
 import {
+	type KnowledgeAccumulationOperation,
 	runGlobalKnowledgeAccumulation,
 	runLocalKnowledgeAccumulation,
 } from "./algorithms";
@@ -200,8 +201,20 @@ function createKnowledgeTriggerRunner(
 ): WorkflowTriggerRunner {
 	return {
 		async run(trigger, ctx, signal) {
+			const reportProgress =
+				!ctx.hasUI || ctx.ui === undefined
+					? undefined
+					: (operation: KnowledgeAccumulationOperation) => {
+							ctx.ui.notify(formatKnowledgeProgressMessage(operation), "info");
+						};
 			try {
-				await runKnowledgeTrigger(runtime, trigger, ctx, signal);
+				await runKnowledgeTrigger({
+					runtime,
+					trigger,
+					ctx,
+					signal,
+					reportProgress,
+				});
 				return { ok: true };
 			} catch {
 				if (ctx.hasUI) {
@@ -213,13 +226,36 @@ function createKnowledgeTriggerRunner(
 	};
 }
 
+/** Maps one accumulation operation to a stable user-facing progress message. */
+function formatKnowledgeProgressMessage(
+	operation: KnowledgeAccumulationOperation,
+): string {
+	switch (operation) {
+		case "prepare_local_summary":
+			return "[knowledge] preparing local knowledge summary...";
+		case "merge_local_knowledge":
+			return "[knowledge] merging local knowledge...";
+		case "merge_global_knowledge":
+			return "[knowledge] merging global knowledge...";
+	}
+}
+
+/** Carries one trigger execution request for root-coordinated accumulation. */
+interface KnowledgeTriggerRunRequest {
+	readonly runtime: EnabledKnowledgeRuntime;
+	readonly trigger: WorkflowTrigger;
+	readonly ctx: ExtensionContext;
+	readonly signal: AbortSignal | undefined;
+	readonly reportProgress:
+		| ((operation: KnowledgeAccumulationOperation) => void)
+		| undefined;
+}
+
 /** Runs one accumulation under a root FIFO lease resolved before admission. */
 async function runKnowledgeTrigger(
-	runtime: EnabledKnowledgeRuntime,
-	trigger: WorkflowTrigger,
-	ctx: ExtensionContext,
-	signal: AbortSignal | undefined,
+	request: KnowledgeTriggerRunRequest,
 ): Promise<void> {
+	const { runtime, trigger, ctx, signal, reportProgress } = request;
 	const resolved = resolveKnowledgeScope(
 		runtime.config,
 		runtime.resolveProject,
@@ -254,6 +290,7 @@ async function runKnowledgeTrigger(
 				: undefined,
 			completeSimple: runtime.completeSimple,
 			signal,
+			...(reportProgress === undefined ? {} : { reportProgress }),
 		};
 		if (trigger.type === "local_knowledge_accumulation") {
 			await runLocalKnowledgeAccumulation(options);

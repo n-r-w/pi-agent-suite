@@ -34,4 +34,10 @@
   3. Keep exact identifiers and names when they affect correctness.
   4. Return only the final replacement Markdown.
   5. Keep result within the stated token limit.
+  6. MUST use ONLY English unless maintaining original language is essential for accuracy.
 </merge_rules>
+
+<size_constraints>
+  1. Volume of final knowledge should not exceed 400 lines of text.
+  2. MUST remove articles, use simple, caveman-style phrases while maintaining the meaning.
+</size_constraints>

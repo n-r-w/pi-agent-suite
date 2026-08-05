@@ -31,6 +31,12 @@ import type { BranchPaths, ProjectPaths } from "./paths";
 
 const NOT_FOUND = "NOT_FOUND";
 
+/** Lists user-visible accumulation operations for progress reporting. */
+export type KnowledgeAccumulationOperation =
+	| "prepare_local_summary"
+	| "merge_local_knowledge"
+	| "merge_global_knowledge";
+
 /** Storage operations used by accumulation after the root grants a scoped lease. */
 interface KnowledgeAlgorithmOwner {
 	replace(
@@ -60,6 +66,7 @@ interface KnowledgeAlgorithmOptions {
 	readonly completeSimple: AuxiliaryLlmCompletion;
 	readonly signal: AbortSignal | undefined;
 	readonly replay?: typeof replayContextProjection;
+	readonly reportProgress?: (operation: KnowledgeAccumulationOperation) => void;
 }
 
 /** Reports whether an accumulation performed a complete knowledge replacement. */
@@ -89,6 +96,7 @@ export async function runLocalKnowledgeAccumulation(
 	options: KnowledgeAlgorithmOptions,
 ): Promise<KnowledgeAlgorithmResult> {
 	throwIfCancelled(options.signal);
+	options.reportProgress?.("prepare_local_summary");
 	const extraction = await resolveOperationRuntime(
 		options.ctx,
 		options.config.extraction,
@@ -123,6 +131,7 @@ export async function runLocalKnowledgeAccumulation(
 		return { kind: "noop" };
 	}
 
+	options.reportProgress?.("merge_local_knowledge");
 	const merge = await resolveOperationRuntime(
 		options.ctx,
 		options.config.merge,
@@ -164,6 +173,7 @@ export async function runGlobalKnowledgeAccumulation(
 		return { kind: "noop" };
 	}
 
+	options.reportProgress?.("merge_global_knowledge");
 	const merge = await resolveOperationRuntime(
 		options.ctx,
 		options.config.merge,

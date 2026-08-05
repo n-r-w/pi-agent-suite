@@ -118,7 +118,13 @@ Project instruction files, including `AGENTS.md`, remain separate and are never 
 
 ## Workflow triggers
 
-Knowledge accumulates only when a workflow enters a stage containing a supported trigger:
+Knowledge accumulates only when a workflow enters a stage containing a supported trigger. In TUI mode, the extension reports operation progress with informational notifications. Local accumulation reports preparation and merge separately:
+- `[knowledge] preparing local knowledge summary...`
+- `[knowledge] merging local knowledge...`
+Global accumulation reports merge progress:
+- `[knowledge] merging global knowledge...`
+
+Knowledge accumulates when a workflow enters a stage containing a supported trigger:
 
 ```yaml
 stages:
