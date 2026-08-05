@@ -205,7 +205,11 @@ function createKnowledgeTriggerRunner(
 		async run(trigger, ctx, signal) {
 			const reportProgress =
 				!ctx.hasUI || ctx.ui === undefined
-					? undefined
+					? (operation: KnowledgeAccumulationOperation) => {
+							process.stderr.write(
+								`${formatKnowledgeProgressMessage(operation)}\n`,
+							);
+						}
 					: (operation: KnowledgeAccumulationOperation) => {
 							ctx.ui.notify(formatKnowledgeProgressMessage(operation), "info");
 						};
@@ -223,6 +227,10 @@ function createKnowledgeTriggerRunner(
 					ctx.ui.notify(
 						`[knowledge] accumulation failed (${formatKnowledgeFailureReason(error)})`,
 						"warning",
+					);
+				} else {
+					process.stderr.write(
+						`[knowledge] accumulation failed (${formatKnowledgeFailureReason(error)})\n`,
 					);
 				}
 				return { ok: false };

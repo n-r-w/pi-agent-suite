@@ -462,7 +462,9 @@ async function handleCliTriggerIfRequested(
 		ctx.shutdown();
 		return true;
 	}
+	process.stderr.write(`[trigger] running ${triggerFlag}...\n`);
 	await runner.run({ type: triggerFlag }, ctx, undefined);
+	process.stderr.write(`[trigger] ${triggerFlag} completed\n`);
 	ctx.shutdown();
 	return true;
 }
