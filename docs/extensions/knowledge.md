@@ -155,7 +155,7 @@ Workflow state is saved before triggers run. A failed trigger stops the remainin
 2. A local digest already recorded after the last successful global merge skips the model call.
 3. Changed local knowledge is consolidated with global knowledge.
 4. A within-limit result completely replaces the global file.
-5. The local file remains unchanged, and its digest is recorded only after global replacement succeeds.
+5. After a successful global replacement, the transferred local knowledge file is deleted, and its digest is recorded.
 
 Merge consolidation separates knowledge into two categories: strategic (stable high-leverage project knowledge) and tactical (important but volatile operational knowledge). The replacement Markdown must always keep explicit `## Strategic knowledge` and `## Tactical knowledge` sections. The model must preserve strategic foundations without allowing tactical churn to overwrite them, while still keeping enough tactical risk context for near-term work.
 

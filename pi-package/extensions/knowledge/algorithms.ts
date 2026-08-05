@@ -43,6 +43,7 @@ interface KnowledgeAlgorithmOwner {
 		target: KnowledgeTarget,
 		text: string,
 	): Promise<KnowledgeReplacementResult>;
+	delete(target: KnowledgeTarget): Promise<void>;
 	readGlobalMergeState(path: string): Promise<GlobalMergeState | null>;
 	replaceGlobalMergeState(path: string, state: GlobalMergeState): Promise<void>;
 	replaceIdentityMetadata(
@@ -188,6 +189,10 @@ export async function runGlobalKnowledgeAccumulation(
 		existing: options.snapshots.global,
 		incoming: local,
 		tokenLimit: options.config.globalTokenLimit,
+	});
+	await options.owner.delete({
+		scope: "local",
+		path: options.branchPaths.knowledgeFile,
 	});
 	// The digest becomes authoritative only after the global replacement completed.
 	await options.owner.replaceGlobalMergeState(

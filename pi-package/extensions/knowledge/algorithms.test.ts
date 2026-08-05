@@ -74,6 +74,7 @@ function response(text: string): AssistantMessage {
 class RecordingOwner {
 	readonly events: string[] = [];
 	readonly replacements: Array<{ target: KnowledgeTarget; text: string }> = [];
+	readonly deletions: KnowledgeTarget[] = [];
 	state: GlobalMergeState | null = null;
 	overLimitTexts = new Map<
 		string,
@@ -91,6 +92,12 @@ class RecordingOwner {
 		return overLimit === undefined
 			? { kind: "written", tokenCount: 3 }
 			: { kind: "over-limit", ...overLimit };
+	}
+
+	/** Deletes one knowledge target after successful transfer to durable destination. */
+	public async delete(target: KnowledgeTarget): Promise<void> {
+		this.events.push(`delete:${target.scope}`);
+		this.deletions.push(target);
 	}
 
 	/** Returns the exact local digest from the last successful global replacement. */
@@ -330,12 +337,12 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
-	 * Proves changed local knowledge replaces only global knowledge and persists its digest afterward.
-	 * Inputs and expected outputs: changed local plus absent global produces one global replacement, then state and identity writes.
-	 * Edge case: local target is never replaced even when global starts absent.
+	 * Proves changed local knowledge replaces global knowledge and removes transferred local knowledge.
+	 * Inputs and expected outputs: changed local plus absent global produces one global replacement, one local deletion, then state and identity writes.
+	 * Edge case: local transfer cleanup deletes only the local target and never the global target.
 	 * Dependencies: the owner event log makes write ordering observable.
 	 */
-	test("merges changed local into global and persists digest after replacement", async () => {
+	test("merges changed local into global, deletes local, and persists digest", async () => {
 		// Arrange: one fitting global merge response.
 		const owner = new RecordingOwner();
 		const contexts: Context[] = [];
@@ -349,13 +356,17 @@ describe("knowledge accumulation algorithms", () => {
 		// Act: global accumulation completes successfully.
 		const result = await runGlobalKnowledgeAccumulation(options);
 
-		// Assert: global replacement precedes digest persistence and local remains untouched.
+		// Assert: global replacement is followed by local cleanup, then digest and identity persistence.
 		expect(result).toEqual({ kind: "written" });
 		expect(owner.replacements).toHaveLength(1);
 		expect(owner.replacements[0]?.target.scope).toBe("global");
+		expect(owner.deletions).toEqual([
+			{ scope: "local", path: options.branchPaths.knowledgeFile },
+		]);
 		expect(owner.events).toEqual([
 			"read-state",
 			"replace:global:## Global",
+			"delete:local",
 			"write-state",
 			"write-identity",
 		]);
@@ -382,7 +393,7 @@ describe("knowledge accumulation algorithms", () => {
 			contexts,
 		});
 
-		// Act and assert: exhaustion fails before state or identity writes.
+		// Act and assert: exhaustion fails before local deletion, state, or identity writes.
 		await expect(runGlobalKnowledgeAccumulation(options)).rejects.toThrow(
 			"merge output exceeds the knowledge token limit",
 		);
@@ -391,6 +402,7 @@ describe("knowledge accumulation algorithms", () => {
 			"large-2",
 			"large-3",
 		]);
+		expect(owner.deletions).toEqual([]);
 		expect(owner.events.filter((event) => event === "write-state")).toEqual([]);
 		expect(owner.events.filter((event) => event === "write-identity")).toEqual(
 			[],
