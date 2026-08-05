@@ -81,6 +81,7 @@ describe("knowledge configuration", () => {
 		expect(result.config.extraction.systemPrompt).toBeDefined();
 		expect(result.config.extraction.taskPrompt).toBeDefined();
 		expect(result.config.merge.systemPrompt).toBeDefined();
+		expect(result.config.merge.taskPrompt).toBeDefined();
 	});
 
 	/** Verifies that every top-level and nested setting can be overridden independently. */
@@ -90,10 +91,12 @@ describe("knowledge configuration", () => {
 		const dataDir = join(agentSuiteDir, "catalog");
 		const extractionSystemPrompt = join(agentSuiteDir, "extract-system.md");
 		const extractionTaskPrompt = join(agentSuiteDir, "extract-task.md");
-		const mergePrompt = join(agentSuiteDir, "merge.md");
+		const mergeSystemPrompt = join(agentSuiteDir, "merge-system.md");
+		const mergeTaskPrompt = join(agentSuiteDir, "merge.md");
 		await writeFile(extractionSystemPrompt, "Extract durable knowledge.");
 		await writeFile(extractionTaskPrompt, "Summarize this branch session.");
-		await writeFile(mergePrompt, "Merge durable knowledge.");
+		await writeFile(mergeSystemPrompt, "Merge system rules.");
+		await writeFile(mergeTaskPrompt, "Merge durable knowledge.");
 		const value = {
 			enabled: false,
 			dataDir,
@@ -110,7 +113,8 @@ describe("knowledge configuration", () => {
 			merge: {
 				model: "anthropic/claude",
 				thinking: "xhigh",
-				systemPromptFile: mergePrompt,
+				systemPromptFile: mergeSystemPrompt,
+				taskPromptFile: mergeTaskPrompt,
 				retryCount: 4,
 			},
 		} as const;
@@ -133,7 +137,8 @@ describe("knowledge configuration", () => {
 				merge: {
 					model: value.merge.model,
 					thinking: value.merge.thinking,
-					systemPrompt: "Merge durable knowledge.",
+					systemPrompt: "Merge system rules.",
+					taskPrompt: "Merge durable knowledge.",
 					retryCount: value.merge.retryCount,
 				},
 			},
@@ -174,6 +179,8 @@ describe("knowledge configuration", () => {
 			{ merge: { thinking: "unknown" } },
 			{ merge: { retryCount: 1.5 } },
 			{ merge: { systemPromptFile: missingPrompt } },
+			{ merge: { taskPromptFile: "relative.md" } },
+			{ merge: { taskPromptFile: emptyPrompt } },
 		];
 
 		// ACT

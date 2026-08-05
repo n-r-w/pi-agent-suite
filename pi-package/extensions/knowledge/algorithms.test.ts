@@ -140,6 +140,7 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 			model: undefined,
 			thinking: undefined,
 			systemPrompt: "merge system",
+			taskPrompt: "merge task prompt",
 			retryCount: 2,
 		},
 		...overrides,
@@ -254,6 +255,54 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
+	 * Proves summary-source serialization keeps visible text while dropping bulky non-text payloads.
+	 * Inputs and expected outputs: one replayed assistant message with thinking and tool-call payload retains only text content.
+	 * Edge case: hidden payload values such as thinking signatures and tool arguments never appear in the extraction request.
+	 * Dependencies: local extraction request assembly serializes replayed branch messages before model invocation.
+	 */
+	test("serializes only text payload in summary source", async () => {
+		// Arrange: replay returns one assistant message with both visible text and hidden payload blocks.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: null, local: null },
+			outputs: ["NOT_FOUND"],
+			contexts,
+		});
+		const noisyAssistant = response("assistant visible");
+		(noisyAssistant as unknown as { content: unknown }).content = [
+			{
+				type: "thinking",
+				thinking: "internal reasoning",
+				thinkingSignature: "private-signature",
+			},
+			{ type: "text", text: "assistant visible" },
+			{
+				type: "toolCall",
+				id: "call-1",
+				name: "read",
+				arguments: { path: "/private/path" },
+			},
+		];
+		(options as { replay: NonNullable<typeof options.replay> }).replay =
+			async () =>
+				[noisyAssistant] as Awaited<
+					ReturnType<NonNullable<typeof options.replay>>
+				>;
+
+		// Act.
+		const result = await runLocalKnowledgeAccumulation(options);
+
+		// Assert.
+		expect(result).toEqual({ kind: "noop" });
+		const content = String(contexts[0]?.messages[0]?.content);
+		expect(content).toContain("assistant visible");
+		expect(content).not.toContain("private-signature");
+		expect(content).not.toContain("/private/path");
+	});
+
+	/**
 	 * Proves extraction receives current knowledge snapshots so duplicate filtering rules are actionable.
 	 * Inputs and expected outputs: one global and one local snapshot appear in the extraction user message before summary source.
 	 * Edge case: both sections are present in one outer knowledge block when both snapshots exist.
@@ -288,12 +337,12 @@ describe("knowledge accumulation algorithms", () => {
 
 	/**
 	 * Proves local format feedback and oversized merge feedback use finite configured retries.
-	 * Inputs and expected outputs: marker-invalid extraction repairs once; oversized merge reports 17 against unchanged limit 5, then writes repaired Markdown.
+	 * Inputs and expected outputs: empty extraction repairs once; oversized merge reports 17 against unchanged limit 5, then writes repaired Markdown.
 	 * Edge case: stored local knowledge is supplied to merge and replacement occurs only for the within-limit response.
 	 * Dependencies: the owner supplies the authoritative tokenizer count used in feedback.
 	 */
 	test("repairs invalid extraction and oversized local merge before replacement", async () => {
-		// Arrange: one extraction defect, one positive repair, one oversized merge, and one fitting repair.
+		// Arrange: one empty extraction defect, one positive repair, one oversized merge, and one fitting repair.
 		const owner = new RecordingOwner();
 		owner.overLimitTexts.set("oversized merge", {
 			tokenCount: 17,
@@ -303,12 +352,7 @@ describe("knowledge accumulation algorithms", () => {
 		const options = createOptions({
 			owner,
 			snapshots: { global: "global", local: "stored local" },
-			outputs: [
-				"NOT_FOUND with explanation",
-				"## New",
-				"oversized merge",
-				"## Merged",
-			],
+			outputs: ["", "## New", "oversized merge", "## Merged"],
 			contexts,
 		});
 
@@ -442,5 +486,33 @@ describe("knowledge accumulation algorithms", () => {
 		);
 		expect(String(contexts[2]?.messages.at(-1)?.content)).toContain("12");
 		expect(String(contexts[2]?.messages.at(-1)?.content)).toContain("5");
+	});
+
+	/**
+	 * Proves the merge request appends the task prompt after data to prevent prompt injection.
+	 * Inputs and expected outputs: one global merge captures the initial request message.
+	 * Edge case: task prompt must appear after </incoming_knowledge> so data does not trail last.
+	 * Dependencies: formatMergeRequest owns the exact ordering contract.
+	 */
+	test("appends task prompt after incoming knowledge in merge request", async () => {
+		// Arrange: one fitting global merge response.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: "global old", local: "local new" },
+			outputs: ["## Merged"],
+			contexts,
+		});
+
+		// Act: global accumulation sends one merge request.
+		await runGlobalKnowledgeAccumulation(options);
+
+		// Assert: the merge request message ends with the task prompt after all data.
+		const mergeMessage = String(contexts[0]?.messages[0]?.content);
+		const incomingEnd = mergeMessage.lastIndexOf("</incoming_knowledge>");
+		expect(incomingEnd).toBeGreaterThan(-1);
+		const taskPromptStart = mergeMessage.indexOf("merge task prompt");
+		expect(taskPromptStart).toBeGreaterThan(incomingEnd);
 	});
 });

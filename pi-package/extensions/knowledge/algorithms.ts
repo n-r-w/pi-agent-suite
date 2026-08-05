@@ -109,9 +109,6 @@ export async function runLocalKnowledgeAccumulation(
 		loadedSkillRoots: options.loadedSkillRoots,
 	});
 	const extractionTaskPrompt = extraction.operation.taskPrompt;
-	if (extractionTaskPrompt === undefined) {
-		throw new Error("knowledge extraction task prompt is not configured");
-	}
 	const extractionContext: Context = {
 		systemPrompt: extraction.operation.systemPrompt,
 		messages: [
@@ -228,11 +225,13 @@ async function extractKnowledgeAttempt(
 	if (completion.rawText === NOT_FOUND) {
 		return null;
 	}
-	if (completion.text.length > 0 && !completion.rawText.includes(NOT_FOUND)) {
+	if (completion.text.length > 0) {
 		return completion.text;
 	}
 	if (attempt === operation.operation.retryCount) {
-		throw new Error("knowledge extraction response contract was not satisfied");
+		throw new Error(
+			`knowledge extraction response contract was not satisfied: ${completion.rawText}`,
+		);
 	}
 	context.messages.push(
 		completion.response,
@@ -262,7 +261,14 @@ async function mergeAndReplace({
 	const context: Context = {
 		systemPrompt: operation.operation.systemPrompt,
 		messages: [
-			userMessage(formatMergeRequest(existing ?? "", incoming, tokenLimit)),
+			userMessage(
+				formatMergeRequest(
+					existing ?? "",
+					incoming,
+					tokenLimit,
+					operation.operation.taskPrompt,
+				),
+			),
 		],
 		tools: [],
 	};
@@ -343,7 +349,12 @@ async function completeText(
 		throw new Error("knowledge model request was cancelled");
 	}
 	if (response.stopReason === "error") {
-		throw new Error("knowledge model request failed");
+		throw new Error(
+			typeof response.errorMessage === "string" &&
+				response.errorMessage.trim().length > 0
+				? response.errorMessage.trim()
+				: "knowledge model request failed",
+		);
 	}
 	return {
 		response,
@@ -389,22 +400,27 @@ function formatExtractionRequest(
 	].join("\n");
 }
 
-/** Serializes projected branch dialogue into one stable source payload. */
+/** Serializes projected branch dialogue into one stable text-only source payload. */
 function formatSummarySource(
 	messages: ReturnType<typeof convertToLlm>,
 ): string {
 	return messages
-		.map((message, index) =>
-			[
+		.map((message, index) => {
+			const textContent = serializeSummaryContent(message.content).trim();
+			if (textContent.length === 0) {
+				return "";
+			}
+			return [
 				`<message index="${index}" role="${message.role}">`,
-				serializeSummaryContent(message.content),
+				textContent,
 				"</message>",
-			].join("\n"),
-		)
+			].join("\n");
+		})
+		.filter((chunk) => chunk.length > 0)
 		.join("\n\n");
 }
 
-/** Serializes one projected message payload without dropping text evidence. */
+/** Serializes one projected message payload while dropping non-text helper payloads. */
 function serializeSummaryContent(content: unknown): string {
 	if (typeof content === "string") {
 		return content;
@@ -412,18 +428,20 @@ function serializeSummaryContent(content: unknown): string {
 	if (Array.isArray(content)) {
 		return content
 			.map((part) => {
-				if (isRecord(part) && part["type"] === "text") {
-					const text = part["text"];
-					return typeof text === "string" ? text : JSON.stringify(part);
+				if (!isRecord(part) || part["type"] !== "text") {
+					return "";
 				}
-				return JSON.stringify(part);
+				const text = part["text"];
+				return typeof text === "string" ? text : "";
 			})
+			.filter((text) => text.length > 0)
 			.join("\n");
 	}
 	if (isRecord(content)) {
-		return JSON.stringify(content);
+		const text = content["text"];
+		return typeof text === "string" ? text : "";
 	}
-	return String(content);
+	return "";
 }
 
 /** Narrows unknown values to generic string-key records. */
@@ -436,6 +454,7 @@ function formatMergeRequest(
 	existing: string,
 	incoming: string,
 	tokenLimit: number,
+	taskPrompt: string,
 ): string {
 	return [
 		`The complete replacement must contain at most ${tokenLimit} tokens.`,
@@ -445,6 +464,8 @@ function formatMergeRequest(
 		"<incoming_knowledge>",
 		incoming,
 		"</incoming_knowledge>",
+		"",
+		taskPrompt,
 	].join("\n");
 }
 

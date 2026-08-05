@@ -38,8 +38,12 @@ afterEach(async () => {
 	);
 });
 
-/** Creates one text-only auxiliary response. */
-function response(text: string): AssistantMessage {
+/** Creates one auxiliary response with explicit stop reason and optional provider error text. */
+function response(
+	text: string,
+	stopReason: AssistantMessage["stopReason"] = "stop",
+	errorMessage?: string,
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
@@ -54,7 +58,8 @@ function response(text: string): AssistantMessage {
 			totalTokens: 2,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "stop",
+		stopReason,
+		...(errorMessage === undefined ? {} : { errorMessage }),
 		timestamp: 1,
 	};
 }
@@ -78,6 +83,7 @@ function config(dataDir: string): KnowledgeConfig {
 			model: undefined,
 			thinking: undefined,
 			systemPrompt: "merge system",
+			taskPrompt: "merge task prompt",
 			retryCount: 2,
 		},
 	};
@@ -213,12 +219,12 @@ describe("knowledge extension lifecycle", () => {
 
 	/**
 	 * Proves trigger failures notify TUI safely, remain silent headlessly, and return failure for workflow sequencing.
-	 * Inputs and expected outputs: contract-invalid extraction exhausts one retry in both TUI and headless contexts.
-	 * Edge case: notification excludes the model output and no diagnostic is appended to model context.
+	 * Inputs and expected outputs: empty extraction exhausts one retry in both TUI and headless contexts.
+	 * Edge case: notification includes the raw model output for debugging.
 	 * Dependencies: workflow runner receives the exact initiating context and signal from the workflow extension.
 	 */
 	test("reports trigger failure safely without throwing into workflow", async () => {
-		// Arrange: every extraction response contains prohibited marker-plus-text output.
+		// Arrange: every extraction response is empty, failing the response contract.
 		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-trigger-"));
 		temporaryDirectories.push(dataDir);
 		const fake = createPi();
@@ -226,7 +232,7 @@ describe("knowledge extension lifecycle", () => {
 		knowledgeExtension(fake.pi, {
 			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
 			resolveProject: () => resolution,
-			completeSimple: async () => response("NOT_FOUND private knowledge text"),
+			completeSimple: async () => response(""),
 			runtimeEnv: {},
 		});
 		const runner = getWorkflowTriggerRunner(fake.pi);
@@ -248,16 +254,53 @@ describe("knowledge extension lifecycle", () => {
 			undefined,
 		);
 
-		// Assert: workflow receives failure, TUI receives step progress and one fixed failure message, and headless adds none.
+		// Assert: workflow receives failure, TUI receives step progress and one detailed failure message, and headless adds none.
 		expect(tuiResult).toEqual({ ok: false });
 		expect(headlessResult).toEqual({ ok: false });
 		expect(fake.notifications).toEqual([
 			"[knowledge] preparing local knowledge summary...",
-			"[knowledge] accumulation failed",
+			"[knowledge] accumulation failed (knowledge extraction response contract was not satisfied:)",
 		]);
-		expect(fake.notifications.join(" ")).not.toContain(
-			"private knowledge text",
+	});
+
+	/**
+	 * Proves provider-facing failure details are preserved in the user-visible accumulation warning.
+	 * Inputs and expected outputs: one model error response with explicit errorMessage propagates that message to the warning.
+	 * Edge case: extraction failure still returns workflow-safe { ok: false } without throwing.
+	 * Dependencies: knowledge trigger runner catches algorithm errors and formats one warning.
+	 */
+	test("reports original provider error text in accumulation warning", async () => {
+		// Arrange: completeSimple returns one explicit provider error response.
+		const dataDir = await mkdtemp(
+			join(tmpdir(), "pi-knowledge-provider-error-"),
 		);
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async () =>
+				response("", "error", "No API key found for github-copilot."),
+			runtimeEnv: {},
+		});
+		const runner = getWorkflowTriggerRunner(fake.pi);
+		if (runner === undefined) {
+			throw new Error("workflow trigger runner missing");
+		}
+
+		// Act.
+		const result = await runner.run(
+			{ type: "local_knowledge_accumulation" },
+			createContext(fake.notifications, true),
+			undefined,
+		);
+
+		// Assert.
+		expect(result).toEqual({ ok: false });
+		expect(fake.notifications).toEqual([
+			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] accumulation failed (No API key found for github-copilot.)",
+		]);
 	});
 
 	/**
@@ -289,9 +332,11 @@ describe("knowledge extension lifecycle", () => {
 			undefined,
 		);
 
-		// Assert: the stage trigger fails safely before model or catalog activity.
+		// Assert: the stage trigger fails safely before model or catalog activity and reports the failure reason.
 		expect(result).toEqual({ ok: false });
-		expect(fake.notifications).toEqual(["[knowledge] accumulation failed"]);
+		expect(fake.notifications).toEqual([
+			"[knowledge] accumulation failed (knowledge project scope unavailable)",
+		]);
 	});
 
 	/**

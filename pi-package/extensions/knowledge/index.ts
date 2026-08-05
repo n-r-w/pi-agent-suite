@@ -216,9 +216,12 @@ function createKnowledgeTriggerRunner(
 					reportProgress,
 				});
 				return { ok: true };
-			} catch {
+			} catch (error) {
 				if (ctx.hasUI) {
-					ctx.ui.notify("[knowledge] accumulation failed", "warning");
+					ctx.ui.notify(
+						`[knowledge] accumulation failed (${formatKnowledgeFailureReason(error)})`,
+						"warning",
+					);
 				}
 				return { ok: false };
 			}
@@ -238,6 +241,14 @@ function formatKnowledgeProgressMessage(
 		case "merge_global_knowledge":
 			return "[knowledge] merging global knowledge...";
 	}
+}
+
+/** Formats one accumulation failure into user-visible warning details. */
+function formatKnowledgeFailureReason(error: unknown): string {
+	if (error instanceof Error && error.message.trim().length > 0) {
+		return error.message.trim();
+	}
+	return String(error);
 }
 
 /** Carries one trigger execution request for root-coordinated accumulation. */

@@ -20,12 +20,8 @@ const OPERATION_KEYS = [
 	"model",
 	"thinking",
 	"systemPromptFile",
-	"retryCount",
-] as const;
-/** Defines extraction-only fields beyond the shared operation contract. */
-const EXTRACTION_OPERATION_KEYS = [
-	...OPERATION_KEYS,
 	"taskPromptFile",
+	"retryCount",
 ] as const;
 /** Defines the thinking values accepted by knowledge model operations. */
 const THINKING_LEVELS = [
@@ -52,6 +48,9 @@ const BUNDLED_EXTRACTION_SYSTEM_PROMPT = fileURLToPath(
 const BUNDLED_EXTRACTION_TASK_PROMPT = fileURLToPath(
 	new URL("./prompts/extraction.md", import.meta.url),
 );
+const BUNDLED_MERGE_SYSTEM_PROMPT = fileURLToPath(
+	new URL("./prompts/merge-system.md", import.meta.url),
+);
 const BUNDLED_MERGE_PROMPT = fileURLToPath(
 	new URL("./prompts/merge.md", import.meta.url),
 );
@@ -65,8 +64,8 @@ export interface KnowledgeOperationConfig {
 	readonly model: string | undefined;
 	readonly thinking: KnowledgeThinking | undefined;
 	readonly systemPrompt: string;
+	readonly taskPrompt: string;
 	readonly retryCount: number;
-	readonly taskPrompt?: string;
 }
 
 /** Holds the fully resolved knowledge configuration. */
@@ -117,17 +116,18 @@ export function parseKnowledgeConfig(
 	const extraction = parseOperationConfig({
 		value: value["extraction"],
 		defaultPromptFile: BUNDLED_EXTRACTION_SYSTEM_PROMPT,
+		defaultTaskPromptFile: BUNDLED_EXTRACTION_TASK_PROMPT,
 		defaultRetryCount: DEFAULT_EXTRACTION_RETRIES,
 		fieldName: "extraction",
-		allowedKeys: EXTRACTION_OPERATION_KEYS,
-		defaultTaskPromptFile: BUNDLED_EXTRACTION_TASK_PROMPT,
+		allowedKeys: OPERATION_KEYS,
 	});
 	if (typeof extraction === "string") {
 		return invalid(extraction);
 	}
 	const merge = parseOperationConfig({
 		value: value["merge"],
-		defaultPromptFile: BUNDLED_MERGE_PROMPT,
+		defaultPromptFile: BUNDLED_MERGE_SYSTEM_PROMPT,
+		defaultTaskPromptFile: BUNDLED_MERGE_PROMPT,
 		defaultRetryCount: DEFAULT_MERGE_RETRIES,
 		fieldName: "merge",
 		allowedKeys: OPERATION_KEYS,
@@ -249,10 +249,10 @@ function parsePrimaryBranches(
 interface ParseOperationConfigOptions {
 	readonly value: unknown;
 	readonly defaultPromptFile: string;
+	readonly defaultTaskPromptFile: string;
 	readonly defaultRetryCount: number;
 	readonly fieldName: string;
 	readonly allowedKeys: readonly string[];
-	readonly defaultTaskPromptFile?: string;
 }
 
 /** Resolves one nested operation config while preserving current-runtime defaults. */
@@ -286,14 +286,6 @@ function parseOperationConfig(
 	);
 	if (systemPrompt.kind === "invalid") {
 		return systemPrompt.issue;
-	}
-	if (options.defaultTaskPromptFile === undefined) {
-		return {
-			model,
-			thinking,
-			systemPrompt: systemPrompt.content,
-			retryCount: retryCount ?? options.defaultRetryCount,
-		};
 	}
 	const taskPrompt = resolveOperationPrompt(
 		parsed,

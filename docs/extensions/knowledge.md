@@ -30,7 +30,8 @@ The file is optional. Missing configuration enables the extension with defaults.
   "merge": {
     "model": "review-fast",
     "thinking": "medium",
-    "systemPromptFile": "/absolute/path/to/merge.md",
+    "systemPromptFile": "/absolute/path/to/merge-system.md",
+    "taskPromptFile": "/absolute/path/to/merge.md",
     "retryCount": 2
   }
 }
@@ -54,7 +55,8 @@ All fields are optional.
 | `merge` | Object | Defaults below | Configures local and global knowledge consolidation. |
 | `merge.model` | Non-empty string | Current initiating model | Selects the merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `merge.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects merge reasoning. |
-| `merge.systemPromptFile` | Readable non-empty absolute file path | Bundled merge prompt | Replaces the merge system prompt. |
+| `merge.systemPromptFile` | Readable non-empty absolute file path | Bundled merge system prompt | Replaces the merge system prompt. |
+| `merge.taskPromptFile` | Readable non-empty absolute file path | Bundled merge task prompt | Replaces the merge task prompt attached after `</incoming_knowledge>`. |
 | `merge.retryCount` | Non-negative safe integer | `2` | Number of shortening retries after the initial over-limit merge response. |
 
 Unknown fields, invalid JSON, invalid values, and unreadable or empty configured prompt files disable the extension. In TUI mode, Pi shows a fixed error notification without the private configuration value.
