@@ -254,6 +254,39 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
+	 * Proves extraction receives current knowledge snapshots so duplicate filtering rules are actionable.
+	 * Inputs and expected outputs: one global and one local snapshot appear in the extraction user message before summary source.
+	 * Edge case: both sections are present in one outer knowledge block when both snapshots exist.
+	 * Dependencies: extraction request assembly is the only source of knowledge-block injection.
+	 */
+	test("includes current knowledge block in extraction request", async () => {
+		// Arrange: existing global and local knowledge are available at extraction start.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: "## Global\nKnown", local: "## Local\nKnown" },
+			outputs: ["NOT_FOUND"],
+			contexts,
+		});
+
+		// Act: run one local extraction cycle.
+		const result = await runLocalKnowledgeAccumulation(options);
+
+		// Assert: extraction request includes current knowledge and source transcript.
+		expect(result).toEqual({ kind: "noop" });
+		const content = String(contexts[0]?.messages[0]?.content);
+		expect(content).toContain("<knowledge>");
+		expect(content).toContain("<global>");
+		expect(content).toContain("## Global\nKnown");
+		expect(content).toContain("<local>");
+		expect(content).toContain("## Local\nKnown");
+		expect(content).toContain("</knowledge>");
+		expect(content).toContain("<summary_source>");
+		expect(content).toContain("projected current branch");
+	});
+
+	/**
 	 * Proves local format feedback and oversized merge feedback use finite configured retries.
 	 * Inputs and expected outputs: marker-invalid extraction repairs once; oversized merge reports 17 against unchanged limit 5, then writes repaired Markdown.
 	 * Edge case: stored local knowledge is supplied to merge and replacement occurs only for the within-limit response.

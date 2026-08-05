@@ -142,7 +142,7 @@ Workflow state is saved before triggers run. A failed trigger stops the remainin
 
 ### Local accumulation
 
-1. The extraction model receives one explicit request: `<summary_source> ...projected branch session... </summary_source>` plus the extraction task prompt.
+1. The extraction model receives one explicit request that includes current `<knowledge>...</knowledge>` snapshots and `<summary_source> ...projected branch session... </summary_source>`, followed by the extraction task prompt.
 2. The extraction system prompt and task prompt are configured independently.
 3. Exact `NOT_FOUND` ends without changes.
 4. Empty or contract-invalid output receives format feedback up to `extraction.retryCount`.

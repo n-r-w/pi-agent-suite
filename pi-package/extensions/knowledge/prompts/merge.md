@@ -36,6 +36,7 @@
   5. Keep result within the stated token limit.
   6. MUST NOT place duplicate information between the strategic and tactical sections.
   7. MUST use ONLY English unless maintaining original language is essential for accuracy.
+  8. Group related knowledge into single statements when possible.
 </merge_rules>
 
 <size_constraints>

@@ -20,6 +20,7 @@ import { replayContextProjection } from "../../shared/context-projection";
 import type { KnowledgeSnapshots } from "../../shared/knowledge-runtime";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import type { KnowledgeConfig, KnowledgeOperationConfig } from "./config";
+import { renderKnowledgeBlock } from "./context";
 import type { IdentityMetadata } from "./git-context";
 import {
 	createGlobalMergeState,
@@ -116,6 +117,7 @@ export async function runLocalKnowledgeAccumulation(
 		messages: [
 			userMessage(
 				formatExtractionRequest(
+					renderKnowledgeBlock(options.snapshots),
 					formatSummarySource(convertToLlm(projected)),
 					extractionTaskPrompt,
 				),
@@ -371,11 +373,20 @@ async function resolveOperationRuntime(
 	};
 }
 
-/** Builds one explicit extraction request that separates source data from task instructions. */
-function formatExtractionRequest(source: string, taskPrompt: string): string {
-	return ["<summary_source>", source, "</summary_source>", "", taskPrompt].join(
-		"\n",
-	);
+/** Builds one explicit extraction request that includes current knowledge and source data. */
+function formatExtractionRequest(
+	knowledgeBlock: string | null,
+	source: string,
+	taskPrompt: string,
+): string {
+	return [
+		...(knowledgeBlock === null ? [] : [knowledgeBlock, ""]),
+		"<summary_source>",
+		source,
+		"</summary_source>",
+		"",
+		taskPrompt,
+	].join("\n");
 }
 
 /** Serializes projected branch dialogue into one stable source payload. */
