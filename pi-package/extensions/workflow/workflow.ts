@@ -299,6 +299,9 @@ export function replayWorkflowStateWithWarnings(
 				continue;
 			}
 			ignoringLegacyState = false;
+			if (warnings.length > 0) {
+				warnings.length = 0;
+			}
 			state = replayWorkflowStateEntry(state, entry);
 		} catch (error) {
 			throw new Error(`invalid workflow-state entry: ${errorMessage(error)}`);
@@ -429,7 +432,10 @@ function validateSavedWorkflow(
 /** Checks that a persisted route starts correctly and follows only advance edges. */
 function validateRestorationSettings(
 	value: unknown,
-): WorkflowRestorationSettings {
+): WorkflowRestorationSettings | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
 	const restoration = requireObject(
 		value,
 		"workflow restoration",

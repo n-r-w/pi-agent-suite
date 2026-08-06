@@ -530,29 +530,33 @@ async function completeSettledWorkflow(
 	if (activeStage === undefined || !activeStage.final) {
 		return;
 	}
-	if (state.restoration === undefined) {
-		throw new Error("workflow restoration settings are unavailable");
+	let restorationApplication:
+		| Awaited<ReturnType<typeof applyWorkflowModelRestoration>>
+		| undefined;
+	if (state.restoration !== undefined) {
+		restorationApplication = await applyWorkflowModelRestoration(
+			pi,
+			runtime.modelRegistry,
+			runtime.currentModel,
+			state.restoration,
+		);
+		runtime.currentModel = restorationApplication.currentModel;
 	}
-	const application = await applyWorkflowModelRestoration(
-		pi,
-		runtime.modelRegistry,
-		runtime.currentModel,
-		state.restoration,
-	);
-	runtime.currentModel = application.currentModel;
 	try {
 		pi.appendEntry(WORKFLOW_STATE_ENTRY, {
 			kind: "completed",
 			route: state.route,
 		});
 	} catch (error) {
-		try {
-			await rollbackWorkflowModelSettings(pi, application);
-			runtime.currentModel = application.previousModel;
-		} catch (rollbackError) {
-			throw new Error(
-				`${formatError(error)}; final-stage model could not be restored: ${formatError(rollbackError)}`,
-			);
+		if (restorationApplication !== undefined) {
+			try {
+				await rollbackWorkflowModelSettings(pi, restorationApplication);
+				runtime.currentModel = restorationApplication.previousModel;
+			} catch (rollbackError) {
+				throw new Error(
+					`${formatError(error)}; final-stage model could not be restored: ${formatError(rollbackError)}`,
+				);
+			}
 		}
 		throw error;
 	}
