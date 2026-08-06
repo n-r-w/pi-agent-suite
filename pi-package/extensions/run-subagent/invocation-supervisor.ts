@@ -692,6 +692,7 @@ export class InvocationSupervisor implements InvocationControl {
 			}
 		}
 		if (type === "message_end") {
+			handle.notification = undefined;
 			this.handleAssistantMessageEnd(handle, value);
 		}
 		this.handleCompletionDecision(

@@ -121,7 +121,7 @@ interface CustomCompactionRuntime {
 /** Authentication material resolved for the selected summarization model. */
 interface ModelAuth {
 	readonly apiKey?: string;
-	readonly headers?: Record<string, string>;
+	readonly headers?: Record<string, string | null>;
 }
 
 /** Complete request dependencies resolved before adaptive work starts. */
@@ -152,7 +152,7 @@ interface CustomCompactionSession {
 			| {
 					readonly ok: true;
 					readonly apiKey?: string;
-					readonly headers?: Record<string, string>;
+					readonly headers?: Record<string, string | null>;
 			  }
 			| { readonly ok: false; readonly error: string }
 		>;

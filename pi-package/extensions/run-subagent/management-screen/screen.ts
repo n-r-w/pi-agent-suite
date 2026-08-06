@@ -959,39 +959,42 @@ export class ManagementScreen implements Component, Focusable {
 	/** Renders one transient child status row without adding it to conversation history. */
 	private renderLiveStatus(width: number): readonly string[] {
 		const notification = this.view.selectedNotification;
-		if (notification !== undefined) {
-			this.liveStatusIndicator?.stop();
-			this.liveStatusIndicator = undefined;
-			const color =
-				notification.notifyType === "info" ? "accent" : notification.notifyType;
-			return [
-				truncateToWidth(
-					this.options.theme.fg(color, notification.message),
-					width,
-				),
-			];
-		}
 		const status = this.view.selectedLiveStatus;
-		if (status === undefined) {
+		const message =
+			notification?.message ??
+			(status !== undefined
+				? liveStatusMessage(status, Date.now())
+				: undefined);
+
+		if (message === undefined) {
 			this.liveStatusIndicator?.stop();
 			this.liveStatusIndicator = undefined;
 			return [];
 		}
+
 		if (this.liveStatusIndicator === undefined) {
 			this.liveStatusIndicator = new Loader(
 				this.options.tui,
-				(text) =>
-					this.options.theme.fg(
+				(text) => {
+					const notif = this.view.selectedNotification;
+					if (notif !== undefined) {
+						return this.options.theme.fg(
+							notif.notifyType === "info" ? "accent" : notif.notifyType,
+							text,
+						);
+					}
+					return this.options.theme.fg(
 						this.view.selectedLiveStatus?.kind === "retrying"
 							? "warning"
 							: "accent",
 						text,
-					),
+					);
+				},
 				(text) => this.options.theme.fg("muted", text),
-				liveStatusMessage(status, Date.now()),
+				message,
 			);
 		}
-		this.liveStatusIndicator.setMessage(liveStatusMessage(status, Date.now()));
+		this.liveStatusIndicator.setMessage(message);
 		// Loader reserves a leading spacer for Pi's standalone status container; this pane owns its row budget.
 		const line = this.liveStatusIndicator.render(width)[1];
 		return line === undefined ? [] : [truncateToWidth(line, width)];

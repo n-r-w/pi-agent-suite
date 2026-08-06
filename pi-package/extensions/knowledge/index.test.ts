@@ -123,14 +123,35 @@ function createPi() {
 	const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
 	const notifications: string[] = [];
 	const notificationLevels: string[] = [];
+	const sendMessageCalls: Array<{
+		customType: string;
+		content: string;
+		display: boolean;
+		details: unknown;
+	}> = [];
 	const pi = {
 		events: new EventEmitter(),
 		on: (event: string, handler: (...args: unknown[]) => unknown) => {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
 		getThinkingLevel: () => "high",
-	} as unknown as ExtensionAPI;
-	return { pi, handlers, notifications, notificationLevels };
+		registerMessageRenderer: () => {},
+		sendMessage: (message: {
+			customType: string;
+			content: string;
+			display: boolean;
+			details: unknown;
+		}) => {
+			sendMessageCalls.push(message);
+		},
+	} as unknown as ExtensionAPI & { sendMessageCalls: typeof sendMessageCalls };
+	Object.assign(pi, { sendMessageCalls });
+	return {
+		pi,
+		handlers,
+		notifications,
+		notificationLevels,
+	};
 }
 
 /** Creates one initiating context with isolated session and TUI state. */
@@ -383,6 +404,54 @@ describe("knowledge extension lifecycle", () => {
 			"[knowledge] preparing local knowledge summary...",
 			"[knowledge] merging local knowledge...",
 		]);
+	});
+
+	/**
+	 * Proves a successful knowledge trigger writes one TUI-only outcome entry to the session journal.
+	 * Inputs and expected outputs: one successful local accumulation produces one knowledge-outcome entry with kind success.
+	 * Edge case: the outcome entry is presentation-only and does not enter the LLM context.
+	 * Dependencies: trigger success path and the extension's appendEntry boundary.
+	 */
+	test("persists knowledge outcome entry on successful trigger", async () => {
+		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-outcome-"));
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async (_model, context) => {
+				const serialized = String(context.messages[0]?.content);
+				if (serialized.includes("<summary_source>")) {
+					return response("## Strategic knowledge\n- Stable rule.");
+				}
+				return response(
+					"## Strategic knowledge\n- Stable rule.\n\n## Tactical knowledge\n- Active debt.",
+				);
+			},
+			runtimeEnv: {},
+		});
+		const runner = getWorkflowTriggerRunner(fake.pi);
+		if (runner === undefined) {
+			throw new Error("workflow trigger runner missing");
+		}
+
+		const ctx = createContext(fake.notifications, true);
+		const result = await runner.run(
+			{ type: "local_knowledge_accumulation" },
+			ctx,
+			undefined,
+		);
+
+		expect(result).toEqual({ ok: true });
+		expect(fake.pi.sendMessageCalls).toContainEqual({
+			customType: "knowledge-outcome",
+			content: "[knowledge] local knowledge merge completed",
+			display: true,
+			details: {
+				kind: "success",
+				triggerType: "local_knowledge_accumulation",
+			},
+		});
 	});
 
 	/**

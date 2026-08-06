@@ -145,7 +145,7 @@ export interface ToolResultSummaryModelRegistry {
 		| {
 				readonly ok: true;
 				readonly apiKey?: string;
-				readonly headers?: Record<string, string>;
+				readonly headers?: Record<string, string | null>;
 		  }
 		| { readonly ok: false; readonly error: string }
 	>;

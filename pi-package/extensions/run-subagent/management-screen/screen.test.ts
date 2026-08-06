@@ -1045,9 +1045,9 @@ describe("management screen", () => {
 		}
 	});
 
-	test("renders the latest child notification instead of live status", () => {
-		// Purpose: the selected pane must show invocation-owned notification state outside session history.
-		// Inputs and expected output: one warning notification replaces the live-status row and stays width-safe.
+	test("renders the latest child notification with the spinner", () => {
+		// Purpose: the selected pane must show invocation-owned notification state with an animated spinner.
+		// Inputs and expected output: one warning notification appears in the spinner row, stays width-safe, and hides the live-status label.
 		// Edge case: wide CJK and emoji content must not exceed the panel width.
 		// Dependencies: immutable projection state and the selected-pane renderer.
 		const fixture = createScreen();
@@ -1071,6 +1071,54 @@ describe("management screen", () => {
 				notificationVisible: true,
 				liveStatusHidden: true,
 				widthSafe: true,
+			});
+		} finally {
+			fixture.screen.dispose();
+		}
+	});
+
+	test("returns to live status spinner after notification clears", () => {
+		// Purpose: when a notification is cleared, the spinner must show the live-status label without stopping.
+		// Inputs and expected output: notification renders first, then clearing it reveals the live-status label.
+		// Dependencies: immutable projection state and the selected-pane renderer.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedLiveStatus: { kind: "working" },
+			selectedNotification: {
+				message: "temporary notice",
+				notifyType: "info",
+			},
+		});
+
+		try {
+			const withNotification = fixture.screen.render(80);
+			fixture.source.publish({
+				...fixture.source.getView(),
+				revision: 3,
+				selectedNotification: undefined,
+			});
+			const afterClear = fixture.screen.render(80);
+
+			expect({
+				notificationShown: withNotification.some((line) =>
+					line.includes("temporary notice"),
+				),
+				liveStatusHiddenDuringNotification: withNotification.every(
+					(line) => !line.includes("Working..."),
+				),
+				liveStatusVisibleAfterClear: afterClear.some((line) =>
+					line.includes("Working..."),
+				),
+				notificationGoneAfterClear: afterClear.every(
+					(line) => !line.includes("temporary notice"),
+				),
+			}).toEqual({
+				notificationShown: true,
+				liveStatusHiddenDuringNotification: true,
+				liveStatusVisibleAfterClear: true,
+				notificationGoneAfterClear: true,
 			});
 		} finally {
 			fixture.screen.dispose();

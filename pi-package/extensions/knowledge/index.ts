@@ -11,6 +11,10 @@ import {
 	replayContextProjection,
 } from "../../shared/context-projection";
 import {
+	KNOWLEDGE_OUTCOME_CUSTOM_TYPE,
+	renderKnowledgeOutcome,
+} from "../../shared/knowledge-outcome-renderer";
+import {
 	appendKnowledgeBlock,
 	getKnowledgeHierarchyClient,
 	type KnowledgeHierarchyClient,
@@ -152,6 +156,10 @@ export default function knowledgeExtension(
 	};
 	const readBlock = createKnowledgeBlockReader(runtime);
 	disposers.push(registerKnowledgeContextRuntime(pi, { readBlock }));
+	pi.registerMessageRenderer(
+		KNOWLEDGE_OUTCOME_CUSTOM_TYPE,
+		renderKnowledgeOutcome,
+	);
 	disposers.push(
 		registerWorkflowTriggerRunner(pi, createKnowledgeTriggerRunner(runtime)),
 	);
@@ -221,6 +229,7 @@ function createKnowledgeTriggerRunner(
 					signal,
 					reportProgress,
 				});
+				persistKnowledgeOutcome(runtime.pi, trigger.type);
 				return { ok: true };
 			} catch (error) {
 				if (ctx.hasUI) {
@@ -259,6 +268,24 @@ function formatKnowledgeFailureReason(error: unknown): string {
 		return error.message.trim();
 	}
 	return String(error);
+}
+
+/** Persists one terminal TUI outcome entry without changing trigger success behavior. */
+function persistKnowledgeOutcome(pi: ExtensionAPI, triggerType: string): void {
+	try {
+		pi.sendMessage({
+			customType: KNOWLEDGE_OUTCOME_CUSTOM_TYPE,
+			content: `[knowledge] ${
+				triggerType === "global_knowledge_accumulation"
+					? "global knowledge merge completed"
+					: "local knowledge merge completed"
+			}`,
+			display: true,
+			details: { kind: "success", triggerType },
+		});
+	} catch {
+		// Entry persistence is best-effort; trigger success is unaffected.
+	}
 }
 
 /** Carries one trigger execution request for root-coordinated accumulation. */

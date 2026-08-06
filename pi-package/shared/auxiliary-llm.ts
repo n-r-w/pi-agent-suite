@@ -25,7 +25,7 @@ export interface AuxiliaryLlmContext {
 export interface AuxiliaryLlmRuntime {
 	readonly model: Model<Api>;
 	readonly apiKey?: string;
-	readonly headers?: Record<string, string>;
+	readonly headers?: Record<string, string | null>;
 }
 
 /** Reports either an authenticated runtime or one safe resolution issue. */

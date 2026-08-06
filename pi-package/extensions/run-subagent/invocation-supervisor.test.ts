@@ -1196,6 +1196,80 @@ describe("InvocationSupervisor", () => {
 		});
 	});
 
+	test("clears transient notification when a permanent message arrives", async () => {
+		// Purpose: a durable journal entry (message_end) must clear the transient notification so the spinner returns to live status.
+		// Input and expected output: notification captured from extension_ui_request, then cleared after message_end.
+		// Dependencies: controlled child-process RPC streams and production supervisor.
+		const child = createChildProcess();
+		const events: InvocationEvent[] = [];
+		const supervisor = createSupervisor(child, events);
+		const acceptance = await acceptStart(supervisor, child);
+
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "extension_ui_request",
+					method: "notify",
+					message: "transient notice",
+					notifyType: "info",
+				})}\n`,
+			),
+		);
+
+		const firstPending = supervisor.readActiveEntries(acceptance.invocationId);
+		await waitForWriteCount(child, 2);
+		const firstRequestId = readCommandId(child.stdinWrites[1]);
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: firstRequestId,
+					type: "response",
+					command: "get_entries",
+					success: true,
+					data: { entries: [], leafId: null },
+				})}\n`,
+			),
+		);
+		const firstPage = await firstPending;
+
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "message_end",
+					message: { role: "assistant" },
+				})}\n`,
+			),
+		);
+
+		const secondPending = supervisor.readActiveEntries(acceptance.invocationId);
+		await waitForWriteCount(child, 3);
+		const secondRequestId = readCommandId(child.stdinWrites[2]);
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: secondRequestId,
+					type: "response",
+					command: "get_entries",
+					success: true,
+					data: { entries: [], leafId: null },
+				})}\n`,
+			),
+		);
+		const secondPage = await secondPending;
+
+		expect({
+			beforeClear: firstPage.notification,
+			afterClear: secondPage.notification,
+		}).toEqual({
+			beforeClear: { message: "transient notice", notifyType: "info" },
+			afterClear: undefined,
+		});
+	});
+
 	test("keeps an accepted invocation supervised until terminal", async () => {
 		// Purpose: Pi RPC prompt acceptance must resolve start without releasing process supervision.
 		// Input and expected output: one successful prompt response resolves acceptance before a later terminal event.
