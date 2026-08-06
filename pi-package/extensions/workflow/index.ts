@@ -11,6 +11,7 @@ import {
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
+import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import {
 	singleLineTextSchema,
 	technicalIdentifierSchema,
@@ -48,7 +49,9 @@ import {
 	readWorkflowPolicyEnvironment,
 } from "./environment";
 import {
+	applyWorkflowModelRestoration,
 	applyWorkflowModelSettings,
+	captureWorkflowModelRestoration,
 	resolveWorkflowModelSettings,
 	rollbackWorkflowModelSettings,
 } from "./model-runtime";
@@ -67,12 +70,14 @@ import {
 } from "./tool-rendering.ts";
 import {
 	activateWorkflow,
+	completeWorkflow,
 	createWorkflow,
-	replayWorkflowState,
+	replayWorkflowStateWithWarnings,
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
 	type WorkflowDefinition,
 	type WorkflowState,
+	withWorkflowRestoration,
 } from "./workflow";
 
 const EXTENSION_DIRECTORY = "workflow";
@@ -240,6 +245,7 @@ interface WorkflowRuntime {
 	catalogError: Error | undefined;
 	promptError: Error | undefined;
 	state: WorkflowState | undefined;
+	replayWarnings: readonly string[];
 	currentModel: ExtensionContext["model"];
 	modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	readonly selfSuppressedNames: Set<string>;
@@ -346,6 +352,7 @@ function createWorkflowRuntimeState(
 		catalogError: catalogResult.error,
 		promptError,
 		state: undefined,
+		replayWarnings: [],
 		currentModel: undefined,
 		modelRegistry: undefined,
 		selfSuppressedNames: new Set<string>(),
@@ -374,6 +381,39 @@ function reportWorkflowCatalogWarnings(
 		`[workflow] disabled invalid catalog workflows:\n${details}`,
 		"warning",
 	);
+}
+
+/** Reports ignored legacy workflow state through the available session output. */
+function reportWorkflowStateWarnings(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	warnings: readonly string[],
+): void {
+	if (warnings.length === 0) {
+		return;
+	}
+	const message = warnings.join("\n");
+	if (ctx.hasUI) {
+		ctx.ui.notify(message, "warning");
+		return;
+	}
+	process.stderr.write(`${message}\n`);
+}
+
+/** Reports each replay warning once until the synchronized branch changes. */
+function reportReplayWarningsOnce(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	warnings: readonly string[],
+	reportedWarningKey: string | undefined,
+): string | undefined {
+	const warningKey = warnings.join("\n");
+	if (warningKey.length === 0) {
+		return undefined;
+	}
+	if (warningKey === reportedWarningKey) {
+		return reportedWarningKey;
+	}
+	reportWorkflowStateWarnings(ctx, warnings);
+	return warningKey;
 }
 
 /** Registers definitions before lifecycle policies and then follows their active-name decisions. */
@@ -469,6 +509,57 @@ async function handleCliTriggerIfRequested(
 	return true;
 }
 
+/** Completes a final-stage workflow after Pi reports the agent run as settled. */
+async function completeSettledWorkflow(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+	refreshTools: (trigger: ReconciliationTrigger) => void,
+): Promise<void> {
+	const state = runtime.state;
+	const activeStageId = state?.route.at(-1);
+	if (
+		state === undefined ||
+		state.status === "completed" ||
+		activeStageId === undefined
+	) {
+		return;
+	}
+	const activeStage = state.workflow.stages.find(
+		({ id }) => id === activeStageId,
+	);
+	if (activeStage === undefined || !activeStage.final) {
+		return;
+	}
+	if (state.restoration === undefined) {
+		throw new Error("workflow restoration settings are unavailable");
+	}
+	const application = await applyWorkflowModelRestoration(
+		pi,
+		runtime.modelRegistry,
+		runtime.currentModel,
+		state.restoration,
+	);
+	runtime.currentModel = application.currentModel;
+	try {
+		pi.appendEntry(WORKFLOW_STATE_ENTRY, {
+			kind: "completed",
+			route: state.route,
+		});
+	} catch (error) {
+		try {
+			await rollbackWorkflowModelSettings(pi, application);
+			runtime.currentModel = application.previousModel;
+		} catch (rollbackError) {
+			throw new Error(
+				`${formatError(error)}; final-stage model could not be restored: ${formatError(rollbackError)}`,
+			);
+		}
+		throw error;
+	}
+	runtime.state = completeWorkflow(state);
+	refreshTools("lifecycle");
+}
+
 /** Registers session and model lifecycle synchronization without reapplying manual model changes. */
 function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 	const {
@@ -481,6 +572,7 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 		statusHolder,
 		warnings,
 	} = options;
+	let reportedReplayWarningKey: string | undefined;
 	const synchronize = async (ctx: {
 		readonly mode: ExtensionContext["mode"];
 		readonly ui: ExtensionContext["ui"];
@@ -510,6 +602,9 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 	pi.on("model_select", (event) => {
 		runtime.currentModel = event.model;
 	});
+	pi.on("agent_settled", async () => {
+		await completeSettledWorkflow(pi, runtime, refreshTools);
+	});
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
 	).on(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
@@ -521,8 +616,20 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 		}
 		await synchronize(ctx);
 		reportWorkflowCatalogWarnings(ctx, warnings);
+		reportedReplayWarningKey = reportReplayWarningsOnce(
+			ctx,
+			runtime.replayWarnings,
+			reportedReplayWarningKey,
+		);
 	});
-	pi.on("session_tree", async (_event, ctx) => synchronize(ctx));
+	pi.on("session_tree", async (_event, ctx) => {
+		await synchronize(ctx);
+		reportedReplayWarningKey = reportReplayWarningsOnce(
+			ctx,
+			runtime.replayWarnings,
+			reportedReplayWarningKey,
+		);
+	});
 	pi.on("session_shutdown", () => {
 		unsubscribeFromAgentChanges();
 		statusHolder.indicator?.dispose();
@@ -666,9 +773,12 @@ function synchronizeWorkflowRuntime(
 	runtime.currentModel = model;
 	runtime.modelRegistry = modelRegistry;
 	try {
-		runtime.state = replayWorkflowState(branch);
+		const replay = replayWorkflowStateWithWarnings(branch);
+		runtime.state = replay.state;
+		runtime.replayWarnings = replay.warnings;
 	} catch (error) {
 		runtime.state = undefined;
+		runtime.replayWarnings = [];
 		runtime.catalog = [];
 		runtime.catalogError =
 			error instanceof Error ? error : new Error(String(error));
@@ -708,7 +818,11 @@ async function synchronizeWorkflowModelRuntime(
 ): Promise<void> {
 	const state = runtime.state;
 	const stageId = state?.route.at(-1);
-	if (state === undefined || stageId === undefined) {
+	if (
+		state === undefined ||
+		state.status === "completed" ||
+		stageId === undefined
+	) {
 		return;
 	}
 	const resolution = resolveWorkflowModelSettings(
@@ -732,13 +846,25 @@ async function commitWorkflowStateChange(
 	runtime: WorkflowRuntime,
 	candidate: WorkflowState,
 	data: Record<string, unknown>,
-): Promise<void> {
-	const stageId = candidate.route.at(-1);
+): Promise<WorkflowState> {
+	const kind = data["kind"];
+	const persistedCandidate =
+		(kind === "activated" || kind === "created") &&
+		candidate.restoration === undefined
+			? withWorkflowRestoration(
+					candidate,
+					captureWorkflowModelRestoration(
+						runtime.currentModel,
+						pi.getThinkingLevel() as ReasoningLevel,
+					),
+				)
+			: candidate;
+	const stageId = persistedCandidate.route.at(-1);
 	if (stageId === undefined) {
 		throw new Error("workflow candidate has no active stage");
 	}
 	const resolution = resolveWorkflowModelSettings(
-		candidate.workflow,
+		persistedCandidate.workflow,
 		stageId,
 		getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
 		pi.getThinkingLevel(),
@@ -750,8 +876,13 @@ async function commitWorkflowStateChange(
 		resolution,
 	);
 	runtime.currentModel = application.currentModel;
+	const persistedData =
+		(kind === "activated" || kind === "created") &&
+		persistedCandidate.restoration !== undefined
+			? { ...data, restoration: persistedCandidate.restoration }
+			: data;
 	try {
-		pi.appendEntry(WORKFLOW_STATE_ENTRY, data);
+		pi.appendEntry(WORKFLOW_STATE_ENTRY, persistedData);
 	} catch (error) {
 		try {
 			await rollbackWorkflowModelSettings(pi, application);
@@ -763,6 +894,7 @@ async function commitWorkflowStateChange(
 		}
 		throw error;
 	}
+	return persistedCandidate;
 }
 
 /** Converts unknown failures into stable operation messages. */
@@ -798,13 +930,16 @@ function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
 	registerWorkflowCreateTool(options);
 }
 
-/** Registers dynamic creation as one validated, persisted, and activated operation. */
-function registerWorkflowCreateTool(
+/** Executes dynamic creation as one validated, persisted, and activated operation. */
+async function executeWorkflowCreate(
 	options: RegisterWorkflowToolsOptions,
-): void {
+	params: unknown,
+	signal: AbortSignal | undefined,
+	ctx: ExtensionContext,
+): Promise<typeof SUCCESS_RESULT> {
 	const {
 		pi,
-		prompts,
+		runtime,
 		getCatalog,
 		getCatalogError,
 		getState,
@@ -812,6 +947,48 @@ function registerWorkflowCreateTool(
 		resolveAvailability,
 		setState,
 	} = options;
+	const workflow = validateCreatedWorkflowDefinition(
+		params,
+		WORKFLOW_CREATE_TOOL,
+	);
+	const policy = getPolicy();
+	if (policy.kind === "error") {
+		throw new Error(policy.issue);
+	}
+	if (!resolveAvailability().availableToolNames.has(WORKFLOW_CREATE_TOOL)) {
+		throw getCatalogError() ?? new Error("workflow creation is unavailable");
+	}
+	const workflowKey = toWorkflowMatchKey(workflow.id);
+	const catalogMatch = getCatalog().find(
+		({ id }) => toWorkflowMatchKey(id) === workflowKey,
+	);
+	if (catalogMatch !== undefined) {
+		throw new Error(
+			`workflow ${workflow.id} conflicts with catalog workflow ${catalogMatch.id}`,
+		);
+	}
+	const current = getState();
+	if (
+		current?.source === "dynamic" &&
+		toWorkflowMatchKey(current.workflow.id) === workflowKey
+	) {
+		throw new Error(`workflow ${workflow.id} is already active`);
+	}
+	const candidate = createWorkflow(workflow);
+	const persisted = await commitWorkflowStateChange(pi, runtime, candidate, {
+		kind: "created",
+		workflow: candidate.workflow,
+		route: candidate.route,
+	});
+	await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
+	return SUCCESS_RESULT;
+}
+
+/** Registers dynamic creation with its semantic presentation. */
+function registerWorkflowCreateTool(
+	options: RegisterWorkflowToolsOptions,
+): void {
+	const { pi, prompts, getCatalog, getState } = options;
 	registerPackageTool(pi, {
 		name: WORKFLOW_CREATE_TOOL,
 		label: "Create workflow",
@@ -832,43 +1009,7 @@ function registerWorkflowCreateTool(
 		},
 		renderResult: renderWorkflowResult,
 		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
-			const workflow = validateCreatedWorkflowDefinition(
-				params,
-				WORKFLOW_CREATE_TOOL,
-			);
-			const policy = getPolicy();
-			if (policy.kind === "error") {
-				throw new Error(policy.issue);
-			}
-			if (!resolveAvailability().availableToolNames.has(WORKFLOW_CREATE_TOOL)) {
-				throw (
-					getCatalogError() ?? new Error("workflow creation is unavailable")
-				);
-			}
-			const workflowKey = toWorkflowMatchKey(workflow.id);
-			const catalogMatch = getCatalog().find(
-				({ id }) => toWorkflowMatchKey(id) === workflowKey,
-			);
-			if (catalogMatch !== undefined) {
-				throw new Error(
-					`workflow ${workflow.id} conflicts with catalog workflow ${catalogMatch.id}`,
-				);
-			}
-			const current = getState();
-			if (
-				current?.source === "dynamic" &&
-				toWorkflowMatchKey(current.workflow.id) === workflowKey
-			) {
-				throw new Error(`workflow ${workflow.id} is already active`);
-			}
-			const candidate = createWorkflow(workflow);
-			pi.appendEntry(WORKFLOW_STATE_ENTRY, {
-				kind: "created",
-				workflow: candidate.workflow,
-				route: candidate.route,
-			});
-			await setEnteredWorkflowState(pi, setState, candidate, { ctx, signal });
-			return SUCCESS_RESULT;
+			return executeWorkflowCreate(options, params, signal, ctx);
 		},
 	});
 }
@@ -927,12 +1068,17 @@ function registerWorkflowActivateTool(
 				);
 			}
 			const candidate = activateWorkflow(workflow);
-			await commitWorkflowStateChange(pi, runtime, candidate, {
-				kind: "activated",
-				workflow: candidate.workflow,
-				route: candidate.route,
-			});
-			await setEnteredWorkflowState(pi, setState, candidate, { ctx, signal });
+			const persisted = await commitWorkflowStateChange(
+				pi,
+				runtime,
+				candidate,
+				{
+					kind: "activated",
+					workflow: candidate.workflow,
+					route: candidate.route,
+				},
+			);
+			await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});
@@ -993,11 +1139,16 @@ function registerWorkflowTransitionTool(
 				throw new Error(`workflow ${current.workflow.id} is not available`);
 			}
 			const candidate = transitionWorkflow(current, stageId);
-			await commitWorkflowStateChange(pi, runtime, candidate, {
-				kind: "transitioned",
-				route: candidate.route,
-			});
-			await setEnteredWorkflowState(pi, setState, candidate, { ctx, signal });
+			const persisted = await commitWorkflowStateChange(
+				pi,
+				runtime,
+				candidate,
+				{
+					kind: "transitioned",
+					route: candidate.route,
+				},
+			);
+			await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});

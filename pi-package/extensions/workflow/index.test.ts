@@ -231,7 +231,12 @@ function activatedEntry(): unknown {
 	return {
 		type: "custom",
 		customType: "workflow-state",
-		data: { kind: "activated", workflow, route: state.route },
+		data: {
+			kind: "activated",
+			workflow,
+			route: state.route,
+			restoration: { modelId: "openai/current-model", thinking: "medium" },
+		},
 	};
 }
 
@@ -383,6 +388,15 @@ async function runLifecycle(
 			},
 		},
 	);
+}
+
+/** Invokes the session-level settlement handler without providing a UI context. */
+async function runAgentSettled(fake: FakePi): Promise<void> {
+	const handler = fake.handlers.get("agent_settled");
+	if (handler === undefined) {
+		throw new Error("missing agent_settled handler");
+	}
+	await handler({ type: "agent_settled" });
 }
 
 /** Renders the latest shared status widget or fails with its missing state. */
@@ -543,6 +557,46 @@ describe("workflow extension lifecycle", () => {
 		const activate = requireTool(fake, "workflow_activate");
 		await activate.execute("activate-valid", { workflowId: "delivery" });
 		expect(fake.appended).toHaveLength(1);
+	});
+
+	/**
+	 * Proves legacy workflow entries do not block startup and produce one warning.
+	 * Inputs and expected output: an old activation followed by a transition is ignored and catalog capabilities remain available.
+	 * Edge case: ignoring only the activation would make the dependent transition fail during replay.
+	 * Dependencies: workflow replay, lifecycle warning delivery, and catalog reconciliation.
+	 */
+	test("warns and ignores legacy workflow state", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		const activated = activatedEntry() as {
+			readonly type: "custom";
+			readonly customType: "workflow-state";
+			readonly data: Record<string, unknown>;
+		};
+		const activatedData = activated.data;
+		const { restoration: _restoration, ...legacyData } = activatedData;
+		const legacyBranch = [
+			{ ...activated, data: legacyData },
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["start", "done"] },
+			},
+		];
+
+		await runLifecycle(fake, "session_start");
+		await runLifecycle(fake, "session_tree", legacyBranch);
+		await runLifecycle(fake, "session_tree", legacyBranch);
+
+		expect(fake.notifications).toEqual([
+			{
+				message:
+					"[workflow] ignored workflow state from an older format; start a new workflow to continue",
+				type: "warning",
+			},
+		]);
+		expect(fake.activeTools).toContain("workflow_activate");
+		expect(fake.activeTools).toContain("workflow_transition");
 	});
 
 	/**
@@ -872,6 +926,7 @@ describe("workflow extension lifecycle", () => {
 			workflow: {
 				model: { id: "openai/workflow-model", thinking: "high" },
 			},
+			restoration: { modelId: "openai/current-model", thinking: "medium" },
 		});
 
 		const transition = requireTool(fake, "workflow_transition");
@@ -960,6 +1015,149 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.model?.id).toBe("current-model");
 		expect(fake.thinkingLevel).toBe("medium");
 		expect(fake.appended).toEqual([]);
+	});
+
+	/**
+	 * Proves a settled final-stage run restores the runtime values captured before activation.
+	 * Inputs and expected outputs: activation and final transition apply workflow settings; settlement restores the original model and thinking level and persists completion.
+	 * Edge cases: the final stage omits model settings, so the final runtime values remain those from the preceding stage.
+	 * Dependencies: workflow model application, persisted state entries, and the agent_settled lifecycle event.
+	 */
+	test("restores runtime settings after a final stage settles", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("transition", { stageId: "done" });
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("high");
+
+		await runAgentSettled(fake);
+
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["activated", "transitioned", "completed"]);
+	});
+
+	/**
+	 * Proves replay of completed state does not reapply final-stage runtime settings.
+	 * Inputs and expected outputs: a completed branch is replayed into a fresh runtime and keeps the main model selected.
+	 * Edge cases: the branch contains activation, transition, and completion entries in chronological order.
+	 * Dependencies: workflow replay, completed-state synchronization, and model runtime setup.
+	 */
+	test("does not reapply workflow settings when replaying completion", async () => {
+		await createSuite(modelYaml());
+		const source = await createFakePi();
+		await runLifecycle(source, "session_start");
+		await requireTool(source, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		await requireTool(source, "workflow_transition").execute("transition", {
+			stageId: "done",
+		});
+		await runAgentSettled(source);
+
+		const replayed = await createFakePi();
+		const branch = source.appended.map(({ data }) => ({
+			type: "custom",
+			customType: "workflow-state",
+			data,
+		}));
+		await runLifecycle(replayed, "session_start", branch);
+
+		expect(replayed.model?.id).toBe("current-model");
+		expect(replayed.thinkingLevel).toBe("medium");
+	});
+
+	/** Proves non-final settlement does not complete the active workflow. */
+	test("keeps runtime settings while a non-final stage settles", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+
+		await runAgentSettled(fake);
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["activated"]);
+	});
+
+	/**
+	 * Proves completion removes active-stage instructions while retaining the rework route.
+	 * Inputs and expected outputs: a settled final stage projects completed state without active-stage guidance; rework restores active settings and context.
+	 * Edge cases: the completed state must remain available even though the final-stage model has been restored.
+	 * Dependencies: completion persistence, context projection, and route transition application.
+	 */
+	test("projects completion and supports rework", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("transition", { stageId: "done" });
+		await runAgentSettled(fake);
+
+		const completedContext = String(
+			(
+				(await runContext(fake, [])) as {
+					messages: Array<{ content: unknown }>;
+				}
+			).messages[0]?.content,
+		);
+		expect(completedContext).toContain("<completed_workflow");
+		expect(completedContext).not.toContain("<active_workflow");
+		expect(completedContext).not.toContain("<active_stage_guidelines>");
+
+		await transition.execute("rework", { stageId: "start" });
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		const activeContext = String(
+			(
+				(await runContext(fake, [])) as {
+					messages: Array<{ content: unknown }>;
+				}
+			).messages[0]?.content,
+		);
+		expect(activeContext).toContain("<active_workflow");
+		expect(activeContext).toContain("<active_stage_guidelines>");
+	});
+
+	/**
+	 * Proves completion persistence failure restores final-stage runtime values and keeps the workflow active.
+	 * Inputs and expected outputs: an append failure during settlement leaves the final model, thinking level, and active context unchanged.
+	 * Edge cases: runtime restoration succeeds before the persistence failure and therefore requires an explicit rollback.
+	 * Dependencies: completion transaction and workflow model rollback.
+	 */
+	test("rolls back final-stage restoration when completion persistence fails", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("transition", { stageId: "done" });
+		fake.appendError = new Error("completion append failed");
+
+		await expect(runAgentSettled(fake)).rejects.toThrow(
+			"completion append failed",
+		);
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("high");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["activated", "transitioned"]);
 	});
 
 	/** Proves manual model changes are not overwritten by main-agent policy events. */

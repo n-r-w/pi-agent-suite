@@ -84,7 +84,11 @@ test("workflow entry activates a configured workflow and projects its initial st
 	if (lifecycle === undefined) {
 		throw new Error("session_start handler missing");
 	}
-	const context = { sessionManager: { getBranch: () => [] } };
+	const context = {
+		model: { provider: "test", id: "current" },
+		modelRegistry: undefined,
+		sessionManager: { getBranch: () => [] },
+	};
 	await lifecycle({ type: "session_start" }, context);
 	await lifecycle({ type: "session_start" }, context);
 	expect(tools.map(({ name }) => name)).toEqual([

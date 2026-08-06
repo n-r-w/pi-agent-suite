@@ -10,7 +10,10 @@ import {
 } from "../../shared/model-settings";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
-import type { WorkflowDefinition } from "./workflow";
+import type {
+	WorkflowDefinition,
+	WorkflowRestorationSettings,
+} from "./workflow";
 
 type ModelRegistry = ExtensionContext["modelRegistry"];
 type WorkflowModelAPI = Pick<
@@ -68,6 +71,35 @@ export function resolveWorkflowModelSettings(
 		shouldApplyModel: effectiveModelId !== undefined,
 		shouldApplyThinking:
 			explicitThinking !== undefined || configuredModelId !== undefined,
+	};
+}
+
+/** Applies a persisted pre-workflow model and thinking snapshot. */
+export async function applyWorkflowModelRestoration(
+	pi: WorkflowModelAPI,
+	modelRegistry: ModelRegistry | undefined,
+	currentModel: Model<Api> | undefined,
+	restoration: WorkflowRestorationSettings,
+): Promise<WorkflowModelApplication> {
+	return applyWorkflowModelSettings(pi, modelRegistry, currentModel, {
+		effectiveModelId: restoration.modelId,
+		thinking: restoration.thinking,
+		shouldApplyModel: true,
+		shouldApplyThinking: true,
+	});
+}
+
+/** Captures the runtime values that must survive workflow model replacement. */
+export function captureWorkflowModelRestoration(
+	currentModel: Model<Api> | undefined,
+	thinking: ReasoningLevel,
+): WorkflowRestorationSettings {
+	if (currentModel === undefined) {
+		throw new Error("current model is unavailable");
+	}
+	return {
+		modelId: `${currentModel.provider}/${currentModel.id}`,
+		thinking,
 	};
 }
 

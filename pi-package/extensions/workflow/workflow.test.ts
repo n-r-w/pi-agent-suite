@@ -475,7 +475,12 @@ describe("workflow state", () => {
 			{
 				type: "custom",
 				customType: "workflow-state",
-				data: { kind: "activated", workflow, route: ["a"] },
+				data: {
+					kind: "activated",
+					workflow,
+					route: ["a"],
+					restoration: { modelId: "openai/current-model", thinking: "medium" },
+				},
 			},
 			{
 				type: "custom",
@@ -505,6 +510,10 @@ describe("workflow state", () => {
 					kind: "created",
 					workflow: dynamicWorkflow,
 					route: ["a"],
+					restoration: {
+						modelId: "openai/current-model",
+						thinking: "medium",
+					},
 				},
 			},
 			{
@@ -515,6 +524,47 @@ describe("workflow state", () => {
 		]);
 		expect(dynamicReplay).toHaveProperty("source", "dynamic");
 		expect(dynamicReplay?.route).toEqual(["a", "b"]);
+
+		const finalRoute = ["a", "b", "d", "f"];
+		const completedReplay = replayWorkflowState([
+			entries[0],
+			entries[1],
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["a", "b"] },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["a", "b", "d"] },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: finalRoute },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "completed", route: finalRoute },
+			},
+		]);
+		expect(completedReplay?.status).toBe("completed");
+		expect(completedReplay?.restoration).toEqual({
+			modelId: "openai/current-model",
+			thinking: "medium",
+		});
+		expect(
+			getStageStatuses(
+				completedReplay as NonNullable<typeof completedReplay>,
+			).get("f"),
+		).toBe("completed");
+		expect(
+			getAvailableTransitions(
+				completedReplay as NonNullable<typeof completedReplay>,
+			).map(({ to }) => to),
+		).toEqual(["b"]);
 		expect(() =>
 			replayWorkflowState([
 				...entries,
@@ -548,5 +598,28 @@ describe("workflow state", () => {
 				},
 			]),
 		).toThrow("workflow-state");
+	});
+
+	/** Proves pre-restoration workflow chains are ignored instead of blocking session replay. */
+	test("ignores legacy workflow state chains", () => {
+		const workflow = validateWorkflowDefinition(
+			"delivery",
+			validValue(),
+			SOURCE,
+		);
+		const legacyEntries = [
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "activated", workflow, route: ["a"] },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["a", "b"] },
+			},
+		];
+
+		expect(replayWorkflowState(legacyEntries)).toBeUndefined();
 	});
 });

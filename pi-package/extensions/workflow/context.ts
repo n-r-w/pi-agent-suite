@@ -91,8 +91,20 @@ function renderActiveWorkflow(state: WorkflowState): string {
 		(edge) =>
 			`    <transition to="${escapeXml(edge.to)}" type="${edge.type}" />`,
 	);
+	const workflowTag =
+		state.status === "completed" ? "completed_workflow" : "active_workflow";
+	const stageAttribute =
+		state.status === "completed" ? "completed_stage_id" : "active_stage_id";
+	const stageGuidelines =
+		state.status === "active"
+			? [
+					"  <active_stage_guidelines>",
+					escapeXml(activeStage.prompt),
+					"  </active_stage_guidelines>",
+				]
+			: [];
 	return [
-		`<active_workflow id="${escapeXml(state.workflow.id)}" active_stage_id="${escapeXml(activeStageId)}">`,
+		`<${workflowTag} id="${escapeXml(state.workflow.id)}" ${stageAttribute}="${escapeXml(activeStageId)}">`,
 		...(state.workflow.prompt === undefined
 			? []
 			: [
@@ -100,9 +112,7 @@ function renderActiveWorkflow(state: WorkflowState): string {
 					escapeXml(state.workflow.prompt),
 					"  </guidelines>",
 				]),
-		"  <active_stage_guidelines>",
-		escapeXml(activeStage.prompt),
-		"  </active_stage_guidelines>",
+		...stageGuidelines,
 		"  <stages>",
 		...stages,
 		"  </stages>",
@@ -116,7 +126,7 @@ function renderActiveWorkflow(state: WorkflowState): string {
 					...available,
 					"  </available_transitions>",
 				]),
-		"</active_workflow>",
+		`</${workflowTag}>`,
 	].join("\n");
 }
 

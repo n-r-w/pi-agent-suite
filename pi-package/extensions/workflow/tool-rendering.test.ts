@@ -116,6 +116,16 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 		appendEntry(): void {},
 	} as unknown as ExtensionAPI;
 	await workflowExtension(api);
+	for (const sessionStart of handlers.get("session_start") ?? []) {
+		await sessionStart({ type: "session_start" }, {
+			mode: "rpc",
+			hasUI: true,
+			model: { provider: "test", id: "current" },
+			modelRegistry: undefined,
+			sessionManager: { getBranch: () => [] },
+			shutdown: () => {},
+		} as never);
+	}
 	return { api, handlers, tools };
 }
 

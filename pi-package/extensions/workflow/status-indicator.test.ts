@@ -81,6 +81,7 @@ function workflowState(
 			],
 		},
 		route,
+		status: "active",
 	};
 }
 

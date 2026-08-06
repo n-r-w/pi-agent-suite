@@ -1,7 +1,12 @@
 import {
+	isModelId,
 	type ModelSettings,
 	parseModelSettings,
 } from "../../shared/model-settings";
+import {
+	isReasoningLevel,
+	type ReasoningLevel,
+} from "../../shared/reasoning-levels";
 import {
 	isSingleLineText,
 	isTechnicalIdentifier,
@@ -11,6 +16,13 @@ import type { WorkflowTrigger } from "../../shared/workflow-trigger-runtime";
 export type WorkflowTransitionType = "advance" | "rework";
 export type WorkflowStageStatus = "not_started" | "in_progress" | "completed";
 export type WorkflowSource = "catalog" | "dynamic";
+export type WorkflowStatus = "active" | "completed";
+
+/** Captures the runtime values that must be restored when a workflow completes. */
+export interface WorkflowRestorationSettings {
+	readonly modelId: string;
+	readonly thinking: ReasoningLevel;
+}
 
 /** One normalized workflow stage with explicit boolean flags. */
 export interface WorkflowStage {
@@ -40,11 +52,19 @@ export interface WorkflowDefinition {
 	readonly transitions: readonly WorkflowTransition[];
 }
 
-/** The only mutable workflow state: one saved definition, its source, and its actual route. */
+/** The only mutable workflow state: one saved definition, its lifecycle, and its actual route. */
 export interface WorkflowState {
 	readonly source: WorkflowSource;
 	readonly workflow: WorkflowDefinition;
 	readonly route: readonly string[];
+	readonly status: WorkflowStatus;
+	readonly restoration?: WorkflowRestorationSettings;
+}
+
+/** Result of replaying workflow entries, including non-blocking legacy warnings. */
+export interface WorkflowStateReplayResult {
+	readonly state: WorkflowState | undefined;
+	readonly warnings: readonly string[];
 }
 
 const ROOT_KEYS = new Set([
@@ -82,6 +102,12 @@ const TRIGGER_KEYS = new Set(["type"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
 const SAVED_DYNAMIC_WORKFLOW_KEYS = new Set(CREATED_ROOT_KEYS);
+const RESTORATION_KEYS = new Set(["modelId", "thinking"]);
+const LEGACY_WORKFLOW_STATE_KEYS = new Set(["kind", "workflow", "route"]);
+
+/** Warning emitted when a workflow snapshot predates persisted restoration settings. */
+export const WORKFLOW_LEGACY_STATE_WARNING =
+	"[workflow] ignored workflow state from an older format; start a new workflow to continue";
 
 /** Validates YAML-derived data before it enters workflow domain logic. */
 export function validateWorkflowDefinition(
@@ -132,7 +158,33 @@ function startWorkflow(
 	if (initial === undefined) {
 		throw new Error("validated workflow has no initial stage");
 	}
-	return { source, workflow, route: [initial.id] };
+	return { source, workflow, route: [initial.id], status: "active" };
+}
+
+/** Attaches the pre-workflow runtime snapshot before the activation is persisted. */
+export function withWorkflowRestoration(
+	state: WorkflowState,
+	restoration: WorkflowRestorationSettings,
+): WorkflowState {
+	if (state.restoration !== undefined) {
+		throw new Error("workflow restoration settings are already assigned");
+	}
+	return { ...state, restoration };
+}
+
+/** Marks a final-stage workflow complete after runtime restoration has succeeded. */
+export function completeWorkflow(state: WorkflowState): WorkflowState {
+	if (state.status !== "active") {
+		throw new Error("workflow is already completed");
+	}
+	const activeStageId = state.route.at(-1);
+	const activeStage = state.workflow.stages.find(
+		({ id }) => id === activeStageId,
+	);
+	if (activeStage === undefined || !activeStage.final) {
+		throw new Error("only a final workflow stage can complete the workflow");
+	}
+	return { ...state, status: "completed" };
 }
 
 /** Applies one currently available transition without mutating the prior state. */
@@ -152,10 +204,18 @@ export function transitionWorkflow(
 		);
 	}
 	if (transition.type === "advance") {
-		return { ...state, route: [...state.route, transition.to] };
+		return {
+			...state,
+			status: "active",
+			route: [...state.route, transition.to],
+		};
 	}
 	const targetIndex = state.route.lastIndexOf(transition.to);
-	return { ...state, route: state.route.slice(0, targetIndex + 1) };
+	return {
+		...state,
+		status: "active",
+		route: state.route.slice(0, targetIndex + 1),
+	};
 }
 
 /** Derives every stage status from route membership and the active route tail. */
@@ -167,7 +227,7 @@ export function getStageStatuses(
 	return new Map(
 		state.workflow.stages.map((stage) => [
 			stage.id,
-			deriveStageStatus(stage.id, activeStageId, routeIds),
+			deriveStageStatus(stage.id, activeStageId, routeIds, state.status),
 		]),
 	);
 }
@@ -177,8 +237,9 @@ function deriveStageStatus(
 	stageId: string,
 	activeStageId: string | undefined,
 	routeIds: ReadonlySet<string>,
+	workflowStatus: WorkflowStatus,
 ): WorkflowStageStatus {
-	if (stageId === activeStageId) {
+	if (stageId === activeStageId && workflowStatus === "active") {
 		return "in_progress";
 	}
 	if (routeIds.has(stageId)) {
@@ -206,18 +267,56 @@ export function getAvailableTransitions(
 export function replayWorkflowState(
 	entries: readonly unknown[],
 ): WorkflowState | undefined {
+	return replayWorkflowStateWithWarnings(entries).state;
+}
+
+/** Reconstructs workflow state while ignoring complete chains from the old snapshot format. */
+export function replayWorkflowStateWithWarnings(
+	entries: readonly unknown[],
+): WorkflowStateReplayResult {
 	let state: WorkflowState | undefined;
+	let ignoringLegacyState = false;
+	const warnings: string[] = [];
 	for (const entry of entries) {
 		if (!isWorkflowStateEntry(entry)) {
 			continue;
 		}
 		try {
+			const data = requireObject(
+				Reflect.get(entry, "data"),
+				"workflow-state data",
+			);
+			const action = classifyWorkflowReplayAction(data, ignoringLegacyState);
+			if (action === "ignore") {
+				continue;
+			}
+			if (action === "legacy") {
+				state = undefined;
+				ignoringLegacyState = true;
+				if (warnings.length === 0) {
+					warnings.push(WORKFLOW_LEGACY_STATE_WARNING);
+				}
+				continue;
+			}
+			ignoringLegacyState = false;
 			state = replayWorkflowStateEntry(state, entry);
 		} catch (error) {
 			throw new Error(`invalid workflow-state entry: ${errorMessage(error)}`);
 		}
 	}
-	return state;
+	return { state, warnings };
+}
+
+/** Selects whether one persisted entry starts, continues, or ends a legacy chain. */
+function classifyWorkflowReplayAction(
+	data: Readonly<Record<string, unknown>>,
+	ignoringLegacyState: boolean,
+): "ignore" | "legacy" | "replay" {
+	const kind = Reflect.get(data, "kind");
+	if (ignoringLegacyState) {
+		return kind === "activated" || kind === "created" ? "replay" : "ignore";
+	}
+	return isLegacyWorkflowStateData(data) ? "legacy" : "replay";
 }
 
 /** Applies one exact saved entry while preserving source across route-only updates. */
@@ -233,7 +332,7 @@ function replayWorkflowStateEntry(
 	if (kind === "activated" || kind === "created") {
 		assertExactKeys(
 			data,
-			new Set(["kind", "workflow", "route"]),
+			new Set(["kind", "workflow", "route", "restoration"]),
 			`${kind} entry`,
 		);
 		const workflow = validateSavedWorkflow(
@@ -244,6 +343,10 @@ function replayWorkflowStateEntry(
 			source: kind === "activated" ? "catalog" : "dynamic",
 			workflow,
 			route: validateRoute(workflow, Reflect.get(data, "route")),
+			status: "active",
+			restoration: validateRestorationSettings(
+				Reflect.get(data, "restoration"),
+			),
 		};
 	}
 	if (kind === "transitioned") {
@@ -253,10 +356,40 @@ function replayWorkflowStateEntry(
 		}
 		return {
 			...state,
+			status: "active",
 			route: validateRoute(state.workflow, Reflect.get(data, "route")),
 		};
 	}
-	throw new Error("entry kind must be activated, created, or transitioned");
+	if (kind === "completed") {
+		assertExactKeys(data, new Set(["kind", "route"]), "completed entry");
+		if (state === undefined) {
+			throw new Error("completed entry has no active snapshot");
+		}
+		const completed = {
+			...state,
+			status: "active" as const,
+			route: validateRoute(state.workflow, Reflect.get(data, "route")),
+		};
+		return completeWorkflow(completed);
+	}
+	throw new Error(
+		"entry kind must be activated, created, transitioned, or completed",
+	);
+}
+
+/** Identifies an activation or creation entry from before restoration was persisted. */
+function isLegacyWorkflowStateData(
+	data: Readonly<Record<string, unknown>>,
+): boolean {
+	const kind = Reflect.get(data, "kind");
+	if (kind !== "activated" && kind !== "created") {
+		return false;
+	}
+	const keys = Object.keys(data);
+	return (
+		keys.length === LEGACY_WORKFLOW_STATE_KEYS.size &&
+		keys.every((key) => LEGACY_WORKFLOW_STATE_KEYS.has(key))
+	);
 }
 
 /** Identifies every entry claiming workflow ownership before outer-shape validation. */
@@ -291,6 +424,26 @@ function validateSavedWorkflow(
 		},
 		"saved workflow",
 	);
+}
+
+/** Checks that a persisted route starts correctly and follows only advance edges. */
+function validateRestorationSettings(
+	value: unknown,
+): WorkflowRestorationSettings {
+	const restoration = requireObject(
+		value,
+		"workflow restoration",
+		RESTORATION_KEYS,
+	);
+	const modelId = restoration["modelId"];
+	if (!isModelId(modelId)) {
+		throw new Error("workflow restoration modelId must use provider/model");
+	}
+	const thinking = restoration["thinking"];
+	if (!isReasoningLevel(thinking)) {
+		throw new Error("workflow restoration thinking is invalid");
+	}
+	return { modelId, thinking };
 }
 
 /** Checks that a persisted route starts correctly and follows only advance edges. */
