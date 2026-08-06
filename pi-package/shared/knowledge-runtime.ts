@@ -48,6 +48,13 @@ export interface KnowledgeHierarchyClient {
 	release(leaseId: string): Promise<void>;
 }
 
+/** Holds all process-local knowledge runtime roles for one extension instance. */
+interface KnowledgeRuntimeHolder {
+	context: KnowledgeContextRuntime | undefined;
+	root: KnowledgeRootRuntime | undefined;
+	hierarchy: KnowledgeHierarchyClient | undefined;
+}
+
 /** Event bus channel for synchronous cross-extension holder lookup. */
 const HOLDER_REQUEST_CHANNEL = "pi-harness:knowledge-runtime:request";
 
@@ -160,8 +167,8 @@ function getHolder(pi: ExtensionAPI): KnowledgeRuntimeHolder {
 
 	/** Replies to future requests from other extensions with this holder. */
 	if (typeof pi.events?.on === "function") {
-		pi.events.on(HOLDER_REQUEST_CHANNEL, (s: HolderSlot) => {
-			s.holder = holder;
+		pi.events.on(HOLDER_REQUEST_CHANNEL, (data: unknown) => {
+			(data as HolderSlot).holder = holder;
 		});
 	}
 

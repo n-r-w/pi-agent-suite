@@ -73,8 +73,8 @@ export function registerWorkflowTriggerRunner(
 
 	/** Replies to future cross-extension lookup requests. */
 	if (typeof pi.events?.on === "function") {
-		pi.events.on(RUNNER_REQUEST_CHANNEL, (slot: RunnerSlot) => {
-			slot.runner = runnerByPi.get(pi);
+		pi.events.on(RUNNER_REQUEST_CHANNEL, (data: unknown) => {
+			(data as RunnerSlot).runner = runnerByPi.get(pi);
 		});
 	}
 

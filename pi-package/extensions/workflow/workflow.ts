@@ -342,14 +342,15 @@ function replayWorkflowStateEntry(
 			Reflect.get(data, "workflow"),
 			kind === "activated",
 		);
+		const restoration = validateRestorationSettings(
+			Reflect.get(data, "restoration"),
+		);
 		return {
 			source: kind === "activated" ? "catalog" : "dynamic",
 			workflow,
 			route: validateRoute(workflow, Reflect.get(data, "route")),
 			status: "active",
-			restoration: validateRestorationSettings(
-				Reflect.get(data, "restoration"),
-			),
+			...(restoration !== undefined ? { restoration } : {}),
 		};
 	}
 	if (kind === "transitioned") {

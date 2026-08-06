@@ -195,8 +195,8 @@ function getSessionStatusPanelController(
 
 	/** Replies to future requests from other extensions with this holder. */
 	if (typeof pi.events?.on === "function") {
-		pi.events.on(CONTROLLER_REQUEST_CHANNEL, (s: ControllerSlot) => {
-			s.holder = holder;
+		pi.events.on(CONTROLLER_REQUEST_CHANNEL, (data: unknown) => {
+			(data as ControllerSlot).holder = holder;
 		});
 	}
 

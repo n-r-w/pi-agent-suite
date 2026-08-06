@@ -51,8 +51,11 @@ export async function handleKnowledgeRuntimeRequest(
 				runtime.cancel(ownerId, request.payload.requestId);
 				return { acknowledged: true };
 		}
-	} catch {
+	} catch (error) {
 		// Root errors cross IPC only as a fixed message without paths, prompts, URLs, or knowledge.
+		process.stderr.write(
+			`[knowledge] hierarchy operation failed: ${error instanceof Error ? error.message : String(error)}\n`,
+		);
 		throw new Error("knowledge hierarchy operation failed");
 	}
 }

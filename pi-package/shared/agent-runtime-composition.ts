@@ -120,8 +120,8 @@ export function getAgentRuntimeComposition(
 
 	/** Replies to future requests from other extensions with this holder. */
 	if (typeof pi.events?.on === "function") {
-		pi.events.on(COMPOSITION_REQUEST_CHANNEL, (s: CompositionSlot) => {
-			s.holder = holder;
+		pi.events.on(COMPOSITION_REQUEST_CHANNEL, (data: unknown) => {
+			(data as CompositionSlot).holder = holder;
 		});
 	}
 

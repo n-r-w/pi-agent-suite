@@ -165,6 +165,12 @@ describe("run-subagent knowledge runtime integration", () => {
 		const pi = createPi();
 		const secret =
 			"https://user:password@example.invalid prompt private knowledge";
+		const writes: string[] = [];
+		const originalWrite = process.stderr.write;
+		process.stderr.write = ((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
 		registerKnowledgeRootRuntime(pi, {
 			read: async () => {
 				throw new Error(secret);
@@ -185,10 +191,16 @@ describe("run-subagent knowledge runtime integration", () => {
 			request("knowledge_read", { scope: SCOPE }),
 		);
 
-		// Assert: only the fixed transport-safe failure crosses the boundary.
-		await expect(result).rejects.toThrow(
-			"knowledge hierarchy operation failed",
-		);
-		await expect(result).rejects.not.toThrow(secret);
+		try {
+			// Assert: only the fixed transport-safe failure crosses the boundary.
+			await expect(result).rejects.toThrow(
+				"knowledge hierarchy operation failed",
+			);
+			await expect(result).rejects.not.toThrow(secret);
+			// The original error is logged locally for root-side diagnosability.
+			expect(writes.some((w) => w.includes(secret))).toBe(true);
+		} finally {
+			process.stderr.write = originalWrite;
+		}
 	});
 });
