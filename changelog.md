@@ -1,12 +1,47 @@
 # Changelog
 
-## v2.2.0 - 2026-08-06
+## v2.2.0 - 2026-08-07
 
-- Add cross-session global and branch-local project knowledge with bounded storage, extraction, merging, and workflow triggers
-- Inject applicable knowledge into agents and auxiliary model calls, including subagent runtime transport
-- Add shared model settings and aliases across extensions, plus workflow model/thinking precedence
-- Add `--agent` and workflow trigger CLI controls with ephemeral session behavior
-- Update documentation, validation, footer display, and comprehensive unit/integration coverage
+### Features
+
+**Cross-session knowledge system**
+- Added branch-local and global project knowledge with bounded storage, extraction, and merging
+- Added merge prompt separation (system/user) and extraction diagnostics
+- Added separate extraction prompts and knowledge categories
+- Added accumulation progress reporting and prompt constraints
+- Transfers local knowledge after global merge; includes current snapshots in extraction requests
+- Added preferred-remote project selection for knowledge identity
+- Added knowledge outcome entries and notification spinner behavior
+- Injects applicable knowledge into agents and auxiliary model calls, including subagent runtime transport
+
+**Shared model aliases and workflow model/thinking settings**
+- Added shared model settings and aliases across extensions for suite-wide model selection
+- Added workflow model and thinking settings with stage-level precedence
+- Restores final-stage runtime model settings after workflow completion
+- Resolves model aliases before launch validation in run-subagent
+
+**CLI controls**
+- Added `--agent` (ephemeral session) and `--trigger` (workflow trigger) CLI flags
+- Added stderr progress reporting for headless triggers
+
+**Management screen / subagents**
+- Shows subagent workflow status in the management screen
+- Routes child notifications to the selected pane
+
+### Fixes
+- Footer now shows provider alongside model and thinking level
+- Supports cross-extension state sharing in Pi 0.84 (per-extension `pi.events` wrapper isolation)
+- Handles optional workflow restoration and replay warnings
+
+### Removed
+- Removed the Mermaid ASCII rendering extension because pi already contains it
+
+### Documentation & Tests
+- Added feature specs for knowledge, CLI flags, workflow model/thinking, and subagent workflow status
+- Clarified project documentation, testing rules, and workflow completion requirements
+- Renamed environment test support file (`env.ts` → `environment.ts`)
+- Workflow tests now use keybinding-aware rendering assertions
+- Comprehensive new unit/integration coverage across knowledge, model-aliases, workflow, and run-subagent modules
 
 ## v2.1.0 - 2026-08-02
 
