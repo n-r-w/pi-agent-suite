@@ -1,6 +1,6 @@
 # Pi Agent Suite
 
-A set of [PI Coding Agent](https://pi.dev/) extensions that adds agent support, configurable workflows, dynamic context compression, MCP servers, mermaid rendering, and other useful features.
+A set of [PI Coding Agent](https://pi.dev/) extensions that adds agent support, configurable workflows, dynamic context compression, MCP servers, and other useful features.
 
 - [Agents](#different-tasks-require-unique-combinations-of-rules-available-tools-models-and-reasoning-levels)
 - [Workflows](#the-model-must-be-reliably-kept-on-track-rather-than-simply-relying-on-a-complex-multi-step-prompt)
@@ -471,7 +471,6 @@ Parameters:
 | `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary; requires valid enabled custom compaction. | `context-projection/config.json`: `enabled`, `projectCompactionSource`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/context-projection.md) |
 | `knowledge` | Enabled | Supplies bounded global and branch-local project knowledge across sessions and accumulates it through workflow triggers. | Optional `knowledge/config.json`; data defaults to `knowledge/data`. | [docs/extensions/knowledge.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/knowledge.md) |
 | `workflow` | Inactive until configured | Adds validated workflow activation, stage transitions, ordered stage-entry triggers, route-derived provider context, and a compact active-stage row in the shared session status panel. | Add `.yaml` files under `workflow/workflows`; optional prompt paths in `workflow/config.json`. | [docs/extensions/workflow.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/workflow.md) |
-| `mermaid` | Enabled in TUI mode | Renders supported Mermaid blocks from assistant responses as durable ASCII previews. | Fixed safety limits; no configuration. | [docs/extensions/mermaid.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/mermaid.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/completion-sound.md) |
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/cmux.md) |
 | `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/main-agent-selection.md) |

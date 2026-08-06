@@ -127,22 +127,12 @@ export default function knowledgeExtension(
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	const replay = dependencies.replay ?? replayContextProjection;
 	let loadedSkillRoots: readonly string[] = [];
-	const childProcess =
-		dependencies.runtimeEnv === undefined
-			? isKnowledgeChildProcess()
-			: isChildAgentProcess(dependencies.runtimeEnv);
-	const coordinator = childProcess
-		? undefined
-		: new KnowledgeMutationCoordinator((scope) =>
-				readStoredSnapshots(owner, config, scope),
-			);
-	const rootHierarchies =
-		coordinator === undefined ? undefined : createRootHierarchies(coordinator);
-	const rootClient = rootHierarchies?.client;
-	const disposers: Array<() => void> = [];
-	if (rootHierarchies !== undefined) {
-		disposers.push(registerKnowledgeRootRuntime(pi, rootHierarchies.root));
-	}
+	const { coordinator, rootClient, disposers } = createCoordinatorHierarchy(
+		pi,
+		config,
+		owner,
+		dependencies,
+	);
 
 	const runtime: EnabledKnowledgeRuntime = {
 		pi,
@@ -177,6 +167,39 @@ export default function knowledgeExtension(
 			dispose();
 		}
 	});
+}
+
+/** Creates the mutation coordinator, root hierarchy, and initial disposal callbacks. */
+function createCoordinatorHierarchy(
+	pi: ExtensionAPI,
+	config: KnowledgeConfig,
+	owner: KnowledgeOwner,
+	dependencies: KnowledgeExtensionDependencies,
+): {
+	coordinator: KnowledgeMutationCoordinator | undefined;
+	rootClient: KnowledgeHierarchyClient | undefined;
+	disposers: Array<() => void>;
+} {
+	const childProcess =
+		dependencies.runtimeEnv === undefined
+			? isKnowledgeChildProcess()
+			: isChildAgentProcess(dependencies.runtimeEnv);
+	const coordinator = childProcess
+		? undefined
+		: new KnowledgeMutationCoordinator((scope) =>
+				readStoredSnapshots(owner, config, scope),
+			);
+	const rootHierarchies =
+		coordinator === undefined ? undefined : createRootHierarchies(coordinator);
+	const disposers: Array<() => void> = [];
+	if (rootHierarchies !== undefined) {
+		disposers.push(registerKnowledgeRootRuntime(pi, rootHierarchies.root));
+	}
+	return {
+		coordinator,
+		rootClient: rootHierarchies?.client,
+		disposers,
+	};
 }
 
 /** Creates the shared context reader with fail-closed scope and storage behavior. */

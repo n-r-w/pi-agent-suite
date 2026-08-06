@@ -31,12 +31,12 @@ describe("workflow policy boundary", () => {
 			kind: "resolved",
 			policy: [],
 		});
-		expect(
-			resolveWorkflowPolicy(["Review", "delivery", "Cafe\u0301"]),
-		).toEqual({
-			kind: "resolved",
-			policy: ["Review", "delivery", "Café"],
-		});
+		expect(resolveWorkflowPolicy(["Review", "delivery", "Cafe\u0301"])).toEqual(
+			{
+				kind: "resolved",
+				policy: ["Review", "delivery", "Café"],
+			},
+		);
 	});
 
 	/** Proves exact case variants remain distinct while NFC-equivalent catalog IDs collide. */

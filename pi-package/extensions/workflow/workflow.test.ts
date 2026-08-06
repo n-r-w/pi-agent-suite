@@ -378,36 +378,38 @@ describe("workflow definition validation", () => {
 	});
 
 	/** Proves technical stage references reject every form of whitespace without restricting other characters. */
-	test.each(["stage id", "stage\tid", "stage\u00a0id", "stage\u0085id"])(
-		"rejects whitespace-bearing stage ID %j",
-		(stageId) => {
-			// Purpose: stage identity must remain one non-whitespace token across declarations and transitions.
-			// Input and expected output: one otherwise valid workflow uses the same whitespace-bearing ID in its stage and outgoing edges and is rejected.
-			// Edge cases: ordinary space, tab, non-breaking space, and next-line cover horizontal and vertical Unicode whitespace.
-			// Dependencies: the workflow definition boundary validates scalar contracts before graph semantics.
-			const value = validValue() as {
-				stages: Array<{ id: string }>;
-				transitions: Array<{ from: string; to: string }>;
-			};
-			const firstStage = value.stages[0];
-			if (firstStage === undefined) {
-				throw new Error("valid workflow fixture must contain an initial stage");
+	test.each([
+		"stage id",
+		"stage\tid",
+		"stage\u00a0id",
+		"stage\u0085id",
+	])("rejects whitespace-bearing stage ID %j", (stageId) => {
+		// Purpose: stage identity must remain one non-whitespace token across declarations and transitions.
+		// Input and expected output: one otherwise valid workflow uses the same whitespace-bearing ID in its stage and outgoing edges and is rejected.
+		// Edge cases: ordinary space, tab, non-breaking space, and next-line cover horizontal and vertical Unicode whitespace.
+		// Dependencies: the workflow definition boundary validates scalar contracts before graph semantics.
+		const value = validValue() as {
+			stages: Array<{ id: string }>;
+			transitions: Array<{ from: string; to: string }>;
+		};
+		const firstStage = value.stages[0];
+		if (firstStage === undefined) {
+			throw new Error("valid workflow fixture must contain an initial stage");
+		}
+		firstStage.id = stageId;
+		for (const transition of value.transitions) {
+			if (transition.from === "a") {
+				transition.from = stageId;
 			}
-			firstStage.id = stageId;
-			for (const transition of value.transitions) {
-				if (transition.from === "a") {
-					transition.from = stageId;
-				}
-				if (transition.to === "a") {
-					transition.to = stageId;
-				}
+			if (transition.to === "a") {
+				transition.to = stageId;
 			}
+		}
 
-			expect(() =>
-				validateWorkflowDefinition("delivery", value, SOURCE),
-			).toThrow();
-		},
-	);
+		expect(() =>
+			validateWorkflowDefinition("delivery", value, SOURCE),
+		).toThrow();
+	});
 });
 
 describe("workflow state", () => {

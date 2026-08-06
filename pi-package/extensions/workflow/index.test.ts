@@ -776,26 +776,23 @@ describe("workflow extension lifecycle", () => {
 	test.each([
 		["reported", { ok: false } as const],
 		["thrown", new Error("runner failed")],
-	])(
-		"keeps workflow success after a %s runner failure",
-		async (_case, failure) => {
-			await createSuite();
-			const fake = await createFakePi();
-			await runLifecycle(fake, "session_start");
-			const calls = captureTriggers(fake, failure);
-			const create = requireTool(fake, "workflow_create");
+	])("keeps workflow success after a %s runner failure", async (_case, failure) => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const calls = captureTriggers(fake, failure);
+		const create = requireTool(fake, "workflow_create");
 
-			const result = await create.execute("create", triggeredCreateArguments());
+		const result = await create.execute("create", triggeredCreateArguments());
 
-			expect(result).toEqual({
-				content: [{ type: "text", text: '{"success":true}' }],
-				details: {},
-			});
-			expect(calls.map(({ trigger }) => trigger.type)).toEqual([
-				"local_knowledge_accumulation",
-			]);
-		},
-	);
+		expect(result).toEqual({
+			content: [{ type: "text", text: '{"success":true}' }],
+			details: {},
+		});
+		expect(calls.map(({ trigger }) => trigger.type)).toEqual([
+			"local_knowledge_accumulation",
+		]);
+	});
 
 	/**
 	 * Proves workflow IDs use exact NFC identity and rejected creates are atomic.
@@ -1421,37 +1418,34 @@ describe("workflow extension lifecycle", () => {
 	test.each([
 		["malformed", "{", "valid JSON"],
 		["unknown", '["missing"]', "missing"],
-	] as const)(
-		"fails closed for %s child workflow policy",
-		async (_case, rawPolicy, expectedIssue) => {
-			// Purpose: policy rejection must remove all workflow tool names and suppress every provider-facing path.
-			// Input and expected output: malformed or unknown transport throws, hides context, appends nothing, and disables all workflow tools.
-			// Edge case: transition still reaches the retained replayed snapshot before returning the cached policy error.
-			// Dependencies: production child environment parsing, lifecycle replay, tool reconciliation, context gating, and transition authorization.
-			await createSuite(validYaml());
-			process.env[CHILD_AGENT_PROCESS_ENV] = "1";
-			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = rawPolicy;
-			const fake = await createFakePi();
+	] as const)("fails closed for %s child workflow policy", async (_case, rawPolicy, expectedIssue) => {
+		// Purpose: policy rejection must remove all workflow tool names and suppress every provider-facing path.
+		// Input and expected output: malformed or unknown transport throws, hides context, appends nothing, and disables all workflow tools.
+		// Edge case: transition still reaches the retained replayed snapshot before returning the cached policy error.
+		// Dependencies: production child environment parsing, lifecycle replay, tool reconciliation, context gating, and transition authorization.
+		await createSuite(validYaml());
+		process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+		process.env[SUBAGENT_WORKFLOW_IDS_ENV] = rawPolicy;
+		const fake = await createFakePi();
 
-			await expect(
-				runLifecycle(fake, "session_start", [activatedEntry()]),
-			).rejects.toThrow(expectedIssue);
+		await expect(
+			runLifecycle(fake, "session_start", [activatedEntry()]),
+		).rejects.toThrow(expectedIssue);
 
-			expect(fake.activeTools).toEqual(["read"]);
-			expect(await runContext(fake, [])).toBeUndefined();
-			expect(fake.appended).toEqual([]);
-			const transition = fake.tools.find(
-				({ name }) => name === "workflow_transition",
-			);
-			if (transition === undefined) {
-				throw new Error("transition tool missing");
-			}
-			await expect(
-				transition.execute("call", { stageId: "done" }),
-			).rejects.toThrow(expectedIssue);
-			expect(fake.appended).toEqual([]);
-		},
-	);
+		expect(fake.activeTools).toEqual(["read"]);
+		expect(await runContext(fake, [])).toBeUndefined();
+		expect(fake.appended).toEqual([]);
+		const transition = fake.tools.find(
+			({ name }) => name === "workflow_transition",
+		);
+		if (transition === undefined) {
+			throw new Error("transition tool missing");
+		}
+		await expect(
+			transition.execute("call", { stageId: "done" }),
+		).rejects.toThrow(expectedIssue);
+		expect(fake.appended).toEqual([]);
+	});
 
 	/** Proves usable lifecycle reconciliation never overrides agent policy. */
 	test("leaves active names unchanged while the subsystem is usable", async () => {
@@ -1542,42 +1536,39 @@ describe("workflow extension lifecycle", () => {
 		["invalid", "empty", []],
 		["invalid", "matching explicit", ["delivery"]],
 		["invalid", "non-matching explicit", ["review"]],
-	] as const)(
-		"keeps a saved snapshot with %s catalog and %s policy",
-		async (catalogKind, _policyName, policy) => {
-			// Purpose: a complete saved snapshot remains continuable independently from catalog and activation policy.
-			// Input and expected output: every resolved policy exposes and advances saved Delivery without new activation options.
-			// Edge case: invalid and removed catalogs still cannot provide new activation definitions.
-			// Dependencies: production lifecycle replay, active-state projection, transition enforcement, and isolated catalog fixtures.
-			await createSuite(
-				catalogKind === "invalid" ? "invalid: true\n" : undefined,
-			);
-			const fake = await createFakePi();
-			await runLifecycle(fake, "session_start", [activatedEntry()]);
-			setMainWorkflowPolicy(fake, policy);
-			const transition = requireTool(fake, "workflow_transition");
+	] as const)("keeps a saved snapshot with %s catalog and %s policy", async (catalogKind, _policyName, policy) => {
+		// Purpose: a complete saved snapshot remains continuable independently from catalog and activation policy.
+		// Input and expected output: every resolved policy exposes and advances saved Delivery without new activation options.
+		// Edge case: invalid and removed catalogs still cannot provide new activation definitions.
+		// Dependencies: production lifecycle replay, active-state projection, transition enforcement, and isolated catalog fixtures.
+		await createSuite(
+			catalogKind === "invalid" ? "invalid: true\n" : undefined,
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start", [activatedEntry()]);
+		setMainWorkflowPolicy(fake, policy);
+		const transition = requireTool(fake, "workflow_transition");
 
-			const initialContext = await runContext(fake, []);
-			expect(initialContext).toBeDefined();
-			const initialContent = String(
-				(initialContext as { messages: Array<{ content: unknown }> })
-					.messages[0]?.content,
-			);
-			expect(initialContent).not.toContain("<workflow_activation_options");
-			expect(initialContent).toContain(
-				'<active_workflow id="delivery" active_stage_id="start"',
-			);
+		const initialContext = await runContext(fake, []);
+		expect(initialContext).toBeDefined();
+		const initialContent = String(
+			(initialContext as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
+		);
+		expect(initialContent).not.toContain("<workflow_activation_options");
+		expect(initialContent).toContain(
+			'<active_workflow id="delivery" active_stage_id="start"',
+		);
 
-			await transition.execute("finish-delivery", { stageId: "done" });
-			expect(fake.appended).toHaveLength(1);
-			const transitionedContext = await runContext(fake, []);
-			const transitionedContent = String(
-				(transitionedContext as { messages: Array<{ content: unknown }> })
-					.messages[0]?.content,
-			);
-			expect(transitionedContent).toContain('active_stage_id="done"');
-		},
-	);
+		await transition.execute("finish-delivery", { stageId: "done" });
+		expect(fake.appended).toHaveLength(1);
+		const transitionedContext = await runContext(fake, []);
+		const transitionedContent = String(
+			(transitionedContext as { messages: Array<{ content: unknown }> })
+				.messages[0]?.content,
+		);
+		expect(transitionedContent).toContain('active_stage_id="done"');
+	});
 
 	test("does not publish workflow status outside TUI mode", async () => {
 		// Purpose: print and RPC sessions must not create the interactive shared status panel.

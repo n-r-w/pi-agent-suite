@@ -59,7 +59,10 @@ interface RunnerSlot {
 }
 
 /** Per-pi cache so each extension and each test fake keeps its own reference. */
-const runnerByPi = new WeakMap<ExtensionAPI, WorkflowTriggerRunner | undefined>();
+const runnerByPi = new WeakMap<
+	ExtensionAPI,
+	WorkflowTriggerRunner | undefined
+>();
 
 /** Registers the process-local runner used by the workflow extension. */
 export function registerWorkflowTriggerRunner(

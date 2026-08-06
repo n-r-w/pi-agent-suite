@@ -4,7 +4,6 @@ import type {
 	UserMessage,
 } from "@earendil-works/pi-ai";
 import type {
-	MessageRenderer,
 	MessageRenderOptions,
 	Theme,
 	ToolDefinition,
