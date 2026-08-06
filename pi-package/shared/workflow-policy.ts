@@ -1,4 +1,3 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isSingleLineText } from "./text-contracts";
 
 /** Canonical workflow IDs, with undefined preserving unrestricted policy. */
@@ -15,16 +14,20 @@ export type WorkflowPolicyResolution =
 	| { readonly kind: "resolved"; readonly policy: ResolvedWorkflowPolicy }
 	| { readonly kind: "error"; readonly issue: string };
 
-/** Cross-module property shared through Pi's event carrier. */
-const WORKFLOW_CATALOG_POLICY_PROPERTY = "__piAgentSuiteWorkflowCatalogPolicy";
+/** Cross-extension catalog carrier.
+ *
+ * Pi 0.84.0 loads each extension via jiti with `moduleCache: false`,
+ * giving every extension its own copy of shared modules. Only
+ * `globalThis` is truly shared across all extension instances.
+ */
+const CATALOG_KEY = "__piHarnessWorkflowCatalogPolicy";
 
-interface WorkflowCatalogPolicyCarrier {
-	[WORKFLOW_CATALOG_POLICY_PROPERTY]?: WorkflowCatalogPolicy;
+interface CatalogCarrier {
+	[CATALOG_KEY]?: WorkflowCatalogPolicy;
 }
 
 /** Publishes canonical catalog identity after rejecting NFC-equivalent collisions. */
 export function publishWorkflowCatalogPolicy(
-	pi: Pick<ExtensionAPI, "events">,
 	catalog: WorkflowCatalogPolicy,
 ): WorkflowCatalogPolicy {
 	const collision = findWorkflowDuplicate(catalog.ids);
@@ -40,14 +43,12 @@ export function publishWorkflowCatalogPolicy(
 						`workflow catalog IDs collide after NFC normalization: ${collision}`,
 					),
 				};
-	const carrier = pi.events as unknown as WorkflowCatalogPolicyCarrier;
-	carrier[WORKFLOW_CATALOG_POLICY_PROPERTY] = publication;
+	(globalThis as unknown as CatalogCarrier)[CATALOG_KEY] = publication;
 	return publication;
 }
 
 /** Resolves optional workflow names through the currently published canonical catalog. */
 export function resolveWorkflowPolicy(
-	pi: Pick<ExtensionAPI, "events">,
 	names: readonly string[] | undefined,
 ): WorkflowPolicyResolution {
 	if (names === undefined) {
@@ -69,7 +70,7 @@ export function resolveWorkflowPolicy(
 			issue: `workflow policy contains an NFC-equivalent duplicate: ${duplicate}`,
 		};
 	}
-	const catalog = readWorkflowCatalogPolicy(pi);
+	const catalog = readWorkflowCatalogPolicy();
 	if (catalog.error !== undefined) {
 		return { kind: "error", issue: catalog.error.message };
 	}
@@ -89,7 +90,6 @@ export function resolveWorkflowPolicy(
 
 /** Parses the child-owned JSON boundary and resolves its names canonically. */
 export function parseChildWorkflowPolicy(
-	pi: Pick<ExtensionAPI, "events">,
 	raw: string | undefined,
 ): WorkflowPolicyResolution {
 	if (raw === undefined) {
@@ -107,7 +107,7 @@ export function parseChildWorkflowPolicy(
 			issue: "child workflow policy must be an array of single-line strings",
 		};
 	}
-	return resolveWorkflowPolicy(pi, value);
+	return resolveWorkflowPolicy(value);
 }
 
 /** Applies canonical explicit membership while unrestricted policy admits every ID. */
@@ -135,12 +135,9 @@ export function hasAllowedWorkflowSource(
 }
 
 /** Reads the publication and fails explicit resolution when initialization is absent. */
-function readWorkflowCatalogPolicy(
-	pi: Pick<ExtensionAPI, "events">,
-): WorkflowCatalogPolicy {
-	const carrier = pi.events as unknown as WorkflowCatalogPolicyCarrier;
+function readWorkflowCatalogPolicy(): WorkflowCatalogPolicy {
 	return (
-		carrier[WORKFLOW_CATALOG_POLICY_PROPERTY] ?? {
+		(globalThis as unknown as CatalogCarrier)[CATALOG_KEY] ?? {
 			ids: [],
 			error: new Error("workflow catalog policy is unavailable"),
 		}

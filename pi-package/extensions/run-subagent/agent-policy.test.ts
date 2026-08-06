@@ -83,7 +83,7 @@ describe("effective callable-agent policy", () => {
 			events: {},
 			getThinkingLevel: () => "medium",
 		} as unknown as ExtensionAPI;
-		publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+		publishWorkflowCatalogPolicy({ ids: ["Review"] });
 		const agents: readonly AgentDefinition[] = [
 			{
 				id: "Worker",

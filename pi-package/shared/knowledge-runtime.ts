@@ -48,19 +48,16 @@ export interface KnowledgeHierarchyClient {
 	release(leaseId: string): Promise<void>;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessKnowledgeRuntime";
+/** Event bus channel for synchronous cross-extension holder lookup. */
+const HOLDER_REQUEST_CHANNEL = "pi-harness:knowledge-runtime:request";
 
-/** Holds independent knowledge roles without exposing a generic handler registry. */
-interface KnowledgeRuntimeHolder {
-	context: KnowledgeContextRuntime | undefined;
-	root: KnowledgeRootRuntime | undefined;
-	hierarchy: KnowledgeHierarchyClient | undefined;
+/** Mutable slot passed through the event bus for request-reply. */
+interface HolderSlot {
+	holder: KnowledgeRuntimeHolder | undefined;
 }
 
-/** Event-bus carrier shared by separately loaded package extensions. */
-interface KnowledgeRuntimeCarrier {
-	[RUNTIME_PROPERTY]?: KnowledgeRuntimeHolder;
-}
+/** Per-pi cache so each extension and each test fake keeps its own reference. */
+const holderByPi = new WeakMap<ExtensionAPI, KnowledgeRuntimeHolder>();
 
 /** Registers a process-local context source. */
 export function registerKnowledgeContextRuntime(
@@ -131,22 +128,42 @@ function registerRole<role extends keyof KnowledgeRuntimeHolder>(
 	};
 }
 
-/** Creates one stable holder for the lifetime of the process-local event bus. */
+/** Creates or looks up one stable holder for the lifetime of the extension runtime.
+ *
+ * Pi 0.84.0 loads each extension via jiti with `moduleCache: false`. The event
+ * bus is the only channel shared across extension instances, so the holder is
+ * exchanged through a synchronous emit/on request-reply with a mutable slot.
+ * A WeakMap keyed by pi provides per-instance caching and test isolation.
+ */
 function getHolder(pi: ExtensionAPI): KnowledgeRuntimeHolder {
-	const carrier = pi.events as unknown as KnowledgeRuntimeCarrier;
-	if (carrier[RUNTIME_PROPERTY] !== undefined) {
-		return carrier[RUNTIME_PROPERTY];
+	const cached = holderByPi.get(pi);
+	if (cached !== undefined) {
+		return cached;
 	}
+
+	/** Asks whether another extension already created the holder. */
+	const slot: HolderSlot = { holder: undefined };
+	if (typeof pi.events?.emit === "function") {
+		pi.events.emit(HOLDER_REQUEST_CHANNEL, slot);
+	}
+	if (slot.holder !== undefined) {
+		holderByPi.set(pi, slot.holder);
+		return slot.holder;
+	}
+
 	const holder: KnowledgeRuntimeHolder = {
 		context: undefined,
 		root: undefined,
 		hierarchy: undefined,
 	};
-	Object.defineProperty(carrier, RUNTIME_PROPERTY, {
-		configurable: false,
-		enumerable: false,
-		value: holder,
-		writable: false,
-	});
+	holderByPi.set(pi, holder);
+
+	/** Replies to future requests from other extensions with this holder. */
+	if (typeof pi.events?.on === "function") {
+		pi.events.on(HOLDER_REQUEST_CHANNEL, (s: HolderSlot) => {
+			s.holder = holder;
+		});
+	}
+
 	return holder;
 }

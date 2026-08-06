@@ -1061,7 +1061,7 @@ describe("main-agent-selection", () => {
 				workflows: ["Review"],
 			});
 			const pi = createExtensionApiFake();
-			publishWorkflowCatalogPolicy(pi, { ids: ["Review", "Delivery"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review", "Delivery"] });
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
@@ -1102,7 +1102,7 @@ describe("main-agent-selection", () => {
 				workflows: ["Missing"],
 			});
 			const pi = createExtensionApiFake();
-			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const ctx = createCommandContext("/tmp/project", undefined, [model]);
 			mainAgentSelection(pi);
 			await getCommand(pi, "agent").handler("Stable", ctx);
@@ -1147,7 +1147,7 @@ describe("main-agent-selection", () => {
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "write"],
 			});
-			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const ctx = createCommandContext("/tmp/project", undefined, [model]);
 			mainAgentSelection(pi);
 			await getCommand(pi, "agent").handler("Stable", ctx);
@@ -1221,7 +1221,7 @@ describe("main-agent-selection", () => {
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "write"],
 			});
-			publishWorkflowCatalogPolicy(oldPi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const oldCtx = createCommandContext("/tmp/project", undefined, [model]);
 			const oldFactory = await importFreshMainAgentSelection();
 			oldFactory(oldPi);
@@ -1239,7 +1239,7 @@ describe("main-agent-selection", () => {
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "write"],
 			});
-			publishWorkflowCatalogPolicy(newPi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const newCtx = createCommandContext("/tmp/project", undefined, [model]);
 			const newFactory = await importFreshMainAgentSelection();
 			newFactory(newPi);

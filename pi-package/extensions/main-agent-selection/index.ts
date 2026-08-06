@@ -944,7 +944,7 @@ function resolveMainAgentPolicies(
 			readonly kind: "error";
 			readonly outcome: "workflow-policy-error" | "application-error";
 	  } {
-	const workflows = resolveWorkflowPolicy(pi, agent.workflows);
+	const workflows = resolveWorkflowPolicy(agent.workflows);
 	if (workflows.kind === "error") {
 		reportIssue(ctx, workflows.issue);
 		return { kind: "error", outcome: "workflow-policy-error" };

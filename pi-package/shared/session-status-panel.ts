@@ -6,8 +6,8 @@ import type {
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-/** Stores the controller on Pi's shared event carrier across extension modules. */
-const PANEL_PROPERTY = "__piHarnessSessionStatusPanel";
+/** Event bus channel for synchronous cross-extension controller lookup. */
+const CONTROLLER_REQUEST_CHANNEL = "pi-harness:session-status-panel:request";
 
 /** Identifies the single widget owned by the shared session-status panel. */
 const PANEL_WIDGET_KEY = "session-status-panel";
@@ -47,10 +47,13 @@ interface SessionStatusPanelHolder {
 	stale: boolean;
 }
 
-/** Adds the private status-panel holder to Pi's shared event carrier. */
-interface SessionStatusPanelCarrier {
-	[PANEL_PROPERTY]?: SessionStatusPanelHolder;
+/** Mutable slot passed through the event bus for request-reply. */
+interface ControllerSlot {
+	holder: SessionStatusPanelHolder | undefined;
 }
+
+/** Per-pi cache so each extension and each test fake keeps its own reference. */
+const holderByPi = new WeakMap<ExtensionAPI, SessionStatusPanelHolder>();
 
 /** Renders one separator followed by every current status row. */
 class SessionStatusPanelComponent implements Component {
@@ -157,14 +160,28 @@ class SessionStatusPanelController {
 	}
 }
 
-/** Returns the current controller or creates one for a new runtime generation. */
+/** Returns the current controller or creates one for a new runtime generation.
+ *
+ * Pi 0.84.0 loads each extension via jiti with `moduleCache: false`. The event
+ * bus is the only channel shared across extension instances, so the controller
+ * is exchanged through a synchronous emit/on request-reply with a mutable slot.
+ */
 function getSessionStatusPanelController(
 	pi: ExtensionAPI,
 ): SessionStatusPanelController {
-	const carrier = pi.events as SessionStatusPanelCarrier;
-	const existing = carrier[PANEL_PROPERTY];
-	if (existing?.controller !== undefined && !existing.stale) {
-		return existing.controller;
+	const cached = holderByPi.get(pi);
+	if (cached?.controller !== undefined && !cached.stale) {
+		return cached.controller;
+	}
+
+	/** Asks whether another extension already created the controller. */
+	const slot: ControllerSlot = { holder: undefined };
+	if (typeof pi.events?.emit === "function") {
+		pi.events.emit(CONTROLLER_REQUEST_CHANNEL, slot);
+	}
+	if (slot.holder?.controller !== undefined && !slot.holder.stale) {
+		holderByPi.set(pi, slot.holder);
+		return slot.holder.controller;
 	}
 
 	const holder: SessionStatusPanelHolder = {
@@ -174,16 +191,15 @@ function getSessionStatusPanelController(
 	holder.controller = new SessionStatusPanelController(() => {
 		holder.stale = true;
 	});
-	if (existing !== undefined) {
-		carrier[PANEL_PROPERTY] = holder;
-		return holder.controller;
+	holderByPi.set(pi, holder);
+
+	/** Replies to future requests from other extensions with this holder. */
+	if (typeof pi.events?.on === "function") {
+		pi.events.on(CONTROLLER_REQUEST_CHANNEL, (s: ControllerSlot) => {
+			s.holder = holder;
+		});
 	}
-	Object.defineProperty(carrier, PANEL_PROPERTY, {
-		configurable: false,
-		enumerable: false,
-		value: holder,
-		writable: true,
-	});
+
 	return holder.controller;
 }
 

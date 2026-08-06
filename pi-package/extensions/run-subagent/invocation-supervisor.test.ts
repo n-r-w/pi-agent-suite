@@ -549,7 +549,7 @@ describe("InvocationSupervisor", () => {
 				events: new EventEmitter(),
 				getThinkingLevel: () => "off",
 			} as unknown as ExtensionAPI;
-			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			let authCalls = 0;
 			const ctx = {
 				cwd: "/tmp",

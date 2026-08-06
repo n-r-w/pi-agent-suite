@@ -60,7 +60,7 @@ export async function resolveLaunchConfiguration(
 			`Subagent ${request.agentId} is unavailable`,
 		);
 	}
-	const workflows = resolveWorkflowPolicy(pi, agent.workflows);
+	const workflows = resolveWorkflowPolicy(agent.workflows);
 	if (workflows.kind === "error") {
 		throw new InvocationStartError("start_failed", workflows.issue);
 	}

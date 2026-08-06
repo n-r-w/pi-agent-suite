@@ -32,6 +32,7 @@ pi-update:
 		}; \
 	done
 	bun add --dev --exact $(addsuffix @$(PI_VERSION),$(PI_PACKAGES))
+	@cd pi-package && bun install && cd ..
 	bun run verify
 	./node_modules/.bin/pi --version
 

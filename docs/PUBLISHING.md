@@ -40,7 +40,7 @@ Update all Pi development packages to one explicit version:
 make pi-update PI_VERSION=0.80.6
 ```
 
-The update target checks that all four packages provide the requested version, writes exact versions to `package.json` and `bun.lock`, runs `bun run verify`, and prints the version of the repository-local Pi executable.
+The update target checks that all four packages provide the requested version, writes exact versions to root `package.json` and `bun.lock`, reinstalls `pi-package/` nested dependencies so `pi-package/node_modules/` matches the root versions, runs `bun run verify`, and prints the version of the repository-local Pi executable.
 
 Review the upstream Pi changes and the resulting repository diff before committing. The target does not update the globally installed Pi.
 

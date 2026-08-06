@@ -50,32 +50,34 @@ export interface WorkflowTriggerRunner {
 	): Promise<WorkflowTriggerRunResult>;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessWorkflowTriggerRunner";
+/** Event bus channel for synchronous cross-extension runner lookup. */
+const RUNNER_REQUEST_CHANNEL = "pi-harness:workflow-trigger-runner:request";
 
-/** Event-bus carrier shared by separately loaded package extensions. */
-interface WorkflowTriggerRuntimeCarrier {
-	[RUNTIME_PROPERTY]?: WorkflowTriggerRunner | undefined;
+/** Mutable slot passed through the event bus for request-reply. */
+interface RunnerSlot {
+	runner: WorkflowTriggerRunner | undefined;
 }
+
+/** Per-pi cache so each extension and each test fake keeps its own reference. */
+const runnerByPi = new WeakMap<ExtensionAPI, WorkflowTriggerRunner | undefined>();
 
 /** Registers the process-local runner used by the workflow extension. */
 export function registerWorkflowTriggerRunner(
 	pi: ExtensionAPI,
 	runner: WorkflowTriggerRunner,
 ): () => void {
-	const carrier = pi.events as unknown as WorkflowTriggerRuntimeCarrier;
-	if (Object.hasOwn(carrier, RUNTIME_PROPERTY)) {
-		carrier[RUNTIME_PROPERTY] = runner;
-	} else {
-		Object.defineProperty(carrier, RUNTIME_PROPERTY, {
-			configurable: false,
-			enumerable: false,
-			value: runner,
-			writable: true,
+	runnerByPi.set(pi, runner);
+
+	/** Replies to future cross-extension lookup requests. */
+	if (typeof pi.events?.on === "function") {
+		pi.events.on(RUNNER_REQUEST_CHANNEL, (slot: RunnerSlot) => {
+			slot.runner = runnerByPi.get(pi);
 		});
 	}
+
 	return () => {
-		if (carrier[RUNTIME_PROPERTY] === runner) {
-			carrier[RUNTIME_PROPERTY] = undefined;
+		if (runnerByPi.get(pi) === runner) {
+			runnerByPi.set(pi, undefined);
 		}
 	};
 }
@@ -84,7 +86,18 @@ export function registerWorkflowTriggerRunner(
 export function getWorkflowTriggerRunner(
 	pi: ExtensionAPI,
 ): WorkflowTriggerRunner | undefined {
-	return (pi.events as unknown as WorkflowTriggerRuntimeCarrier)[
-		RUNTIME_PROPERTY
-	];
+	const cached = runnerByPi.get(pi);
+	if (cached !== undefined) {
+		return cached;
+	}
+
+	/** Asks whether another extension already registered a runner. */
+	const slot: RunnerSlot = { runner: undefined };
+	if (typeof pi.events?.emit === "function") {
+		pi.events.emit(RUNNER_REQUEST_CHANNEL, slot);
+	}
+	if (slot.runner !== undefined) {
+		runnerByPi.set(pi, slot.runner);
+	}
+	return slot.runner;
 }

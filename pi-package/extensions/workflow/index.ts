@@ -425,7 +425,7 @@ export default async function workflowExtension(
 		loadWorkflowCatalog(join(extensionDirectory, "workflows")),
 		loadPromptsForInitialization(extensionDirectory),
 	]);
-	const catalogPublication = publishWorkflowCatalogPolicy(pi, {
+	const catalogPublication = publishWorkflowCatalogPolicy({
 		ids: loadedCatalog.workflows.map(({ id }) => id),
 		...(loadedCatalog.error === undefined
 			? {}
@@ -644,7 +644,7 @@ function createWorkflowPolicyReader(
 	const environment = readWorkflowPolicyEnvironment();
 	const childPolicy =
 		environment.kind === "child"
-			? parseChildWorkflowPolicy(pi, environment.rawPolicy)
+			? parseChildWorkflowPolicy(environment.rawPolicy)
 			: undefined;
 	return () =>
 		childPolicy ?? {
