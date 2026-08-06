@@ -958,6 +958,19 @@ export class ManagementScreen implements Component, Focusable {
 
 	/** Renders one transient child status row without adding it to conversation history. */
 	private renderLiveStatus(width: number): readonly string[] {
+		const notification = this.view.selectedNotification;
+		if (notification !== undefined) {
+			this.liveStatusIndicator?.stop();
+			this.liveStatusIndicator = undefined;
+			const color =
+				notification.notifyType === "info" ? "accent" : notification.notifyType;
+			return [
+				truncateToWidth(
+					this.options.theme.fg(color, notification.message),
+					width,
+				),
+			];
+		}
 		const status = this.view.selectedLiveStatus;
 		if (status === undefined) {
 			this.liveStatusIndicator?.stop();

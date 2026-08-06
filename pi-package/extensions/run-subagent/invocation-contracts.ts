@@ -41,6 +41,12 @@ export interface NewInvocationRequest extends InvocationScope {
 	readonly prompt: string;
 }
 
+/** Retains the latest transient notification for one active invocation. */
+export interface InvocationNotification {
+	readonly message: string;
+	readonly notifyType: "info" | "warning" | "error";
+}
+
 /** Describes supervisor observations consumed by the coordinator. */
 export type InvocationEvent =
 	| {

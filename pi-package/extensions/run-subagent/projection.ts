@@ -6,6 +6,7 @@ import type {
 	OwnerIdentity,
 	SessionKey,
 } from "./domain.ts";
+import type { InvocationNotification } from "./invocation-contracts.ts";
 import type { LiveAgentStatus } from "./live-status.ts";
 import { SessionStore } from "./persistence.ts";
 
@@ -57,6 +58,7 @@ export interface ManagementProjectionView {
 	readonly selectedConversationComplete: boolean;
 	readonly selectedLiveStatus: LiveAgentStatus | undefined;
 	readonly selectedProjectionSavedTokens: number | undefined;
+	readonly selectedNotification: InvocationNotification | undefined;
 	readonly affectedStableKeys: readonly string[];
 }
 
@@ -66,6 +68,7 @@ interface ConversationSnapshot {
 	readonly complete: boolean;
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
+	readonly notification: InvocationNotification | undefined;
 }
 
 /** Supplies one selected conversation revision without positional argument coupling. */
@@ -76,6 +79,7 @@ interface ConversationUpdate {
 	readonly complete: boolean;
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
+	readonly notification: InvocationNotification | undefined;
 }
 
 /** Encodes complete owner-local identity without relying on a global numeric ID. */
@@ -99,6 +103,7 @@ export class HierarchyConversationProjection {
 		selectedConversationComplete: true,
 		selectedLiveStatus: undefined,
 		selectedProjectionSavedTokens: undefined,
+		selectedNotification: undefined,
 		affectedStableKeys: [],
 	});
 
@@ -128,6 +133,7 @@ export class HierarchyConversationProjection {
 				complete: true,
 				liveStatus: undefined,
 				projectionSavedTokens: undefined,
+				notification: undefined,
 			});
 			this.conversations.set(key, next);
 			changedConversationKeys.add(key);
@@ -159,6 +165,7 @@ export class HierarchyConversationProjection {
 				complete: update.complete,
 				liveStatus: update.liveStatus,
 				projectionSavedTokens: update.projectionSavedTokens,
+				notification: update.notification,
 			}),
 		);
 		return this.rebuild(new Set([key]));
@@ -191,6 +198,7 @@ export class HierarchyConversationProjection {
 			selectedConversationComplete: this.getSelectedConversationComplete(),
 			selectedLiveStatus: this.getSelectedLiveStatus(),
 			selectedProjectionSavedTokens: this.getSelectedProjectionSavedTokens(),
+			selectedNotification: this.getSelectedNotification(),
 			affectedStableKeys: affected,
 		});
 		return this.view;
@@ -267,6 +275,7 @@ export class HierarchyConversationProjection {
 			selectedConversationComplete: this.getSelectedConversationComplete(),
 			selectedLiveStatus: this.getSelectedLiveStatus(),
 			selectedProjectionSavedTokens: this.getSelectedProjectionSavedTokens(),
+			selectedNotification: this.getSelectedNotification(),
 			affectedStableKeys: orderAffectedKeys(affected, nextNodes),
 		});
 		return this.view;
@@ -303,6 +312,13 @@ export class HierarchyConversationProjection {
 		return this.selectedStableKey === null
 			? undefined
 			: this.conversations.get(this.selectedStableKey)?.projectionSavedTokens;
+	}
+
+	/** Returns the transient notification owned by the selected invocation. */
+	private getSelectedNotification(): InvocationNotification | undefined {
+		return this.selectedStableKey === null
+			? undefined
+			: this.conversations.get(this.selectedStableKey)?.notification;
 	}
 }
 
@@ -435,6 +451,10 @@ function createConversationSnapshot(
 		complete: source.complete,
 		liveStatus: frozenLiveStatus,
 		projectionSavedTokens: source.projectionSavedTokens,
+		notification:
+			source.notification === undefined
+				? undefined
+				: freezeRecursively(structuredClone(source.notification)),
 	});
 }
 

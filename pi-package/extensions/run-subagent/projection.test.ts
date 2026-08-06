@@ -237,6 +237,7 @@ describe("HierarchyConversationProjection", () => {
 			complete: false,
 			liveStatus: { kind: "working" },
 			projectionSavedTokens: 139_000,
+			notification: undefined,
 		});
 		const repeatedConversation = projection.updateConversation({
 			sessionKey: nestedSession.key,
@@ -250,6 +251,7 @@ describe("HierarchyConversationProjection", () => {
 				deadlineAtMs: 1_000,
 			},
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		});
 
 		// ASSERT: only selected conversation entries are exposed and prior revisions remain unchanged.

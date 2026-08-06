@@ -58,12 +58,14 @@ test("reloads each terminal file revision after repeated continuations", async (
 			leafId: first.id,
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		},
 		{
 			entries: [continued],
 			leafId: continued.id,
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		},
 	];
 	let terminalReads = 0;
@@ -134,6 +136,7 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 					leafId,
 					liveStatus: undefined,
 					projectionSavedTokens: undefined,
+					notification: undefined,
 				};
 			},
 		};
@@ -150,6 +153,7 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 			complete: true,
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		});
 		await loader.dispose();
 	} finally {
@@ -168,6 +172,10 @@ test("publishes a live status change without new conversation entries", async ()
 			leafId: null,
 			liveStatus: { kind: "working" } as const,
 			projectionSavedTokens: undefined,
+			notification: {
+				message: "preparing child work",
+				notifyType: "info" as const,
+			},
 		},
 		{
 			entries: [],
@@ -179,6 +187,10 @@ test("publishes a live status change without new conversation entries", async ()
 				deadlineAtMs: 5_000,
 			} as const,
 			projectionSavedTokens: undefined,
+			notification: {
+				message: "retrying child work",
+				notifyType: "warning" as const,
+			},
 		},
 	];
 	const session = sessionRevision("active", "active-invocation");
@@ -212,6 +224,10 @@ test("publishes a live status change without new conversation entries", async ()
 				deadlineAtMs: 5_000,
 			},
 			projectionSavedTokens: undefined,
+			notification: {
+				message: "retrying child work",
+				notifyType: "warning",
+			},
 		},
 	});
 	await loader.dispose();
@@ -230,12 +246,14 @@ test("publishes projection savings changes without new conversation entries", as
 			leafId: null,
 			liveStatus,
 			projectionSavedTokens: 139_000,
+			notification: undefined,
 		},
 		{
 			entries: [],
 			leafId: null,
 			liveStatus,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		},
 	];
 	const session = sessionRevision("active", "active-invocation");
@@ -266,6 +284,7 @@ test("publishes projection savings changes without new conversation entries", as
 			complete: true,
 			liveStatus,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		},
 	});
 	await loader.dispose();
@@ -297,6 +316,7 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		complete: false,
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
+		notification: undefined,
 	});
 	expect(await loader.loadEarlier()).toBe(false);
 	expect(loader.getSnapshot()).toEqual({
@@ -304,6 +324,7 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		complete: false,
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
+		notification: undefined,
 	});
 	expect(await loader.loadEarlier()).toBe(true);
 	expect(loader.getSnapshot()).toEqual({
@@ -311,6 +332,7 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		complete: true,
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
+		notification: undefined,
 	});
 	await loader.dispose();
 });
@@ -343,6 +365,7 @@ test("completes an inactive preview during background refresh", async () => {
 		complete: true,
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
+		notification: undefined,
 	});
 	await loader.dispose();
 });

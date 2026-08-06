@@ -215,6 +215,7 @@ class ViewSourceFake implements ManagementViewSource {
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
 			affectedStableKeys: node === null ? [] : [node.stableKey],
 		};
 	}
@@ -265,6 +266,7 @@ class ActiveConversationSourceFake {
 	public entries: readonly SessionEntry[] = [conversationEntry("active")];
 	public liveStatus: ManagementProjectionView["selectedLiveStatus"];
 	public projectionSavedTokens: number | undefined;
+	public notification: ManagementProjectionView["selectedNotification"];
 	public error: Error | undefined;
 	public readCalls = 0;
 	public readonly sinceValues: Array<string | undefined> = [];
@@ -279,6 +281,7 @@ class ActiveConversationSourceFake {
 		readonly leafId: string | null;
 		readonly liveStatus: ManagementProjectionView["selectedLiveStatus"];
 		readonly projectionSavedTokens: number | undefined;
+		readonly notification: ManagementProjectionView["selectedNotification"];
 	}> {
 		this.readCalls += 1;
 		this.sinceValues.push(since);
@@ -298,6 +301,7 @@ class ActiveConversationSourceFake {
 			leafId: this.entries.at(-1)?.id ?? null,
 			liveStatus: this.liveStatus,
 			projectionSavedTokens: this.projectionSavedTokens,
+			notification: this.notification,
 		};
 	}
 
@@ -853,6 +857,7 @@ describe("management screen", () => {
 			...fixture.source.getView(),
 			revision: 3,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
 			affectedStableKeys: [node.stableKey],
 		});
 		const clearedRows = fixture.screen.render(120);
@@ -1037,6 +1042,38 @@ describe("management screen", () => {
 		} finally {
 			fixture.screen.dispose();
 			nowSpy.mockRestore();
+		}
+	});
+
+	test("renders the latest child notification instead of live status", () => {
+		// Purpose: the selected pane must show invocation-owned notification state outside session history.
+		// Inputs and expected output: one warning notification replaces the live-status row and stays width-safe.
+		// Edge case: wide CJK and emoji content must not exceed the panel width.
+		// Dependencies: immutable projection state and the selected-pane renderer.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedLiveStatus: { kind: "working" },
+			selectedNotification: {
+				message: "处理通知 🚀 ".repeat(20),
+				notifyType: "warning",
+			},
+		});
+
+		try {
+			const rows = fixture.screen.render(80);
+			expect({
+				notificationVisible: rows.some((line) => line.includes("处理通知")),
+				liveStatusHidden: rows.every((line) => !line.includes("Working...")),
+				widthSafe: rows.every((line) => visibleWidth(line) <= 80),
+			}).toEqual({
+				notificationVisible: true,
+				liveStatusHidden: true,
+				widthSafe: true,
+			});
+		} finally {
+			fixture.screen.dispose();
 		}
 	});
 
@@ -1329,6 +1366,7 @@ describe("management screen", () => {
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
 			affectedStableKeys: nodes.map((node) => node.stableKey),
 		});
 		const topRows = fixture.screen.render(80);
@@ -1347,6 +1385,7 @@ describe("management screen", () => {
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
 			affectedStableKeys: [],
 		});
 		fixture.screen.render(80);

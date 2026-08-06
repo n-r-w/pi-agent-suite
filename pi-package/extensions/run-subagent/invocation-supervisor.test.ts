@@ -1031,7 +1031,12 @@ describe("InvocationSupervisor", () => {
 		child.stdout?.emit(
 			"data",
 			Buffer.from(
-				'{"type":"auto_retry_start","attempt":8,"maxAttempts":10,"delayMs":96000}\n',
+				`${JSON.stringify({
+					type: "extension_ui_request",
+					method: "notify",
+					message: "first child notice",
+					notifyType: "warning",
+				})}\n{"type":"auto_retry_start","attempt":8,"maxAttempts":10,"delayMs":96000}\n`,
 			),
 		);
 		emitProjectionStatus(child, "~139k");
@@ -1107,6 +1112,16 @@ describe("InvocationSupervisor", () => {
 			),
 		);
 		const page = await pending;
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "extension_ui_request",
+					method: "notify",
+					message: "latest child notice",
+				})}\n`,
+			),
+		);
 		emitProjectionStatus(child, "~0");
 		const incremental = supervisor.readActiveEntries(
 			acceptance.invocationId,
@@ -1139,6 +1154,7 @@ describe("InvocationSupervisor", () => {
 			leafId: page.leafId,
 			liveStatus: page.liveStatus,
 			projectionSavedTokens: page.projectionSavedTokens,
+			notification: page.notification,
 			deadlineValid:
 				page.liveStatus?.kind === "retrying" &&
 				page.liveStatus.deadlineAtMs >= retryObservedAfterMs + 96_000,
@@ -1155,14 +1171,24 @@ describe("InvocationSupervisor", () => {
 			leafId: "assistant-1",
 			liveStatus: page.liveStatus,
 			projectionSavedTokens: 139_000,
+			notification: {
+				message: "first child notice",
+				notifyType: "warning",
+			},
 			deadlineValid: true,
 			incrementalPage: {
 				entries: [],
 				leafId: "assistant-1",
 				liveStatus: page.liveStatus,
 				projectionSavedTokens: undefined,
+				notification: {
+					message: "latest child notice",
+					notifyType: "info",
+				},
 			},
 			activity: [
+				acceptance.invocationId,
+				acceptance.invocationId,
 				acceptance.invocationId,
 				acceptance.invocationId,
 				acceptance.invocationId,
