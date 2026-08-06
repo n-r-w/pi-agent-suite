@@ -3,6 +3,8 @@ import type { LogicalSession } from "../domain";
 import type { InvocationNotification } from "../invocation-contracts";
 import type { LiveAgentStatus } from "../live-status";
 import { projectionStableKey } from "../projection";
+import type { WorkflowStatus } from "../workflow-status";
+import { extractWorkflowStatus } from "../workflow-status";
 
 /** Supplies active Pi entry pages without exposing process ownership. */
 export interface SelectedConversationActiveSource {
@@ -30,6 +32,7 @@ export interface SelectedConversationSnapshot {
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
 	readonly notification: InvocationNotification | undefined;
+	readonly workflowStatus: WorkflowStatus | undefined;
 }
 
 /** Configures one selected-only progressive branch loader. */
@@ -54,6 +57,7 @@ export class SelectedConversationLoader {
 	private liveStatus: LiveAgentStatus | undefined;
 	private projectionSavedTokens: number | undefined;
 	private notification: InvocationNotification | undefined;
+	private workflowStatus: WorkflowStatus | undefined;
 	private lastState: LogicalSession["state"];
 	private disposed = false;
 
@@ -94,6 +98,7 @@ export class SelectedConversationLoader {
 			liveStatus: this.liveStatus,
 			projectionSavedTokens: this.projectionSavedTokens,
 			notification: this.notification,
+			workflowStatus: this.workflowStatus,
 		};
 	}
 
@@ -157,13 +162,20 @@ export class SelectedConversationLoader {
 			ReturnType<SelectedConversationActiveSource["readActiveEntries"]>
 		>,
 	): boolean {
+		const newWorkflowStatus = extractWorkflowStatus(
+			Array.from(this.entriesById.values()),
+		);
 		const changed =
 			this.liveStatus !== page.liveStatus ||
 			this.projectionSavedTokens !== page.projectionSavedTokens ||
-			this.notification !== page.notification;
+			this.notification !== page.notification ||
+			this.workflowStatus?.workflowId !== newWorkflowStatus?.workflowId ||
+			this.workflowStatus?.stageDescription !==
+				newWorkflowStatus?.stageDescription;
 		this.liveStatus = page.liveStatus;
 		this.projectionSavedTokens = page.projectionSavedTokens;
 		this.notification = page.notification;
+		this.workflowStatus = newWorkflowStatus;
 		return changed;
 	}
 
@@ -205,6 +217,9 @@ export class SelectedConversationLoader {
 		this.liveStatus = page.liveStatus;
 		this.projectionSavedTokens = page.projectionSavedTokens;
 		this.notification = page.notification;
+		this.workflowStatus = extractWorkflowStatus(
+			Array.from(this.entriesById.values()),
+		);
 		this.branch = this.resolveBranch();
 	}
 
@@ -243,7 +258,8 @@ export class SelectedConversationLoader {
 			contentChanged ||
 			this.liveStatus !== undefined ||
 			this.projectionSavedTokens !== undefined ||
-			this.notification !== undefined;
+			this.notification !== undefined ||
+			this.workflowStatus !== undefined;
 		if (contentChanged) {
 			this.replaceCompleteBranch(entries);
 		} else {
@@ -251,6 +267,7 @@ export class SelectedConversationLoader {
 			this.liveStatus = undefined;
 			this.projectionSavedTokens = undefined;
 			this.notification = undefined;
+			this.workflowStatus = undefined;
 		}
 		return changed;
 	}

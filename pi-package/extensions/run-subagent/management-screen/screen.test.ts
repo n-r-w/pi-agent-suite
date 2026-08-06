@@ -216,6 +216,7 @@ class ViewSourceFake implements ManagementViewSource {
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
 			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: node === null ? [] : [node.stableKey],
 		};
 	}
@@ -459,6 +460,36 @@ describe("management screen", () => {
 			rowsFit: true,
 			zeroAgentTitle: true,
 			selectedHeaderDividerFragments: false,
+		});
+	});
+
+	test("positions the header divider after the workflow status row", () => {
+		// Purpose: a workflow status header row must not collide with the fixed divider border.
+		// Inputs and expected output: a wide projection with selectedWorkflowStatus renders the workflow row as content and shifts the divider after it.
+		// Edge case: border characters (├, ─┤) must appear only on the divider row, never on the workflow status content row.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: fixture.source.getView().revision + 1,
+			selectedWorkflowStatus: {
+				workflowId: "TestWorkflow",
+				stageDescription: "Active stage",
+			},
+		});
+		const rows = fixture.screen.render(160);
+		// Header with workflow status: [chain, prompt, metadata, workflow] = 4 content rows.
+		// Full screen: row 0 = top border, rows 1-4 = header content, row 5 = divider.
+		const workflowRow = rows[4] ?? "";
+		const dividerRow = rows[5] ?? "";
+		expect({
+			workflowHasContent: workflowRow.includes("Workflow:"),
+			workflowHasDividerBorder:
+				workflowRow.includes("├") || workflowRow.includes("─┤"),
+			dividerHasBorder: dividerRow.includes("├") && dividerRow.includes("─┤"),
+		}).toEqual({
+			workflowHasContent: true,
+			workflowHasDividerBorder: false,
+			dividerHasBorder: true,
 		});
 	});
 
@@ -858,6 +889,7 @@ describe("management screen", () => {
 			revision: 3,
 			selectedProjectionSavedTokens: undefined,
 			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: [node.stableKey],
 		});
 		const clearedRows = fixture.screen.render(120);
@@ -1098,6 +1130,7 @@ describe("management screen", () => {
 				...fixture.source.getView(),
 				revision: 3,
 				selectedNotification: undefined,
+				selectedWorkflowStatus: undefined,
 			});
 			const afterClear = fixture.screen.render(80);
 
@@ -1415,6 +1448,7 @@ describe("management screen", () => {
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
 			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: nodes.map((node) => node.stableKey),
 		});
 		const topRows = fixture.screen.render(80);
@@ -1434,6 +1468,7 @@ describe("management screen", () => {
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
 			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: [],
 		});
 		fixture.screen.render(80);

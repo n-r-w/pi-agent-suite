@@ -341,6 +341,7 @@ export class ManagementProjectionRuntime implements ManagementViewSource {
 			liveStatus: snapshot.liveStatus,
 			projectionSavedTokens: snapshot.projectionSavedTokens,
 			notification: snapshot.notification,
+			workflowStatus: snapshot.workflowStatus,
 		});
 		this.publishRevision(before, next);
 	}

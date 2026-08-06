@@ -59,6 +59,7 @@ test("reloads each terminal file revision after repeated continuations", async (
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
 			notification: undefined,
+			workflowStatus: undefined,
 		},
 		{
 			entries: [continued],
@@ -66,6 +67,7 @@ test("reloads each terminal file revision after repeated continuations", async (
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
 			notification: undefined,
+			workflowStatus: undefined,
 		},
 	];
 	let terminalReads = 0;
@@ -137,6 +139,7 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 					liveStatus: undefined,
 					projectionSavedTokens: undefined,
 					notification: undefined,
+					workflowStatus: undefined,
 				};
 			},
 		};
@@ -154,6 +157,7 @@ test("opens an active conversation from one complete RPC snapshot", async () => 
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
 			notification: undefined,
+			workflowStatus: undefined,
 		});
 		await loader.dispose();
 	} finally {
@@ -228,6 +232,7 @@ test("publishes a live status change without new conversation entries", async ()
 				message: "retrying child work",
 				notifyType: "warning",
 			},
+			workflowStatus: undefined,
 		},
 	});
 	await loader.dispose();
@@ -247,6 +252,7 @@ test("publishes projection savings changes without new conversation entries", as
 			liveStatus,
 			projectionSavedTokens: 139_000,
 			notification: undefined,
+			workflowStatus: undefined,
 		},
 		{
 			entries: [],
@@ -254,6 +260,7 @@ test("publishes projection savings changes without new conversation entries", as
 			liveStatus,
 			projectionSavedTokens: undefined,
 			notification: undefined,
+			workflowStatus: undefined,
 		},
 	];
 	const session = sessionRevision("active", "active-invocation");
@@ -285,6 +292,7 @@ test("publishes projection savings changes without new conversation entries", as
 			liveStatus,
 			projectionSavedTokens: undefined,
 			notification: undefined,
+			workflowStatus: undefined,
 		},
 	});
 	await loader.dispose();
@@ -317,6 +325,7 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
 		notification: undefined,
+		workflowStatus: undefined,
 	});
 	expect(await loader.loadEarlier()).toBe(false);
 	expect(loader.getSnapshot()).toEqual({
@@ -325,6 +334,7 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
 		notification: undefined,
+		workflowStatus: undefined,
 	});
 	expect(await loader.loadEarlier()).toBe(true);
 	expect(loader.getSnapshot()).toEqual({
@@ -333,6 +343,7 @@ test("paginates an inactive branch in memory by complete user turns", async () =
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
 		notification: undefined,
+		workflowStatus: undefined,
 	});
 	await loader.dispose();
 });
@@ -366,6 +377,7 @@ test("completes an inactive preview during background refresh", async () => {
 		liveStatus: undefined,
 		projectionSavedTokens: undefined,
 		notification: undefined,
+		workflowStatus: undefined,
 	});
 	await loader.dispose();
 });

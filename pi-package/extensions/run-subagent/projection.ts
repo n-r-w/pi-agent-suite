@@ -9,6 +9,7 @@ import type {
 import type { InvocationNotification } from "./invocation-contracts.ts";
 import type { LiveAgentStatus } from "./live-status.ts";
 import { SessionStore } from "./persistence.ts";
+import type { WorkflowStatus } from "./workflow-status.ts";
 
 /** Supplies one direct owner's durable journal to recursive hierarchy projection. */
 export interface ProjectionJournal {
@@ -59,6 +60,7 @@ export interface ManagementProjectionView {
 	readonly selectedLiveStatus: LiveAgentStatus | undefined;
 	readonly selectedProjectionSavedTokens: number | undefined;
 	readonly selectedNotification: InvocationNotification | undefined;
+	readonly selectedWorkflowStatus: WorkflowStatus | undefined;
 	readonly affectedStableKeys: readonly string[];
 }
 
@@ -69,6 +71,7 @@ interface ConversationSnapshot {
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
 	readonly notification: InvocationNotification | undefined;
+	readonly workflowStatus: WorkflowStatus | undefined;
 }
 
 /** Supplies one selected conversation revision without positional argument coupling. */
@@ -80,6 +83,7 @@ interface ConversationUpdate {
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
 	readonly notification: InvocationNotification | undefined;
+	readonly workflowStatus: WorkflowStatus | undefined;
 }
 
 /** Encodes complete owner-local identity without relying on a global numeric ID. */
@@ -104,6 +108,7 @@ export class HierarchyConversationProjection {
 		selectedLiveStatus: undefined,
 		selectedProjectionSavedTokens: undefined,
 		selectedNotification: undefined,
+		selectedWorkflowStatus: undefined,
 		affectedStableKeys: [],
 	});
 
@@ -134,6 +139,7 @@ export class HierarchyConversationProjection {
 				liveStatus: undefined,
 				projectionSavedTokens: undefined,
 				notification: undefined,
+				workflowStatus: undefined,
 			});
 			this.conversations.set(key, next);
 			changedConversationKeys.add(key);
@@ -166,6 +172,7 @@ export class HierarchyConversationProjection {
 				liveStatus: update.liveStatus,
 				projectionSavedTokens: update.projectionSavedTokens,
 				notification: update.notification,
+				workflowStatus: update.workflowStatus,
 			}),
 		);
 		return this.rebuild(new Set([key]));
@@ -199,6 +206,7 @@ export class HierarchyConversationProjection {
 			selectedLiveStatus: this.getSelectedLiveStatus(),
 			selectedProjectionSavedTokens: this.getSelectedProjectionSavedTokens(),
 			selectedNotification: this.getSelectedNotification(),
+			selectedWorkflowStatus: this.getSelectedWorkflowStatus(),
 			affectedStableKeys: affected,
 		});
 		return this.view;
@@ -276,6 +284,7 @@ export class HierarchyConversationProjection {
 			selectedLiveStatus: this.getSelectedLiveStatus(),
 			selectedProjectionSavedTokens: this.getSelectedProjectionSavedTokens(),
 			selectedNotification: this.getSelectedNotification(),
+			selectedWorkflowStatus: this.getSelectedWorkflowStatus(),
 			affectedStableKeys: orderAffectedKeys(affected, nextNodes),
 		});
 		return this.view;
@@ -319,6 +328,13 @@ export class HierarchyConversationProjection {
 		return this.selectedStableKey === null
 			? undefined
 			: this.conversations.get(this.selectedStableKey)?.notification;
+	}
+
+	/** Returns the workflow status only for the selected stable key. */
+	private getSelectedWorkflowStatus(): WorkflowStatus | undefined {
+		return this.selectedStableKey === null
+			? undefined
+			: this.conversations.get(this.selectedStableKey)?.workflowStatus;
 	}
 }
 
@@ -455,6 +471,10 @@ function createConversationSnapshot(
 			source.notification === undefined
 				? undefined
 				: freezeRecursively(structuredClone(source.notification)),
+		workflowStatus:
+			source.workflowStatus === undefined
+				? undefined
+				: Object.freeze({ ...source.workflowStatus }),
 	});
 }
 
