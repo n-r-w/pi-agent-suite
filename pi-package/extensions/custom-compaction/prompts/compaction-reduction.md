@@ -1,5 +1,6 @@
 <task>
   Reduce ordered content in `<summary_source>` into a smaller intermediate context checkpoint for next AI coding assistant.
+  When referring to identifiers, they must be retained COMPLETELY AS IS.
 </task>
 <retention_test>
   Retain information only when omitting it would leave next assistant unable to:

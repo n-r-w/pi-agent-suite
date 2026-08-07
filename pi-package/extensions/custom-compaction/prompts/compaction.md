@@ -1,6 +1,7 @@
 <task>
   Messages above are a conversation to summarize.
   Create a structured context checkpoint summary that another LLM will use to continue work.
+  When referring to identifiers, they must be retained COMPLETELY AS IS.
 </task>
 
 <language>
