@@ -842,6 +842,8 @@ function createRootSupervisor(options: {
 				owner: remoteOwner,
 				request,
 			}),
+		onRuntimeModelChanged: (change) =>
+			options.getCoordinator().applyRuntimeModelChange(change),
 	});
 	return supervisor;
 }

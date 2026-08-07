@@ -37,6 +37,7 @@ import {
 	type InvocationEvent,
 	InvocationStartError,
 	type InvocationSupervisorOptions,
+	type RuntimeModelChange,
 } from "./invocation-contracts";
 import { InvocationSupervisor } from "./invocation-supervisor";
 import {
@@ -236,8 +237,16 @@ class CoordinatorStoreFake implements OwnerSessionStore {
 function createSupervisor(
 	child: ControlledChild,
 	events: InvocationEvent[],
+	options: SupervisorHarnessOptions = {},
 ): InvocationSupervisor {
-	return createSupervisorHarness([child], events).supervisor;
+	return createSupervisorHarness(
+		[child],
+		events,
+		undefined,
+		undefined,
+		true,
+		options,
+	).supervisor;
 }
 
 interface SupervisorHarnessOptions {
@@ -247,6 +256,7 @@ interface SupervisorHarnessOptions {
 	readonly recordChildStartupAttempt?: (
 		record: ChildAuthStartupAttemptRecord,
 	) => void;
+	readonly onRuntimeModelChanged?: InvocationSupervisorOptions["onRuntimeModelChanged"];
 }
 
 /** Creates one supervisor whose successive launches consume controlled child processes. */
@@ -309,6 +319,9 @@ function createSupervisorHarness(
 		},
 		recordChildStartupAttempt:
 			options.recordChildStartupAttempt ?? (() => undefined),
+		...(options.onRuntimeModelChanged === undefined
+			? {}
+			: { onRuntimeModelChanged: options.onRuntimeModelChanged }),
 	};
 	const supervisor = new InvocationSupervisor(supervisorOptions);
 	return { supervisor, spawnCount: () => spawnCount };
@@ -2919,3 +2932,93 @@ function readCommandId(value: string | undefined): string | undefined {
 			: undefined;
 	return typeof id === "string" ? id : undefined;
 }
+
+test("reports runtime thinking level from child thinking_level_changed events", async () => {
+	const child = createChildProcess();
+	const events: InvocationEvent[] = [];
+	const modelChanges: RuntimeModelChange[] = [];
+	const supervisor = createSupervisor(child, events, {
+		onRuntimeModelChanged: (change) => {
+			modelChanges.push(change);
+		},
+	});
+	const acceptance = await acceptStart(supervisor, child);
+
+	child.stdout?.emit(
+		"data",
+		Buffer.from(
+			`${JSON.stringify({
+				type: "thinking_level_changed",
+				level: "high",
+			})}\n`,
+		),
+	);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(modelChanges).toEqual([
+		{ invocationId: acceptance.invocationId, thinking: "high" },
+	]);
+});
+
+test("reports runtime model from child message_end events", async () => {
+	const child = createChildProcess();
+	const events: InvocationEvent[] = [];
+	const modelChanges: RuntimeModelChange[] = [];
+	const supervisor = createSupervisor(child, events, {
+		onRuntimeModelChanged: (change) => {
+			modelChanges.push(change);
+		},
+	});
+	const acceptance = await acceptStart(supervisor, child);
+
+	child.stdout?.emit(
+		"data",
+		Buffer.from(
+			`${JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					provider: "zai",
+					model: "glm-5.2",
+				},
+			})}\n`,
+		),
+	);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(modelChanges).toEqual([
+		{ invocationId: acceptance.invocationId, modelId: "zai/glm-5.2" },
+	]);
+});
+
+test("does not report model when message matches launch config model", async () => {
+	const child = createChildProcess();
+	const events: InvocationEvent[] = [];
+	const modelChanges: RuntimeModelChange[] = [];
+	const supervisor = createSupervisor(child, events, {
+		onRuntimeModelChanged: (change) => {
+			modelChanges.push(change);
+		},
+	});
+	await acceptStart(supervisor, child);
+
+	child.stdout?.emit(
+		"data",
+		Buffer.from(
+			`${JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					provider: "openai",
+					model: "test-model",
+				},
+			})}\n`,
+		),
+	);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(modelChanges).toEqual([]);
+});

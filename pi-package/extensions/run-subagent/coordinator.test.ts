@@ -2681,3 +2681,59 @@ function readFailureCode(error: unknown): string {
 	}
 	return "unexpected_failure";
 }
+
+test("updates invocation model on runtime model change", async () => {
+	const harness = createHarness();
+	const session = activeSession(1);
+	harness.catalog.add(session);
+	harness.coordinator.registerOwner(OWNER);
+
+	await harness.coordinator.applyRuntimeModelChange({
+		invocationId: session.invocationId,
+		modelId: "new/model",
+	});
+
+	const updated = harness.catalog.get(OWNER, 1);
+	expect(updated?.invocationMetadata.modelId).toBe("new/model");
+});
+
+test("updates invocation thinking on runtime thinking change", async () => {
+	const harness = createHarness();
+	const session = activeSession(1);
+	harness.catalog.add(session);
+	harness.coordinator.registerOwner(OWNER);
+
+	await harness.coordinator.applyRuntimeModelChange({
+		invocationId: session.invocationId,
+		thinking: "high",
+	});
+
+	const updated = harness.catalog.get(OWNER, 1);
+	expect(updated?.invocationMetadata.thinking).toBe("high");
+});
+
+test("ignores runtime model change for terminal sessions", async () => {
+	const harness = createHarness();
+	const session = activeSession(1);
+	harness.catalog.add({ ...session, state: "terminal-success" });
+	harness.coordinator.registerOwner(OWNER);
+
+	await harness.coordinator.applyRuntimeModelChange({
+		invocationId: session.invocationId,
+		modelId: "new/model",
+	});
+
+	const updated = harness.catalog.get(OWNER, 1);
+	expect(updated?.invocationMetadata.modelId).toBe("openai/test-model");
+});
+
+test("ignores runtime model change for unknown invocation", async () => {
+	const harness = createHarness();
+
+	await harness.coordinator.applyRuntimeModelChange({
+		invocationId: "unknown-invocation",
+		modelId: "new/model",
+	});
+
+	expect(harness.catalog.sessions.length).toBe(0);
+});

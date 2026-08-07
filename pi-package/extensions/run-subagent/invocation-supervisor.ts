@@ -112,6 +112,8 @@ interface InvocationHandle {
 	terminalObserved: boolean;
 	teardown: Promise<void> | undefined;
 	lastAssistantText: string;
+	liveModelId: string | undefined;
+	liveThinking: string | undefined;
 	contextTokens: number | undefined;
 	projectionSavedTokens: number | undefined;
 	liveStatus: LiveAgentStatus | undefined;
@@ -393,6 +395,8 @@ export class InvocationSupervisor implements InvocationControl {
 			terminalObserved: false,
 			teardown: undefined,
 			lastAssistantText: "",
+			liveModelId: launch?.modelId,
+			liveThinking: launch?.thinking,
 			contextTokens: undefined,
 			projectionSavedTokens: undefined,
 			liveStatus: undefined,
@@ -719,6 +723,17 @@ export class InvocationSupervisor implements InvocationControl {
 		if (projectionUpdate !== undefined) {
 			handle.projectionSavedTokens = projectionUpdate.savedTokens;
 		}
+		const runtimeThinking = readRuntimeThinking(value);
+		if (
+			runtimeThinking !== undefined &&
+			runtimeThinking !== handle.liveThinking
+		) {
+			handle.liveThinking = runtimeThinking;
+			this.options.onRuntimeModelChanged?.({
+				invocationId: handle.acceptance.invocationId,
+				thinking: runtimeThinking,
+			});
+		}
 	}
 
 	/** Captures assistant text and context usage before completion handling. */
@@ -733,6 +748,18 @@ export class InvocationSupervisor implements InvocationControl {
 		}
 		if (readString(message, "role") === "assistant") {
 			handle.contextTokens = readContextTokens(message);
+		}
+		const provider = readString(message, "provider");
+		const model = readString(message, "model");
+		if (provider !== undefined && model !== undefined) {
+			const modelId = `${provider}/${model}`;
+			if (modelId !== handle.liveModelId) {
+				handle.liveModelId = modelId;
+				this.options.onRuntimeModelChanged?.({
+					invocationId: handle.acceptance.invocationId,
+					modelId,
+				});
+			}
 		}
 	}
 
@@ -876,6 +903,14 @@ function activeEntriesFromRpcData(data: unknown): ActiveConversationRpcEntries {
 		),
 		leafId,
 	};
+}
+
+/** Reads the thinking level from one child thinking_level_changed session event. */
+function readRuntimeThinking(value: unknown): string | undefined {
+	if (readString(value, "type") !== "thinking_level_changed") {
+		return undefined;
+	}
+	return readString(value, "level");
 }
 
 /** Reads one valid child notification and applies the documented default type. */

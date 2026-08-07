@@ -66,6 +66,13 @@ export type InvocationEvent =
 			readonly projectionSavedTokens?: number;
 	  };
 
+/** Reports a runtime model or thinking level change observed from a child process. */
+export interface RuntimeModelChange {
+	readonly invocationId: string;
+	readonly modelId?: string;
+	readonly thinking?: string;
+}
+
 /** Reserves active-steer authority at the last synchronous point before dispatch. */
 export interface InvocationSteerScope {
 	readonly signal?: AbortSignal;
@@ -119,6 +126,7 @@ export interface InvocationSupervisorOptions {
 	readonly bridge: RootRuntimeBridge;
 	readonly onEvent: (event: InvocationEvent) => Promise<void> | void;
 	readonly onRuntimeFailure?: (failure: RuntimeChannelFailure) => void;
+	readonly onRuntimeModelChanged?: (change: RuntimeModelChange) => void;
 	readonly onRuntimeRequest?: (
 		owner: OwnerIdentity,
 		request: RuntimeRequest,

@@ -25,6 +25,7 @@ import {
 	type InvocationControl,
 	type InvocationEvent,
 	InvocationStartError,
+	type RuntimeModelChange,
 } from "./invocation-contracts";
 import type { OwnerSessionStore } from "./persistence";
 import { sanitizePublicSubagentErrorMessage } from "./public-error";
@@ -613,6 +614,26 @@ export class SubagentCoordinator {
 				invocationMetadata,
 				terminalObservedAt,
 			});
+		});
+	}
+
+	/** Updates invocation metadata when a child process reports a model or thinking level change. */
+	public applyRuntimeModelChange(change: RuntimeModelChange): Promise<void> {
+		return this.enqueue(() => {
+			const session = this.findSessionByInvocation(change.invocationId);
+			if (
+				session === undefined ||
+				session.state !== "active" ||
+				session.invocationId !== change.invocationId
+			) {
+				return;
+			}
+			const invocationMetadata = {
+				...session.invocationMetadata,
+				...(change.modelId === undefined ? {} : { modelId: change.modelId }),
+				...(change.thinking === undefined ? {} : { thinking: change.thinking }),
+			};
+			this.options.catalog.update(session.key, { invocationMetadata });
 		});
 	}
 
