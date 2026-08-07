@@ -62,6 +62,7 @@ function workflowState(
 					id: "ideation",
 					description,
 					prompt: "Generate concepts",
+					triggers: [],
 					initial: true,
 					final: false,
 				},
@@ -69,6 +70,7 @@ function workflowState(
 					id: "synthesis",
 					description: "Summarize the strongest concepts",
 					prompt: "Summarize concepts",
+					triggers: [],
 					initial: false,
 					final: true,
 				},
@@ -79,6 +81,7 @@ function workflowState(
 			],
 		},
 		route,
+		status: "active",
 	};
 }
 

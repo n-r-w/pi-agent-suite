@@ -40,6 +40,7 @@ import {
 	type InvocationAcceptance,
 	type InvocationControl,
 	type InvocationLaunchConfiguration,
+	type InvocationNotification,
 	type InvocationScope,
 	InvocationStartError,
 	type InvocationSteerScope,
@@ -78,12 +79,13 @@ export interface ActiveConversationEntries {
 	readonly leafId: string | null;
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
+	readonly notification: InvocationNotification | undefined;
 }
 
 /** One validated append-order page returned directly by Pi's get_entries RPC command. */
 type ActiveConversationRpcEntries = Omit<
 	ActiveConversationEntries,
-	"liveStatus" | "projectionSavedTokens"
+	"liveStatus" | "projectionSavedTokens" | "notification"
 >;
 
 /** Carries one prompt-bearing RPC and its optional dispatch reservation. */
@@ -110,9 +112,12 @@ interface InvocationHandle {
 	terminalObserved: boolean;
 	teardown: Promise<void> | undefined;
 	lastAssistantText: string;
+	liveModelId: string | undefined;
+	liveThinking: string | undefined;
 	contextTokens: number | undefined;
 	projectionSavedTokens: number | undefined;
 	liveStatus: LiveAgentStatus | undefined;
+	notification: InvocationNotification | undefined;
 }
 
 /** Owns one process, RPC stream, and runtime lease per invocation. */
@@ -162,6 +167,7 @@ export class InvocationSupervisor implements InvocationControl {
 			...entries,
 			liveStatus: handle.liveStatus,
 			projectionSavedTokens: handle.projectionSavedTokens,
+			notification: handle.notification,
 		};
 	}
 
@@ -389,9 +395,12 @@ export class InvocationSupervisor implements InvocationControl {
 			terminalObserved: false,
 			teardown: undefined,
 			lastAssistantText: "",
+			liveModelId: launch?.modelId,
+			liveThinking: launch?.thinking,
 			contextTokens: undefined,
 			projectionSavedTokens: undefined,
 			liveStatus: undefined,
+			notification: undefined,
 		};
 	}
 
@@ -667,16 +676,7 @@ export class InvocationSupervisor implements InvocationControl {
 	/** Routes only documented RPC response and session-event fields. */
 	private handleRpcEvent(handle: InvocationHandle, value: unknown): void {
 		const type = readString(value, "type");
-		// Retain presentation state before publishing activity so snapshots observe the triggering event.
-		handle.liveStatus = reduceLiveAgentStatus(
-			handle.liveStatus,
-			value,
-			Date.now(),
-		);
-		const projectionUpdate = readProjectionUpdate(value);
-		if (projectionUpdate !== undefined) {
-			handle.projectionSavedTokens = projectionUpdate.savedTokens;
-		}
+		this.updatePresentationState(handle, value);
 		if (type === "extension_error" && !handle.accepted) {
 			const startupError = readString(value, "error");
 			if (startupError !== undefined) {
@@ -696,19 +696,71 @@ export class InvocationSupervisor implements InvocationControl {
 			}
 		}
 		if (type === "message_end") {
-			const message = readField(value, "message");
-			const text = readAssistantText(message);
-			if (text !== undefined) {
-				handle.lastAssistantText = text;
-			}
-			if (readString(message, "role") === "assistant") {
-				handle.contextTokens = readContextTokens(message);
-			}
+			handle.notification = undefined;
+			this.handleAssistantMessageEnd(handle, value);
 		}
 		this.handleCompletionDecision(
 			handle,
 			handle.completion.handleSessionEvent(value),
 		);
+	}
+
+	/** Updates transient, status, and notification presentation state from one child event. */
+	private updatePresentationState(
+		handle: InvocationHandle,
+		value: unknown,
+	): void {
+		handle.liveStatus = reduceLiveAgentStatus(
+			handle.liveStatus,
+			value,
+			Date.now(),
+		);
+		const notification = readNotification(value);
+		if (notification !== undefined) {
+			handle.notification = notification;
+		}
+		const projectionUpdate = readProjectionUpdate(value);
+		if (projectionUpdate !== undefined) {
+			handle.projectionSavedTokens = projectionUpdate.savedTokens;
+		}
+		const runtimeThinking = readRuntimeThinking(value);
+		if (
+			runtimeThinking !== undefined &&
+			runtimeThinking !== handle.liveThinking
+		) {
+			handle.liveThinking = runtimeThinking;
+			this.options.onRuntimeModelChanged?.({
+				invocationId: handle.acceptance.invocationId,
+				thinking: runtimeThinking,
+			});
+		}
+	}
+
+	/** Captures assistant text and context usage before completion handling. */
+	private handleAssistantMessageEnd(
+		handle: InvocationHandle,
+		value: unknown,
+	): void {
+		const message = readField(value, "message");
+		const text = readAssistantText(message);
+		if (text !== undefined) {
+			handle.lastAssistantText = text;
+		}
+		if (readString(message, "role") === "assistant") {
+			handle.contextTokens = readContextTokens(message);
+		}
+		const provider = readString(message, "provider");
+		const model = readString(message, "model");
+		if (provider !== undefined && model !== undefined) {
+			const modelId = `${provider}/${model}`;
+			if (modelId !== handle.liveModelId) {
+				handle.liveModelId = modelId;
+				this.options.onRuntimeModelChanged?.({
+					invocationId: handle.acceptance.invocationId,
+					modelId,
+				});
+			}
+		}
 	}
 
 	/** Resolves one documented Pi RPC command response. */
@@ -851,6 +903,41 @@ function activeEntriesFromRpcData(data: unknown): ActiveConversationRpcEntries {
 		),
 		leafId,
 	};
+}
+
+/** Reads the thinking level from one child thinking_level_changed session event. */
+function readRuntimeThinking(value: unknown): string | undefined {
+	if (readString(value, "type") !== "thinking_level_changed") {
+		return undefined;
+	}
+	return readString(value, "level");
+}
+
+/** Reads one valid child notification and applies the documented default type. */
+function readNotification(value: unknown): InvocationNotification | undefined {
+	if (
+		readString(value, "type") !== "extension_ui_request" ||
+		readString(value, "method") !== "notify"
+	) {
+		return undefined;
+	}
+	const message = readString(value, "message");
+	const rawNotifyType = readField(value, "notifyType");
+	if (
+		message === undefined ||
+		(rawNotifyType !== undefined && typeof rawNotifyType !== "string")
+	) {
+		return undefined;
+	}
+	const notifyType = rawNotifyType ?? "info";
+	if (
+		notifyType !== "info" &&
+		notifyType !== "warning" &&
+		notifyType !== "error"
+	) {
+		return undefined;
+	}
+	return { message, notifyType };
 }
 
 /** Reads one projection status update, including an explicit savings clear. */

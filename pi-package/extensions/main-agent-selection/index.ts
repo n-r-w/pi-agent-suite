@@ -29,12 +29,17 @@ import {
 	getSuiteExtensionDir,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import {
+	assertThinkingLevelSupported,
+	splitModelId,
+} from "../../shared/model-settings";
 import { isSingleLineText } from "../../shared/text-contracts";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import {
 	type ResolvedWorkflowPolicy,
 	resolveWorkflowPolicy,
 } from "../../shared/workflow-policy";
+import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import { isChildSubagentProcess } from "./environment";
 
 const COMMAND_NAME = "agent";
@@ -83,6 +88,7 @@ interface MainAgentSelectorKeybindings {
 interface MainAgentContext {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
+	readonly model: Model<Api> | undefined;
 	readonly sessionManager: {
 		getSessionFile(): string | undefined;
 	};
@@ -322,6 +328,12 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	writeRuntimeDiagnostic("main-agent-selection.loaded");
 	getAgentRuntimeComposition(pi);
 
+	pi.registerFlag("agent", {
+		description:
+			"Set main agent for this session (ephemeral, not persisted to disk)",
+		type: "string",
+	});
+
 	pi.registerCommand(COMMAND_NAME, {
 		description: "Select the main agent for this working directory",
 		handler: async (args, ctx) => {
@@ -367,6 +379,21 @@ async function handleSessionStart(
 		cwd: mainContext.cwd,
 	});
 	if (isChildSubagentProcess()) {
+		return;
+	}
+
+	const agentFlag = pi.getFlag("agent");
+	if (typeof agentFlag === "string") {
+		await applyEphemeralAgent(pi, mainContext, agentFlag);
+		writeRuntimeDiagnostic(
+			"main-agent-selection.session-start.ephemeral-applied",
+			{
+				agentFlag,
+				activeAgentId:
+					getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+						?.id ?? null,
+			},
+		);
 		return;
 	}
 
@@ -785,6 +812,13 @@ async function applyAgentSelection(
 		return policies.outcome;
 	}
 
+	const thinkingIssue = validateConfiguredThinking(ctx, agent);
+	if (thinkingIssue !== undefined) {
+		clearMainAgentSelection(pi);
+		reportIssue(ctx, thinkingIssue);
+		return "application-error";
+	}
+
 	const modelIssue = await applyConfiguredModel(pi, ctx, agent);
 	if (modelIssue !== undefined) {
 		clearMainAgentSelection(pi);
@@ -792,8 +826,11 @@ async function applyAgentSelection(
 		return "application-error";
 	}
 
-	if (agent.model?.thinking !== undefined) {
-		pi.setThinkingLevel(agent.model.thinking);
+	const appliedThinkingIssue = applyConfiguredThinking(pi, agent);
+	if (appliedThinkingIssue !== undefined) {
+		clearMainAgentSelection(pi);
+		reportIssue(ctx, appliedThinkingIssue);
+		return "application-error";
 	}
 
 	writeRuntimeDiagnostic("main-agent-selection.apply.resolved", {
@@ -810,9 +847,64 @@ async function applyAgentSelection(
 			...workflowPolicyMetadata(policies.workflows),
 			...(agent.agents !== undefined ? { agents: agent.agents } : {}),
 		},
+		...(agent.model !== undefined ? { model: agent.model } : {}),
 		...(policies.tools !== undefined ? { tools: policies.tools } : {}),
 	});
 	return "applied";
+}
+
+/** Validates configured thinking against the model that would receive it. */
+function validateConfiguredThinking(
+	ctx: MainAgentContext,
+	agent: AgentDefinition,
+): string | undefined {
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+	const thinking = resolvedSettings.settings.thinking;
+	if (thinking === undefined) {
+		return undefined;
+	}
+	const model =
+		resolvedSettings.settings.id === undefined
+			? ctx.model
+			: resolveModel(ctx, resolvedSettings.settings.id);
+	if (model === undefined) {
+		return resolvedSettings.settings.id === undefined
+			? "current model is unavailable"
+			: `model ${resolvedSettings.settings.id} was not found`;
+	}
+	try {
+		assertThinkingLevelSupported(model, thinking);
+		return undefined;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
+/** Applies configured thinking and rejects Pi's silent capability clamping. */
+function applyConfiguredThinking(
+	pi: ExtensionAPI,
+	agent: AgentDefinition,
+): string | undefined {
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+	const thinking = resolvedSettings.settings.thinking;
+	if (thinking === undefined) {
+		return undefined;
+	}
+	try {
+		pi.setThinkingLevel(thinking);
+		if (pi.getThinkingLevel() !== thinking) {
+			return `thinking level ${thinking} could not be applied`;
+		}
+		return undefined;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
 }
 
 /** Applies one optional configured model and returns a precise failure issue. */
@@ -821,16 +913,20 @@ async function applyConfiguredModel(
 	ctx: MainAgentContext,
 	agent: AgentDefinition,
 ): Promise<string | undefined> {
-	if (agent.model?.id === undefined) {
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+	if (resolvedSettings.settings.id === undefined) {
 		return undefined;
 	}
-	const model = resolveModel(ctx, agent.model.id);
+	const model = resolveModel(ctx, resolvedSettings.settings.id);
 	if (model === undefined) {
-		return `model ${agent.model.id} was not found`;
+		return `model ${resolvedSettings.settings.id} was not found`;
 	}
 	return (await pi.setModel(model))
 		? undefined
-		: `model ${agent.model.id} could not be applied`;
+		: `model ${resolvedSettings.settings.id} could not be applied`;
 }
 
 /** Resolves tool and workflow policy before model or runtime-composition side effects. */
@@ -848,7 +944,7 @@ function resolveMainAgentPolicies(
 			readonly kind: "error";
 			readonly outcome: "workflow-policy-error" | "application-error";
 	  } {
-	const workflows = resolveWorkflowPolicy(pi, agent.workflows);
+	const workflows = resolveWorkflowPolicy(agent.workflows);
 	if (workflows.kind === "error") {
 		reportIssue(ctx, workflows.issue);
 		return { kind: "error", outcome: "workflow-policy-error" };
@@ -896,13 +992,7 @@ function resolveModel(
 	ctx: MainAgentContext,
 	modelId: string,
 ): Model<Api> | undefined {
-	const separatorIndex = modelId.indexOf("/");
-	if (separatorIndex <= 0 || separatorIndex === modelId.length - 1) {
-		return undefined;
-	}
-
-	const provider = modelId.slice(0, separatorIndex);
-	const id = modelId.slice(separatorIndex + 1);
+	const { provider, id } = splitModelId(modelId);
 	return ctx.modelRegistry.find(provider, id);
 }
 
@@ -1091,6 +1181,45 @@ function reportIssue(ctx: MainAgentContext, issue: string): void {
 	}
 
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
+}
+
+/**
+ * Reports an agent selection error to the user.
+ * In interactive mode, delegates to {@link reportIssue}.
+ * In print mode (-p), writes to stderr because ctx.ui is unavailable.
+ */
+function reportAgentError(ctx: MainAgentContext, issue: string): void {
+	if (ctx.hasUI === false) {
+		process.stderr.write(`${ISSUE_PREFIX} ${issue}\n`);
+		return;
+	}
+	reportIssue(ctx, issue);
+}
+
+/**
+ * Applies a main agent for the current session only, without persisting
+ * the selection to disk. Used by the --agent CLI flag.
+ * When agentId is "none", clears the main agent contribution.
+ * When the agent ID is not found, reports an error without changing state.
+ */
+async function applyEphemeralAgent(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+	agentId: string,
+): Promise<void> {
+	if (agentId.toLowerCase() === NO_AGENT_ARGUMENT) {
+		getAgentRuntimeComposition(pi).clearMainAgentContribution();
+		return;
+	}
+	const agents = await loadSelectableAgents(ctx.cwd);
+	const agent = agents.find((candidate) =>
+		agentIdMatches(candidate.id, agentId),
+	);
+	if (agent === undefined) {
+		reportAgentError(ctx, `agent ${agentId} was not found`);
+		return;
+	}
+	await applyAgentSelection(pi, ctx, agent);
 }
 
 /** Returns true when an object contains only keys from a finite set. */

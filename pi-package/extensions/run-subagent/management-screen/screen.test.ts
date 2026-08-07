@@ -215,6 +215,8 @@ class ViewSourceFake implements ManagementViewSource {
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: node === null ? [] : [node.stableKey],
 		};
 	}
@@ -265,6 +267,7 @@ class ActiveConversationSourceFake {
 	public entries: readonly SessionEntry[] = [conversationEntry("active")];
 	public liveStatus: ManagementProjectionView["selectedLiveStatus"];
 	public projectionSavedTokens: number | undefined;
+	public notification: ManagementProjectionView["selectedNotification"];
 	public error: Error | undefined;
 	public readCalls = 0;
 	public readonly sinceValues: Array<string | undefined> = [];
@@ -279,6 +282,7 @@ class ActiveConversationSourceFake {
 		readonly leafId: string | null;
 		readonly liveStatus: ManagementProjectionView["selectedLiveStatus"];
 		readonly projectionSavedTokens: number | undefined;
+		readonly notification: ManagementProjectionView["selectedNotification"];
 	}> {
 		this.readCalls += 1;
 		this.sinceValues.push(since);
@@ -298,6 +302,7 @@ class ActiveConversationSourceFake {
 			leafId: this.entries.at(-1)?.id ?? null,
 			liveStatus: this.liveStatus,
 			projectionSavedTokens: this.projectionSavedTokens,
+			notification: this.notification,
 		};
 	}
 
@@ -455,6 +460,36 @@ describe("management screen", () => {
 			rowsFit: true,
 			zeroAgentTitle: true,
 			selectedHeaderDividerFragments: false,
+		});
+	});
+
+	test("positions the header divider after the workflow status row", () => {
+		// Purpose: a workflow status header row must not collide with the fixed divider border.
+		// Inputs and expected output: a wide projection with selectedWorkflowStatus renders the workflow row as content and shifts the divider after it.
+		// Edge case: border characters (├, ─┤) must appear only on the divider row, never on the workflow status content row.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: fixture.source.getView().revision + 1,
+			selectedWorkflowStatus: {
+				workflowId: "TestWorkflow",
+				stageDescription: "Active stage",
+			},
+		});
+		const rows = fixture.screen.render(160);
+		// Header with workflow status: [chain, prompt, metadata, workflow] = 4 content rows.
+		// Full screen: row 0 = top border, rows 1-4 = header content, row 5 = divider.
+		const workflowRow = rows[4] ?? "";
+		const dividerRow = rows[5] ?? "";
+		expect({
+			workflowHasContent: workflowRow.includes("Workflow:"),
+			workflowHasDividerBorder:
+				workflowRow.includes("├") || workflowRow.includes("─┤"),
+			dividerHasBorder: dividerRow.includes("├") && dividerRow.includes("─┤"),
+		}).toEqual({
+			workflowHasContent: true,
+			workflowHasDividerBorder: false,
+			dividerHasBorder: true,
 		});
 	});
 
@@ -853,6 +888,8 @@ describe("management screen", () => {
 			...fixture.source.getView(),
 			revision: 3,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: [node.stableKey],
 		});
 		const clearedRows = fixture.screen.render(120);
@@ -1037,6 +1074,87 @@ describe("management screen", () => {
 		} finally {
 			fixture.screen.dispose();
 			nowSpy.mockRestore();
+		}
+	});
+
+	test("renders the latest child notification with the spinner", () => {
+		// Purpose: the selected pane must show invocation-owned notification state with an animated spinner.
+		// Inputs and expected output: one warning notification appears in the spinner row, stays width-safe, and hides the live-status label.
+		// Edge case: wide CJK and emoji content must not exceed the panel width.
+		// Dependencies: immutable projection state and the selected-pane renderer.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedLiveStatus: { kind: "working" },
+			selectedNotification: {
+				message: "处理通知 🚀 ".repeat(20),
+				notifyType: "warning",
+			},
+		});
+
+		try {
+			const rows = fixture.screen.render(80);
+			expect({
+				notificationVisible: rows.some((line) => line.includes("处理通知")),
+				liveStatusHidden: rows.every((line) => !line.includes("Working...")),
+				widthSafe: rows.every((line) => visibleWidth(line) <= 80),
+			}).toEqual({
+				notificationVisible: true,
+				liveStatusHidden: true,
+				widthSafe: true,
+			});
+		} finally {
+			fixture.screen.dispose();
+		}
+	});
+
+	test("returns to live status spinner after notification clears", () => {
+		// Purpose: when a notification is cleared, the spinner must show the live-status label without stopping.
+		// Inputs and expected output: notification renders first, then clearing it reveals the live-status label.
+		// Dependencies: immutable projection state and the selected-pane renderer.
+		const fixture = createScreen();
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedLiveStatus: { kind: "working" },
+			selectedNotification: {
+				message: "temporary notice",
+				notifyType: "info",
+			},
+		});
+
+		try {
+			const withNotification = fixture.screen.render(80);
+			fixture.source.publish({
+				...fixture.source.getView(),
+				revision: 3,
+				selectedNotification: undefined,
+				selectedWorkflowStatus: undefined,
+			});
+			const afterClear = fixture.screen.render(80);
+
+			expect({
+				notificationShown: withNotification.some((line) =>
+					line.includes("temporary notice"),
+				),
+				liveStatusHiddenDuringNotification: withNotification.every(
+					(line) => !line.includes("Working..."),
+				),
+				liveStatusVisibleAfterClear: afterClear.some((line) =>
+					line.includes("Working..."),
+				),
+				notificationGoneAfterClear: afterClear.every(
+					(line) => !line.includes("temporary notice"),
+				),
+			}).toEqual({
+				notificationShown: true,
+				liveStatusHiddenDuringNotification: true,
+				liveStatusVisibleAfterClear: true,
+				notificationGoneAfterClear: true,
+			});
+		} finally {
+			fixture.screen.dispose();
 		}
 	});
 
@@ -1329,6 +1447,8 @@ describe("management screen", () => {
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: nodes.map((node) => node.stableKey),
 		});
 		const topRows = fixture.screen.render(80);
@@ -1347,6 +1467,8 @@ describe("management screen", () => {
 			selectedConversationComplete: true,
 			selectedLiveStatus: undefined,
 			selectedProjectionSavedTokens: undefined,
+			selectedNotification: undefined,
+			selectedWorkflowStatus: undefined,
 			affectedStableKeys: [],
 		});
 		fixture.screen.render(80);

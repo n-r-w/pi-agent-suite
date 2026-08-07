@@ -40,7 +40,7 @@ Each description file must be readable and contain non-whitespace text after tri
 
 | Name | Required | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `model.id` | No | `provider/model` string | Calling agent's current model | Selects a model from the calling Pi process's registry. |
+| `model.id` | No | Non-empty string | Calling agent's current model | Selects a model from the calling Pi process's registry. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Calling agent's current thinking level | Selects reasoning for the auxiliary request. `off` omits the provider reasoning option. |
 | `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Supplies trimmed non-empty text as the auxiliary system prompt. |
 
@@ -68,7 +68,7 @@ Example:
   "waitDescriptionPromptFile": "/absolute/path/to/subagent-wait.md",
   "query": {
     "model": {
-      "id": "provider/model",
+      "id": "analyst-complex",
       "thinking": "medium"
     },
     "systemPromptFile": "/absolute/path/to/subagent-query-system.md"
@@ -351,9 +351,11 @@ Asks one auxiliary model a focused question using a directly owned saved child c
 
 A successful call returns only the auxiliary model's answer as tool-result text. The default tool shell shows the pending question as a bounded plain-text preview or a complete expanded Markdown section. After completion, the collapsed view shows the elapsed time, clips the normalized question to one visual row without wrapping, and bounds the plain-text answer preview. The expanded view shows the complete question and answer as separate Markdown sections.
 
-The operation does not start, steer, wait for, resume, stop, or invoke the child agent. It reads one saved root-to-leaf branch through Pi's public `SessionManager`, validates every entry, applies only `context-projection` replacements persisted in that branch, appends one XML-escaped `<question>...</question>` block, and sends no tools to the auxiliary model. The child system prompt and the calling agent's project context are not copied.
+The operation does not start, steer, wait for, resume, stop, or invoke the child agent. It reads one saved root-to-leaf branch through Pi's public `SessionManager`, validates every entry, applies only `context-projection` replacements persisted in that branch, appends one XML-escaped `<question>...</question>` block, and sends no tools to the auxiliary model. The child system prompt and general calling-agent project context are not copied. When the `knowledge` extension resolves applicable stored knowledge, the query system context includes its `<knowledge>` block.
 
-The auxiliary model request runs in the Pi process of the calling agent. That process supplies the configured or current model, thinking level, authentication, cancellation signal, and cost attribution. A worker process requests only the authorized saved branch from the root runtime; that internal payload contains `sessionId` but not the question, session path, model, credentials, system prompt, answer, usage, or cost.
+The auxiliary model request runs in the Pi process of the calling agent. That process supplies the configured or current model, thinking level, authentication, cancellation signal, knowledge context, and cost attribution. A worker process requests only the authorized saved branch from the root runtime; that branch payload contains `sessionId` but not the question, session path, model, credentials, system prompt, answer, usage, or cost.
+
+The same root transport also carries closed knowledge read, mutation-acquire, mutation-release, and cancellation requests. Knowledge payloads never include model credentials or prompts. The root knowledge coordinator releases queued or active work when a child runtime disconnects or stops.
 
 The query does not retry, truncate the branch, read process-local projection replacements, or merge current loaded-skill state. A missing or empty saved session, invalid branch, unavailable model or authentication, oversized input, provider failure, or empty text response fails with `query_failed`.
 

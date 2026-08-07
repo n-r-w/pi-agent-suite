@@ -28,6 +28,7 @@ import { Check } from "typebox/value";
 import { createPersistedSession } from "../../../test/support/persisted-session";
 import type { AgentDefinition } from "../../shared/agent-registry";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
+import { getKnowledgeHierarchyClient } from "../../shared/knowledge-runtime";
 import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
@@ -72,7 +73,8 @@ const TEST_MODEL: Model<Api> = {
 	api: "openai-responses",
 	provider: "openai",
 	baseUrl: "https://example.invalid",
-	reasoning: false,
+	reasoning: true,
+	thinkingLevelMap: { xhigh: "xhigh", max: "max" },
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 128_000,
@@ -415,6 +417,7 @@ describe("subagents entry", () => {
 				},
 			});
 			await pi.emit("session_start", { type: "session_start" }, ctx);
+			expect(getKnowledgeHierarchyClient(pi)).toBeDefined();
 			const pending = getTool(pi, "subagent_query").execute(
 				"worker-query",
 				{ sessionId: 4, question: "What happened?" },

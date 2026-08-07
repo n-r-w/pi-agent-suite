@@ -41,6 +41,11 @@ import {
 	resolveFdPathFromPathValue,
 } from "../../shared/file-autocomplete";
 import {
+	appendKnowledgeBlock,
+	readKnowledgeBlock,
+} from "../../shared/knowledge-runtime";
+import { isModelSelectorId } from "../../shared/model-settings";
+import {
 	appendProjectContext,
 	type ProjectContextFile,
 } from "../../shared/project-context-prompt";
@@ -157,6 +162,7 @@ export default function askLlm(
 		description: "Ask a one-off LLM question without writing it to the session",
 		handler: async (args, ctx) => {
 			await handleAskCommand(args, ctx as AskLlmCommandContext, {
+				pi,
 				completeSimple,
 				copyToClipboard,
 				resolveFdPath,
@@ -174,6 +180,7 @@ async function handleAskCommand(
 	args: string,
 	ctx: AskLlmCommandContext,
 	options: {
+		readonly pi: ExtensionAPI;
 		readonly completeSimple: NonNullable<AskLlmDependencies["completeSimple"]>;
 		readonly copyToClipboard: NonNullable<
 			AskLlmDependencies["copyToClipboard"]
@@ -247,6 +254,7 @@ async function runWithLoader(
 	ctx: AskLlmCommandContext,
 	question: string,
 	options: {
+		readonly pi: ExtensionAPI;
 		readonly completeSimple: NonNullable<AskLlmDependencies["completeSimple"]>;
 		readonly currentThinkingLevel: unknown;
 		readonly loadedSkillRoots: readonly string[];
@@ -258,6 +266,7 @@ async function runWithLoader(
 		loader.onAbort = () => done({ kind: "cancelled" });
 
 		executeAskLlm({
+			pi: options.pi,
 			completeSimple: options.completeSimple,
 			question,
 			ctx,
@@ -281,6 +290,7 @@ async function runWithLoader(
 
 /** Executes one direct model call with config, prompt, model, and auth validation. */
 async function executeAskLlm({
+	pi,
 	completeSimple,
 	question,
 	ctx,
@@ -289,6 +299,7 @@ async function executeAskLlm({
 	contextFiles,
 	signal,
 }: {
+	readonly pi: ExtensionAPI;
 	readonly completeSimple: NonNullable<AskLlmDependencies["completeSimple"]>;
 	readonly question: string;
 	readonly ctx: AskLlmCommandContext;
@@ -312,15 +323,19 @@ async function executeAskLlm({
 		return { kind: "issue", issue: promptResult.issue };
 	}
 
+	const thinking =
+		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel);
 	const runtimeResult = await resolveAuxiliaryLlmRuntime(
 		ctx,
 		configResult.config.model?.id,
+		thinking,
 	);
 	if ("issue" in runtimeResult) {
 		return { kind: "issue", issue: runtimeResult.issue };
 	}
 
 	const context = await buildContext({
+		pi,
 		ctx,
 		systemPrompt: promptResult.prompt,
 		question,
@@ -336,13 +351,13 @@ async function executeAskLlm({
 		};
 	}
 
+	const effectiveThinking = runtimeResult.thinking ?? thinking;
 	const response = await executeAskLlmModelWithRetry({
 		completeSimple,
 		runtime: runtimeResult.runtime,
 		context,
 		options: buildAuxiliaryLlmOptions(
-			configResult.config.model?.thinking ??
-				parseThinking(currentThinkingLevel),
+			effectiveThinking,
 			signal,
 			runtimeResult.runtime,
 		),
@@ -371,12 +386,14 @@ async function executeAskLlm({
 
 /** Builds a model context from the current branch without storing the ask command turn. */
 async function buildContext({
+	pi,
 	ctx,
 	systemPrompt,
 	question,
 	loadedSkillRoots,
 	contextFiles,
 }: {
+	readonly pi: ExtensionAPI;
 	readonly ctx: AskLlmCommandContext;
 	readonly systemPrompt: string;
 	readonly question: string;
@@ -395,8 +412,10 @@ async function buildContext({
 		timestamp: Date.now(),
 	});
 
+	const projectSystemPrompt = appendProjectContext(systemPrompt, contextFiles);
+	const knowledgeBlock = await readKnowledgeBlock(pi, ctx);
 	return {
-		systemPrompt: appendProjectContext(systemPrompt, contextFiles),
+		systemPrompt: appendKnowledgeBlock(projectSystemPrompt, knowledgeBlock),
 		messages,
 		tools: [],
 	};
@@ -584,8 +603,8 @@ function validateModelConfig(model: unknown): string | undefined {
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
 		return "model.id must be a non-empty string";
 	}
-	if (typeof id === "string" && !hasProviderModelShape(id)) {
-		return "model.id must use provider/model";
+	if (typeof id === "string" && !isModelSelectorId(id)) {
+		return "model.id must be a non-empty string";
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
 		return `model.thinking must be one of ${REASONING_LEVELS.join(", ")}`;
@@ -706,12 +725,6 @@ function reportIssue(ctx: AskLlmCommandContext, issue: string): void {
 	}
 
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
-}
-
-/** Returns true when a model ID contains provider and model parts separated by slash. */
-function hasProviderModelShape(modelId: string): boolean {
-	const separatorIndex = modelId.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < modelId.length - 1;
 }
 
 /** Returns true when an object contains only supported keys. */

@@ -7,7 +7,7 @@ import {
 	writeConfig,
 	writeEnabledConfig,
 	writeRawConfig,
-} from "./support/env";
+} from "./support/environment";
 import {
 	createCompletionQueue,
 	createContext,
@@ -123,10 +123,6 @@ describe("convene-council config", () => {
 			{
 				config: { llm1: { model: { id: "" } } },
 				error: "llm1.model.id must be a non-empty string",
-			},
-			{
-				config: { llm1: { model: { id: "missing-separator" } } },
-				error: "llm1.model.id must use provider/model",
 			},
 			{
 				config: { llm1: { model: { thinking: "huge" } } },

@@ -41,6 +41,12 @@ export interface NewInvocationRequest extends InvocationScope {
 	readonly prompt: string;
 }
 
+/** Retains the latest transient notification for one active invocation. */
+export interface InvocationNotification {
+	readonly message: string;
+	readonly notifyType: "info" | "warning" | "error";
+}
+
 /** Describes supervisor observations consumed by the coordinator. */
 export type InvocationEvent =
 	| {
@@ -59,6 +65,13 @@ export type InvocationEvent =
 			readonly contextTokens?: number;
 			readonly projectionSavedTokens?: number;
 	  };
+
+/** Reports a runtime model or thinking level change observed from a child process. */
+export interface RuntimeModelChange {
+	readonly invocationId: string;
+	readonly modelId?: string;
+	readonly thinking?: string;
+}
 
 /** Reserves active-steer authority at the last synchronous point before dispatch. */
 export interface InvocationSteerScope {
@@ -113,6 +126,7 @@ export interface InvocationSupervisorOptions {
 	readonly bridge: RootRuntimeBridge;
 	readonly onEvent: (event: InvocationEvent) => Promise<void> | void;
 	readonly onRuntimeFailure?: (failure: RuntimeChannelFailure) => void;
+	readonly onRuntimeModelChanged?: (change: RuntimeModelChange) => void;
 	readonly onRuntimeRequest?: (
 		owner: OwnerIdentity,
 		request: RuntimeRequest,

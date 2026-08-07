@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	hasAllowedWorkflowSource,
 	isWorkflowAllowed,
@@ -8,52 +7,55 @@ import {
 	resolveWorkflowPolicy,
 } from "./workflow-policy";
 
-/** Creates one isolated Pi event carrier without loading extension entry points. */
-function createPolicyPi(): Pick<ExtensionAPI, "events"> {
-	return { events: {} } as Pick<ExtensionAPI, "events">;
+/** Catalog carrier key matching the production global. */
+const CATALOG_KEY = "__piHarnessWorkflowCatalogPolicy";
+
+/** Removes any catalog left by a previous test so each case starts clean. */
+function resetCatalog(): void {
+	delete (globalThis as Record<string, unknown>)[CATALOG_KEY];
 }
 
 describe("workflow policy boundary", () => {
 	/** Proves absent, empty, and explicit configured policies keep distinct meanings. */
 	test("resolves exact and NFC-equivalent names to canonical catalog IDs", () => {
-		const pi = createPolicyPi();
-		publishWorkflowCatalogPolicy(pi, {
+		resetCatalog();
+		publishWorkflowCatalogPolicy({
 			ids: ["Review", "delivery", "Café"],
 		});
 
-		expect(resolveWorkflowPolicy(pi, undefined)).toEqual({
+		expect(resolveWorkflowPolicy(undefined)).toEqual({
 			kind: "resolved",
 			policy: undefined,
 		});
-		expect(resolveWorkflowPolicy(pi, [])).toEqual({
+		expect(resolveWorkflowPolicy([])).toEqual({
 			kind: "resolved",
 			policy: [],
 		});
-		expect(
-			resolveWorkflowPolicy(pi, ["Review", "delivery", "Cafe\u0301"]),
-		).toEqual({
-			kind: "resolved",
-			policy: ["Review", "delivery", "Café"],
-		});
+		expect(resolveWorkflowPolicy(["Review", "delivery", "Cafe\u0301"])).toEqual(
+			{
+				kind: "resolved",
+				policy: ["Review", "delivery", "Café"],
+			},
+		);
 	});
 
 	/** Proves exact case variants remain distinct while NFC-equivalent catalog IDs collide. */
 	test("uses exact NFC workflow identity", () => {
-		const pi = createPolicyPi();
-		const caseVariants = publishWorkflowCatalogPolicy(pi, {
+		resetCatalog();
+		const caseVariants = publishWorkflowCatalogPolicy({
 			ids: ["Review", "review"],
 		});
 		expect(caseVariants.error).toBeUndefined();
-		expect(resolveWorkflowPolicy(pi, ["review"])).toEqual({
+		expect(resolveWorkflowPolicy(["review"])).toEqual({
 			kind: "resolved",
 			policy: ["review"],
 		});
 
-		const canonicalVariants = publishWorkflowCatalogPolicy(pi, {
+		const canonicalVariants = publishWorkflowCatalogPolicy({
 			ids: ["Café", "Cafe\u0301"],
 		});
 		expect(canonicalVariants.error?.message).toContain("Cafe\u0301");
-		expect(resolveWorkflowPolicy(pi, ["Café"]).kind).toBe("error");
+		expect(resolveWorkflowPolicy(["Café"]).kind).toBe("error");
 	});
 
 	/** Proves invalid names and duplicates fail without returning partial canonical IDs. */
@@ -62,9 +64,9 @@ describe("workflow policy boundary", () => {
 		[["Review", "Review"], "duplicate"],
 		[[" Review"], "single-line"],
 	])("rejects configured workflow policy %j", (names, issue) => {
-		const pi = createPolicyPi();
-		publishWorkflowCatalogPolicy(pi, { ids: ["Review", "delivery"] });
-		const result = resolveWorkflowPolicy(pi, names);
+		resetCatalog();
+		publishWorkflowCatalogPolicy({ ids: ["Review", "delivery"] });
+		const result = resolveWorkflowPolicy(names);
 		expect(result.kind).toBe("error");
 		if (result.kind === "error") {
 			expect(result.issue.toLowerCase()).toContain(issue);
@@ -73,14 +75,14 @@ describe("workflow policy boundary", () => {
 
 	/** Proves only explicit non-empty policy depends on a valid current catalog. */
 	test("resolves unrestricted and empty policy through catalog failure", () => {
-		const pi = createPolicyPi();
-		publishWorkflowCatalogPolicy(pi, {
+		resetCatalog();
+		publishWorkflowCatalogPolicy({
 			ids: [],
 			error: new Error("catalog invalid"),
 		});
-		expect(resolveWorkflowPolicy(pi, undefined).kind).toBe("resolved");
-		expect(resolveWorkflowPolicy(pi, []).kind).toBe("resolved");
-		const explicit = resolveWorkflowPolicy(pi, ["Review"]);
+		expect(resolveWorkflowPolicy(undefined).kind).toBe("resolved");
+		expect(resolveWorkflowPolicy([]).kind).toBe("resolved");
+		const explicit = resolveWorkflowPolicy(["Review"]);
 		expect(explicit.kind).toBe("error");
 		if (explicit.kind === "error") {
 			expect(explicit.issue).toContain("catalog invalid");
@@ -89,17 +91,17 @@ describe("workflow policy boundary", () => {
 
 	/** Proves child JSON preserves omitted, empty, and canonical explicit policies. */
 	test("parses transported child workflow policy against the published catalog", () => {
-		const pi = createPolicyPi();
-		publishWorkflowCatalogPolicy(pi, { ids: ["Review", "delivery"] });
-		expect(parseChildWorkflowPolicy(pi, undefined)).toEqual({
+		resetCatalog();
+		publishWorkflowCatalogPolicy({ ids: ["Review", "delivery"] });
+		expect(parseChildWorkflowPolicy(undefined)).toEqual({
 			kind: "resolved",
 			policy: undefined,
 		});
-		expect(parseChildWorkflowPolicy(pi, "[]")).toEqual({
+		expect(parseChildWorkflowPolicy("[]")).toEqual({
 			kind: "resolved",
 			policy: [],
 		});
-		expect(parseChildWorkflowPolicy(pi, '["Review"]')).toEqual({
+		expect(parseChildWorkflowPolicy('["Review"]')).toEqual({
 			kind: "resolved",
 			policy: ["Review"],
 		});
@@ -113,9 +115,9 @@ describe("workflow policy boundary", () => {
 		'["Review", "Review"]',
 		'["missing"]',
 	])("rejects child workflow policy %s", (raw) => {
-		const pi = createPolicyPi();
-		publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
-		expect(parseChildWorkflowPolicy(pi, raw).kind).toBe("error");
+		resetCatalog();
+		publishWorkflowCatalogPolicy({ ids: ["Review"] });
+		expect(parseChildWorkflowPolicy(raw).kind).toBe("error");
 	});
 
 	/** Proves membership and context source eligibility share one policy rule. */

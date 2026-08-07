@@ -3,7 +3,11 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
-import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	MessageRenderOptions,
+	Theme,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import {
 	AssistantMessageComponent,
 	CustomMessageComponent,
@@ -15,6 +19,10 @@ import {
 	type MarkdownTheme,
 	type TUI,
 } from "@earendil-works/pi-tui";
+import {
+	KNOWLEDGE_OUTCOME_CUSTOM_TYPE,
+	renderKnowledgeOutcome,
+} from "../../../shared/knowledge-outcome-renderer";
 import { SUBAGENT_HISTORY_CUSTOM_TYPE } from "../persistence.ts";
 import type { ConversationProjectionEntry } from "../projection";
 import { renderPrompt } from "../semantic-layout.ts";
@@ -455,11 +463,10 @@ function createCustomComponent(
 		details: entry.details,
 		timestamp: Number.isNaN(timestamp) ? 0 : timestamp,
 	};
+	const renderer = resolveCustomMessageRenderer(entry.customType);
 	const component = new CustomMessageComponent(
 		message,
-		entry.customType === SUBAGENT_HISTORY_CUSTOM_TYPE
-			? renderSubagentFeedback
-			: undefined,
+		renderer,
 		options.markdownTheme,
 		0,
 	);
@@ -494,6 +501,25 @@ export function readInitialPrompt(
 		if (entry.type === "message" && entry.message.role === "user") {
 			return messageText(entry.message.content);
 		}
+	}
+	return undefined;
+}
+
+/** Resolves the renderer for one custom-message entry type. */
+function resolveCustomMessageRenderer(
+	customType: string,
+):
+	| ((
+			message: CustomMessageInput,
+			options: MessageRenderOptions,
+			theme: Theme,
+	  ) => Component | undefined)
+	| undefined {
+	if (customType === SUBAGENT_HISTORY_CUSTOM_TYPE) {
+		return renderSubagentFeedback;
+	}
+	if (customType === KNOWLEDGE_OUTCOME_CUSTOM_TYPE) {
+		return renderKnowledgeOutcome;
 	}
 	return undefined;
 }

@@ -12,16 +12,10 @@ import type {
 import {
 	createEventBus,
 	initTheme,
+	keyText,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
-import {
-	Box,
-	KeybindingsManager,
-	setKeybindings,
-	type TUI,
-	TUI_KEYBINDINGS,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { Box, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { parse } from "yaml";
 import { createToolRenderContext } from "../../../test/support/tool-render-context.ts";
 import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment.ts";
@@ -87,6 +81,7 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 	>();
 	const tools: ToolDefinition[] = [];
 	const activeTools: string[] = [];
+	let thinkingLevel = "medium";
 	const events = createEventBus();
 	const api = {
 		events,
@@ -102,15 +97,35 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 			tools.push(definition);
 			activeTools.push(definition.name);
 		},
+		registerFlag(): void {},
+		getFlag(): undefined {
+			return undefined;
+		},
 		getActiveTools() {
 			return [...activeTools];
 		},
 		setActiveTools(names: string[]) {
 			activeTools.splice(0, activeTools.length, ...names);
 		},
+		getThinkingLevel() {
+			return thinkingLevel;
+		},
+		setThinkingLevel(level: string) {
+			thinkingLevel = level;
+		},
 		appendEntry(): void {},
 	} as unknown as ExtensionAPI;
 	await workflowExtension(api);
+	for (const sessionStart of handlers.get("session_start") ?? []) {
+		await sessionStart({ type: "session_start" }, {
+			mode: "rpc",
+			hasUI: true,
+			model: { provider: "test", id: "current" },
+			modelRegistry: undefined,
+			sessionManager: { getBranch: () => [] },
+			shutdown: () => {},
+		} as never);
+	}
 	return { api, handlers, tools };
 }
 
@@ -270,8 +285,6 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-	// Restore Pi's global keybinding registry after renderer-specific bindings.
-	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 	if (originalSuiteDirectory === undefined) {
 		delete process.env["PI_AGENT_SUITE_DIR"];
 	} else {
@@ -354,20 +367,11 @@ describe("workflow semantic tool rendering", () => {
 
 	/**
 	 * Proves creation shows complete semantic content in active and reconstructed session rendering.
-	 * Input and expected output: collapsed calls show references and the configured expansion binding; expanded calls show catalog-shaped YAML.
+	 * Input and expected output: collapsed calls show references and the active expansion binding; expanded calls show catalog-shaped YAML.
 	 * Edge case: an exact catalog collision retains the submitted identity and configurable hint.
 	 * Dependencies: presentation events, package registry reconstruction, Pi keybindings, and create tool execution.
 	 */
 	test("renders workflow creation before and after execution", async () => {
-		setKeybindings(
-			new KeybindingsManager({
-				...TUI_KEYBINDINGS,
-				"app.tools.expand": {
-					defaultKeys: "ctrl+e",
-					description: "Expand collapsed tool output",
-				},
-			}),
-		);
 		await createWorkflowSuite();
 		const fixture = await createFixture();
 		const created = await executeTool(
@@ -385,7 +389,7 @@ describe("workflow semantic tool rendering", () => {
 				"workflow_create",
 				"Workflow: dynamic-delivery · Dynamic delivery process",
 				"Stage: implementation · Implementation stage",
-				"Content: ctrl+e to show",
+				`Content: ${keyText("app.tools.expand")} to show`,
 			],
 			result: [],
 		});
@@ -440,7 +444,7 @@ describe("workflow semantic tool rendering", () => {
 			"workflow_create",
 			"Workflow: delivery · Conflicting delivery process",
 			"Stage: implementation · Implementation stage",
-			"Content: ctrl+e to show",
+			`Content: ${keyText("app.tools.expand")} to show`,
 		]);
 		expect(activeRejected.result.join("\n")).toContain("Error:");
 		expect(sessionRejected).toEqual(activeRejected);

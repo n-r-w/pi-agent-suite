@@ -37,6 +37,7 @@ import {
 	type InvocationEvent,
 	InvocationStartError,
 	type InvocationSupervisorOptions,
+	type RuntimeModelChange,
 } from "./invocation-contracts";
 import { InvocationSupervisor } from "./invocation-supervisor";
 import {
@@ -236,8 +237,16 @@ class CoordinatorStoreFake implements OwnerSessionStore {
 function createSupervisor(
 	child: ControlledChild,
 	events: InvocationEvent[],
+	options: SupervisorHarnessOptions = {},
 ): InvocationSupervisor {
-	return createSupervisorHarness([child], events).supervisor;
+	return createSupervisorHarness(
+		[child],
+		events,
+		undefined,
+		undefined,
+		true,
+		options,
+	).supervisor;
 }
 
 interface SupervisorHarnessOptions {
@@ -247,6 +256,7 @@ interface SupervisorHarnessOptions {
 	readonly recordChildStartupAttempt?: (
 		record: ChildAuthStartupAttemptRecord,
 	) => void;
+	readonly onRuntimeModelChanged?: InvocationSupervisorOptions["onRuntimeModelChanged"];
 }
 
 /** Creates one supervisor whose successive launches consume controlled child processes. */
@@ -309,6 +319,9 @@ function createSupervisorHarness(
 		},
 		recordChildStartupAttempt:
 			options.recordChildStartupAttempt ?? (() => undefined),
+		...(options.onRuntimeModelChanged === undefined
+			? {}
+			: { onRuntimeModelChanged: options.onRuntimeModelChanged }),
 	};
 	const supervisor = new InvocationSupervisor(supervisorOptions);
 	return { supervisor, spawnCount: () => spawnCount };
@@ -547,7 +560,7 @@ describe("InvocationSupervisor", () => {
 			events: new EventEmitter(),
 			getThinkingLevel: () => "off",
 		} as unknown as ExtensionAPI;
-		publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+		publishWorkflowCatalogPolicy({ ids: ["Review"] });
 		let authCalls = 0;
 		const ctx = {
 			cwd: "/tmp",
@@ -1028,7 +1041,12 @@ describe("InvocationSupervisor", () => {
 		child.stdout?.emit(
 			"data",
 			Buffer.from(
-				'{"type":"auto_retry_start","attempt":8,"maxAttempts":10,"delayMs":96000}\n',
+				`${JSON.stringify({
+					type: "extension_ui_request",
+					method: "notify",
+					message: "first child notice",
+					notifyType: "warning",
+				})}\n{"type":"auto_retry_start","attempt":8,"maxAttempts":10,"delayMs":96000}\n`,
 			),
 		);
 		emitProjectionStatus(child, "~139k");
@@ -1104,6 +1122,16 @@ describe("InvocationSupervisor", () => {
 			),
 		);
 		const page = await pending;
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "extension_ui_request",
+					method: "notify",
+					message: "latest child notice",
+				})}\n`,
+			),
+		);
 		emitProjectionStatus(child, "~0");
 		const incremental = supervisor.readActiveEntries(
 			acceptance.invocationId,
@@ -1136,6 +1164,7 @@ describe("InvocationSupervisor", () => {
 			leafId: page.leafId,
 			liveStatus: page.liveStatus,
 			projectionSavedTokens: page.projectionSavedTokens,
+			notification: page.notification,
 			deadlineValid:
 				page.liveStatus?.kind === "retrying" &&
 				page.liveStatus.deadlineAtMs >= retryObservedAfterMs + 96_000,
@@ -1152,18 +1181,102 @@ describe("InvocationSupervisor", () => {
 			leafId: "assistant-1",
 			liveStatus: page.liveStatus,
 			projectionSavedTokens: 139_000,
+			notification: {
+				message: "first child notice",
+				notifyType: "warning",
+			},
 			deadlineValid: true,
 			incrementalPage: {
 				entries: [],
 				leafId: "assistant-1",
 				liveStatus: page.liveStatus,
 				projectionSavedTokens: undefined,
+				notification: {
+					message: "latest child notice",
+					notifyType: "info",
+				},
 			},
 			activity: [
 				acceptance.invocationId,
 				acceptance.invocationId,
 				acceptance.invocationId,
+				acceptance.invocationId,
+				acceptance.invocationId,
 			],
+		});
+	});
+
+	test("clears transient notification when a permanent message arrives", async () => {
+		// Purpose: a durable journal entry (message_end) must clear the transient notification so the spinner returns to live status.
+		// Input and expected output: notification captured from extension_ui_request, then cleared after message_end.
+		// Dependencies: controlled child-process RPC streams and production supervisor.
+		const child = createChildProcess();
+		const events: InvocationEvent[] = [];
+		const supervisor = createSupervisor(child, events);
+		const acceptance = await acceptStart(supervisor, child);
+
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "extension_ui_request",
+					method: "notify",
+					message: "transient notice",
+					notifyType: "info",
+				})}\n`,
+			),
+		);
+
+		const firstPending = supervisor.readActiveEntries(acceptance.invocationId);
+		await waitForWriteCount(child, 2);
+		const firstRequestId = readCommandId(child.stdinWrites[1]);
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: firstRequestId,
+					type: "response",
+					command: "get_entries",
+					success: true,
+					data: { entries: [], leafId: null },
+				})}\n`,
+			),
+		);
+		const firstPage = await firstPending;
+
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "message_end",
+					message: { role: "assistant" },
+				})}\n`,
+			),
+		);
+
+		const secondPending = supervisor.readActiveEntries(acceptance.invocationId);
+		await waitForWriteCount(child, 3);
+		const secondRequestId = readCommandId(child.stdinWrites[2]);
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: secondRequestId,
+					type: "response",
+					command: "get_entries",
+					success: true,
+					data: { entries: [], leafId: null },
+				})}\n`,
+			),
+		);
+		const secondPage = await secondPending;
+
+		expect({
+			beforeClear: firstPage.notification,
+			afterClear: secondPage.notification,
+		}).toEqual({
+			beforeClear: { message: "transient notice", notifyType: "info" },
+			afterClear: undefined,
 		});
 	});
 
@@ -2819,3 +2932,93 @@ function readCommandId(value: string | undefined): string | undefined {
 			: undefined;
 	return typeof id === "string" ? id : undefined;
 }
+
+test("reports runtime thinking level from child thinking_level_changed events", async () => {
+	const child = createChildProcess();
+	const events: InvocationEvent[] = [];
+	const modelChanges: RuntimeModelChange[] = [];
+	const supervisor = createSupervisor(child, events, {
+		onRuntimeModelChanged: (change) => {
+			modelChanges.push(change);
+		},
+	});
+	const acceptance = await acceptStart(supervisor, child);
+
+	child.stdout?.emit(
+		"data",
+		Buffer.from(
+			`${JSON.stringify({
+				type: "thinking_level_changed",
+				level: "high",
+			})}\n`,
+		),
+	);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(modelChanges).toEqual([
+		{ invocationId: acceptance.invocationId, thinking: "high" },
+	]);
+});
+
+test("reports runtime model from child message_end events", async () => {
+	const child = createChildProcess();
+	const events: InvocationEvent[] = [];
+	const modelChanges: RuntimeModelChange[] = [];
+	const supervisor = createSupervisor(child, events, {
+		onRuntimeModelChanged: (change) => {
+			modelChanges.push(change);
+		},
+	});
+	const acceptance = await acceptStart(supervisor, child);
+
+	child.stdout?.emit(
+		"data",
+		Buffer.from(
+			`${JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					provider: "zai",
+					model: "glm-5.2",
+				},
+			})}\n`,
+		),
+	);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(modelChanges).toEqual([
+		{ invocationId: acceptance.invocationId, modelId: "zai/glm-5.2" },
+	]);
+});
+
+test("does not report model when message matches launch config model", async () => {
+	const child = createChildProcess();
+	const events: InvocationEvent[] = [];
+	const modelChanges: RuntimeModelChange[] = [];
+	const supervisor = createSupervisor(child, events, {
+		onRuntimeModelChanged: (change) => {
+			modelChanges.push(change);
+		},
+	});
+	await acceptStart(supervisor, child);
+
+	child.stdout?.emit(
+		"data",
+		Buffer.from(
+			`${JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					provider: "openai",
+					model: "test-model",
+				},
+			})}\n`,
+		),
+	);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(modelChanges).toEqual([]);
+});

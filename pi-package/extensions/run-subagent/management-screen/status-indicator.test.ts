@@ -56,6 +56,8 @@ function view(nodes: readonly ProjectionNode[]): ManagementProjectionView {
 		selectedConversationComplete: true,
 		selectedLiveStatus: undefined,
 		selectedProjectionSavedTokens: undefined,
+		selectedNotification: undefined,
+		selectedWorkflowStatus: undefined,
 		affectedStableKeys: nodes.map((node) => node.stableKey),
 	};
 }

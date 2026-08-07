@@ -1,0 +1,27 @@
+# Knowledge Domain Glossary
+
+- **Knowledge:** Concise project information extracted from agent work and intended to inform decisions in future sessions. A complete session log or retelling is not knowledge.
+- **Knowledge set:** A size-bounded collection of knowledge for one scope. A knowledge set contains strategic and tactical sections.
+- **Knowledge category:** One of two semantic sections in a knowledge set: strategic or tactical. A category does not determine scope or availability duration.
+- **Strategic knowledge:** Foundational information that affects decisions across multiple project tasks or domains. It changes when the project's purpose or foundational constraints change. Examples include project purpose, primary implementation language, and selected architecture.
+- **Tactical knowledge:** Information used for decisions in a specific domain, business rule, or working practice. It changes with the corresponding project logic. A calculation rule in effect for a specific domain is tactical knowledge.
+- **Knowledge scope:** The availability boundary of a knowledge set. The allowed scopes are global and local. Scope is not a knowledge category.
+- **Global knowledge:** Knowledge of one logical project that is available in every branch, clone, and worktree whose Pi environment can access the project's knowledge catalog.
+- **Local knowledge:** Knowledge of one non-primary Git branch. It is available to sessions on that branch across clones and worktrees and unavailable to other branches.
+- **Temporary knowledge:** Not an allowed knowledge category. Use local knowledge when the intended meaning is knowledge limited to one task branch.
+- **Knowledge project:** One logical remote Git repository across all its clones and worktrees. A fork is a separate project. A repository without a fetch URL is not a knowledge project.
+- **Project key:** A deterministic SHA-256 key derived from one versioned, standard fetch URL identity shared by every successfully parsed fetch URL of the current Git context. The key is stable across URL forms explicitly equated by the owning identity profile, but not across repository rename, transfer, deletion, or remote namespace reuse. It is not a permanent Git repository identifier.
+- **Project directory:** One catalog subdirectory named with a readable project prefix followed by the complete project-key digest. The prefix is diagnostic and does not determine identity.
+- **Primary-branch variant:** One Git-valid branch name on which knowledge accumulation is disabled. Configuration supplies a non-empty set of unique variants; the defaults are `main` and `master`. Remote HEAD evidence does not determine this set.
+- **Knowledge catalog:** The knowledge storage available to the Pi environment running the extension. Its default data directory is `knowledge/data` under the active agent-suite directory. Synchronization between machines is outside scope.
+- **Knowledge owner module:** The module that owns the knowledge catalog and knowledge files. Its external contract provides independent read, complete replacement, and delete operations.
+- **Knowledge extraction:** LLM analysis of the projected current session that returns concise newly identified knowledge or the exact marker `NOT_FOUND`.
+- **Local knowledge accumulation:** A named two-step algorithm that extracts knowledge from the current session and merges it into the active branch's local knowledge file.
+- **Global knowledge accumulation:** A named algorithm that merges the active branch's local knowledge file into the project's global knowledge file.
+- **Workflow trigger:** A typed action that runs when a workflow enters a stage through creation, activation, advance, or rework. Stage restoration does not run triggers.
+- **Local knowledge accumulation trigger:** The workflow trigger type `local_knowledge_accumulation`.
+- **Global knowledge accumulation trigger:** The workflow trigger type `global_knowledge_accumulation`.
+- **Knowledge mutation queue:** A FIFO queue for the active branch that serializes complete knowledge-changing algorithms within one root Pi process and every agent it starts.
+- **Knowledge consolidation:** Producing an updated knowledge set from existing and newly identified knowledge. "Knowledge merge" is an allowed synonym. It does not mean Git merge or raw text concatenation.
+- **Strategic knowledge displacement:** Loss of foundational information because frequent tactical changes or tactical growth consume the bounded knowledge capacity.
+- **Accumulated experience:** An informal name for the collection of retained knowledge. It is not a separate data type.

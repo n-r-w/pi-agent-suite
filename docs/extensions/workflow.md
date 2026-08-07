@@ -16,6 +16,9 @@ When `PI_AGENT_SUITE_DIR` is set, the extension uses `<PI_AGENT_SUITE_DIR>/workf
 description: Use for software delivery
 prompt: |
   Follow these guidelines throughout the workflow.
+model:
+  id: openai/gpt-5
+  thinking: high
 stages:
   - id: implementation
     description: Implement the approved change
@@ -23,6 +26,10 @@ stages:
       Implement only the approved scope.
       Follow the project testing rules.
     initial: true
+    triggers:
+      - type: local_knowledge_accumulation
+    model:
+      thinking: xhigh
   - id: review
     description: Review the implementation
     prompt: Review the implementation and report evidence-backed findings
@@ -42,6 +49,9 @@ Every catalog or dynamic workflow requires:
 - trimmed single-line workflow and stage descriptions;
 - a non-empty `prompt` for every stage;
 - an optional root `prompt` for guidance that applies to every stage;
+- an optional ordered `triggers` list containing only closed trigger objects;
+- supported trigger types `local_knowledge_accumulation` and `global_knowledge_accumulation`;
+- an optional root `model` object and optional stage `model` objects in catalog YAML;
 - unique stage IDs and valid transition endpoints;
 - an acyclic `advance` graph in which every stage is reachable;
 - no outgoing `advance` from final stages;
@@ -49,6 +59,10 @@ Every catalog or dynamic workflow requires:
 - `rework` transitions only to strict `advance` ancestors.
 
 Surrounding prompt whitespace is removed. An omitted or empty root prompt means that the workflow has no shared guidance.
+
+Catalog YAML model settings use independently optional `id` and `thinking` fields. `id` accepts either `provider/model` or an alias from `model-aliases/config.json`. The effective values are resolved independently with stage settings taking priority over workflow settings, followed by the selected agent and the current Pi runtime value. Unknown models and thinking levels unsupported by the resolved model fail before workflow state is persisted. Settings are applied during activation, stage transitions, and session synchronization. Manual model changes in Pi or main-agent changes are not automatically overwritten.
+
+Workflow activation and dynamic creation persist the current runtime model identifier and thinking level as a restoration snapshot. When an agent run settles on a final stage, the extension restores that snapshot and marks the workflow completed. This lifecycle handling uses `agent_settled` and does not require TUI or user interaction, so it also applies to subagents, RPC sessions, and print mode.
 
 Each invalid or unreadable `.yaml` file is excluded independently, while valid sibling workflows remain available. At session start, Pi shows one warning that lists every excluded file and its validation issue when UI notifications are available. Catalog IDs must be unique after NFC normalization and remain case-sensitive. An unreadable workflow directory or an NFC-equivalent catalog ID collision rejects the catalog. A missing or empty workflow directory is a valid empty catalog. The catalog is read when the extension loads.
 
@@ -95,6 +109,10 @@ Each configured path must be absolute and reference a readable file with non-emp
 
 All workflow tools run sequentially and return model-visible success content `{"success":true}`.
 
+After creation, activation, advance, or rework persists the entered stage, its triggers run sequentially in listed order. Duplicate triggers are preserved. A reported or thrown trigger failure stops the remaining stage triggers but does not change workflow success. Restoring an active stage during session start or branch reconstruction runs no triggers.
+
+A final-stage agent run remains active until `agent_settled`. The settlement restores the pre-workflow model and thinking level, persists a `completed` snapshot, and removes final-stage instructions from provider context. A completed workflow remains available for allowed `rework` transitions; rework marks it active and applies the target stage settings.
+
 ### `workflow_create`
 
 `workflow_create` accepts one complete, flat definition:
@@ -130,7 +148,7 @@ All workflow tools run sequentially and return model-visible success content `{"
 
 A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. A replaced dynamic workflow cannot be reactivated. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
 
-The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets.
+The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets. The `workflow_create` schema remains unchanged and does not expose model settings; model settings are available only in catalog YAML.
 
 `workflow_create` remains available with a missing or empty catalog when the agent's `tools` policy permits it. A catalog error blocks creation because ID collisions cannot be checked against an incomplete namespace. Dynamic workflows are never written to YAML.
 
@@ -153,6 +171,8 @@ Workflow: TuiBrainstorming · Generate and discuss TUI concepts
 ```
 
 The row contains the workflow ID and active stage description. It never includes stage IDs or transitions. The shared separator and the complete Workflow row use Pi's dim color. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed. The row is clipped to the terminal width and ends with `…` when content is hidden.
+
+A completed workflow is still retained for rework, but its provider context uses `<completed_workflow>` and omits `<active_stage_guidelines>` until rework makes the workflow active again.
 
 Creation, activation, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row or the saved active workflow. The agent's tool policy still controls provider-context availability. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
 
@@ -227,17 +247,26 @@ Follow the project testing rules.
 </active_workflow>
 ```
 
-The root workflow prompt is projected in `<guidelines>` for every active stage and omitted when absent. Only the active stage prompt is projected in `<active_stage_guidelines>`; a transition replaces it on the next context request.
+The root workflow prompt is projected in `<guidelines>` for every active stage and omitted when absent. Only the active stage prompt is projected in `<active_stage_guidelines>`; a transition replaces it on the next context request. A completed workflow uses `<completed_workflow completed_stage_id="...">` and projects no stage prompt.
 
 Catalog activation options are filtered through `workflows`. The current active state remains projectable and transitionable under every resolved policy, regardless of whether it came from catalog activation or `workflow_create`.
 
 ## Session snapshots
 
-Catalog activation stores an `activated` snapshot with the validated workflow definition and route. Dynamic creation stores the same data in a `created` snapshot. Later transitions store only the updated route and preserve the workflow source.
+Catalog activation stores an `activated` snapshot with the validated workflow definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Later transitions store only the updated route and preserve the workflow source and restoration settings. Completion stores a `completed` snapshot with the final route. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
 
 The active branch reconstructs state on session start and branch changes:
-- `activated` restores catalog-backed state;
-- `created` restores dynamic state;
-- `transitioned` updates the route of the preceding snapshot.
+- `activated` restores catalog-backed active state and its restoration settings;
+- `created` restores dynamic active state and its restoration settings;
+- `transitioned` updates the route of the preceding snapshot;
+- `completed` restores completed state without applying workflow model settings.
 
 The latest valid active snapshot remains available under every resolved policy after its catalog file is removed or the catalog becomes invalid. An invalid catalog prevents new creation and activation but does not block transitions of that saved active workflow. Earlier replaced dynamic workflows do not appear in activation options and cannot be reactivated.
+
+## CLI flags
+
+| Flag | Type | Description |
+| --- | --- | --- |
+| `--trigger <type>` | String | Runs a workflow trigger at startup, then exits. The trigger type must match a value used in workflow YAML stage definitions. |
+
+Available trigger types: `local_knowledge_accumulation`, `global_knowledge_accumulation`. When `--trigger` is set, the extension invokes the registered trigger runner at session start. After execution (success or failure), the session shuts down. An unknown trigger type or a missing trigger runner (for example, when the knowledge extension is disabled) produces an error on stderr and exits. The flag is ignored in child agent processes.

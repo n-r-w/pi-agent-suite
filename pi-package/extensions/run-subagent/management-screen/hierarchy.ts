@@ -7,6 +7,7 @@ import {
 import { normalizeTerminalDisplayText } from "../../../shared/terminal-display-text";
 import type { ProjectionNode } from "../projection";
 import { formatDuration, renderContext } from "../semantic-layout";
+import type { WorkflowStatus } from "../workflow-status";
 import type { ScrollMetrics } from "./scroll-indicator";
 import { AGENT_STATUS_ICONS, countAgentStatuses } from "./status-summary";
 
@@ -16,6 +17,8 @@ const PREFERRED_AGENT_IDENTITY_WIDTH = 7;
 const PREFERRED_TASK_TEXT_WIDTH = 8;
 /** Separates only selected-detail fields that survive availability and width allocation. */
 const SELECTED_DETAIL_SEPARATOR = " · ";
+/** Removes one optional trailing period from a workflow status row for cosmetic consistency. */
+const TRAILING_PERIOD_PATTERN = /\.$/u;
 
 interface TreePrefixes {
 	readonly identity: string;
@@ -48,6 +51,7 @@ interface SelectedSessionHeaderOptions {
 	readonly width: number;
 	readonly theme: Theme;
 	readonly focused?: boolean;
+	readonly workflowStatus?: WorkflowStatus;
 }
 
 /** Owns hierarchy selection, branch expansion, and viewport state. */
@@ -468,7 +472,12 @@ export function renderSelectedSessionHeader(
 		options.width,
 		options.theme,
 	);
-	return [chain, prompt, metadata];
+	const workflow = renderSelectedWorkflowStatus(
+		options.workflowStatus,
+		options.width,
+		options.theme,
+	);
+	return [chain, prompt, metadata, ...workflow];
 }
 
 /** Renders one status icon and the normalized initial prompt without wrapping. */
@@ -521,6 +530,21 @@ function renderSelectedMetadata(
 		width,
 		"…",
 	);
+}
+
+/** Renders the active workflow status as one dim, truncated row. */
+function renderSelectedWorkflowStatus(
+	status: WorkflowStatus | undefined,
+	width: number,
+	theme: Theme,
+): string[] {
+	if (status === undefined || width <= 0) {
+		return [];
+	}
+	const text = normalizeTerminalDisplayText(
+		`Workflow: ${status.workflowId} · ${status.stageDescription}`,
+	).replace(TRAILING_PERIOD_PATTERN, "");
+	return [theme.fg("dim", truncateToWidth(text, width, "…"))];
 }
 
 /** Groups siblings in the projection's creation order. */

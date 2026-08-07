@@ -268,7 +268,7 @@ If during execution you encounter blocker:
   <user_interaction_protocol name="When and How to ask user for questions, choices, and decisions">
     <guidelines>
       1. When message offers one or more next actions, alternatives, or permission to continue, message MUST be treated as `<decision_question>`, not as `<status_or_result_message>` or `<closing_prompt>`.
-      2. You MUST NOT combine `<status_or_result_message>` report with `<decision_question>` prompt in one free-form message.
+      2. You MUST NOT combine `<status_or_result_message>` report with `<decision_question>` prompt in one free-form message. When approval of a reported result is needed, send result first and request approval in a separate subsequent `<decision_question>` message.
       3. IF choice is needed, you MUST use `<decision_question>` format exactly.
       4. MUST NOT use markdown links to files user-facing messages, use simple file references instead (e.g. `path/to/file`)
     </guidelines>

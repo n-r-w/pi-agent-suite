@@ -3,6 +3,7 @@ import {
 	readSuiteConfigFile,
 	type StorageFileReadResult,
 } from "./agent-suite-storage";
+import { isModelSelectorId } from "./model-settings";
 import {
 	isReasoningLevel,
 	REASONING_LEVELS,
@@ -123,8 +124,8 @@ function parseCustomCompactionConfig(
 	}
 
 	const model = value["model"];
-	if (model !== undefined && !isModelId(model)) {
-		return { kind: "invalid", issue: "model must use provider/model" };
+	if (model !== undefined && !isModelSelectorId(model)) {
+		return { kind: "invalid", issue: "model must be a non-empty string" };
 	}
 
 	const reasoning = value["reasoning"];
@@ -190,15 +191,6 @@ function validatePromptFiles(
 		}
 	}
 	return undefined;
-}
-
-/** Returns whether a value uses the required provider/model identifier shape. */
-function isModelId(value: unknown): value is string {
-	return (
-		typeof value === "string" &&
-		value.indexOf("/") > 0 &&
-		value.indexOf("/") < value.length - 1
-	);
 }
 
 /** Returns whether unknown JSON is a non-array object. */

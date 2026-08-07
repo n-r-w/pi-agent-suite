@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
-import { withIsolatedAgentDir, writeEnabledConfig } from "./support/env";
+import {
+	withIsolatedAgentDir,
+	writeEnabledConfig,
+} from "./support/environment";
 import {
 	createCompletionQueue,
 	createContext,

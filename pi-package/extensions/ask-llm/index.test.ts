@@ -18,6 +18,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import { registerKnowledgeContextRuntime } from "../../shared/knowledge-runtime";
 import askLlm from "./index.ts";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -983,6 +984,29 @@ describe("ask-llm", () => {
 			);
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
 				"Project rule: keep docs current.",
+			);
+		});
+	});
+
+	test("includes applicable knowledge in the ask-llm system context", async () => {
+		// Purpose: explicit ask-llm requests must receive the same applicable knowledge as normal agent turns.
+		// Input and expected output: one registered source appends its block to the model system prompt.
+		// Edge case: the block is read during request assembly instead of captured from a prior turn.
+		// Dependencies: shared knowledge context registry and fake completion recorder.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "gpt-test");
+			const completion = createCompletionFake();
+			const pi = createExtensionApiFake();
+			const ctx = createContextFake([model]);
+			registerKnowledgeContextRuntime(pi, {
+				readBlock: async () => "<knowledge>ask knowledge</knowledge>",
+			});
+			askLlm(pi, { completeSimple: completion.completeSimple });
+
+			await getAskCommand(pi).handler("Use knowledge", ctx);
+
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"<knowledge>ask knowledge</knowledge>",
 			);
 		});
 	});

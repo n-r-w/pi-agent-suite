@@ -55,6 +55,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 	readonly setModelCalls: Model<Api>[];
 	readonly thinkingCalls: string[];
 	readonly activeToolCalls: string[][];
+	readonly flagValues: Map<string, boolean | string>;
 }
 
 interface ExtensionApiFakeOptions {
@@ -62,6 +63,7 @@ interface ExtensionApiFakeOptions {
 	readonly setModelResults?: readonly boolean[];
 	readonly activeTools?: readonly string[];
 	readonly allTools?: readonly string[];
+	readonly flagValues?: ReadonlyMap<string, boolean | string>;
 }
 
 interface CustomComponentFake {
@@ -77,6 +79,7 @@ interface KeybindingsFake {
 interface CommandContextFake {
 	readonly cwd: string;
 	readonly hasUI?: boolean;
+	readonly model: Model<Api> | undefined;
 	readonly sessionManager: {
 		getSessionFile(): string | undefined;
 	};
@@ -118,7 +121,11 @@ function createExtensionApiFake(
 	const thinkingCalls: string[] = [];
 	const activeToolCalls: string[][] = [];
 	let currentActiveTools = [...(options.activeTools ?? [])];
+	let currentThinkingLevel = "medium";
 	const setModelResults = [...(options.setModelResults ?? [])];
+	const flagValues = new Map<string, boolean | string>(
+		options.flagValues ?? [],
+	);
 
 	return {
 		handlers,
@@ -127,6 +134,7 @@ function createExtensionApiFake(
 		setModelCalls,
 		thinkingCalls,
 		activeToolCalls,
+		flagValues,
 		events: {
 			emit(): void {},
 			on(): () => void {
@@ -176,6 +184,7 @@ function createExtensionApiFake(
 		},
 		setThinkingLevel(level: string): void {
 			thinkingCalls.push(level);
+			currentThinkingLevel = level;
 		},
 		setActiveTools(toolNames: string[]): void {
 			currentActiveTools = [...toolNames];
@@ -198,9 +207,24 @@ function createExtensionApiFake(
 			return [];
 		},
 		getThinkingLevel(): string {
-			return "medium";
+			return currentThinkingLevel;
 		},
 		setLabel(): void {},
+		registerFlag(
+			name: string,
+			flagOptions: {
+				type: "boolean" | "string";
+				default?: boolean | string;
+				description?: string;
+			},
+		): void {
+			if (flagOptions.default !== undefined && !flagValues.has(name)) {
+				flagValues.set(name, flagOptions.default);
+			}
+		},
+		getFlag(name: string): boolean | string | undefined {
+			return flagValues.get(name);
+		},
 		modelRegistry: undefined,
 	} as unknown as ExtensionApiFake;
 }
@@ -247,6 +271,7 @@ function createModel(provider: string, id: string): Model<Api> {
 		api: "fake-api",
 		baseUrl: "https://example.test",
 		reasoning: true,
+		thinkingLevelMap: { xhigh: "xhigh", max: "max" },
 		name: `${provider}/${id}`,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -382,6 +407,7 @@ function createCommandContext(
 
 	return {
 		cwd,
+		model: models[0],
 		sessionManager: {
 			getSessionFile: () => sessionFile,
 		},
@@ -1035,7 +1061,7 @@ describe("main-agent-selection", () => {
 				workflows: ["Review"],
 			});
 			const pi = createExtensionApiFake();
-			publishWorkflowCatalogPolicy(pi, { ids: ["Review", "Delivery"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review", "Delivery"] });
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
@@ -1076,7 +1102,7 @@ describe("main-agent-selection", () => {
 				workflows: ["Missing"],
 			});
 			const pi = createExtensionApiFake();
-			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const ctx = createCommandContext("/tmp/project", undefined, [model]);
 			mainAgentSelection(pi);
 			await getCommand(pi, "agent").handler("Stable", ctx);
@@ -1121,7 +1147,7 @@ describe("main-agent-selection", () => {
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "write"],
 			});
-			publishWorkflowCatalogPolicy(pi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const ctx = createCommandContext("/tmp/project", undefined, [model]);
 			mainAgentSelection(pi);
 			await getCommand(pi, "agent").handler("Stable", ctx);
@@ -1195,7 +1221,7 @@ describe("main-agent-selection", () => {
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "write"],
 			});
-			publishWorkflowCatalogPolicy(oldPi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const oldCtx = createCommandContext("/tmp/project", undefined, [model]);
 			const oldFactory = await importFreshMainAgentSelection();
 			oldFactory(oldPi);
@@ -1213,7 +1239,7 @@ describe("main-agent-selection", () => {
 				activeTools: ["read", "bash"],
 				allTools: ["read", "bash", "write"],
 			});
-			publishWorkflowCatalogPolicy(newPi, { ids: ["Review"] });
+			publishWorkflowCatalogPolicy({ ids: ["Review"] });
 			const newCtx = createCommandContext("/tmp/project", undefined, [model]);
 			const newFactory = await importFreshMainAgentSelection();
 			newFactory(newPi);
@@ -2340,6 +2366,31 @@ describe("main-agent-selection", () => {
 		});
 	});
 
+	test("rejects thinking unsupported by the configured model before application", async () => {
+		// Purpose: unsupported agent thinking must fail before model, thinking, or contribution changes.
+		// Input and expected output: a model without reasoning rejects a high thinking level and emits one warning.
+		// Edge case: the agent supplies both a model ID and thinking level, so capability validation must precede setModel.
+		// Dependencies: this test uses an isolated agent file and a fake model registry.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = { ...createModel("openai", "gpt-test"), reasoning: false };
+			await writeAgent(agentDir, {
+				id: "builder",
+				description: "Builds code",
+				body: "Builder system prompt",
+				model: { id: "openai/gpt-test", thinking: "high" },
+			});
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
+			mainAgentSelection(pi);
+
+			await getCommand(pi, "agent").handler("builder", ctx);
+
+			expect(pi.setModelCalls).toEqual([]);
+			expect(pi.thinkingCalls).toEqual([]);
+			expect(ctx.notifications[0]?.type).toBe("warning");
+		});
+	});
+
 	test("fails closed when model application fails", async () => {
 		// Purpose: a selected agent must not publish prompt, tools, thinking, or runtime contribution when its configured model cannot be applied.
 		// Input and expected output: setModel returns false, selection reports a warning, and no runtime contribution is applied.
@@ -2400,9 +2451,9 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("skips agents with malformed model IDs during registry loading", async () => {
-		// Purpose: agent model IDs must be validated at the shared agent-registry boundary instead of failing later in one extension path.
-		// Input and expected output: an agent with model.id missing provider/model shape is not selectable, while a valid agent remains available.
+	test("reports missing model aliases during agent selection", async () => {
+		// Purpose: model aliases that do not exist in model-aliases config must fail with a clear runtime warning.
+		// Input and expected output: an agent with unresolved alias fails selection, while a valid agent remains selectable.
 		// Edge case: model.thinking-only agents remain valid because model.id is optional.
 		// Dependencies: this test writes temporary Markdown agent files only.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2419,14 +2470,16 @@ describe("main-agent-selection", () => {
 				model: { thinking: "high" },
 			});
 			const pi = createExtensionApiFake();
-			const ctx = createCommandContext("/tmp/project");
+			const model = createModel("openai", "gpt-test");
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
 			mainAgentSelection(pi);
 
 			await getCommand(pi, "agent").handler("broken", ctx);
 
 			expect(ctx.notifications).toEqual([
 				{
-					message: "[main-agent-selection] agent broken was not found",
+					message:
+						"[main-agent-selection] model alias missing-provider-separator was not found",
 					type: "warning",
 				},
 			]);
@@ -2740,6 +2793,117 @@ describe("main-agent-selection", () => {
 			await getCommand(pi, "agent").handler("planner", ctx);
 
 			expect(pi.activeToolCalls).toEqual([["write"], ["read", "bash"]]);
+		});
+	});
+
+	describe("--agent CLI flag (ephemeral selection)", () => {
+		test("applies agent from flag to runtime composition without disk persistence", async () => {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeAgent(agentDir, {
+					id: "reviewer",
+					description: "Reviews code",
+					body: "Reviewer prompt",
+				});
+
+				const pi = createExtensionApiFake({
+					flagValues: new Map([["agent", "reviewer"]]),
+					activeTools: ["read", "bash"],
+				});
+				const ctx = createCommandContext("/tmp/project");
+				mainAgentSelection(pi);
+
+				await getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				);
+
+				const contribution =
+					getAgentRuntimeComposition(pi).getMainAgentContribution();
+				expect(contribution?.agent?.id).toBe("reviewer");
+			});
+		});
+
+		test("clears main agent contribution when flag value is 'none'", async () => {
+			await withIsolatedAgentDir(async () => {
+				const pi = createExtensionApiFake({
+					flagValues: new Map([["agent", "none"]]),
+					activeTools: ["read", "bash"],
+				});
+				const ctx = createCommandContext("/tmp/project");
+				mainAgentSelection(pi);
+
+				await getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				);
+
+				const contribution =
+					getAgentRuntimeComposition(pi).getMainAgentContribution();
+				expect(contribution).toBeUndefined();
+			});
+		});
+
+		test("reports error for unknown agent ID and does not apply any agent", async () => {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeAgent(agentDir, {
+					id: "reviewer",
+					description: "Reviews code",
+					body: "Reviewer prompt",
+				});
+
+				const pi = createExtensionApiFake({
+					flagValues: new Map([["agent", "nonexistent"]]),
+					activeTools: ["read", "bash"],
+				});
+				const ctx = createCommandContext("/tmp/project", undefined, [], false);
+				mainAgentSelection(pi);
+
+				await getHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					ctx,
+				);
+
+				const contribution =
+					getAgentRuntimeComposition(pi).getMainAgentContribution();
+				expect(contribution).toBeUndefined();
+			});
+		});
+
+		test("does not process flag in child subagent process", async () => {
+			await withIsolatedAgentDir(async (agentDir) => {
+				const previousSubagentId = process.env[SUBAGENT_AGENT_ID_ENV];
+				process.env[SUBAGENT_AGENT_ID_ENV] = "child-subagent";
+
+				try {
+					await writeAgent(agentDir, {
+						id: "reviewer",
+						description: "Reviews code",
+						body: "Reviewer prompt",
+					});
+
+					const pi = createExtensionApiFake({
+						flagValues: new Map([["agent", "reviewer"]]),
+						activeTools: ["read", "bash"],
+					});
+					const ctx = createCommandContext("/tmp/project");
+					mainAgentSelection(pi);
+
+					await getHandler(pi, "session_start")(
+						{ type: "session_start", reason: "startup" },
+						ctx,
+					);
+
+					const contribution =
+						getAgentRuntimeComposition(pi).getMainAgentContribution();
+					expect(contribution).toBeUndefined();
+				} finally {
+					if (previousSubagentId === undefined) {
+						delete process.env[SUBAGENT_AGENT_ID_ENV];
+					} else {
+						process.env[SUBAGENT_AGENT_ID_ENV] = previousSubagentId;
+					}
+				}
+			});
 		});
 	});
 });

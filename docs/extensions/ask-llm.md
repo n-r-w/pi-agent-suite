@@ -10,6 +10,8 @@ Run `/ask <question>` to ask a question directly. Run `/ask` without text to ope
 
 The extension uses the current session model and thinking level unless you configure another model or thinking level. Each `/ask` invocation uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session. Retries for one invocation reuse that ID.
 
+When the `knowledge` extension resolves applicable stored knowledge, `/ask` appends the same `<knowledge>` block used by the calling agent to its explicit system context. The question and answer remain absent from the current session.
+
 ## Configuration
 
 Default configuration file: `~/.pi/agent/agent-suite/ask-llm/config.json`.
@@ -20,7 +22,7 @@ Full configuration example:
 {
   "enabled": true,
   "model": {
-    "id": "provider/model",
+    "id": "analyst-complex",
     "thinking": "medium"
   },
   "systemPromptFile": "/absolute/path/to/system.md",
@@ -38,7 +40,7 @@ All configuration parameters are optional. If the configuration file is missing,
 | --- | --- | --- | --- | --- |
 | `enabled` | boolean | No | `true` | Enables or disables the `/ask` command. Set to `false` to disable the command. |
 | `model` | object | No | Current session model and thinking level | Groups model selection options. |
-| `model.id` | string in `provider/model` format | No | Current session model | Selects the model used by `/ask`. |
+| `model.id` | non-empty string | No | Current session model | Selects the model used by `/ask`. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | string enum | No | Current thinking level | Selects the thinking level used by `/ask`. |
 | `systemPromptFile` | non-empty absolute path string | No | Bundled system prompt | Uses a custom system prompt file. The file must be readable and non-empty. |
 | `retry` | object | No | Default retry settings | Groups retry options for retryable provider failures. |

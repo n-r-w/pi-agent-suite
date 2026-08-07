@@ -27,6 +27,7 @@ type ContextBlock =
 export function renderExternalContextPackage(
 	entries: readonly SessionEntry[],
 	toolCallId: string,
+	knowledgeBlock?: string,
 ): string {
 	const toolCalls = collectVisibleToolCalls(entries, toolCallId);
 	const blocks = mergeAdjacentBlocks(
@@ -34,7 +35,12 @@ export function renderExternalContextPackage(
 			renderContextEntry(entry, toolCallId, toolCalls),
 		),
 	).map(renderContextBlock);
-	return ["<context>", ...blocks, "</context>"].join("\n");
+	return [
+		"<context>",
+		...blocks,
+		...(knowledgeBlock === undefined ? [] : [knowledgeBlock]),
+		"</context>",
+	].join("\n");
 }
 
 /** Records visible tool-call arguments before later tool-result rendering. */
@@ -311,10 +317,12 @@ function renderBashExecution(
 export async function buildExternalCouncilContextPackage(options: {
 	readonly ctx: CouncilContext;
 	readonly toolCallId: string;
+	readonly knowledgeBlock?: string;
 }): Promise<string> {
 	return renderExternalContextPackage(
 		options.ctx.sessionManager.getBranch(),
 		options.toolCallId,
+		options.knowledgeBlock,
 	);
 }
 

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { writeRuntimeDiagnostic } from "./agent-runtime-diagnostics";
+import type { ModelSettings } from "./model-settings";
 
 export interface MainAgentRuntimeInfo {
 	readonly id: string;
@@ -12,6 +13,7 @@ export interface MainAgentContribution {
 	readonly prompt: string;
 	readonly tools?: readonly string[];
 	readonly agent?: MainAgentRuntimeInfo;
+	readonly model?: ModelSettings;
 }
 
 /** Defines static or dynamic guidance built after runtime tool filtering. */
@@ -50,19 +52,29 @@ export interface AgentRuntimeComposition {
 	): void;
 }
 
-const RUNTIME_PROPERTY = "__piHarnessAgentRuntimeComposition";
-
 export const MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT =
 	"pi-harness:main-agent-contribution-change";
+
+/** Event bus channel for synchronous cross-extension composition lookup. */
+const COMPOSITION_REQUEST_CHANNEL =
+	"pi-harness:agent-runtime-composition:request";
 
 interface RuntimeCompositionHolder {
 	runtime: AgentRuntimeComposition;
 	stale: boolean;
 }
 
-interface RuntimeCompositionCarrier {
-	[RUNTIME_PROPERTY]?: RuntimeCompositionHolder;
+/** Mutable slot passed through the event bus for request-reply. */
+interface CompositionSlot {
+	holder: RuntimeCompositionHolder | undefined;
 }
+
+/** Per-pi cache so each extension and each test fake keeps its own reference.
+ *
+ * In production, all entries point to the same shared holder (found via the
+ * event bus). In tests, each fake pi gets its own isolated holder.
+ */
+const holderByPi = new WeakMap<ExtensionAPI, RuntimeCompositionHolder>();
 
 interface AgentRuntimeEventBus {
 	emit(
@@ -71,40 +83,54 @@ interface AgentRuntimeEventBus {
 	): void;
 }
 
-/** Returns the singleton runtime composition owner for one extension runtime. */
+/** Returns the singleton runtime composition owner for one extension runtime.
+ *
+ * Pi 0.84.0 loads each extension via jiti with `moduleCache: false`, giving
+ * every extension its own copy of shared modules. The event bus is the only
+ * channel shared across extension instances, so the composition reference is
+ * exchanged through a synchronous emit/on request-reply with a mutable slot.
+ * A WeakMap keyed by pi provides per-instance caching and test isolation.
+ */
 export function getAgentRuntimeComposition(
 	pi: ExtensionAPI,
 ): AgentRuntimeComposition {
-	const carrier = pi.events as RuntimeCompositionCarrier;
-	const existing = carrier[RUNTIME_PROPERTY];
-	if (existing !== undefined && !existing.stale) {
-		return existing.runtime;
+	const cached = holderByPi.get(pi);
+	if (cached !== undefined && !cached.stale) {
+		return cached.runtime;
+	}
+
+	/** Asks whether another extension already created the composition. */
+	const slot: CompositionSlot = { holder: undefined };
+	if (typeof pi.events?.emit === "function") {
+		pi.events.emit(COMPOSITION_REQUEST_CHANNEL, slot);
+	}
+	if (slot.holder !== undefined && !slot.holder.stale) {
+		holderByPi.set(pi, slot.holder);
+		return slot.holder.runtime;
 	}
 
 	writeRuntimeDiagnostic("runtime-composition.created", {
-		replacedStaleRuntime: existing !== undefined,
+		replacedStaleRuntime: slot.holder !== undefined,
 	});
 	const holder: RuntimeCompositionHolder = {
 		runtime: new AgentRuntimeCompositionImpl(pi),
 		stale: false,
 	};
-	if (existing !== undefined) {
-		carrier[RUNTIME_PROPERTY] = holder;
-		return holder.runtime;
+	holderByPi.set(pi, holder);
+
+	/** Replies to future requests from other extensions with this holder. */
+	if (typeof pi.events?.on === "function") {
+		pi.events.on(COMPOSITION_REQUEST_CHANNEL, (data: unknown) => {
+			(data as CompositionSlot).holder = holder;
+		});
 	}
 
-	Object.defineProperty(carrier, RUNTIME_PROPERTY, {
-		configurable: false,
-		enumerable: false,
-		value: holder,
-		writable: true,
-	});
 	return holder.runtime;
 }
 
 /** Marks the current runtime composition stale after pi starts replacing the extension runtime. */
 export function markAgentRuntimeCompositionStale(pi: ExtensionAPI): void {
-	const holder = (pi.events as RuntimeCompositionCarrier)[RUNTIME_PROPERTY];
+	const holder = holderByPi.get(pi);
 	if (holder === undefined) {
 		return;
 	}

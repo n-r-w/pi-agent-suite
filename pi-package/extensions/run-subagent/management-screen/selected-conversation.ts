@@ -1,7 +1,10 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { LogicalSession } from "../domain";
+import type { InvocationNotification } from "../invocation-contracts";
 import type { LiveAgentStatus } from "../live-status";
 import { projectionStableKey } from "../projection";
+import type { WorkflowStatus } from "../workflow-status";
+import { extractWorkflowStatus } from "../workflow-status";
 
 /** Supplies active Pi entry pages without exposing process ownership. */
 export interface SelectedConversationActiveSource {
@@ -13,6 +16,7 @@ export interface SelectedConversationActiveSource {
 		readonly leafId: string | null;
 		readonly liveStatus: LiveAgentStatus | undefined;
 		readonly projectionSavedTokens: number | undefined;
+		readonly notification: InvocationNotification | undefined;
 	}>;
 }
 
@@ -27,6 +31,8 @@ export interface SelectedConversationSnapshot {
 	readonly complete: boolean;
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
+	readonly notification: InvocationNotification | undefined;
+	readonly workflowStatus: WorkflowStatus | undefined;
 }
 
 /** Configures one selected-only progressive branch loader. */
@@ -50,6 +56,8 @@ export class SelectedConversationLoader {
 	private complete = false;
 	private liveStatus: LiveAgentStatus | undefined;
 	private projectionSavedTokens: number | undefined;
+	private notification: InvocationNotification | undefined;
+	private workflowStatus: WorkflowStatus | undefined;
 	private lastState: LogicalSession["state"];
 	private disposed = false;
 
@@ -89,6 +97,8 @@ export class SelectedConversationLoader {
 			complete: this.complete,
 			liveStatus: this.liveStatus,
 			projectionSavedTokens: this.projectionSavedTokens,
+			notification: this.notification,
+			workflowStatus: this.workflowStatus,
 		};
 	}
 
@@ -138,21 +148,35 @@ export class SelectedConversationLoader {
 				this.leafId = page.leafId;
 				changed = true;
 			}
-			// Runtime status revisions remain visible even when no durable message was appended.
-			if (this.liveStatus !== page.liveStatus) {
-				this.liveStatus = page.liveStatus;
-				changed = true;
-			}
-			// Projection savings are a live snapshot value, so an explicit clear must also publish a revision.
-			if (this.projectionSavedTokens !== page.projectionSavedTokens) {
-				this.projectionSavedTokens = page.projectionSavedTokens;
-				changed = true;
-			}
+			changed = this.updateTransientState(page) || changed;
 			if (changed) {
 				this.branch = this.resolveBranch();
 			}
 			return changed;
 		});
+	}
+
+	/** Applies transient fields independently from durable conversation entries. */
+	private updateTransientState(
+		page: Awaited<
+			ReturnType<SelectedConversationActiveSource["readActiveEntries"]>
+		>,
+	): boolean {
+		const newWorkflowStatus = extractWorkflowStatus(
+			Array.from(this.entriesById.values()),
+		);
+		const changed =
+			this.liveStatus !== page.liveStatus ||
+			this.projectionSavedTokens !== page.projectionSavedTokens ||
+			this.notification !== page.notification ||
+			this.workflowStatus?.workflowId !== newWorkflowStatus?.workflowId ||
+			this.workflowStatus?.stageDescription !==
+				newWorkflowStatus?.stageDescription;
+		this.liveStatus = page.liveStatus;
+		this.projectionSavedTokens = page.projectionSavedTokens;
+		this.notification = page.notification;
+		this.workflowStatus = newWorkflowStatus;
+		return changed;
 	}
 
 	/** Releases selected payload ownership without interrupting Pi migration. */
@@ -168,6 +192,7 @@ export class SelectedConversationLoader {
 		this.branch = Object.freeze([]);
 		this.inactiveBranch = undefined;
 		this.liveStatus = undefined;
+		this.notification = undefined;
 	}
 
 	/** Selects a complete active RPC read or a saved SessionManager snapshot. */
@@ -191,6 +216,10 @@ export class SelectedConversationLoader {
 		this.complete = true;
 		this.liveStatus = page.liveStatus;
 		this.projectionSavedTokens = page.projectionSavedTokens;
+		this.notification = page.notification;
+		this.workflowStatus = extractWorkflowStatus(
+			Array.from(this.entriesById.values()),
+		);
 		this.branch = this.resolveBranch();
 	}
 
@@ -228,13 +257,17 @@ export class SelectedConversationLoader {
 		const changed =
 			contentChanged ||
 			this.liveStatus !== undefined ||
-			this.projectionSavedTokens !== undefined;
+			this.projectionSavedTokens !== undefined ||
+			this.notification !== undefined ||
+			this.workflowStatus !== undefined;
 		if (contentChanged) {
 			this.replaceCompleteBranch(entries);
 		} else {
 			// Terminal snapshots cannot retain presentation state from the stopped writer.
 			this.liveStatus = undefined;
 			this.projectionSavedTokens = undefined;
+			this.notification = undefined;
+			this.workflowStatus = undefined;
 		}
 		return changed;
 	}
@@ -250,6 +283,7 @@ export class SelectedConversationLoader {
 		this.complete = true;
 		this.liveStatus = undefined;
 		this.projectionSavedTokens = undefined;
+		this.notification = undefined;
 		this.branch = Object.freeze([...entries]);
 	}
 

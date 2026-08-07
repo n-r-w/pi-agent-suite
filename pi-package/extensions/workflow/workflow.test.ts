@@ -23,6 +23,11 @@ function validValue(): unknown {
 				id: "b",
 				description: "B",
 				prompt: "\nFirst line\n  indented second line\n",
+				triggers: [
+					{ type: "local_knowledge_accumulation" },
+					{ type: "global_knowledge_accumulation" },
+					{ type: "local_knowledge_accumulation" },
+				],
 			},
 			{ id: "c", description: "C", prompt: "Prompt C" },
 			{ id: "d", description: "D", prompt: "Prompt D" },
@@ -56,13 +61,80 @@ describe("workflow definition validation", () => {
 		expect(workflow.prompt).toBe(
 			"Follow shared rules.\n  Preserve this indentation.",
 		);
+		expect(workflow.stages[0]?.triggers).toEqual([]);
 		expect(workflow.stages[1]).toEqual({
 			id: "b",
 			description: "B",
 			prompt: "First line\n  indented second line",
+			triggers: [
+				{ type: "local_knowledge_accumulation" },
+				{ type: "global_knowledge_accumulation" },
+				{ type: "local_knowledge_accumulation" },
+			],
 			initial: false,
 			final: false,
 		});
+	});
+
+	/** Proves catalog YAML can define independent workflow and stage model settings. */
+	test("accepts optional model settings at workflow and stage levels", () => {
+		const value = validValue() as {
+			stages: Record<string, unknown>[];
+		};
+		const firstStage = value.stages[0];
+		if (firstStage === undefined) {
+			throw new Error("valid workflow fixture must contain an initial stage");
+		}
+		firstStage["model"] = { thinking: "xhigh" };
+
+		const workflow = validateWorkflowDefinition(
+			"delivery",
+			{
+				...value,
+				model: { id: "openai/gpt-test", thinking: "high" },
+			},
+			SOURCE,
+		);
+
+		expect(workflow.model).toEqual({
+			id: "openai/gpt-test",
+			thinking: "high",
+		});
+		expect(workflow.stages[0]?.model).toEqual({ thinking: "xhigh" });
+	});
+
+	/**
+	 * Proves trigger entries remain closed discriminated objects at the workflow boundary.
+	 * Inputs and expected outputs: unknown types, unknown fields, missing types, arrays, strings, and null are rejected.
+	 * Edge cases: an explicitly empty trigger list remains valid and equivalent to omission.
+	 * Dependencies: stage parsing and the supported workflow trigger type set.
+	 */
+	test("rejects invalid trigger objects", () => {
+		const invalidTriggers: readonly unknown[] = [
+			[{ type: "unknown" }],
+			[{ type: "local_knowledge_accumulation", extra: true }],
+			[{}],
+			[[{ type: "local_knowledge_accumulation" }]],
+			["local_knowledge_accumulation"],
+			[null],
+		];
+		for (const triggers of invalidTriggers) {
+			const value = validValue() as {
+				stages: Record<string, unknown>[];
+			};
+			value.stages[0] = { ...value.stages[0], triggers };
+			expect(() =>
+				validateWorkflowDefinition("delivery", value, SOURCE),
+			).toThrow("trigger");
+		}
+
+		const value = validValue() as {
+			stages: Record<string, unknown>[];
+		};
+		value.stages[0] = { ...value.stages[0], triggers: [] };
+		expect(
+			validateWorkflowDefinition("delivery", value, SOURCE).stages[0]?.triggers,
+		).toEqual([]);
 	});
 
 	/**
@@ -405,7 +477,12 @@ describe("workflow state", () => {
 			{
 				type: "custom",
 				customType: "workflow-state",
-				data: { kind: "activated", workflow, route: ["a"] },
+				data: {
+					kind: "activated",
+					workflow,
+					route: ["a"],
+					restoration: { modelId: "openai/current-model", thinking: "medium" },
+				},
 			},
 			{
 				type: "custom",
@@ -419,6 +496,11 @@ describe("workflow state", () => {
 		expect(replayed?.workflow.prompt).toBe(
 			"Follow shared rules.\n  Preserve this indentation.",
 		);
+		expect(replayed?.workflow.stages[1]?.triggers).toEqual([
+			{ type: "local_knowledge_accumulation" },
+			{ type: "global_knowledge_accumulation" },
+			{ type: "local_knowledge_accumulation" },
+		]);
 
 		const dynamicWorkflow = { ...workflow, id: "dynamic-delivery" };
 		const dynamicReplay = replayWorkflowState([
@@ -430,6 +512,10 @@ describe("workflow state", () => {
 					kind: "created",
 					workflow: dynamicWorkflow,
 					route: ["a"],
+					restoration: {
+						modelId: "openai/current-model",
+						thinking: "medium",
+					},
 				},
 			},
 			{
@@ -440,6 +526,47 @@ describe("workflow state", () => {
 		]);
 		expect(dynamicReplay).toHaveProperty("source", "dynamic");
 		expect(dynamicReplay?.route).toEqual(["a", "b"]);
+
+		const finalRoute = ["a", "b", "d", "f"];
+		const completedReplay = replayWorkflowState([
+			entries[0],
+			entries[1],
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["a", "b"] },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["a", "b", "d"] },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: finalRoute },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "completed", route: finalRoute },
+			},
+		]);
+		expect(completedReplay?.status).toBe("completed");
+		expect(completedReplay?.restoration).toEqual({
+			modelId: "openai/current-model",
+			thinking: "medium",
+		});
+		expect(
+			getStageStatuses(
+				completedReplay as NonNullable<typeof completedReplay>,
+			).get("f"),
+		).toBe("completed");
+		expect(
+			getAvailableTransitions(
+				completedReplay as NonNullable<typeof completedReplay>,
+			).map(({ to }) => to),
+		).toEqual(["b"]);
 		expect(() =>
 			replayWorkflowState([
 				...entries,
@@ -473,5 +600,28 @@ describe("workflow state", () => {
 				},
 			]),
 		).toThrow("workflow-state");
+	});
+
+	/** Proves pre-restoration workflow chains are ignored instead of blocking session replay. */
+	test("ignores legacy workflow state chains", () => {
+		const workflow = validateWorkflowDefinition(
+			"delivery",
+			validValue(),
+			SOURCE,
+		);
+		const legacyEntries = [
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "activated", workflow, route: ["a"] },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["a", "b"] },
+			},
+		];
+
+		expect(replayWorkflowState(legacyEntries)).toBeUndefined();
 	});
 });

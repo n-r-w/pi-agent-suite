@@ -29,9 +29,14 @@ import {
 } from "../../shared/custom-compaction-config";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
+	assertThinkingLevelSupported,
+	splitModelId,
+} from "../../shared/model-settings";
+import {
 	isReasoningLevel,
 	type ReasoningLevel,
 } from "../../shared/reasoning-levels";
+import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import {
 	type AdaptiveCompactionProgressEvent,
 	type AdaptiveCompactionRequest,
@@ -116,7 +121,7 @@ interface CustomCompactionRuntime {
 /** Authentication material resolved for the selected summarization model. */
 interface ModelAuth {
 	readonly apiKey?: string;
-	readonly headers?: Record<string, string>;
+	readonly headers?: Record<string, string | null>;
 }
 
 /** Complete request dependencies resolved before adaptive work starts. */
@@ -147,7 +152,7 @@ interface CustomCompactionSession {
 			| {
 					readonly ok: true;
 					readonly apiKey?: string;
-					readonly headers?: Record<string, string>;
+					readonly headers?: Record<string, string | null>;
 			  }
 			| { readonly ok: false; readonly error: string }
 		>;
@@ -441,29 +446,38 @@ function resolveRuntime(
 	config: CustomCompactionConfig,
 	currentThinkingLevel: unknown,
 ): CustomCompactionRuntime | string {
+	const resolvedSettings = resolveModelSettingsWithAliasesSync({
+		...(config.model === undefined ? {} : { id: config.model }),
+		...(config.reasoning === undefined ? {} : { thinking: config.reasoning }),
+	});
+	if ("issue" in resolvedSettings) {
+		return resolvedSettings.issue;
+	}
+
 	let model = session.model;
-	if (config.model !== undefined) {
-		const modelId = splitModelId(config.model);
-		if (modelId === undefined) {
-			return "model must use provider/model";
-		}
-		model = session.modelRegistry.find(modelId.provider, modelId.modelId);
+	if (resolvedSettings.settings.id !== undefined) {
+		const { provider, id } = splitModelId(resolvedSettings.settings.id);
+		model = session.modelRegistry.find(provider, id);
 		if (model === undefined) {
-			return `model ${config.model} was not found`;
+			return `model ${resolvedSettings.settings.id} was not found`;
 		}
 	}
 	if (model === undefined) {
 		return "current model is unavailable";
 	}
 
-	return {
-		model,
-		reasoning:
-			config.reasoning ??
-			(isReasoningLevel(currentThinkingLevel)
-				? currentThinkingLevel
-				: undefined),
-	};
+	const reasoning =
+		resolvedSettings.settings.thinking ??
+		(isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined);
+	if (reasoning !== undefined) {
+		try {
+			assertThinkingLevelSupported(model, reasoning);
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	}
+
+	return { model, reasoning };
 }
 
 /** Calls the selected model and records cost for every completed response. */
@@ -605,20 +619,6 @@ function assertConfiguredPromptPathsAreAbsolute(): void {
 			throw error;
 		}
 	}
-}
-
-/** Splits a validated provider/model identifier at its first slash. */
-function splitModelId(
-	value: string,
-): { readonly provider: string; readonly modelId: string } | undefined {
-	const separator = value.indexOf("/");
-	if (separator <= 0 || separator >= value.length - 1) {
-		return undefined;
-	}
-	return {
-		provider: value.slice(0, separator),
-		modelId: value.slice(separator + 1),
-	};
 }
 
 /** Creates one progress reporter that survives failed adaptive attempts. */

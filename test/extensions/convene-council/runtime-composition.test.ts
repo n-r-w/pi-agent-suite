@@ -4,7 +4,7 @@ import {
 	withIsolatedAgentDir,
 	writeEnabledConfig,
 	writeRawConfig,
-} from "./support/env";
+} from "./support/environment";
 import { createExtensionApiFake, type ExtensionApiFake } from "./support/fakes";
 
 /** Emits before-agent-start handlers in registration order and returns the latest non-empty result. */

@@ -140,7 +140,8 @@
 		{
 			"includes": [
 				"pi-package/extensions/**/environment.ts",
-				"pi-package/shared/environment.ts"
+				"pi-package/shared/environment.ts",
+				"test/**/environment.ts"
 			],
 			"linter": {
 				"rules": {

@@ -23,6 +23,7 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
+import { resolveAuxiliaryLlmRuntime } from "../../shared/auxiliary-llm";
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	collectLoadedSkillRoots,
@@ -30,6 +31,11 @@ import {
 } from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
+import {
+	appendKnowledgeBlock,
+	readKnowledgeBlock,
+} from "../../shared/knowledge-runtime";
+import { isModelSelectorId } from "../../shared/model-settings";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -103,7 +109,7 @@ interface ConsultAdvisorConfig {
 interface AdvisorRuntime {
 	readonly model: Model<Api>;
 	readonly apiKey?: string;
-	readonly headers?: Record<string, string>;
+	readonly headers?: Record<string, string | null>;
 }
 
 interface AdvisorContextBuildOptions {
@@ -120,6 +126,7 @@ interface AdvisorContext extends ExtensionContext {
 }
 
 interface ExecuteConsultAdvisorOptions {
+	readonly pi: ExtensionAPI;
 	readonly completeSimple: NonNullable<
 		ConsultAdvisorDependencies["completeSimple"]
 	>;
@@ -173,6 +180,7 @@ export default function consultAdvisor(
 		renderResult: renderConsultAdvisorResult,
 		async execute(...[toolCallId, params, signal, _onUpdate, ctx]) {
 			return executeConsultAdvisor({
+				pi,
 				completeSimple,
 				toolCallId,
 				params: params as ConsultAdvisorParams,
@@ -192,6 +200,7 @@ export default function consultAdvisor(
 
 /** Executes one advisor model call after strict config, prompt, and model validation. */
 async function executeConsultAdvisor({
+	pi,
 	completeSimple,
 	toolCallId,
 	params,
@@ -217,9 +226,12 @@ async function executeConsultAdvisor({
 		return errorResult(promptResult.issue);
 	}
 
+	const thinking =
+		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel);
 	const runtimeResult = await resolveAdvisorRuntime(
 		ctx,
 		configResult.config.model?.id,
+		thinking,
 	);
 	if ("issue" in runtimeResult) {
 		reportIssue(ctx, runtimeResult.issue);
@@ -227,6 +239,7 @@ async function executeConsultAdvisor({
 	}
 
 	const context = await buildAdvisorContext({
+		pi,
 		ctx,
 		advisorPrompt: promptResult.prompt,
 		question: params.question,
@@ -238,8 +251,9 @@ async function executeConsultAdvisor({
 		return errorResult(ADVISOR_CONTEXT_TOO_LARGE_ERROR);
 	}
 
+	const effectiveThinking = runtimeResult.thinking ?? thinking;
 	const options = buildAdvisorOptions(
-		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel),
+		effectiveThinking,
 		signal,
 		runtimeResult.runtime,
 		createAuxiliaryLlmSessionId(),
@@ -428,8 +442,8 @@ function validateAdvisorModelConfig(
 	if (id !== undefined && (typeof id !== "string" || id.length === 0)) {
 		return { issue: "model.id must be a non-empty string" };
 	}
-	if (typeof id === "string" && !hasProviderModelShape(id)) {
-		return { issue: "model.id must use provider/model" };
+	if (typeof id === "string" && !isModelSelectorId(id)) {
+		return { issue: "model.id must be a non-empty string" };
 	}
 	if (thinking !== undefined && !isThinking(thinking)) {
 		return {
@@ -517,13 +531,16 @@ async function readAdvisorPrompt(
 
 /** Builds advisor context from current branch while replaying recorded context projection state. */
 async function buildAdvisorContext({
+	pi,
 	ctx,
 	advisorPrompt,
 	question,
 	toolCallId,
 	loadedSkillRoots,
 	contextFiles,
-}: AdvisorContextBuildOptions): Promise<Context> {
+}: AdvisorContextBuildOptions & {
+	readonly pi: ExtensionAPI;
+}): Promise<Context> {
 	const projectedMessages = await replayContextProjection({
 		branchEntries: ctx.sessionManager.getBranch(),
 		cwd: ctx.cwd,
@@ -534,8 +551,13 @@ async function buildAdvisorContext({
 		toolCallId,
 	);
 	messages.push({ role: "user", content: question, timestamp: Date.now() });
+	const projectSystemPrompt = formatAdvisorSystemPrompt(
+		advisorPrompt,
+		contextFiles,
+	);
+	const knowledgeBlock = await readKnowledgeBlock(pi, ctx);
 	return {
-		systemPrompt: formatAdvisorSystemPrompt(advisorPrompt, contextFiles),
+		systemPrompt: appendKnowledgeBlock(projectSystemPrompt, knowledgeBlock),
 		messages,
 		tools: [],
 	};
@@ -583,58 +605,34 @@ function removePendingAdvisorCall(
 	return result;
 }
 
-/** Returns true when model ID contains provider and model parts separated by the first slash. */
-function hasProviderModelShape(modelId: string): boolean {
-	const separatorIndex = modelId.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < modelId.length - 1;
-}
-
 /** Resolves the advisor model and request auth through the pi model registry. */
 async function resolveAdvisorRuntime(
 	ctx: AdvisorContext,
 	modelId: string | undefined,
-): Promise<{ readonly runtime: AdvisorRuntime } | { readonly issue: string }> {
-	const model =
-		modelId === undefined
-			? ctx.model
-			: resolveConfiguredAdvisorModel(ctx, modelId);
-	if (model === undefined) {
+	thinking: Thinking | undefined,
+): Promise<
+	| { readonly runtime: AdvisorRuntime; readonly thinking?: Thinking }
+	| { readonly issue: string }
+> {
+	const runtimeResult = await resolveAuxiliaryLlmRuntime(
+		ctx,
+		modelId,
+		thinking,
+	);
+	if ("issue" in runtimeResult) {
 		return {
-			issue:
-				modelId === undefined
-					? "current model is unavailable"
-					: `model ${modelId} was not found`,
+			issue: runtimeResult.issue.startsWith("model auth unavailable: ")
+				? `advisor ${runtimeResult.issue}`
+				: runtimeResult.issue,
 		};
 	}
 
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		return { issue: `advisor model auth unavailable: ${auth.error}` };
-	}
-
 	return {
-		runtime: {
-			model,
-			...(auth.apiKey !== undefined ? { apiKey: auth.apiKey } : {}),
-			...(auth.headers !== undefined ? { headers: auth.headers } : {}),
-		},
+		runtime: runtimeResult.runtime,
+		...(runtimeResult.thinking === undefined
+			? {}
+			: { thinking: runtimeResult.thinking }),
 	};
-}
-
-/** Resolves a configured advisor model ID through the model registry. */
-function resolveConfiguredAdvisorModel(
-	ctx: AdvisorContext,
-	modelId: string,
-): Model<Api> | undefined {
-	const separatorIndex = modelId.indexOf("/");
-	if (separatorIndex <= 0 || separatorIndex === modelId.length - 1) {
-		return undefined;
-	}
-
-	return ctx.modelRegistry.find(
-		modelId.slice(0, separatorIndex),
-		modelId.slice(separatorIndex + 1),
-	);
 }
 
 /** Builds completion options while treating `off` as no reasoning option. */

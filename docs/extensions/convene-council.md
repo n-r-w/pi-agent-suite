@@ -8,6 +8,8 @@ Use it when a complex question needs two model participants to compare answers b
 
 The models with the highest "thinking" level and reasoning capabilities are recommended for best results. Each participant runs in an isolated child Pi session with a Pi-compatible UUIDv7 session ID.
 
+When the `knowledge` extension resolves applicable stored knowledge, the shared external context package supplies the same `<knowledge>` block to both participants.
+
 ## Configuration
 
 Default config file: `~/.pi/agent/agent-suite/convene-council/config.json`.
@@ -23,13 +25,13 @@ The extension is disabled when the config file is missing or when `enabled` is n
   "enabled": true,
   "llm1": {
     "model": {
-      "id": "provider/model-a",
+      "id": "analyst-complex",
       "thinking": "high"
     }
   },
   "llm2": {
     "model": {
-      "id": "provider/model-b",
+      "id": "review-fast",
       "thinking": "medium"
     }
   },
@@ -47,11 +49,11 @@ The extension is disabled when the config file is missing or when `enabled` is n
 | `enabled` | No | Boolean | `false` | Enables the extension only when set to `true`. |
 | `llm1` | No | Object with optional `model` | Uses the current session model and thinking level | Configures the first participant. |
 | `llm1.model` | No | Object with optional `id` and `thinking` | Uses the current session model and thinking level | Configures the first participant model. |
-| `llm1.model.id` | No | Non-empty `provider/model` string | Current session model | Model for the first participant. |
+| `llm1.model.id` | No | Non-empty string | Current session model | Model for the first participant. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `llm1.model.thinking` | No | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | Current thinking level | Thinking level for the first participant. |
 | `llm2` | No | Object with optional `model` | Uses the current session model and thinking level | Configures the second participant. |
 | `llm2.model` | No | Object with optional `id` and `thinking` | Uses the current session model and thinking level | Configures the second participant model. |
-| `llm2.model.id` | No | Non-empty `provider/model` string | Current session model | Model for the second participant. |
+| `llm2.model.id` | No | Non-empty string | Current session model | Model for the second participant. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `llm2.model.thinking` | No | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | Current thinking level | Thinking level for the second participant. |
 | `participantIterationLimit` | No | Positive integer | `3` | Maximum number of discussion iterations before returning a no-consensus result. |
 | `finalAnswerParticipant` | No | One of `llm1`, `llm2` | `llm2` | Participant that writes the final answer after agreement. |

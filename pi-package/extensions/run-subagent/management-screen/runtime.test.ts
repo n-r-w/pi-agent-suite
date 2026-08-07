@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { LogicalSession } from "../domain";
 import type { LiveAgentStatus } from "../live-status";
-import { projectionStableKey } from "../projection";
+import {
+	type ManagementProjectionView,
+	projectionStableKey,
+} from "../projection";
 import { ManagementProjectionRuntime } from "./runtime";
 
 /** Creates one deterministic displayable user entry. */
@@ -99,6 +102,7 @@ interface ActiveConversationPage {
 	readonly leafId: string | null;
 	readonly liveStatus: LiveAgentStatus | undefined;
 	readonly projectionSavedTokens: number | undefined;
+	readonly notification: ManagementProjectionView["selectedNotification"];
 }
 
 /** Supplies controlled active deltas, activity events, and incremental boundaries. */
@@ -256,6 +260,7 @@ describe("management projection runtime progressive loading", () => {
 				leafId: thirdReply.id,
 				liveStatus: { kind: "working" },
 				projectionSavedTokens: undefined,
+				notification: undefined,
 			},
 			{
 				entries: [fourthUser, fourthReply],
@@ -267,6 +272,7 @@ describe("management projection runtime progressive loading", () => {
 					deadlineAtMs: 5_000,
 				},
 				projectionSavedTokens: undefined,
+				notification: undefined,
 			},
 		]);
 		const runtime = createRuntime([session], active);
@@ -317,6 +323,7 @@ describe("management projection runtime progressive loading", () => {
 				leafId: secondReply.id,
 				liveStatus: undefined,
 				projectionSavedTokens: undefined,
+				notification: undefined,
 			},
 		]);
 		const runtime = createRuntime([session], active);
@@ -330,6 +337,7 @@ describe("management projection runtime progressive loading", () => {
 			leafId: firstReply.id,
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		});
 		await opening;
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -364,6 +372,7 @@ describe("management projection runtime progressive loading", () => {
 				leafId: secondUser.id,
 				liveStatus: undefined,
 				projectionSavedTokens: undefined,
+				notification: undefined,
 			},
 		]);
 		const runtime = createRuntime([firstSession, secondSession], active);
@@ -378,6 +387,7 @@ describe("management projection runtime progressive loading", () => {
 			leafId: firstUser.id,
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		});
 		await obsolete;
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -413,6 +423,7 @@ describe("management projection runtime progressive loading", () => {
 			leafId: firstUser.id,
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		});
 		await opening;
 		await new Promise<void>((resolve) => setImmediate(resolve));
@@ -450,6 +461,7 @@ describe("management projection runtime progressive loading", () => {
 			leafId: firstUser.id,
 			liveStatus: undefined,
 			projectionSavedTokens: undefined,
+			notification: undefined,
 		});
 		await opening;
 		await new Promise<void>((resolve) => setImmediate(resolve));

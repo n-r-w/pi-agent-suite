@@ -59,6 +59,7 @@ export async function executeConveneCouncil({
 	ctx,
 	currentThinkingLevel,
 	contextFiles,
+	knowledgeBlock,
 	availableTools,
 	recordCost,
 	onUpdate,
@@ -105,6 +106,7 @@ export async function executeConveneCouncil({
 	const externalContextPackage = await buildExternalCouncilContextPackage({
 		ctx,
 		toolCallId,
+		...(knowledgeBlock === undefined ? {} : { knowledgeBlock }),
 	});
 	return runCouncilWithOwnedParticipants({
 		externalContextPackage,

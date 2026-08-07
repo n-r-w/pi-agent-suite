@@ -2,12 +2,6 @@ import { isReasoningLevel } from "../../shared/reasoning-levels";
 import { PARTICIPANT_IDS } from "./constants";
 import type { ParticipantId, Thinking } from "./types";
 
-/** Returns true when model ID contains provider and model parts separated by the first slash. */
-export function hasProviderModelShape(modelId: string): boolean {
-	const separatorIndex = modelId.indexOf("/");
-	return separatorIndex > 0 && separatorIndex < modelId.length - 1;
-}
-
 /** Returns true when an object contains only keys from a finite set. */
 export function hasOnlyKeys(
 	value: Record<string, unknown>,

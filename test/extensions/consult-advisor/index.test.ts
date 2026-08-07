@@ -25,6 +25,7 @@ import mainAgentSelection from "../../../pi-package/extensions/main-agent-select
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../../../pi-package/extensions/run-subagent/contracts";
 import subagents from "../../../pi-package/extensions/run-subagent/index";
 import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
+import { registerKnowledgeContextRuntime } from "../../../pi-package/shared/knowledge-runtime";
 import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
@@ -190,6 +191,10 @@ function createExtensionApiFake(
 			commands.push({ name, handler: options.handler });
 		},
 		registerShortcut(): void {},
+		registerFlag(): void {},
+		getFlag(): undefined {
+			return undefined;
+		},
 		appendEntry(customType: string, data: unknown): void {
 			appendEntryCalls.push({ customType, data });
 		},
@@ -978,6 +983,28 @@ describe("consult-advisor", () => {
 			);
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
 				"Project rule: keep docs current.",
+			);
+		});
+	});
+
+	test("includes applicable knowledge in the advisor system context", async () => {
+		// Purpose: explicit advisor requests must receive the same applicable knowledge as normal agent turns.
+		// Input and expected output: one registered source appends its block to the advisor system prompt.
+		// Edge case: knowledge is read when the explicit request is assembled.
+		// Dependencies: shared knowledge registry and completion recorder.
+		await withIsolatedAgentDir(async () => {
+			const pi = createExtensionApiFake();
+			const ctx = createContext([createModel("openai", "advisor")]);
+			const completion = createCompletionFake();
+			registerKnowledgeContextRuntime(pi, {
+				readBlock: async () => "<knowledge>advisor knowledge</knowledge>",
+			});
+			consultAdvisor(pi, { completeSimple: completion.completeSimple });
+
+			await executeConsult(pi, ctx, "Use knowledge");
+
+			expect(completion.calls[0]?.context.systemPrompt).toContain(
+				"<knowledge>advisor knowledge</knowledge>",
 			);
 		});
 	});
@@ -1986,12 +2013,12 @@ describe("consult-advisor", () => {
 		}
 	});
 
-	test("rejects malformed model id during config validation", async () => {
-		// Purpose: malformed model.id values must be classified as config errors.
-		// Input and expected output: malformed provider/model strings report model.id format warning and skip completeSimple.
-		// Edge case: model IDs are split at first slash, but provider and model parts must both exist.
+	test("rejects empty model id during config validation", async () => {
+		// Purpose: empty model.id values must be classified as config errors.
+		// Input and expected output: an empty model.id reports a validation warning and skips completeSimple.
+		// Edge case: non-empty non-provider model IDs are treated as aliases and validated at runtime.
 		// Dependencies: temp config and fake completion function.
-		for (const modelId of ["advisor", "/advisor", "openai/"]) {
+		for (const modelId of [""]) {
 			await withIsolatedAgentDir(async (agentDir) => {
 				await writeConfig(agentDir, {
 					enabled: true,
@@ -2008,7 +2035,7 @@ describe("consult-advisor", () => {
 				expect(completion.calls).toEqual([]);
 				expect(ctx.notifications).toEqual([
 					{
-						message: "[consult-advisor] model.id must use provider/model",
+						message: "[consult-advisor] model.id must be a non-empty string",
 						type: "warning",
 					},
 				]);

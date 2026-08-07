@@ -3,18 +3,25 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import { Check } from "typebox/value";
 import {
 	getAgentRuntimeComposition,
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment";
 import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../shared/subagent-environment";
+import {
+	registerWorkflowTriggerRunner,
+	type WorkflowTrigger,
+	type WorkflowTriggerRunResult,
+} from "../../shared/workflow-trigger-runtime";
 import workflowExtension from "./index";
 import { activateWorkflow, validateWorkflowDefinition } from "./workflow";
 
@@ -25,6 +32,7 @@ interface FakeTool {
 	readonly name: string;
 	readonly description: string;
 	readonly executionMode?: string;
+	readonly parameters: unknown;
 	readonly execute: (...args: unknown[]) => Promise<unknown>;
 }
 
@@ -34,11 +42,17 @@ interface FakePi {
 	readonly tools: FakeTool[];
 	readonly appended: Array<{ customType: string; data: unknown }>;
 	readonly notifications: Array<{ message: string; type: string | undefined }>;
+	readonly modelSetCalls: Model<Api>[];
+	readonly modelRegistry: ExtensionContext["modelRegistry"];
 	activeTools: string[];
 	appendError: Error | undefined;
 	api: ExtensionAPI | undefined;
+	model: Model<Api> | undefined;
+	thinkingLevel: string;
 	readonly ui: ExtensionContext["ui"];
 	readonly widgetUpdates: Array<{ key: string; content: WidgetContent }>;
+	flagValues: Map<string, boolean | string>;
+	shutdownCalls: number;
 }
 
 const temporaryDirectories: string[] = [];
@@ -69,6 +83,39 @@ function validYaml(): string {
 	return "description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
 }
 
+/** Returns a catalog workflow with root and initial-stage model settings. */
+function modelYaml(): string {
+	return "description: Delivery\nmodel:\n  id: openai/workflow-model\n  thinking: high\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n    model:\n      thinking: xhigh\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
+}
+
+/** Returns a workflow whose second stage must fall back to the selected agent model. */
+function agentFallbackYaml(): string {
+	return "description: Delivery\nstages:\n  - id: configured\n    description: Configured\n    prompt: Use the workflow model\n    initial: true\n    model:\n      id: openai/workflow-model\n      thinking: xhigh\n  - id: fallback\n    description: Fallback\n    prompt: Use the agent model\n    final: true\ntransitions:\n  - from: configured\n    to: fallback\n    type: advance\n  - from: fallback\n    to: configured\n    type: rework\n";
+}
+
+/** Creates one model fixture with optional support for model-specific thinking levels. */
+function createModel(
+	provider: string,
+	id: string,
+	extendedThinking = false,
+): Model<Api> {
+	return {
+		provider,
+		id,
+		api: "fake-api",
+		baseUrl: "https://example.test",
+		reasoning: true,
+		...(extendedThinking
+			? { thinkingLevelMap: { xhigh: "xhigh", max: "max" } }
+			: {}),
+		name: `${provider}/${id}`,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100_000,
+		maxTokens: 8_192,
+	};
+}
+
 /** Creates one complete workflow_create argument object with a caller-owned identity. */
 function createArguments(id = "dynamic-delivery"): Record<string, unknown> {
 	return {
@@ -96,6 +143,56 @@ function createArguments(id = "dynamic-delivery"): Record<string, unknown> {
 	};
 }
 
+/** Adds ordered duplicate triggers to both stages of one dynamic workflow fixture. */
+function triggeredCreateArguments(): Record<string, unknown> {
+	const args = createArguments();
+	const stages = args["stages"] as Record<string, unknown>[];
+	stages[0] = {
+		...stages[0],
+		triggers: [
+			{ type: "local_knowledge_accumulation" },
+			{ type: "global_knowledge_accumulation" },
+			{ type: "local_knowledge_accumulation" },
+		],
+	};
+	stages[1] = {
+		...stages[1],
+		triggers: [{ type: "global_knowledge_accumulation" }],
+	};
+	return args;
+}
+
+/** Registers one fake runner and records persistence visible at each trigger attempt. */
+function captureTriggers(
+	fake: FakePi,
+	result: WorkflowTriggerRunResult | Error = { ok: true },
+	onRun?: (ctx: ExtensionContext, signal: AbortSignal | undefined) => void,
+): Array<{ trigger: WorkflowTrigger; persistedKinds: readonly string[] }> {
+	if (fake.api === undefined) {
+		throw new Error("extension API missing");
+	}
+	const calls: Array<{
+		trigger: WorkflowTrigger;
+		persistedKinds: readonly string[];
+	}> = [];
+	registerWorkflowTriggerRunner(fake.api, {
+		async run(trigger, ctx, signal) {
+			onRun?.(ctx, signal);
+			calls.push({
+				trigger,
+				persistedKinds: fake.appended.map(
+					({ data }) => (data as { kind: string }).kind,
+				),
+			});
+			if (result instanceof Error) {
+				throw result;
+			}
+			return result;
+		},
+	});
+	return calls;
+}
+
 /** Returns a registered workflow tool or fails the fixture with its missing identity. */
 function requireTool(fake: FakePi, name: string): FakeTool {
 	const tool = fake.tools.find((candidate) => candidate.name === name);
@@ -117,6 +214,7 @@ function activatedEntry(): unknown {
 					description: "Start",
 					prompt: "Start work",
 					initial: true,
+					triggers: [{ type: "local_knowledge_accumulation" }],
 				},
 				{
 					id: "done",
@@ -133,7 +231,12 @@ function activatedEntry(): unknown {
 	return {
 		type: "custom",
 		customType: "workflow-state",
-		data: { kind: "activated", workflow, route: state.route },
+		data: {
+			kind: "activated",
+			workflow,
+			route: state.route,
+			restoration: { modelId: "openai/current-model", thinking: "medium" },
+		},
 	};
 }
 
@@ -150,17 +253,33 @@ async function createFakePi(): Promise<FakePi> {
 			widgetUpdates.push({ key, content });
 		},
 	} as unknown as ExtensionContext["ui"];
+	const currentModel = createModel("openai", "current-model");
+	const workflowModel = createModel("openai", "workflow-model", true);
+	const agentModel = createModel("openai-codex", "gpt-5.6-luna");
+	const models = [currentModel, workflowModel, agentModel];
 	const fake: FakePi = {
 		handlers: new Map(),
 		listeners: new Map(),
 		tools: [],
 		appended: [],
 		notifications,
+		modelSetCalls: [],
+		modelRegistry: {
+			find(provider: string, id: string) {
+				return models.find(
+					(model) => model.provider === provider && model.id === id,
+				);
+			},
+		} as ExtensionContext["modelRegistry"],
 		activeTools: ["read"],
 		appendError: undefined,
 		api: undefined,
+		model: currentModel,
+		thinkingLevel: "medium",
 		ui,
 		widgetUpdates,
+		flagValues: new Map(),
+		shutdownCalls: 0,
 	};
 	const api = {
 		on(event: string, handler: (...args: unknown[]) => unknown) {
@@ -176,11 +295,36 @@ async function createFakePi(): Promise<FakePi> {
 		setActiveTools(names: string[]) {
 			fake.activeTools = [...names];
 		},
+		async setModel(model: Model<Api>) {
+			fake.modelSetCalls.push(model);
+			fake.model = model;
+			return true;
+		},
+		getThinkingLevel() {
+			return fake.thinkingLevel;
+		},
+		setThinkingLevel(level: string) {
+			fake.thinkingLevel = level;
+		},
 		appendEntry(customType: string, data: unknown) {
 			if (fake.appendError !== undefined) {
 				throw fake.appendError;
 			}
 			fake.appended.push({ customType, data });
+		},
+		registerFlag(
+			name: string,
+			options: {
+				type: "boolean" | "string";
+				default?: boolean | string;
+			},
+		) {
+			if (options.default !== undefined && !fake.flagValues.has(name)) {
+				fake.flagValues.set(name, options.default);
+			}
+		},
+		getFlag(name: string) {
+			return fake.flagValues.get(name);
 		},
 		events: {
 			emit(event: string, ...args: unknown[]) {
@@ -236,9 +380,23 @@ async function runLifecycle(
 			mode,
 			hasUI: mode === "tui" || mode === "rpc",
 			ui: fake.ui,
+			model: fake.model,
+			modelRegistry: fake.modelRegistry,
 			sessionManager: { getBranch: () => branch },
+			shutdown: () => {
+				fake.shutdownCalls++;
+			},
 		},
 	);
+}
+
+/** Invokes the session-level settlement handler without providing a UI context. */
+async function runAgentSettled(fake: FakePi): Promise<void> {
+	const handler = fake.handlers.get("agent_settled");
+	if (handler === undefined) {
+		throw new Error("missing agent_settled handler");
+	}
+	await handler({ type: "agent_settled" });
 }
 
 /** Renders the latest shared status widget or fails with its missing state. */
@@ -311,6 +469,35 @@ describe("workflow extension lifecycle", () => {
 	});
 
 	/**
+	 * Proves the dynamic TypeBox boundary accepts only closed trigger objects with supported discriminators.
+	 * Inputs and expected outputs: ordered supported trigger objects pass; unknown types, fields, and shapes fail.
+	 * Edge case: omitting triggers remains valid.
+	 * Dependencies: the registered workflow_create TypeBox schema.
+	 */
+	test("exposes the closed workflow trigger schema", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const create = requireTool(fake, "workflow_create");
+		const schema = create.parameters as Parameters<typeof Check>[0];
+		const valid = triggeredCreateArguments();
+
+		expect(Check(schema, valid)).toBe(true);
+		expect(Check(schema, createArguments())).toBe(true);
+		for (const triggers of [
+			[{ type: "unknown" }],
+			[{ type: "local_knowledge_accumulation", extra: true }],
+			[{}],
+			["local_knowledge_accumulation"],
+			null,
+		] as const) {
+			const invalid = triggeredCreateArguments();
+			const stages = invalid["stages"] as Record<string, unknown>[];
+			stages[0] = { ...stages[0], triggers };
+			expect(Check(schema, invalid)).toBe(false);
+		}
+	});
+
+	/**
 	 * Proves a valid empty catalog keeps workflow_create and universal guidance without activation options.
 	 * Input and expected output: no YAML and no saved state leave only workflow_create active and project guidelines only.
 	 * Edge case: workflow_activate and workflow_transition are system-suppressed independently.
@@ -373,6 +560,46 @@ describe("workflow extension lifecycle", () => {
 	});
 
 	/**
+	 * Proves legacy workflow entries do not block startup and produce one warning.
+	 * Inputs and expected output: an old activation followed by a transition is ignored and catalog capabilities remain available.
+	 * Edge case: ignoring only the activation would make the dependent transition fail during replay.
+	 * Dependencies: workflow replay, lifecycle warning delivery, and catalog reconciliation.
+	 */
+	test("warns and ignores legacy workflow state", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		const activated = activatedEntry() as {
+			readonly type: "custom";
+			readonly customType: "workflow-state";
+			readonly data: Record<string, unknown>;
+		};
+		const activatedData = activated.data;
+		const { restoration: _restoration, ...legacyData } = activatedData;
+		const legacyBranch = [
+			{ ...activated, data: legacyData },
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["start", "done"] },
+			},
+		];
+
+		await runLifecycle(fake, "session_start");
+		await runLifecycle(fake, "session_tree", legacyBranch);
+		await runLifecycle(fake, "session_tree", legacyBranch);
+
+		expect(fake.notifications).toEqual([
+			{
+				message:
+					"[workflow] ignored workflow state from an older format; start a new workflow to continue",
+				type: "warning",
+			},
+		]);
+		expect(fake.activeTools).toContain("workflow_activate");
+		expect(fake.activeTools).toContain("workflow_transition");
+	});
+
+	/**
 	 * Proves dynamic creation and transition remain independent from the catalog workflows allowlist.
 	 * Input and expected output: workflows: [] permits create, restores policy-enabled transition, and advances dynamic state.
 	 * Edge case: no activation options are projected before or after creation.
@@ -385,6 +612,7 @@ describe("workflow extension lifecycle", () => {
 		await runLifecycle(fake, "session_start");
 		const create = requireTool(fake, "workflow_create");
 		const transition = requireTool(fake, "workflow_transition");
+		const triggerCalls = captureTriggers(fake);
 
 		expect(await create.execute("create", createArguments())).toMatchObject({
 			content: [{ type: "text", text: '{"success":true}' }],
@@ -402,6 +630,7 @@ describe("workflow extension lifecycle", () => {
 		expect(
 			fake.appended.map(({ data }) => (data as { kind: string }).kind),
 		).toEqual(["created", "transitioned"]);
+		expect(triggerCalls).toEqual([]);
 		const context = await runContext(fake, []);
 		const content = String(
 			(context as { messages: Array<{ content: unknown }> }).messages[0]
@@ -411,6 +640,158 @@ describe("workflow extension lifecycle", () => {
 			'<active_workflow id="dynamic-delivery" active_stage_id="done"',
 		);
 		expect(content).not.toContain("<workflow_activation_options");
+	});
+
+	/**
+	 * Proves dynamic creation, advance, and rework run the entered stage triggers after each saved state entry.
+	 * Inputs and expected outputs: duplicate initial triggers and one final trigger run in listed order on every entry.
+	 * Edge case: rework re-enters the initial stage and repeats its full trigger list exactly once.
+	 * Dependencies: the registered cross-extension runner and append-before-trigger ordering.
+	 */
+	test("runs dynamic stage triggers after persisted stage entry", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const calls = captureTriggers(fake);
+		const create = requireTool(fake, "workflow_create");
+		const transition = requireTool(fake, "workflow_transition");
+
+		await create.execute("create", triggeredCreateArguments());
+		await transition.execute("advance", { stageId: "done" });
+		await transition.execute("rework", { stageId: "start" });
+
+		expect(calls.map(({ trigger }) => trigger.type)).toEqual([
+			"local_knowledge_accumulation",
+			"global_knowledge_accumulation",
+			"local_knowledge_accumulation",
+			"global_knowledge_accumulation",
+			"local_knowledge_accumulation",
+			"global_knowledge_accumulation",
+			"local_knowledge_accumulation",
+		]);
+		expect(calls.map(({ persistedKinds }) => persistedKinds)).toEqual([
+			["created"],
+			["created"],
+			["created"],
+			["created", "transitioned"],
+			["created", "transitioned", "transitioned"],
+			["created", "transitioned", "transitioned"],
+			["created", "transitioned", "transitioned"],
+		]);
+	});
+
+	/** Proves trigger model and session resolution use the tool invocation that entered the stage. */
+	test("passes the initiating context and cancellation signal after persistence", async () => {
+		// Purpose: trigger model and session resolution must use the tool invocation that entered the stage.
+		// Input and expected output: one triggered create forwards the exact context and signal after appending state.
+		// Edge case: no copied or lifecycle context may replace either invocation-owned value.
+		// Dependencies: the shared runner boundary and workflow create tool execution contract.
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const invocations: Array<{
+			ctx: ExtensionContext;
+			signal: AbortSignal | undefined;
+		}> = [];
+		captureTriggers(fake, { ok: true }, (ctx, signal) => {
+			invocations.push({ ctx, signal });
+		});
+		const create = requireTool(fake, "workflow_create");
+		const signal = new AbortController().signal;
+		const ctx = { marker: "initiating-context" } as unknown as ExtensionContext;
+
+		await create.execute(
+			"create",
+			triggeredCreateArguments(),
+			signal,
+			undefined,
+			ctx,
+		);
+
+		expect(invocations).toEqual([
+			{ ctx, signal },
+			{ ctx, signal },
+			{ ctx, signal },
+		]);
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["created"]);
+	});
+
+	/**
+	 * Proves catalog activation runs initial-stage triggers only after the activated snapshot is saved.
+	 * Input and expected output: one triggered catalog workflow invokes local then global once.
+	 * Edge case: duplicate-free catalog input uses the same runner contract as dynamic creation.
+	 * Dependencies: catalog parsing, activation persistence, and the shared runner registry.
+	 */
+	test("runs catalog activation triggers after persistence", async () => {
+		await createSuite(
+			validYaml().replace(
+				"    initial: true\n",
+				"    initial: true\n    triggers:\n      - type: local_knowledge_accumulation\n      - type: global_knowledge_accumulation\n",
+			),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const calls = captureTriggers(fake);
+		const activate = requireTool(fake, "workflow_activate");
+
+		await activate.execute("activate", { workflowId: "delivery" });
+
+		expect(calls).toEqual([
+			{
+				trigger: { type: "local_knowledge_accumulation" },
+				persistedKinds: ["activated"],
+			},
+			{
+				trigger: { type: "global_knowledge_accumulation" },
+				persistedKinds: ["activated"],
+			},
+		]);
+	});
+
+	/**
+	 * Proves session and branch restoration reconstruct triggered workflow state without entering the restored stage.
+	 * Input and expected output: a saved initial stage containing a trigger produces zero runner calls on both lifecycle events.
+	 * Edge case: repeated branch restoration remains side-effect free.
+	 * Dependencies: saved workflow replay and lifecycle synchronization.
+	 */
+	test("does not run triggers during workflow restoration", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const calls = captureTriggers(fake);
+
+		await runLifecycle(fake, "session_start", [activatedEntry()]);
+		await runLifecycle(fake, "session_tree", [activatedEntry()]);
+
+		expect(calls).toEqual([]);
+	});
+
+	/**
+	 * Proves runner failures remain non-blocking and stop the remaining triggers for that stage entry.
+	 * Inputs and expected outputs: a reported failure and a thrown failure each preserve the exact workflow success result.
+	 * Edge case: only the first of three listed triggers is attempted after either failure form.
+	 * Dependencies: sequential trigger dispatch and workflow success-result stability.
+	 */
+	test.each([
+		["reported", { ok: false } as const],
+		["thrown", new Error("runner failed")],
+	])("keeps workflow success after a %s runner failure", async (_case, failure) => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const calls = captureTriggers(fake, failure);
+		const create = requireTool(fake, "workflow_create");
+
+		const result = await create.execute("create", triggeredCreateArguments());
+
+		expect(result).toEqual({
+			content: [{ type: "text", text: '{"success":true}' }],
+			details: {},
+		});
+		expect(calls.map(({ trigger }) => trigger.type)).toEqual([
+			"local_knowledge_accumulation",
+		]);
 	});
 
 	/**
@@ -524,6 +905,279 @@ describe("workflow extension lifecycle", () => {
 		);
 	});
 
+	/** Proves catalog activation applies stage-over-workflow model settings before persistence. */
+	test("applies catalog model settings during activation", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await activate.execute("call", { workflowId: "delivery" });
+
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai/workflow-model"]);
+		expect(fake.thinkingLevel).toBe("xhigh");
+		expect(fake.appended[0]?.data).toMatchObject({
+			kind: "activated",
+			workflow: {
+				model: { id: "openai/workflow-model", thinking: "high" },
+			},
+			restoration: { modelId: "openai/current-model", thinking: "medium" },
+		});
+
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("call", { stageId: "done" });
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai/workflow-model"]);
+		expect(fake.thinkingLevel).toBe("high");
+	});
+
+	/** Proves a stage without workflow settings applies the selected agent model. */
+	test("applies agent model when returning to a stage without model settings", async () => {
+		await createSuite(agentFallbackYaml());
+		const fake = await createFakePi();
+		if (fake.api === undefined) {
+			throw new Error("extension API missing");
+		}
+		getAgentRuntimeComposition(fake.api).setMainAgentContribution({
+			prompt: "main",
+			model: {
+				id: "openai-codex/gpt-5.6-luna",
+				thinking: "medium",
+			},
+			agent: { id: "Main" },
+		});
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("call", { workflowId: "delivery" });
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("call", { stageId: "fallback" });
+
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai/workflow-model", "openai-codex/gpt-5.6-luna"]);
+		expect(fake.model?.provider).toBe("openai-codex");
+		expect(fake.model?.id).toBe("gpt-5.6-luna");
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
+	/** Rejects unknown workflow models before runtime or session state mutation. */
+	test("rejects unknown model before activation persistence", async () => {
+		await createSuite(
+			modelYaml().replace("openai/workflow-model", "openai/missing"),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await expect(
+			activate.execute("call", { workflowId: "delivery" }),
+		).rejects.toThrow("model openai/missing was not found");
+		expect(fake.modelSetCalls).toEqual([]);
+		expect(fake.appended).toEqual([]);
+	});
+
+	/** Rejects thinking unsupported by the target model before model application. */
+	test("rejects unsupported thinking before activation persistence", async () => {
+		await createSuite(
+			modelYaml().replace("openai/workflow-model", "openai/current-model"),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await expect(
+			activate.execute("call", { workflowId: "delivery" }),
+		).rejects.toThrow("thinking xhigh is not supported");
+		expect(fake.modelSetCalls).toEqual([]);
+		expect(fake.appended).toEqual([]);
+	});
+
+	/** Restores runtime model and thinking when workflow persistence fails. */
+	test("rolls back runtime settings when activation persistence fails", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		fake.appendError = new Error("append failed");
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+
+		await expect(
+			activate.execute("call", { workflowId: "delivery" }),
+		).rejects.toThrow("append failed");
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		expect(fake.appended).toEqual([]);
+	});
+
+	/**
+	 * Proves a settled final-stage run restores the runtime values captured before activation.
+	 * Inputs and expected outputs: activation and final transition apply workflow settings; settlement restores the original model and thinking level and persists completion.
+	 * Edge cases: the final stage omits model settings, so the final runtime values remain those from the preceding stage.
+	 * Dependencies: workflow model application, persisted state entries, and the agent_settled lifecycle event.
+	 */
+	test("restores runtime settings after a final stage settles", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("transition", { stageId: "done" });
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("high");
+
+		await runAgentSettled(fake);
+
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["activated", "transitioned", "completed"]);
+	});
+
+	/**
+	 * Proves replay of completed state does not reapply final-stage runtime settings.
+	 * Inputs and expected outputs: a completed branch is replayed into a fresh runtime and keeps the main model selected.
+	 * Edge cases: the branch contains activation, transition, and completion entries in chronological order.
+	 * Dependencies: workflow replay, completed-state synchronization, and model runtime setup.
+	 */
+	test("does not reapply workflow settings when replaying completion", async () => {
+		await createSuite(modelYaml());
+		const source = await createFakePi();
+		await runLifecycle(source, "session_start");
+		await requireTool(source, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		await requireTool(source, "workflow_transition").execute("transition", {
+			stageId: "done",
+		});
+		await runAgentSettled(source);
+
+		const replayed = await createFakePi();
+		const branch = source.appended.map(({ data }) => ({
+			type: "custom",
+			customType: "workflow-state",
+			data,
+		}));
+		await runLifecycle(replayed, "session_start", branch);
+
+		expect(replayed.model?.id).toBe("current-model");
+		expect(replayed.thinkingLevel).toBe("medium");
+	});
+
+	/** Proves non-final settlement does not complete the active workflow. */
+	test("keeps runtime settings while a non-final stage settles", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+
+		await runAgentSettled(fake);
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["activated"]);
+	});
+
+	/**
+	 * Proves completion removes active-stage instructions while retaining the rework route.
+	 * Inputs and expected outputs: a settled final stage projects completed state without active-stage guidance; rework restores active settings and context.
+	 * Edge cases: the completed state must remain available even though the final-stage model has been restored.
+	 * Dependencies: completion persistence, context projection, and route transition application.
+	 */
+	test("projects completion and supports rework", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("transition", { stageId: "done" });
+		await runAgentSettled(fake);
+
+		const completedContext = String(
+			(
+				(await runContext(fake, [])) as {
+					messages: Array<{ content: unknown }>;
+				}
+			).messages[0]?.content,
+		);
+		expect(completedContext).toContain("<completed_workflow");
+		expect(completedContext).not.toContain("<active_workflow");
+		expect(completedContext).not.toContain("<active_stage_guidelines>");
+
+		await transition.execute("rework", { stageId: "start" });
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		const activeContext = String(
+			(
+				(await runContext(fake, [])) as {
+					messages: Array<{ content: unknown }>;
+				}
+			).messages[0]?.content,
+		);
+		expect(activeContext).toContain("<active_workflow");
+		expect(activeContext).toContain("<active_stage_guidelines>");
+	});
+
+	/**
+	 * Proves completion persistence failure restores final-stage runtime values and keeps the workflow active.
+	 * Inputs and expected outputs: an append failure during settlement leaves the final model, thinking level, and active context unchanged.
+	 * Edge cases: runtime restoration succeeds before the persistence failure and therefore requires an explicit rollback.
+	 * Dependencies: completion transaction and workflow model rollback.
+	 */
+	test("rolls back final-stage restoration when completion persistence fails", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("activate", { workflowId: "delivery" });
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("transition", { stageId: "done" });
+		fake.appendError = new Error("completion append failed");
+
+		await expect(runAgentSettled(fake)).rejects.toThrow(
+			"completion append failed",
+		);
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("high");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["activated", "transitioned"]);
+	});
+
+	/** Proves manual model changes are not overwritten by main-agent policy events. */
+	test("does not reapply workflow settings after manual model selection", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("call", { workflowId: "delivery" });
+		fake.modelSetCalls.length = 0;
+		const manualModel = createModel("openai", "manual-model", true);
+		fake.model = manualModel;
+		fake.thinkingLevel = "low";
+		for (const listener of fake.listeners.get("model_select") ?? []) {
+			listener({ model: manualModel });
+		}
+		setMainWorkflowPolicy(fake, ["delivery"]);
+
+		expect(fake.modelSetCalls).toEqual([]);
+		expect(fake.model?.id).toBe("manual-model");
+		expect(fake.thinkingLevel).toBe("low");
+	});
+
 	/** Proves successful tools keep model content stable while persisting state. */
 	test("persists activation and transition with stable success content", async () => {
 		await createSuite(validYaml());
@@ -568,9 +1222,12 @@ describe("workflow extension lifecycle", () => {
 		).rejects.toThrow("not available for activation");
 
 		expect(fake.appended).toEqual(entriesBeforeReactivation);
+		const transitionedEntry = entriesBeforeReactivation[1];
+		if (transitionedEntry === undefined) {
+			throw new Error("transitioned entry missing");
+		}
 		expect(
-			(entriesBeforeReactivation[1]?.data as { route: readonly string[] })
-				.route,
+			(transitionedEntry.data as { route: readonly string[] }).route,
 		).toEqual(["start", "done"]);
 		const result = await runContext(fake, []);
 		const content = String(
@@ -610,7 +1267,12 @@ describe("workflow extension lifecycle", () => {
 
 	/** Proves invalid arguments and append failures preserve prior state. */
 	test("validates tool boundaries and preserves state on append failure", async () => {
-		await createSuite(validYaml());
+		await createSuite(
+			validYaml().replace(
+				"    initial: true\n",
+				"    initial: true\n    triggers:\n      - type: local_knowledge_accumulation\n",
+			),
+		);
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
 		const activate = fake.tools[0];
@@ -623,10 +1285,12 @@ describe("workflow extension lifecycle", () => {
 		await expect(
 			activate.execute("call", { workflowId: "delivery", extra: true }),
 		).rejects.toThrow();
+		const triggerCalls = captureTriggers(fake);
 		fake.appendError = new Error("append failed");
 		await expect(
 			activate.execute("call", { workflowId: "delivery" }),
 		).rejects.toThrow("append failed");
+		expect(triggerCalls).toEqual([]);
 		fake.appendError = undefined;
 		const result = await runContext(fake, []);
 		expect(
@@ -976,5 +1640,61 @@ describe("workflow extension lifecycle", () => {
 			]),
 		).rejects.toThrow("workflow-state");
 		expect(fake.activeTools).toEqual(["read"]);
+	});
+
+	describe("--trigger CLI flag", () => {
+		test("invokes trigger runner with correct type and shuts down", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			const runCalls: Array<{ type: string }> = [];
+			if (fake.api === undefined) {
+				throw new Error("extension API missing");
+			}
+			registerWorkflowTriggerRunner(fake.api, {
+				async run(trigger) {
+					runCalls.push(trigger);
+					return { ok: true };
+				},
+			});
+
+			fake.flagValues.set("trigger", "local_knowledge_accumulation");
+
+			await runLifecycle(fake, "session_start");
+
+			expect(runCalls).toEqual([{ type: "local_knowledge_accumulation" }]);
+			expect(fake.shutdownCalls).toBe(1);
+		});
+
+		test("exits with error for unknown trigger type", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			fake.flagValues.set("trigger", "unknown_trigger");
+
+			await runLifecycle(fake, "session_start");
+
+			expect(fake.shutdownCalls).toBe(1);
+		});
+
+		test("exits with error when trigger runner is not registered", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			fake.flagValues.set("trigger", "local_knowledge_accumulation");
+
+			await runLifecycle(fake, "session_start");
+
+			expect(fake.shutdownCalls).toBe(1);
+		});
+
+		test("continues normal session when trigger flag is not set", async () => {
+			await createSuite(validYaml());
+			const fake = await createFakePi();
+
+			await runLifecycle(fake, "session_start");
+
+			expect(fake.shutdownCalls).toBe(0);
+		});
 	});
 });

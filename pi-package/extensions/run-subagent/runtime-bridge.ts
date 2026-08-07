@@ -1,6 +1,11 @@
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type {
+	KnowledgeMutationLease,
+	KnowledgeScope,
+	KnowledgeSnapshots,
+} from "../../shared/knowledge-runtime";
+import type {
 	AgentOperationPayload,
 	AgentOperationResponse,
 } from "./agent-operation-wire";
@@ -471,6 +476,74 @@ export class WorkerRuntimeBridge {
 				},
 			}),
 		);
+	}
+
+	/** Reads visible knowledge through the root-owned coordinator. */
+	public async requestKnowledgeRead(
+		scope: KnowledgeScope,
+	): Promise<KnowledgeSnapshots> {
+		return (await this.request("knowledge_read", {
+			scope,
+		})) as KnowledgeSnapshots;
+	}
+
+	/** Acquires one root FIFO lease and cancels queued work with the caller signal. */
+	public async requestKnowledgeAcquire(
+		scope: KnowledgeScope,
+		signal: AbortSignal | undefined,
+	): Promise<KnowledgeMutationLease> {
+		if (signal?.aborted) {
+			throw readCancellationError(signal);
+		}
+		const acquisition = await this.dispatch("knowledge_acquire", { scope });
+		if (signal === undefined) {
+			return (await acquisition.response) as KnowledgeMutationLease;
+		}
+
+		let markAborted = (): void => undefined;
+		const aborted = new Promise<void>((resolve) => {
+			markAborted = resolve;
+		});
+		signal.addEventListener("abort", markAborted, { once: true });
+		try {
+			const outcome = await Promise.race([
+				acquisition.response.then(
+					(response) => ({ kind: "response" as const, response }),
+					(error: unknown) => ({ kind: "error" as const, error }),
+				),
+				aborted.then(() => ({ kind: "abort" as const })),
+			]);
+			if (outcome.kind === "response") {
+				return outcome.response as KnowledgeMutationLease;
+			}
+			if (outcome.kind === "error") {
+				throw outcome.error instanceof Error
+					? outcome.error
+					: new Error(String(outcome.error));
+			}
+
+			try {
+				await this.request("knowledge_cancel", {
+					requestId: acquisition.requestId,
+				});
+			} catch {
+				// Failed cancellation leaves the serialized root response authoritative.
+				return (await acquisition.response) as KnowledgeMutationLease;
+			}
+			try {
+				await acquisition.response;
+			} catch {
+				// The root rejection settles and removes the original pending correlation.
+			}
+			throw readCancellationError(signal);
+		} finally {
+			signal.removeEventListener("abort", markAborted);
+		}
+	}
+
+	/** Releases one root FIFO lease after the child algorithm finishes. */
+	public async requestKnowledgeRelease(leaseId: string): Promise<void> {
+		await this.request("knowledge_release", { leaseId });
 	}
 
 	/** Cancels one nested wait through a separate bridge correlation. */

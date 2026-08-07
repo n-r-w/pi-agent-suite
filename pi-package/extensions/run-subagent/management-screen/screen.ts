@@ -47,7 +47,6 @@ const PANE_SEPARATOR_WIDTH = 1;
 const SCROLL_COLUMN_WIDTH = 1;
 const HIERARCHY_WIDTH_DIVISOR = 3;
 const SCREEN_CHROME_ROWS = 3;
-const SELECTED_HEADER_ROWS = 3;
 const PANE_DIVIDER_ROWS = 1;
 const MIN_CONVERSATION_ROWS = 1;
 const MIN_FRAMED_EDITOR_ROWS = 3;
@@ -97,6 +96,7 @@ interface ScrollTrack {
 interface WideRowContent {
 	readonly hierarchyLines: readonly string[];
 	readonly conversationLines: readonly string[];
+	readonly conversationStartIndex: number;
 	readonly editorTopIndex?: number;
 	readonly hierarchyScroll?: ScrollTrack;
 	readonly conversationScroll?: ScrollTrack;
@@ -645,6 +645,7 @@ export class ManagementScreen implements Component, Focusable {
 			this.renderWideRow(index, height, panes, {
 				hierarchyLines,
 				conversationLines,
+				conversationStartIndex: selectedPane.conversationStartIndex,
 				...(selectedPane.editorTopIndex === undefined
 					? {}
 					: { editorTopIndex: selectedPane.editorTopIndex }),
@@ -668,7 +669,9 @@ export class ManagementScreen implements Component, Focusable {
 				? this.renderHierarchyPane(contentWidth, normalHeight)
 				: (selectedPane?.lines ?? []);
 		const dividerIndex =
-			this.narrowPane === "hierarchy" ? 1 : SELECTED_HEADER_ROWS;
+			this.narrowPane === "hierarchy" || selectedPane === undefined
+				? 1
+				: selectedPane.conversationStartIndex - PANE_DIVIDER_ROWS;
 		const scroll =
 			this.narrowPane === "hierarchy"
 				? createScrollTrack(this.hierarchy.getScrollMetrics(), 2)
@@ -734,8 +737,8 @@ export class ManagementScreen implements Component, Focusable {
 			return `├${hierarchyLine}${SCREEN_SEGMENT_RESET}─┤${conversationLine}${SCREEN_SEGMENT_RESET}${conversationScroll}│`;
 		}
 		if (
-			index === SELECTED_HEADER_ROWS &&
-			content.conversationLines.length > 0
+			content.conversationLines.length > 0 &&
+			index === content.conversationStartIndex - PANE_DIVIDER_ROWS
 		) {
 			// The divider belongs to the selected-session header and must stay absent with no selection.
 			return `│${hierarchyLine}${SCREEN_SEGMENT_RESET}${hierarchyScroll}├${conversationLine}${SCREEN_SEGMENT_RESET}─┤`;
@@ -881,7 +884,7 @@ export class ManagementScreen implements Component, Focusable {
 		const editorLines = this.editor.render(width);
 		const maximumEditorRows = Math.max(
 			1,
-			height - SELECTED_HEADER_ROWS - PANE_DIVIDER_ROWS - MIN_CONVERSATION_ROWS,
+			height - header.length - PANE_DIVIDER_ROWS - MIN_CONVERSATION_ROWS,
 		);
 		const liveStatusLines = this.renderLiveStatus(width);
 		const editorViewport = cropEditorViewport(
@@ -950,6 +953,9 @@ export class ManagementScreen implements Component, Focusable {
 			selectedStableKey,
 			...(initialPrompt === undefined ? {} : { initialPrompt }),
 			...(headerMetadata === undefined ? {} : { metadata: headerMetadata }),
+			...(this.view.selectedWorkflowStatus === undefined
+				? {}
+				: { workflowStatus: this.view.selectedWorkflowStatus }),
 			width,
 			theme: this.options.theme,
 			focused: this._focused && this.focus === "conversation",
@@ -958,27 +964,43 @@ export class ManagementScreen implements Component, Focusable {
 
 	/** Renders one transient child status row without adding it to conversation history. */
 	private renderLiveStatus(width: number): readonly string[] {
+		const notification = this.view.selectedNotification;
 		const status = this.view.selectedLiveStatus;
-		if (status === undefined) {
+		const message =
+			notification?.message ??
+			(status !== undefined
+				? liveStatusMessage(status, Date.now())
+				: undefined);
+
+		if (message === undefined) {
 			this.liveStatusIndicator?.stop();
 			this.liveStatusIndicator = undefined;
 			return [];
 		}
+
 		if (this.liveStatusIndicator === undefined) {
 			this.liveStatusIndicator = new Loader(
 				this.options.tui,
-				(text) =>
-					this.options.theme.fg(
+				(text) => {
+					const notif = this.view.selectedNotification;
+					if (notif !== undefined) {
+						return this.options.theme.fg(
+							notif.notifyType === "info" ? "accent" : notif.notifyType,
+							text,
+						);
+					}
+					return this.options.theme.fg(
 						this.view.selectedLiveStatus?.kind === "retrying"
 							? "warning"
 							: "accent",
 						text,
-					),
+					);
+				},
 				(text) => this.options.theme.fg("muted", text),
-				liveStatusMessage(status, Date.now()),
+				message,
 			);
 		}
-		this.liveStatusIndicator.setMessage(liveStatusMessage(status, Date.now()));
+		this.liveStatusIndicator.setMessage(message);
 		// Loader reserves a leading spacer for Pi's standalone status container; this pane owns its row budget.
 		const line = this.liveStatusIndicator.render(width)[1];
 		return line === undefined ? [] : [truncateToWidth(line, width)];
