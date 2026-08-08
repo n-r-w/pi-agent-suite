@@ -50,7 +50,10 @@ const IDENTITY_METADATA: IdentityMetadata = {
 };
 
 /** Creates one text-only auxiliary response accepted by the shared response extractor. */
-function response(text: string): AssistantMessage {
+function response(
+	text: string,
+	stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
@@ -65,7 +68,7 @@ function response(text: string): AssistantMessage {
 			totalTokens: 2,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "stop",
+		stopReason,
 		timestamp: Date.now(),
 	};
 }
@@ -135,14 +138,27 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 			thinking: undefined,
 			systemPrompt: "extract system",
 			taskPrompt: "summarize projected session",
-			retryCount: 1,
+			maxFractionDenominator: 8,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
-		merge: {
+		mergeLocal: {
 			model: undefined,
 			thinking: undefined,
-			systemPrompt: "merge system",
-			taskPrompt: "merge task prompt",
-			retryCount: 2,
+			systemPrompt: "merge local system",
+			taskPrompt: "merge local task prompt",
+			maxFractionDenominator: 8,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
+		},
+		mergeGlobal: {
+			model: undefined,
+			thinking: undefined,
+			systemPrompt: "merge global system",
+			taskPrompt: "merge global task prompt",
+			maxFractionDenominator: 8,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
 		...overrides,
 	};
@@ -155,6 +171,10 @@ function createOptions(options: {
 	readonly outputs: readonly string[];
 	readonly contexts: Context[];
 	readonly configuration?: KnowledgeConfig;
+	readonly stopReasons?: readonly AssistantMessage["stopReason"][];
+	readonly reportProgress?: Parameters<
+		typeof runLocalKnowledgeAccumulation
+	>[0]["reportProgress"];
 }): Parameters<typeof runLocalKnowledgeAccumulation>[0] {
 	const projectPaths = createProjectPaths("/catalog", "project-a-digest");
 	const branchPaths = createBranchPaths(projectPaths, "feature/a");
@@ -188,11 +208,12 @@ function createOptions(options: {
 		completeSimple: async (_model, context) => {
 			options.contexts.push(context);
 			const text = options.outputs[outputIndex];
+			const stopReason = options.stopReasons?.[outputIndex] ?? "stop";
 			outputIndex += 1;
 			if (text === undefined) {
 				throw new Error("unexpected completion call");
 			}
-			return response(text);
+			return response(text, stopReason);
 		},
 		signal: undefined,
 		replay: async ({ branchEntries }) => {
@@ -214,6 +235,9 @@ function createOptions(options: {
 				},
 			];
 		},
+		...(options.reportProgress === undefined
+			? {}
+			: { reportProgress: options.reportProgress }),
 	};
 }
 
@@ -337,13 +361,13 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
-	 * Proves local format feedback and oversized merge feedback use finite configured retries.
-	 * Inputs and expected outputs: empty extraction repairs once; oversized merge reports 17 against unchanged limit 5, then writes repaired Markdown.
+	 * Proves oversized merge repair resends the same request with a reduced target before replacement.
+	 * Inputs and expected outputs: one fitting extraction, one oversized merge, and one fitting repair.
 	 * Edge case: stored local knowledge is supplied to merge and replacement occurs only for the within-limit response.
-	 * Dependencies: the owner supplies the authoritative tokenizer count used in feedback.
+	 * Dependencies: the owner supplies the authoritative tokenizer count used in size rejection.
 	 */
-	test("repairs invalid extraction and oversized local merge before replacement", async () => {
-		// Arrange: one empty extraction defect, one positive repair, one oversized merge, and one fitting repair.
+	test("repairs oversized local merge before replacement", async () => {
+		// Arrange: one fitting extraction, one oversized merge, and one fitting repair.
 		const owner = new RecordingOwner();
 		owner.overLimitTexts.set("oversized merge", {
 			tokenCount: 17,
@@ -353,21 +377,21 @@ describe("knowledge accumulation algorithms", () => {
 		const options = createOptions({
 			owner,
 			snapshots: { global: "global", local: "stored local" },
-			outputs: ["", "## New", "oversized merge", "## Merged"],
+			outputs: ["## New", "oversized merge", "## Merged"],
 			contexts,
 		});
 
-		// Act: local accumulation repairs both protocol defects within configured allowances.
+		// Act: local accumulation repairs the merge size defect within the reduced-target chain.
 		const result = await runLocalKnowledgeAccumulation(options);
 
-		// Assert: feedback carries runtime-significant marker and exact count/limit values.
+		// Assert: the merge retry resends one reduced-target message without previous-output history.
 		expect(result).toEqual({ kind: "written" });
-		expect(contexts).toHaveLength(4);
-		expect(String(contexts[1]?.messages.at(-1)?.content)).toContain(
-			"NOT_FOUND",
-		);
-		expect(String(contexts[3]?.messages.at(-1)?.content)).toContain("17");
-		expect(String(contexts[3]?.messages.at(-1)?.content)).toContain("5");
+		expect(contexts).toHaveLength(3);
+		const mergeRetry = String(contexts[2]?.messages[0]?.content);
+		expect(contexts[2]?.messages).toHaveLength(1);
+		expect(mergeRetry).toContain("Output MUST NOT exceed 1/2 of an A4 page");
+		expect(mergeRetry).toContain("One A4 page is about 500 words.");
+		expect(mergeRetry).not.toContain("Hard token ceiling");
 		expect(owner.replacements.map(({ text }) => text)).toEqual([
 			"oversized merge",
 			"## Merged",
@@ -452,41 +476,207 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
-	 * Proves finite oversized-merge exhaustion leaves pre-write storage and digest state unchanged.
-	 * Inputs and expected outputs: three oversized responses consume initial plus two retries and reject.
-	 * Edge case: each feedback keeps the configured limit while reporting its response's actual count.
-	 * Dependencies: owner over-limit outcomes prove no direct write started.
+	 * Proves an empty extraction output violates the response contract and fails immediately.
+	 * Inputs and expected outputs: one empty extraction response throws without any storage write.
+	 * Edge case: the empty response must not consume a reduced-target retry or format feedback.
+	 * Dependencies: extractKnowledgeAttempt routes empty text to a contract error.
 	 */
-	test("leaves storage unchanged when merge retries are exhausted", async () => {
-		// Arrange: every allowed global merge response exceeds the same configured limit.
+	test("fails immediately on empty extraction output", async () => {
+		// Arrange: extraction returns one empty non-NOT_FOUND response.
 		const owner = new RecordingOwner();
-		owner.overLimitTexts.set("large-1", { tokenCount: 11, tokenLimit: 5 });
-		owner.overLimitTexts.set("large-2", { tokenCount: 12, tokenLimit: 5 });
-		owner.overLimitTexts.set("large-3", { tokenCount: 13, tokenLimit: 5 });
 		const contexts: Context[] = [];
 		const options = createOptions({
 			owner,
-			snapshots: { global: "before", local: "changed" },
-			outputs: ["large-1", "large-2", "large-3"],
+			snapshots: { global: null, local: null },
+			outputs: [""],
 			contexts,
 		});
 
-		// Act and assert: exhaustion fails before local deletion, state, or identity writes.
-		await expect(runGlobalKnowledgeAccumulation(options)).rejects.toThrow(
-			"merge output exceeds the knowledge token limit",
+		// Act and assert: the empty output fails without retries or writes.
+		await expect(runLocalKnowledgeAccumulation(options)).rejects.toThrow(
+			"knowledge extraction response contract was not satisfied:",
 		);
-		expect(owner.replacements.map(({ text }) => text)).toEqual([
-			"large-1",
-			"large-2",
-			"large-3",
+		expect(contexts).toHaveLength(1);
+		expect(owner.events).toEqual([]);
+	});
+
+	/**
+	 * Proves truncated extraction is repaired like an oversized one regardless of output length:
+	 * one reduced-target retry without history.
+	 * Inputs and expected outputs: truncated extraction (with text or empty) is retried at
+	 * 1/2 of an A4 page, then a fitting repair and one merge write.
+	 * Edge case: the retry rebuilds a single-message context and never resends the truncated output.
+	 * Dependencies: the size-target reduction chain owned by size-target.ts.
+	 */
+	test("treats truncated extraction as a size defect with a reduced target", async () => {
+		// Arrange: each truncation variant (with text or empty) is followed by a fitting repair; merge fits once.
+		for (const truncated of ["truncated output", ""]) {
+			const owner = new RecordingOwner();
+			const contexts: Context[] = [];
+			const options = createOptions({
+				owner,
+				snapshots: { global: null, local: null },
+				outputs: [truncated, "## New", "## Merged"],
+				stopReasons: ["length", "stop", "stop"],
+				contexts,
+			});
+
+			// Act: run one local accumulation over a truncated extraction response.
+			const result = await runLocalKnowledgeAccumulation(options);
+
+			// Assert: the retry resends one reduced-target message without previous-output history.
+			expect(result).toEqual({ kind: "written" });
+			expect(contexts).toHaveLength(3);
+			expect(contexts[1]?.messages).toHaveLength(1);
+			const extractionRetry = String(contexts[1]?.messages[0]?.content);
+			expect(extractionRetry).toContain(
+				"Output MUST NOT exceed 1/2 of an A4 page",
+			);
+			expect(extractionRetry).toContain("One A4 page is about 500 words.");
+			expect(extractionRetry).not.toContain("Hard token ceiling");
+			expect(extractionRetry).not.toContain(
+				"Return non-empty concise Markdown",
+			);
+			expect(owner.replacements.map(({ text }) => text)).toEqual(["## Merged"]);
+		}
+	});
+
+	/**
+	 * Proves oversized extraction walks the reduced-target chain and stops at the fraction floor.
+	 * Inputs and expected outputs: oversized extraction goes 2/3 → 1/2 → 3/8 → 1/4 → 1/8 and throws
+	 * at the floor because the next step cannot shrink further.
+	 * Edge case: the final retry uses the minimum fraction; no storage write ever starts.
+	 * Dependencies: the fixed o200k tokenizer and the configured-scale floor contract.
+	 */
+	test("stops oversized extraction at the fraction floor", async () => {
+		// Arrange: every extraction attempt exceeds the configured token limit.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: null, local: null },
+			outputs: [
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+			],
+			contexts,
+			configuration: config({ localTokenLimit: 5 }),
+		});
+
+		// Act and assert: the chain reaches 1/8 and the next step cannot shrink, so extraction throws.
+		await expect(runLocalKnowledgeAccumulation(options)).rejects.toThrow(
+			"knowledge extraction output exceeds the knowledge token limit or was truncated",
+		);
+		expect(contexts).toHaveLength(5);
+		const finalRetry = String(contexts[4]?.messages[0]?.content);
+		expect(contexts[4]?.messages).toHaveLength(1);
+		expect(finalRetry).toContain("Output MUST NOT exceed 1/8 of an A4 page");
+		expect(finalRetry).toContain("One A4 page is about 500 words.");
+		expect(finalRetry).not.toContain("Hard token ceiling");
+		expect(owner.events).toEqual([]);
+	});
+
+	/**
+	 * Proves each reduced-target extraction retry is announced with its new size target.
+	 * Inputs and expected outputs: two oversized extractions walk 2/3 → 1/2 → 3/8, then extraction fits.
+	 * Edge case: the merge progress follows the last extraction retry in order.
+	 * Dependencies: reportProgress is the user-visible progress boundary.
+	 */
+	test("reports each reduced-target extraction retry", async () => {
+		// Arrange: two oversized extraction attempts walk the chain, then extraction fits.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const progress: string[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: null, local: null },
+			outputs: [
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				"## New",
+				"## Merged",
+			],
+			contexts,
+			configuration: config({ localTokenLimit: 5 }),
+			reportProgress: (operation, sizeTarget) => {
+				progress.push(
+					sizeTarget === undefined ? operation : `${operation}:${sizeTarget}`,
+				);
+			},
+		});
+
+		// Act: run one local accumulation over two oversized extraction responses.
+		await runLocalKnowledgeAccumulation(options);
+
+		// Assert: each retry announces its new size target before the merge starts.
+		expect(progress).toEqual([
+			"prepare_local_summary:2/3 of an A4 page",
+			"extraction_retry:1/2 of an A4 page",
+			"extraction_retry:3/8 of an A4 page",
+			"merge_local_knowledge:2/3 of an A4 page",
 		]);
-		expect(owner.deletions).toEqual([]);
-		expect(owner.events.filter((event) => event === "write-state")).toEqual([]);
-		expect(owner.events.filter((event) => event === "write-identity")).toEqual(
-			[],
-		);
-		expect(String(contexts[2]?.messages.at(-1)?.content)).toContain("12");
-		expect(String(contexts[2]?.messages.at(-1)?.content)).toContain("5");
+	});
+
+	/**
+	 * Proves provider-truncated merge output is retried with a reduced target.
+	 * Inputs and expected outputs: one truncated merge response is followed by one fitting repair that writes.
+	 * Edge case: the truncation path mirrors extraction and never resends the truncated output.
+	 * Dependencies: retryMergeWithReducedTarget and the size-target reduction chain.
+	 */
+	test("retries provider-truncated merge with a reduced target", async () => {
+		// Arrange: global merge first truncates, then returns a fitting repair.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: "global old", local: "local new" },
+			outputs: ["truncated merge", "## Merged"],
+			stopReasons: ["length", "stop"],
+			contexts,
+		});
+
+		// Act: global accumulation runs over one truncated merge response.
+		await runGlobalKnowledgeAccumulation(options);
+
+		// Assert: the retry resends one reduced-target message without previous-output history.
+		expect(contexts).toHaveLength(2);
+		expect(contexts[1]?.messages).toHaveLength(1);
+		const mergeRetry = String(contexts[1]?.messages[0]?.content);
+		expect(mergeRetry).toContain("1/2 of an A4 page");
+		expect(owner.replacements.map(({ text }) => text)).toEqual(["## Merged"]);
+	});
+
+	/**
+	 * Proves an empty truncated merge response is still a size defect.
+	 * Inputs and expected outputs: a reasoning model that spends its whole output budget on thinking
+	 * returns zero text parts with stopReason "length"; the merge retry uses a reduced target, not a format error.
+	 * Edge case: empty text plus truncation must not fail the merge before the size repair.
+	 * Dependencies: retryMergeWithReducedTarget and the size-target reduction chain.
+	 */
+	test("treats empty truncated merge as a size defect with a reduced target", async () => {
+		// Arrange: global merge first returns empty text truncated by the provider, then a fitting repair.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: "global old", local: "local new" },
+			outputs: ["", "## Merged"],
+			stopReasons: ["length", "stop"],
+			contexts,
+		});
+
+		// Act: global accumulation runs over one empty truncated merge response.
+		await runGlobalKnowledgeAccumulation(options);
+
+		// Assert: the retry resends one reduced-target message without previous-output history.
+		expect(contexts).toHaveLength(2);
+		expect(contexts[1]?.messages).toHaveLength(1);
+		const mergeRetry = String(contexts[1]?.messages[0]?.content);
+		expect(mergeRetry).toContain("1/2 of an A4 page");
+		expect(owner.replacements.map(({ text }) => text)).toEqual(["## Merged"]);
 	});
 
 	/**
@@ -499,11 +689,17 @@ describe("knowledge accumulation algorithms", () => {
 		// Arrange: one fitting global merge response.
 		const owner = new RecordingOwner();
 		const contexts: Context[] = [];
+		const progress: string[] = [];
 		const options = createOptions({
 			owner,
 			snapshots: { global: "global old", local: "local new" },
 			outputs: ["## Merged"],
 			contexts,
+			reportProgress: (operation, sizeTarget) => {
+				progress.push(
+					sizeTarget === undefined ? operation : `${operation}:${sizeTarget}`,
+				);
+			},
 		});
 
 		// Act: global accumulation sends one merge request.
@@ -513,7 +709,8 @@ describe("knowledge accumulation algorithms", () => {
 		const mergeMessage = String(contexts[0]?.messages[0]?.content);
 		const incomingEnd = mergeMessage.lastIndexOf("</incoming_knowledge>");
 		expect(incomingEnd).toBeGreaterThan(-1);
-		const taskPromptStart = mergeMessage.indexOf("merge task prompt");
+		const taskPromptStart = mergeMessage.indexOf("merge global task prompt");
 		expect(taskPromptStart).toBeGreaterThan(incomingEnd);
+		expect(progress).toEqual(["merge_global_knowledge:2/3 of an A4 page"]);
 	});
 });

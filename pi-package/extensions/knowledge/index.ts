@@ -4,6 +4,10 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentSuiteDir } from "../../shared/agent-suite-storage";
+import {
+	registerTriggerAlgorithm,
+	type TriggerAlgorithm,
+} from "../../shared/algorithm-registry";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
 import { isChildAgentProcess } from "../../shared/child-agent-environment";
 import {
@@ -107,9 +111,11 @@ export default function knowledgeExtension(
 			isGitRemoteName,
 		});
 	if (configResult.kind === "invalid") {
+		const message = `[knowledge] invalid configuration: ${configResult.issue}`;
 		pi.on("session_start", (_event, ctx) => {
+			process.stderr.write(`${message}\n`);
 			if (ctx.hasUI) {
-				ctx.ui.notify("[knowledge] invalid configuration", "error");
+				ctx.ui.notify(message, "error");
 			}
 		});
 		return;
@@ -150,9 +156,7 @@ export default function knowledgeExtension(
 		KNOWLEDGE_OUTCOME_CUSTOM_TYPE,
 		renderKnowledgeOutcome,
 	);
-	disposers.push(
-		registerWorkflowTriggerRunner(pi, createKnowledgeTriggerRunner(runtime)),
-	);
+	registerKnowledgeTriggerRoles(pi, runtime, disposers);
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		loadedSkillRoots = collectLoadedSkillRoots(event);
@@ -167,6 +171,34 @@ export default function knowledgeExtension(
 			dispose();
 		}
 	});
+}
+
+/** Registers the workflow runner and manual-launch algorithms for one runtime. */
+function registerKnowledgeTriggerRoles(
+	pi: ExtensionAPI,
+	runtime: EnabledKnowledgeRuntime,
+	disposers: Array<() => void>,
+): void {
+	const triggerRunner = createKnowledgeTriggerRunner(runtime);
+	disposers.push(registerWorkflowTriggerRunner(pi, triggerRunner));
+	disposers.push(
+		registerTriggerAlgorithm(
+			pi,
+			createAccumulationAlgorithm(
+				triggerRunner,
+				"local_knowledge_accumulation",
+			),
+		),
+	);
+	disposers.push(
+		registerTriggerAlgorithm(
+			pi,
+			createAccumulationAlgorithm(
+				triggerRunner,
+				"global_knowledge_accumulation",
+			),
+		),
+	);
 }
 
 /** Creates the mutation coordinator, root hierarchy, and initial disposal callbacks. */
@@ -236,13 +268,22 @@ function createKnowledgeTriggerRunner(
 		async run(trigger, ctx, signal) {
 			const reportProgress =
 				!ctx.hasUI || ctx.ui === undefined
-					? (operation: KnowledgeAccumulationOperation) => {
+					? (
+							operation: KnowledgeAccumulationOperation,
+							sizeTarget?: string,
+						) => {
 							process.stderr.write(
-								`${formatKnowledgeProgressMessage(operation)}\n`,
+								`${formatKnowledgeProgressMessage(operation, sizeTarget)}\n`,
 							);
 						}
-					: (operation: KnowledgeAccumulationOperation) => {
-							ctx.ui.notify(formatKnowledgeProgressMessage(operation), "info");
+					: (
+							operation: KnowledgeAccumulationOperation,
+							sizeTarget?: string,
+						) => {
+							ctx.ui.notify(
+								formatKnowledgeProgressMessage(operation, sizeTarget),
+								"info",
+							);
 						};
 			try {
 				await runKnowledgeTrigger({
@@ -271,17 +312,38 @@ function createKnowledgeTriggerRunner(
 	};
 }
 
+/** Creates one manual-launch algorithm over the shared trigger runner boundary. */
+function createAccumulationAlgorithm(
+	runner: WorkflowTriggerRunner,
+	type: WorkflowTrigger["type"],
+): TriggerAlgorithm {
+	const description =
+		type === "local_knowledge_accumulation"
+			? "Accumulate active-branch knowledge into the local file"
+			: "Merge active-branch knowledge into the global file";
+	return {
+		type,
+		description,
+		run: (ctx, signal) => runner.run({ type }, ctx, signal),
+	};
+}
+
 /** Maps one accumulation operation to a stable user-facing progress message. */
 function formatKnowledgeProgressMessage(
 	operation: KnowledgeAccumulationOperation,
+	sizeTarget?: string,
 ): string {
 	switch (operation) {
 		case "prepare_local_summary":
-			return "[knowledge] preparing local knowledge summary...";
+			return `[knowledge] preparing local knowledge summary (target: ${sizeTarget})...`;
 		case "merge_local_knowledge":
-			return "[knowledge] merging local knowledge...";
+			return `[knowledge] merging local knowledge (target: ${sizeTarget})...`;
 		case "merge_global_knowledge":
-			return "[knowledge] merging global knowledge...";
+			return `[knowledge] merging global knowledge (target: ${sizeTarget})...`;
+		case "extraction_retry":
+			return `[knowledge] extraction output too large, retrying with a reduced target (${sizeTarget})...`;
+		case "merge_retry":
+			return `[knowledge] merge output too large, retrying with a reduced target (${sizeTarget})...`;
 	}
 }
 
@@ -318,7 +380,7 @@ interface KnowledgeTriggerRunRequest {
 	readonly ctx: ExtensionContext;
 	readonly signal: AbortSignal | undefined;
 	readonly reportProgress:
-		| ((operation: KnowledgeAccumulationOperation) => void)
+		| ((operation: KnowledgeAccumulationOperation, sizeTarget?: string) => void)
 		| undefined;
 }
 

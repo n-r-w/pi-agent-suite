@@ -25,15 +25,28 @@ The file is optional. Missing configuration enables the extension with defaults.
   "extraction": {
     "model": "analyst-complex",
     "thinking": "medium",
-    "systemPromptFile": "/absolute/path/to/extraction.md",
-    "retryCount": 1
+    "systemPromptFile": "/absolute/path/to/extraction-system.md",
+    "maxFractionDenominator": 8,
+    "initialFraction": "2/3",
+    "reductionCoefficient": "3/4"
   },
-  "merge": {
+  "mergeLocal": {
     "model": "review-fast",
     "thinking": "medium",
-    "systemPromptFile": "/absolute/path/to/merge-system.md",
-    "taskPromptFile": "/absolute/path/to/merge.md",
-    "retryCount": 2
+    "systemPromptFile": "/absolute/path/to/merge-local-system.md",
+    "taskPromptFile": "/absolute/path/to/merge-local.md",
+    "maxFractionDenominator": 8,
+    "initialFraction": "2/3",
+    "reductionCoefficient": "3/4"
+  },
+  "mergeGlobal": {
+    "model": "review-fast",
+    "thinking": "medium",
+    "systemPromptFile": "/absolute/path/to/merge-global-system.md",
+    "taskPromptFile": "/absolute/path/to/merge-global.md",
+    "maxFractionDenominator": 8,
+    "initialFraction": "2/3",
+    "reductionCoefficient": "3/4"
   }
 }
 ```
@@ -53,15 +66,27 @@ All fields are optional.
 | `extraction.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects extraction reasoning. |
 | `extraction.systemPromptFile` | Readable non-empty absolute file path | Bundled extraction system prompt | Replaces the extraction system prompt. |
 | `extraction.taskPromptFile` | Readable non-empty absolute file path | Bundled extraction task prompt | Replaces the extraction task prompt attached after `<summary_source>`. |
-| `extraction.retryCount` | Non-negative safe integer | `1` | Number of format-correction retries after the initial extraction response. |
-| `merge` | Object | Defaults below | Configures local and global knowledge consolidation. |
-| `merge.model` | Non-empty string | Current initiating model | Selects the merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
-| `merge.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects merge reasoning. |
-| `merge.systemPromptFile` | Readable non-empty absolute file path | Bundled merge system prompt | Replaces the merge system prompt. |
-| `merge.taskPromptFile` | Readable non-empty absolute file path | Bundled merge task prompt | Replaces the merge task prompt attached after `</incoming_knowledge>`. |
-| `merge.retryCount` | Non-negative safe integer | `2` | Number of shortening retries after the initial over-limit merge response. |
+| `extraction.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
+| `extraction.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the extraction output as a fraction of an A4 page. |
+| `extraction.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each size-correction retry. |
+| `mergeLocal` | Object | Defaults below | Configures active-branch local knowledge consolidation. |
+| `mergeLocal.model` | Non-empty string | Current initiating model | Selects the local merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `mergeLocal.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects local merge reasoning. |
+| `mergeLocal.systemPromptFile` | Readable non-empty absolute file path | Bundled local merge system prompt | Replaces the local merge system prompt. |
+| `mergeLocal.taskPromptFile` | Readable non-empty absolute file path | Bundled local merge task prompt | Replaces the local merge task prompt attached after `</incoming_knowledge>`. |
+| `mergeLocal.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
+| `mergeLocal.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the local merge output as a fraction of an A4 page. |
+| `mergeLocal.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each shortening retry. |
+| `mergeGlobal` | Object | Defaults below | Configures global knowledge consolidation. |
+| `mergeGlobal.model` | Non-empty string | Current initiating model | Selects the global merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `mergeGlobal.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects global merge reasoning. |
+| `mergeGlobal.systemPromptFile` | Readable non-empty absolute file path | Bundled global merge system prompt | Replaces the global merge system prompt. |
+| `mergeGlobal.taskPromptFile` | Readable non-empty absolute file path | Bundled global merge task prompt | Replaces the global merge task prompt attached after `</incoming_knowledge>`. |
+| `mergeGlobal.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
+| `mergeGlobal.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the global merge output as a fraction of an A4 page. |
+| `mergeGlobal.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each shortening retry. |
 
-Unknown fields, invalid JSON, invalid values, and unreadable or empty configured prompt files disable the extension. In TUI mode, Pi shows a fixed error notification without the private configuration value.
+Unknown fields, invalid JSON, invalid values, and unreadable or empty configured prompt files disable the extension. The validation reason is written to stderr in every mode and shown as an error notification in TUI mode without the private configuration value.
 
 Configuration is read when the extension loads. Restart Pi to apply changes.
 
@@ -104,7 +129,7 @@ knowledge/data/<project-name>-<project-sha256>/
 
 Readable prefixes are diagnostic. Complete SHA-256 values determine project and branch directory identity.
 
-Each Markdown replacement is counted before its target directory or file is opened. Counting uses the project's existing `js-tiktoken` integration through `estimateTextTokens(text, undefined, undefined)`.
+Each Markdown replacement is counted before its target directory or file is opened. Counting uses the single fixed `o200k_base` encoding through `countKnowledgeTextTokens` from `pi-package/shared/context-size.ts`.
 
 Files are overwritten directly. The extension does not use temporary replacement files or file locks.
 
@@ -123,13 +148,16 @@ Project instruction files, including `AGENTS.md`, remain separate and are never 
 
 ## Workflow triggers
 
-Knowledge accumulates only when a workflow enters a stage containing a supported trigger. In TUI mode, the extension reports operation progress with informational notifications. Local accumulation reports preparation and merge separately:
+Knowledge accumulates when a workflow enters a stage containing a supported trigger, or when the user runs an accumulation algorithm manually through the `algorithms` extension (`/trigger:local_knowledge_accumulation`, `/trigger:global_knowledge_accumulation`, or `pi --trigger <type>`). In TUI mode, the extension reports operation progress with informational notifications. Local accumulation reports preparation and merge separately:
 - `[knowledge] preparing local knowledge summary...`
 - `[knowledge] merging local knowledge...`
 Global accumulation reports merge progress:
 - `[knowledge] merging global knowledge...`
+Each reduced-target retry is announced with its new size:
+- `[knowledge] extraction output too large, retrying with a reduced target (1/2 of an A4 page)...`
+- `[knowledge] merge output too large, retrying with a reduced target (1/2 of an A4 page)...`
 
-Knowledge accumulates when a workflow enters a stage containing a supported trigger:
+Workflow-launched accumulation:
 
 ```yaml
 stages:
@@ -150,7 +178,7 @@ Workflow state is saved before triggers run. A failed trigger stops the remainin
 1. The extraction model receives one explicit request that includes current `<knowledge>...</knowledge>` snapshots and `<summary_source> ...projected branch session... </summary_source>`, followed by the extraction task prompt.
 2. The extraction system prompt and task prompt are configured independently.
 3. Exact `NOT_FOUND` ends without changes.
-4. Empty or contract-invalid output receives format feedback up to `extraction.retryCount`.
+4. Empty or contract-invalid output is a contract error and is never retried. Exact `NOT_FOUND` remains the only no-knowledge marker.
 5. Positive Markdown is consolidated with stored local knowledge.
 6. A within-limit result completely replaces the local file.
 
@@ -164,7 +192,7 @@ Workflow state is saved before triggers run. A failed trigger stops the remainin
 
 Merge consolidation separates knowledge into two categories: strategic (stable high-leverage project knowledge) and tactical (important but volatile operational knowledge). The replacement Markdown must always keep explicit `## Strategic knowledge` and `## Tactical knowledge` sections. The model must preserve strategic foundations without allowing tactical churn to overwrite them, while still keeping enough tactical risk context for near-term work.
 
-When merge output exceeds the target file limit, the model receives the actual tokenizer count and unchanged limit. Exhausting `merge.retryCount` leaves pre-write storage unchanged.
+When merge output exceeds the target file limit, the next attempt resends the same request with a reduced A4-page target. Retries continue until the fraction chain reaches its floor `1/maxFractionDenominator`; reaching the floor leaves pre-write storage unchanged.
 
 ## Mutation coordination
 

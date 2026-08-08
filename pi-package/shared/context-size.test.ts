@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { estimateTextTokens, takeTextTokenPrefix } from "./context-size";
+import {
+	countKnowledgeTextTokens,
+	estimateTextTokens,
+	takeTextTokenPrefix,
+} from "./context-size";
 
 describe("estimateTextTokens", () => {
 	/** Proves text-only adaptive budgets use the selected model encoding without request framing. */
@@ -54,5 +58,22 @@ describe("estimateTextTokens", () => {
 				index + 1,
 			);
 		}
+	});
+});
+
+describe("countKnowledgeTextTokens", () => {
+	/** Proves knowledge limit checks use the single fixed o200k encoding. */
+	test("counts with the fixed o200k encoding", () => {
+		// ARRANGE: Dense text distinguishes tokenizer counting from character heuristics.
+		const text = "antidisestablishmentarianism".repeat(40);
+
+		// ACT: Compare the fixed knowledge count with the known modern OpenAI encoding.
+		const knowledgeTokens = countKnowledgeTextTokens(text);
+		const o200kTokens = estimateTextTokens(text, "gpt-5", "openai");
+
+		// ASSERT: Both paths use o200k_base and agree exactly.
+		expect(knowledgeTokens).toBeGreaterThan(0);
+		expect(knowledgeTokens).toBe(o200kTokens);
+		expect(countKnowledgeTextTokens("")).toBe(0);
 	});
 });

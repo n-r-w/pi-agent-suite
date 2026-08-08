@@ -8,6 +8,10 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+	getTriggerAlgorithm,
+	getTriggerAlgorithms,
+} from "../../shared/algorithm-registry";
 import { readKnowledgeBlock } from "../../shared/knowledge-runtime";
 import { getWorkflowTriggerRunner } from "../../shared/workflow-trigger-runtime";
 import type { KnowledgeConfig } from "./config";
@@ -78,14 +82,27 @@ function config(dataDir: string): KnowledgeConfig {
 			thinking: undefined,
 			systemPrompt: "extract system",
 			taskPrompt: "summarize projected session",
-			retryCount: 1,
+			maxFractionDenominator: 8,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
-		merge: {
+		mergeLocal: {
 			model: undefined,
 			thinking: undefined,
-			systemPrompt: "merge system",
-			taskPrompt: "merge task prompt",
-			retryCount: 2,
+			systemPrompt: "merge local system",
+			taskPrompt: "merge local task prompt",
+			maxFractionDenominator: 8,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
+		},
+		mergeGlobal: {
+			model: undefined,
+			thinking: undefined,
+			systemPrompt: "merge global system",
+			taskPrompt: "merge global task prompt",
+			maxFractionDenominator: 8,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
 	};
 }
@@ -280,7 +297,7 @@ describe("knowledge extension lifecycle", () => {
 		expect(tuiResult).toEqual({ ok: false });
 		expect(headlessResult).toEqual({ ok: false });
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
 			"[knowledge] accumulation failed (knowledge extraction response contract was not satisfied:)",
 		]);
 	});
@@ -320,7 +337,7 @@ describe("knowledge extension lifecycle", () => {
 		// Assert.
 		expect(result).toEqual({ ok: false });
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
 			"[knowledge] accumulation failed (No API key found for github-copilot.)",
 		]);
 	});
@@ -401,8 +418,57 @@ describe("knowledge extension lifecycle", () => {
 		// ASSERT
 		expect(result).toEqual({ ok: true });
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
-			"[knowledge] merging local knowledge...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
+			"[knowledge] merging local knowledge (target: 2/3 of an A4 page)...",
+		]);
+	});
+
+	/**
+	 * Proves a reduced-target extraction retry announces its new A4-page size in TUI mode.
+	 * Inputs and expected outputs: one truncated extraction is retried at 1/2, then extraction and merge fit.
+	 * Edge case: the retry progress message appears between preparation and merge progress.
+	 * Dependencies: trigger progress is emitted through the workflow runner boundary.
+	 */
+	test("reports reduced-target extraction retry with its new size", async () => {
+		// ARRANGE
+		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-retry-notify-"));
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async (_model, context) => {
+				const serialized = String(context.messages[0]?.content);
+				if (serialized.includes("<summary_source>")) {
+					if (serialized.includes("1/2 of an A4 page")) {
+						return response("## Strategic knowledge\n- Stable rule.");
+					}
+					return response("", "length");
+				}
+				return response(
+					"## Strategic knowledge\n- Stable rule.\n\n## Tactical knowledge\n- Active debt.",
+				);
+			},
+			runtimeEnv: {},
+		});
+		const runner = getWorkflowTriggerRunner(fake.pi);
+		if (runner === undefined) {
+			throw new Error("workflow trigger runner missing");
+		}
+
+		// ACT
+		const result = await runner.run(
+			{ type: "local_knowledge_accumulation" },
+			createContext(fake.notifications, true),
+			undefined,
+		);
+
+		// ASSERT
+		expect(result).toEqual({ ok: true });
+		expect(fake.notifications).toEqual([
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
+			"[knowledge] extraction output too large, retrying with a reduced target (1/2 of an A4 page)...",
+			"[knowledge] merging local knowledge (target: 2/3 of an A4 page)...",
 		]);
 	});
 
@@ -504,13 +570,14 @@ describe("knowledge extension lifecycle", () => {
 		expect(result).toEqual({ ok: true });
 		expect(replayedSkillRoots).toEqual([resolve("/skills/knowledge")]);
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
 		]);
 	});
 
 	/**
 	 * Proves a present invalid configuration disables every knowledge runtime role without default fallback.
-	 * Inputs and expected outputs: invalid config registers no trigger or context source and reports one safe startup warning only with TUI.
+	 * Inputs and expected outputs: invalid config registers no trigger or context source, reports one safe startup warning only with TUI,
+	 * and echoes the parser reason to stderr in every mode.
 	 * Edge case: reading the shared context registry after startup still returns null.
 	 * Dependencies: configuration validation itself is covered by config.test.ts.
 	 */
@@ -525,16 +592,66 @@ describe("knowledge extension lifecycle", () => {
 			true,
 			fake.notificationLevels,
 		);
-
-		// Act: emit the startup warning handler if registration created one.
-		for (const handler of fake.handlers.get("session_start") ?? []) {
-			await handler({ type: "session_start" }, ctx);
+		const stderrLines: string[] = [];
+		const originalStderrWrite = process.stderr.write;
+		process.stderr.write = (chunk: string) => {
+			stderrLines.push(chunk);
+			return true;
+		};
+		try {
+			// Act: emit the startup warning handler if registration created one.
+			for (const handler of fake.handlers.get("session_start") ?? []) {
+				await handler({ type: "session_start" }, ctx);
+			}
+		} finally {
+			process.stderr.write = originalStderrWrite;
 		}
 
-		// Assert: no fallback runtime exists and the warning does not echo parser details.
+		// Assert: no fallback runtime exists, the TUI warning echoes the parser reason, and stderr does too.
 		expect(getWorkflowTriggerRunner(fake.pi)).toBeUndefined();
 		expect(await readKnowledgeBlock(fake.pi, ctx)).toBeNull();
-		expect(fake.notifications).toEqual(["[knowledge] invalid configuration"]);
+		expect(fake.notifications).toEqual([
+			"[knowledge] invalid configuration: invalid private path",
+		]);
 		expect(fake.notificationLevels).toEqual(["error"]);
+		expect(stderrLines).toEqual([
+			"[knowledge] invalid configuration: invalid private path\n",
+		]);
+	});
+
+	/**
+	 * Proves the knowledge extension registers its two accumulation algorithms in the shared registry.
+	 * Inputs and expected outputs: both trigger types resolve after extension load.
+	 * Edge case: registration is scoped to the same pi instance that loaded the extension.
+	 * Dependencies: the shared algorithm registry is the single manual-launch source.
+	 */
+	test("registers its accumulation algorithms in the algorithm registry", async () => {
+		// Arrange: one enabled extension with a no-op extraction outcome.
+		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-registry-"));
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async () => response("NOT_FOUND"),
+			runtimeEnv: {},
+		});
+
+		// Act: read the shared registry entries.
+		const types = getTriggerAlgorithms(fake.pi)
+			.map(({ type }) => type)
+			.sort();
+
+		// Assert: both knowledge algorithms are available for manual launch.
+		expect(types).toEqual([
+			"global_knowledge_accumulation",
+			"local_knowledge_accumulation",
+		]);
+		expect(
+			getTriggerAlgorithm(fake.pi, "local_knowledge_accumulation"),
+		).toBeDefined();
+		expect(
+			getTriggerAlgorithm(fake.pi, "global_knowledge_accumulation"),
+		).toBeDefined();
 	});
 });
