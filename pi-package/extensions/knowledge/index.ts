@@ -111,9 +111,11 @@ export default function knowledgeExtension(
 			isGitRemoteName,
 		});
 	if (configResult.kind === "invalid") {
+		const message = `[knowledge] invalid configuration: ${configResult.issue}`;
 		pi.on("session_start", (_event, ctx) => {
+			process.stderr.write(`${message}\n`);
 			if (ctx.hasUI) {
-				ctx.ui.notify("[knowledge] invalid configuration", "error");
+				ctx.ui.notify(message, "error");
 			}
 		});
 		return;

@@ -527,7 +527,8 @@ describe("knowledge extension lifecycle", () => {
 
 	/**
 	 * Proves a present invalid configuration disables every knowledge runtime role without default fallback.
-	 * Inputs and expected outputs: invalid config registers no trigger or context source and reports one safe startup warning only with TUI.
+	 * Inputs and expected outputs: invalid config registers no trigger or context source, reports one safe startup warning only with TUI,
+	 * and echoes the parser reason to stderr in every mode.
 	 * Edge case: reading the shared context registry after startup still returns null.
 	 * Dependencies: configuration validation itself is covered by config.test.ts.
 	 */
@@ -542,17 +543,31 @@ describe("knowledge extension lifecycle", () => {
 			true,
 			fake.notificationLevels,
 		);
-
-		// Act: emit the startup warning handler if registration created one.
-		for (const handler of fake.handlers.get("session_start") ?? []) {
-			await handler({ type: "session_start" }, ctx);
+		const stderrLines: string[] = [];
+		const originalStderrWrite = process.stderr.write;
+		process.stderr.write = (chunk: string) => {
+			stderrLines.push(chunk);
+			return true;
+		};
+		try {
+			// Act: emit the startup warning handler if registration created one.
+			for (const handler of fake.handlers.get("session_start") ?? []) {
+				await handler({ type: "session_start" }, ctx);
+			}
+		} finally {
+			process.stderr.write = originalStderrWrite;
 		}
 
-		// Assert: no fallback runtime exists and the warning does not echo parser details.
+		// Assert: no fallback runtime exists, the TUI warning echoes the parser reason, and stderr does too.
 		expect(getWorkflowTriggerRunner(fake.pi)).toBeUndefined();
 		expect(await readKnowledgeBlock(fake.pi, ctx)).toBeNull();
-		expect(fake.notifications).toEqual(["[knowledge] invalid configuration"]);
+		expect(fake.notifications).toEqual([
+			"[knowledge] invalid configuration: invalid private path",
+		]);
 		expect(fake.notificationLevels).toEqual(["error"]);
+		expect(stderrLines).toEqual([
+			"[knowledge] invalid configuration: invalid private path\n",
+		]);
 	});
 
 	/**

@@ -86,7 +86,7 @@ All fields are optional.
 | `mergeGlobal.initialFraction` | Simple fraction string `n/d` with denominator at most 8 | `"2/3"` | Initial target size of the global merge output as a fraction of an A4 page. |
 | `mergeGlobal.reductionCoefficient` | Simple fraction string `n/d` with denominator at most 8 | `"3/4"` | Multiplier applied to the target fraction on each shortening retry. |
 
-Unknown fields, invalid JSON, invalid values, and unreadable or empty configured prompt files disable the extension. In TUI mode, Pi shows a fixed error notification without the private configuration value.
+Unknown fields, invalid JSON, invalid values, and unreadable or empty configured prompt files disable the extension. The validation reason is written to stderr in every mode and shown as an error notification in TUI mode without the private configuration value.
 
 Configuration is read when the extension loads. Restart Pi to apply changes.
 
