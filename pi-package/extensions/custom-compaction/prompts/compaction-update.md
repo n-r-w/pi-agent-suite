@@ -1,6 +1,7 @@
 <task>
   Messages above are NEW conversation messages to incorporate into  existing summary provided in `<previous_summary>` tags.
   Update  existing structured summary with new information.
+  When referring to identifiers, they must be retained COMPLETELY AS IS.
 </task>
 
 <language>

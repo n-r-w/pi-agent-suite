@@ -112,6 +112,7 @@ Interactive Pi sessions receive informational messages for:
 
 - forced compaction-source projection progress and retries;
 - adaptive compaction start;
+- planning compaction budgets;
 - the number of original blocks in each preliminary range;
 - oversized-block fragment count and each fragment position;
 - previous_summary normalization;
@@ -122,7 +123,7 @@ Interactive Pi sessions receive informational messages for:
 
 The successful outcome states whether the direct or adaptive path ran and reports applicable counts for projected tool results, reduced blocks, preliminary ranges, oversized blocks, fragments, normalizations, merges, logical model requests, and retries.
 
-A logical model request is counted once even when it is retried. Retries are reported separately. Start and outcome notifications yield one event-loop turn so Pi can repaint them before synchronous planning or lifecycle completion continues. Non-interactive runs emit no progress notifications.
+A logical model request is counted once even when it is retried. Retries are reported separately. Start, planning, and outcome notifications yield one event-loop turn so Pi can repaint them before planning continues or lifecycle completion replaces them. Non-interactive runs emit no progress notifications.
 
 The terminal success or standard-compaction fallback is also stored as a `custom-compaction-outcome` custom entry with a dedicated TUI renderer. This TUI-only entry survives transcript redraw and session reload but does not participate in LLM context. Intermediate progress remains transient and is not persisted.
 

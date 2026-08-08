@@ -716,6 +716,10 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 				{
+					message: "[custom-compaction] planning compaction budgets...",
+					type: "info",
+				},
+				{
 					message: "[custom-compaction] creating final summary...",
 					type: "info",
 				},
@@ -1110,6 +1114,10 @@ describe("custom-compaction", () => {
 					type: "info",
 				},
 				{
+					message: "[custom-compaction] planning compaction budgets...",
+					type: "info",
+				},
+				{
 					message: "[custom-compaction] creating final summary...",
 					type: "info",
 				},
@@ -1161,6 +1169,10 @@ describe("custom-compaction", () => {
 			expect(session.notifications).toEqual([
 				{
 					message: "[custom-compaction] adaptive compaction started",
+					type: "info",
+				},
+				{
+					message: "[custom-compaction] planning compaction budgets...",
 					type: "info",
 				},
 				{

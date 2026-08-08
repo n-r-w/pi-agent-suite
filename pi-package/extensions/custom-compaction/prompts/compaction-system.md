@@ -13,7 +13,7 @@
     **MUST:**
         1. Avoid duplicating same information across sections. If information is relevant to multiple sections, include it in most appropriate one.
         2. Include brief explanations of rationale for items where indicated `Rationale for ...`
-        3. Preserve exact file paths, function names, commands, error messages, identifiers, and configuration keys.
+        3. Preserve exactly file paths, function names, commands, error messages, identifiers, and configuration keys.
         4. Keep each section concise.
         5. Omit empty sections.
 </rules>

@@ -118,17 +118,20 @@ interface OriginalPrefixSelection {
 }
 
 /** Selects the largest oldest contiguous original range that fits one reduction request. */
-export function findLargestFittingOriginalPrefix({
+export async function findLargestFittingOriginalPrefix({
 	items,
 	startIndex,
 	originalCount,
 	summaryNodeTokens,
 	options,
-}: OriginalPrefixSelection): number {
+}: OriginalPrefixSelection): Promise<number> {
 	let low = 1;
 	let high = originalCount;
 	let best = 0;
 	while (low <= high) {
+		// Sequential binary-search probes depend on each other; Promise.all cannot parallelize them.
+		// biome-ignore lint/performance/noAwaitInLoops: cooperative event-loop yield is the point of this loop.
+		await options.onStep?.();
 		const middle = Math.floor((low + high) / 2);
 		const candidate = items.slice(startIndex, startIndex + middle);
 		if (doesReductionRequestFit(candidate, summaryNodeTokens, options)) {

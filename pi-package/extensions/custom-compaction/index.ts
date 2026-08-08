@@ -731,10 +731,11 @@ async function reportProgress(
 	session.ui.notify(`${ISSUE_PREFIX} ${message}`, "info");
 	if (
 		event.type === "start" ||
+		event.type === "planning" ||
 		event.type === "complete" ||
 		(event.type === "source-projection" && event.completed === 0)
 	) {
-		// Pi repaints start and outcome states before synchronous work or lifecycle completion replaces them.
+		// Pi repaints start, planning, and outcome states before the next work phase or lifecycle completion replaces them.
 		await yieldToEventLoop();
 	}
 }
@@ -756,6 +757,8 @@ function formatProgressMessage(
 			return `retrying compaction-source projection: attempt ${event.nextAttempt}/${event.totalAttempts}`;
 		case "start":
 			return "adaptive compaction started";
+		case "planning":
+			return "planning compaction budgets...";
 		case "split":
 			return `splitting oversized history block into ${event.fragments} fragments`;
 		case "operation":
