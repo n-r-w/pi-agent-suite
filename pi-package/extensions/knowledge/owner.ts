@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isFileNotFoundError } from "../../shared/agent-suite-storage";
-import { estimateTextTokens } from "../../shared/context-size";
+import { countKnowledgeTextTokens } from "../../shared/context-size";
 import type { IdentityMetadata } from "./git-context";
 
 /** Defines the strict global-merge state fields and digest encoding. */
@@ -68,7 +68,7 @@ export class KnowledgeOwner {
 	): Promise<KnowledgeReplacementResult> {
 		// Counting must finish before directory creation or target opening so an
 		// oversized model result cannot alter the catalog.
-		const tokenCount = estimateTextTokens(text, undefined, undefined);
+		const tokenCount = countKnowledgeTextTokens(text);
 		const tokenLimit =
 			target.scope === "global"
 				? this.#globalTokenLimit

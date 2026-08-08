@@ -8,6 +8,10 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+	getTriggerAlgorithm,
+	getTriggerAlgorithms,
+} from "../../shared/algorithm-registry";
 import { readKnowledgeBlock } from "../../shared/knowledge-runtime";
 import { getWorkflowTriggerRunner } from "../../shared/workflow-trigger-runtime";
 import type { KnowledgeConfig } from "./config";
@@ -79,13 +83,26 @@ function config(dataDir: string): KnowledgeConfig {
 			systemPrompt: "extract system",
 			taskPrompt: "summarize projected session",
 			retryCount: 1,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
-		merge: {
+		mergeLocal: {
 			model: undefined,
 			thinking: undefined,
-			systemPrompt: "merge system",
-			taskPrompt: "merge task prompt",
+			systemPrompt: "merge local system",
+			taskPrompt: "merge local task prompt",
 			retryCount: 2,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
+		},
+		mergeGlobal: {
+			model: undefined,
+			thinking: undefined,
+			systemPrompt: "merge global system",
+			taskPrompt: "merge global task prompt",
+			retryCount: 2,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
 	};
 }
@@ -536,5 +553,41 @@ describe("knowledge extension lifecycle", () => {
 		expect(await readKnowledgeBlock(fake.pi, ctx)).toBeNull();
 		expect(fake.notifications).toEqual(["[knowledge] invalid configuration"]);
 		expect(fake.notificationLevels).toEqual(["error"]);
+	});
+
+	/**
+	 * Proves the knowledge extension registers its two accumulation algorithms in the shared registry.
+	 * Inputs and expected outputs: both trigger types resolve after extension load.
+	 * Edge case: registration is scoped to the same pi instance that loaded the extension.
+	 * Dependencies: the shared algorithm registry is the single manual-launch source.
+	 */
+	test("registers its accumulation algorithms in the algorithm registry", async () => {
+		// Arrange: one enabled extension with a no-op extraction outcome.
+		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-registry-"));
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async () => response("NOT_FOUND"),
+			runtimeEnv: {},
+		});
+
+		// Act: read the shared registry entries.
+		const types = getTriggerAlgorithms(fake.pi)
+			.map(({ type }) => type)
+			.sort();
+
+		// Assert: both knowledge algorithms are available for manual launch.
+		expect(types).toEqual([
+			"global_knowledge_accumulation",
+			"local_knowledge_accumulation",
+		]);
+		expect(
+			getTriggerAlgorithm(fake.pi, "local_knowledge_accumulation"),
+		).toBeDefined();
+		expect(
+			getTriggerAlgorithm(fake.pi, "global_knowledge_accumulation"),
+		).toBeDefined();
 	});
 });

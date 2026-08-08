@@ -4,6 +4,10 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentSuiteDir } from "../../shared/agent-suite-storage";
+import {
+	registerTriggerAlgorithm,
+	type TriggerAlgorithm,
+} from "../../shared/algorithm-registry";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
 import { isChildAgentProcess } from "../../shared/child-agent-environment";
 import {
@@ -150,9 +154,7 @@ export default function knowledgeExtension(
 		KNOWLEDGE_OUTCOME_CUSTOM_TYPE,
 		renderKnowledgeOutcome,
 	);
-	disposers.push(
-		registerWorkflowTriggerRunner(pi, createKnowledgeTriggerRunner(runtime)),
-	);
+	registerKnowledgeTriggerRoles(pi, runtime, disposers);
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		loadedSkillRoots = collectLoadedSkillRoots(event);
@@ -167,6 +169,34 @@ export default function knowledgeExtension(
 			dispose();
 		}
 	});
+}
+
+/** Registers the workflow runner and manual-launch algorithms for one runtime. */
+function registerKnowledgeTriggerRoles(
+	pi: ExtensionAPI,
+	runtime: EnabledKnowledgeRuntime,
+	disposers: Array<() => void>,
+): void {
+	const triggerRunner = createKnowledgeTriggerRunner(runtime);
+	disposers.push(registerWorkflowTriggerRunner(pi, triggerRunner));
+	disposers.push(
+		registerTriggerAlgorithm(
+			pi,
+			createAccumulationAlgorithm(
+				triggerRunner,
+				"local_knowledge_accumulation",
+			),
+		),
+	);
+	disposers.push(
+		registerTriggerAlgorithm(
+			pi,
+			createAccumulationAlgorithm(
+				triggerRunner,
+				"global_knowledge_accumulation",
+			),
+		),
+	);
 }
 
 /** Creates the mutation coordinator, root hierarchy, and initial disposal callbacks. */
@@ -268,6 +298,22 @@ function createKnowledgeTriggerRunner(
 				return { ok: false };
 			}
 		},
+	};
+}
+
+/** Creates one manual-launch algorithm over the shared trigger runner boundary. */
+function createAccumulationAlgorithm(
+	runner: WorkflowTriggerRunner,
+	type: WorkflowTrigger["type"],
+): TriggerAlgorithm {
+	const description =
+		type === "local_knowledge_accumulation"
+			? "Accumulate active-branch knowledge into the local file"
+			: "Merge active-branch knowledge into the global file";
+	return {
+		type,
+		description,
+		run: (ctx, signal) => runner.run({ type }, ctx, signal),
 	};
 }
 

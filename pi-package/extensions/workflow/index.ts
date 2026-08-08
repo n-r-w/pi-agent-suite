@@ -26,7 +26,6 @@ import {
 } from "../../shared/workflow-policy";
 import {
 	getWorkflowTriggerRunner,
-	isWorkflowTriggerType,
 	type WorkflowTrigger,
 	type WorkflowTriggerRunner,
 } from "../../shared/workflow-trigger-runtime";
@@ -44,10 +43,7 @@ import {
 	type WorkflowPrompts,
 } from "./config";
 import { projectWorkflowContext } from "./context";
-import {
-	isWorkflowChildProcess,
-	readWorkflowPolicyEnvironment,
-} from "./environment";
+import { readWorkflowPolicyEnvironment } from "./environment";
 import {
 	applyWorkflowModelRestoration,
 	applyWorkflowModelSettings,
@@ -468,45 +464,6 @@ export default async function workflowExtension(
 		statusHolder,
 		warnings: loadedCatalog.warnings,
 	});
-
-	pi.registerFlag("trigger", {
-		description: "Run a workflow trigger at startup and exit",
-		type: "string",
-	});
-}
-
-/**
- * Checks the --trigger CLI flag and executes the requested trigger if set.
- * Returns true when the flag was handled (trigger executed or error reported),
- * signaling the caller to skip normal session initialization.
- */
-async function handleCliTriggerIfRequested(
-	pi: ExtensionAPI,
-	ctx: ExtensionContext,
-): Promise<boolean> {
-	if (isWorkflowChildProcess()) {
-		return false;
-	}
-	const triggerFlag = pi.getFlag("trigger");
-	if (typeof triggerFlag !== "string") {
-		return false;
-	}
-	if (!isWorkflowTriggerType(triggerFlag)) {
-		process.stderr.write(`unknown trigger type: ${triggerFlag}\n`);
-		ctx.shutdown();
-		return true;
-	}
-	const runner = getWorkflowTriggerRunner(pi);
-	if (runner === undefined) {
-		process.stderr.write("trigger runner not registered\n");
-		ctx.shutdown();
-		return true;
-	}
-	process.stderr.write(`[trigger] running ${triggerFlag}...\n`);
-	await runner.run({ type: triggerFlag }, ctx, undefined);
-	process.stderr.write(`[trigger] ${triggerFlag} completed\n`);
-	ctx.shutdown();
-	return true;
 }
 
 /** Completes a final-stage workflow after Pi reports the agent run as settled. */
@@ -615,9 +572,6 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 		refreshTools("policy-reset");
 	});
 	pi.on("session_start", async (_event, ctx) => {
-		if (await handleCliTriggerIfRequested(pi, ctx)) {
-			return;
-		}
 		await synchronize(ctx);
 		reportWorkflowCatalogWarnings(ctx, warnings);
 		reportedReplayWarningKey = reportReplayWarningsOnce(

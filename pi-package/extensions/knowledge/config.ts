@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isFileNotFoundError } from "../../shared/agent-suite-storage";
 import { isModelSelectorId } from "../../shared/model-settings";
+import { parseSimpleFraction } from "./size-target";
 
 /** Defines the complete strict top-level configuration contract. */
 const TOP_LEVEL_KEYS = [
@@ -14,7 +15,8 @@ const TOP_LEVEL_KEYS = [
 	"primaryBranches",
 	"preferredRemotes",
 	"extraction",
-	"merge",
+	"mergeLocal",
+	"mergeGlobal",
 ] as const;
 /** Defines the shared strict operation fields used by extraction and merge. */
 const OPERATION_KEYS = [
@@ -23,6 +25,8 @@ const OPERATION_KEYS = [
 	"systemPromptFile",
 	"taskPromptFile",
 	"retryCount",
+	"initialFraction",
+	"reductionCoefficient",
 ] as const;
 /** Defines the thinking values accepted by knowledge model operations. */
 const THINKING_LEVELS = [
@@ -39,6 +43,9 @@ const DEFAULT_EXTRACTION_RETRIES = 1;
 const DEFAULT_MERGE_RETRIES = 2;
 const DEFAULT_PRIMARY_BRANCHES = ["main", "master"] as const;
 const DEFAULT_PREFERRED_REMOTES = ["origin"] as const;
+/** Defines the A4-page size-target defaults shared by every model operation. */
+const DEFAULT_INITIAL_FRACTION = "2/3";
+const DEFAULT_REDUCTION_COEFFICIENT = "3/4";
 /** Defines the agent-suite-relative configuration and catalog locations. */
 const CONFIG_FILE = "config.json";
 const KNOWLEDGE_DIRECTORY = "knowledge";
@@ -50,24 +57,32 @@ const BUNDLED_EXTRACTION_SYSTEM_PROMPT = fileURLToPath(
 const BUNDLED_EXTRACTION_TASK_PROMPT = fileURLToPath(
 	new URL("./prompts/extraction.md", import.meta.url),
 );
-const BUNDLED_MERGE_SYSTEM_PROMPT = fileURLToPath(
-	new URL("./prompts/merge-system.md", import.meta.url),
+const BUNDLED_MERGE_LOCAL_SYSTEM_PROMPT = fileURLToPath(
+	new URL("./prompts/merge-local-system.md", import.meta.url),
 );
-const BUNDLED_MERGE_PROMPT = fileURLToPath(
-	new URL("./prompts/merge.md", import.meta.url),
+const BUNDLED_MERGE_LOCAL_TASK_PROMPT = fileURLToPath(
+	new URL("./prompts/merge-local.md", import.meta.url),
+);
+const BUNDLED_MERGE_GLOBAL_SYSTEM_PROMPT = fileURLToPath(
+	new URL("./prompts/merge-global-system.md", import.meta.url),
+);
+const BUNDLED_MERGE_GLOBAL_TASK_PROMPT = fileURLToPath(
+	new URL("./prompts/merge-global.md", import.meta.url),
 );
 
 type UnknownRecord = Record<string, unknown>;
 
 export type KnowledgeThinking = (typeof THINKING_LEVELS)[number];
 
-/** Holds one operation's resolved model, prompt, and retry settings. */
+/** Holds one operation's resolved model, prompt, retry, and size-target settings. */
 export interface KnowledgeOperationConfig {
 	readonly model: string | undefined;
 	readonly thinking: KnowledgeThinking | undefined;
 	readonly systemPrompt: string;
 	readonly taskPrompt: string;
 	readonly retryCount: number;
+	readonly initialFraction: number;
+	readonly reductionCoefficient: number;
 }
 
 /** Holds the fully resolved knowledge configuration. */
@@ -79,7 +94,8 @@ export interface KnowledgeConfig {
 	readonly primaryBranches: readonly string[];
 	readonly preferredRemotes: readonly string[];
 	readonly extraction: KnowledgeOperationConfig;
-	readonly merge: KnowledgeOperationConfig;
+	readonly mergeLocal: KnowledgeOperationConfig;
+	readonly mergeGlobal: KnowledgeOperationConfig;
 }
 
 /** Reports either a valid configuration or a fail-closed validation issue. */
@@ -135,16 +151,27 @@ export function parseKnowledgeConfig(
 	if (typeof extraction === "string") {
 		return invalid(extraction);
 	}
-	const merge = parseOperationConfig({
-		value: value["merge"],
-		defaultPromptFile: BUNDLED_MERGE_SYSTEM_PROMPT,
-		defaultTaskPromptFile: BUNDLED_MERGE_PROMPT,
+	const mergeLocal = parseOperationConfig({
+		value: value["mergeLocal"],
+		defaultPromptFile: BUNDLED_MERGE_LOCAL_SYSTEM_PROMPT,
+		defaultTaskPromptFile: BUNDLED_MERGE_LOCAL_TASK_PROMPT,
 		defaultRetryCount: DEFAULT_MERGE_RETRIES,
-		fieldName: "merge",
+		fieldName: "mergeLocal",
 		allowedKeys: OPERATION_KEYS,
 	});
-	if (typeof merge === "string") {
-		return invalid(merge);
+	if (typeof mergeLocal === "string") {
+		return invalid(mergeLocal);
+	}
+	const mergeGlobal = parseOperationConfig({
+		value: value["mergeGlobal"],
+		defaultPromptFile: BUNDLED_MERGE_GLOBAL_SYSTEM_PROMPT,
+		defaultTaskPromptFile: BUNDLED_MERGE_GLOBAL_TASK_PROMPT,
+		defaultRetryCount: DEFAULT_MERGE_RETRIES,
+		fieldName: "mergeGlobal",
+		allowedKeys: OPERATION_KEYS,
+	});
+	if (typeof mergeGlobal === "string") {
+		return invalid(mergeGlobal);
 	}
 
 	return {
@@ -154,7 +181,8 @@ export function parseKnowledgeConfig(
 			primaryBranches,
 			preferredRemotes,
 			extraction,
-			merge,
+			mergeLocal,
+			mergeGlobal,
 		},
 	};
 }
@@ -314,6 +342,24 @@ function parseOperationConfig(
 	if (retryCount !== undefined && !isNonNegativeSafeInteger(retryCount)) {
 		return `${options.fieldName}.retryCount must be a non-negative safe integer`;
 	}
+	const initialFraction = resolveFractionSetting(
+		parsed["initialFraction"],
+		options.fieldName,
+		"initialFraction",
+		DEFAULT_INITIAL_FRACTION,
+	);
+	if (typeof initialFraction === "string") {
+		return initialFraction;
+	}
+	const reductionCoefficient = resolveFractionSetting(
+		parsed["reductionCoefficient"],
+		options.fieldName,
+		"reductionCoefficient",
+		DEFAULT_REDUCTION_COEFFICIENT,
+	);
+	if (typeof reductionCoefficient === "string") {
+		return reductionCoefficient;
+	}
 	const systemPrompt = resolveOperationPrompt(
 		parsed,
 		options.fieldName,
@@ -338,6 +384,8 @@ function parseOperationConfig(
 		systemPrompt: systemPrompt.content,
 		taskPrompt: taskPrompt.content,
 		retryCount: retryCount ?? options.defaultRetryCount,
+		initialFraction,
+		reductionCoefficient,
 	};
 }
 
@@ -353,6 +401,20 @@ function parseOperationRecord(
 		return `${fieldName} must be an object`;
 	}
 	return value;
+}
+
+/** Resolves one simple-fraction setting from config or its documented default. */
+function resolveFractionSetting(
+	value: unknown,
+	fieldName: string,
+	configKey: "initialFraction" | "reductionCoefficient",
+	defaultValue: string,
+): number | string {
+	const parsed = parseSimpleFraction(value ?? defaultValue);
+	if (typeof parsed === "string") {
+		return `${fieldName}.${configKey} ${parsed}`;
+	}
+	return parsed;
 }
 
 /** Resolves one prompt content field from config or its default bundled path. */

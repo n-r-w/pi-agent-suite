@@ -265,8 +265,4 @@ The latest valid active snapshot remains available under every resolved policy a
 
 ## CLI flags
 
-| Flag | Type | Description |
-| --- | --- | --- |
-| `--trigger <type>` | String | Runs a workflow trigger at startup, then exits. The trigger type must match a value used in workflow YAML stage definitions. |
-
-Available trigger types: `local_knowledge_accumulation`, `global_knowledge_accumulation`. When `--trigger` is set, the extension invokes the registered trigger runner at session start. After execution (success or failure), the session shuts down. An unknown trigger type or a missing trigger runner (for example, when the knowledge extension is disabled) produces an error on stderr and exits. The flag is ignored in child agent processes.
+The workflow extension registers no CLI flags. The `--trigger <type>` flag is owned by the `algorithms` extension and runs a registered algorithm at startup; see `docs/extensions/algorithms.md`.

@@ -105,9 +105,11 @@ Give agents and decision-support model calls the stored global project knowledge
 - Every local file token limit defaults to 5,000 tokens.
 - Extraction and merge model settings default to the model active in the initiating Pi process when the operation starts.
 - Extraction and merge thinking settings default to the thinking level active in the initiating Pi process when the operation starts.
-- Bundled extraction and merge system prompts are used when prompt-file overrides are omitted.
+- Bundled extraction, local-merge, and global-merge system prompts are used when prompt-file overrides are omitted.
 - The extraction format retry count defaults to one retry after the initial response.
 - The oversized merge retry count defaults to two retries after the initial response.
+- The initial size target defaults to two thirds of an A4 page for every operation.
+- The retry reduction coefficient defaults to three quarters for every operation.
 - Primary-branch variants default to `main` and `master`.
 - Configuration can override each default independently.
 - A present configuration file accepts only documented fields. Invalid JSON, unsupported fields, invalid values, or unreadable configured prompt files reject the configuration.
@@ -235,9 +237,9 @@ knowledge/data/<project-prefix>-<project-digest>/
 
 ### Models and prompts
 
-- Extraction and merge use separate model and thinking configurations.
+- Extraction and merge use separate model, thinking, prompt, retry, and size-target configurations.
 - An omitted model or thinking setting resolves to values active in the initiating Pi process when the operation starts.
-- The extension ships one extraction system prompt and one shared merge system prompt.
+- The extension ships one extraction system prompt and separate local and global merge system prompts.
 - Configuration can replace either prompt with an absolute file path.
 - The extraction prompt requests critical changes, obstacles encountered during work, and information useful to future sessions instead of a session retelling.
 - The merge prompt owns concision and semantic balance between strategic and tactical knowledge.
@@ -248,13 +250,17 @@ knowledge/data/<project-prefix>-<project-digest>/
 - `NOT_FOUND` is the only no-knowledge response and contains no additional text.
 - A positive result is non-empty concise Markdown without a required category structure.
 - Empty or contract-invalid output is returned to the extraction model with format feedback.
+- Output that exceeds the target file limit or is provider-truncated is retried with a reduced A4-page target.
 - Extraction retries stop after the configured finite retry allowance.
 
 ### Token-limit retries
 
-- Global and local limits are evaluated independently with `estimateTextTokens(text, undefined, undefined)` from `pi-package/shared/context-size.ts`.
-- This function uses the project's existing `js-tiktoken` tokenizers and a conservative model-independent count.
-- When merge output exceeds the target file limit, the merge model receives the actual output token count and unchanged allowed limit.
+- Global and local limits are evaluated independently with `countKnowledgeTextTokens` from `pi-package/shared/context-size.ts`.
+- This function counts with the single fixed `o200k_base` encoding.
+- Every operation request states a target size as a simple fraction of an A4 page with a fixed 500-word anchor and a hard token ceiling.
+- When merge output exceeds the target file limit or is provider-truncated, the next attempt resends the identical request with a reduced A4-page target.
+- The reduced target is the previous target multiplied by the operation's reduction coefficient and rounded to the nearest eighth.
+- The fraction is a guide; the configured token limit remains the hard ceiling enforced by the owner.
 - Exhausting configured retries leaves the stored file unchanged when direct writing has not started.
 
 ### Failure behavior

@@ -99,6 +99,11 @@ export function countProjectionTextTokens(text: string): number {
 	return countTokens(text, "o200k_base");
 }
 
+/** Returns a tokenizer-based count for bounded knowledge files with the fixed o200k encoding. */
+export function countKnowledgeTextTokens(text: string): number {
+	return countTokens(text, "o200k_base");
+}
+
 /** Counts only fields that become model-visible provider input. */
 function estimateModelVisibleContextTokens(
 	context: Context,

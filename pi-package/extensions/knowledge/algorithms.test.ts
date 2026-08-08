@@ -50,7 +50,10 @@ const IDENTITY_METADATA: IdentityMetadata = {
 };
 
 /** Creates one text-only auxiliary response accepted by the shared response extractor. */
-function response(text: string): AssistantMessage {
+function response(
+	text: string,
+	stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
@@ -65,7 +68,7 @@ function response(text: string): AssistantMessage {
 			totalTokens: 2,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "stop",
+		stopReason,
 		timestamp: Date.now(),
 	};
 }
@@ -136,13 +139,26 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 			systemPrompt: "extract system",
 			taskPrompt: "summarize projected session",
 			retryCount: 1,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
-		merge: {
+		mergeLocal: {
 			model: undefined,
 			thinking: undefined,
-			systemPrompt: "merge system",
-			taskPrompt: "merge task prompt",
+			systemPrompt: "merge local system",
+			taskPrompt: "merge local task prompt",
 			retryCount: 2,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
+		},
+		mergeGlobal: {
+			model: undefined,
+			thinking: undefined,
+			systemPrompt: "merge global system",
+			taskPrompt: "merge global task prompt",
+			retryCount: 2,
+			initialFraction: 2 / 3,
+			reductionCoefficient: 3 / 4,
 		},
 		...overrides,
 	};
@@ -155,6 +171,7 @@ function createOptions(options: {
 	readonly outputs: readonly string[];
 	readonly contexts: Context[];
 	readonly configuration?: KnowledgeConfig;
+	readonly stopReasons?: readonly AssistantMessage["stopReason"][];
 }): Parameters<typeof runLocalKnowledgeAccumulation>[0] {
 	const projectPaths = createProjectPaths("/catalog", "project-a-digest");
 	const branchPaths = createBranchPaths(projectPaths, "feature/a");
@@ -188,11 +205,12 @@ function createOptions(options: {
 		completeSimple: async (_model, context) => {
 			options.contexts.push(context);
 			const text = options.outputs[outputIndex];
+			const stopReason = options.stopReasons?.[outputIndex] ?? "stop";
 			outputIndex += 1;
 			if (text === undefined) {
 				throw new Error("unexpected completion call");
 			}
-			return response(text);
+			return response(text, stopReason);
 		},
 		signal: undefined,
 		replay: async ({ branchEntries }) => {
@@ -337,7 +355,7 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
-	 * Proves local format feedback and oversized merge feedback use finite configured retries.
+	 * Proves local format feedback uses finite retries while oversized merge repair resends the same request with a reduced target.
 	 * Inputs and expected outputs: empty extraction repairs once; oversized merge reports 17 against unchanged limit 5, then writes repaired Markdown.
 	 * Edge case: stored local knowledge is supplied to merge and replacement occurs only for the within-limit response.
 	 * Dependencies: the owner supplies the authoritative tokenizer count used in feedback.
@@ -360,14 +378,16 @@ describe("knowledge accumulation algorithms", () => {
 		// Act: local accumulation repairs both protocol defects within configured allowances.
 		const result = await runLocalKnowledgeAccumulation(options);
 
-		// Assert: feedback carries runtime-significant marker and exact count/limit values.
+		// Assert: extraction feedback carries the contract marker, while the merge retry resends one reduced-target message.
 		expect(result).toEqual({ kind: "written" });
 		expect(contexts).toHaveLength(4);
 		expect(String(contexts[1]?.messages.at(-1)?.content)).toContain(
 			"NOT_FOUND",
 		);
-		expect(String(contexts[3]?.messages.at(-1)?.content)).toContain("17");
-		expect(String(contexts[3]?.messages.at(-1)?.content)).toContain("5");
+		const mergeRetry = String(contexts[3]?.messages[0]?.content);
+		expect(contexts[3]?.messages).toHaveLength(1);
+		expect(mergeRetry).toContain("1/2 of an A4 page");
+		expect(mergeRetry).toContain("Hard token ceiling: 5000 tokens");
 		expect(owner.replacements.map(({ text }) => text)).toEqual([
 			"oversized merge",
 			"## Merged",
@@ -454,7 +474,7 @@ describe("knowledge accumulation algorithms", () => {
 	/**
 	 * Proves finite oversized-merge exhaustion leaves pre-write storage and digest state unchanged.
 	 * Inputs and expected outputs: three oversized responses consume initial plus two retries and reject.
-	 * Edge case: each feedback keeps the configured limit while reporting its response's actual count.
+	 * Edge case: each retry resends one reduced-target message without previous-output history.
 	 * Dependencies: owner over-limit outcomes prove no direct write started.
 	 */
 	test("leaves storage unchanged when merge retries are exhausted", async () => {
@@ -485,8 +505,137 @@ describe("knowledge accumulation algorithms", () => {
 		expect(owner.events.filter((event) => event === "write-identity")).toEqual(
 			[],
 		);
-		expect(String(contexts[2]?.messages.at(-1)?.content)).toContain("12");
-		expect(String(contexts[2]?.messages.at(-1)?.content)).toContain("5");
+		const finalRetry = String(contexts[2]?.messages[0]?.content);
+		expect(contexts[2]?.messages).toHaveLength(1);
+		expect(finalRetry).toContain("3/8 of an A4 page");
+		expect(finalRetry).toContain("Hard token ceiling: 5000 tokens");
+	});
+
+	/**
+	 * Proves truncated extraction is repaired like an oversized one regardless of output length:
+	 * one reduced-target retry without history.
+	 * Inputs and expected outputs: truncated extraction (with text or empty) is retried at
+	 * 1/2 of an A4 page, then a fitting repair and one merge write.
+	 * Edge case: the retry rebuilds a single-message context and never resends the truncated output.
+	 * Dependencies: the size-target reduction chain owned by size-target.ts.
+	 */
+	test("treats truncated extraction as a size defect with a reduced target", async () => {
+		// Arrange: each truncation variant (with text or empty) is followed by a fitting repair; merge fits once.
+		for (const truncated of ["truncated output", ""]) {
+			const owner = new RecordingOwner();
+			const contexts: Context[] = [];
+			const options = createOptions({
+				owner,
+				snapshots: { global: null, local: null },
+				outputs: [truncated, "## New", "## Merged"],
+				stopReasons: ["length", "stop", "stop"],
+				contexts,
+			});
+
+			// Act: run one local accumulation over a truncated extraction response.
+			const result = await runLocalKnowledgeAccumulation(options);
+
+			// Assert: the retry resends one reduced-target message without previous-output history.
+			expect(result).toEqual({ kind: "written" });
+			expect(contexts).toHaveLength(3);
+			expect(contexts[1]?.messages).toHaveLength(1);
+			const extractionRetry = String(contexts[1]?.messages[0]?.content);
+			expect(extractionRetry).toContain("1/2 of an A4 page");
+			expect(extractionRetry).toContain("Hard token ceiling: 5000 tokens");
+			expect(extractionRetry).not.toContain(
+				"Return non-empty concise Markdown",
+			);
+			expect(owner.replacements.map(({ text }) => text)).toEqual(["## Merged"]);
+		}
+	});
+
+	/**
+	 * Proves oversized extraction retries with a reduced target and reports exhaustion with a combined message.
+	 * Inputs and expected outputs: oversized extraction retries at 1/2, then an oversized retry throws the size-limit error.
+	 * Edge case: exhaustion leaves storage untouched because extraction never started a write.
+	 * Dependencies: the extraction retry allowance and the fixed o200k tokenizer.
+	 */
+	test("retries oversized extraction and throws when size repairs are exhausted", async () => {
+		// Arrange: both extraction attempts exceed the configured token limit.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: null, local: null },
+			outputs: [`${"oversized ".repeat(20)}`, `${"oversized ".repeat(20)}`],
+			contexts,
+			configuration: config({ localTokenLimit: 5 }),
+		});
+
+		// Act and assert: the first attempt retries at a reduced target, the second throws.
+		await expect(runLocalKnowledgeAccumulation(options)).rejects.toThrow(
+			"knowledge extraction output exceeds the knowledge token limit or was truncated",
+		);
+		expect(contexts).toHaveLength(2);
+		const extractionRetry = String(contexts[1]?.messages[0]?.content);
+		expect(contexts[1]?.messages).toHaveLength(1);
+		expect(extractionRetry).toContain("1/2 of an A4 page");
+		expect(extractionRetry).toContain("Hard token ceiling: 5 tokens");
+		expect(owner.events).toEqual([]);
+	});
+
+	/**
+	 * Proves provider-truncated merge output is retried with a reduced target.
+	 * Inputs and expected outputs: one truncated merge response is followed by one fitting repair that writes.
+	 * Edge case: the truncation path mirrors extraction and never resends the truncated output.
+	 * Dependencies: retryMergeWithReducedTarget and the size-target reduction chain.
+	 */
+	test("retries provider-truncated merge with a reduced target", async () => {
+		// Arrange: global merge first truncates, then returns a fitting repair.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: "global old", local: "local new" },
+			outputs: ["truncated merge", "## Merged"],
+			stopReasons: ["length", "stop"],
+			contexts,
+		});
+
+		// Act: global accumulation runs over one truncated merge response.
+		await runGlobalKnowledgeAccumulation(options);
+
+		// Assert: the retry resends one reduced-target message without previous-output history.
+		expect(contexts).toHaveLength(2);
+		expect(contexts[1]?.messages).toHaveLength(1);
+		const mergeRetry = String(contexts[1]?.messages[0]?.content);
+		expect(mergeRetry).toContain("1/2 of an A4 page");
+		expect(owner.replacements.map(({ text }) => text)).toEqual(["## Merged"]);
+	});
+
+	/**
+	 * Proves an empty truncated merge response is still a size defect.
+	 * Inputs and expected outputs: a reasoning model that spends its whole output budget on thinking
+	 * returns zero text parts with stopReason "length"; the merge retry uses a reduced target, not a format error.
+	 * Edge case: empty text plus truncation must not fail the merge before the size repair.
+	 * Dependencies: retryMergeWithReducedTarget and the size-target reduction chain.
+	 */
+	test("treats empty truncated merge as a size defect with a reduced target", async () => {
+		// Arrange: global merge first returns empty text truncated by the provider, then a fitting repair.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: "global old", local: "local new" },
+			outputs: ["", "## Merged"],
+			stopReasons: ["length", "stop"],
+			contexts,
+		});
+
+		// Act: global accumulation runs over one empty truncated merge response.
+		await runGlobalKnowledgeAccumulation(options);
+
+		// Assert: the retry resends one reduced-target message without previous-output history.
+		expect(contexts).toHaveLength(2);
+		expect(contexts[1]?.messages).toHaveLength(1);
+		const mergeRetry = String(contexts[1]?.messages[0]?.content);
+		expect(mergeRetry).toContain("1/2 of an A4 page");
+		expect(owner.replacements.map(({ text }) => text)).toEqual(["## Merged"]);
 	});
 
 	/**
@@ -513,7 +662,7 @@ describe("knowledge accumulation algorithms", () => {
 		const mergeMessage = String(contexts[0]?.messages[0]?.content);
 		const incomingEnd = mergeMessage.lastIndexOf("</incoming_knowledge>");
 		expect(incomingEnd).toBeGreaterThan(-1);
-		const taskPromptStart = mergeMessage.indexOf("merge task prompt");
+		const taskPromptStart = mergeMessage.indexOf("merge global task prompt");
 		expect(taskPromptStart).toBeGreaterThan(incomingEnd);
 	});
 });

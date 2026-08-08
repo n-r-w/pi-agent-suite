@@ -17,6 +17,7 @@ import {
 	resolveAuxiliaryLlmRuntime,
 } from "../../shared/auxiliary-llm";
 import { replayContextProjection } from "../../shared/context-projection";
+import { countKnowledgeTextTokens } from "../../shared/context-size";
 import type { KnowledgeSnapshots } from "../../shared/knowledge-runtime";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import type { KnowledgeConfig, KnowledgeOperationConfig } from "./config";
@@ -29,6 +30,11 @@ import {
 	type KnowledgeTarget,
 } from "./owner";
 import type { BranchPaths, ProjectPaths } from "./paths";
+import {
+	A4_PAGE_ANCHOR_TEXT,
+	formatA4Fraction,
+	nextReducedFraction,
+} from "./size-target";
 
 const NOT_FOUND = "NOT_FOUND";
 
@@ -72,7 +78,7 @@ interface KnowledgeAlgorithmOptions {
 }
 
 /** Reports whether an accumulation performed a complete knowledge replacement. */
-export type KnowledgeAlgorithmResult =
+type KnowledgeAlgorithmResult =
 	| { readonly kind: "noop" }
 	| { readonly kind: "written" };
 
@@ -108,24 +114,16 @@ export async function runLocalKnowledgeAccumulation(
 		cwd: options.ctx.cwd,
 		loadedSkillRoots: options.loadedSkillRoots,
 	});
-	const extractionTaskPrompt = extraction.operation.taskPrompt;
-	const extractionContext: Context = {
-		systemPrompt: extraction.operation.systemPrompt,
-		messages: [
-			userMessage(
-				formatExtractionRequest(
-					renderKnowledgeBlock(options.snapshots),
-					formatSummarySource(convertToLlm(projected)),
-					extractionTaskPrompt,
-				),
-			),
-		],
-		tools: [],
+	const extractionRequest: ExtractionRequest = {
+		knowledgeBlock: renderKnowledgeBlock(options.snapshots),
+		source: formatSummarySource(convertToLlm(projected)),
+		taskPrompt: extraction.operation.taskPrompt,
 	};
 	const extracted = await extractKnowledge(
 		options,
 		extraction,
-		extractionContext,
+		extractionRequest,
+		options.config.localTokenLimit,
 	);
 	if (extracted === null) {
 		return { kind: "noop" };
@@ -134,7 +132,7 @@ export async function runLocalKnowledgeAccumulation(
 	options.reportProgress?.("merge_local_knowledge");
 	const merge = await resolveOperationRuntime(
 		options.ctx,
-		options.config.merge,
+		options.config.mergeLocal,
 	);
 	const target: KnowledgeTarget = {
 		scope: "local",
@@ -176,7 +174,7 @@ export async function runGlobalKnowledgeAccumulation(
 	options.reportProgress?.("merge_global_knowledge");
 	const merge = await resolveOperationRuntime(
 		options.ctx,
-		options.config.merge,
+		options.config.mergeGlobal,
 	);
 	await mergeAndReplace({
 		options,
@@ -205,44 +203,131 @@ export async function runGlobalKnowledgeAccumulation(
 	return { kind: "written" };
 }
 
-/** Runs finite extraction-format repair and distinguishes only the exact no-op marker. */
+/** Carries the immutable extraction source plus the current size-target state. */
+interface ExtractionRequest {
+	readonly knowledgeBlock: string | null;
+	readonly source: string;
+	readonly taskPrompt: string;
+}
+
+/** Tracks one extraction attempt's fraction, token ceiling, and format-repair history. */
+interface ExtractionAttemptState {
+	readonly request: ExtractionRequest;
+	readonly tokenLimit: number;
+	readonly fraction: number;
+	readonly attempt: number;
+	readonly context: Context;
+}
+
+/** Runs finite extraction repair and distinguishes only the exact no-op marker. */
 function extractKnowledge(
 	options: KnowledgeAlgorithmOptions,
 	operation: ResolvedOperationRuntime,
-	context: Context,
+	request: ExtractionRequest,
+	tokenLimit: number,
 ): Promise<string | null> {
-	return extractKnowledgeAttempt(options, operation, context, 0);
+	const initialFraction = operation.operation.initialFraction;
+	return extractKnowledgeAttempt(options, operation, {
+		request,
+		tokenLimit,
+		fraction: initialFraction,
+		attempt: 0,
+		context: buildExtractionContext(
+			operation,
+			request,
+			tokenLimit,
+			initialFraction,
+		),
+	});
 }
 
-/** Performs one sequential extraction attempt because each repair depends on prior output. */
+/**
+ * Performs one sequential extraction attempt with size repair and format-repair history.
+ * Format and size repairs share the configured retry allowance: a format defect at
+ * attempt zero leaves fewer attempts for later size defects.
+ */
 async function extractKnowledgeAttempt(
 	options: KnowledgeAlgorithmOptions,
 	operation: ResolvedOperationRuntime,
-	context: Context,
-	attempt: number,
+	state: ExtractionAttemptState,
 ): Promise<string | null> {
-	const completion = await completeText(options, operation, context);
+	const completion = await completeText(options, operation, state.context);
 	if (completion.rawText === NOT_FOUND) {
 		return null;
+	}
+	if (
+		completion.response.stopReason === "length" ||
+		(completion.text.length > 0 &&
+			countKnowledgeTextTokens(completion.text) > state.tokenLimit)
+	) {
+		// Truncated or oversized extraction is retried with a reduced target and no previous-output history.
+		if (state.attempt === operation.operation.retryCount) {
+			throw new Error(
+				"knowledge extraction output exceeds the knowledge token limit or was truncated",
+			);
+		}
+		const nextFraction = nextReducedFraction(
+			state.fraction,
+			operation.operation.reductionCoefficient,
+		);
+		return extractKnowledgeAttempt(options, operation, {
+			...state,
+			fraction: nextFraction,
+			attempt: state.attempt + 1,
+			context: buildExtractionContext(
+				operation,
+				state.request,
+				state.tokenLimit,
+				nextFraction,
+			),
+		});
 	}
 	if (completion.text.length > 0) {
 		return completion.text;
 	}
-	if (attempt === operation.operation.retryCount) {
+	// Empty extraction is a format defect repaired with feedback history.
+	if (state.attempt === operation.operation.retryCount) {
 		throw new Error(
 			`knowledge extraction response contract was not satisfied: ${completion.rawText}`,
 		);
 	}
-	context.messages.push(
+	state.context.messages.push(
 		completion.response,
 		userMessage(
 			"Return non-empty concise Markdown, or return exactly NOT_FOUND with no other text.",
 		),
 	);
-	return extractKnowledgeAttempt(options, operation, context, attempt + 1);
+	return extractKnowledgeAttempt(options, operation, {
+		...state,
+		attempt: state.attempt + 1,
+	});
 }
 
-/** Retries only oversized merge output and writes the first response within the owner limit. */
+/** Builds one extraction request with the current A4-page size target. */
+function buildExtractionContext(
+	operation: ResolvedOperationRuntime,
+	request: ExtractionRequest,
+	tokenLimit: number,
+	fraction: number,
+): Context {
+	return {
+		systemPrompt: operation.operation.systemPrompt,
+		messages: [
+			userMessage(
+				formatExtractionRequest({
+					knowledgeBlock: request.knowledgeBlock,
+					source: request.source,
+					taskPrompt: request.taskPrompt,
+					tokenLimit,
+					fraction,
+				}),
+			),
+		],
+		tools: [],
+	};
+}
+
+/** Runs one merge and retries only size-rejected output with a reduced target. */
 async function mergeAndReplace({
 	options,
 	operation,
@@ -258,34 +343,55 @@ async function mergeAndReplace({
 	readonly incoming: string;
 	readonly tokenLimit: number;
 }): Promise<void> {
+	await mergeAttempt(options, operation, {
+		target,
+		existing: existing ?? "",
+		incoming,
+		tokenLimit,
+		taskPrompt: operation.operation.taskPrompt,
+		attempt: 0,
+		fraction: operation.operation.initialFraction,
+	});
+}
+
+/** One immutable merge request plus the current size-target state. */
+interface MergeAttemptState {
+	readonly target: KnowledgeTarget;
+	readonly existing: string;
+	readonly incoming: string;
+	readonly tokenLimit: number;
+	readonly taskPrompt: string;
+	readonly attempt: number;
+	readonly fraction: number;
+}
+
+/** Performs one sequential merge attempt; each size repair resends the same request with a reduced target. */
+async function mergeAttempt(
+	options: KnowledgeAlgorithmOptions,
+	operation: ResolvedOperationRuntime,
+	state: MergeAttemptState,
+): Promise<void> {
 	const context: Context = {
 		systemPrompt: operation.operation.systemPrompt,
 		messages: [
 			userMessage(
-				formatMergeRequest(
-					existing ?? "",
-					incoming,
-					tokenLimit,
-					operation.operation.taskPrompt,
-				),
+				formatMergeRequest({
+					existing: state.existing,
+					incoming: state.incoming,
+					tokenLimit: state.tokenLimit,
+					fraction: state.fraction,
+					taskPrompt: state.taskPrompt,
+				}),
 			),
 		],
 		tools: [],
 	};
-	await mergeAttempt(options, operation, { target, context, attempt: 0 });
-}
-
-/** Performs one sequential merge attempt because each size repair depends on its tokenizer count. */
-async function mergeAttempt(
-	options: KnowledgeAlgorithmOptions,
-	operation: ResolvedOperationRuntime,
-	state: {
-		readonly target: KnowledgeTarget;
-		readonly context: Context;
-		readonly attempt: number;
-	},
-): Promise<void> {
-	const completion = await completeText(options, operation, state.context);
+	const completion = await completeText(options, operation, context);
+	// Provider truncation is a size defect that cannot be accepted as knowledge.
+	if (completion.response.stopReason === "length") {
+		await retryMergeWithReducedTarget(options, operation, state);
+		return;
+	}
 	if (completion.text.length === 0) {
 		throw new Error("knowledge merge returned no Markdown");
 	}
@@ -296,19 +402,27 @@ async function mergeAttempt(
 	if (replacement.kind === "written") {
 		return;
 	}
+	await retryMergeWithReducedTarget(options, operation, state);
+}
+
+/** Re-attempts one merge with a reduced A4-page target or reports exhaustion. */
+async function retryMergeWithReducedTarget(
+	options: KnowledgeAlgorithmOptions,
+	operation: ResolvedOperationRuntime,
+	state: MergeAttemptState,
+): Promise<void> {
 	if (state.attempt === operation.operation.retryCount) {
-		throw new Error("merge output exceeds the knowledge token limit");
+		throw new Error(
+			"merge output exceeds the knowledge token limit or was truncated",
+		);
 	}
-	state.context.messages.push(
-		completion.response,
-		userMessage(
-			`The merge output contains ${replacement.tokenCount} tokens. Return a complete replacement containing at most ${replacement.tokenLimit} tokens; the limit is unchanged.`,
-		),
-	);
 	await mergeAttempt(options, operation, {
-		target: state.target,
-		context: state.context,
+		...state,
 		attempt: state.attempt + 1,
+		fraction: nextReducedFraction(
+			state.fraction,
+			operation.operation.reductionCoefficient,
+		),
 	});
 }
 
@@ -319,23 +433,15 @@ async function completeText(
 	context: Context,
 ): Promise<CompletionText> {
 	throwIfCancelled(options.signal);
-	// Each request receives a stable snapshot so later repair messages cannot mutate prior call evidence.
-	const requestContext: Context = {
-		...context,
-		messages: [...context.messages],
-	};
 	if (
-		!doesAuxiliaryLlmInputFitContextWindow(
-			requestContext,
-			operation.runtime.model,
-		)
+		!doesAuxiliaryLlmInputFitContextWindow(context, operation.runtime.model)
 	) {
 		throw new Error("knowledge model input exceeds its context window");
 	}
 	const response = await completeAuxiliaryLlm(
 		options.completeSimple,
 		operation.runtime,
-		requestContext,
+		context,
 		buildAuxiliaryLlmOptions(
 			operation.operation.thinking ??
 				operation.resolvedThinking ??
@@ -385,18 +491,21 @@ async function resolveOperationRuntime(
 }
 
 /** Builds one explicit extraction request that includes current knowledge and source data. */
-function formatExtractionRequest(
-	knowledgeBlock: string | null,
-	source: string,
-	taskPrompt: string,
-): string {
+function formatExtractionRequest(options: {
+	readonly knowledgeBlock: string | null;
+	readonly source: string;
+	readonly taskPrompt: string;
+	readonly tokenLimit: number;
+	readonly fraction: number;
+}): string {
 	return [
-		...(knowledgeBlock === null ? [] : [knowledgeBlock, ""]),
+		...(options.knowledgeBlock === null ? [] : [options.knowledgeBlock, ""]),
+		formatSizeTargetSentence(options.fraction, options.tokenLimit),
 		"<summary_source>",
-		source,
+		options.source,
 		"</summary_source>",
 		"",
-		taskPrompt,
+		options.taskPrompt,
 	].join("\n");
 }
 
@@ -450,23 +559,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Builds the explicit opaque-Markdown merge request shared by local and global accumulation. */
-function formatMergeRequest(
-	existing: string,
-	incoming: string,
-	tokenLimit: number,
-	taskPrompt: string,
-): string {
+function formatMergeRequest(options: {
+	readonly existing: string;
+	readonly incoming: string;
+	readonly tokenLimit: number;
+	readonly fraction: number;
+	readonly taskPrompt: string;
+}): string {
 	return [
-		`The complete replacement must contain at most ${tokenLimit} tokens.`,
+		formatSizeTargetSentence(options.fraction, options.tokenLimit),
 		"<stored_knowledge>",
-		existing,
+		options.existing,
 		"</stored_knowledge>",
 		"<incoming_knowledge>",
-		incoming,
+		options.incoming,
 		"</incoming_knowledge>",
 		"",
-		taskPrompt,
+		options.taskPrompt,
 	].join("\n");
+}
+
+/** Builds the A4-page size-target sentence with the fixed anchor and hard token ceiling. */
+function formatSizeTargetSentence(
+	fraction: number,
+	tokenLimit: number,
+): string {
+	return `Target size: ${formatA4Fraction(fraction)}. ${A4_PAGE_ANCHOR_TEXT} Hard token ceiling: ${tokenLimit} tokens.`;
 }
 
 /** Creates one explicit user instruction for an isolated auxiliary request. */

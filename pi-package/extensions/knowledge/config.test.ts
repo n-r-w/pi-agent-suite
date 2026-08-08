@@ -73,17 +73,30 @@ describe("knowledge configuration", () => {
 				model: undefined,
 				thinking: undefined,
 				retryCount: 1,
+				initialFraction: 2 / 3,
+				reductionCoefficient: 3 / 4,
 			},
-			merge: {
+			mergeLocal: {
 				model: undefined,
 				thinking: undefined,
 				retryCount: 2,
+				initialFraction: 2 / 3,
+				reductionCoefficient: 3 / 4,
+			},
+			mergeGlobal: {
+				model: undefined,
+				thinking: undefined,
+				retryCount: 2,
+				initialFraction: 2 / 3,
+				reductionCoefficient: 3 / 4,
 			},
 		});
 		expect(result.config.extraction.systemPrompt).toBeDefined();
 		expect(result.config.extraction.taskPrompt).toBeDefined();
-		expect(result.config.merge.systemPrompt).toBeDefined();
-		expect(result.config.merge.taskPrompt).toBeDefined();
+		expect(result.config.mergeLocal.systemPrompt).toBeDefined();
+		expect(result.config.mergeLocal.taskPrompt).toBeDefined();
+		expect(result.config.mergeGlobal.systemPrompt).toBeDefined();
+		expect(result.config.mergeGlobal.taskPrompt).toBeDefined();
 	});
 
 	/** Verifies that every top-level and nested setting can be overridden independently. */
@@ -93,12 +106,19 @@ describe("knowledge configuration", () => {
 		const dataDir = join(agentSuiteDir, "catalog");
 		const extractionSystemPrompt = join(agentSuiteDir, "extract-system.md");
 		const extractionTaskPrompt = join(agentSuiteDir, "extract-task.md");
-		const mergeSystemPrompt = join(agentSuiteDir, "merge-system.md");
-		const mergeTaskPrompt = join(agentSuiteDir, "merge.md");
+		const mergeLocalSystemPrompt = join(agentSuiteDir, "merge-local-system.md");
+		const mergeLocalTaskPrompt = join(agentSuiteDir, "merge-local.md");
+		const mergeGlobalSystemPrompt = join(
+			agentSuiteDir,
+			"merge-global-system.md",
+		);
+		const mergeGlobalTaskPrompt = join(agentSuiteDir, "merge-global.md");
 		await writeFile(extractionSystemPrompt, "Extract durable knowledge.");
 		await writeFile(extractionTaskPrompt, "Summarize this branch session.");
-		await writeFile(mergeSystemPrompt, "Merge system rules.");
-		await writeFile(mergeTaskPrompt, "Merge durable knowledge.");
+		await writeFile(mergeLocalSystemPrompt, "Merge local system rules.");
+		await writeFile(mergeLocalTaskPrompt, "Merge local durable knowledge.");
+		await writeFile(mergeGlobalSystemPrompt, "Merge global system rules.");
+		await writeFile(mergeGlobalTaskPrompt, "Merge global durable knowledge.");
 		const value = {
 			enabled: false,
 			dataDir,
@@ -112,13 +132,26 @@ describe("knowledge configuration", () => {
 				systemPromptFile: extractionSystemPrompt,
 				taskPromptFile: extractionTaskPrompt,
 				retryCount: 3,
+				initialFraction: "1/2",
+				reductionCoefficient: "1/2",
 			},
-			merge: {
+			mergeLocal: {
 				model: "anthropic/claude",
 				thinking: "xhigh",
-				systemPromptFile: mergeSystemPrompt,
-				taskPromptFile: mergeTaskPrompt,
+				systemPromptFile: mergeLocalSystemPrompt,
+				taskPromptFile: mergeLocalTaskPrompt,
 				retryCount: 4,
+				initialFraction: "5/8",
+				reductionCoefficient: "3/4",
+			},
+			mergeGlobal: {
+				model: "openai/gpt-5",
+				thinking: "low",
+				systemPromptFile: mergeGlobalSystemPrompt,
+				taskPromptFile: mergeGlobalTaskPrompt,
+				retryCount: 1,
+				initialFraction: "3/4",
+				reductionCoefficient: "1/2",
 			},
 		} as const;
 
@@ -136,13 +169,26 @@ describe("knowledge configuration", () => {
 					systemPrompt: "Extract durable knowledge.",
 					taskPrompt: "Summarize this branch session.",
 					retryCount: value.extraction.retryCount,
+					initialFraction: 1 / 2,
+					reductionCoefficient: 1 / 2,
 				},
-				merge: {
-					model: value.merge.model,
-					thinking: value.merge.thinking,
-					systemPrompt: "Merge system rules.",
-					taskPrompt: "Merge durable knowledge.",
-					retryCount: value.merge.retryCount,
+				mergeLocal: {
+					model: value.mergeLocal.model,
+					thinking: value.mergeLocal.thinking,
+					systemPrompt: "Merge local system rules.",
+					taskPrompt: "Merge local durable knowledge.",
+					retryCount: value.mergeLocal.retryCount,
+					initialFraction: 5 / 8,
+					reductionCoefficient: 3 / 4,
+				},
+				mergeGlobal: {
+					model: value.mergeGlobal.model,
+					thinking: value.mergeGlobal.thinking,
+					systemPrompt: "Merge global system rules.",
+					taskPrompt: "Merge global durable knowledge.",
+					retryCount: value.mergeGlobal.retryCount,
+					initialFraction: 3 / 4,
+					reductionCoefficient: 1 / 2,
 				},
 			},
 		});
@@ -180,13 +226,26 @@ describe("knowledge configuration", () => {
 			{ extraction: { taskPromptFile: "relative.md" } },
 			{ extraction: { systemPromptFile: emptyPrompt } },
 			{ extraction: { taskPromptFile: emptyPrompt } },
-			{ merge: { unknown: true } },
-			{ merge: { model: "" } },
-			{ merge: { thinking: "unknown" } },
-			{ merge: { retryCount: 1.5 } },
-			{ merge: { systemPromptFile: missingPrompt } },
-			{ merge: { taskPromptFile: "relative.md" } },
-			{ merge: { taskPromptFile: emptyPrompt } },
+			{ extraction: { initialFraction: "0.5" } },
+			{ extraction: { initialFraction: "3/2" } },
+			{ extraction: { initialFraction: "1/9" } },
+			{ extraction: { reductionCoefficient: "x" } },
+			{ mergeLocal: { unknown: true } },
+			{ mergeLocal: { model: "" } },
+			{ mergeLocal: { thinking: "unknown" } },
+			{ mergeLocal: { retryCount: 1.5 } },
+			{ mergeLocal: { systemPromptFile: missingPrompt } },
+			{ mergeLocal: { taskPromptFile: "relative.md" } },
+			{ mergeLocal: { taskPromptFile: emptyPrompt } },
+			{ mergeLocal: { initialFraction: "2" } },
+			{ mergeGlobal: { unknown: true } },
+			{ mergeGlobal: { model: "" } },
+			{ mergeGlobal: { thinking: "unknown" } },
+			{ mergeGlobal: { retryCount: 1.5 } },
+			{ mergeGlobal: { systemPromptFile: missingPrompt } },
+			{ mergeGlobal: { taskPromptFile: "relative.md" } },
+			{ mergeGlobal: { taskPromptFile: emptyPrompt } },
+			{ mergeGlobal: { reductionCoefficient: "0.5" } },
 		];
 
 		// ACT
@@ -206,6 +265,21 @@ describe("knowledge configuration", () => {
 
 		// ACT
 		const result = readKnowledgeConfig(parseOptions(agentSuiteDir));
+
+		// ASSERT
+		expect(result.kind).toBe("invalid");
+	});
+
+	/** Verifies that the removed merge key fails closed without a legacy alias. */
+	test("rejects the legacy merge key without fallback", async () => {
+		// ARRANGE
+		const agentSuiteDir = await createSuiteDirectory();
+
+		// ACT
+		const result = parseKnowledgeConfig(
+			{ merge: { retryCount: 2 } },
+			parseOptions(agentSuiteDir),
+		);
 
 		// ASSERT
 		expect(result.kind).toBe("invalid");
