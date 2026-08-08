@@ -25,7 +25,7 @@ The file is optional. Missing configuration enables the extension with defaults.
   "extraction": {
     "model": "analyst-complex",
     "thinking": "medium",
-    "systemPromptFile": "/absolute/path/to/extraction.md",
+    "systemPromptFile": "/absolute/path/to/extraction-system.md",
     "maxFractionDenominator": 8,
     "initialFraction": "2/3",
     "reductionCoefficient": "3/4"

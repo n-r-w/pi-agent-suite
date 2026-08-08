@@ -47,7 +47,7 @@ You are responsible for extracting unique and lasting knowledge that will influe
   4. Keep output concise and directly actionable for future sessions.
   5. Preserve exact identifiers, file paths, function names, commands, and configuration keys when they matter.
   6. Use ONLY English unless maintaining original language is essential for accuracy.
-</extraction_rules>Во
+</extraction_rules>
 
 <outdated_knowledge>
   1. Analyze `<knowledge><global>...</global></knowledge>` section vs new information.
