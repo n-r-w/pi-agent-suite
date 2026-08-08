@@ -1,7 +1,4 @@
-/** Maximum denominator accepted for A4-page size targets. */
-export const MAX_FRACTION_DENOMINATOR = 8;
-
-/** Half-way rounding offset used by the nearest-eighth reduction rule. */
+/** Half-way rounding offset used by the nearest-Nth reduction rule. */
 const ROUNDING_HALF = 0.5;
 
 /** Simple-fraction contract accepted by configuration parsing. */
@@ -11,11 +8,14 @@ const SIMPLE_FRACTION_PATTERN = /^\d+\/\d+$/u;
 export const A4_PAGE_ANCHOR_TEXT = "One A4 page is about 500 words.";
 
 /** Formats one size target as a simple A4 page fraction, never as a decimal. */
-export function formatA4Fraction(fraction: number): string {
+export function formatA4Fraction(
+	fraction: number,
+	maxDenominator: number,
+): string {
 	if (fraction >= 1) {
 		return "a full A4 page";
 	}
-	const { numerator, denominator } = toSimpleFraction(fraction);
+	const { numerator, denominator } = toSimpleFraction(fraction, maxDenominator);
 	return `${numerator}/${denominator} of an A4 page`;
 }
 
@@ -23,17 +23,21 @@ export function formatA4Fraction(fraction: number): string {
 export function nextReducedFraction(
 	fraction: number,
 	coefficient: number,
+	maxDenominator: number,
 ): number {
 	const reduced = fraction * coefficient;
-	const eighthCount = Math.floor(
-		reduced * MAX_FRACTION_DENOMINATOR + ROUNDING_HALF - Number.EPSILON,
+	const partCount = Math.floor(
+		reduced * maxDenominator + ROUNDING_HALF - Number.EPSILON,
 	);
-	const clamped = Math.max(1, Math.min(MAX_FRACTION_DENOMINATOR, eighthCount));
-	return clamped / MAX_FRACTION_DENOMINATOR;
+	const clamped = Math.max(1, Math.min(maxDenominator, partCount));
+	return clamped / maxDenominator;
 }
 
-/** Parses one "n/d" fraction string with a denominator of at most eight. */
-export function parseSimpleFraction(value: unknown): number | string {
+/** Parses one "n/d" fraction string with a denominator of at most maxDenominator. */
+export function parseSimpleFraction(
+	value: unknown,
+	maxDenominator: number,
+): number | string {
 	if (typeof value !== "string" || !SIMPLE_FRACTION_PATTERN.test(value)) {
 		return "must be a simple fraction like 2/3";
 	}
@@ -46,25 +50,24 @@ export function parseSimpleFraction(value: unknown): number | string {
 	if (numerator > denominator) {
 		return "fraction must not exceed 1";
 	}
-	if (denominator > MAX_FRACTION_DENOMINATOR) {
-		return `fraction denominator must not exceed ${MAX_FRACTION_DENOMINATOR}`;
+	if (denominator > maxDenominator) {
+		return `fraction denominator must not exceed ${maxDenominator}`;
 	}
 	return numerator / denominator;
 }
 
-/** Finds the closest simple fraction with a denominator of at most eight. */
-function toSimpleFraction(value: number): {
+/** Finds the closest simple fraction with a denominator of at most maxDenominator. */
+function toSimpleFraction(
+	value: number,
+	maxDenominator: number,
+): {
 	readonly numerator: number;
 	readonly denominator: number;
 } {
 	let bestNumerator = 1;
 	let bestDenominator = 1;
 	let bestError = Number.POSITIVE_INFINITY;
-	for (
-		let denominator = 1;
-		denominator <= MAX_FRACTION_DENOMINATOR;
-		denominator += 1
-	) {
+	for (let denominator = 1; denominator <= maxDenominator; denominator += 1) {
 		const numerator = Math.round(value * denominator);
 		if (numerator < 1 || numerator > denominator) {
 			continue;

@@ -138,7 +138,7 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 			thinking: undefined,
 			systemPrompt: "extract system",
 			taskPrompt: "summarize projected session",
-			retryCount: 1,
+			maxFractionDenominator: 8,
 			initialFraction: 2 / 3,
 			reductionCoefficient: 3 / 4,
 		},
@@ -147,7 +147,7 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 			thinking: undefined,
 			systemPrompt: "merge local system",
 			taskPrompt: "merge local task prompt",
-			retryCount: 2,
+			maxFractionDenominator: 8,
 			initialFraction: 2 / 3,
 			reductionCoefficient: 3 / 4,
 		},
@@ -156,7 +156,7 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 			thinking: undefined,
 			systemPrompt: "merge global system",
 			taskPrompt: "merge global task prompt",
-			retryCount: 2,
+			maxFractionDenominator: 8,
 			initialFraction: 2 / 3,
 			reductionCoefficient: 3 / 4,
 		},
@@ -355,13 +355,13 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
-	 * Proves local format feedback uses finite retries while oversized merge repair resends the same request with a reduced target.
-	 * Inputs and expected outputs: empty extraction repairs once; oversized merge reports 17 against unchanged limit 5, then writes repaired Markdown.
+	 * Proves oversized merge repair resends the same request with a reduced target before replacement.
+	 * Inputs and expected outputs: one fitting extraction, one oversized merge, and one fitting repair.
 	 * Edge case: stored local knowledge is supplied to merge and replacement occurs only for the within-limit response.
-	 * Dependencies: the owner supplies the authoritative tokenizer count used in feedback.
+	 * Dependencies: the owner supplies the authoritative tokenizer count used in size rejection.
 	 */
-	test("repairs invalid extraction and oversized local merge before replacement", async () => {
-		// Arrange: one empty extraction defect, one positive repair, one oversized merge, and one fitting repair.
+	test("repairs oversized local merge before replacement", async () => {
+		// Arrange: one fitting extraction, one oversized merge, and one fitting repair.
 		const owner = new RecordingOwner();
 		owner.overLimitTexts.set("oversized merge", {
 			tokenCount: 17,
@@ -371,21 +371,18 @@ describe("knowledge accumulation algorithms", () => {
 		const options = createOptions({
 			owner,
 			snapshots: { global: "global", local: "stored local" },
-			outputs: ["", "## New", "oversized merge", "## Merged"],
+			outputs: ["## New", "oversized merge", "## Merged"],
 			contexts,
 		});
 
-		// Act: local accumulation repairs both protocol defects within configured allowances.
+		// Act: local accumulation repairs the merge size defect within the reduced-target chain.
 		const result = await runLocalKnowledgeAccumulation(options);
 
-		// Assert: extraction feedback carries the contract marker, while the merge retry resends one reduced-target message.
+		// Assert: the merge retry resends one reduced-target message without previous-output history.
 		expect(result).toEqual({ kind: "written" });
-		expect(contexts).toHaveLength(4);
-		expect(String(contexts[1]?.messages.at(-1)?.content)).toContain(
-			"NOT_FOUND",
-		);
-		const mergeRetry = String(contexts[3]?.messages[0]?.content);
-		expect(contexts[3]?.messages).toHaveLength(1);
+		expect(contexts).toHaveLength(3);
+		const mergeRetry = String(contexts[2]?.messages[0]?.content);
+		expect(contexts[2]?.messages).toHaveLength(1);
 		expect(mergeRetry).toContain("1/2 of an A4 page");
 		expect(mergeRetry).toContain("Hard token ceiling: 5000 tokens");
 		expect(owner.replacements.map(({ text }) => text)).toEqual([
@@ -472,43 +469,28 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
-	 * Proves finite oversized-merge exhaustion leaves pre-write storage and digest state unchanged.
-	 * Inputs and expected outputs: three oversized responses consume initial plus two retries and reject.
-	 * Edge case: each retry resends one reduced-target message without previous-output history.
-	 * Dependencies: owner over-limit outcomes prove no direct write started.
+	 * Proves an empty extraction output violates the response contract and fails immediately.
+	 * Inputs and expected outputs: one empty extraction response throws without any storage write.
+	 * Edge case: the empty response must not consume a reduced-target retry or format feedback.
+	 * Dependencies: extractKnowledgeAttempt routes empty text to a contract error.
 	 */
-	test("leaves storage unchanged when merge retries are exhausted", async () => {
-		// Arrange: every allowed global merge response exceeds the same configured limit.
+	test("fails immediately on empty extraction output", async () => {
+		// Arrange: extraction returns one empty non-NOT_FOUND response.
 		const owner = new RecordingOwner();
-		owner.overLimitTexts.set("large-1", { tokenCount: 11, tokenLimit: 5 });
-		owner.overLimitTexts.set("large-2", { tokenCount: 12, tokenLimit: 5 });
-		owner.overLimitTexts.set("large-3", { tokenCount: 13, tokenLimit: 5 });
 		const contexts: Context[] = [];
 		const options = createOptions({
 			owner,
-			snapshots: { global: "before", local: "changed" },
-			outputs: ["large-1", "large-2", "large-3"],
+			snapshots: { global: null, local: null },
+			outputs: [""],
 			contexts,
 		});
 
-		// Act and assert: exhaustion fails before local deletion, state, or identity writes.
-		await expect(runGlobalKnowledgeAccumulation(options)).rejects.toThrow(
-			"merge output exceeds the knowledge token limit",
+		// Act and assert: the empty output fails without retries or writes.
+		await expect(runLocalKnowledgeAccumulation(options)).rejects.toThrow(
+			"knowledge extraction response contract was not satisfied:",
 		);
-		expect(owner.replacements.map(({ text }) => text)).toEqual([
-			"large-1",
-			"large-2",
-			"large-3",
-		]);
-		expect(owner.deletions).toEqual([]);
-		expect(owner.events.filter((event) => event === "write-state")).toEqual([]);
-		expect(owner.events.filter((event) => event === "write-identity")).toEqual(
-			[],
-		);
-		const finalRetry = String(contexts[2]?.messages[0]?.content);
-		expect(contexts[2]?.messages).toHaveLength(1);
-		expect(finalRetry).toContain("3/8 of an A4 page");
-		expect(finalRetry).toContain("Hard token ceiling: 5000 tokens");
+		expect(contexts).toHaveLength(1);
+		expect(owner.events).toEqual([]);
 	});
 
 	/**
@@ -550,32 +532,39 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
-	 * Proves oversized extraction retries with a reduced target and reports exhaustion with a combined message.
-	 * Inputs and expected outputs: oversized extraction retries at 1/2, then an oversized retry throws the size-limit error.
-	 * Edge case: exhaustion leaves storage untouched because extraction never started a write.
-	 * Dependencies: the extraction retry allowance and the fixed o200k tokenizer.
+	 * Proves oversized extraction walks the reduced-target chain and stops at the fraction floor.
+	 * Inputs and expected outputs: oversized extraction goes 2/3 → 1/2 → 3/8 → 1/4 → 1/8 and throws
+	 * at the floor because the next step cannot shrink further.
+	 * Edge case: the final retry uses the minimum fraction; no storage write ever starts.
+	 * Dependencies: the fixed o200k tokenizer and the configured-scale floor contract.
 	 */
-	test("retries oversized extraction and throws when size repairs are exhausted", async () => {
-		// Arrange: both extraction attempts exceed the configured token limit.
+	test("stops oversized extraction at the fraction floor", async () => {
+		// Arrange: every extraction attempt exceeds the configured token limit.
 		const owner = new RecordingOwner();
 		const contexts: Context[] = [];
 		const options = createOptions({
 			owner,
 			snapshots: { global: null, local: null },
-			outputs: [`${"oversized ".repeat(20)}`, `${"oversized ".repeat(20)}`],
+			outputs: [
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+			],
 			contexts,
 			configuration: config({ localTokenLimit: 5 }),
 		});
 
-		// Act and assert: the first attempt retries at a reduced target, the second throws.
+		// Act and assert: the chain reaches 1/8 and the next step cannot shrink, so extraction throws.
 		await expect(runLocalKnowledgeAccumulation(options)).rejects.toThrow(
 			"knowledge extraction output exceeds the knowledge token limit or was truncated",
 		);
-		expect(contexts).toHaveLength(2);
-		const extractionRetry = String(contexts[1]?.messages[0]?.content);
-		expect(contexts[1]?.messages).toHaveLength(1);
-		expect(extractionRetry).toContain("1/2 of an A4 page");
-		expect(extractionRetry).toContain("Hard token ceiling: 5 tokens");
+		expect(contexts).toHaveLength(5);
+		const finalRetry = String(contexts[4]?.messages[0]?.content);
+		expect(contexts[4]?.messages).toHaveLength(1);
+		expect(finalRetry).toContain("1/8 of an A4 page");
+		expect(finalRetry).toContain("Hard token ceiling: 5 tokens");
 		expect(owner.events).toEqual([]);
 	});
 

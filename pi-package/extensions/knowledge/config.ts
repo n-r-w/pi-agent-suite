@@ -24,7 +24,7 @@ const OPERATION_KEYS = [
 	"thinking",
 	"systemPromptFile",
 	"taskPromptFile",
-	"retryCount",
+	"maxFractionDenominator",
 	"initialFraction",
 	"reductionCoefficient",
 ] as const;
@@ -37,15 +37,17 @@ const THINKING_LEVELS = [
 	"high",
 	"xhigh",
 ] as const;
-/** Defines bounded-file, retry, and primary-branch defaults. */
+/** Defines bounded-file and primary-branch defaults. */
 const DEFAULT_TOKEN_LIMIT = 5_000;
-const DEFAULT_EXTRACTION_RETRIES = 1;
-const DEFAULT_MERGE_RETRIES = 2;
 const DEFAULT_PRIMARY_BRANCHES = ["main", "master"] as const;
 const DEFAULT_PREFERRED_REMOTES = ["origin"] as const;
 /** Defines the A4-page size-target defaults shared by every model operation. */
 const DEFAULT_INITIAL_FRACTION = "2/3";
 const DEFAULT_REDUCTION_COEFFICIENT = "3/4";
+/** Defines the fraction-denominator range accepted per operation. */
+const MIN_FRACTION_DENOMINATOR = 4;
+const MAX_FRACTION_DENOMINATOR = 32;
+const DEFAULT_FRACTION_DENOMINATOR = 8;
 /** Defines the agent-suite-relative configuration and catalog locations. */
 const CONFIG_FILE = "config.json";
 const KNOWLEDGE_DIRECTORY = "knowledge";
@@ -74,13 +76,13 @@ type UnknownRecord = Record<string, unknown>;
 
 export type KnowledgeThinking = (typeof THINKING_LEVELS)[number];
 
-/** Holds one operation's resolved model, prompt, retry, and size-target settings. */
+/** Holds one operation's resolved model, prompt, and size-target settings. */
 export interface KnowledgeOperationConfig {
 	readonly model: string | undefined;
 	readonly thinking: KnowledgeThinking | undefined;
 	readonly systemPrompt: string;
 	readonly taskPrompt: string;
-	readonly retryCount: number;
+	readonly maxFractionDenominator: number;
 	readonly initialFraction: number;
 	readonly reductionCoefficient: number;
 }
@@ -144,7 +146,6 @@ export function parseKnowledgeConfig(
 		value: value["extraction"],
 		defaultPromptFile: BUNDLED_EXTRACTION_SYSTEM_PROMPT,
 		defaultTaskPromptFile: BUNDLED_EXTRACTION_TASK_PROMPT,
-		defaultRetryCount: DEFAULT_EXTRACTION_RETRIES,
 		fieldName: "extraction",
 		allowedKeys: OPERATION_KEYS,
 	});
@@ -155,7 +156,6 @@ export function parseKnowledgeConfig(
 		value: value["mergeLocal"],
 		defaultPromptFile: BUNDLED_MERGE_LOCAL_SYSTEM_PROMPT,
 		defaultTaskPromptFile: BUNDLED_MERGE_LOCAL_TASK_PROMPT,
-		defaultRetryCount: DEFAULT_MERGE_RETRIES,
 		fieldName: "mergeLocal",
 		allowedKeys: OPERATION_KEYS,
 	});
@@ -166,7 +166,6 @@ export function parseKnowledgeConfig(
 		value: value["mergeGlobal"],
 		defaultPromptFile: BUNDLED_MERGE_GLOBAL_SYSTEM_PROMPT,
 		defaultTaskPromptFile: BUNDLED_MERGE_GLOBAL_TASK_PROMPT,
-		defaultRetryCount: DEFAULT_MERGE_RETRIES,
 		fieldName: "mergeGlobal",
 		allowedKeys: OPERATION_KEYS,
 	});
@@ -314,7 +313,6 @@ interface ParseOperationConfigOptions {
 	readonly value: unknown;
 	readonly defaultPromptFile: string;
 	readonly defaultTaskPromptFile: string;
-	readonly defaultRetryCount: number;
 	readonly fieldName: string;
 	readonly allowedKeys: readonly string[];
 }
@@ -338,24 +336,27 @@ function parseOperationConfig(
 	if (thinking !== undefined && !isThinking(thinking)) {
 		return `${options.fieldName}.thinking is unsupported`;
 	}
-	const retryCount = parsed["retryCount"];
-	if (retryCount !== undefined && !isNonNegativeSafeInteger(retryCount)) {
-		return `${options.fieldName}.retryCount must be a non-negative safe integer`;
+	const maxFractionDenominator = resolveFractionDenominator(
+		parsed["maxFractionDenominator"],
+		options.fieldName,
+	);
+	if (typeof maxFractionDenominator === "string") {
+		return maxFractionDenominator;
 	}
 	const initialFraction = resolveFractionSetting(
 		parsed["initialFraction"],
-		options.fieldName,
-		"initialFraction",
+		`${options.fieldName}.initialFraction`,
 		DEFAULT_INITIAL_FRACTION,
+		maxFractionDenominator,
 	);
 	if (typeof initialFraction === "string") {
 		return initialFraction;
 	}
 	const reductionCoefficient = resolveFractionSetting(
 		parsed["reductionCoefficient"],
-		options.fieldName,
-		"reductionCoefficient",
+		`${options.fieldName}.reductionCoefficient`,
 		DEFAULT_REDUCTION_COEFFICIENT,
+		maxFractionDenominator,
 	);
 	if (typeof reductionCoefficient === "string") {
 		return reductionCoefficient;
@@ -383,7 +384,7 @@ function parseOperationConfig(
 		thinking,
 		systemPrompt: systemPrompt.content,
 		taskPrompt: taskPrompt.content,
-		retryCount: retryCount ?? options.defaultRetryCount,
+		maxFractionDenominator,
 		initialFraction,
 		reductionCoefficient,
 	};
@@ -403,16 +404,32 @@ function parseOperationRecord(
 	return value;
 }
 
+/** Resolves the per-operation denominator bound or its documented default. */
+function resolveFractionDenominator(
+	value: unknown,
+	fieldName: string,
+): number | string {
+	if (value === undefined) {
+		return DEFAULT_FRACTION_DENOMINATOR;
+	}
+	if (
+		!isIntegerInRange(value, MIN_FRACTION_DENOMINATOR, MAX_FRACTION_DENOMINATOR)
+	) {
+		return `${fieldName}.maxFractionDenominator must be an integer between ${MIN_FRACTION_DENOMINATOR} and ${MAX_FRACTION_DENOMINATOR}`;
+	}
+	return value;
+}
+
 /** Resolves one simple-fraction setting from config or its documented default. */
 function resolveFractionSetting(
 	value: unknown,
-	fieldName: string,
-	configKey: "initialFraction" | "reductionCoefficient",
+	fieldPath: string,
 	defaultValue: string,
+	maxDenominator: number,
 ): number | string {
-	const parsed = parseSimpleFraction(value ?? defaultValue);
+	const parsed = parseSimpleFraction(value ?? defaultValue, maxDenominator);
 	if (typeof parsed === "string") {
-		return `${fieldName}.${configKey} ${parsed}`;
+		return `${fieldPath} ${parsed}`;
 	}
 	return parsed;
 }
@@ -493,9 +510,18 @@ function isPositiveSafeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-/** Checks the finite retry allowance contract, including zero retries. */
-function isNonNegativeSafeInteger(value: unknown): value is number {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+/** Checks the inclusive integer range contract for fraction denominators. */
+function isIntegerInRange(
+	value: unknown,
+	min: number,
+	max: number,
+): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= min &&
+		value <= max
+	);
 }
 
 /** Checks JSON object shape without accepting arrays. */

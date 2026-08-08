@@ -75,7 +75,7 @@ Give agents and decision-support model calls the stored global project knowledge
 - One global Markdown file per knowledge project.
 - One local Markdown file per non-primary branch.
 - Local and global accumulation trigger types.
-- Configurable models, thinking levels, prompts, file token limits, retry counts, primary-branch variants, and data directory.
+- Configurable models, thinking levels, prompts, file token limits, fraction denominators, primary-branch variants, and data directory.
 - Automatic fail-closed project-key derivation from supported fetch URL forms.
 
 ### Non-Scope
@@ -106,8 +106,7 @@ Give agents and decision-support model calls the stored global project knowledge
 - Extraction and merge model settings default to the model active in the initiating Pi process when the operation starts.
 - Extraction and merge thinking settings default to the thinking level active in the initiating Pi process when the operation starts.
 - Bundled extraction, local-merge, and global-merge system prompts are used when prompt-file overrides are omitted.
-- The extraction format retry count defaults to one retry after the initial response.
-- The oversized merge retry count defaults to two retries after the initial response.
+- The maximum fraction denominator defaults to eight for every operation and accepts integers from four to thirty-two.
 - The initial size target defaults to two thirds of an A4 page for every operation.
 - The retry reduction coefficient defaults to three quarters for every operation.
 - Primary-branch variants default to `main` and `master`.
@@ -237,7 +236,7 @@ knowledge/data/<project-prefix>-<project-digest>/
 
 ### Models and prompts
 
-- Extraction and merge use separate model, thinking, prompt, retry, and size-target configurations.
+- Extraction and merge use separate model, thinking, prompt, fraction-denominator, and size-target configurations.
 - An omitted model or thinking setting resolves to values active in the initiating Pi process when the operation starts.
 - The extension ships one extraction system prompt and separate local and global merge system prompts.
 - Configuration can replace either prompt with an absolute file path.
@@ -249,9 +248,9 @@ knowledge/data/<project-prefix>-<project-digest>/
 
 - `NOT_FOUND` is the only no-knowledge response and contains no additional text.
 - A positive result is non-empty concise Markdown without a required category structure.
-- Empty or contract-invalid output is returned to the extraction model with format feedback.
+- Empty or contract-invalid output is a contract error and is never retried.
 - Output that exceeds the target file limit or is provider-truncated is retried with a reduced A4-page target.
-- Extraction retries stop after the configured finite retry allowance.
+- Extraction retries continue until the fraction chain reaches its floor `1/maxFractionDenominator`; reaching the floor fails the operation without a write.
 
 ### Token-limit retries
 
@@ -259,9 +258,9 @@ knowledge/data/<project-prefix>-<project-digest>/
 - This function counts with the single fixed `o200k_base` encoding.
 - Every operation request states a target size as a simple fraction of an A4 page with a fixed 500-word anchor and a hard token ceiling.
 - When merge output exceeds the target file limit or is provider-truncated, the next attempt resends the identical request with a reduced A4-page target.
-- The reduced target is the previous target multiplied by the operation's reduction coefficient and rounded to the nearest eighth.
+- The reduced target is the previous target multiplied by the operation's reduction coefficient, rounded to the nearest Nth with `N = maxFractionDenominator`, and clamped to the fraction floor `1/N`.
 - The fraction is a guide; the configured token limit remains the hard ceiling enforced by the owner.
-- Exhausting configured retries leaves the stored file unchanged when direct writing has not started.
+- Reaching the fraction floor `1/maxFractionDenominator` leaves the stored file unchanged when direct writing has not started.
 
 ### Failure behavior
 

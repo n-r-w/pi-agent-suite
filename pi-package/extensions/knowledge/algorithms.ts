@@ -215,7 +215,6 @@ interface ExtractionAttemptState {
 	readonly request: ExtractionRequest;
 	readonly tokenLimit: number;
 	readonly fraction: number;
-	readonly attempt: number;
 	readonly context: Context;
 }
 
@@ -231,7 +230,6 @@ function extractKnowledge(
 		request,
 		tokenLimit,
 		fraction: initialFraction,
-		attempt: 0,
 		context: buildExtractionContext(
 			operation,
 			request,
@@ -242,9 +240,8 @@ function extractKnowledge(
 }
 
 /**
- * Performs one sequential extraction attempt with size repair and format-repair history.
- * Format and size repairs share the configured retry allowance: a format defect at
- * attempt zero leaves fewer attempts for later size defects.
+ * Performs one sequential extraction attempt with size repair only.
+ * Truncated or oversized output is retried with a reduced target; empty output violates the contract.
  */
 async function extractKnowledgeAttempt(
 	options: KnowledgeAlgorithmOptions,
@@ -261,19 +258,19 @@ async function extractKnowledgeAttempt(
 			countKnowledgeTextTokens(completion.text) > state.tokenLimit)
 	) {
 		// Truncated or oversized extraction is retried with a reduced target and no previous-output history.
-		if (state.attempt === operation.operation.retryCount) {
+		const nextFraction = nextReducedFraction(
+			state.fraction,
+			operation.operation.reductionCoefficient,
+			operation.operation.maxFractionDenominator,
+		);
+		if (nextFraction === state.fraction) {
 			throw new Error(
 				"knowledge extraction output exceeds the knowledge token limit or was truncated",
 			);
 		}
-		const nextFraction = nextReducedFraction(
-			state.fraction,
-			operation.operation.reductionCoefficient,
-		);
 		return extractKnowledgeAttempt(options, operation, {
 			...state,
 			fraction: nextFraction,
-			attempt: state.attempt + 1,
 			context: buildExtractionContext(
 				operation,
 				state.request,
@@ -285,22 +282,10 @@ async function extractKnowledgeAttempt(
 	if (completion.text.length > 0) {
 		return completion.text;
 	}
-	// Empty extraction is a format defect repaired with feedback history.
-	if (state.attempt === operation.operation.retryCount) {
-		throw new Error(
-			`knowledge extraction response contract was not satisfied: ${completion.rawText}`,
-		);
-	}
-	state.context.messages.push(
-		completion.response,
-		userMessage(
-			"Return non-empty concise Markdown, or return exactly NOT_FOUND with no other text.",
-		),
+	// Empty extraction output violates the response contract.
+	throw new Error(
+		`knowledge extraction response contract was not satisfied: ${completion.rawText}`,
 	);
-	return extractKnowledgeAttempt(options, operation, {
-		...state,
-		attempt: state.attempt + 1,
-	});
 }
 
 /** Builds one extraction request with the current A4-page size target. */
@@ -320,6 +305,7 @@ function buildExtractionContext(
 					taskPrompt: request.taskPrompt,
 					tokenLimit,
 					fraction,
+					maxDenominator: operation.operation.maxFractionDenominator,
 				}),
 			),
 		],
@@ -349,7 +335,6 @@ async function mergeAndReplace({
 		incoming,
 		tokenLimit,
 		taskPrompt: operation.operation.taskPrompt,
-		attempt: 0,
 		fraction: operation.operation.initialFraction,
 	});
 }
@@ -361,7 +346,6 @@ interface MergeAttemptState {
 	readonly incoming: string;
 	readonly tokenLimit: number;
 	readonly taskPrompt: string;
-	readonly attempt: number;
 	readonly fraction: number;
 }
 
@@ -381,6 +365,7 @@ async function mergeAttempt(
 					tokenLimit: state.tokenLimit,
 					fraction: state.fraction,
 					taskPrompt: state.taskPrompt,
+					maxDenominator: operation.operation.maxFractionDenominator,
 				}),
 			),
 		],
@@ -411,18 +396,19 @@ async function retryMergeWithReducedTarget(
 	operation: ResolvedOperationRuntime,
 	state: MergeAttemptState,
 ): Promise<void> {
-	if (state.attempt === operation.operation.retryCount) {
+	const nextFraction = nextReducedFraction(
+		state.fraction,
+		operation.operation.reductionCoefficient,
+		operation.operation.maxFractionDenominator,
+	);
+	if (nextFraction === state.fraction) {
 		throw new Error(
 			"merge output exceeds the knowledge token limit or was truncated",
 		);
 	}
 	await mergeAttempt(options, operation, {
 		...state,
-		attempt: state.attempt + 1,
-		fraction: nextReducedFraction(
-			state.fraction,
-			operation.operation.reductionCoefficient,
-		),
+		fraction: nextFraction,
 	});
 }
 
@@ -497,10 +483,15 @@ function formatExtractionRequest(options: {
 	readonly taskPrompt: string;
 	readonly tokenLimit: number;
 	readonly fraction: number;
+	readonly maxDenominator: number;
 }): string {
 	return [
 		...(options.knowledgeBlock === null ? [] : [options.knowledgeBlock, ""]),
-		formatSizeTargetSentence(options.fraction, options.tokenLimit),
+		formatSizeTargetSentence(
+			options.fraction,
+			options.tokenLimit,
+			options.maxDenominator,
+		),
 		"<summary_source>",
 		options.source,
 		"</summary_source>",
@@ -565,9 +556,14 @@ function formatMergeRequest(options: {
 	readonly tokenLimit: number;
 	readonly fraction: number;
 	readonly taskPrompt: string;
+	readonly maxDenominator: number;
 }): string {
 	return [
-		formatSizeTargetSentence(options.fraction, options.tokenLimit),
+		formatSizeTargetSentence(
+			options.fraction,
+			options.tokenLimit,
+			options.maxDenominator,
+		),
 		"<stored_knowledge>",
 		options.existing,
 		"</stored_knowledge>",
@@ -583,8 +579,9 @@ function formatMergeRequest(options: {
 function formatSizeTargetSentence(
 	fraction: number,
 	tokenLimit: number,
+	maxDenominator: number,
 ): string {
-	return `Target size: ${formatA4Fraction(fraction)}. ${A4_PAGE_ANCHOR_TEXT} Hard token ceiling: ${tokenLimit} tokens.`;
+	return `Target size: ${formatA4Fraction(fraction, maxDenominator)}. ${A4_PAGE_ANCHOR_TEXT} Hard token ceiling: ${tokenLimit} tokens.`;
 }
 
 /** Creates one explicit user instruction for an isolated auxiliary request. */
