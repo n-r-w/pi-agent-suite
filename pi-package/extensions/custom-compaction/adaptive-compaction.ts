@@ -44,6 +44,7 @@ export type AdaptiveCompactionOperation =
 /** Progress emitted by the functional core without depending on Pi UI contracts. */
 export type AdaptiveCompactionProgressEvent =
 	| { readonly type: "start" }
+	| { readonly type: "planning" }
 	| {
 			readonly type: "operation";
 			readonly operation: AdaptiveCompactionOperation;
@@ -108,6 +109,8 @@ export interface AdaptiveCompactionOptions {
 	readonly onProgress?: (
 		event: AdaptiveCompactionProgressEvent,
 	) => void | Promise<void>;
+	/** Cooperative event-loop yield invoked by planning and reduction loops during heavy computation. */
+	readonly onStep?: () => Promise<void>;
 	readonly complete: (
 		request: AdaptiveCompactionRequest,
 	) => Promise<AssistantMessage>;
@@ -129,6 +132,7 @@ export async function adaptiveCompactHistory(
 	const runtimeOptions: AdaptiveCompactionOptions = {
 		...options,
 		onProgress: emitProgress,
+		onStep: options.onStep ?? createThrottledPlanningStep(options.signal),
 	};
 	await emitProgress({ type: "start" });
 	validateOptions(runtimeOptions);
@@ -139,18 +143,23 @@ export async function adaptiveCompactHistory(
 	if (items.length === 0) {
 		throw new Error("adaptive compaction summary source is empty");
 	}
-	const finalBudget = calculateFinalSummaryBudget(runtimeOptions);
+	await emitProgress({ type: "planning" });
+	const finalBudget = await calculateFinalSummaryBudget(runtimeOptions);
 
 	// Direct final summarization is preferred because it avoids every lossy reduction step.
 	let summary: string;
 	if (
-		doesFinalRequestFit(items, finalBudget.finalSummaryTokens, runtimeOptions)
+		await doesFinalRequestFit(
+			items,
+			finalBudget.finalSummaryTokens,
+			runtimeOptions,
+		)
 	) {
 		summary = await executeFinalSummary(items, finalBudget, runtimeOptions);
 	} else {
 		const budgets: CompactionBudgets = {
 			...finalBudget,
-			summaryNodeTokens: calculateCommonNodeBudget(
+			summaryNodeTokens: await calculateCommonNodeBudget(
 				runtimeOptions,
 				items,
 				finalBudget.finalSummaryTokens,
@@ -169,6 +178,25 @@ export async function adaptiveCompactHistory(
 		completedRequests: logicalRequestCount,
 	});
 	return summary;
+}
+
+/** Minimum elapsed time between cooperative planning yields. */
+const PLANNING_YIELD_INTERVAL_MS = 100;
+
+/** Returns a throttled step that honors abort requests and yields to the event loop. */
+export function createThrottledPlanningStep(
+	signal: AbortSignal,
+): () => Promise<void> {
+	let lastYieldAt = 0;
+	return async () => {
+		signal.throwIfAborted();
+		const now = performance.now();
+		if (now - lastYieldAt < PLANNING_YIELD_INTERVAL_MS) {
+			return;
+		}
+		lastYieldAt = now;
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	};
 }
 
 /** Normalizes the oldest previous summary before any original history reduction. */
@@ -199,7 +227,7 @@ async function reduceUntilFinalFits(
 	budgets: CompactionBudgets,
 	options: AdaptiveCompactionOptions,
 ): Promise<SourceItem[]> {
-	if (doesFinalRequestFit(items, budgets.finalSummaryTokens, options)) {
+	if (await doesFinalRequestFit(items, budgets.finalSummaryTokens, options)) {
 		return items;
 	}
 	if (findAdjacentSummaryNodes(items) >= 0) {
@@ -230,7 +258,7 @@ async function reduceOldestOriginalRange(
 	summaryNodeTokens: number,
 	options: AdaptiveCompactionOptions,
 ): Promise<void> {
-	const fittingCount = findLargestFittingOriginalPrefix({
+	const fittingCount = await findLargestFittingOriginalPrefix({
 		items,
 		startIndex: firstOriginalIndex,
 		originalCount: countContiguousOriginals(items, firstOriginalIndex),

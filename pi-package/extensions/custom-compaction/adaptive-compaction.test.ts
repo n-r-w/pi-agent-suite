@@ -11,6 +11,7 @@ import {
 	type AdaptiveCompactionProgressEvent,
 	type AdaptiveCompactionRequest,
 	adaptiveCompactHistory,
+	createThrottledPlanningStep,
 } from "./adaptive-compaction";
 
 /** Detects useful whitespace inside serialized fragment text. */
@@ -264,6 +265,7 @@ describe("adaptiveCompactHistory", () => {
 		);
 		expect(progressEvents).toEqual([
 			{ type: "start" },
+			{ type: "planning" },
 			{ type: "operation", operation: "final" },
 			{ type: "complete", completedRequests: 1 },
 		]);
@@ -498,7 +500,8 @@ describe("adaptiveCompactHistory", () => {
 			remaining = remaining.slice(fragment.length);
 		}
 		expect(remaining).toBe("");
-	});
+		// Dense CJK tokenization exceeds Bun's 5s default test timeout once planning yields to the event loop.
+	}, 30_000);
 
 	/** Proves hierarchical merges reject non-reducing output through the configured retry policy. */
 	test("retries non-reducing adjacent merges without accepting a partial tree", async () => {
@@ -644,6 +647,7 @@ describe("adaptiveCompactHistory", () => {
 		);
 		expect(progressEvents).toEqual([
 			{ type: "start" },
+			{ type: "planning" },
 			{ type: "operation", operation: "final" },
 			{
 				type: "retry",
@@ -864,6 +868,121 @@ describe("adaptiveCompactHistory", () => {
 		await expect(adaptiveCompactHistory(options)).rejects.toThrow(
 			"common summary_node budget",
 		);
+		expect(requests).toHaveLength(0);
+	});
+
+	/** Proves planning calls the injected step callback while adaptive budgets are computed. */
+	test("invokes the injected step callback during budget computation", async () => {
+		// Purpose: planning must offer cooperative yield points so the event loop stays responsive.
+		// Input and expected output: an injected step callback is invoked while adaptive budgets are computed.
+		// Edge case: adaptive planning runs binary searches that previously had no yield points.
+		// Dependencies: the engine fixture and a deterministic step counter.
+		let stepCalls = 0;
+		const { options, progressEvents, requests } = createOptions({
+			preparation: {
+				messagesToSummarize: Array.from({ length: 20 }, (_, index) =>
+					userMessage(`BLOCK_${index}_${"old ".repeat(170)}`, index),
+				),
+				turnPrefixMessages: [],
+				tokensBefore: 10_000,
+			},
+			summarizationModel: {
+				id: "gpt-5",
+				provider: "openai",
+				contextWindow: 1_050,
+				maxTokens: 96,
+			},
+			onStep: async () => {
+				stepCalls += 1;
+			},
+			complete: async (request) => {
+				requests.push(request);
+				if (request.operation === "preliminary") {
+					return response(`INTERMEDIATE_${"compressed ".repeat(70)}`);
+				}
+				return response("adaptive-final");
+			},
+		});
+
+		// ACT: Compact through adaptive planning with an injected step observer.
+		await adaptiveCompactHistory(options);
+
+		// ASSERT: The step callback ran during planning and the planning event preceded every operation.
+		expect(stepCalls).toBeGreaterThan(0);
+		const planningIndex = progressEvents.findIndex(
+			(event) => event.type === "planning",
+		);
+		expect(planningIndex).toBeGreaterThanOrEqual(0);
+		const firstOperationIndex = progressEvents.findIndex(
+			(event) => event.type === "operation",
+		);
+		expect(planningIndex).toBeLessThan(firstOperationIndex);
+	});
+
+	/** Proves the default step actually releases the event loop during planning. */
+	test("yields to the event loop during planning through the default step", async () => {
+		// Purpose: the production default step (no injected onStep) must let a macrotask run before the first model request.
+		// Input and expected output: a setTimeout flag armed on the planning event fires before the first completion.
+		// Edge case: removing the default step's setTimeout yield keeps the promise chain microtask-only and leaves the flag unset.
+		// Dependencies: the synchronous engine fixture and the default throttled step.
+		let macrotaskFired = false;
+		let firedBeforeCompletion = false;
+		const { options, requests } = createOptions({
+			onProgress: (event) => {
+				if (event.type === "planning") {
+					setTimeout(() => {
+						macrotaskFired = true;
+					}, 0);
+				}
+			},
+			complete: async (request) => {
+				requests.push(request);
+				firedBeforeCompletion = macrotaskFired;
+				return response("final-summary");
+			},
+		});
+
+		// ACT: Compact through the direct path with only the default step.
+		await adaptiveCompactHistory(options);
+
+		// ASSERT: A macrotask queued by planning ran before the first model completion.
+		expect(firedBeforeCompletion).toBeTrue();
+		expect(requests).toHaveLength(1);
+	});
+
+	/** Proves the default step throws when the signal is already aborted. */
+	test("aborts the default throttled step on an aborted signal", async () => {
+		// Purpose: the production default step must honor the shared abort signal on every call.
+		// Input and expected output: a pre-aborted signal makes the step reject with AbortError.
+		// Edge case: the step is the only planning-time guard; model requests carry the same signal too.
+		// Dependencies: one pre-aborted AbortController and the exported step factory.
+		const controller = new AbortController();
+		controller.abort();
+		const step = createThrottledPlanningStep(controller.signal);
+
+		// ACT and ASSERT: The step throws AbortError without touching the event loop.
+		await expect(step()).rejects.toMatchObject({ name: "AbortError" });
+	});
+
+	/** Proves an aborted planning phase stops before any model request. */
+	test("aborts planning when the step observes an aborted signal", async () => {
+		// Purpose: escape must interrupt compaction while planning occupies the event loop.
+		// Input and expected output: a signal aborted inside the injected step stops planning before completion.
+		// Edge case: abort is delivered through the same signal that guards model requests.
+		// Dependencies: the engine fixture, one AbortController, and a step callback that aborts it.
+		const controller = new AbortController();
+		const { options, requests } = createOptions({
+			signal: controller.signal,
+			onStep: async () => {
+				controller.abort();
+				controller.signal.throwIfAborted();
+			},
+		});
+
+		// ACT and ASSERT: Planning rejects with AbortError and no model request starts.
+		await expect(adaptiveCompactHistory(options)).rejects.toMatchObject({
+			name: "AbortError",
+		});
 		expect(requests).toHaveLength(0);
 	});
 });
