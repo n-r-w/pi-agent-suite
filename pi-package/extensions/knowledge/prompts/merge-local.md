@@ -12,6 +12,9 @@
 
   ## Tactical knowledge
   ### {Topic Y}
+
+  ## Outdated knowledge
+  <!-- Existing global or local knowledge that is outdated and should be removed -->
 ```
 
 If a category has no valid items, keep the section and write: (none)

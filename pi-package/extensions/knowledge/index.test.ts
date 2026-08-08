@@ -424,6 +424,55 @@ describe("knowledge extension lifecycle", () => {
 	});
 
 	/**
+	 * Proves a reduced-target extraction retry announces its new A4-page size in TUI mode.
+	 * Inputs and expected outputs: one truncated extraction is retried at 1/2, then extraction and merge fit.
+	 * Edge case: the retry progress message appears between preparation and merge progress.
+	 * Dependencies: trigger progress is emitted through the workflow runner boundary.
+	 */
+	test("reports reduced-target extraction retry with its new size", async () => {
+		// ARRANGE
+		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-retry-notify-"));
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async (_model, context) => {
+				const serialized = String(context.messages[0]?.content);
+				if (serialized.includes("<summary_source>")) {
+					if (serialized.includes("1/2 of an A4 page")) {
+						return response("## Strategic knowledge\n- Stable rule.");
+					}
+					return response("", "length");
+				}
+				return response(
+					"## Strategic knowledge\n- Stable rule.\n\n## Tactical knowledge\n- Active debt.",
+				);
+			},
+			runtimeEnv: {},
+		});
+		const runner = getWorkflowTriggerRunner(fake.pi);
+		if (runner === undefined) {
+			throw new Error("workflow trigger runner missing");
+		}
+
+		// ACT
+		const result = await runner.run(
+			{ type: "local_knowledge_accumulation" },
+			createContext(fake.notifications, true),
+			undefined,
+		);
+
+		// ASSERT
+		expect(result).toEqual({ ok: true });
+		expect(fake.notifications).toEqual([
+			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] extraction output too large, retrying with a reduced target (1/2 of an A4 page)...",
+			"[knowledge] merging local knowledge...",
+		]);
+	});
+
+	/**
 	 * Proves a successful knowledge trigger writes one TUI-only outcome entry to the session journal.
 	 * Inputs and expected outputs: one successful local accumulation produces one knowledge-outcome entry with kind success.
 	 * Edge case: the outcome entry is presentation-only and does not enter the LLM context.

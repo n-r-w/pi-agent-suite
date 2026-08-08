@@ -153,6 +153,9 @@ Knowledge accumulates when a workflow enters a stage containing a supported trig
 - `[knowledge] merging local knowledge...`
 Global accumulation reports merge progress:
 - `[knowledge] merging global knowledge...`
+Each reduced-target retry is announced with its new size:
+- `[knowledge] extraction output too large, retrying with a reduced target (1/2 of an A4 page)...`
+- `[knowledge] merge output too large, retrying with a reduced target (1/2 of an A4 page)...`
 
 Workflow-launched accumulation:
 

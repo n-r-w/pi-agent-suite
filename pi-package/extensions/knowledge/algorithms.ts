@@ -42,7 +42,9 @@ const NOT_FOUND = "NOT_FOUND";
 export type KnowledgeAccumulationOperation =
 	| "prepare_local_summary"
 	| "merge_local_knowledge"
-	| "merge_global_knowledge";
+	| "merge_global_knowledge"
+	| "extraction_retry"
+	| "merge_retry";
 
 /** Storage operations used by accumulation after the root grants a scoped lease. */
 interface KnowledgeAlgorithmOwner {
@@ -74,7 +76,10 @@ interface KnowledgeAlgorithmOptions {
 	readonly completeSimple: AuxiliaryLlmCompletion;
 	readonly signal: AbortSignal | undefined;
 	readonly replay?: typeof replayContextProjection;
-	readonly reportProgress?: (operation: KnowledgeAccumulationOperation) => void;
+	readonly reportProgress?: (
+		operation: KnowledgeAccumulationOperation,
+		reducedTarget?: string,
+	) => void;
 }
 
 /** Reports whether an accumulation performed a complete knowledge replacement. */
@@ -268,6 +273,13 @@ async function extractKnowledgeAttempt(
 				"knowledge extraction output exceeds the knowledge token limit or was truncated",
 			);
 		}
+		options.reportProgress?.(
+			"extraction_retry",
+			formatA4Fraction(
+				nextFraction,
+				operation.operation.maxFractionDenominator,
+			),
+		);
 		return extractKnowledgeAttempt(options, operation, {
 			...state,
 			fraction: nextFraction,
@@ -406,6 +418,10 @@ async function retryMergeWithReducedTarget(
 			"merge output exceeds the knowledge token limit or was truncated",
 		);
 	}
+	options.reportProgress?.(
+		"merge_retry",
+		formatA4Fraction(nextFraction, operation.operation.maxFractionDenominator),
+	);
 	await mergeAttempt(options, operation, {
 		...state,
 		fraction: nextFraction,

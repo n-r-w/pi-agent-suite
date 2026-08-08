@@ -268,13 +268,22 @@ function createKnowledgeTriggerRunner(
 		async run(trigger, ctx, signal) {
 			const reportProgress =
 				!ctx.hasUI || ctx.ui === undefined
-					? (operation: KnowledgeAccumulationOperation) => {
+					? (
+							operation: KnowledgeAccumulationOperation,
+							reducedTarget?: string,
+						) => {
 							process.stderr.write(
-								`${formatKnowledgeProgressMessage(operation)}\n`,
+								`${formatKnowledgeProgressMessage(operation, reducedTarget)}\n`,
 							);
 						}
-					: (operation: KnowledgeAccumulationOperation) => {
-							ctx.ui.notify(formatKnowledgeProgressMessage(operation), "info");
+					: (
+							operation: KnowledgeAccumulationOperation,
+							reducedTarget?: string,
+						) => {
+							ctx.ui.notify(
+								formatKnowledgeProgressMessage(operation, reducedTarget),
+								"info",
+							);
 						};
 			try {
 				await runKnowledgeTrigger({
@@ -322,6 +331,7 @@ function createAccumulationAlgorithm(
 /** Maps one accumulation operation to a stable user-facing progress message. */
 function formatKnowledgeProgressMessage(
 	operation: KnowledgeAccumulationOperation,
+	reducedTarget?: string,
 ): string {
 	switch (operation) {
 		case "prepare_local_summary":
@@ -330,6 +340,10 @@ function formatKnowledgeProgressMessage(
 			return "[knowledge] merging local knowledge...";
 		case "merge_global_knowledge":
 			return "[knowledge] merging global knowledge...";
+		case "extraction_retry":
+			return `[knowledge] extraction output too large, retrying with a reduced target (${reducedTarget})...`;
+		case "merge_retry":
+			return `[knowledge] merge output too large, retrying with a reduced target (${reducedTarget})...`;
 	}
 }
 
@@ -366,7 +380,10 @@ interface KnowledgeTriggerRunRequest {
 	readonly ctx: ExtensionContext;
 	readonly signal: AbortSignal | undefined;
 	readonly reportProgress:
-		| ((operation: KnowledgeAccumulationOperation) => void)
+		| ((
+				operation: KnowledgeAccumulationOperation,
+				reducedTarget?: string,
+		  ) => void)
 		| undefined;
 }
 

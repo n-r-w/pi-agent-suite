@@ -259,6 +259,7 @@ knowledge/data/<project-prefix>-<project-digest>/
 - Every operation request states a target size as a simple fraction of an A4 page with a fixed 500-word anchor and a hard token ceiling.
 - When merge output exceeds the target file limit or is provider-truncated, the next attempt resends the identical request with a reduced A4-page target.
 - The reduced target is the previous target multiplied by the operation's reduction coefficient, rounded to the nearest Nth with `N = maxFractionDenominator`, and clamped to the fraction floor `1/N`.
+- Every reduced-target retry is announced to the user with its new size before the retried request runs.
 - The fraction is a guide; the configured token limit remains the hard ceiling enforced by the owner.
 - Reaching the fraction floor `1/maxFractionDenominator` leaves the stored file unchanged when direct writing has not started.
 

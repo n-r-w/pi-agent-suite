@@ -18,8 +18,8 @@ GOOD: `NOT_FOUND`
   ## Tactical knowledge
   ### {Topic Y}
 
-  ## Outdated knowledge
-  <!-- Existing global or local knowledge that is outdated and should be removed -->
+  ## Global knowledge to remove
+  { Existing global knowledge that is outdated and should be removed. If there is none, omit this section entirely }
 ```
 If a category has no valid items, keep the section and write: (none)
 </output_contract>

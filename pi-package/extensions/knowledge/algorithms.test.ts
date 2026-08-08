@@ -172,6 +172,9 @@ function createOptions(options: {
 	readonly contexts: Context[];
 	readonly configuration?: KnowledgeConfig;
 	readonly stopReasons?: readonly AssistantMessage["stopReason"][];
+	readonly reportProgress?: Parameters<
+		typeof runLocalKnowledgeAccumulation
+	>[0]["reportProgress"];
 }): Parameters<typeof runLocalKnowledgeAccumulation>[0] {
 	const projectPaths = createProjectPaths("/catalog", "project-a-digest");
 	const branchPaths = createBranchPaths(projectPaths, "feature/a");
@@ -232,6 +235,9 @@ function createOptions(options: {
 				},
 			];
 		},
+		...(options.reportProgress === undefined
+			? {}
+			: { reportProgress: options.reportProgress }),
 	};
 }
 
@@ -569,6 +575,49 @@ describe("knowledge accumulation algorithms", () => {
 	});
 
 	/**
+	 * Proves each reduced-target extraction retry is announced with its new size target.
+	 * Inputs and expected outputs: two oversized extractions walk 2/3 → 1/2 → 3/8, then extraction fits.
+	 * Edge case: the merge progress follows the last extraction retry in order.
+	 * Dependencies: reportProgress is the user-visible progress boundary.
+	 */
+	test("reports each reduced-target extraction retry", async () => {
+		// Arrange: two oversized extraction attempts walk the chain, then extraction fits.
+		const owner = new RecordingOwner();
+		const contexts: Context[] = [];
+		const progress: string[] = [];
+		const options = createOptions({
+			owner,
+			snapshots: { global: null, local: null },
+			outputs: [
+				`${"oversized ".repeat(20)}`,
+				`${"oversized ".repeat(20)}`,
+				"## New",
+				"## Merged",
+			],
+			contexts,
+			configuration: config({ localTokenLimit: 5 }),
+			reportProgress: (operation, reducedTarget) => {
+				progress.push(
+					reducedTarget === undefined
+						? operation
+						: `${operation}:${reducedTarget}`,
+				);
+			},
+		});
+
+		// Act: run one local accumulation over two oversized extraction responses.
+		await runLocalKnowledgeAccumulation(options);
+
+		// Assert: each retry announces its new size target before the merge starts.
+		expect(progress).toEqual([
+			"prepare_local_summary",
+			"extraction_retry:1/2 of an A4 page",
+			"extraction_retry:3/8 of an A4 page",
+			"merge_local_knowledge",
+		]);
+	});
+
+	/**
 	 * Proves provider-truncated merge output is retried with a reduced target.
 	 * Inputs and expected outputs: one truncated merge response is followed by one fitting repair that writes.
 	 * Edge case: the truncation path mirrors extraction and never resends the truncated output.
@@ -637,11 +686,19 @@ describe("knowledge accumulation algorithms", () => {
 		// Arrange: one fitting global merge response.
 		const owner = new RecordingOwner();
 		const contexts: Context[] = [];
+		const progress: string[] = [];
 		const options = createOptions({
 			owner,
 			snapshots: { global: "global old", local: "local new" },
 			outputs: ["## Merged"],
 			contexts,
+			reportProgress: (operation, reducedTarget) => {
+				progress.push(
+					reducedTarget === undefined
+						? operation
+						: `${operation}:${reducedTarget}`,
+				);
+			},
 		});
 
 		// Act: global accumulation sends one merge request.
@@ -653,5 +710,6 @@ describe("knowledge accumulation algorithms", () => {
 		expect(incomingEnd).toBeGreaterThan(-1);
 		const taskPromptStart = mergeMessage.indexOf("merge global task prompt");
 		expect(taskPromptStart).toBeGreaterThan(incomingEnd);
+		expect(progress).toEqual(["merge_global_knowledge"]);
 	});
 });

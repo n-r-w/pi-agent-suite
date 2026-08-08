@@ -36,7 +36,6 @@ You are responsible for merging knowledge from multiple sources into a single kn
   6. Group related knowledge into single statements when possible.
 </merge_rules>
 
-<size_constraints>
-  1. Volume of final knowledge should not exceed 400 lines of text.
-  2. MUST remove articles, use simple, caveman-style phrases while maintaining the meaning.
-</size_constraints>
+<style>
+  MUST remove articles, use simple, caveman-style phrases while maintaining the meaning.
+</style>
