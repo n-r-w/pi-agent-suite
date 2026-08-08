@@ -34,13 +34,14 @@ export interface CompactionBudgets extends FinalSummaryBudget {
 }
 
 /** Calculates only the budgets required to decide and execute the direct path. */
-export function calculateFinalSummaryBudget(
+export async function calculateFinalSummaryBudget(
 	options: AdaptiveCompactionOptions,
-): FinalSummaryBudget {
+): Promise<FinalSummaryBudget> {
 	const currentMainInputTokens = estimateMainInput(
 		options.currentProjectedMainMessages,
 		options,
 	);
+	await options.onStep?.();
 	const emptyProspectiveInputTokens = estimateProspectiveMainInput("", options);
 	const mainWindowInputLimit =
 		options.mainModel.contextWindow -
@@ -60,11 +61,11 @@ export function calculateFinalSummaryBudget(
 }
 
 /** Calculates the common node budget only after the complete direct request does not fit. */
-export function calculateCommonNodeBudget(
+export async function calculateCommonNodeBudget(
 	options: AdaptiveCompactionOptions,
 	items: readonly SourceItem[],
 	finalSummaryTokens: number,
-): number {
+): Promise<number> {
 	// Two bounded inputs plus one equally bounded output must fit every merge request.
 	const emptyMergeInputTokens = estimateSummaryInput(
 		buildSummaryContext(
@@ -86,7 +87,7 @@ export function calculateCommonNodeBudget(
 	const maximumNodeTokens = Math.floor(
 		Math.min(mergeNodeTokens, modelOutputLimit(options.summarizationModel)),
 	);
-	const summaryNodeTokens = findLargestFeasibleNodeBudget(
+	const summaryNodeTokens = await findLargestFeasibleNodeBudget(
 		maximumNodeTokens,
 		items,
 		finalSummaryTokens,
@@ -101,18 +102,23 @@ export function calculateCommonNodeBudget(
 }
 
 /** Finds the largest monotonic node cap whose dry-run reduction reaches a final-fit suffix. */
-function findLargestFeasibleNodeBudget(
+async function findLargestFeasibleNodeBudget(
 	maximumNodeTokens: number,
 	items: readonly SourceItem[],
 	finalSummaryTokens: number,
 	options: AdaptiveCompactionOptions,
-): number {
+): Promise<number> {
 	let low = 1;
 	let high = maximumNodeTokens;
 	let best = 0;
 	while (low <= high) {
+		// Sequential binary-search probes depend on each other; Promise.all cannot parallelize them.
+		// biome-ignore lint/performance/noAwaitInLoops: cooperative event-loop yield is the point of this loop.
+		await options.onStep?.();
 		const candidate = Math.floor((low + high) / 2);
-		if (isNodeBudgetFeasible(candidate, items, finalSummaryTokens, options)) {
+		if (
+			await isNodeBudgetFeasible(candidate, items, finalSummaryTokens, options)
+		) {
 			best = candidate;
 			low = candidate + 1;
 		} else {
@@ -123,12 +129,12 @@ function findLargestFeasibleNodeBudget(
 }
 
 /** Simulates worst-case cap-sized nodes without issuing model requests. */
-function isNodeBudgetFeasible(
+async function isNodeBudgetFeasible(
 	summaryNodeTokens: number,
 	items: readonly SourceItem[],
 	finalSummaryTokens: number,
 	options: AdaptiveCompactionOptions,
-): boolean {
+): Promise<boolean> {
 	const previousSummary = items.find(
 		(item): item is SummaryNode => item.id === "previousSummary",
 	);
@@ -150,6 +156,9 @@ function isNodeBudgetFeasible(
 	);
 	let hasSummaryNode = previousSummary !== undefined;
 	while (hasSummaryNode || remainingOriginals.length > 0) {
+		// Sequential dry-run passes depend on the previous prefix; Promise.all cannot parallelize them.
+		// biome-ignore lint/performance/noAwaitInLoops: cooperative event-loop yield is the point of this loop.
+		await options.onStep?.();
 		if (
 			hasSummaryNode &&
 			doesSimulatedFinalRequestFit(
@@ -164,7 +173,7 @@ function isNodeBudgetFeasible(
 		if (remainingOriginals.length === 0) {
 			return false;
 		}
-		const fittingCount = findLargestFittingOriginalPrefix({
+		const fittingCount = await findLargestFittingOriginalPrefix({
 			items: remainingOriginals,
 			startIndex: 0,
 			originalCount: remainingOriginals.length,
@@ -212,20 +221,20 @@ function doesSimulatedFinalRequestFit(
 }
 
 /** Checks a final request with its full reserved output rather than input alone. */
-export function doesFinalRequestFit(
+export async function doesFinalRequestFit(
 	items: readonly SourceItem[],
 	finalSummaryTokens: number,
 	options: AdaptiveCompactionOptions,
-): boolean {
+): Promise<boolean> {
 	const context = buildSummaryContext(
 		items,
 		options.finalPrompt,
 		options.summarySystemPrompt,
 	);
+	const estimatedInputTokens = estimateSummaryInput(context, options);
+	await options.onStep?.();
 	return (
-		estimateSummaryInput(context, options) +
-			finalSummaryTokens +
-			options.safetyMarginTokens <=
+		estimatedInputTokens + finalSummaryTokens + options.safetyMarginTokens <=
 		options.summarizationModel.contextWindow
 	);
 }
