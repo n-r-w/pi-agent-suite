@@ -270,18 +270,18 @@ function createKnowledgeTriggerRunner(
 				!ctx.hasUI || ctx.ui === undefined
 					? (
 							operation: KnowledgeAccumulationOperation,
-							reducedTarget?: string,
+							sizeTarget?: string,
 						) => {
 							process.stderr.write(
-								`${formatKnowledgeProgressMessage(operation, reducedTarget)}\n`,
+								`${formatKnowledgeProgressMessage(operation, sizeTarget)}\n`,
 							);
 						}
 					: (
 							operation: KnowledgeAccumulationOperation,
-							reducedTarget?: string,
+							sizeTarget?: string,
 						) => {
 							ctx.ui.notify(
-								formatKnowledgeProgressMessage(operation, reducedTarget),
+								formatKnowledgeProgressMessage(operation, sizeTarget),
 								"info",
 							);
 						};
@@ -331,19 +331,19 @@ function createAccumulationAlgorithm(
 /** Maps one accumulation operation to a stable user-facing progress message. */
 function formatKnowledgeProgressMessage(
 	operation: KnowledgeAccumulationOperation,
-	reducedTarget?: string,
+	sizeTarget?: string,
 ): string {
 	switch (operation) {
 		case "prepare_local_summary":
-			return "[knowledge] preparing local knowledge summary...";
+			return `[knowledge] preparing local knowledge summary (target: ${sizeTarget})...`;
 		case "merge_local_knowledge":
-			return "[knowledge] merging local knowledge...";
+			return `[knowledge] merging local knowledge (target: ${sizeTarget})...`;
 		case "merge_global_knowledge":
-			return "[knowledge] merging global knowledge...";
+			return `[knowledge] merging global knowledge (target: ${sizeTarget})...`;
 		case "extraction_retry":
-			return `[knowledge] extraction output too large, retrying with a reduced target (${reducedTarget})...`;
+			return `[knowledge] extraction output too large, retrying with a reduced target (${sizeTarget})...`;
 		case "merge_retry":
-			return `[knowledge] merge output too large, retrying with a reduced target (${reducedTarget})...`;
+			return `[knowledge] merge output too large, retrying with a reduced target (${sizeTarget})...`;
 	}
 }
 
@@ -380,10 +380,7 @@ interface KnowledgeTriggerRunRequest {
 	readonly ctx: ExtensionContext;
 	readonly signal: AbortSignal | undefined;
 	readonly reportProgress:
-		| ((
-				operation: KnowledgeAccumulationOperation,
-				reducedTarget?: string,
-		  ) => void)
+		| ((operation: KnowledgeAccumulationOperation, sizeTarget?: string) => void)
 		| undefined;
 }
 

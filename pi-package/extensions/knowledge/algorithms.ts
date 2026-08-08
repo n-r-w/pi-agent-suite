@@ -78,7 +78,7 @@ interface KnowledgeAlgorithmOptions {
 	readonly replay?: typeof replayContextProjection;
 	readonly reportProgress?: (
 		operation: KnowledgeAccumulationOperation,
-		reducedTarget?: string,
+		sizeTarget?: string,
 	) => void;
 }
 
@@ -109,7 +109,13 @@ export async function runLocalKnowledgeAccumulation(
 	options: KnowledgeAlgorithmOptions,
 ): Promise<KnowledgeAlgorithmResult> {
 	throwIfCancelled(options.signal);
-	options.reportProgress?.("prepare_local_summary");
+	options.reportProgress?.(
+		"prepare_local_summary",
+		formatA4Fraction(
+			options.config.extraction.initialFraction,
+			options.config.extraction.maxFractionDenominator,
+		),
+	);
 	const extraction = await resolveOperationRuntime(
 		options.ctx,
 		options.config.extraction,
@@ -134,7 +140,13 @@ export async function runLocalKnowledgeAccumulation(
 		return { kind: "noop" };
 	}
 
-	options.reportProgress?.("merge_local_knowledge");
+	options.reportProgress?.(
+		"merge_local_knowledge",
+		formatA4Fraction(
+			options.config.mergeLocal.initialFraction,
+			options.config.mergeLocal.maxFractionDenominator,
+		),
+	);
 	const merge = await resolveOperationRuntime(
 		options.ctx,
 		options.config.mergeLocal,
@@ -175,7 +187,13 @@ export async function runGlobalKnowledgeAccumulation(
 		return { kind: "noop" };
 	}
 
-	options.reportProgress?.("merge_global_knowledge");
+	options.reportProgress?.(
+		"merge_global_knowledge",
+		formatA4Fraction(
+			options.config.mergeGlobal.initialFraction,
+			options.config.mergeGlobal.maxFractionDenominator,
+		),
+	);
 	const merge = await resolveOperationRuntime(
 		options.ctx,
 		options.config.mergeGlobal,

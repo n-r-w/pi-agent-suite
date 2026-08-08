@@ -601,11 +601,9 @@ describe("knowledge accumulation algorithms", () => {
 			],
 			contexts,
 			configuration: config({ localTokenLimit: 5 }),
-			reportProgress: (operation, reducedTarget) => {
+			reportProgress: (operation, sizeTarget) => {
 				progress.push(
-					reducedTarget === undefined
-						? operation
-						: `${operation}:${reducedTarget}`,
+					sizeTarget === undefined ? operation : `${operation}:${sizeTarget}`,
 				);
 			},
 		});
@@ -615,10 +613,10 @@ describe("knowledge accumulation algorithms", () => {
 
 		// Assert: each retry announces its new size target before the merge starts.
 		expect(progress).toEqual([
-			"prepare_local_summary",
+			"prepare_local_summary:2/3 of an A4 page",
 			"extraction_retry:1/2 of an A4 page",
 			"extraction_retry:3/8 of an A4 page",
-			"merge_local_knowledge",
+			"merge_local_knowledge:2/3 of an A4 page",
 		]);
 	});
 
@@ -697,11 +695,9 @@ describe("knowledge accumulation algorithms", () => {
 			snapshots: { global: "global old", local: "local new" },
 			outputs: ["## Merged"],
 			contexts,
-			reportProgress: (operation, reducedTarget) => {
+			reportProgress: (operation, sizeTarget) => {
 				progress.push(
-					reducedTarget === undefined
-						? operation
-						: `${operation}:${reducedTarget}`,
+					sizeTarget === undefined ? operation : `${operation}:${sizeTarget}`,
 				);
 			},
 		});
@@ -715,6 +711,6 @@ describe("knowledge accumulation algorithms", () => {
 		expect(incomingEnd).toBeGreaterThan(-1);
 		const taskPromptStart = mergeMessage.indexOf("merge global task prompt");
 		expect(taskPromptStart).toBeGreaterThan(incomingEnd);
-		expect(progress).toEqual(["merge_global_knowledge"]);
+		expect(progress).toEqual(["merge_global_knowledge:2/3 of an A4 page"]);
 	});
 });

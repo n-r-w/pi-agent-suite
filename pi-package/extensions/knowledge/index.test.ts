@@ -297,7 +297,7 @@ describe("knowledge extension lifecycle", () => {
 		expect(tuiResult).toEqual({ ok: false });
 		expect(headlessResult).toEqual({ ok: false });
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
 			"[knowledge] accumulation failed (knowledge extraction response contract was not satisfied:)",
 		]);
 	});
@@ -337,7 +337,7 @@ describe("knowledge extension lifecycle", () => {
 		// Assert.
 		expect(result).toEqual({ ok: false });
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
 			"[knowledge] accumulation failed (No API key found for github-copilot.)",
 		]);
 	});
@@ -418,8 +418,8 @@ describe("knowledge extension lifecycle", () => {
 		// ASSERT
 		expect(result).toEqual({ ok: true });
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
-			"[knowledge] merging local knowledge...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
+			"[knowledge] merging local knowledge (target: 2/3 of an A4 page)...",
 		]);
 	});
 
@@ -466,9 +466,9 @@ describe("knowledge extension lifecycle", () => {
 		// ASSERT
 		expect(result).toEqual({ ok: true });
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
 			"[knowledge] extraction output too large, retrying with a reduced target (1/2 of an A4 page)...",
-			"[knowledge] merging local knowledge...",
+			"[knowledge] merging local knowledge (target: 2/3 of an A4 page)...",
 		]);
 	});
 
@@ -570,7 +570,7 @@ describe("knowledge extension lifecycle", () => {
 		expect(result).toEqual({ ok: true });
 		expect(replayedSkillRoots).toEqual([resolve("/skills/knowledge")]);
 		expect(fake.notifications).toEqual([
-			"[knowledge] preparing local knowledge summary...",
+			"[knowledge] preparing local knowledge summary (target: 2/3 of an A4 page)...",
 		]);
 	});
 
