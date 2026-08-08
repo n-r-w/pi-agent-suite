@@ -389,8 +389,9 @@ describe("knowledge accumulation algorithms", () => {
 		expect(contexts).toHaveLength(3);
 		const mergeRetry = String(contexts[2]?.messages[0]?.content);
 		expect(contexts[2]?.messages).toHaveLength(1);
-		expect(mergeRetry).toContain("1/2 of an A4 page");
-		expect(mergeRetry).toContain("Hard token ceiling: 5000 tokens");
+		expect(mergeRetry).toContain("Output MUST NOT exceed 1/2 of an A4 page");
+		expect(mergeRetry).toContain("One A4 page is about 500 words.");
+		expect(mergeRetry).not.toContain("Hard token ceiling");
 		expect(owner.replacements.map(({ text }) => text)).toEqual([
 			"oversized merge",
 			"## Merged",
@@ -528,8 +529,11 @@ describe("knowledge accumulation algorithms", () => {
 			expect(contexts).toHaveLength(3);
 			expect(contexts[1]?.messages).toHaveLength(1);
 			const extractionRetry = String(contexts[1]?.messages[0]?.content);
-			expect(extractionRetry).toContain("1/2 of an A4 page");
-			expect(extractionRetry).toContain("Hard token ceiling: 5000 tokens");
+			expect(extractionRetry).toContain(
+				"Output MUST NOT exceed 1/2 of an A4 page",
+			);
+			expect(extractionRetry).toContain("One A4 page is about 500 words.");
+			expect(extractionRetry).not.toContain("Hard token ceiling");
 			expect(extractionRetry).not.toContain(
 				"Return non-empty concise Markdown",
 			);
@@ -569,8 +573,9 @@ describe("knowledge accumulation algorithms", () => {
 		expect(contexts).toHaveLength(5);
 		const finalRetry = String(contexts[4]?.messages[0]?.content);
 		expect(contexts[4]?.messages).toHaveLength(1);
-		expect(finalRetry).toContain("1/8 of an A4 page");
-		expect(finalRetry).toContain("Hard token ceiling: 5 tokens");
+		expect(finalRetry).toContain("Output MUST NOT exceed 1/8 of an A4 page");
+		expect(finalRetry).toContain("One A4 page is about 500 words.");
+		expect(finalRetry).not.toContain("Hard token ceiling");
 		expect(owner.events).toEqual([]);
 	});
 

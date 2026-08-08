@@ -256,7 +256,7 @@ knowledge/data/<project-prefix>-<project-digest>/
 
 - Global and local limits are evaluated independently with `countKnowledgeTextTokens` from `pi-package/shared/context-size.ts`.
 - This function counts with the single fixed `o200k_base` encoding.
-- Every operation request states a target size as a simple fraction of an A4 page with a fixed 500-word anchor and a hard token ceiling.
+- Every operation request ends with a `<target_size>` block stating the target as a simple fraction of an A4 page with a fixed 500-word anchor. Token limits are never mentioned to the model; the owner enforces the ceiling internally.
 - When merge output exceeds the target file limit or is provider-truncated, the next attempt resends the identical request with a reduced A4-page target.
 - The reduced target is the previous target multiplied by the operation's reduction coefficient, rounded to the nearest Nth with `N = maxFractionDenominator`, and clamped to the fraction floor `1/N`.
 - Every reduced-target retry is announced to the user with its new size before the retried request runs.

@@ -149,7 +149,6 @@ export async function runLocalKnowledgeAccumulation(
 		target,
 		existing: options.snapshots.local,
 		incoming: extracted,
-		tokenLimit: options.config.localTokenLimit,
 	});
 	await options.owner.replaceIdentityMetadata(
 		options.projectPaths.identityFile,
@@ -190,7 +189,6 @@ export async function runGlobalKnowledgeAccumulation(
 		},
 		existing: options.snapshots.global,
 		incoming: local,
-		tokenLimit: options.config.globalTokenLimit,
 	});
 	await options.owner.delete({
 		scope: "local",
@@ -235,12 +233,7 @@ function extractKnowledge(
 		request,
 		tokenLimit,
 		fraction: initialFraction,
-		context: buildExtractionContext(
-			operation,
-			request,
-			tokenLimit,
-			initialFraction,
-		),
+		context: buildExtractionContext(operation, request, initialFraction),
 	});
 }
 
@@ -283,12 +276,7 @@ async function extractKnowledgeAttempt(
 		return extractKnowledgeAttempt(options, operation, {
 			...state,
 			fraction: nextFraction,
-			context: buildExtractionContext(
-				operation,
-				state.request,
-				state.tokenLimit,
-				nextFraction,
-			),
+			context: buildExtractionContext(operation, state.request, nextFraction),
 		});
 	}
 	if (completion.text.length > 0) {
@@ -304,7 +292,6 @@ async function extractKnowledgeAttempt(
 function buildExtractionContext(
 	operation: ResolvedOperationRuntime,
 	request: ExtractionRequest,
-	tokenLimit: number,
 	fraction: number,
 ): Context {
 	return {
@@ -315,7 +302,6 @@ function buildExtractionContext(
 					knowledgeBlock: request.knowledgeBlock,
 					source: request.source,
 					taskPrompt: request.taskPrompt,
-					tokenLimit,
 					fraction,
 					maxDenominator: operation.operation.maxFractionDenominator,
 				}),
@@ -332,20 +318,17 @@ async function mergeAndReplace({
 	target,
 	existing,
 	incoming,
-	tokenLimit,
 }: {
 	readonly options: KnowledgeAlgorithmOptions;
 	readonly operation: ResolvedOperationRuntime;
 	readonly target: KnowledgeTarget;
 	readonly existing: string | null;
 	readonly incoming: string;
-	readonly tokenLimit: number;
 }): Promise<void> {
 	await mergeAttempt(options, operation, {
 		target,
 		existing: existing ?? "",
 		incoming,
-		tokenLimit,
 		taskPrompt: operation.operation.taskPrompt,
 		fraction: operation.operation.initialFraction,
 	});
@@ -356,7 +339,6 @@ interface MergeAttemptState {
 	readonly target: KnowledgeTarget;
 	readonly existing: string;
 	readonly incoming: string;
-	readonly tokenLimit: number;
 	readonly taskPrompt: string;
 	readonly fraction: number;
 }
@@ -374,7 +356,6 @@ async function mergeAttempt(
 				formatMergeRequest({
 					existing: state.existing,
 					incoming: state.incoming,
-					tokenLimit: state.tokenLimit,
 					fraction: state.fraction,
 					taskPrompt: state.taskPrompt,
 					maxDenominator: operation.operation.maxFractionDenominator,
@@ -492,27 +473,23 @@ async function resolveOperationRuntime(
 	};
 }
 
-/** Builds one explicit extraction request that includes current knowledge and source data. */
+/** Builds one explicit extraction request that ends with the A4-page size target. */
 function formatExtractionRequest(options: {
 	readonly knowledgeBlock: string | null;
 	readonly source: string;
 	readonly taskPrompt: string;
-	readonly tokenLimit: number;
 	readonly fraction: number;
 	readonly maxDenominator: number;
 }): string {
 	return [
 		...(options.knowledgeBlock === null ? [] : [options.knowledgeBlock, ""]),
-		formatSizeTargetSentence(
-			options.fraction,
-			options.tokenLimit,
-			options.maxDenominator,
-		),
 		"<summary_source>",
 		options.source,
 		"</summary_source>",
 		"",
 		options.taskPrompt,
+		"",
+		formatSizeTargetBlock(options.fraction, options.maxDenominator),
 	].join("\n");
 }
 
@@ -565,21 +542,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-/** Builds the explicit opaque-Markdown merge request shared by local and global accumulation. */
+/** Builds the explicit opaque-Markdown merge request ending with the A4-page size target. */
 function formatMergeRequest(options: {
 	readonly existing: string;
 	readonly incoming: string;
-	readonly tokenLimit: number;
 	readonly fraction: number;
 	readonly taskPrompt: string;
 	readonly maxDenominator: number;
 }): string {
 	return [
-		formatSizeTargetSentence(
-			options.fraction,
-			options.tokenLimit,
-			options.maxDenominator,
-		),
 		"<stored_knowledge>",
 		options.existing,
 		"</stored_knowledge>",
@@ -588,16 +559,21 @@ function formatMergeRequest(options: {
 		"</incoming_knowledge>",
 		"",
 		options.taskPrompt,
+		"",
+		formatSizeTargetBlock(options.fraction, options.maxDenominator),
 	].join("\n");
 }
 
-/** Builds the A4-page size-target sentence with the fixed anchor and hard token ceiling. */
-function formatSizeTargetSentence(
+/** Builds the trailing A4-page size-target block without any token information. */
+function formatSizeTargetBlock(
 	fraction: number,
-	tokenLimit: number,
 	maxDenominator: number,
 ): string {
-	return `Target size: ${formatA4Fraction(fraction, maxDenominator)}. ${A4_PAGE_ANCHOR_TEXT} Hard token ceiling: ${tokenLimit} tokens.`;
+	return [
+		"<target_size>",
+		`Output MUST NOT exceed ${formatA4Fraction(fraction, maxDenominator)}. ${A4_PAGE_ANCHOR_TEXT}`,
+		"</target_size>",
+	].join("\n");
 }
 
 /** Creates one explicit user instruction for an isolated auxiliary request. */
