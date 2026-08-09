@@ -783,12 +783,14 @@ async function synchronizeWorkflowModelRuntime(
 	) {
 		return;
 	}
-	const resolution = resolveWorkflowModelSettings(
-		state.workflow,
+	const resolution = resolveWorkflowModelSettings({
+		workflow: state.workflow,
 		stageId,
-		getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
-		pi.getThinkingLevel(),
-	);
+		agentSettings:
+			getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
+		currentThinking: pi.getThinkingLevel(),
+		restoration: state.restoration,
+	});
 	const application = await applyWorkflowModelSettings(
 		pi,
 		runtime.modelRegistry,
@@ -821,12 +823,14 @@ async function commitWorkflowStateChange(
 	if (stageId === undefined) {
 		throw new Error("workflow candidate has no active stage");
 	}
-	const resolution = resolveWorkflowModelSettings(
-		persistedCandidate.workflow,
+	const resolution = resolveWorkflowModelSettings({
+		workflow: persistedCandidate.workflow,
 		stageId,
-		getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
-		pi.getThinkingLevel(),
-	);
+		agentSettings:
+			getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
+		currentThinking: pi.getThinkingLevel(),
+		restoration: persistedCandidate.restoration,
+	});
 	const application = await applyWorkflowModelSettings(
 		pi,
 		runtime.modelRegistry,

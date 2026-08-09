@@ -966,6 +966,32 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.thinkingLevel).toBe("medium");
 	});
 
+	/**
+	 * Proves a stage without settings restores the pre-workflow model when no agent is available.
+	 * Inputs and expected outputs: a process without an agent contribution returns to the pre-workflow model on the first model-less stage.
+	 * Edge case: the pre-workflow restoration snapshot carries both the model and the thinking level.
+	 * Dependencies: activation restoration capture and stage-transition model application.
+	 */
+	test("restores pre-workflow model on a stage without model settings", async () => {
+		await createSuite(agentFallbackYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("call", { workflowId: "delivery" });
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("call", { stageId: "fallback" });
+
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai/workflow-model", "openai/current-model"]);
+		expect(fake.model?.provider).toBe("openai");
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
 	/** Rejects unknown workflow models before runtime or session state mutation. */
 	test("rejects unknown model before activation persistence", async () => {
 		await createSuite(

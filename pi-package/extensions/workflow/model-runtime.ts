@@ -38,13 +38,26 @@ export interface WorkflowModelApplication {
 	readonly modelChanged: boolean;
 }
 
-/** Resolves model and thinking fields independently for one active workflow stage. */
+/** Inputs for resolving one active workflow stage's model and thinking settings. */
+export interface ResolveWorkflowModelSettingsOptions {
+	readonly workflow: WorkflowDefinition;
+	readonly stageId: string;
+	readonly agentSettings: ModelSettings | undefined;
+	readonly currentThinking: ReasoningLevel;
+	readonly restoration: WorkflowRestorationSettings | undefined;
+}
+
+/** Resolves model and thinking fields independently for one active workflow stage.
+ *
+ * The pre-workflow restoration snapshot is the last fallback source, which makes
+ * model-less stages return to the spawned agent model in child subagent processes
+ * where the selected-agent contribution is unavailable.
+ */
 export function resolveWorkflowModelSettings(
-	workflow: WorkflowDefinition,
-	stageId: string,
-	agentSettings: ModelSettings | undefined,
-	currentThinking: ReasoningLevel,
+	options: ResolveWorkflowModelSettingsOptions,
 ): WorkflowModelResolution {
+	const { workflow, stageId, agentSettings, currentThinking, restoration } =
+		options;
 	const stage = workflow.stages.find(({ id }) => id === stageId);
 	if (stage === undefined) {
 		throw new Error(`workflow stage ${stageId} was not found`);
@@ -54,8 +67,10 @@ export function resolveWorkflowModelSettings(
 	const explicitThinking =
 		stage.model?.thinking ??
 		workflow.model?.thinking ??
-		agentSettings?.thinking;
-	const selectedModelId = configuredModelId ?? agentSettings?.id;
+		agentSettings?.thinking ??
+		restoration?.thinking;
+	const selectedModelId =
+		configuredModelId ?? agentSettings?.id ?? restoration?.modelId;
 	const resolvedSettings = resolveModelSettingsWithAliasesSync({
 		...(typeof selectedModelId === "string" ? { id: selectedModelId } : {}),
 		...(explicitThinking === undefined ? {} : { thinking: explicitThinking }),

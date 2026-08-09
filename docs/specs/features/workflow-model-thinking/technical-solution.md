@@ -42,6 +42,7 @@ model:
 - Add one resolver that calculates model and thinking independently.
 - Resolve each field in this order:
   `stage → workflow → agent → current Pi runtime value`.
+- When the selected agent is unavailable, such as in child subagent processes or sessions without a selected agent, the pre-workflow restoration snapshot is the agent fallback source.
 - During activation, use the initial stage as the stage source.
 - During a transition, use the target stage as the stage source.
 - For a rework transition, use the rework target stage.

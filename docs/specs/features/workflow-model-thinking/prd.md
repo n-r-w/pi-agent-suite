@@ -14,7 +14,7 @@
 5. Each parameter uses this precedence order:
    `stage → workflow → agent → current Pi runtime value`.
 6. When a parameter is omitted at one level, the value from the next level is used.
-7. When a parameter is omitted at every level, the current Pi runtime value is preserved.
+7. When the selected agent is unavailable, the pre-workflow restoration snapshot serves as the agent source. When a parameter is omitted at every level, the restoration snapshot value is applied; the current Pi runtime value is preserved only when no restoration snapshot exists, such as in legacy workflow snapshots.
 8. A model identifier uses the `provider/model` format.
 9. A thinking level uses one of these values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 10. One shared model and thinking contract is used by every configuration boundary that accepts these parameters.
