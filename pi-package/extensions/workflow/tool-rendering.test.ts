@@ -115,13 +115,31 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 		},
 		appendEntry(): void {},
 	} as unknown as ExtensionAPI;
+	const renderingModel = {
+		provider: "test",
+		id: "current",
+		api: "test-api",
+		baseUrl: "https://example.test",
+		reasoning: true,
+		name: "test/current",
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 100_000,
+		maxTokens: 8_192,
+	};
 	await workflowExtension(api);
 	for (const sessionStart of handlers.get("session_start") ?? []) {
 		await sessionStart({ type: "session_start" }, {
 			mode: "rpc",
 			hasUI: true,
-			model: { provider: "test", id: "current" },
-			modelRegistry: undefined,
+			model: renderingModel,
+			modelRegistry: {
+				find(provider: string, id: string) {
+					return provider === "test" && id === "current"
+						? renderingModel
+						: undefined;
+				},
+			},
 			sessionManager: { getBranch: () => [] },
 			shutdown: () => {},
 		} as never);

@@ -38,13 +38,27 @@ export interface WorkflowModelApplication {
 	readonly modelChanged: boolean;
 }
 
-/** Resolves model and thinking fields independently for one active workflow stage. */
+/** Inputs for resolving one active workflow stage's model and thinking settings. */
+export interface ResolveWorkflowModelSettingsOptions {
+	readonly workflow: WorkflowDefinition;
+	readonly stageId: string;
+	readonly agentSettings: ModelSettings | undefined;
+	readonly currentThinking: ReasoningLevel;
+	readonly restoration: WorkflowRestorationSettings | undefined;
+}
+
+/** Resolves model and thinking fields independently for one active workflow stage.
+ *
+ * Each level contributes its explicit thinking or the alias default of its model.
+ * The pre-workflow restoration snapshot is the last fallback source, which makes
+ * model-less stages return to the spawned agent model in child subagent processes
+ * where the selected-agent contribution is unavailable.
+ */
 export function resolveWorkflowModelSettings(
-	workflow: WorkflowDefinition,
-	stageId: string,
-	agentSettings: ModelSettings | undefined,
-	currentThinking: ReasoningLevel,
+	options: ResolveWorkflowModelSettingsOptions,
 ): WorkflowModelResolution {
+	const { workflow, stageId, agentSettings, currentThinking, restoration } =
+		options;
 	const stage = workflow.stages.find(({ id }) => id === stageId);
 	if (stage === undefined) {
 		throw new Error(`workflow stage ${stageId} was not found`);
@@ -52,10 +66,12 @@ export function resolveWorkflowModelSettings(
 
 	const configuredModelId = stage.model?.id ?? workflow.model?.id;
 	const explicitThinking =
-		stage.model?.thinking ??
-		workflow.model?.thinking ??
-		agentSettings?.thinking;
-	const selectedModelId = configuredModelId ?? agentSettings?.id;
+		resolveLevelThinking(stage.model) ??
+		resolveLevelThinking(workflow.model) ??
+		resolveLevelThinking(agentSettings) ??
+		restoration?.thinking;
+	const selectedModelId =
+		configuredModelId ?? agentSettings?.id ?? restoration?.modelId;
 	const resolvedSettings = resolveModelSettingsWithAliasesSync({
 		...(typeof selectedModelId === "string" ? { id: selectedModelId } : {}),
 		...(explicitThinking === undefined ? {} : { thinking: explicitThinking }),
@@ -72,6 +88,23 @@ export function resolveWorkflowModelSettings(
 		shouldApplyThinking:
 			explicitThinking !== undefined || configuredModelId !== undefined,
 	};
+}
+
+/** Resolves the explicit or alias-default thinking for one model settings level. */
+function resolveLevelThinking(
+	model: ModelSettings | undefined,
+): ReasoningLevel | undefined {
+	if (model?.thinking !== undefined) {
+		return model.thinking;
+	}
+	if (model?.id === undefined) {
+		return undefined;
+	}
+	const resolved = resolveModelSettingsWithAliasesSync({ id: model.id });
+	if ("issue" in resolved) {
+		return undefined;
+	}
+	return resolved.settings.thinking;
 }
 
 /** Applies a persisted pre-workflow model and thinking snapshot. */

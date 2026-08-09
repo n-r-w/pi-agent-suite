@@ -12,7 +12,7 @@ Any extension field that accepts `model.id` can use either:
 - a real `provider/model` ID;
 - an alias from this file.
 
-If both alias and caller config define `thinking`, caller config has priority.
+If both alias and caller config define `thinking`, caller config has priority. When the caller config does not define `thinking`, the alias default `thinking` applies. The caller's current thinking level is used only when neither the config nor the alias provides one.
 
 ## Configuration
 

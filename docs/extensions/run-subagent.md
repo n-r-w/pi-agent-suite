@@ -41,7 +41,7 @@ Each description file must be readable and contain non-whitespace text after tri
 | Name | Required | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `model.id` | No | Non-empty string | Calling agent's current model | Selects a model from the calling Pi process's registry. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
-| `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Calling agent's current thinking level | Selects reasoning for the auxiliary request. `off` omits the provider reasoning option. |
+| `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Alias default thinking, or calling agent's current thinking level | Selects reasoning for the auxiliary request. An alias `model.id` without explicit `thinking` uses the alias default. `off` omits the provider reasoning option. |
 | `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Supplies trimmed non-empty text as the auxiliary system prompt. |
 
 Before each model turn, the extension evaluates the active tools after main-agent selection, child tool policy, and depth filtering. If any subagent tool is active, the resolved extension description is appended to the system prompt inside `<subagent_tools_guidelines>...</subagent_tools_guidelines>`. When `subagent_start` is active, each callable agent is appended with its escaped ID and description:

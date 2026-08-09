@@ -41,7 +41,8 @@ model:
 ### SOL-04: Effective settings resolution
 - Add one resolver that calculates model and thinking independently.
 - Resolve each field in this order:
-  `stage → workflow → agent → current Pi runtime value`.
+  `stage → workflow → agent → restoration snapshot (when the agent is unavailable) → current Pi runtime value`.
+- When a level omits `thinking`, use the alias default thinking of that level's model.
 - During activation, use the initial stage as the stage source.
 - During a transition, use the target stage as the stage source.
 - For a rework transition, use the rework target stage.

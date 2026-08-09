@@ -226,12 +226,10 @@ async function executeConsultAdvisor({
 		return errorResult(promptResult.issue);
 	}
 
-	const thinking =
-		configResult.config.model?.thinking ?? parseThinking(currentThinkingLevel);
 	const runtimeResult = await resolveAdvisorRuntime(
 		ctx,
 		configResult.config.model?.id,
-		thinking,
+		configResult.config.model?.thinking,
 	);
 	if ("issue" in runtimeResult) {
 		reportIssue(ctx, runtimeResult.issue);
@@ -251,7 +249,8 @@ async function executeConsultAdvisor({
 		return errorResult(ADVISOR_CONTEXT_TOO_LARGE_ERROR);
 	}
 
-	const effectiveThinking = runtimeResult.thinking ?? thinking;
+	const effectiveThinking =
+		runtimeResult.thinking ?? parseThinking(currentThinkingLevel);
 	const options = buildAdvisorOptions(
 		effectiveThinking,
 		signal,
