@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	Api,
 	AssistantMessage,
@@ -12,6 +15,7 @@ import type {
 	ExtensionContext,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import { registerKnowledgeContextRuntime } from "../../shared/knowledge-runtime";
 import type { SubagentQueryModelConfig } from "./entry-config";
 import { executeSubagentQuery } from "./subagent-query";
@@ -258,6 +262,55 @@ describe("executeSubagentQuery", () => {
 		expect(calls[0]?.model).toBe(CONFIGURED_MODEL);
 		expect(calls[0]?.options).not.toHaveProperty("reasoning");
 		expect(costs).toEqual([{ source: "subagent-query", cost: 0.5 }]);
+	});
+
+	test("applies alias default thinking when query model has no explicit thinking", async () => {
+		// Purpose: query overrides must use the alias default thinking instead of the current session thinking level.
+		// Input and expected output: query model alias without thinking resolves to the alias default reasoning.
+		// Edge case: the alias carries both the model and the default thinking level.
+		// Dependencies: isolated model-alias config, model registry fake, and completion fake.
+		const suite = await mkdtemp(join(tmpdir(), "pi-subagent-query-alias-"));
+		const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
+		process.env[AGENT_SUITE_DIR_ENV] = suite;
+		try {
+			await mkdir(join(suite, "model-aliases"), { recursive: true });
+			await writeFile(
+				join(suite, "model-aliases", "config.json"),
+				JSON.stringify({
+					codex_extractor: {
+						id: "provider/configured",
+						thinking: "low",
+					},
+				}),
+			);
+			const calls: CompletionCall[] = [];
+			const modelConfig: SubagentQueryModelConfig = { id: "codex_extractor" };
+			const result = await executeSubagentQuery({
+				completeSimple: async (selectedModel, context, options) => {
+					calls.push({ model: selectedModel, context, options });
+					return assistantResponse({ text: "alias answer" });
+				},
+				ctx: createContext(),
+				pi: createPi(() => undefined),
+				branchEntries: savedBranch(),
+				question: "Question",
+				systemPrompt: "System",
+				modelConfig,
+				currentThinkingLevel: "high",
+			});
+
+			expect(result).toEqual({ kind: "success", answer: "alias answer" });
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.model).toBe(CONFIGURED_MODEL);
+			expect(calls[0]?.options?.reasoning).toBe("low");
+		} finally {
+			if (previousSuiteDir === undefined) {
+				delete process.env[AGENT_SUITE_DIR_ENV];
+			} else {
+				process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
+			}
+			await rm(suite, { recursive: true, force: true });
+		}
 	});
 
 	test("rejects unavailable runtime, oversized input, empty output, and cancellation", async () => {

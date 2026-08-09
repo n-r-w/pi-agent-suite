@@ -93,6 +93,11 @@ function agentFallbackYaml(): string {
 	return "description: Delivery\nstages:\n  - id: configured\n    description: Configured\n    prompt: Use the workflow model\n    initial: true\n    model:\n      id: openai/workflow-model\n      thinking: xhigh\n  - id: fallback\n    description: Fallback\n    prompt: Use the agent model\n    final: true\ntransitions:\n  - from: configured\n    to: fallback\n    type: advance\n  - from: fallback\n    to: configured\n    type: rework\n";
 }
 
+/** Returns a workflow whose initial stage uses an alias model and whose final stage has no settings. */
+function aliasStageYaml(): string {
+	return "description: Delivery\nstages:\n  - id: collect\n    description: Collect\n    prompt: Collect state\n    initial: true\n    model:\n      id: codex_extractor\n  - id: implement\n    description: Implement\n    prompt: Implement change\n    final: true\ntransitions:\n  - from: collect\n    to: implement\n    type: advance\n  - from: implement\n    to: collect\n    type: rework\n";
+}
+
 /** Creates one model fixture with optional support for model-specific thinking levels. */
 function createModel(
 	provider: string,
@@ -989,6 +994,42 @@ describe("workflow extension lifecycle", () => {
 		).toEqual(["openai/workflow-model", "openai/current-model"]);
 		expect(fake.model?.provider).toBe("openai");
 		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
+	/**
+	 * Proves a stage with an alias model keeps the alias default thinking over the restoration snapshot.
+	 * Inputs and expected outputs: a process without an agent contribution applies the alias thinking on the initial stage and restores the pre-workflow values on the next model-less stage.
+	 * Edge case: the alias carries both the model and the default thinking level.
+	 * Dependencies: isolated model-alias config and stage-transition model application.
+	 */
+	test("applies alias default thinking on stages with an alias model", async () => {
+		const suite = await createSuite(aliasStageYaml());
+		await mkdir(join(suite, "model-aliases"), { recursive: true });
+		await writeFile(
+			join(suite, "model-aliases", "config.json"),
+			JSON.stringify({
+				codex_extractor: {
+					id: "openai-codex/gpt-5.6-luna",
+					thinking: "low",
+				},
+			}),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("call", { workflowId: "delivery" });
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai-codex/gpt-5.6-luna"]);
+		expect(fake.thinkingLevel).toBe("low");
+
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("call", { stageId: "implement" });
+
+		expect(
+			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
+		).toEqual(["openai-codex/gpt-5.6-luna", "openai/current-model"]);
 		expect(fake.thinkingLevel).toBe("medium");
 	});
 

@@ -40,11 +40,11 @@ A ready-made YAML workflow can describe optional model and thinking settings for
 
 `stage → workflow → agent → current Pi runtime value`
 
-When the selected agent is unavailable, such as in child subagent processes or sessions without a selected agent, the pre-workflow restoration snapshot is the agent fallback source. If no source defines a setting, the current Pi runtime value remains unchanged. An unavailable model or unsupported thinking level causes workflow execution to fail with the error returned by Pi; the workflow does not silently fall back to another value.
+When the selected agent is unavailable, such as in child subagent processes or sessions without a selected agent, the pre-workflow restoration snapshot is the agent fallback source. A level that omits `thinking` uses the alias default thinking of its model. If no source defines a setting, the current Pi runtime value remains unchanged. An unavailable model or unsupported thinking level causes workflow execution to fail with the error returned by Pi; the workflow does not silently fall back to another value.
 
 ## Success Metrics
 - Activation and stage transition results follow the defined priority order for model and thinking independently.
-- An omitted setting falls back to the selected agent or the pre-workflow restoration snapshot and changes the current Pi runtime value only when one of them exists.
+- An omitted setting falls back to the alias default of the level's model, then to the selected agent or the pre-workflow restoration snapshot, and changes the current Pi runtime value only when one of them exists.
 - The LLM does not choose a model from the catalog.
 - Quantitative cost, speed, and quality metrics are not used for this problem.
 
@@ -87,4 +87,4 @@ When the selected agent is unavailable, such as in child subagent processes or s
 - **Thinking level:** The model reasoning setting. Existing values are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
 - **Current Pi runtime value:** The model or thinking level active in Pi before a workflow or stage setting is applied.
 - **Restoration snapshot:** The model identifier and thinking level active when a workflow is activated, persisted with the workflow state, and restored when the workflow completes. It serves as the agent source when the selected agent is unavailable.
-- **Configuration priority:** The order used to resolve a setting from stage, workflow, agent, restoration snapshot, and current Pi runtime values.
+- **Configuration priority:** The order used to resolve a setting from stage, workflow, agent, restoration snapshot, and current Pi runtime values, with the alias default thinking of the level's model applied when the level omits `thinking`.

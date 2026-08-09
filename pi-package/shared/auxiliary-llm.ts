@@ -50,10 +50,10 @@ export async function resolveAuxiliaryLlmRuntime(
 	thinking: ReasoningLevel | undefined = undefined,
 ): Promise<AuxiliaryLlmRuntimeResult> {
 	const resolvedSettings = await resolveModelSettingsWithAliases(
-		modelId === undefined
+		modelId === undefined && thinking === undefined
 			? undefined
 			: {
-					id: modelId,
+					...(modelId === undefined ? {} : { id: modelId }),
 					...(thinking === undefined ? {} : { thinking }),
 				},
 	);

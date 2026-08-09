@@ -742,6 +742,40 @@ describe("ask-llm", () => {
 		});
 	});
 
+	test("applies alias default thinking when config model has no explicit thinking", async () => {
+		// Purpose: /ask must use the alias default thinking instead of the current session thinking level.
+		// Input and expected output: config model alias without thinking resolves to the alias default reasoning.
+		// Edge case: the alias carries both the model and the default thinking level.
+		// Dependencies: isolated model-alias config, fake model layer, and fake ExtensionAPI session-write methods.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = createModel("openai-codex", "gpt-5.6-luna");
+			await mkdir(join(agentDir, "agent-suite", "model-aliases"), {
+				recursive: true,
+			});
+			await writeFile(
+				join(agentDir, "agent-suite", "model-aliases", "config.json"),
+				JSON.stringify({
+					codex_extractor: {
+						id: "openai-codex/gpt-5.6-luna",
+						thinking: "low",
+					},
+				}),
+			);
+			await writeConfig(agentDir, {
+				model: { id: "codex_extractor" },
+			});
+			const completion = createCompletionFake("Visible answer");
+			const pi = createExtensionApiFake();
+			const ctx = createContextFake([model], "Question from editor");
+			askLlm(pi, { completeSimple: completion.completeSimple });
+
+			await getAskCommand(pi).handler("What should I check?", ctx);
+
+			expect(completion.calls[0]?.model).toBe(model);
+			expect(completion.calls[0]?.options?.reasoning).toBe("low");
+		});
+	});
+
 	test("opens a centered question dialog when ask command arguments are empty", async () => {
 		// Purpose: empty /ask must collect the question without replacing the main editor area.
 		// Input and expected output: whitespace-only args open a centered overlay dialog and use its submitted text as the model question.
