@@ -29,7 +29,7 @@ import {
 } from "../../shared/custom-compaction-config";
 import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
-	assertThinkingLevelSupported,
+	resolveThinkingLevel,
 	splitModelId,
 } from "../../shared/model-settings";
 import {
@@ -469,15 +469,12 @@ function resolveRuntime(
 	const reasoning =
 		resolvedSettings.settings.thinking ??
 		(isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined);
-	if (reasoning !== undefined) {
-		try {
-			assertThinkingLevelSupported(model, reasoning);
-		} catch (error) {
-			return error instanceof Error ? error.message : String(error);
-		}
-	}
+	const resolvedReasoning =
+		reasoning === undefined
+			? undefined
+			: resolveThinkingLevel(model, reasoning);
 
-	return { model, reasoning };
+	return { model, reasoning: resolvedReasoning };
 }
 
 /** Calls the selected model and records cost for every completed response. */

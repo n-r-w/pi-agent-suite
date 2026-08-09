@@ -18,8 +18,8 @@ import {
 	estimateSerializedInputTokens,
 } from "./context-size";
 import {
-	assertThinkingLevelSupported,
 	isModelSelectorId,
+	resolveThinkingLevel,
 	splitModelId,
 } from "./model-settings";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
@@ -307,16 +307,13 @@ export async function resolveToolResultSummaryRuntimeConfig({
 		return undefined;
 	}
 
-	const thinking =
+	const requestedThinking =
 		resolvedSettings.settings.thinking ??
 		parseToolResultSummaryThinking(currentThinking);
-	if (thinking !== undefined) {
-		try {
-			assertThinkingLevelSupported(model, thinking);
-		} catch {
-			return undefined;
-		}
-	}
+	const thinking =
+		requestedThinking === undefined
+			? undefined
+			: resolveThinkingLevel(model, requestedThinking);
 
 	const auth = await modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) {

@@ -1,6 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
-	assertThinkingLevelSupported,
+	resolveThinkingLevel,
 	splitModelId,
 } from "../../shared/model-settings";
 import { resolveModelSettingsWithAliases } from "../model-aliases/config";
@@ -72,9 +72,10 @@ async function resolveParticipantRuntime(
 		resolvedSettings.settings.thinking,
 		currentThinking,
 	);
+	let resolvedThinking: Thinking | undefined;
 	if (thinking.thinking !== undefined) {
 		try {
-			assertThinkingLevelSupported(model, thinking.thinking);
+			resolvedThinking = resolveThinkingLevel(model, thinking.thinking);
 		} catch (error) {
 			return { issue: error instanceof Error ? error.message : String(error) };
 		}
@@ -83,7 +84,7 @@ async function resolveParticipantRuntime(
 	return {
 		runtime: {
 			model,
-			...thinking,
+			...(resolvedThinking === undefined ? {} : { thinking: resolvedThinking }),
 		},
 	};
 }

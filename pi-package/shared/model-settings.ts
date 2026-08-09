@@ -3,7 +3,24 @@ import {
 	getSupportedThinkingLevels,
 	type Model,
 } from "@earendil-works/pi-ai";
-import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
+import {
+	isReasoningLevel,
+	REASONING_LEVELS,
+	type ReasoningLevel,
+} from "./reasoning-levels";
+
+/** Orders reasoning levels from the least to the most intensive. */
+const THINKING_LEVEL_ORDER: readonly ReasoningLevel[] = REASONING_LEVELS;
+
+/** Maps levels that have equivalent user intent. */
+const THINKING_LEVEL_MATES: Readonly<
+	Partial<Record<ReasoningLevel, ReasoningLevel>>
+> = {
+	minimal: "low",
+	low: "minimal",
+	medium: "high",
+	high: "medium",
+};
 
 /** Lists the fields accepted by every nested model settings object. */
 export const MODEL_SETTINGS_KEYS = ["id", "thinking"] as const;
@@ -44,17 +61,47 @@ export function splitModelId(modelId: string): {
 	};
 }
 
-/** Rejects a thinking level that the resolved model does not expose. */
-export function assertThinkingLevelSupported(
+/** Resolves a valid thinking level to the nearest level the model supports. */
+export function resolveThinkingLevel(
 	model: Model<Api>,
 	thinking: ReasoningLevel,
 	fieldPath = "thinking",
-): void {
-	if (!getSupportedThinkingLevels(model).includes(thinking)) {
+): ReasoningLevel {
+	if (!isReasoningLevel(thinking)) {
 		throw new Error(
-			`${fieldPath} ${thinking} is not supported by model ${model.provider}/${model.id}`,
+			`${fieldPath} must be one of ${REASONING_LEVELS.join(", ")}`,
 		);
 	}
+	const supportedLevels = getSupportedThinkingLevels(
+		model,
+	) as readonly ReasoningLevel[];
+	if (supportedLevels.includes(thinking)) {
+		return thinking;
+	}
+
+	const mate = THINKING_LEVEL_MATES[thinking];
+	if (mate !== undefined && supportedLevels.includes(mate)) {
+		return mate;
+	}
+
+	const requestedIndex = THINKING_LEVEL_ORDER.indexOf(thinking);
+	for (
+		let index = requestedIndex + 1;
+		index < THINKING_LEVEL_ORDER.length;
+		index += 1
+	) {
+		const candidate = THINKING_LEVEL_ORDER[index];
+		if (candidate !== undefined && supportedLevels.includes(candidate)) {
+			return candidate;
+		}
+	}
+	for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+		const candidate = THINKING_LEVEL_ORDER[index];
+		if (candidate !== undefined && supportedLevels.includes(candidate)) {
+			return candidate;
+		}
+	}
+	return "off";
 }
 
 /** Returns true when a value is a closed model settings object. */

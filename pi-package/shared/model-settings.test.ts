@@ -1,23 +1,33 @@
 import { describe, expect, test } from "bun:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
-	assertThinkingLevelSupported,
 	isModelId,
 	isModelSelectorId,
 	isModelSettings,
 	parseModelSettings,
+	resolveThinkingLevel,
 	splitModelId,
 } from "./model-settings";
+import { REASONING_LEVELS, type ReasoningLevel } from "./reasoning-levels";
 
-/** Creates a model fixture with the requested reasoning capability. */
-function createModel(reasoning: boolean): Model<Api> {
+/** Creates a model fixture with the requested thinking-level map. */
+function createModel(
+	reasoning: boolean,
+	supportedThinkingLevels: readonly ReasoningLevel[] = REASONING_LEVELS,
+): Model<Api> {
+	const thinkingLevelMap = Object.fromEntries(
+		REASONING_LEVELS.map((level) => [
+			level,
+			supportedThinkingLevels.includes(level) ? level : null,
+		]),
+	);
 	return {
 		provider: "openai",
 		id: "gpt-test",
 		api: "fake-api",
 		baseUrl: "https://example.test",
 		reasoning,
-		...(reasoning ? { thinkingLevelMap: { xhigh: "xhigh", max: "max" } } : {}),
+		thinkingLevelMap,
 		name: "openai/gpt-test",
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -52,13 +62,30 @@ describe("model settings contract", () => {
 		);
 	});
 
-	/** Verifies capability checks accept model-supported levels and reject unsupported levels. */
-	test("checks thinking support before runtime application", () => {
-		expect(() =>
-			assertThinkingLevelSupported(createModel(true), "max"),
-		).not.toThrow();
-		expect(() =>
-			assertThinkingLevelSupported(createModel(false), "high"),
-		).toThrow("thinking high is not supported");
+	/** Verifies valid requested levels resolve to the nearest model-supported level. */
+	test("resolves supported thinking levels", () => {
+		// Purpose: valid configured levels remain usable when a model omits an exact level.
+		// Input and expected output: mate, higher, and lower supported levels return the specified nearest level.
+		// Edge cases: xhigh resolves to max, off resolves upward, and non-reasoning models resolve to off.
+		// Dependencies: getSupportedThinkingLevels defines the model capability set.
+		expect(
+			resolveThinkingLevel(createModel(true, ["off", "low"]), "minimal"),
+		).toBe("low");
+		expect(
+			resolveThinkingLevel(createModel(true, ["off", "high"]), "medium"),
+		).toBe("high");
+		expect(
+			resolveThinkingLevel(createModel(true, ["off", "high"]), "low"),
+		).toBe("high");
+		expect(
+			resolveThinkingLevel(createModel(true, ["off", "max"]), "xhigh"),
+		).toBe("max");
+		expect(
+			resolveThinkingLevel(createModel(true, ["off", "high"]), "max"),
+		).toBe("high");
+		expect(resolveThinkingLevel(createModel(true, ["minimal"]), "off")).toBe(
+			"minimal",
+		);
+		expect(resolveThinkingLevel(createModel(false), "high")).toBe("off");
 	});
 });

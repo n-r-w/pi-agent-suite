@@ -30,9 +30,10 @@ import {
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
 import {
-	assertThinkingLevelSupported,
+	resolveThinkingLevel,
 	splitModelId,
 } from "../../shared/model-settings";
+import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import { isSingleLineText } from "../../shared/text-contracts";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import {
@@ -812,10 +813,10 @@ async function applyAgentSelection(
 		return policies.outcome;
 	}
 
-	const thinkingIssue = validateConfiguredThinking(ctx, agent);
-	if (thinkingIssue !== undefined) {
+	const resolvedThinking = resolveConfiguredThinking(ctx, agent);
+	if ("issue" in resolvedThinking) {
 		clearMainAgentSelection(pi);
-		reportIssue(ctx, thinkingIssue);
+		reportIssue(ctx, resolvedThinking.issue);
 		return "application-error";
 	}
 
@@ -826,7 +827,10 @@ async function applyAgentSelection(
 		return "application-error";
 	}
 
-	const appliedThinkingIssue = applyConfiguredThinking(pi, agent);
+	const appliedThinkingIssue = applyConfiguredThinking(
+		pi,
+		resolvedThinking.thinking,
+	);
 	if (appliedThinkingIssue !== undefined) {
 		clearMainAgentSelection(pi);
 		reportIssue(ctx, appliedThinkingIssue);
@@ -853,46 +857,43 @@ async function applyAgentSelection(
 	return "applied";
 }
 
-/** Validates configured thinking against the model that would receive it. */
-function validateConfiguredThinking(
+/** Resolves configured thinking against the model that would receive it. */
+function resolveConfiguredThinking(
 	ctx: MainAgentContext,
 	agent: AgentDefinition,
-): string | undefined {
+): { readonly issue: string } | { readonly thinking?: ReasoningLevel } {
 	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
 	if ("issue" in resolvedSettings) {
-		return resolvedSettings.issue;
+		return resolvedSettings;
 	}
 	const thinking = resolvedSettings.settings.thinking;
 	if (thinking === undefined) {
-		return undefined;
+		return {};
 	}
 	const model =
 		resolvedSettings.settings.id === undefined
 			? ctx.model
 			: resolveModel(ctx, resolvedSettings.settings.id);
 	if (model === undefined) {
-		return resolvedSettings.settings.id === undefined
-			? "current model is unavailable"
-			: `model ${resolvedSettings.settings.id} was not found`;
+		return {
+			issue:
+				resolvedSettings.settings.id === undefined
+					? "current model is unavailable"
+					: `model ${resolvedSettings.settings.id} was not found`,
+		};
 	}
 	try {
-		assertThinkingLevelSupported(model, thinking);
-		return undefined;
+		return { thinking: resolveThinkingLevel(model, thinking) };
 	} catch (error) {
-		return error instanceof Error ? error.message : String(error);
+		return { issue: error instanceof Error ? error.message : String(error) };
 	}
 }
 
 /** Applies configured thinking and rejects Pi's silent capability clamping. */
 function applyConfiguredThinking(
 	pi: ExtensionAPI,
-	agent: AgentDefinition,
+	thinking: ReasoningLevel | undefined,
 ): string | undefined {
-	const resolvedSettings = resolveModelSettingsWithAliasesSync(agent.model);
-	if ("issue" in resolvedSettings) {
-		return resolvedSettings.issue;
-	}
-	const thinking = resolvedSettings.settings.thinking;
 	if (thinking === undefined) {
 		return undefined;
 	}

@@ -164,6 +164,8 @@ describe("effective callable-agent policy", () => {
 							provider,
 							id,
 							contextWindow: 32000,
+							reasoning: true,
+							thinkingLevelMap: { minimal: null, low: null, medium: null },
 						};
 					}
 					return undefined;
@@ -204,7 +206,7 @@ describe("effective callable-agent policy", () => {
 			).toMatchObject({
 				modelId: "provider/model",
 				provider: "provider",
-				thinking: "low",
+				thinking: "high",
 				runtimeFacts: {
 					modelProvider: "provider",
 					modelId: "model",
