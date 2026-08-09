@@ -45,6 +45,17 @@
 5. Each agent owns only ITS subagents. MUST NOT ask subagent to perform `subagent_steer` to send messages to subagents that you started.
 6. MUST NOT "push" subagents with `subagent_steer` requests. If the subagent has not yet completed its work, it means you MUST wait.
 
+**GOAL WRITING:**
+1. `Goal:` states the desired end state of the stage.
+2. Goal answers "what must be achieved". Task answers "what to do". They are different concepts.
+3. Goal MUST describe a verifiable outcome, not an action.
+4. Tasks MUST go into `Required work`, never into `Goal:`.
+5. Formulate goal as resulting state. Optionally add outcome purpose.
+6. Wrong and right pairs:
+- `Goal: Collect facts.` (action) vs `Goal: Build evidence base for analysis.` (outcome)
+- `Goal: Get user approval of plan.` vs `Goal: Obtain agreed plan.`
+- `Goal: Present results.` vs `Goal: Provide user with necessary information.`
+
 **SUBAGENT PROMPT FORMAT**:
 ```
 <goal>
