@@ -13,7 +13,7 @@ Users of Pi with large contexts who run `/compact` manually. The whole Pi TUI is
 - Session `019fdca2-fd41-71ae-b9ce-6cf5c836b807`: two compactions; in both, after 14 tool-result projections there is a ~4.5-minute gap with zero completed model requests; the user observes a frozen spinner at `projecting compaction source: 13/14 tool results`.
 - Benchmark: `calculateCommonNodeBudget` alone = 36.6–68.5 s of pure CPU; a 10 ms heartbeat timer received 0 ticks during the run → the event loop is fully blocked.
 - Static analysis: the whole planning chain (`buildSummarySource` → `calculateFinalSummaryBudget` → `doesFinalRequestFit` → `calculateCommonNodeBudget` → dry-run binary search) is synchronous; there is no `await` between the single event-loop yield and the first LLM request.
-- For provider `opencode-go` (not in the OpenAI family), every token count runs 3 tiktoken encodings and takes the maximum, about 3× slower than a known encoding (measured 2050 ms vs 627 ms for a 12 MB text).
+- All token counts now use `o200k_base`; planning keeps a cache of exact complete rendered summary-context estimates for one adaptive compaction and does not retain it between compactions.
 - The Pi spinner is a `Loader` from pi-tui animated via `setInterval(80ms)`; a blocked event loop freezes it.
 
 ## Impact
@@ -25,7 +25,7 @@ Users of Pi with large contexts who run `/compact` manually. The whole Pi TUI is
 Run `/compact` manually with a context of ~556k tokens, 89 history blocks, model `deepseek-v4-flash` (provider `opencode-go`), with the `custom-compaction` extension enabled.
 
 ## Current State
-Planning runs as one synchronous block: a single `setTimeout(0)` yield before it, then 30–90+ seconds without releasing the event loop and without any progress notifications.
+Planning emits a progress notification and yields through its cooperative step callback. Token counting uses only `o200k_base`. Each `adaptiveCompactHistory` invocation holds an exact cache for complete rendered summary-context estimates during planning; the cache is not retained after that invocation.
 
 ## Desired Outcome
 During planning, the Pi spinner keeps animating, a message about the running operation is shown (e.g., "planning compaction budgets…"), the UI stays responsive, and escape works.
@@ -36,10 +36,10 @@ During planning, the Pi spinner keeps animating, a message about the running ope
 - The compaction result (final summary, range selection, request count) does not change relative to current behavior.
 
 ## Scope
-Only the planning phase of adaptive compaction in `custom-compaction`: releasing the event loop at an interval that prevents visible blocking, and progress notifications. Only what is required for "progress message + live spinner".
+The planning phase of adaptive compaction in `custom-compaction`: cooperative event-loop release, progress notifications, fixed `o200k_base` token counting, and request-local caching of exact complete rendered summary-context estimates. The cache exists only for one `adaptiveCompactHistory` invocation.
 
 ## Out of Scope / Non-Goals
-- Optimizing tokenization itself (caching, worker thread, tokenizer replacement, removing the 3-encoding fallback).
+- Worker threads.
 - Changing the budget calculation algorithm or compaction results.
 - Speeding up the first large LLM request.
 

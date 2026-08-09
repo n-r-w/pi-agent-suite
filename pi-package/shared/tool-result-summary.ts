@@ -18,8 +18,8 @@ import {
 	estimateSerializedInputTokens,
 } from "./context-size";
 import {
-	assertThinkingLevelSupported,
 	isModelSelectorId,
+	resolveThinkingLevel,
 	splitModelId,
 } from "./model-settings";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
@@ -307,16 +307,13 @@ export async function resolveToolResultSummaryRuntimeConfig({
 		return undefined;
 	}
 
-	const thinking =
+	const requestedThinking =
 		resolvedSettings.settings.thinking ??
 		parseToolResultSummaryThinking(currentThinking);
-	if (thinking !== undefined) {
-		try {
-			assertThinkingLevelSupported(model, thinking);
-		} catch {
-			return undefined;
-		}
-	}
+	const thinking =
+		requestedThinking === undefined
+			? undefined
+			: resolveThinkingLevel(model, requestedThinking);
 
 	const auth = await modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) {
@@ -467,10 +464,7 @@ export function doesContextFitModel(
 	context: Context,
 	model: Model<Api>,
 ): boolean {
-	return (
-		estimateSerializedInputTokens(context, model.id, model.provider) <=
-		model.contextWindow
-	);
+	return estimateSerializedInputTokens(context) <= model.contextWindow;
 }
 
 /** Builds a tool-result message whose content contains the generated helper summary. */

@@ -9,7 +9,6 @@ A set of [PI Coding Agent](https://pi.dev/) extensions that adds agent support, 
 - [Discussion between LLMs for solving complex problems](#solving-complex-problems-requires-discussion)
 - [Full list of extensions with detailed documentation](#full-list-of-extensions-with-detailed-documentation)
 - [MCP support and recommended MCP servers](#mcp-support-and-recommended-mcp-servers)
-- [Changelog](https://github.com/n-r-w/pi-agent-suite/blob/main/changelog.md)
 
 ## Quick start
 

@@ -196,19 +196,23 @@ export function renderSourceItem(item: SourceItem): string {
 	return `<summary_node id="${item.id}">\n${item.text}\n</summary_node>`;
 }
 
-/** Estimates a summarization request with the selected compaction tokenizer profile. */
+/** Estimates a complete rendered summary context once per adaptive compaction. */
 export function estimateSummaryInput(
 	context: Context,
 	options: AdaptiveCompactionOptions,
 ): number {
-	return estimateSerializedInputTokens(
-		context,
-		options.summarizationModel.id,
-		options.summarizationModel.provider,
-	);
+	const cache = options.summaryContextTokenCache;
+	const key = JSON.stringify(context);
+	const cached = cache.get(key);
+	if (cached !== undefined) {
+		return cached;
+	}
+	const estimatedTokens = estimateSerializedInputTokens(context);
+	cache.set(key, estimatedTokens);
+	return estimatedTokens;
 }
 
 /** Counts summary text without adding synthetic chat request framing. */
 export function countSummaryTextTokens(text: string): number {
-	return estimateTextTokens(text, undefined, undefined);
+	return estimateTextTokens(text);
 }

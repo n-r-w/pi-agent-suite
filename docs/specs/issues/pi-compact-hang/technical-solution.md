@@ -3,7 +3,7 @@
 ## Problem Statement
 - PRB-01: During manual `/compact` on contexts ≥ ~500k tokens, the adaptive compaction planning phase blocks the Pi event loop for 30–90+ seconds: the spinner freezes, escape does not respond, and the progress message goes stale (session `019fdca2-fd41-71ae-b9ce-6cf5c836b807`; measured `calculateCommonNodeBudget` = 36.6–68.5 s of pure CPU with 0 heartbeat ticks).
 - PRB-02: The planning phase is one synchronous stretch with only a single `setTimeout(0)` yield (`adaptive-compaction.ts:133`) between the "start" notification and the first LLM request.
-- PRB-03: For the non-OpenAI provider (`opencode-go`), every token count runs 3 synchronous tiktoken encodings (`context-size.ts:188-192`), multiplying the CPU cost.
+- PRB-03: Planning repeatedly estimated identical complete rendered summary contexts during dry-run searches.
 
 ## Proposed Solution
 
@@ -30,18 +30,23 @@
 - The step implementation calls `options.signal.throwIfAborted()`; an aborted signal (escape → `abortCompaction()` → `_compactionAbortController.abort()`, already wired by pi) throws `AbortError`.
 - The `AbortError` propagates through the existing catch in `handleSessionBeforeCompact` (`index.ts`), which follows the same path as cancel during an LLM request (REQ-03: cancel works as on other stages).
 
-### TRD-01: Residual single-tokenization block (decision: accepted)
-- One full-corpus 3-encoding tokenization (~556k tokens ≈ 2.2 MB) is ~370 ms — a single irreducible step slightly above the ~200 ms target from REQ-02.
-- Decision: accepted. The spinner briefly stutters (~4 missed frames) instead of freezing; this happens a handful of times at the start of planning and is far below the current 30–90 s freeze.
-- The alternative (splitting the 3-encoding computation with yields between encodings, result-identical) would touch the shared `context-size.ts` module and is explicitly deferred.
+### SOL-04: Fixed tokenizer and request-local planning cache
+- `pi-package/shared/context-size.ts` loads only `o200k_base`. Its token-count and token-prefix APIs do not accept model or provider parameters.
+- `adaptiveCompactHistory` creates one `Map` for the invocation. `estimateSummaryInput` keys each entry by `JSON.stringify(context)`, the complete rendered summary context, and reuses its token estimate on an exact match.
+- The map is reachable only through the invocation runtime options. A later or concurrent compaction creates a different map.
 
-### TRD-02: No algorithm or result change (REQ-04)
-- Yields only interleave execution; no computation, ordering, or token-count value changes. No caching, worker threads, or tokenizer changes are introduced (KISS; per PRD out of scope).
+### TRD-01: Single-tokenizer counting
+- `o200k_base` is the only tokenizer used for context input, standalone text, and token-prefix operations.
+- Model and provider no longer influence token estimates.
+
+### TRD-02: Planning result preservation
+- Cache hits reuse the estimate computed for the same complete rendered context. They do not alter a budget calculation or request order.
+- No worker thread, budget-algorithm change, global cache, or cross-compaction retention is introduced.
 
 ## Overengineering and Overspecification Considerations
-- The change is limited to the custom-compaction extension; the shared `context-size.ts` module is untouched.
-- No worker threads, no token-count caching, no changes to the budget algorithm.
-- The step callback is optional and throttled, so test callers without it keep identical behavior.
+- The change is limited to `context-size.ts` and custom-compaction planning.
+- No worker threads, global cache, or budget-algorithm change is introduced.
+- The step callback remains optional and throttled.
 
 ## Open Questions
 No open questions.

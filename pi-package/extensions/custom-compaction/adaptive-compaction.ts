@@ -70,7 +70,7 @@ export interface AdaptiveCompactionRequest {
 	readonly signal: AbortSignal;
 }
 
-/** Model fields used for tokenizer selection and bounded request planning. */
+/** Model fields used for bounded request planning and provider requests. */
 export type AdaptiveCompactionModel = Pick<
 	Model<Api>,
 	"contextWindow" | "id" | "maxTokens" | "provider"
@@ -85,8 +85,8 @@ export type AdaptiveCompactionPreparation = Pick<
 	| "turnPrefixMessages"
 >;
 
-/** Complete input contract for the extension-local adaptive compaction engine. */
-export interface AdaptiveCompactionOptions {
+/** Caller-supplied configuration for one adaptive compaction. */
+export interface AdaptiveCompactionInput {
 	readonly preparation: AdaptiveCompactionPreparation;
 	/** System prompt for final summary requests. */
 	readonly summarySystemPrompt: string;
@@ -116,9 +116,15 @@ export interface AdaptiveCompactionOptions {
 	) => Promise<AssistantMessage>;
 }
 
+/** Internal state shared by helpers during one adaptive compaction. */
+export interface AdaptiveCompactionOptions extends AdaptiveCompactionInput {
+	/** Exact summary-context estimates owned by this invocation. */
+	readonly summaryContextTokenCache: Map<string, number>;
+}
+
 /** Produces only the durable summary; Pi lifecycle state remains owned by the caller. */
 export async function adaptiveCompactHistory(
-	options: AdaptiveCompactionOptions,
+	options: AdaptiveCompactionInput,
 ): Promise<string> {
 	let logicalRequestCount = 0;
 	const emitProgress = async (
@@ -133,6 +139,7 @@ export async function adaptiveCompactHistory(
 		...options,
 		onProgress: emitProgress,
 		onStep: options.onStep ?? createThrottledPlanningStep(options.signal),
+		summaryContextTokenCache: new Map(),
 	};
 	await emitProgress({ type: "start" });
 	validateOptions(runtimeOptions);

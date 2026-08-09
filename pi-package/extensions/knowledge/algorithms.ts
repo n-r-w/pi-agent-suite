@@ -19,6 +19,7 @@ import {
 import { replayContextProjection } from "../../shared/context-projection";
 import { countKnowledgeTextTokens } from "../../shared/context-size";
 import type { KnowledgeSnapshots } from "../../shared/knowledge-runtime";
+import { resolveThinkingLevel } from "../../shared/model-settings";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import type { KnowledgeConfig, KnowledgeOperationConfig } from "./config";
 import { renderKnowledgeBlock } from "./context";
@@ -439,14 +440,16 @@ async function completeText(
 	) {
 		throw new Error("knowledge model input exceeds its context window");
 	}
+	const requestedThinking =
+		operation.resolvedThinking ?? options.currentThinking;
 	const response = await completeAuxiliaryLlm(
 		options.completeSimple,
 		operation.runtime,
 		context,
 		buildAuxiliaryLlmOptions(
-			operation.operation.thinking ??
-				operation.resolvedThinking ??
-				options.currentThinking,
+			requestedThinking === undefined
+				? undefined
+				: resolveThinkingLevel(operation.runtime.model, requestedThinking),
 			options.signal,
 			operation.runtime,
 		),
@@ -478,7 +481,11 @@ async function resolveOperationRuntime(
 	ctx: ExtensionContext,
 	operation: KnowledgeOperationConfig,
 ): Promise<ResolvedOperationRuntime> {
-	const result = await resolveAuxiliaryLlmRuntime(ctx, operation.model);
+	const result = await resolveAuxiliaryLlmRuntime(
+		ctx,
+		operation.model,
+		operation.thinking,
+	);
 	if ("issue" in result) {
 		throw new Error(`knowledge model unavailable: ${result.issue}`);
 	}

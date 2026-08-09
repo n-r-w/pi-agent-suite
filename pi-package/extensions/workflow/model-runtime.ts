@@ -4,8 +4,8 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-	assertThinkingLevelSupported,
 	type ModelSettings,
+	resolveThinkingLevel,
 	splitModelId,
 } from "../../shared/model-settings";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
@@ -159,7 +159,7 @@ export async function applyWorkflowModelSettings(
 		currentModel,
 		resolution,
 	);
-	validateTargetModel(resolution, targetModel);
+	const resolvedThinking = resolveTargetThinking(resolution, targetModel);
 	const modelChanged =
 		resolution.shouldApplyModel &&
 		targetModel !== undefined &&
@@ -168,7 +168,7 @@ export async function applyWorkflowModelSettings(
 		await applyResolvedWorkflowModelSettings(
 			pi,
 			targetModel,
-			resolution,
+			resolvedThinking,
 			modelChanged,
 		);
 	} catch (error) {
@@ -189,25 +189,25 @@ export async function applyWorkflowModelSettings(
 	};
 }
 
-/** Validates the target model before any Pi runtime mutation. */
-function validateTargetModel(
+/** Resolves workflow thinking against the target model before any Pi runtime mutation. */
+function resolveTargetThinking(
 	resolution: WorkflowModelResolution,
 	targetModel: Model<Api> | undefined,
-): void {
+): ReasoningLevel | undefined {
 	if (!resolution.shouldApplyThinking) {
-		return;
+		return undefined;
 	}
 	if (targetModel === undefined) {
 		throw new Error("current model is unavailable");
 	}
-	assertThinkingLevelSupported(targetModel, resolution.thinking);
+	return resolveThinkingLevel(targetModel, resolution.thinking);
 }
 
 /** Applies model and thinking changes after validation has completed. */
 async function applyResolvedWorkflowModelSettings(
 	pi: WorkflowModelAPI,
 	targetModel: Model<Api> | undefined,
-	resolution: WorkflowModelResolution,
+	resolvedThinking: ReasoningLevel | undefined,
 	modelChanged: boolean,
 ): Promise<void> {
 	if (modelChanged && targetModel !== undefined) {
@@ -218,14 +218,12 @@ async function applyResolvedWorkflowModelSettings(
 			);
 		}
 	}
-	if (!resolution.shouldApplyThinking) {
+	if (resolvedThinking === undefined) {
 		return;
 	}
-	pi.setThinkingLevel(resolution.thinking);
-	if (pi.getThinkingLevel() !== resolution.thinking) {
-		throw new Error(
-			`thinking level ${resolution.thinking} could not be applied`,
-		);
+	pi.setThinkingLevel(resolvedThinking);
+	if (pi.getThinkingLevel() !== resolvedThinking) {
+		throw new Error(`thinking level ${resolvedThinking} could not be applied`);
 	}
 }
 

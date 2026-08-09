@@ -339,16 +339,13 @@ function splitOversizedText(
 		const tokenPrefix =
 			usefulPrefixLength > 0
 				? undefined
-				: findLargestFittingTokenPrefix(
-						remaining,
-						(blockText) =>
-							doesFragmentRequestFit(
-								block.id,
-								blockText,
-								summaryNodeTokens,
-								options,
-							),
-						options,
+				: findLargestFittingTokenPrefix(remaining, (blockText) =>
+						doesFragmentRequestFit(
+							block.id,
+							blockText,
+							summaryNodeTokens,
+							options,
+						),
 					);
 		const fragment =
 			usefulPrefixLength > 0
@@ -397,23 +394,13 @@ function findLargestFittingTextPrefix(
 function findLargestFittingTokenPrefix(
 	text: string,
 	fits: (candidate: string) => boolean,
-	options: AdaptiveCompactionOptions,
 ): string | undefined {
 	let low = 1;
-	let high = estimateTextTokens(
-		text,
-		options.summarizationModel.id,
-		options.summarizationModel.provider,
-	);
+	let high = estimateTextTokens(text);
 	let best: string | undefined;
 	while (low <= high) {
 		const middle = Math.floor((low + high) / 2);
-		const candidate = takeTextTokenPrefix(
-			text,
-			middle,
-			options.summarizationModel.id,
-			options.summarizationModel.provider,
-		);
+		const candidate = takeTextTokenPrefix(text, middle);
 		if (candidate.length === 0) {
 			low = middle + 1;
 		} else if (text.startsWith(candidate) && fits(candidate)) {

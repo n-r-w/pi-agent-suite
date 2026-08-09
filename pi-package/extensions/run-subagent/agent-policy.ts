@@ -14,6 +14,7 @@ import {
 	type MainAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
+import { resolveThinkingLevel } from "../../shared/model-settings";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import { resolveWorkflowPolicy } from "../../shared/workflow-policy";
@@ -77,7 +78,10 @@ export async function resolveLaunchConfiguration(
 		cwd: ctx.cwd,
 		modelId: `${model.provider}/${model.id}`,
 		provider: model.provider,
-		thinking: resolvedModel.thinking ?? pi.getThinkingLevel(),
+		thinking: resolveThinkingLevel(
+			model,
+			resolvedModel.thinking ?? pi.getThinkingLevel(),
+		),
 		...(agent.tools === undefined ? {} : { toolPatterns: agent.tools }),
 		...(workflows.policy === undefined
 			? {}

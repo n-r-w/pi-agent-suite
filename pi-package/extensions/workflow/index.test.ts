@@ -1049,8 +1049,12 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.appended).toEqual([]);
 	});
 
-	/** Rejects thinking unsupported by the target model before model application. */
-	test("rejects unsupported thinking before activation persistence", async () => {
+	/** Resolves unsupported thinking before applying and persisting the target model. */
+	test("resolves unsupported thinking before activation persistence", async () => {
+		// Purpose: workflow activation must use a level supported by the selected model.
+		// Input and expected output: xhigh resolves to high for openai/current-model and activation succeeds.
+		// Edge case: the model changes while the workflow's configured thinking level is unavailable.
+		// Dependencies: workflow model runtime applies the shared thinking-level resolver.
 		await createSuite(
 			modelYaml().replace("openai/workflow-model", "openai/current-model"),
 		);
@@ -1058,11 +1062,9 @@ describe("workflow extension lifecycle", () => {
 		await runLifecycle(fake, "session_start");
 		const activate = requireTool(fake, "workflow_activate");
 
-		await expect(
-			activate.execute("call", { workflowId: "delivery" }),
-		).rejects.toThrow("thinking xhigh is not supported");
-		expect(fake.modelSetCalls).toEqual([]);
-		expect(fake.appended).toEqual([]);
+		await activate.execute("call", { workflowId: "delivery" });
+		expect(fake.thinkingLevel).toBe("high");
+		expect(fake.appended).toHaveLength(1);
 	});
 
 	/** Restores runtime model and thinking when workflow persistence fails. */

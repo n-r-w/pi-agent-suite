@@ -327,6 +327,7 @@ async function executeAskLlm({
 		ctx,
 		configResult.config.model?.id,
 		configResult.config.model?.thinking,
+		parseThinking(currentThinkingLevel),
 	);
 	if ("issue" in runtimeResult) {
 		return { kind: "issue", issue: runtimeResult.issue };
@@ -349,8 +350,7 @@ async function executeAskLlm({
 		};
 	}
 
-	const effectiveThinking =
-		runtimeResult.thinking ?? parseThinking(currentThinkingLevel);
+	const effectiveThinking = runtimeResult.thinking;
 	const response = await executeAskLlmModelWithRetry({
 		completeSimple,
 		runtime: runtimeResult.runtime,

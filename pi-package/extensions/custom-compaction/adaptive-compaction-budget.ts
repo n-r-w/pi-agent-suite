@@ -261,15 +261,11 @@ function estimateMainInput(
 	messages: readonly AgentMessage[],
 	options: AdaptiveCompactionOptions,
 ): number {
-	return estimateSerializedInputTokens(
-		{
-			systemPrompt: options.mainSystemPrompt,
-			messages: convertToLlm([...messages]),
-			tools: [...options.activeTools],
-		},
-		options.mainModel.id,
-		options.mainModel.provider,
-	);
+	return estimateSerializedInputTokens({
+		systemPrompt: options.mainSystemPrompt,
+		messages: convertToLlm([...messages]),
+		tools: [...options.activeTools],
+	});
 }
 
 /** Returns the selected model's positive output cap or its context window as the cap. */

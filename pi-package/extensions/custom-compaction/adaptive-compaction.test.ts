@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
+import { Tiktoken } from "js-tiktoken/lite";
 import { Type } from "typebox";
 import {
 	estimateTextTokens,
 	takeTextTokenPrefix,
 } from "../../shared/context-size";
 import {
-	type AdaptiveCompactionOptions,
+	type AdaptiveCompactionInput,
 	type AdaptiveCompactionProgressEvent,
 	type AdaptiveCompactionRequest,
 	adaptiveCompactHistory,
@@ -78,15 +79,15 @@ function requestText(request: AdaptiveCompactionRequest): string {
 }
 
 /** Builds an isolated engine fixture with deterministic completion and request IDs. */
-function createOptions(overrides: Partial<AdaptiveCompactionOptions> = {}): {
-	readonly options: AdaptiveCompactionOptions;
+function createOptions(overrides: Partial<AdaptiveCompactionInput> = {}): {
+	readonly options: AdaptiveCompactionInput;
 	readonly progressEvents: AdaptiveCompactionProgressEvent[];
 	readonly requests: AdaptiveCompactionRequest[];
 } {
 	const progressEvents: AdaptiveCompactionProgressEvent[] = [];
 	const requests: AdaptiveCompactionRequest[] = [];
 	let requestId = 0;
-	const options: AdaptiveCompactionOptions = {
+	const options: AdaptiveCompactionInput = {
 		preparation: {
 			previousSummary: "previous_summary",
 			messagesToSummarize: [userMessage("history-message", 1)],
@@ -492,10 +493,8 @@ describe("adaptiveCompactHistory", () => {
 		let remaining = `[User]: ${denseText}`;
 		for (const fragment of fragmentTexts) {
 			if (!WHITESPACE_PATTERN.test(fragment.trim())) {
-				const tokenCount = estimateTextTokens(fragment, "gpt-5", "openai");
-				expect(
-					takeTextTokenPrefix(remaining, tokenCount, "gpt-5", "openai"),
-				).toBe(fragment);
+				const tokenCount = estimateTextTokens(fragment);
+				expect(takeTextTokenPrefix(remaining, tokenCount)).toBe(fragment);
 			}
 			remaining = remaining.slice(fragment.length);
 		}
@@ -869,6 +868,61 @@ describe("adaptiveCompactHistory", () => {
 			"common summary_node budget",
 		);
 		expect(requests).toHaveLength(0);
+	});
+
+	/** Proves each compaction keeps its complete planning-context estimates private. */
+	test("reuses complete planning context estimates only within one compaction", async () => {
+		// Purpose: repeated complete contexts reuse one exact estimate during one compaction.
+		// Input and expected output: two adaptive runs each encode their repeated simulated final context once.
+		// Edge case: the second run must not reuse the first run's cached estimate.
+		// Dependencies: the engine fixture and the real o200k tokenizer instrumentation.
+		const originalEncode = Tiktoken.prototype.encode;
+		const contextEncodeCounts = new Map<string, number>();
+		let firstCompactionCounts: number[] = [];
+		Tiktoken.prototype.encode = function (...args) {
+			const [text] = args;
+			if (text.includes("<summary_source>")) {
+				contextEncodeCounts.set(text, (contextEncodeCounts.get(text) ?? 0) + 1);
+			}
+			return originalEncode.call(this, ...args);
+		};
+		const overrides: Partial<AdaptiveCompactionInput> = {
+			preparation: {
+				messagesToSummarize: Array.from({ length: 20 }, (_, index) =>
+					userMessage(`BLOCK_${index}_${"old ".repeat(170)}`, index),
+				),
+				turnPrefixMessages: [],
+				tokensBefore: 10_000,
+			},
+			summarizationModel: {
+				id: "gpt-5",
+				provider: "openai",
+				contextWindow: 1_050,
+				maxTokens: 96,
+			},
+			complete: async (request) =>
+				response(
+					request.operation === "preliminary"
+						? `INTERMEDIATE_${"compressed ".repeat(70)}`
+						: "adaptive-final",
+				),
+		};
+
+		try {
+			// ACT: Run equivalent adaptive compactions with independent input objects.
+			await adaptiveCompactHistory(createOptions(overrides).options);
+			firstCompactionCounts = [...contextEncodeCounts.values()];
+			await adaptiveCompactHistory(createOptions(overrides).options);
+		} finally {
+			Tiktoken.prototype.encode = originalEncode;
+		}
+
+		// ASSERT: Identical contexts are cached per compaction, not shared across runs.
+		expect(firstCompactionCounts.length).toBeGreaterThan(0);
+		expect(firstCompactionCounts.every((count) => count === 1)).toBeTrue();
+		expect(
+			[...contextEncodeCounts.values()].every((count) => count === 2),
+		).toBeTrue();
 	});
 
 	/** Proves planning calls the injected step callback while adaptive budgets are computed. */

@@ -2366,10 +2366,10 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("rejects thinking unsupported by the configured model before application", async () => {
-		// Purpose: unsupported agent thinking must fail before model, thinking, or contribution changes.
-		// Input and expected output: a model without reasoning rejects a high thinking level and emits one warning.
-		// Edge case: the agent supplies both a model ID and thinking level, so capability validation must precede setModel.
+	test("resolves thinking unsupported by the configured model before application", async () => {
+		// Purpose: agent selection must apply a level supported by the configured model.
+		// Input and expected output: a non-reasoning model resolves high to off without a warning.
+		// Edge case: the agent supplies both a model ID and thinking level.
 		// Dependencies: this test uses an isolated agent file and a fake model registry.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const model = { ...createModel("openai", "gpt-test"), reasoning: false };
@@ -2385,9 +2385,9 @@ describe("main-agent-selection", () => {
 
 			await getCommand(pi, "agent").handler("builder", ctx);
 
-			expect(pi.setModelCalls).toEqual([]);
-			expect(pi.thinkingCalls).toEqual([]);
-			expect(ctx.notifications[0]?.type).toBe("warning");
+			expect(pi.setModelCalls).toEqual([model]);
+			expect(pi.thinkingCalls).toEqual(["off"]);
+			expect(ctx.notifications).toEqual([]);
 		});
 	});
 

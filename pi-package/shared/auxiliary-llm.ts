@@ -9,7 +9,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveModelSettingsWithAliases } from "../extensions/model-aliases/config";
 import { createAuxiliaryLlmSessionId } from "./auxiliary-llm-session";
 import { estimateSerializedInputTokens } from "./context-size";
-import { assertThinkingLevelSupported, splitModelId } from "./model-settings";
+import { resolveThinkingLevel, splitModelId } from "./model-settings";
 import type { ReasoningLevel } from "./reasoning-levels";
 
 /** Provides the caller-local model registry and current model. */
@@ -48,6 +48,7 @@ export async function resolveAuxiliaryLlmRuntime(
 	ctx: AuxiliaryLlmContext,
 	modelId: string | undefined,
 	thinking: ReasoningLevel | undefined = undefined,
+	fallbackThinking: ReasoningLevel | undefined = undefined,
 ): Promise<AuxiliaryLlmRuntimeResult> {
 	const resolvedSettings = await resolveModelSettingsWithAliases(
 		modelId === undefined && thinking === undefined
@@ -71,11 +72,14 @@ export async function resolveAuxiliaryLlmRuntime(
 		};
 	}
 
-	const effectiveThinking = resolvedSettings.settings.thinking;
-	const supportedThinking = ensureThinkingSupported(model, effectiveThinking);
-	if (typeof supportedThinking === "string") {
-		return { issue: supportedThinking };
-	}
+	const effectiveThinking = resolveEffectiveThinking(
+		resolvedSettings.settings.thinking,
+		fallbackThinking,
+	);
+	const resolvedThinking =
+		effectiveThinking === undefined
+			? undefined
+			: resolveThinkingLevel(model, effectiveThinking);
 
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) {
@@ -87,7 +91,7 @@ export async function resolveAuxiliaryLlmRuntime(
 			...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
 			...(auth.headers === undefined ? {} : { headers: auth.headers }),
 		},
-		...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
+		...(resolvedThinking === undefined ? {} : { thinking: resolvedThinking }),
 	};
 }
 
@@ -120,10 +124,7 @@ export function doesAuxiliaryLlmInputFitContextWindow(
 	context: Context,
 	model: Model<Api>,
 ): boolean {
-	return (
-		estimateSerializedInputTokens(context, model.id, model.provider) <=
-		model.contextWindow
-	);
+	return estimateSerializedInputTokens(context) <= model.contextWindow;
 }
 
 /** Performs exactly one tool-less auxiliary model request. */
@@ -164,18 +165,10 @@ function resolveRuntimeModel(
 		: resolveConfiguredModel(ctx, modelId);
 }
 
-/** Verifies optional reasoning support and returns the error message when unsupported. */
-function ensureThinkingSupported(
-	model: Model<Api>,
-	thinking: ReasoningLevel | undefined,
-): true | string {
-	if (thinking === undefined) {
-		return true;
-	}
-	try {
-		assertThinkingLevelSupported(model, thinking);
-		return true;
-	} catch (error) {
-		return error instanceof Error ? error.message : String(error);
-	}
+/** Prefers configured thinking over the caller's current level. */
+function resolveEffectiveThinking(
+	configuredThinking: ReasoningLevel | undefined,
+	fallbackThinking: ReasoningLevel | undefined,
+): ReasoningLevel | undefined {
+	return configuredThinking ?? fallbackThinking;
 }

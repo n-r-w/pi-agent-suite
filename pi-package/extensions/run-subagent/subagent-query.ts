@@ -61,6 +61,7 @@ export async function executeSubagentQuery({
 		ctx,
 		modelConfig?.id,
 		modelConfig?.thinking,
+		isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined,
 	);
 	if ("issue" in runtimeResult) {
 		return { kind: "issue", issue: "Query model is unavailable" };
@@ -82,9 +83,7 @@ export async function executeSubagentQuery({
 		};
 	}
 
-	const effectiveThinking =
-		runtimeResult.thinking ??
-		(isReasoningLevel(currentThinkingLevel) ? currentThinkingLevel : undefined);
+	const effectiveThinking = runtimeResult.thinking;
 	const options = buildAuxiliaryLlmOptions(
 		effectiveThinking,
 		signal,
