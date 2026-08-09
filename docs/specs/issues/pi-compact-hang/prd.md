@@ -16,8 +16,8 @@ The planning phase becomes non-blocking: the Pi spinner animates continuously, a
 - The user presses escape during planning — the operation is interrupted, as on other compaction stages.
 
 ## Scope and Non-Scope
-**In scope:** the planning phase of adaptive compaction in `custom-compaction`; releasing the event loop; a progress message; cancel.
-**Out of scope:** tokenization optimization (caching, worker thread, tokenizer replacement, removing the 3-encoding fallback); changing the budget calculation algorithm; speeding up the first large LLM request.
+**In scope:** the planning phase of adaptive compaction in `custom-compaction`; releasing the event loop; a progress message; cancel; fixed `o200k_base` token counting; request-local caching of complete rendered planning-context estimates.
+**Out of scope:** worker threads; changing the budget calculation algorithm; wall-clock performance benchmarks; speeding up the first large LLM request.
 
 ## Requirements
 

@@ -464,10 +464,7 @@ export function doesContextFitModel(
 	context: Context,
 	model: Model<Api>,
 ): boolean {
-	return (
-		estimateSerializedInputTokens(context, model.id, model.provider) <=
-		model.contextWindow
-	);
+	return estimateSerializedInputTokens(context) <= model.contextWindow;
 }
 
 /** Builds a tool-result message whose content contains the generated helper summary. */

@@ -86,6 +86,8 @@ Before any model request, the extension calculates:
 - the maximum final summary size allowed by the prospective next main-model request;
 - one common intermediate summary_node limit that permits pairwise merges and the final summarization request.
 
+All request and text estimates use `o200k_base`, regardless of model or provider. During one `adaptiveCompactHistory` invocation, planning caches the estimate for every exact complete rendered summary context. The cache is created for that invocation and becomes unreachable when it finishes; no cache is shared with another compaction.
+
 The prospective main-model request includes the effective system prompt, active tools, candidate compaction summary, retained suffix, main-model response reserve, and safety margin. Existing `context-projection` replacements are replayed for retained-suffix sizing. Generated summary replacements are also reused in the discarded summary range.
 
 The final main-model request must fit its model window and must not be larger than the projected request representation it replaces. When no positive final or intermediate budget exists, custom compaction fails before issuing a model request.

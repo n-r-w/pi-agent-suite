@@ -124,10 +124,7 @@ export function doesAuxiliaryLlmInputFitContextWindow(
 	context: Context,
 	model: Model<Api>,
 ): boolean {
-	return (
-		estimateSerializedInputTokens(context, model.id, model.provider) <=
-		model.contextWindow
-	);
+	return estimateSerializedInputTokens(context) <= model.contextWindow;
 }
 
 /** Performs exactly one tool-less auxiliary model request. */

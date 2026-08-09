@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { Tiktoken } from "js-tiktoken/lite";
+import o200kBase from "js-tiktoken/ranks/o200k_base";
 import {
 	countKnowledgeTextTokens,
 	estimateTextTokens,
@@ -6,46 +8,44 @@ import {
 } from "./context-size";
 
 describe("estimateTextTokens", () => {
-	/** Proves text-only adaptive budgets use the selected model encoding without request framing. */
-	test("counts standalone text with the selected model tokenizer", () => {
-		// ARRANGE: Dense text distinguishes tokenizer counting from character heuristics.
-		const text = "antidisestablishmentarianism".repeat(40);
+	/** Proves standalone text uses the fixed o200k tokenizer without request framing. */
+	test("counts standalone text with the fixed o200k tokenizer", () => {
+		// ARRANGE: Japanese text has different cl100k_base and o200k_base token counts.
+		const text = "お誕生日おめでとう".repeat(40);
 
-		// ACT: Count the same text for a known modern OpenAI model and an unknown model.
-		const knownModelTokens = estimateTextTokens(text, "gpt-5", "openai");
-		const fallbackTokens = estimateTextTokens(text, undefined, undefined);
+		// ACT: Count it through the public API and directly through o200k_base ranks.
+		const estimatedTokens = estimateTextTokens(text);
+		const o200kTokens = new Tiktoken(o200kBase).encode(text, [], []).length;
 
-		// ASSERT: Both paths return usable conservative counts without request overhead.
-		expect(knownModelTokens).toBeGreaterThan(0);
-		expect(fallbackTokens).toBeGreaterThanOrEqual(knownModelTokens);
-		expect(estimateTextTokens("", "gpt-5", "openai")).toBe(0);
+		// ASSERT: The public estimate is the fixed o200k_base count.
+		expect(estimatedTokens).toBeGreaterThan(0);
+		expect(estimatedTokens).toBe(o200kTokens);
+		expect(estimateTextTokens("")).toBe(0);
 	});
 
-	/** Proves hard fragment fallback returns a lossless prefix at a selected tokenizer boundary. */
-	test("takes a bounded prefix at a model token boundary", () => {
+	/** Proves hard fragment fallback returns a lossless prefix at an o200k token boundary. */
+	test("takes a bounded prefix at an o200k token boundary", () => {
 		// ARRANGE: Dense text has no useful paragraph, line, sentence, or word boundary.
 		const text = "antidisestablishmentarianism".repeat(10);
 
-		// ACT: Keep only the first five selected-model tokens.
-		const prefix = takeTextTokenPrefix(text, 5, "gpt-5", "openai");
+		// ACT: Keep only the first five o200k tokens.
+		const prefix = takeTextTokenPrefix(text, 5);
 
 		// ASSERT: The decoded token prefix is non-empty, lossless, and within the token limit.
 		expect(prefix.length).toBeGreaterThan(0);
 		expect(text.startsWith(prefix)).toBeTrue();
-		expect(estimateTextTokens(prefix, "gpt-5", "openai")).toBeLessThanOrEqual(
-			5,
-		);
+		expect(estimateTextTokens(prefix)).toBeLessThanOrEqual(5);
 	});
 
 	/** Proves token-prefix decoding never returns replacement text for split Unicode tokens. */
 	test("keeps decoded Unicode token prefixes lossless", () => {
 		// ARRANGE: Emoji sequences can span several tokenizer byte tokens.
 		const text = "👩‍💻界🚀".repeat(4);
-		const totalTokens = estimateTextTokens(text, "gpt-5", "openai");
+		const totalTokens = estimateTextTokens(text);
 
 		// ACT: Decode every bounded token-prefix size.
 		const prefixes = Array.from({ length: totalTokens }, (_, index) =>
-			takeTextTokenPrefix(text, index + 1, "gpt-5", "openai"),
+			takeTextTokenPrefix(text, index + 1),
 		);
 
 		// ASSERT: Empty early limits can become lossless later, and every returned value stays exact.
@@ -54,9 +54,7 @@ describe("estimateTextTokens", () => {
 		);
 		for (const [index, prefix] of prefixes.entries()) {
 			expect(prefix.length === 0 || text.startsWith(prefix)).toBeTrue();
-			expect(estimateTextTokens(prefix, "gpt-5", "openai")).toBeLessThanOrEqual(
-				index + 1,
-			);
+			expect(estimateTextTokens(prefix)).toBeLessThanOrEqual(index + 1);
 		}
 	});
 });
@@ -67,9 +65,9 @@ describe("countKnowledgeTextTokens", () => {
 		// ARRANGE: Dense text distinguishes tokenizer counting from character heuristics.
 		const text = "antidisestablishmentarianism".repeat(40);
 
-		// ACT: Compare the fixed knowledge count with the known modern OpenAI encoding.
+		// ACT: Compare the fixed knowledge count with the standalone o200k estimate.
 		const knowledgeTokens = countKnowledgeTextTokens(text);
-		const o200kTokens = estimateTextTokens(text, "gpt-5", "openai");
+		const o200kTokens = estimateTextTokens(text);
 
 		// ASSERT: Both paths use o200k_base and agree exactly.
 		expect(knowledgeTokens).toBeGreaterThan(0);

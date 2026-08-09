@@ -567,15 +567,12 @@ function doesAdvisorInputFitContextWindow(
 	context: Context,
 	model: Model<Api>,
 ): boolean {
-	return estimateAdvisorInputTokens(context, model) <= model.contextWindow;
+	return estimateAdvisorInputTokens(context) <= model.contextWindow;
 }
 
 /** Estimates advisor input with tokenizer-based counting before provider execution. */
-function estimateAdvisorInputTokens(
-	context: Context,
-	model: Model<Api>,
-): number {
-	return estimateSerializedInputTokens(context, model.id, model.provider);
+function estimateAdvisorInputTokens(context: Context): number {
+	return estimateSerializedInputTokens(context);
 }
 
 /** Removes consult_advisor tool calls and matching tool results from the advisor transcript. */
