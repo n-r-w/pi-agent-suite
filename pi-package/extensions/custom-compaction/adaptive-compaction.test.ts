@@ -875,21 +875,21 @@ describe("adaptiveCompactHistory", () => {
 		// Purpose: repeated complete contexts reuse one exact estimate during one compaction.
 		// Input and expected output: two adaptive runs each encode their repeated simulated final context once.
 		// Edge case: the second run must not reuse the first run's cached estimate.
-		// Dependencies: the engine fixture and the real o200k tokenizer instrumentation.
+		// Dependencies: the engine fixture and deterministic tokenizer instrumentation.
 		const originalEncode = Tiktoken.prototype.encode;
 		const contextEncodeCounts = new Map<string, number>();
 		let firstCompactionCounts: number[] = [];
-		Tiktoken.prototype.encode = function (...args) {
+		Tiktoken.prototype.encode = (...args) => {
 			const [text] = args;
 			if (text.includes("<summary_source>")) {
 				contextEncodeCounts.set(text, (contextEncodeCounts.get(text) ?? 0) + 1);
 			}
-			return originalEncode.call(this, ...args);
+			return Array.from({ length: Math.ceil(text.length / 4) }, () => 0);
 		};
 		const overrides: Partial<AdaptiveCompactionInput> = {
 			preparation: {
-				messagesToSummarize: Array.from({ length: 20 }, (_, index) =>
-					userMessage(`BLOCK_${index}_${"old ".repeat(170)}`, index),
+				messagesToSummarize: Array.from({ length: 12 }, (_, index) =>
+					userMessage(`BLOCK_${index}_${"old ".repeat(100)}`, index),
 				),
 				turnPrefixMessages: [],
 				tokensBefore: 10_000,
@@ -897,13 +897,13 @@ describe("adaptiveCompactHistory", () => {
 			summarizationModel: {
 				id: "gpt-5",
 				provider: "openai",
-				contextWindow: 1_050,
+				contextWindow: 700,
 				maxTokens: 96,
 			},
 			complete: async (request) =>
 				response(
 					request.operation === "preliminary"
-						? `INTERMEDIATE_${"compressed ".repeat(70)}`
+						? `INTERMEDIATE_${"compressed ".repeat(10)}`
 						: "adaptive-final",
 				),
 		};
