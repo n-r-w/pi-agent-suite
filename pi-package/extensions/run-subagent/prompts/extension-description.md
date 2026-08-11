@@ -56,7 +56,7 @@
 - `Goal: Get user approval of plan.` vs `Goal: Obtain agreed plan.`
 - `Goal: Present results.` vs `Goal: Provide user with necessary information.`
 
-**SUBAGENT PROMPT FORMAT**:
+**SUBAGENT PROMPT FORMAT**. MUST USE `ASD-STE100` - Simplified Technical English:
 ```
 <goal>
     <!-- Which goal subagent is expected to achieve -->
