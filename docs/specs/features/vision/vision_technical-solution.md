@@ -13,8 +13,9 @@
 
 ### SOL-02: Capability-aware tool visibility
 - Add `isMultimodal(model) = !!model?.input?.includes("image")` (a model without `"image"` in `input` is text-only).
-- On `session_start` and `model_select`, sync the active tool set with a read-merge-write over `pi.getActiveTools()`/`pi.setActiveTools()`.
-- The tool is present in the active set only when `config.enabled === true` and the active model is text-only; otherwise it is removed. Other extensions' tools are preserved.
+- On `session_start`, resolve the effective config and the active model; on `model_select`, re-sync using the cached config.
+- The tool is present in the active set only when all of: `config.enabled === true`, `provider` is set, `model` is set, and the active model is text-only. Otherwise it is removed (other extensions' tools are preserved) via a read-merge-write over `pi.getActiveTools()`/`pi.setActiveTools()`.
+- When `enabled` is true but `provider`/`model` are unset, or the config file is malformed, show a warning via `ctx.ui?.notify(...)` at `session_start` and keep the tool hidden for the session.
 
 ### SOL-03: `describe_image` tool definition
 - Tool `describe_image`, label `Describe Image`, with TypeBox schema:
@@ -79,7 +80,7 @@
   - `no_image_path` — neither `image_path` nor `image_paths` given.
   - `batch_too_large` — more than 50 images.
 - Per-image errors — occur inside the loop; each becomes an `[error: code — message]` section in the batch text block (the model sees them and can recover):
-  - `not_found`, `not_a_file`, `too_large`, `unsupported_format`, `invalid_data_url`, `invalid_base64`.
+  - `not_found`, `not_a_file`, `too_large`, `unsupported_format`, `invalid_data_url`, `invalid_base64`, `read_error` (file exists but cannot be read: permission or I/O error).
 
 ### SOL-11: Tool presentation in main window and subagent TUI
 - Register the tool via `registerPackageTool(pi, definition)` from `shared/tool-presentation/registry.ts`, not bare `pi.registerTool`, so the renderers are published on the shared event bus.
