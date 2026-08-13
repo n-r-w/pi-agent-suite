@@ -66,18 +66,20 @@
 - Treat `stopReason === "error"` as retryable via `createRetryableExternalError`; abort errors are never retried.
 
 ### SOL-09: Batch execution
-- Normalize `image_path`/`image_paths` into a deduped, order-preserving path list; reject an empty list (`no_image_path`) and more than 50 images (`batch_too_large`).
+- Validate the call once before any image work: normalize `image_path`/`image_paths` into a deduped, order-preserving path list; reject an empty list (`no_image_path`) and more than 50 images (`batch_too_large`) by throwing (see SOL-10).
 - Run delegations with bounded concurrency `config.batchConcurrency` (a small `mapWithConcurrency` helper).
-- Each image delegates independently with its own retry; a per-image failure becomes an `[error: code — message]` section, not a whole-batch failure.
+- Each image delegates independently with its own retry; a per-image failure becomes an `[error: code — message]` section in the block, not a whole-batch failure.
 - The result is one order-stable text block: `[Batch: N image(s)]` header, then `[Image 1] path` + description per image.
-- Set `isError` only when every image failed.
 
 ### SOL-10: Error handling
-- `not_configured` — `provider` or `model` unset.
-- `model_not_found` — `provider/model` not in the model registry.
-- `auth_error` — `getApiKeyAndHeaders` fails.
-- Image errors: `not_found`, `not_a_file`, `too_large`, `unsupported_format`, `invalid_data_url`, `invalid_base64`.
-- Each error returns an actionable message; the tool result sets `isError`.
+- Global errors — validated once before the image loop; thrown, so the TUI shows a red error and the message does not enter the LLM context:
+  - `not_configured` — `provider` or `model` unset.
+  - `model_not_found` — `provider/model` not in the model registry.
+  - `auth_error` — `getApiKeyAndHeaders` fails.
+  - `no_image_path` — neither `image_path` nor `image_paths` given.
+  - `batch_too_large` — more than 50 images.
+- Per-image errors — occur inside the loop; each becomes an `[error: code — message]` section in the batch text block (the model sees them and can recover):
+  - `not_found`, `not_a_file`, `too_large`, `unsupported_format`, `invalid_data_url`, `invalid_base64`.
 
 ### SOL-11: Tool presentation in main window and subagent TUI
 - Register the tool via `registerPackageTool(pi, definition)` from `shared/tool-presentation/registry.ts`, not bare `pi.registerTool`, so the renderers are published on the shared event bus.
