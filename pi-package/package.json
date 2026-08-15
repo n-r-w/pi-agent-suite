@@ -45,7 +45,8 @@
 			"./extensions/structured-prompt/index.ts",
 			"./extensions/ask-llm/index.ts",
 			"./extensions/consult-advisor/index.ts",
-			"./extensions/convene-council/index.ts"
+			"./extensions/convene-council/index.ts",
+			"./extensions/vision/index.ts"
 		]
 	},
 	"peerDependencies": {
