@@ -5,6 +5,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { Key } from "@earendil-works/pi-tui";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
@@ -968,7 +969,7 @@ function registerManagementEntries(
 		description: "Open the Subagents management screen",
 		handler: async (_args, handlerContext) => open(handlerContext),
 	});
-	pi.registerShortcut("ctrl+shift+g", {
+	pi.registerShortcut(Key.ctrlAlt("s"), {
 		description: "Open the Subagents management screen",
 		handler: open,
 	});

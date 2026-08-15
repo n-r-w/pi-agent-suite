@@ -10,6 +10,7 @@ import {
 	type Component,
 	type Focusable,
 	Input,
+	Key,
 	type Keybinding,
 	type SelectItem,
 	SelectList,
@@ -54,9 +55,7 @@ const NO_AGENT_ARGUMENT = "none";
 /** Internal selector value for the explicit no-agent option. */
 const NO_AGENT_VALUE = "__none__";
 
-type ShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
-
-const SHORTCUT = "Ctrl+Shift+A" as ShortcutKey;
+const SHORTCUT = Key.ctrlAlt("a");
 const AGENT_SELECTION_EXTENSION_DIR = "agent-selection";
 const LEGACY_STATE_DIR = join("agent-selection", "state");
 const STATE_SUBDIR = "state";

@@ -161,12 +161,12 @@ describe("subagent main-window status indicator", () => {
 		}).toEqual({
 			resumedRows: [
 				"─".repeat(120),
-				"Agents: ⧗ 1 · ✓ 1 · ✗ 1 · ■ 1 · Ctrl+Shift+G",
+				"Agents: ⧗ 1 · ✓ 1 · ✗ 1 · ■ 1 · Ctrl+Alt+S",
 			],
 			resumedLineWidth: 120,
 			updatedRows: [
 				"─".repeat(120),
-				"Agents: ⧗ 0 · ✓ 2 · ✗ 1 · ■ 1 · Ctrl+Shift+G",
+				"Agents: ⧗ 0 · ✓ 2 · ✗ 1 · ■ 1 · Ctrl+Alt+S",
 			],
 			cleared: undefined,
 		});
@@ -196,7 +196,7 @@ describe("subagent main-window status indicator", () => {
 		dispose();
 
 		expect(status).toContain(
-			"<dim>Agents: </dim><accent>⧗</accent><dim> 1 · </dim><success>✓</success><dim> 1 · </dim><error>✗</error><dim> 1 · </dim><warning>■</warning><dim> 1 · Ctrl+Shift+G</dim>",
+			"<dim>Agents: </dim><accent>⧗</accent><dim> 1 · </dim><success>✓</success><dim> 1 · </dim><error>✗</error><dim> 1 · </dim><warning>■</warning><dim> 1 · Ctrl+Alt+S</dim>",
 		);
 	});
 

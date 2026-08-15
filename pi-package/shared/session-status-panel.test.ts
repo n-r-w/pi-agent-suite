@@ -92,14 +92,14 @@ describe("shared session status panel", () => {
 		workflow.set(
 			() => "Workflow: TuiBrainstorming · Generate and discuss TUI concepts",
 		);
-		agents.set(() => "Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Shift+G");
+		agents.set(() => "Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Alt+S");
 		const rows = renderLatest(fake.updates, 100, markedTheme());
 		workflow.dispose();
 		agents.dispose();
 
 		expect(rows).toEqual([
 			`<dim>${"─".repeat(100)}</dim>`,
-			"Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Shift+G",
+			"Agents: ⧗ 0 · ✓ 1 · ✗ 0 · ■ 0 · Ctrl+Alt+S",
 			"Workflow: TuiBrainstorming · Generate and discuss TUI concepts",
 		]);
 	});

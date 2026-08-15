@@ -338,7 +338,7 @@ export class ManagementScreen implements Component, Focusable {
 			this.options.tui.requestRender();
 			return true;
 		}
-		if (matchesKey(data, Key.ctrlShift("g"))) {
+		if (matchesKey(data, Key.ctrlAlt("s"))) {
 			this.options.close();
 			return true;
 		}
@@ -1053,7 +1053,7 @@ export class ManagementScreen implements Component, Focusable {
 		}
 		hints.push(
 			bindingHint(this.options.keybindings, "app.tools.expand", "tools"),
-			rawKeyHint("Ctrl+Shift+G", "close"),
+			rawKeyHint("Ctrl+Alt+S", "close"),
 		);
 		return truncateToWidth(hints.filter(Boolean).join(" · "), width, "…");
 	}
