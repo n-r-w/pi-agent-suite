@@ -30,7 +30,7 @@ curl -fsSL https://github.com/n-r-w/pi-agent-suite/archive/refs/heads/main.zip |
 ### 3. Test it
 
 1. Start Pi in a project directory.
-2. Select the `Coder` agent with `/agent` or `Ctrl+Shift+A`.
+2. Select the `Coder` agent with `/agent` or `Ctrl+Alt+A`.
 3. Ask the agent about available subagents and workflows, for example: "What subagents, advisors, and workflows tools are available? How can you use them to solve a task? Give a very brief summary."
 
 Expected response:
@@ -50,7 +50,7 @@ Expected response:
 
 **Typical use:** activate a suitable workflow, gather evidence directly or through an extractor, delegate focused analysis to an analyst, consult the advisor for a second opinion when valuable, then complete and verify each workflow stage in order.
 ```
-4. Ask the agent `Try running each subagent to see how it works.`, type `Ctrl+Shift+G` or /subagents to open the subagent management screen, and see how the subagents run in parallel and return results.
+4. Ask the agent `Try running each subagent to see how it works.`, type `Ctrl+Alt+S` or /subagents to open the subagent management screen, and see how the subagents run in parallel and return results.
 
 ## What key problems does Pi Agent Suite solve?
 
@@ -62,11 +62,11 @@ Solution: an agent system in which each agent can be configured for a specific t
 
 Select the current active agent (a list of all agents with the `main` type is available):
 - Command `/agent`
-- Key binding `Ctrl+Shift+A`
+- Key binding `Ctrl+Alt+A`
 
 Open the UI for managing running agents:
 - Command `/subagents`
-- Key binding `Ctrl+Shift+G`
+- Key binding `Ctrl+Alt+S`
 
 ![Full subagents TUI](https://raw.githubusercontent.com/n-r-w/pi-agent-suite/main/docs/images/subagents-tui.png)
 
@@ -474,8 +474,8 @@ Parameters:
 | `workflow` | Inactive until configured | Adds validated workflow activation, stage transitions, ordered stage-entry triggers, route-derived provider context, and a compact active-stage row in the shared session status panel. | Add `.yaml` files under `workflow/workflows`; optional prompt paths in `workflow/config.json`. | [docs/extensions/workflow.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/workflow.md) |
 | `completion-sound` | Enabled | Plays a sound after successful top-level agent runs. | `completion-sound/config.json`: `enabled`, `command`, `args`, `volume`. | [docs/extensions/completion-sound.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/completion-sound.md) |
 | `cmux` | Enabled | Sends [cmux](https://cmux.com/) notification after successful top-level agent runs. | `cmux/config.json`: `enabled`. | [docs/extensions/cmux.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/cmux.md) |
-| `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Shift+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/main-agent-selection.md) |
-| `run-subagent` | Enabled | Adds `subagent_start`, `subagent_steer`, `subagent_wait`, and saved-session `subagent_query` tools, an `Agents` row in the shared session status panel, and the `/subagents` (`Ctrl+Shift+G`) management screen. | `run-subagent/config.json`: `enabled`, `maxDepth`, descriptions, and query model/system prompt. | [docs/extensions/run-subagent.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/run-subagent.md) |
+| `main-agent-selection` | Enabled | Adds `/agent` and `Ctrl+Alt+A` for selecting reusable main agents. | `agent-selection/config.json`: `enabled`, `diagnosticsEnabled`. | [docs/extensions/main-agent-selection.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/main-agent-selection.md) |
+| `run-subagent` | Enabled | Adds `subagent_start`, `subagent_steer`, `subagent_wait`, and saved-session `subagent_query` tools, an `Agents` row in the shared session status panel, and the `/subagents` (`Ctrl+Alt+S`) management screen. | `run-subagent/config.json`: `enabled`, `maxDepth`, descriptions, and query model/system prompt. | [docs/extensions/run-subagent.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/run-subagent.md) |
 | `model-aliases` | Optional shared config | Defines global model aliases that map to `provider/model` and optional default `thinking`. Used by all suite model selectors. | `model-aliases/config.json`: alias entries keyed by alias name. | [docs/extensions/model-aliases.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/model-aliases.md) |
 | `structured-prompt` | Enabled | Adds `/prompt` and `Ctrl+Alt+P` for building structured user requests. | `structured-prompt/config.json`: `enabled`. | [docs/extensions/structured-prompt.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/structured-prompt.md) |
 | `ask-llm` | Enabled | Adds `/ask` for one-off model questions that are not saved to the current session. | `ask-llm/config.json`: `enabled`, `model`, `systemPromptFile`, `retry`. | [docs/extensions/ask-llm.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/ask-llm.md) |

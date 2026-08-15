@@ -2,7 +2,7 @@
 
 ## Terms
 
-- **Management screen**: TUI overlay (Ctrl+Shift+G) showing all subagent sessions. Left pane: agent hierarchy. Right pane: conversation of selected agent. Bottom: steer input.
+- **Management screen**: TUI overlay (Ctrl+Alt+S) showing all subagent sessions. Left pane: agent hierarchy. Right pane: conversation of selected agent. Bottom: steer input.
 
 - **Workflow state**: Current state of the workflow extension: `WorkflowState` containing `workflow.id`, `workflow.stages`, and `route` (array of stage IDs; last element is the active stage).
 

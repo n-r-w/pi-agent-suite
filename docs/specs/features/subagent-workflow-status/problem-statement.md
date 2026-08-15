@@ -2,7 +2,7 @@
 
 ## Context
 
-The subagent management screen (Ctrl+Shift+G) lets the user monitor multiple concurrent subagent sessions. Each subagent runs in a child pi process with its own workflow extension. The main agent screen shows a workflow status line at the bottom: `Workflow: Analysis · Generate user response or requested output artifact`. The management screen does not show equivalent information for subagents.
+The subagent management screen (Ctrl+Alt+S) lets the user monitor multiple concurrent subagent sessions. Each subagent runs in a child pi process with its own workflow extension. The main agent screen shows a workflow status line at the bottom: `Workflow: Analysis · Generate user response or requested output artifact`. The management screen does not show equivalent information for subagents.
 
 ## Problem Statement
 

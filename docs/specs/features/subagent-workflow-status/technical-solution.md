@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-The management screen (Ctrl+Shift+G) does not display the current workflow state of a selected subagent. The user cannot see which workflow stage each subagent is working on without reading its conversation.
+The management screen (Ctrl+Alt+S) does not display the current workflow state of a selected subagent. The user cannot see which workflow stage each subagent is working on without reading its conversation.
 
 - TS-P1: Workflow state lives in the child process's `WorkflowRuntime.state`. No existing data channel carries it to the parent's management screen.
 - TS-P2: The parent's `readActiveEntries` polls the child via `get_entries` RPC. The response contains all session entries, including `custom` type entries created by `pi.appendEntry`.

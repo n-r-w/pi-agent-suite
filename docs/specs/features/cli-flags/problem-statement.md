@@ -20,7 +20,7 @@ Extension functionality cannot be controlled through CLI flags at pi startup. Us
 
 - `pi.registerFlag(name, options)` API exists in pi framework and is used by 4 extensions in the pi distribution: `ssh.ts`, `preset.ts`, `sandbox/index.ts`, `plan-mode/index.ts`. All register flags in the factory function and read values in `session_start` handlers.
 - No extension in pi-harness currently uses `registerFlag`. Confirmed by grep across `pi-package/` — only mock implementations in test files.
-- main-agent-selection exposes `/agent <id>` command and `Ctrl+Shift+A` shortcut, but no CLI flag.
+- main-agent-selection exposes `/agent <id>` command and `Ctrl+Alt+A` shortcut, but no CLI flag.
 - knowledge extension registers a trigger runner via `registerWorkflowTriggerRunner`, but it is only invoked by the workflow extension when entering stages with triggers.
 
 ## Impact

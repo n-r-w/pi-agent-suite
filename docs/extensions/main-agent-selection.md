@@ -22,7 +22,7 @@ Full example:
 
 | Name | Type or shape | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `enabled` | Boolean | No | `true` | Enables `/agent` and `Ctrl+Shift+A`. Set to `false` to disable this extension. |
+| `enabled` | Boolean | No | `true` | Enables `/agent` and `Ctrl+Alt+A`. Set to `false` to disable this extension. |
 
 ## Agent definitions
 
@@ -80,7 +80,7 @@ Only `main` and `both` agent definitions appear in the main-agent selector. `sub
 - Run `/agent` to open the selector.
 - Run `/agent <agent-id>` to select an agent by file name without the `.md` extension.
 - Run `/agent none` to clear the selected main agent for the current working directory.
-- Press `Ctrl+Shift+A` to open the selector.
+- Press `Ctrl+Alt+A` to open the selector.
 - Agent ID matching is exact and case-sensitive after NFC normalization. Selector text search remains case-insensitive.
 
 ## CLI flags
