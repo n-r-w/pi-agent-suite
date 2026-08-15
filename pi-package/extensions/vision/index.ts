@@ -95,11 +95,11 @@ function createToolDefinition(
 		name: TOOL_NAME,
 		label: "Describe Image",
 		description:
-			"Analyze one image file with a vision model. Each call is independent and does not remember earlier calls; ask everything about image in one prompt.",
+			"Analyze one image file with a vision model. You cannot see images directly - read tool will not show them to you, so use describe_image instead of read for any image question. Each call is independent and does not remember earlier calls; ask everything about image in one prompt.",
 		promptSnippet:
 			"Analyze one image file and return a text description or answer questions about it",
 		promptGuidelines: [
-			"Call describe_image when active model cannot process images natively.",
+			"Use describe_image instead of read for any image; your model cannot view images directly.",
 		],
 		parameters: TOOL_PARAMETERS,
 		executionMode: "sequential" as const,
@@ -125,7 +125,7 @@ async function executeVisionCall(options: {
 	readonly completeSimple: AuxiliaryLlmCompletion;
 }) {
 	if (isMultimodal(options.ctx.model)) {
-		return toolResult("Use the read tool for image analysis.");
+		return toolResult("Use read tool for image analysis.");
 	}
 	if (
 		options.config.provider === undefined ||
