@@ -94,7 +94,8 @@ function createToolDefinition(
 	return {
 		name: TOOL_NAME,
 		label: "Describe Image",
-		description: "Analyze image files with vision model.",
+		description:
+			"Analyze one image file with a vision model. Each call is independent and does not remember earlier calls; ask everything about image in one prompt.",
 		promptSnippet:
 			"Analyze one image file and return a text description or answer questions about it",
 		promptGuidelines: [
