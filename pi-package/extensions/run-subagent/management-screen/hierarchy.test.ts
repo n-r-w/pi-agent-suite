@@ -36,6 +36,7 @@ const ANSI_THEME = new Theme(
 		thinkingXhigh: 5,
 		muted: 8,
 		accent: 6,
+		text: 7,
 	} as ConstructorParameters<typeof Theme>[0],
 	{ selectedBg: 4, toolPendingBg: 0 } as ConstructorParameters<typeof Theme>[1],
 	"256color",
