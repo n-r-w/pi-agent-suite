@@ -34,7 +34,7 @@ function renderAgentsStatus(counts: AgentStatusCounts, theme: Theme): string {
 		theme.fg("error", AGENT_STATUS_ICONS.failed),
 		theme.fg("dim", ` ${counts.failed} · `),
 		theme.fg("warning", AGENT_STATUS_ICONS.aborted),
-		theme.fg("dim", ` ${counts.aborted} · Ctrl+Shift+G`),
+		theme.fg("dim", ` ${counts.aborted} · Ctrl+Alt+S`),
 	].join("");
 }
 

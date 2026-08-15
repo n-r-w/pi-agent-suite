@@ -53,7 +53,7 @@ const INPUT = {
 	shiftTab: "\u001b[Z",
 	enter: "\r",
 	escape: "\u001b",
-	ctrlShiftG: "\u001b[103;6u",
+	ctrlAltS: "\u001b[115;7u",
 	expandTools: "\u000f",
 	down: "\u001b[B",
 	pageUp: "\u001b[5~",
@@ -1160,7 +1160,7 @@ describe("management screen", () => {
 
 	test("shows every focus zone, one editor frame, and the safe close shortcut", () => {
 		// Purpose: Tab focus ownership and the preferred close action must be visible without duplicate editor separators.
-		// Inputs and expected output: hierarchy title, conversation identity, and both editor borders receive focus in sequence; Ctrl+Shift+G closes.
+		// Inputs and expected output: hierarchy title, conversation identity, and both editor borders receive focus in sequence; Ctrl+Alt+S closes.
 		// Edge case: Escape remains functional elsewhere but is not advertised as the primary close action.
 		// Dependencies: screen-owned focus state, public Editor border rendering, and Kitty combined-key input.
 		const fixture = createScreen({ theme: createFocusTheme() });
@@ -1170,7 +1170,7 @@ describe("management screen", () => {
 		const conversationRows = fixture.screen.render(80);
 		fixture.screen.handleInput(INPUT.tab);
 		const editorRows = fixture.screen.render(80);
-		fixture.screen.handleInput(INPUT.ctrlShiftG);
+		fixture.screen.handleInput(INPUT.ctrlAltS);
 		const isRuleRow = (line: string) => (line.match(/─/g)?.length ?? 0) >= 8;
 		const editorRuleRows = editorRows.filter(
 			(line) => line.includes("\u001b[36m") && isRuleRow(line),
@@ -1182,6 +1182,8 @@ describe("management screen", () => {
 		const hierarchyHint = hierarchyRows.at(-2) ?? "";
 		const conversationHint = conversationRows.at(-2) ?? "";
 		const hint = editorRows.at(-2) ?? "";
+		const closeKey =
+			process.platform === "darwin" ? "Ctrl+option+S" : "Ctrl+Alt+S";
 		const mutedPaneBottom = hierarchyRows.at(-3) ?? "";
 		const activePaneBottom = editorRows.at(-3) ?? "";
 		const activeCursorRow = editorRows.findIndex((line) =>
@@ -1238,8 +1240,7 @@ describe("management screen", () => {
 				conversationHint.includes("page"),
 			editorSendHint:
 				hint.includes("enter") && hint.includes("send") && hint.includes(" · "),
-			preferredCloseHint:
-				hint.includes("Ctrl+Shift+G") && hint.includes("close"),
+			preferredCloseHint: hint.includes(closeKey) && hint.includes("close"),
 			escapeCloseHint: hint.includes("Esc close"),
 			closeCalls: fixture.getCloseCalls(),
 		}).toEqual({

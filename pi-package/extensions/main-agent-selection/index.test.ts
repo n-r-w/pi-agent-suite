@@ -989,9 +989,9 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("registers /agent command and Ctrl+Shift+A shortcut", async () => {
+	test("registers /agent command and Ctrl+Alt+A shortcut", async () => {
 		// Purpose: the extension must expose both selection entry points.
-		// Input and expected output: loading the factory registers /agent and Ctrl+Shift+A.
+		// Input and expected output: loading the factory registers /agent and Ctrl+Alt+A.
 		// Edge case: registration happens before any session or agent files exist.
 		// Dependencies: this test uses only an in-memory ExtensionAPI fake.
 		const pi = createExtensionApiFake();
@@ -999,8 +999,8 @@ describe("main-agent-selection", () => {
 		mainAgentSelection(pi);
 
 		expect(getCommand(pi, "agent")).toMatchObject({ name: "agent" });
-		expect(getShortcut(pi, "Ctrl+Shift+A")).toMatchObject({
-			shortcut: "Ctrl+Shift+A",
+		expect(getShortcut(pi, "ctrl+alt+a")).toMatchObject({
+			shortcut: "ctrl+alt+a",
 		});
 	});
 
@@ -1880,7 +1880,7 @@ describe("main-agent-selection", () => {
 			).toBeUndefined();
 
 			const selectorCtx = createCommandContext("/tmp/project", "__none__");
-			await getShortcut(pi, "Ctrl+Shift+A").handler(selectorCtx);
+			await getShortcut(pi, "ctrl+alt+a").handler(selectorCtx);
 
 			expect(selectorCtx.customCalls[0]?.renderedLines).toContain("→ No agent");
 			expect(await readOnlyStateFile(agentDir)).toEqual({
@@ -2299,7 +2299,7 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("selects an agent through Ctrl+Shift+A", async () => {
+	test("selects an agent through Ctrl+Alt+A", async () => {
 		// Purpose: keyboard shortcut must use the same selection behavior as /agent.
 		// Input and expected output: selector returns reviewer, state stores reviewer, and prompt contribution changes.
 		// Edge case: selection by option value must map back to the selected agent ID.
@@ -2314,7 +2314,7 @@ describe("main-agent-selection", () => {
 			const ctx = createCommandContext("/tmp/project", "reviewer");
 			mainAgentSelection(pi);
 
-			await getShortcut(pi, "Ctrl+Shift+A").handler(ctx);
+			await getShortcut(pi, "ctrl+alt+a").handler(ctx);
 
 			expect(await readOnlyStateFile(agentDir)).toEqual({
 				cwd: "/tmp/project",
