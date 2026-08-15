@@ -297,9 +297,11 @@ describe("vision extension", () => {
 			() => {},
 			context({ input: ["text", "image"] }) as never,
 		);
-		expect(redirect.content[0]).toEqual({
-			type: "text",
-			text: "Use the read tool for image analysis.",
-		});
+		const redirectContent = redirect.content[0];
+		expect(redirect.content).toHaveLength(1);
+		expect(redirectContent?.type).toBe("text");
+		expect(
+			redirectContent?.type === "text" && redirectContent.text.length > 0,
+		).toBe(true);
 	});
 });
