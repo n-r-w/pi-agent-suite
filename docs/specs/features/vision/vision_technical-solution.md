@@ -19,11 +19,10 @@
 
 ### SOL-03: `describe_image` tool definition
 - Tool `describe_image`, label `Describe Image`, with TypeBox schema:
-  - `image_path` — optional string; path to a single image, `data:` URL, or raw base64.
-  - `image_paths` — optional string array; multiple images for one call.
-  - `prompt` — required string; the question to answer about the image(s).
-- `promptSnippet`: `"Analyze one or more image files and return text descriptions or answer questions about them"`.
-- `promptGuidelines`: one bullet telling the model to call `describe_image` when the active model cannot process images natively, and to pass `image_paths` for 2+ images.
+  - `image_path` — required non-empty string; description "Path to one image file.".
+  - `prompt` — required non-empty string, max length 2048; description "Question or instruction to answer about the image.".
+- `promptSnippet`: `"Analyze one image file and return a text description or answer questions about it"`.
+- `promptGuidelines`: one bullet telling the model to call `describe_image` when the active model cannot process images natively.
 - Provide `renderCall` and `renderResult` for consistent TUI display (see SOL-11).
 - No `compress` or `reasoning` parameters; compression is controlled only by config.
 - Defense-in-depth: if `execute` runs while the model is multimodal (mid-session race), return a redirect message telling the model to use `read`.
@@ -31,20 +30,19 @@
 ### SOL-04: Config contract
 - Config file: `~/.pi/agent/agent-suite/vision/config.json` via `getSuiteConfigLocation("vision")`.
 - Shape and defaults:
-  - `enabled` — boolean, default `true`.
+  - `enabled` — boolean, default `false`.
   - `provider` — string; vision-model provider.
   - `model` — string; vision-model id under `provider`.
   - `compression` — object:
     - `enabled` — boolean, default `true`.
     - `jpegQuality` — integer 1–100, default `85`.
     - `maxBytes` — integer, default `4718592` (4.5 MB).
-  - `batchConcurrency` — integer 1–20, default `5`.
   - `retry` — object `{ enabled, maxRetries, baseDelayMs }`, defaults `true`, `3`, `2000`.
 - Config is loaded on `session_start`; a missing or malformed file yields defaults.
 
 ### SOL-05: Image loading and MIME detection
 - Add `image.ts` with `loadImage(input, { compression, cwd })`.
-- Accept a file path, a `data:` URL, or raw base64.
+- Accept a file path.
 - Detect MIME by magic bytes for PNG, JPEG, GIF, WebP; reject other formats with `unsupported_format`.
 - Enforce a 64 MB source-size cap (`too_large`); reject missing files (`not_found`) and non-files (`not_a_file`).
 - Return `{ data, mimeType }` (base64 payload, no `data:` prefix).
@@ -66,28 +64,24 @@
 - Reuse `withRetry` from `shared/retry.ts` with the config `retry`.
 - Treat `stopReason === "error"` as retryable via `createRetryableExternalError`; abort errors are never retried.
 
-### SOL-09: Batch execution
-- Validate the call once before any image work: normalize `image_path`/`image_paths` into a deduped, order-preserving path list; reject an empty list (`no_image_path`) and more than 50 images (`batch_too_large`) by throwing (see SOL-10).
-- Run delegations with bounded concurrency `config.batchConcurrency` (a small `mapWithConcurrency` helper).
-- Each image delegates independently with its own retry; a per-image failure becomes an `[error: code — message]` section in the block, not a whole-batch failure.
-- The result is one order-stable text block: `[Batch: N image(s)]` header, then `[Image 1] path` + description per image.
+### SOL-09: Single-image execution
+- Redirect to `read` when the active model is multimodal.
+- Throw `not_configured` when `provider` or `model` is unset, then resolve the configured vision runtime.
+- Load `image_path` once with the configured compression and delegate it with `describeImage`.
+- Return the description text on success. Return `[error: code — message]` when image loading or vision-model delegation fails.
 
 ### SOL-10: Error handling
-- Global errors — validated once before the image loop; thrown, so the TUI shows a red error and the message does not enter the LLM context:
+- Global errors are thrown, so the TUI shows a red error and the message does not enter the LLM context:
   - `not_configured` — `provider` or `model` unset.
   - `model_not_found` — `provider/model` not in the model registry.
   - `auth_error` — `getApiKeyAndHeaders` fails.
-  - `no_image_path` — neither `image_path` nor `image_paths` given.
-  - `batch_too_large` — more than 50 images.
-- Per-image errors — occur inside the loop; each becomes an `[error: code — message]` section in the batch text block (the model sees them and can recover):
-  - `not_found`, `not_a_file`, `too_large`, `unsupported_format`, `invalid_data_url`, `invalid_base64`, `read_error` (file exists but cannot be read: permission or I/O error).
+- Image loading and vision-model delegation errors return `[error: code — message]` as the text result. Image-loading codes are `not_found`, `not_a_file`, `too_large`, `unsupported_format`, and `read_error`.
 
 ### SOL-11: Tool presentation in main window and subagent TUI
 - Register the tool via `registerPackageTool(pi, definition)` from `shared/tool-presentation/registry.ts`, not bare `pi.registerTool`, so the renderers are published on the shared event bus.
-- Provide `renderCall` and `renderResult` following the final-output tool pattern (skill `pi-tui-rendering`):
-  - Keep the default tool shell (`renderShell` unset).
-  - `renderCall`: compact, width-bounded preview of `image_path`/`image_paths` and `prompt`.
-  - `renderResult`: collapsed view = label + text, wrapped via `Text.render(width)`, line budget applied after; expanded view = `Markdown`.
+- Keep the default tool shell (`renderShell` unset).
+- `renderCall` collapsed view renders `describe_image:` and the full wrapped `image_path`, then a whitespace-normalized `Prompt:` preview limited to two visual lines and an expand hint. Expanded view renders the full wrapped `image_path`, `--- Prompt ---`, and the original prompt text.
+- `renderResult` collapsed view renders `Description:` or `Error:`, whitespace-normalizes the result, limits it to two visual lines, and adds its own expand hint. Expanded view renders `--- Description ---` or `--- Error ---` followed by the full raw result text without Markdown rendering.
 - This keeps rendering consistent in the main window and the `run-subagent` TUI, which resolves package renderers via `getPackageToolPresentation` (a generic "unknown" renderer is used only when no package renderer is published).
 
 ## Overengineering and Overspecification Considerations
@@ -105,7 +99,7 @@ None.
 - REF-02: `pi-package/shared/retry.ts` — `withRetry` and `RetryConfig`.
 - REF-03: `pi-package/shared/agent-suite-storage.ts` — `getSuiteConfigLocation`.
 - REF-04: `pi-package/extensions/consult-advisor/index.ts` — existing tool registration and model-call pattern.
-- REF-05: `/Users/rvnikulenk/dev/misc/pi-vision` — donor reference for `isMultimodal`, `syncToolAvailability`, `loadImage`, batch result format, and the tool schema.
+- REF-05: `/Users/rvnikulenk/dev/misc/pi-vision` — donor reference for `isMultimodal`, `syncToolAvailability`, `loadImage`, and the tool schema.
 - REF-06: `node_modules/@earendil-works/pi-coding-agent/dist/utils/image-resize.d.ts` — `resizeImage` and `ImageResizeOptions`.
 - REF-07: collaboration desk topic `f35a410e-d842-4d2d-babd-633641d3839d` — experiment confirming `completeSimple` serializes `ImageContent` as a base64 data URL.
 - REF-08: `pi-package/shared/tool-presentation/registry.ts` — `registerPackageTool` and `getPackageToolPresentation`.
