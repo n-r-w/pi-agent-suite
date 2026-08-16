@@ -4,7 +4,7 @@
 
 `vision` adds the `describe_image` tool. It lets a text-only primary model delegate analysis of one image to a configured vision model and receive a text answer.
 
-The tool is visible only when all of the following hold: `enabled` is `true`, `provider` and `model` are configured, and the active model is text-only (its `input` does not include `image`). When the extension is enabled but unconfigured, or when the config file is malformed, a warning is shown at session start and the tool stays hidden.
+The tool is visible only when all of the following hold: `enabled` is `true`, `model.id` is configured, and the active model is text-only (its `input` does not include `image`). When the extension is enabled but unconfigured, or when the config file is malformed, a warning is shown at session start and the tool stays hidden.
 
 The tool accepts required `image_path` and `prompt` strings. The image is a file path. `prompt` is limited to 2048 characters. Global errors (`not_configured`, `model_not_found`, `auth_error`) abort the call. Image loading and vision-model errors return `[error: code — message]` as the text result.
 
@@ -16,15 +16,17 @@ Default path:
 ~/.pi/agent/agent-suite/vision/config.json
 ```
 
-If the config file is missing, defaults are used: `enabled` is `false` and `provider` and `model` are not set, so the tool stays hidden and no warning is shown.
+If the config file is missing, defaults are used: `enabled` is `false` and `model` is not set, so the tool stays hidden and no warning is shown.
 
 ## Full configuration example
 
 ```json
 {
   "enabled": true,
-  "provider": "openai",
-  "model": "gpt-4.1-mini",
+  "model": {
+    "id": "vision-default",
+    "thinking": "high"
+  },
   "compression": {
     "enabled": true,
     "jpegQuality": 85,
@@ -43,8 +45,9 @@ If the config file is missing, defaults are used: `enabled` is `false` and `prov
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `false` | Enables or disables the tool. |
-| `provider` | No | Non-empty string | Not set | Vision-model provider name. Both `provider` and `model` must be set for the tool to appear. |
-| `model` | No | Non-empty string | Not set | Vision-model id under `provider`. Both `provider` and `model` must be set for the tool to appear. |
+| `model` | No | Object with optional `id` and `thinking` fields | Not set | Groups vision-model selection options. `model.id` must be set when the extension is enabled. |
+| `model.id` | Required when enabled | Non-empty string | Not set | Selects the vision model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Alias default thinking, or provider default | Selects the thinking level. Explicit `model.thinking` overrides the alias default. If the selected model does not expose the requested level, the nearest available level is used. |
 | `compression` | No | Object with optional `enabled`, `jpegQuality`, and `maxBytes` fields | Compression defaults | Controls image resizing. |
 | `compression.enabled` | No | Boolean | `true` | Enables image compression before sending. |
 | `compression.jpegQuality` | No | Integer from `1` to `100` | `85` | JPEG re-encode quality. |

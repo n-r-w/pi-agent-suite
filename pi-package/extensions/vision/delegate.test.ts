@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	Api,
 	AssistantMessage,
 	Context,
 	Model,
+	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmContext } from "../../shared/auxiliary-llm";
+import { REASONING_LEVELS } from "../../shared/reasoning-levels";
 import {
 	describeImage,
 	mapRuntimeIssue,
@@ -21,9 +27,18 @@ function createModel(): Model<Api> {
 	return {
 		provider: "p",
 		id: "m",
+		api: "fake-api",
+		baseUrl: "https://example.test",
+		reasoning: true,
+		thinkingLevelMap: Object.fromEntries(
+			REASONING_LEVELS.map((level) => [level, level]),
+		),
+		name: "p/m",
 		input: ["text", "image"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 100_000,
-	} as unknown as Model<Api>;
+		maxTokens: 8_192,
+	} as Model<Api>;
 }
 
 function createContext(
@@ -78,22 +93,74 @@ describe("vision delegation", () => {
 	});
 
 	test("resolves an authenticated runtime", async () => {
-		const runtime = await resolveVisionRuntime(createContext(), "p", "m");
-		expect(runtime.model.id).toBe("m");
-		expect(runtime.apiKey).toBe("key");
+		const resolved = await resolveVisionRuntime(createContext(), "p/m");
+		expect(resolved.runtime.model.id).toBe("m");
+		expect(resolved.runtime.apiKey).toBe("key");
 	});
 
 	test("throws model_not_found and auth_error for resolution failures", async () => {
 		await expect(
-			resolveVisionRuntime(createContext({ find: null }), "p", "m"),
+			resolveVisionRuntime(createContext({ find: null }), "p/m"),
 		).rejects.toMatchObject({ code: "model_not_found" });
 		await expect(
 			resolveVisionRuntime(
 				createContext({ auth: { ok: false, error: "missing" } }),
-				"p",
-				"m",
+				"p/m",
 			),
 		).rejects.toMatchObject({ code: "auth_error" });
+	});
+
+	test("resolves an alias and lets explicit thinking override its default", async () => {
+		// Purpose: vision uses the shared alias precedence contract before calling the selected model.
+		// Input and expected output: an alias with low thinking resolves p/m, while explicit high thinking becomes the request reasoning.
+		// Edge case: resolving the same alias without explicit thinking retains the alias default.
+		// Dependencies: isolated model-alias config, fake model registry, and injected completion boundary.
+		const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
+		const suiteDir = await mkdtemp(join(tmpdir(), "vision-alias-"));
+		await mkdir(join(suiteDir, "model-aliases"));
+		await writeFile(
+			join(suiteDir, "model-aliases", "config.json"),
+			JSON.stringify({
+				"vision-default": { id: "p/m", thinking: "low" },
+			}),
+		);
+		process.env[AGENT_SUITE_DIR_ENV] = suiteDir;
+		try {
+			const aliasDefault = await resolveVisionRuntime(
+				createContext(),
+				"vision-default",
+			);
+			expect(aliasDefault.thinking).toBe("low");
+
+			const explicit = await resolveVisionRuntime(
+				createContext(),
+				"vision-default",
+				"high",
+			);
+			expect(explicit.runtime.model.id).toBe("m");
+			expect(explicit.thinking).toBe("high");
+
+			let capturedOptions: SimpleStreamOptions | undefined;
+			await describeImage({
+				runtime: explicit.runtime,
+				thinking: explicit.thinking,
+				image: IMAGE,
+				prompt: "Describe",
+				retry: RETRY_DISABLED,
+				signal: undefined,
+				completeSimple: async (_model, _context, options) => {
+					capturedOptions = options;
+					return assistantMessage("description", "done");
+				},
+			});
+			expect(capturedOptions?.reasoning).toBe("high");
+		} finally {
+			if (previousSuiteDir === undefined) {
+				delete process.env[AGENT_SUITE_DIR_ENV];
+			} else {
+				process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
+			}
+		}
 	});
 
 	test("sends image and prompt content and returns the response text", async () => {
@@ -105,8 +172,10 @@ describe("vision delegation", () => {
 			captured = context;
 			return assistantMessage("description", "done");
 		};
+		const resolved = await resolveVisionRuntime(createContext(), "p/m");
 		const result = await describeImage({
-			runtime: await resolveVisionRuntime(createContext(), "p", "m"),
+			runtime: resolved.runtime,
+			thinking: resolved.thinking,
 			image: IMAGE,
 			prompt: "What is shown?",
 			retry: RETRY_DISABLED,
@@ -128,8 +197,10 @@ describe("vision delegation", () => {
 				? assistantMessage("failed", "error")
 				: assistantMessage("recovered", "done");
 		};
+		const resolved = await resolveVisionRuntime(createContext(), "p/m");
 		const result = await describeImage({
-			runtime: await resolveVisionRuntime(createContext(), "p", "m"),
+			runtime: resolved.runtime,
+			thinking: resolved.thinking,
 			image: IMAGE,
 			prompt: "Describe",
 			retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
@@ -148,9 +219,11 @@ describe("vision delegation", () => {
 			error.name = "AbortError";
 			throw error;
 		};
+		const resolved = await resolveVisionRuntime(createContext(), "p/m");
 		await expect(
 			describeImage({
-				runtime: await resolveVisionRuntime(createContext(), "p", "m"),
+				runtime: resolved.runtime,
+				thinking: resolved.thinking,
 				image: IMAGE,
 				prompt: "Describe",
 				retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },

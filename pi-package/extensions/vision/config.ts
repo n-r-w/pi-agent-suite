@@ -1,4 +1,8 @@
 import {
+	type ModelSettings,
+	parseModelSettings,
+} from "../../shared/model-settings";
+import {
 	buildRetryConfig,
 	type RetryConfig,
 	validateRetryConfig,
@@ -8,21 +12,14 @@ const DEFAULT_JPEG_QUALITY = 85;
 const DEFAULT_MAX_BYTES = 4_718_592;
 const MIN_JPEG_QUALITY = 1;
 const MAX_JPEG_QUALITY = 100;
-const CONFIG_KEYS = [
-	"enabled",
-	"provider",
-	"model",
-	"compression",
-	"retry",
-] as const;
+const CONFIG_KEYS = ["enabled", "model", "compression", "retry"] as const;
 const COMPRESSION_KEYS = ["enabled", "jpegQuality", "maxBytes"] as const;
 
 type RecordValue = Record<string, unknown>;
 
 export interface VisionConfig {
 	readonly enabled: boolean;
-	readonly provider: string | undefined;
-	readonly model: string | undefined;
+	readonly model: ModelSettings | undefined;
 	readonly compression: {
 		readonly enabled: boolean;
 		readonly jpegQuality: number;
@@ -46,13 +43,11 @@ export function parseVisionConfig(value: unknown): VisionConfigResult {
 	if (enabled !== undefined && typeof enabled !== "boolean") {
 		return invalid("enabled must be a boolean");
 	}
-	const provider = optionalString(value["provider"], "provider");
-	if (typeof provider === "string") {
-		return invalid(provider);
-	}
-	const model = optionalString(value["model"], "model");
-	if (typeof model === "string") {
-		return invalid(model);
+	let model: ModelSettings | undefined;
+	try {
+		model = parseModelSettings(value["model"], "model");
+	} catch (error) {
+		return invalid(error instanceof Error ? error.message : String(error));
 	}
 	const compression = parseCompression(value["compression"]);
 	if (typeof compression === "string") {
@@ -66,8 +61,7 @@ export function parseVisionConfig(value: unknown): VisionConfigResult {
 		kind: "valid",
 		config: {
 			enabled: enabled ?? false,
-			provider: provider.value,
-			model: model.value,
+			model,
 			compression,
 			retry: buildRetryConfig(value["retry"]),
 		},
@@ -99,15 +93,6 @@ function parseCompression(
 	return { enabled: enabled ?? true, jpegQuality, maxBytes };
 }
 
-function optionalString(
-	value: unknown,
-	field: string,
-): { readonly value: string | undefined } | string {
-	if (value === undefined) {
-		return { value: undefined };
-	}
-	return typeof value === "string" ? { value } : `${field} must be a string`;
-}
 function isRecord(value: unknown): value is RecordValue {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

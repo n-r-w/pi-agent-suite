@@ -77,8 +77,7 @@ function createToolSynchronizer(
 		const active = pi.getActiveTools().filter((name) => name !== TOOL_NAME);
 		if (
 			config.enabled &&
-			config.provider !== undefined &&
-			config.model !== undefined &&
+			config.model?.id !== undefined &&
 			!isMultimodal(model)
 		) {
 			active.push(TOOL_NAME);
@@ -128,16 +127,13 @@ async function executeVisionCall(options: {
 	if (isMultimodal(options.ctx.model)) {
 		return toolResult("Use read tool for image analysis.");
 	}
-	if (
-		options.config.provider === undefined ||
-		options.config.model === undefined
-	) {
-		throw new Error("not_configured: provider and model must be configured");
+	if (options.config.model?.id === undefined) {
+		throw new Error("not_configured: model.id must be configured");
 	}
-	const runtime = await resolveVisionRuntime(
+	const resolved = await resolveVisionRuntime(
 		options.ctx,
-		options.config.provider,
-		options.config.model,
+		options.config.model.id,
+		options.config.model.thinking,
 	);
 	try {
 		const image = await loadImage(options.params.image_path, {
@@ -146,7 +142,8 @@ async function executeVisionCall(options: {
 		});
 		return toolResult(
 			await describeImage({
-				runtime,
+				runtime: resolved.runtime,
+				thinking: resolved.thinking,
 				image,
 				prompt: options.params.prompt,
 				retry: options.config.retry,
@@ -173,11 +170,8 @@ async function loadConfig(
 		ui?.notify(`[vision] ${parsed.issue}`, "warning");
 		return defaultConfig();
 	}
-	if (
-		parsed.config.enabled &&
-		(parsed.config.provider === undefined || parsed.config.model === undefined)
-	) {
-		ui?.notify("[vision] provider and model must be configured", "warning");
+	if (parsed.config.enabled && parsed.config.model?.id === undefined) {
+		ui?.notify("[vision] model.id must be configured", "warning");
 	}
 	return parsed.config;
 }
