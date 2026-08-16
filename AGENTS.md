@@ -12,7 +12,7 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 5. Suppressing linter warnings is prohibited without user approval.
 
 ## Consistency rules
-1. All extensions should use a unified logic when working with:
+1. All extensions in `pi-package/extensions` should use a unified logic when working with:
     1) TUI: custom rendering, consistent on both main screen and subagent screen; compact and full rendering (ctrl+o).
     2) Models: aliases, setting thinking level
 2. Before reinventing wheel, ALWAYS look for existing patterns!
