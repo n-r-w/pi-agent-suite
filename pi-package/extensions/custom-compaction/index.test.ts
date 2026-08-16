@@ -844,7 +844,7 @@ describe("custom-compaction", () => {
 		});
 	});
 
-	test("uses configured prompts, model, and reasoning", async () => {
+	test("uses configured prompts and model settings", async () => {
 		// Purpose: public runtime selection and prompt overrides must remain effective for the adaptive final request.
 		// Input and expected output: absolute prompts and provider/model/variant select the configured model and update prompt.
 		// Edge case: the model ID contains additional slashes after the provider.
@@ -854,8 +854,10 @@ describe("custom-compaction", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				...prompts,
-				model: "configured/model/variant",
-				reasoning: "medium",
+				model: {
+					id: "configured/model/variant",
+					thinking: "medium",
+				},
 			});
 			completeSimpleMock.mockResolvedValue(
 				createAssistantResponse("configured summary"),
@@ -979,7 +981,7 @@ describe("custom-compaction", () => {
 			await writeConfig(agentDir, {
 				enabled: true,
 				...prompts,
-				model: "configured/reducer",
+				model: { id: "configured/reducer" },
 			});
 			completeSimpleMock.mockImplementation(async (_model, context) =>
 				createAssistantResponse(
@@ -1076,6 +1078,30 @@ describe("custom-compaction", () => {
 							]
 						: [],
 				);
+			}
+			expect(completeSimpleMock).not.toHaveBeenCalled();
+		});
+	});
+
+	test("rejects legacy model fields without fallback", async () => {
+		// Purpose: custom compaction must accept only the shared model-settings object.
+		// Input and expected output: legacy string model and reasoning fields both stop compaction with a warning.
+		// Edge case: each legacy config is otherwise enabled and valid.
+		// Dependencies: isolated config, fake Pi UI, and fake completion.
+		await withIsolatedAgentDir(async (agentDir) => {
+			for (const legacyConfig of [
+				{ enabled: true, model: "configured/model" },
+				{ enabled: true, reasoning: "medium" },
+			]) {
+				await writeConfig(agentDir, legacyConfig);
+				const pi = createExtensionApiFake();
+				const session = createSessionFake({ hasUI: true });
+				customCompaction(pi);
+
+				expect(
+					await getCompactionHandler(pi)(createCompactionEvent(), session.ctx),
+				).toBeUndefined();
+				expect(session.notifications).toHaveLength(1);
 			}
 			expect(completeSimpleMock).not.toHaveBeenCalled();
 		});

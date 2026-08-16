@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isFileNotFoundError } from "../../shared/agent-suite-storage";
-import { isModelSelectorId } from "../../shared/model-settings";
+import {
+	type ModelSettings,
+	parseModelSettings,
+} from "../../shared/model-settings";
 import { parseSimpleFraction } from "./size-target";
 
 /** Defines the complete strict top-level configuration contract. */
@@ -21,21 +24,11 @@ const TOP_LEVEL_KEYS = [
 /** Defines the shared strict operation fields used by extraction and merge. */
 const OPERATION_KEYS = [
 	"model",
-	"thinking",
 	"systemPromptFile",
 	"taskPromptFile",
 	"maxFractionDenominator",
 	"initialFraction",
 	"reductionCoefficient",
-] as const;
-/** Defines the thinking values accepted by knowledge model operations. */
-const THINKING_LEVELS = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
 ] as const;
 /** Defines bounded-file and primary-branch defaults. */
 const DEFAULT_TOKEN_LIMIT = 5_000;
@@ -74,12 +67,9 @@ const BUNDLED_MERGE_GLOBAL_TASK_PROMPT = fileURLToPath(
 
 type UnknownRecord = Record<string, unknown>;
 
-export type KnowledgeThinking = (typeof THINKING_LEVELS)[number];
-
 /** Holds one operation's resolved model, prompt, and size-target settings. */
 export interface KnowledgeOperationConfig {
-	readonly model: string | undefined;
-	readonly thinking: KnowledgeThinking | undefined;
+	readonly model: ModelSettings | undefined;
 	readonly systemPrompt: string;
 	readonly taskPrompt: string;
 	readonly maxFractionDenominator: number;
@@ -328,13 +318,11 @@ function parseOperationConfig(
 	if (!hasOnlyKeys(parsed, options.allowedKeys)) {
 		return `${options.fieldName} contains unsupported fields`;
 	}
-	const model = parsed["model"];
-	if (model !== undefined && !isModelSelectorId(model)) {
-		return `${options.fieldName}.model must be a non-empty string`;
-	}
-	const thinking = parsed["thinking"];
-	if (thinking !== undefined && !isThinking(thinking)) {
-		return `${options.fieldName}.thinking is unsupported`;
+	let model: ModelSettings | undefined;
+	try {
+		model = parseModelSettings(parsed["model"], `${options.fieldName}.model`);
+	} catch (error) {
+		return errorMessage(error);
 	}
 	const maxFractionDenominator = resolveFractionDenominator(
 		parsed["maxFractionDenominator"],
@@ -381,7 +369,6 @@ function parseOperationConfig(
 	}
 	return {
 		model,
-		thinking,
 		systemPrompt: systemPrompt.content,
 		taskPrompt: taskPrompt.content,
 		maxFractionDenominator,
@@ -495,14 +482,6 @@ export function isGitRemoteName(name: string): boolean {
 		},
 	);
 	return result.status === 0;
-}
-
-/** Checks the closed thinking-level set accepted by knowledge operations. */
-function isThinking(value: unknown): value is KnowledgeThinking {
-	return (
-		typeof value === "string" &&
-		(THINKING_LEVELS as readonly string[]).includes(value)
-	);
 }
 
 /** Checks the positive integer contract used by file token limits. */

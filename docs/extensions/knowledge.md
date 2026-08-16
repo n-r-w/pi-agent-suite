@@ -23,16 +23,20 @@ The file is optional. Missing configuration enables the extension with defaults.
   "primaryBranches": ["main", "master"],
   "preferredRemotes": ["origin"],
   "extraction": {
-    "model": "analyst-complex",
-    "thinking": "medium",
+    "model": {
+      "id": "analyst-complex",
+      "thinking": "medium"
+    },
     "systemPromptFile": "/absolute/path/to/extraction-system.md",
     "maxFractionDenominator": 8,
     "initialFraction": "2/3",
     "reductionCoefficient": "3/4"
   },
   "mergeLocal": {
-    "model": "review-fast",
-    "thinking": "medium",
+    "model": {
+      "id": "review-fast",
+      "thinking": "medium"
+    },
     "systemPromptFile": "/absolute/path/to/merge-local-system.md",
     "taskPromptFile": "/absolute/path/to/merge-local.md",
     "maxFractionDenominator": 8,
@@ -40,8 +44,10 @@ The file is optional. Missing configuration enables the extension with defaults.
     "reductionCoefficient": "3/4"
   },
   "mergeGlobal": {
-    "model": "review-fast",
-    "thinking": "medium",
+    "model": {
+      "id": "review-fast",
+      "thinking": "medium"
+    },
     "systemPromptFile": "/absolute/path/to/merge-global-system.md",
     "taskPromptFile": "/absolute/path/to/merge-global.md",
     "maxFractionDenominator": 8,
@@ -62,24 +68,27 @@ All fields are optional.
 | `primaryBranches` | Non-empty array of unique Git-valid branch names | `["main", "master"]` | Disables accumulation on every listed branch. |
 | `preferredRemotes` | Non-empty array of unique Git-valid remote names | `["origin"]` | Ordered list of remote names for project identity selection. The first matching remote's identity is used; all others are ignored. |
 | `extraction` | Object | Defaults below | Configures session knowledge extraction. |
-| `extraction.model` | Non-empty string | Current initiating model | Selects the extraction model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
-| `extraction.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects extraction reasoning. |
+| `extraction.model` | Object | Current initiating model and thinking level | Configures the extraction model. |
+| `extraction.model.id` | Non-empty string | Current initiating model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `extraction.model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current initiating thinking level | Selects extraction thinking level. |
 | `extraction.systemPromptFile` | Readable non-empty absolute file path | Bundled extraction system prompt | Replaces the extraction system prompt. |
 | `extraction.taskPromptFile` | Readable non-empty absolute file path | Bundled extraction task prompt | Replaces the extraction task prompt attached after `<summary_source>`. |
 | `extraction.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
 | `extraction.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the extraction output as a fraction of an A4 page. |
 | `extraction.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each size-correction retry. |
 | `mergeLocal` | Object | Defaults below | Configures active-branch local knowledge consolidation. |
-| `mergeLocal.model` | Non-empty string | Current initiating model | Selects the local merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
-| `mergeLocal.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects local merge reasoning. |
+| `mergeLocal.model` | Object | Current initiating model and thinking level | Configures the local merge model. |
+| `mergeLocal.model.id` | Non-empty string | Current initiating model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `mergeLocal.model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current initiating thinking level | Selects local merge thinking level. |
 | `mergeLocal.systemPromptFile` | Readable non-empty absolute file path | Bundled local merge system prompt | Replaces the local merge system prompt. |
 | `mergeLocal.taskPromptFile` | Readable non-empty absolute file path | Bundled local merge task prompt | Replaces the local merge task prompt attached after `</incoming_knowledge>`. |
 | `mergeLocal.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
 | `mergeLocal.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the local merge output as a fraction of an A4 page. |
 | `mergeLocal.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each shortening retry. |
 | `mergeGlobal` | Object | Defaults below | Configures global knowledge consolidation. |
-| `mergeGlobal.model` | Non-empty string | Current initiating model | Selects the global merge model. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
-| `mergeGlobal.thinking` | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current initiating thinking level | Selects global merge reasoning. |
+| `mergeGlobal.model` | Object | Current initiating model and thinking level | Configures the global merge model. |
+| `mergeGlobal.model.id` | Non-empty string | Current initiating model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `mergeGlobal.model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current initiating thinking level | Selects global merge thinking level. |
 | `mergeGlobal.systemPromptFile` | Readable non-empty absolute file path | Bundled global merge system prompt | Replaces the global merge system prompt. |
 | `mergeGlobal.taskPromptFile` | Readable non-empty absolute file path | Bundled global merge task prompt | Replaces the global merge task prompt attached after `</incoming_knowledge>`. |
 | `mergeGlobal.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |

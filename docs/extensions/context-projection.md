@@ -32,9 +32,11 @@ Full config example:
   "omittedNotice": "Result omitted. Run tool again for full result.",
   "summaryNotice": "Full result omitted. Summary below. Run tool again for full result.",
   "summary": {
-    "enabled": false,
-    "model": null,
-    "thinking": null,
+    "enabled": true,
+    "model": {
+      "id": "summary",
+      "thinking": "low"
+    },
     "maxConcurrency": 1,
     "retryCount": 1,
     "retryDelayMs": 5000,
@@ -76,8 +78,9 @@ If multiple projection levels use the same remaining-token threshold, the extens
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `summary.enabled` | No | Boolean | `false` | Enables generated summaries for newly projected tool results. |
-| `summary.model` | No | `null` or non-empty string | Current main model | Model used to generate summaries. Accepts either `provider/model` or an alias from `model-aliases/config.json`. `null` has the same effect as omitting the parameter. |
-| `summary.thinking` | No | `null`, `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current thinking level | Thinking level used for summary requests. `null` has the same effect as omitting the parameter. |
+| `summary.model` | No | Object | Current main model and thinking level | Configures the model used to generate summaries. |
+| `summary.model.id` | No | Non-empty string | Current main model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `summary.model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current thinking level | Thinking level used for summary requests. |
 | `summary.maxConcurrency` | No | Positive integer | `1` | Maximum number of summary requests that can run at the same time. |
 | `summary.retryCount` | No | Non-negative integer | `1` | Number of retry attempts after the first summary request fails. |
 | `summary.retryDelayMs` | No | Non-negative integer | `5000` | Delay between summary retry attempts, in milliseconds. |

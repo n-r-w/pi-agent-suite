@@ -2,11 +2,13 @@ import type { Context } from "@earendil-works/pi-ai";
 import {
 	type AuxiliaryLlmCompletion,
 	type AuxiliaryLlmContext,
+	type AuxiliaryLlmRuntime,
 	buildAuxiliaryLlmOptions,
 	completeAuxiliaryLlm,
 	getAuxiliaryLlmResponseText,
 	resolveAuxiliaryLlmRuntime,
 } from "../../shared/auxiliary-llm";
+import type { ReasoningLevel } from "../../shared/reasoning-levels";
 import {
 	createRetryableExternalError,
 	type RetryConfig,
@@ -39,21 +41,23 @@ export function toGlobalVisionError(issue: string): VisionGlobalError {
 
 export async function resolveVisionRuntime(
 	ctx: AuxiliaryLlmContext,
-	provider: string,
-	model: string,
+	modelId: string,
+	thinking: ReasoningLevel | undefined = undefined,
 ) {
 	const runtimeResult = await resolveAuxiliaryLlmRuntime(
 		ctx,
-		`${provider}/${model}`,
+		modelId,
+		thinking,
 	);
 	if ("issue" in runtimeResult) {
 		throw toGlobalVisionError(runtimeResult.issue);
 	}
-	return runtimeResult.runtime;
+	return runtimeResult;
 }
 
 export async function describeImage(options: {
-	readonly runtime: Awaited<ReturnType<typeof resolveVisionRuntime>>;
+	readonly runtime: AuxiliaryLlmRuntime;
+	readonly thinking: ReasoningLevel | undefined;
 	readonly image: LoadedImage;
 	readonly prompt: string;
 	readonly retry: RetryConfig;
@@ -82,7 +86,11 @@ export async function describeImage(options: {
 				options.completeSimple,
 				options.runtime,
 				context,
-				buildAuxiliaryLlmOptions(undefined, options.signal, options.runtime),
+				buildAuxiliaryLlmOptions(
+					options.thinking,
+					options.signal,
+					options.runtime,
+				),
 			);
 			if (response.stopReason === "error") {
 				throw createRetryableExternalError("vision model returned an error");

@@ -256,6 +256,25 @@ describe("context projection config", () => {
 		}
 	});
 
+	test("rejects legacy summary model fields without fallback", async () => {
+		// Purpose: summary configuration must use the shared model-settings object exclusively.
+		// Input and expected output: legacy string model and sibling thinking fields both make projection invalid.
+		// Edge case: each legacy shape is otherwise a valid enabled summary configuration.
+		// Dependencies: isolated config file and shared config reader.
+		for (const summary of [
+			{ enabled: true, model: "summary" },
+			{ enabled: true, model: { id: "summary" }, thinking: "low" },
+		]) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, { enabled: true, summary });
+
+				expect(await readContextProjectionConfig()).toEqual({
+					kind: "invalid",
+				});
+			});
+		}
+	});
+
 	test("reports removed placeholder config as fatal with migration guidance", async () => {
 		// Purpose: users must get a clear startup error when the removed placeholder key remains in config.
 		// Input and expected output: enabled config with placeholder returns a fatal issue that names the replacement keys.

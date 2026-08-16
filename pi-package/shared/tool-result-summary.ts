@@ -18,7 +18,8 @@ import {
 	estimateSerializedInputTokens,
 } from "./context-size";
 import {
-	isModelSelectorId,
+	type ModelSettings,
+	parseModelSettings,
 	resolveThinkingLevel,
 	splitModelId,
 } from "./model-settings";
@@ -53,9 +54,6 @@ const SUMMARY_ENABLED_CONFIG_KEY = "enabled";
 
 /** Config key for the model used by summary generation. */
 const SUMMARY_MODEL_CONFIG_KEY = "model";
-
-/** Config key for the thinking level used by summary generation. */
-const SUMMARY_THINKING_CONFIG_KEY = "thinking";
 
 /** Config key for the maximum number of concurrent summary requests. */
 const SUMMARY_MAX_CONCURRENCY_CONFIG_KEY = "maxConcurrency";
@@ -104,7 +102,6 @@ const SUMMARY_EMPTY_RESPONSE_ERROR = "summary response did not contain text";
 const TOOL_RESULT_SUMMARY_CONFIG_KEYS = [
 	SUMMARY_ENABLED_CONFIG_KEY,
 	SUMMARY_MODEL_CONFIG_KEY,
-	SUMMARY_THINKING_CONFIG_KEY,
 	SUMMARY_MAX_CONCURRENCY_CONFIG_KEY,
 	SUMMARY_RETRY_COUNT_CONFIG_KEY,
 	SUMMARY_RETRY_DELAY_MS_CONFIG_KEY,
@@ -118,8 +115,7 @@ export type ToolResultSummaryThinking = ReasoningLevel;
 /** Configuration shared by context-projection and custom-compaction helper summaries. */
 export interface ToolResultSummaryConfig {
 	readonly enabled: boolean;
-	readonly model?: string;
-	readonly thinking?: ToolResultSummaryThinking;
+	readonly model?: ModelSettings;
 	readonly maxConcurrency: number;
 	readonly retryCount: number;
 	readonly retryDelayMs: number;
@@ -132,8 +128,7 @@ interface EnabledSummaryConfigValues {
 	readonly maxConcurrency: number;
 	readonly retryCount: number;
 	readonly retryDelayMs: number;
-	readonly model?: string;
-	readonly thinking?: ToolResultSummaryThinking;
+	readonly model?: ModelSettings;
 	readonly systemPromptFile?: string;
 	readonly userPromptFile?: string;
 }
@@ -235,8 +230,15 @@ export function parseToolResultSummaryConfig(
 		return createDefaultToolResultSummaryConfig(false);
 	}
 
-	const model = config[SUMMARY_MODEL_CONFIG_KEY];
-	const thinking = config[SUMMARY_THINKING_CONFIG_KEY];
+	let model: ModelSettings | undefined;
+	try {
+		model = parseModelSettings(
+			config[SUMMARY_MODEL_CONFIG_KEY],
+			"summary.model",
+		);
+	} catch {
+		return undefined;
+	}
 	const maxConcurrency =
 		config[SUMMARY_MAX_CONCURRENCY_CONFIG_KEY] ??
 		DEFAULT_SUMMARY_MAX_CONCURRENCY;
@@ -248,7 +250,6 @@ export function parseToolResultSummaryConfig(
 	const userPromptFile = config[SUMMARY_USER_PROMPT_FILE_CONFIG_KEY];
 	const values = parseEnabledSummaryConfigValues({
 		model,
-		thinking,
 		maxConcurrency,
 		retryCount,
 		retryDelayMs,
@@ -291,10 +292,7 @@ export async function resolveToolResultSummaryRuntimeConfig({
 	readonly currentThinking: string | undefined;
 	readonly signal: AbortSignal | undefined;
 }): Promise<ToolResultSummaryRuntimeConfig | undefined> {
-	const resolvedSettings = resolveModelSettingsWithAliasesSync({
-		...(config.model === undefined ? {} : { id: config.model }),
-		...(config.thinking === undefined ? {} : { thinking: config.thinking }),
-	});
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(config.model);
 	if ("issue" in resolvedSettings) {
 		return undefined;
 	}
@@ -512,15 +510,13 @@ export async function mapWithConcurrency<T, R>(
 /** Parses enabled summary fields after defaults are applied. */
 function parseEnabledSummaryConfigValues({
 	model,
-	thinking,
 	maxConcurrency,
 	retryCount,
 	retryDelayMs,
 	systemPromptFile,
 	userPromptFile,
 }: {
-	readonly model: unknown;
-	readonly thinking: unknown;
+	readonly model: ModelSettings | undefined;
 	readonly maxConcurrency: unknown;
 	readonly retryCount: unknown;
 	readonly retryDelayMs: unknown;
@@ -528,8 +524,6 @@ function parseEnabledSummaryConfigValues({
 	readonly userPromptFile: unknown;
 }): EnabledSummaryConfigValues | undefined {
 	if (
-		!isOptionalModelId(model) ||
-		!isOptionalSummaryThinking(thinking) ||
 		!isPositiveInteger(maxConcurrency) ||
 		!isNonNegativeInteger(retryCount) ||
 		!isNonNegativeInteger(retryDelayMs) ||
@@ -549,8 +543,7 @@ function parseEnabledSummaryConfigValues({
 		maxConcurrency,
 		retryCount,
 		retryDelayMs,
-		...(typeof model === "string" ? { model } : {}),
-		...(isSummaryThinking(thinking) ? { thinking } : {}),
+		...(model === undefined ? {} : { model }),
 		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
 		...(typeof userPromptFile === "string" ? { userPromptFile } : {}),
 	};
@@ -812,21 +805,6 @@ function parseToolResultSummaryThinking(
 /** Checks whether a runtime value is a valid summary thinking level. */
 function isSummaryThinking(value: unknown): value is ToolResultSummaryThinking {
 	return isReasoningLevel(value);
-}
-
-/** Checks whether an optional runtime value is a valid summary thinking setting. */
-function isOptionalSummaryThinking(
-	value: unknown,
-): value is ToolResultSummaryThinking | undefined {
-	return value === undefined || value === null || isSummaryThinking(value);
-}
-
-/** Checks whether an optional runtime value is a non-empty model selector identifier. */
-function isOptionalModelId(value: unknown): value is string | undefined {
-	if (value === undefined || value === null) {
-		return true;
-	}
-	return isModelSelectorId(value);
 }
 
 /** Checks whether an optional runtime value is a usable string. */

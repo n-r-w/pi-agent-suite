@@ -4,7 +4,7 @@
 
 `custom-compaction` replaces Pi's default compaction request with fixed-boundary adaptive history summarization. It preserves Pi's retained suffix, builds a durable summary from the original chronological summary range, and checks both the summarization-model request and the next main-model request before returning a custom result.
 
-The extension uses the current session model and thinking level by default. A separate compaction model, reasoning level, prompt files, and retry policy are configurable.
+The extension uses the current session model and thinking level by default. Compaction model settings, prompt files, and retry policy are configurable.
 
 ## Configuration file
 
@@ -27,8 +27,10 @@ Missing configuration keeps custom compaction enabled with defaults. The extensi
   "fileCandidatesPromptFile": "/absolute/path/to/compaction-file-candidates.md",
   "reductionSystemPromptFile": "/absolute/path/to/compaction-reduction-system.md",
   "reductionPromptFile": "/absolute/path/to/compaction-reduction.md",
-  "model": "analyst-complex",
-  "reasoning": "medium",
+  "model": {
+    "id": "analyst-complex",
+    "thinking": "medium"
+  },
   "retry": {
     "enabled": true,
     "maxRetries": 3,
@@ -52,8 +54,9 @@ Breaking change: `summary` and `turnPrefixPromptFile` are removed. Adaptive comp
 | `fileCandidatesPromptFile` | No | Non-empty absolute path | Bundled file-candidate prompt | Optional final-prompt fragment that asks the model to select relevant file-operation paths for `must_read_after_compaction`. |
 | `reductionSystemPromptFile` | No | Non-empty absolute path | Bundled reduction system prompt | System prompt used for preliminary, fragment, normalization, and merge requests. |
 | `reductionPromptFile` | No | Non-empty absolute path | Bundled reduction prompt | User prompt used for preliminary, fragment, normalization, and merge requests. |
-| `model` | No | Non-empty string | Current main model | Model used for direct, preliminary, fragment, normalization, merge, and final requests. Accepts either `provider/model` or an alias from `model-aliases/config.json`. Model IDs may contain additional slashes after the provider. |
-| `reasoning` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current thinking level | Reasoning level used for adaptive compaction requests. |
+| `model` | No | Object | Current main model and thinking level | Configures the model used for direct, preliminary, fragment, normalization, merge, and final requests. |
+| `model.id` | No | Non-empty string | Current main model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. Model IDs may contain additional slashes after the provider. |
+| `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current thinking level | Thinking level used for adaptive compaction requests. |
 | `retry` | No | Object | `{ "enabled": true, "maxRetries": 3, "baseDelayMs": 2000 }` | Retry settings for provider failures and invalid summarization responses. |
 | `retry.enabled` | No | Boolean | `true` | Enables retry. |
 | `retry.maxRetries` | No | Non-negative integer | `3` | Number of retries after the first request. |

@@ -3,12 +3,7 @@ import {
 	readSuiteConfigFile,
 	type StorageFileReadResult,
 } from "./agent-suite-storage";
-import { isModelSelectorId } from "./model-settings";
-import {
-	isReasoningLevel,
-	REASONING_LEVELS,
-	type ReasoningLevel,
-} from "./reasoning-levels";
+import { type ModelSettings, parseModelSettings } from "./model-settings";
 import {
 	buildRetryConfig,
 	type RetryConfig,
@@ -33,7 +28,6 @@ const CUSTOM_COMPACTION_CONFIG_KEYS = [
 	"enabled",
 	...PROMPT_FILE_KEYS,
 	"model",
-	"reasoning",
 	"retry",
 ] as const;
 
@@ -45,8 +39,7 @@ export interface CustomCompactionConfig {
 	readonly fileCandidatesPromptFile?: string;
 	readonly reductionSystemPromptFile?: string;
 	readonly reductionPromptFile?: string;
-	readonly model?: string;
-	readonly reasoning?: ReasoningLevel;
+	readonly model?: ModelSettings;
 	readonly retry: RetryConfig;
 }
 
@@ -60,7 +53,10 @@ export type CustomCompactionConfigResult =
 export async function readCustomCompactionConfig(): Promise<CustomCompactionConfigResult> {
 	const configFile = await readSuiteConfigFile(CUSTOM_COMPACTION_EXTENSION_DIR);
 	if (configFile.kind === "missing") {
-		return { kind: "valid", config: buildCustomCompactionConfig({}) };
+		return {
+			kind: "valid",
+			config: buildCustomCompactionConfig({}, undefined),
+		};
 	}
 	if (configFile.kind === "read-error") {
 		return {
@@ -123,16 +119,13 @@ function parseCustomCompactionConfig(
 		return { kind: "invalid", issue: promptFileIssue };
 	}
 
-	const model = value["model"];
-	if (model !== undefined && !isModelSelectorId(model)) {
-		return { kind: "invalid", issue: "model must be a non-empty string" };
-	}
-
-	const reasoning = value["reasoning"];
-	if (reasoning !== undefined && !isReasoningLevel(reasoning)) {
+	let model: ModelSettings | undefined;
+	try {
+		model = parseModelSettings(value["model"], "model");
+	} catch (error) {
 		return {
 			kind: "invalid",
-			issue: `reasoning must be one of ${REASONING_LEVELS.join(", ")}`,
+			issue: error instanceof Error ? error.message : String(error),
 		};
 	}
 
@@ -141,12 +134,13 @@ function parseCustomCompactionConfig(
 		return { kind: "invalid", issue: retryIssue };
 	}
 
-	return { kind: "valid", config: buildCustomCompactionConfig(value) };
+	return { kind: "valid", config: buildCustomCompactionConfig(value, model) };
 }
 
 /** Builds the normalized internal configuration after validation succeeds. */
 function buildCustomCompactionConfig(
 	value: Record<string, unknown>,
+	model: ModelSettings | undefined,
 ): CustomCompactionConfig {
 	const systemPromptFile = value["systemPromptFile"];
 	const historyPromptFile = value["historyPromptFile"];
@@ -154,8 +148,6 @@ function buildCustomCompactionConfig(
 	const fileCandidatesPromptFile = value["fileCandidatesPromptFile"];
 	const reductionSystemPromptFile = value["reductionSystemPromptFile"];
 	const reductionPromptFile = value["reductionPromptFile"];
-	const model = value["model"];
-	const reasoning = value["reasoning"];
 
 	return {
 		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
@@ -168,8 +160,7 @@ function buildCustomCompactionConfig(
 			? { reductionSystemPromptFile }
 			: {}),
 		...(typeof reductionPromptFile === "string" ? { reductionPromptFile } : {}),
-		...(typeof model === "string" ? { model } : {}),
-		...(isReasoningLevel(reasoning) ? { reasoning } : {}),
+		...(model === undefined ? {} : { model }),
 		retry: buildRetryConfig(value["retry"]),
 	};
 }

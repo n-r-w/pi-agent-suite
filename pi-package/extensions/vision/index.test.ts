@@ -78,7 +78,7 @@ function configuredFile() {
 	return {
 		kind: "found" as const,
 		file: {
-			content: '{"enabled":true,"provider":"p","model":"m"}',
+			content: '{"enabled":true,"model":{"id":"p/m"}}',
 			path: "/tmp/config.json",
 			displayPath: "/tmp/config.json",
 			directory: "/tmp",
@@ -138,7 +138,7 @@ describe("vision extension", () => {
 		expect(pi.notifications).toEqual([]);
 	});
 
-	test("warns and hides the tool when explicitly enabled without provider and model", async () => {
+	test("warns and hides the tool when explicitly enabled without a model ID", async () => {
 		const pi = createPi(["read", "describe_image"]);
 		vision(pi, {
 			readConfigFile: async () => ({
@@ -156,7 +156,7 @@ describe("vision extension", () => {
 			{ ...context({ input: ["text"] }), ui } as never,
 		);
 		expect(pi.getActiveTools()).toEqual(["read"]);
-		expect(pi.notifications[0]?.message).toContain("provider and model");
+		expect(pi.notifications[0]?.message).toContain("model.id");
 	});
 
 	test("hides the tool when configuration disables it", async () => {
@@ -166,7 +166,7 @@ describe("vision extension", () => {
 				...configuredFile(),
 				file: {
 					...configuredFile().file,
-					content: '{"enabled":false,"provider":"p","model":"m"}',
+					content: '{"enabled":false,"model":{"id":"p/m"}}',
 				},
 			}),
 		});
