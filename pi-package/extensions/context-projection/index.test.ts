@@ -1610,8 +1610,7 @@ describe("context-projection", () => {
 					keepRecentTurns: 0,
 					summary: {
 						enabled: true,
-						model: null,
-						thinking: null,
+						model: { thinking: "high" },
 						maxConcurrency: 1,
 						systemPromptFile,
 						userPromptFile,

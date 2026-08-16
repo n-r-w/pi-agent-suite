@@ -135,7 +135,6 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 		preferredRemotes: ["origin"],
 		extraction: {
 			model: undefined,
-			thinking: undefined,
 			systemPrompt: "extract system",
 			taskPrompt: "summarize projected session",
 			maxFractionDenominator: 8,
@@ -144,7 +143,6 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 		},
 		mergeLocal: {
 			model: undefined,
-			thinking: undefined,
 			systemPrompt: "merge local system",
 			taskPrompt: "merge local task prompt",
 			maxFractionDenominator: 8,
@@ -153,7 +151,6 @@ function config(overrides: Partial<KnowledgeConfig> = {}): KnowledgeConfig {
 		},
 		mergeGlobal: {
 			model: undefined,
-			thinking: undefined,
 			systemPrompt: "merge global system",
 			taskPrompt: "merge global task prompt",
 			maxFractionDenominator: 8,

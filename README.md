@@ -310,8 +310,9 @@ Summary parameters:
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `summary.enabled` | No | Boolean | `false` | Enables generated summaries for newly projected tool results. |
-| `summary.model` | No | `null` or string in `provider/model` format | Current main model | Model used to generate summaries |
-| `summary.thinking` | No | `null`, `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Current thinking level | Thinking level used for summary requests |
+| `summary.model` | No | Object | Current main model and thinking level | Configures the model used to generate summaries. |
+| `summary.model.id` | No | Non-empty string | Current main model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `summary.model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current thinking level | Thinking level used for summary requests. |
 | `summary.maxConcurrency` | No | Positive integer | `1` | Maximum number of summary requests that can run at the same time. |
 | `summary.retryCount` | No | Non-negative integer | `1` | Number of retry attempts after the first summary request fails. |
 | `summary.retryDelayMs` | No | Non-negative integer | `5000` | Delay between summary retry attempts, in milliseconds. |
@@ -341,9 +342,11 @@ Full config example:
   "omittedNotice": "Result omitted. Run tool again for full result.",
   "summaryNotice": "Full result omitted. Summary below. Run tool again for full result.",
   "summary": {
-    "enabled": false,
-    "model": null,
-    "thinking": null,
+    "enabled": true,
+    "model": {
+      "id": "summary",
+      "thinking": "low"
+    },
     "maxConcurrency": 1,
     "retryCount": 1,
     "retryDelayMs": 5000,
@@ -466,7 +469,7 @@ Parameters:
 | `codex-fast` | Disabled | Toggles fast mode for supported OpenAI Codex requests and marks the footer model with `-F`. | State: `codex-fast/state.json`. Toggle with `/fast` or `Ctrl+Alt+F`. | [docs/extensions/codex-fast.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/codex-fast.md) |
 | `codex-verbosity` | Disabled | Adds `text.verbosity` to OpenAI Codex requests. | `codex-verbosity/config.json`: `enabled`, `verbosity` (`low`, `medium`, `high`). | [docs/extensions/codex-verbosity.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/codex-verbosity.md) |
 | `codex-quota` | Disabled | Shows OpenAI Codex quota status in the footer. | `codex-quota/config.json`: `enabled`, `refreshInterval`, `retryAttempts`, `retryInterval`. | [docs/extensions/codex-quota.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/codex-quota.md) |
-| `custom-compaction` | Enabled | Replaces fixed-request pi compaction with bounded adaptive summarization that can reduce oversized history before the final summary. | `custom-compaction/config.json`: `enabled`, `model`, `reasoning`, prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/custom-compaction.md) |
+| `custom-compaction` | Enabled | Replaces fixed-request pi compaction with bounded adaptive summarization that can reduce oversized history before the final summary. | `custom-compaction/config.json`: `enabled`, `model`, prompt file paths, `retry`. | [docs/extensions/custom-compaction.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/custom-compaction.md) |
 | `context-projection` | Disabled | Replaces old large non-critical tool results in provider context with an omitted notice or summary; requires valid enabled custom compaction. | `context-projection/config.json`: `enabled`, `projectCompactionSource`, projection thresholds, recent-turn protection, `omittedNotice`, `summaryNotice`, `summary`. | [docs/extensions/context-projection.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/context-projection.md) |
 | `knowledge` | Enabled | Supplies bounded global and branch-local project knowledge across sessions and accumulates it through workflow triggers. | Optional `knowledge/config.json`; data defaults to `knowledge/data`. | [docs/extensions/knowledge.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/knowledge.md) |
 | `algorithms` | Enabled | Runs registered algorithms manually via `--trigger <type>` and `/trigger:<type>` slash commands. | No configuration. | [docs/extensions/algorithms.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/algorithms.md) |

@@ -483,8 +483,8 @@ async function resolveOperationRuntime(
 ): Promise<ResolvedOperationRuntime> {
 	const result = await resolveAuxiliaryLlmRuntime(
 		ctx,
-		operation.model,
-		operation.thinking,
+		operation.model?.id,
+		operation.model?.thinking,
 	);
 	if ("issue" in result) {
 		throw new Error(`knowledge model unavailable: ${result.issue}`);

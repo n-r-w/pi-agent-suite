@@ -47,8 +47,8 @@ async function writeConfigText(
 
 describe("knowledge configuration", () => {
 	/**
-	 * Verifies that an absent file resolves every default while model and
-	 * thinking omissions remain deferred to operation start.
+	 * Verifies that an absent file resolves every default while model settings
+	 * remain deferred to operation start.
 	 */
 	test("loads defaults when config.json is absent", async () => {
 		// ARRANGE
@@ -71,21 +71,18 @@ describe("knowledge configuration", () => {
 			preferredRemotes: ["origin"],
 			extraction: {
 				model: undefined,
-				thinking: undefined,
 				maxFractionDenominator: 8,
 				initialFraction: 2 / 3,
 				reductionCoefficient: 3 / 4,
 			},
 			mergeLocal: {
 				model: undefined,
-				thinking: undefined,
 				maxFractionDenominator: 8,
 				initialFraction: 2 / 3,
 				reductionCoefficient: 3 / 4,
 			},
 			mergeGlobal: {
 				model: undefined,
-				thinking: undefined,
 				maxFractionDenominator: 8,
 				initialFraction: 2 / 3,
 				reductionCoefficient: 3 / 4,
@@ -101,6 +98,10 @@ describe("knowledge configuration", () => {
 
 	/** Verifies that every top-level and nested setting can be overridden independently. */
 	test("accepts independent overrides", async () => {
+		// Purpose: each knowledge operation must accept the shared model-settings object with independent prompt and size overrides.
+		// Input and expected output: three distinct model settings and operation fields produce one fully resolved knowledge config.
+		// Edge case: model IDs and thinking levels differ across all operations.
+		// Dependencies: isolated config and prompt files plus deterministic Git name validators.
 		// ARRANGE
 		const agentSuiteDir = await createSuiteDirectory();
 		const dataDir = join(agentSuiteDir, "catalog");
@@ -127,8 +128,7 @@ describe("knowledge configuration", () => {
 			primaryBranches: ["trunk", "release/stable"],
 			preferredRemotes: ["origin", "upstream"],
 			extraction: {
-				model: "openai/gpt-5.6",
-				thinking: "high",
+				model: { id: "openai/gpt-5.6", thinking: "high" },
 				systemPromptFile: extractionSystemPrompt,
 				taskPromptFile: extractionTaskPrompt,
 				maxFractionDenominator: 16,
@@ -136,8 +136,7 @@ describe("knowledge configuration", () => {
 				reductionCoefficient: "1/2",
 			},
 			mergeLocal: {
-				model: "anthropic/claude",
-				thinking: "xhigh",
+				model: { id: "anthropic/claude", thinking: "xhigh" },
 				systemPromptFile: mergeLocalSystemPrompt,
 				taskPromptFile: mergeLocalTaskPrompt,
 				maxFractionDenominator: 32,
@@ -145,8 +144,7 @@ describe("knowledge configuration", () => {
 				reductionCoefficient: "3/4",
 			},
 			mergeGlobal: {
-				model: "openai/gpt-5",
-				thinking: "low",
+				model: { id: "openai/gpt-5", thinking: "low" },
 				systemPromptFile: mergeGlobalSystemPrompt,
 				taskPromptFile: mergeGlobalTaskPrompt,
 				maxFractionDenominator: 4,
@@ -165,7 +163,6 @@ describe("knowledge configuration", () => {
 				...value,
 				extraction: {
 					model: value.extraction.model,
-					thinking: value.extraction.thinking,
 					systemPrompt: "Extract durable knowledge.",
 					taskPrompt: "Summarize this branch session.",
 					maxFractionDenominator: value.extraction.maxFractionDenominator,
@@ -174,7 +171,6 @@ describe("knowledge configuration", () => {
 				},
 				mergeLocal: {
 					model: value.mergeLocal.model,
-					thinking: value.mergeLocal.thinking,
 					systemPrompt: "Merge local system rules.",
 					taskPrompt: "Merge local durable knowledge.",
 					maxFractionDenominator: value.mergeLocal.maxFractionDenominator,
@@ -183,7 +179,6 @@ describe("knowledge configuration", () => {
 				},
 				mergeGlobal: {
 					model: value.mergeGlobal.model,
-					thinking: value.mergeGlobal.thinking,
 					systemPrompt: "Merge global system rules.",
 					taskPrompt: "Merge global durable knowledge.",
 					maxFractionDenominator: value.mergeGlobal.maxFractionDenominator,
@@ -199,6 +194,10 @@ describe("knowledge configuration", () => {
 	 * including invalid Git branch names and unavailable prompts.
 	 */
 	test("rejects unknown fields and invalid values", async () => {
+		// Purpose: strict knowledge configuration must reject malformed values and removed model fields.
+		// Input and expected output: every invalid top-level or operation value produces an invalid result.
+		// Edge case: non-empty legacy model strings and sibling thinking fields remain unsupported.
+		// Dependencies: isolated prompt files and deterministic Git name validators.
 		// ARRANGE
 		const agentSuiteDir = await createSuiteDirectory();
 		const emptyPrompt = join(agentSuiteDir, "empty.md");
@@ -220,6 +219,7 @@ describe("knowledge configuration", () => {
 			{ preferredRemotes: ["bad remote"] },
 			{ extraction: { unknown: true } },
 			{ extraction: { model: "" } },
+			{ extraction: { model: "extract" } },
 			{ extraction: { thinking: "max" } },
 			{ extraction: { maxFractionDenominator: -1 } },
 			{ extraction: { systemPromptFile: "relative.md" } },
@@ -232,6 +232,7 @@ describe("knowledge configuration", () => {
 			{ extraction: { reductionCoefficient: "x" } },
 			{ mergeLocal: { unknown: true } },
 			{ mergeLocal: { model: "" } },
+			{ mergeLocal: { model: "extract" } },
 			{ mergeLocal: { thinking: "unknown" } },
 			{ mergeLocal: { maxFractionDenominator: 1.5 } },
 			{ mergeLocal: { systemPromptFile: missingPrompt } },

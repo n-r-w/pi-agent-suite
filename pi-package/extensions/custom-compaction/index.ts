@@ -446,10 +446,7 @@ function resolveRuntime(
 	config: CustomCompactionConfig,
 	currentThinkingLevel: unknown,
 ): CustomCompactionRuntime | string {
-	const resolvedSettings = resolveModelSettingsWithAliasesSync({
-		...(config.model === undefined ? {} : { id: config.model }),
-		...(config.reasoning === undefined ? {} : { thinking: config.reasoning }),
-	});
+	const resolvedSettings = resolveModelSettingsWithAliasesSync(config.model);
 	if ("issue" in resolvedSettings) {
 		return resolvedSettings.issue;
 	}
