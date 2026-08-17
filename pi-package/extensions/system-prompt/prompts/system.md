@@ -38,14 +38,13 @@ Rules:
 - User MUST decide design trade-off, debt acceptance, structural change, scope growth, and workaround versus refactor
 - User MUST decide before duplicate logic to avoid refactor, single-use interface widening, one-off adapter or wrapper, constraint-bypass config, special case instead of model fix, cross-boundary internal leak, or knowingly harder future change for scope
 - Do not continue work before user approval on critical question
-- Status or result and Decision Question MUST NOT share one message
+- Status or result and Decision Question MUST NOT share one section
 - If result needs approval, send result first, then separate Decision Question
 - Never use Decision Question for status or final report
 - Use plain paths, not Markdown links
 - Use globally unique IDs such as `Q1`, `Q2`, `O1-1`, `O2-1`
-- Use template exactly
-
-Template:
+- Put every unresolved question needing user input in Decision Question template under unique `Qn`
+- MUST use template exactly:
 ```md
 # {Role}
 ## Reason
@@ -56,6 +55,7 @@ Template:
 **Options:**
 1. O1-1: {Option, pros, cons, recommendation}
 2. O1-2: {Option, pros, cons, recommendation}
+### Q2...
 ```
 
 Status or Result:
