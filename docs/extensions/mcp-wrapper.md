@@ -129,7 +129,7 @@ A server without `onDemand` is eager: its loaded tools are available under the n
 
 `activate_toolset` is available only if it is allowed for the current agent and a loaded, still-deferred toolset has at least one tool allowed for that agent. Activation is exact and case-sensitive. It exposes only that agent's allowed tools, is idempotent for an active toolset, and leaves the toolset deferred when activation fails. It disappears after the final eligible toolset is activated. Activation state is local to the pi session and active history branch; main and subagent sessions do not share it. A resumed branch restores its last valid activation snapshot; stale names from changed configuration are warned about and ignored.
 
-The activation result gives the model the status and complete list of currently available tool names, without tool parameters or descriptions. In both main-agent and subagent screens, collapsed rendering shows the status, count, and shortened list; expanded rendering shows the complete list.
+The activation result gives the model the status and complete list of currently available tool names, without tool parameters or descriptions. Main-agent and subagent screens render the status followed by comma-separated tool names. Collapsed rendering shows at most two wrapped content lines, adds an ellipsis when content is hidden, and reports the exact number of hidden lines; expanded rendering shows the complete wrapped list without truncation.
 
 Activation uses already loaded MCP metadata. It does not create a separate MCP connection; normal MCP tool execution retains connection readiness and routing behavior.
 

@@ -3,7 +3,7 @@ import { type Component, Text } from "@earendil-works/pi-tui";
 import { truncateTextByWidth } from "../display-width.ts";
 import type { ToolsetActivationPresentation } from "./contracts.ts";
 
-const COLLAPSED_TOOL_PREVIEW_LIMIT = 2;
+const COLLAPSED_CONTENT_LINE_LIMIT = 2;
 
 interface ActivationRenderResult {
 	readonly content: readonly {
@@ -42,57 +42,51 @@ class ActivationResult implements Component {
 	) {}
 
 	public render(width: number): string[] {
-		if (this.expanded) {
-			return new Text(this.expandedText(), 0, 0).render(width);
+		const wrappedLines = new Text(this.outputText(), 0, 0)
+			.render(width)
+			.map((line) => line.trimEnd());
+		// Plain rows own truncation math while styled rows keep status and names in separate colors.
+		const styledLines = new Text(this.styledOutputText(), 0, 0).render(width);
+		if (this.expanded || wrappedLines.length <= COLLAPSED_CONTENT_LINE_LIMIT) {
+			return styledLines;
 		}
 
-		// Collapsed rows are semantic units: status, bounded names, then one expansion hint.
-		const preview = this.activation.toolNames.slice(
-			0,
-			COLLAPSED_TOOL_PREVIEW_LIMIT,
+		const visibleLines = styledLines.slice(0, COLLAPSED_CONTENT_LINE_LIMIT);
+		const lastVisibleIndex = visibleLines.length - 1;
+		const lastVisibleLine = wrappedLines[lastVisibleIndex] ?? "";
+		// The suffix signals truncation without letting a long wrapped row exceed the shell.
+		visibleLines[lastVisibleIndex] = this.theme.fg(
+			"muted",
+			truncateTextByWidth(`${lastVisibleLine} ...`, width, " ..."),
 		);
-		const lines = [
-			truncateTextByWidth(
-				this.theme.fg("success", this.collapsedStatus()),
-				width,
-			),
-			...preview.map((name) =>
-				truncateTextByWidth(this.theme.fg("muted", `- ${name}`), width),
-			),
+		const hiddenLineCount = wrappedLines.length - visibleLines.length;
+		const hiddenLineLabel = hiddenLineCount === 1 ? "line" : "lines";
+		const hint = `... ${hiddenLineCount} more ${hiddenLineLabel} (${keyHint("app.tools.expand", "to expand")})`;
+		return [
+			...visibleLines,
+			this.theme.fg("dim", truncateTextByWidth(hint, width)),
 		];
-		const hiddenCount = this.activation.toolNames.length - preview.length;
-		if (hiddenCount > 0) {
-			lines.push(
-				truncateTextByWidth(
-					this.theme.fg(
-						"dim",
-						`... ${hiddenCount} more tools (${keyHint("app.tools.expand", "to expand")})`,
-					),
-					width,
-				),
-			);
-		}
-		return lines;
 	}
 
 	public invalidate(): void {}
 
-	private collapsedStatus(): string {
-		const status =
-			this.activation.status === "activated"
-				? `Activated "${this.activation.name}"`
-				: `Already active "${this.activation.name}"`;
-		return `${status} · ${this.activation.toolNames.length} tools`;
+	private outputText(): string {
+		return `${this.statusLabel()}: ${this.activation.toolNames.join(", ")}`;
 	}
 
-	private expandedText(): string {
-		const status =
-			this.activation.status === "activated"
-				? `Activated toolset "${this.activation.name}".`
-				: `Toolset "${this.activation.name}" is already active.`;
-		return `${status}\nAvailable tools (${this.activation.toolNames.length}):\n${this.activation.toolNames
-			.map((name) => `- ${name}`)
-			.join("\n")}`;
+	private styledOutputText(): string {
+		const status = this.theme.fg("success", `${this.statusLabel()}:`);
+		const toolNames = this.theme.fg(
+			"muted",
+			` ${this.activation.toolNames.join(", ")}`,
+		);
+		return `${status}${toolNames}`;
+	}
+
+	private statusLabel(): string {
+		return this.activation.status === "activated"
+			? "Activated"
+			: "Already active";
 	}
 }
 
