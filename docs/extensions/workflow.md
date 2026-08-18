@@ -259,7 +259,9 @@ The active branch reconstructs state on session start and branch changes:
 - `activated` restores catalog-backed active state and its restoration settings;
 - `created` restores dynamic active state and its restoration settings;
 - `transitioned` updates the route of the preceding snapshot;
-- `completed` restores completed state without applying workflow model settings.
+- `completed` restores completed state and the persisted pre-workflow runtime settings without applying final-stage settings.
+
+When tree navigation leaves an active workflow, the extension reconstructs the target branch model from `model_change` entries or assistant messages and its thinking level from `thinking_level_change` entries. Target branch entries override the abandoned workflow restoration snapshot independently, so a branch that changes only model or only thinking retains that explicit value.
 
 The latest valid active snapshot remains available under every resolved policy after its catalog file is removed or the catalog becomes invalid. An invalid catalog prevents new creation and activation but does not block transitions of that saved active workflow. Earlier replaced dynamic workflows do not appear in activation options and cannot be reactivated.
 

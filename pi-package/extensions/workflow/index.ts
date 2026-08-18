@@ -11,7 +11,10 @@ import {
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
-import type { ReasoningLevel } from "../../shared/reasoning-levels";
+import {
+	isReasoningLevel,
+	type ReasoningLevel,
+} from "../../shared/reasoning-levels";
 import {
 	singleLineTextSchema,
 	technicalIdentifierSchema,
@@ -72,6 +75,7 @@ import {
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
 	type WorkflowDefinition,
+	type WorkflowRestorationSettings,
 	type WorkflowState,
 	withWorkflowRestoration,
 } from "./workflow";
@@ -545,9 +549,11 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 			statusHolder.indicator ??= installWorkflowStatusIndicator(pi, ctx.ui);
 		}
 		try {
+			const branch = ctx.sessionManager.getBranch();
+			const previousState = runtime.state;
 			synchronizeWorkflowRuntime({
 				pi,
-				branch: ctx.sessionManager.getBranch(),
+				branch,
 				runtime,
 				catalogResult,
 				promptError,
@@ -555,7 +561,7 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 				model: ctx.model,
 				modelRegistry: ctx.modelRegistry,
 			});
-			await synchronizeWorkflowModelRuntime(pi, runtime);
+			await synchronizeWorkflowModelRuntime(pi, runtime, branch, previousState);
 		} finally {
 			publishWorkflowStatus(statusHolder.indicator, runtime);
 		}
@@ -772,18 +778,87 @@ function synchronizeWorkflowRuntime(
 	}
 }
 
-/** Applies settings for the restored active stage without changing workflow state. */
+/** Reads the model selected by one session entry. */
+function readBranchModelId(candidate: unknown): string | undefined {
+	if (candidate === null || typeof candidate !== "object") {
+		return undefined;
+	}
+	const entry = candidate as Record<string, unknown>;
+	if (
+		entry["type"] === "model_change" &&
+		typeof entry["provider"] === "string" &&
+		typeof entry["modelId"] === "string"
+	) {
+		return `${entry["provider"]}/${entry["modelId"]}`;
+	}
+	const message = entry["message"];
+	if (
+		entry["type"] !== "message" ||
+		message === null ||
+		typeof message !== "object"
+	) {
+		return undefined;
+	}
+	const assistant = message as Record<string, unknown>;
+	return assistant["role"] === "assistant" &&
+		typeof assistant["provider"] === "string" &&
+		typeof assistant["model"] === "string"
+		? `${assistant["provider"]}/${assistant["model"]}`
+		: undefined;
+}
+
+/** Reads the thinking level selected by one session entry. */
+function readBranchThinking(candidate: unknown): ReasoningLevel | undefined {
+	if (candidate === null || typeof candidate !== "object") {
+		return undefined;
+	}
+	const entry = candidate as Record<string, unknown>;
+	return entry["type"] === "thinking_level_change" &&
+		isReasoningLevel(entry["thinkingLevel"])
+		? entry["thinkingLevel"]
+		: undefined;
+}
+
+/** Reconstructs target-branch runtime settings over the activation snapshot. */
+function resolveBranchRestoration(
+	branch: readonly unknown[],
+	fallback: WorkflowRestorationSettings | undefined,
+): WorkflowRestorationSettings | undefined {
+	let modelId = fallback?.modelId;
+	let thinking = fallback?.thinking;
+	for (const entry of branch) {
+		modelId = readBranchModelId(entry) ?? modelId;
+		thinking = readBranchThinking(entry) ?? thinking;
+	}
+	return modelId !== undefined && thinking !== undefined
+		? { modelId, thinking }
+		: undefined;
+}
+
 async function synchronizeWorkflowModelRuntime(
 	pi: ExtensionAPI,
 	runtime: WorkflowRuntime,
+	branch: readonly unknown[],
+	previousState: WorkflowState | undefined,
 ): Promise<void> {
 	const state = runtime.state;
-	const stageId = state?.route.at(-1);
-	if (
-		state === undefined ||
-		state.status === "completed" ||
-		stageId === undefined
-	) {
+	if (state === undefined || state.status === "completed") {
+		const restoration =
+			state?.restoration ??
+			resolveBranchRestoration(branch, previousState?.restoration);
+		if (restoration !== undefined) {
+			const application = await applyWorkflowModelRestoration(
+				pi,
+				runtime.modelRegistry,
+				runtime.currentModel,
+				restoration,
+			);
+			runtime.currentModel = application.currentModel;
+		}
+		return;
+	}
+	const stageId = state.route.at(-1);
+	if (stageId === undefined) {
 		return;
 	}
 	const resolution = resolveWorkflowModelSettings({
