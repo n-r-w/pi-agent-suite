@@ -225,9 +225,9 @@ describe("executeSubagentQuery", () => {
 		expect(costs).toEqual([{ source: "subagent-query", cost: 0.25 }]);
 	});
 
-	test("uses configured model and records billed provider errors", async () => {
-		// Purpose: query overrides must select the caller registry model while accounting for every billed assistant response.
-		// Input and expected output: configured model/off thinking and a billed provider error produce query_failed without reasoning or retry.
+	test("uses configured model and preserves billed provider errors", async () => {
+		// Purpose: query overrides must select the caller registry model while preserving its provider diagnostic and accounting for billed responses.
+		// Input and expected output: configured model/off thinking and a billed provider error return the provider message without reasoning or retry.
 		// Edge case: the failed response still creates one helper cost entry.
 		// Dependencies: deterministic model registry, completion, and append-entry fakes.
 		const calls: CompletionCall[] = [];
@@ -254,14 +254,33 @@ describe("executeSubagentQuery", () => {
 			currentThinkingLevel: "high",
 		});
 
-		expect(result).toEqual({
-			kind: "issue",
-			issue: "The query failed, please try again later",
-		});
+		expect(result).toEqual({ kind: "issue", issue: "provider failed" });
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.model).toBe(CONFIGURED_MODEL);
 		expect(calls[0]?.options).not.toHaveProperty("reasoning");
 		expect(costs).toEqual([{ source: "subagent-query", cost: 0.5 }]);
+	});
+
+	test("preserves thrown completion diagnostics", async () => {
+		// Purpose: completion exceptions must expose their actionable diagnostic instead of replacing it with a generic retry message.
+		// Input and expected output: one thrown timeout error returns its message as the query issue.
+		// Edge case: a thrown completion has no assistant response and therefore records no helper cost.
+		// Dependencies: deterministic completion and append-entry fakes.
+		const costs: unknown[] = [];
+		const result = await executeSubagentQuery({
+			completeSimple: async () => {
+				throw new Error("request timed out");
+			},
+			ctx: createContext(),
+			pi: createPi((_type, data) => costs.push(data)),
+			branchEntries: savedBranch(),
+			question: "Question",
+			systemPrompt: "System",
+			currentThinkingLevel: "medium",
+		});
+
+		expect(result).toEqual({ kind: "issue", issue: "request timed out" });
+		expect(costs).toEqual([]);
 	});
 
 	test("applies alias default thinking when query model has no explicit thinking", async () => {

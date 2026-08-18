@@ -20,6 +20,7 @@ import { readKnowledgeBlock } from "../../shared/knowledge-runtime";
 import { isReasoningLevel } from "../../shared/reasoning-levels";
 import { readCancellationError } from "./cancellation-reason";
 import type { SubagentQueryModelConfig } from "./entry-config";
+import { errorMessage } from "./error-message";
 
 const QUESTION_TAG = "question";
 
@@ -97,14 +98,11 @@ export async function executeSubagentQuery({
 			context,
 			options,
 		);
-	} catch {
+	} catch (error) {
 		if (signal?.aborted) {
 			throw readCancellationError(signal);
 		}
-		return {
-			kind: "issue",
-			issue: "The query failed, please try again later",
-		};
+		return { kind: "issue", issue: errorMessage(error) };
 	}
 
 	recordHelperApiCost(pi, "subagent-query", response);
@@ -117,7 +115,8 @@ export async function executeSubagentQuery({
 	if (response.stopReason === "error") {
 		return {
 			kind: "issue",
-			issue: "The query failed, please try again later",
+			issue:
+				response.errorMessage ?? "The query failed, please try again later",
 		};
 	}
 	const answer = getAuxiliaryLlmResponseText(response);

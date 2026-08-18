@@ -357,7 +357,7 @@ The auxiliary model request runs in the Pi process of the calling agent. That pr
 
 The same root transport also carries closed knowledge read, mutation-acquire, mutation-release, and cancellation requests. Knowledge payloads never include model credentials or prompts. The root knowledge coordinator releases queued or active work when a child runtime disconnects or stops.
 
-The query does not retry, truncate the branch, read process-local projection replacements, or merge current loaded-skill state. A missing or empty saved session, invalid branch, unavailable model or authentication, oversized input, provider failure, or empty text response fails with `query_failed`.
+The query does not retry, truncate the branch, read process-local projection replacements, or merge current loaded-skill state. A missing or empty saved session, invalid branch, unavailable model or authentication, oversized input, provider failure, or empty text response fails with `query_failed`. Provider error responses and completion exceptions retain their available diagnostic message after the public error sanitization boundary.
 
 ## Feedback delivery
 
