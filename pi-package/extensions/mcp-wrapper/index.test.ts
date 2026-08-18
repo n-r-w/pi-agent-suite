@@ -2042,7 +2042,8 @@ Local docs guidance.
 		const manager = {
 			discoverServers: async () => ({
 				serverToolLists: [
-					{ serverKey: "files", tools: [{ name: "read", inputSchema: {} }] },
+					{ serverKey: "alpha", tools: [{ name: "read", inputSchema: {} }] },
+					{ serverKey: "beta", tools: [{ name: "search", inputSchema: {} }] },
 				],
 				serverInstructions: [],
 				failures: [],
@@ -2063,12 +2064,19 @@ Local docs guidance.
 					},
 					widgetLineBudget: 5,
 					mcpServers: {
-						files: {
+						alpha: {
 							type: "stdio",
 							command: "node",
 							args: [],
 							env: {},
-							additionalInstructions: "Use local file guidance.",
+							additionalInstructions: "Alpha local guidance.",
+						},
+						beta: {
+							type: "stdio",
+							command: "node",
+							args: [],
+							env: {},
+							additionalInstructions: "Beta local guidance.",
 						},
 					},
 				},
@@ -2077,10 +2085,17 @@ Local docs guidance.
 		});
 
 		await runSessionStart(pi);
-		pi.setActiveTools([FILES_READ_TOOL_NAME]);
-		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
-			"Use local file guidance.",
-		);
+		pi.setActiveTools(["alpha_read", "beta_search"]);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe(`Base prompt
+
+<mcp_instructions>
+  <server name="alpha">
+Alpha local guidance.
+  </server>
+  <server name="beta">
+Beta local guidance.
+  </server>
+</mcp_instructions>`);
 	});
 
 	test("omits MCP initialize instructions when no registered MCP tool is active", async () => {

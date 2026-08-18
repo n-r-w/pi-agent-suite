@@ -27,7 +27,9 @@ describe("mcp-wrapper config", () => {
 	});
 
 	test("preserves nonblank additional instructions for both transports", () => {
-		const localText = "  First line\\n\\nSecond line  ";
+		const localText = `  First line
+
+Second line  `;
 		const result = parseMcpWrapperConfig({
 			mcpServers: {
 				files: { command: "server", additionalInstructions: localText },
@@ -56,6 +58,11 @@ describe("mcp-wrapper config", () => {
 			mcpServers: {
 				empty: { command: "server", additionalInstructions: "" },
 				whitespace: { command: "server", additionalInstructions: " \n\t" },
+				httpWhitespace: {
+					type: "streamableHttp",
+					url: "https://example.com/mcp",
+					additionalInstructions: " \n\t",
+				},
 			},
 		});
 
@@ -69,6 +76,9 @@ describe("mcp-wrapper config", () => {
 		expect(result.config.mcpServers["whitespace"]).not.toHaveProperty(
 			"additionalInstructions",
 		);
+		expect(result.config.mcpServers["httpWhitespace"]).not.toHaveProperty(
+			"additionalInstructions",
+		);
 	});
 
 	test("rejects non-string additional instructions", () => {
@@ -77,6 +87,17 @@ describe("mcp-wrapper config", () => {
 				parseMcpWrapperConfig({
 					mcpServers: {
 						files: { command: "server", additionalInstructions: value },
+					},
+				}).kind,
+			).toBe("invalid");
+			expect(
+				parseMcpWrapperConfig({
+					mcpServers: {
+						docs: {
+							type: "streamableHttp",
+							url: "https://example.com/mcp",
+							additionalInstructions: value,
+						},
 					},
 				}).kind,
 			).toBe("invalid");
