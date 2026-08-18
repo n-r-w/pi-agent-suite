@@ -102,5 +102,28 @@ describe("mcp-wrapper metadata cache", () => {
 		expect(computeMcpServerConfigHash(config)).not.toBe(
 			computeMcpServerConfigHash({ ...config, args: ["other.js"] }),
 		);
+		expect(computeMcpServerConfigHash(config)).toBe(
+			computeMcpServerConfigHash({
+				...config,
+				additionalInstructions: "Use this server for files.",
+			}),
+		);
+		expect(computeMcpServerConfigHash(config)).toBe(
+			computeMcpServerConfigHash({
+				...config,
+				onDemand: { name: "files", description: "Read files" },
+			}),
+		);
+		expect(
+			computeMcpServerConfigHash({
+				...config,
+				onDemand: { name: "files", description: "Read files" },
+			}),
+		).toBe(
+			computeMcpServerConfigHash({
+				...config,
+				onDemand: { name: "renamed", description: "Changed trigger" },
+			}),
+		);
 	});
 });

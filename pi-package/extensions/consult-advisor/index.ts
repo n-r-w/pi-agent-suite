@@ -196,6 +196,7 @@ export default function consultAdvisor(
 		},
 	};
 	registerPackageTool(pi, definition);
+	getAgentRuntimeComposition(pi).publishBaselineToolNames([TOOL_NAME]);
 }
 
 /** Executes one advisor model call after strict config, prompt, and model validation. */

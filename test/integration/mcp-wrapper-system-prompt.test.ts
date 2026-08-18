@@ -14,6 +14,7 @@ import type { McpClientManager } from "../../pi-package/extensions/mcp-wrapper/c
 import mcpWrapper from "../../pi-package/extensions/mcp-wrapper/index";
 import projectRules from "../../pi-package/extensions/project-rules/index";
 import systemPrompt from "../../pi-package/extensions/system-prompt/index";
+import { getAgentRuntimeComposition } from "../../pi-package/shared/agent-runtime-composition";
 
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
@@ -228,7 +229,13 @@ describe("mcp-wrapper and system-prompt integration", () => {
 						},
 						widgetLineBudget: 5,
 						mcpServers: {
-							fetch: { type: "stdio", command: "node", args: [], env: {} },
+							fetch: {
+								type: "stdio",
+								command: "node",
+								args: [],
+								env: {},
+								additionalInstructions: "Prefer the fetch tool.",
+							},
 						},
 					},
 				}),
@@ -251,6 +258,8 @@ Project rule
 <mcp_instructions>
   <server name="fetch">
 Use fetch for web pages.
+
+Prefer the fetch tool.
   </server>
 </mcp_instructions>`);
 		} finally {
@@ -318,6 +327,7 @@ Use fetch for web pages.
 			});
 
 			await runSessionStart(pi);
+			getAgentRuntimeComposition(pi).setRestrictiveToolNames("test-policy", []);
 
 			expect(await runBeforeAgentStart(pi)).toBe(
 				"Suite template for /tmp/project",
@@ -350,6 +360,8 @@ Use fetch for web pages.
 <mcp_instructions>
   <server name="fetch">
 Use fetch for web pages.
+
+Prefer the fetch tool.
   </server>
 </mcp_instructions>`,
 			},
@@ -418,6 +430,7 @@ Use fetch for web pages.
 									command: "node",
 									args: [],
 									env: {},
+									additionalInstructions: "Prefer the fetch tool.",
 								},
 							},
 						},
@@ -426,7 +439,10 @@ Use fetch for web pages.
 				});
 
 				await runSessionStart(pi);
-				pi.setActiveTools([...toolNamesFromArgs(toolArgs.args)]);
+				getAgentRuntimeComposition(pi).setRestrictiveToolNames(
+					"test-policy",
+					toolNamesFromArgs(toolArgs.args),
+				);
 
 				expect(await runBeforeAgentStart(pi)).toBe(testCase.expectedPrompt);
 			} finally {

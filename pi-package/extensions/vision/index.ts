@@ -4,6 +4,7 @@ import type {
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { readSuiteConfigFile } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
@@ -66,6 +67,7 @@ export default function vision(
 		pi,
 		createToolDefinition(pi, () => config, completeSimple),
 	);
+	getAgentRuntimeComposition(pi).publishBaselineToolNames([TOOL_NAME]);
 }
 
 function createToolSynchronizer(
@@ -74,15 +76,13 @@ function createToolSynchronizer(
 ) {
 	return (model: { readonly input?: readonly string[] } | undefined): void => {
 		const config = getConfig();
-		const active = pi.getActiveTools().filter((name) => name !== TOOL_NAME);
-		if (
-			config.enabled &&
-			config.model?.id !== undefined &&
-			!isMultimodal(model)
-		) {
-			active.push(TOOL_NAME);
-		}
-		pi.setActiveTools(active);
+		const available =
+			config.enabled && config.model?.id !== undefined && !isMultimodal(model);
+		getAgentRuntimeComposition(pi).setRestrictiveToolFilter(
+			"vision-availability",
+			(candidates) =>
+				candidates.filter((name) => name !== TOOL_NAME || available),
+		);
 	};
 }
 

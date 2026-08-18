@@ -355,12 +355,14 @@ async function createFakePi(): Promise<FakePi> {
 function setMainWorkflowPolicy(
 	fake: FakePi,
 	workflows: readonly string[] | undefined,
+	tools?: readonly string[],
 ): void {
 	if (fake.api === undefined) {
 		throw new Error("extension API missing");
 	}
 	getAgentRuntimeComposition(fake.api).setMainAgentContribution({
 		prompt: "main",
+		...(tools === undefined ? {} : { tools }),
 		agent: {
 			id: "Main",
 			...(workflows === undefined ? {} : { workflows }),
@@ -624,8 +626,8 @@ describe("workflow extension lifecycle", () => {
 		});
 		expect(fake.activeTools).toEqual([
 			"read",
-			"workflow_create",
 			"workflow_transition",
+			"workflow_create",
 		]);
 		expect(
 			await transition.execute("transition", { stageId: "done" }),
@@ -1366,7 +1368,7 @@ describe("workflow extension lifecycle", () => {
 	test("keeps active context after suppressing the sole activation tool", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
-		fake.activeTools = ["read", "workflow_activate"];
+		setMainWorkflowPolicy(fake, ["delivery"], ["read", "workflow_activate"]);
 		await runLifecycle(fake, "session_start");
 		const activate = requireTool(fake, "workflow_activate");
 
@@ -1570,7 +1572,7 @@ describe("workflow extension lifecycle", () => {
 	test("leaves active names unchanged while the subsystem is usable", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
-		fake.activeTools = ["read"];
+		setMainWorkflowPolicy(fake, ["delivery"], ["read"]);
 		await runLifecycle(fake, "session_start");
 		expect(fake.activeTools).toEqual(["read"]);
 	});
@@ -1580,32 +1582,41 @@ describe("workflow extension lifecycle", () => {
 		await createSuite();
 		const fake = await createFakePi();
 		fake.activeTools = ["read", "workflow_activate", "workflow_transition"];
+		if (fake.api === undefined) {
+			throw new Error("extension API missing");
+		}
+		const composition = getAgentRuntimeComposition(fake.api);
+		composition.setMainAgentContribution({
+			prompt: "main",
+			tools: ["read", "workflow_activate", "workflow_transition"],
+		});
 		await runLifecycle(fake, "session_start");
 		expect(fake.activeTools).toEqual(["read"]);
 
-		fake.activeTools = ["read", "workflow_transition"];
 		await runLifecycle(fake, "session_tree");
 		expect(fake.activeTools).toEqual(["read"]);
 
+		composition.setRestrictiveToolNames("upstream", ["read"]);
+		composition.addBaselineToolNames(["workflow_transition"]);
+
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
-		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
+		expect(fake.activeTools).toEqual(["read"]);
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
-		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
+		expect(fake.activeTools).toEqual(["read"]);
 	});
 
 	/** Proves a main-agent policy reset replaces stale suppression ownership. */
 	test("reconciles inactive state after main-agent contribution changes", async () => {
 		await createSuite();
 		const fake = await createFakePi();
-		fake.activeTools = ["read", "workflow_activate", "workflow_transition"];
+		setMainWorkflowPolicy(fake, undefined, [
+			"read",
+			"workflow_activate",
+			"workflow_transition",
+		]);
 		await runLifecycle(fake, "session_start");
 
-		fake.activeTools = ["read", "workflow_transition"];
-		for (const listener of fake.listeners.get(
-			MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
-		) ?? []) {
-			listener();
-		}
+		setMainWorkflowPolicy(fake, undefined, ["read", "workflow_transition"]);
 		expect(fake.activeTools).toEqual(["read"]);
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
 		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
@@ -1615,17 +1626,12 @@ describe("workflow extension lifecycle", () => {
 	test("clears stale suppression after a usable main-agent policy change", async () => {
 		await createSuite();
 		const fake = await createFakePi();
-		fake.activeTools = ["read", "workflow_transition"];
+		setMainWorkflowPolicy(fake, undefined, ["read", "workflow_transition"]);
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
 		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
 
-		fake.activeTools = ["read"];
-		for (const listener of fake.listeners.get(
-			MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
-		) ?? []) {
-			listener();
-		}
+		setMainWorkflowPolicy(fake, undefined, ["read"]);
 		expect(fake.activeTools).toEqual(["read"]);
 		await runLifecycle(fake, "session_tree");
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
@@ -1746,7 +1752,11 @@ describe("workflow extension lifecycle", () => {
 	test("deactivates cleanly and rejects malformed saved entries", async () => {
 		await createSuite();
 		const fake = await createFakePi();
-		fake.activeTools = ["read", "workflow_activate", "workflow_transition"];
+		setMainWorkflowPolicy(fake, undefined, [
+			"read",
+			"workflow_activate",
+			"workflow_transition",
+		]);
 		await runLifecycle(fake, "session_start");
 		expect(fake.activeTools).toEqual(["read"]);
 		await expect(

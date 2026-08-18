@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
+import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
 import {
 	withIsolatedAgentDir,
 	writeEnabledConfig,
@@ -38,12 +39,13 @@ describe("convene-council runtime composition", () => {
 			const pi = createExtensionApiFake();
 			conveneCouncil(pi);
 
-			pi.setActiveTools([]);
+			const composition = getAgentRuntimeComposition(pi);
+			composition.setRestrictiveToolNames("test-policy", []);
 			expect(
 				await emitBeforeAgentStartHandlers(pi, { systemPrompt: "Base" }),
 			).toBeUndefined();
 
-			pi.setActiveTools(["convene_council"]);
+			composition.setRestrictiveToolNames("test-policy", undefined);
 			const result = (await emitBeforeAgentStartHandlers(pi, {
 				systemPrompt: "Base",
 			})) as { readonly systemPrompt: string };

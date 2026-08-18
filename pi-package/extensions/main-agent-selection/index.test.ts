@@ -120,7 +120,8 @@ function createExtensionApiFake(
 	const setModelCalls: Model<Api>[] = [];
 	const thinkingCalls: string[] = [];
 	const activeToolCalls: string[][] = [];
-	let currentActiveTools = [...(options.activeTools ?? [])];
+	const allToolNames = options.allTools ?? ["read", "bash", "edit", "write"];
+	let currentActiveTools = [...(options.activeTools ?? allToolNames)];
 	let currentThinkingLevel = "medium";
 	const setModelResults = [...(options.setModelResults ?? [])];
 	const flagValues = new Map<string, boolean | string>(
@@ -191,14 +192,12 @@ function createExtensionApiFake(
 			activeToolCalls.push(toolNames);
 		},
 		getAllTools() {
-			return (options.allTools ?? ["read", "bash", "edit", "write"]).map(
-				(name) => ({
-					name,
-					description: name,
-					parameters: {},
-					sourceInfo: { path: "fake" },
-				}),
-			);
+			return allToolNames.map((name) => ({
+				name,
+				description: name,
+				parameters: {},
+				sourceInfo: { path: "fake" },
+			}));
 		},
 		getActiveTools(): string[] {
 			return [...currentActiveTools];
@@ -1392,7 +1391,7 @@ describe("main-agent-selection", () => {
 				body: "Sage prompt",
 			});
 			const oldPi = createExtensionApiFake({
-				activeTools: ["read", "bash"],
+				activeTools: ["read", "bash", "write"],
 				allTools: ["read", "bash", "edit", "write"],
 			});
 			const oldCtx = createCommandContext(
@@ -1422,7 +1421,7 @@ describe("main-agent-selection", () => {
 			);
 
 			const resumedPi = createExtensionApiFake({
-				activeTools: ["read", "bash"],
+				activeTools: ["read", "bash", "write"],
 				allTools: ["read", "bash", "edit", "write"],
 			});
 			const resumedCtx = createCommandContext(
@@ -1523,7 +1522,7 @@ describe("main-agent-selection", () => {
 				body: "Sage prompt",
 			});
 			const oldPi = createExtensionApiFake({
-				activeTools: ["read", "bash"],
+				activeTools: ["read", "bash", "write"],
 				allTools: ["read", "bash", "edit", "write"],
 			});
 			const oldCtx = createCommandContext("/tmp/project", undefined, [model]);
@@ -1541,7 +1540,7 @@ describe("main-agent-selection", () => {
 			);
 
 			const newPi = createExtensionApiFake({
-				activeTools: ["read", "bash"],
+				activeTools: ["read", "bash", "write"],
 				allTools: ["read", "bash", "edit", "write"],
 			});
 			const newCtx = createCommandContext("/tmp/project", undefined, [model]);
@@ -1859,7 +1858,7 @@ describe("main-agent-selection", () => {
 				body: "Builder system prompt",
 				tools: ["write"],
 			});
-			const pi = createExtensionApiFake({ activeTools: ["read"] });
+			const pi = createExtensionApiFake({ activeTools: ["read", "write"] });
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
@@ -1870,7 +1869,7 @@ describe("main-agent-selection", () => {
 				cwd: "/tmp/project",
 				activeAgentId: null,
 			});
-			expect(pi.activeToolCalls).toEqual([["write"], ["read"]]);
+			expect(pi.activeToolCalls).toEqual([["write"], ["read", "write"]]);
 			expect(ctx.statusCalls).toEqual([]);
 			expect(
 				await getBeforeAgentStartHandler(pi)(
@@ -2605,7 +2604,7 @@ describe("main-agent-selection", () => {
 				tools: ["bash"],
 			});
 			const pi = createExtensionApiFake({
-				activeTools: ["read"],
+				activeTools: ["read", "write"],
 				setModelResults: [true, false],
 			});
 			const ctx = createCommandContext("/tmp/project", undefined, [
@@ -2620,7 +2619,7 @@ describe("main-agent-selection", () => {
 			expect(ctx.notifications[0]?.message).toStartWith(
 				"[main-agent-selection]",
 			);
-			expect(pi.activeToolCalls).toEqual([["write"], ["read"]]);
+			expect(pi.activeToolCalls).toEqual([["write"], ["read", "write"]]);
 			expect(ctx.statusCalls).toEqual([]);
 			expect(
 				await getBeforeAgentStartHandler(pi)(
@@ -2785,14 +2784,19 @@ describe("main-agent-selection", () => {
 				description: "Plans work",
 				body: "Planner prompt",
 			});
-			const pi = createExtensionApiFake({ activeTools: ["read", "bash"] });
+			const pi = createExtensionApiFake({
+				activeTools: ["read", "bash", "write"],
+			});
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
 			await getCommand(pi, "agent").handler("writer", ctx);
 			await getCommand(pi, "agent").handler("planner", ctx);
 
-			expect(pi.activeToolCalls).toEqual([["write"], ["read", "bash"]]);
+			expect(pi.activeToolCalls).toEqual([
+				["write"],
+				["read", "bash", "write"],
+			]);
 		});
 	});
 

@@ -22,14 +22,34 @@ const TIMEOUT_KEYS = [
 	"callSeconds",
 	"maxTotalSeconds",
 ] as const;
-const STDIO_SERVER_KEYS = ["type", "command", "args", "env", "cwd"] as const;
-const STREAMABLE_HTTP_SERVER_KEYS = ["type", "url", "headers"] as const;
+const STDIO_SERVER_KEYS = [
+	"type",
+	"command",
+	"args",
+	"env",
+	"cwd",
+	"onDemand",
+	"additionalInstructions",
+] as const;
+const STREAMABLE_HTTP_SERVER_KEYS = [
+	"type",
+	"url",
+	"headers",
+	"onDemand",
+	"additionalInstructions",
+] as const;
+const ON_DEMAND_KEYS = ["name", "description"] as const;
 
 export interface McpWrapperTimeouts {
 	readonly startupSeconds: number;
 	readonly listToolsSeconds: number;
 	readonly callSeconds: number;
 	readonly maxTotalSeconds: number;
+}
+
+export interface McpOnDemandConfig {
+	readonly name: string;
+	readonly description: string;
 }
 
 export type McpServerConfig =
@@ -39,11 +59,15 @@ export type McpServerConfig =
 			readonly args: readonly string[];
 			readonly env: Readonly<Record<string, string>>;
 			readonly cwd?: string;
+			readonly onDemand?: McpOnDemandConfig;
+			readonly additionalInstructions?: string;
 	  }
 	| {
 			readonly type: "streamableHttp";
 			readonly url: string;
 			readonly headers: Readonly<Record<string, string>>;
+			readonly onDemand?: McpOnDemandConfig;
+			readonly additionalInstructions?: string;
 	  };
 
 export interface McpWrapperConfig {
@@ -218,6 +242,7 @@ function parseMcpServers(value: unknown):
 	}
 
 	const mcpServers: Record<string, McpServerConfig> = {};
+	const onDemandNames = new Set<string>();
 	for (const [serverKey, serverConfig] of Object.entries(value)) {
 		if (serverKey.trim().length === 0) {
 			return invalidConfig("mcpServers keys must be non-empty");
@@ -225,6 +250,13 @@ function parseMcpServers(value: unknown):
 		const serverResult = parseMcpServerConfig(serverConfig);
 		if (serverResult.kind === "invalid") {
 			return serverResult;
+		}
+		const onDemandName = serverResult.serverConfig.onDemand?.name;
+		if (onDemandName !== undefined && onDemandNames.has(onDemandName)) {
+			return invalidConfig(`duplicate onDemand.name: ${onDemandName}`);
+		}
+		if (onDemandName !== undefined) {
+			onDemandNames.add(onDemandName);
 		}
 		mcpServers[serverKey] = serverResult.serverConfig;
 	}
@@ -268,28 +300,34 @@ function parseStdioServerConfig(
 	const args = value["args"];
 	const env = value["env"];
 	const cwd = value["cwd"];
+	const onDemand = parseOnDemand(value["onDemand"]);
+	if (onDemand.kind === "invalid") {
+		return onDemand;
+	}
+	const additionalInstructions = parseAdditionalInstructions(
+		value["additionalInstructions"],
+	);
+	if (additionalInstructions.kind === "invalid") {
+		return additionalInstructions;
+	}
 
-	if (typeof command !== "string" || command.length === 0) {
-		return invalidConfig("stdio.command must be a non-empty string");
-	}
-	if (args !== undefined && !isStringArray(args)) {
-		return invalidConfig("stdio.args must be an array of strings");
-	}
-	if (env !== undefined && !isStringRecord(env)) {
-		return invalidConfig("stdio.env must be an object with string values");
-	}
-	if (cwd !== undefined && typeof cwd !== "string") {
-		return invalidConfig("stdio.cwd must be a string");
+	const fields = parseStdioServerFields(command, args, env, cwd);
+	if (fields.kind === "invalid") {
+		return fields;
 	}
 
 	return {
 		kind: "valid",
 		serverConfig: {
 			type: "stdio",
-			command,
-			args: args ?? [],
-			env: env ?? {},
-			...(cwd !== undefined ? { cwd } : {}),
+			command: fields.command,
+			args: fields.args,
+			env: fields.env,
+			...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}),
+			...(onDemand.value !== undefined ? { onDemand: onDemand.value } : {}),
+			...(additionalInstructions.value !== undefined
+				? { additionalInstructions: additionalInstructions.value }
+				: {}),
 		},
 	};
 }
@@ -309,6 +347,16 @@ function parseStreamableHttpServerConfig(
 
 	const url = value["url"];
 	const headers = value["headers"];
+	const onDemand = parseOnDemand(value["onDemand"]);
+	if (onDemand.kind === "invalid") {
+		return onDemand;
+	}
+	const additionalInstructions = parseAdditionalInstructions(
+		value["additionalInstructions"],
+	);
+	if (additionalInstructions.kind === "invalid") {
+		return additionalInstructions;
+	}
 
 	if (typeof url !== "string" || url.length === 0) {
 		return invalidConfig("streamableHttp.url must be a non-empty string");
@@ -325,8 +373,101 @@ function parseStreamableHttpServerConfig(
 			type: "streamableHttp",
 			url,
 			headers: headers ?? {},
+			...(onDemand.value !== undefined ? { onDemand: onDemand.value } : {}),
+			...(additionalInstructions.value !== undefined
+				? { additionalInstructions: additionalInstructions.value }
+				: {}),
 		},
 	};
+}
+
+function parseStdioServerFields(
+	command: unknown,
+	args: unknown,
+	env: unknown,
+	cwd: unknown,
+):
+	| {
+			readonly kind: "valid";
+			readonly command: string;
+			readonly args: readonly string[];
+			readonly env: Readonly<Record<string, string>>;
+			readonly cwd: string | undefined;
+	  }
+	| InvalidConfigResult {
+	if (typeof command !== "string" || command.length === 0) {
+		return invalidConfig("stdio.command must be a non-empty string");
+	}
+	if (args !== undefined && !isStringArray(args)) {
+		return invalidConfig("stdio.args must be an array of strings");
+	}
+	if (env !== undefined && !isStringRecord(env)) {
+		return invalidConfig("stdio.env must be an object with string values");
+	}
+	if (cwd !== undefined && typeof cwd !== "string") {
+		return invalidConfig("stdio.cwd must be a string");
+	}
+	return {
+		kind: "valid",
+		command,
+		args: args ?? [],
+		env: env ?? {},
+		cwd,
+	};
+}
+
+/** Uses trimmed text only to detect presence while preserving nonblank input unchanged. */
+function parseAdditionalInstructions(
+	value: unknown,
+):
+	| { readonly kind: "valid"; readonly value: string | undefined }
+	| InvalidConfigResult {
+	if (value === undefined) {
+		return { kind: "valid", value: undefined };
+	}
+	if (typeof value !== "string") {
+		return invalidConfig("additionalInstructions must be a string");
+	}
+	return {
+		kind: "valid",
+		value: value.trim().length > 0 ? value : undefined,
+	};
+}
+
+/** Parses the optional deferred-toolset identity without accepting legacy forms. */
+function parseOnDemand(
+	value: unknown,
+):
+	| { readonly kind: "valid"; readonly value: McpOnDemandConfig | undefined }
+	| InvalidConfigResult {
+	if (value === undefined) {
+		return { kind: "valid", value: undefined };
+	}
+	if (
+		!isRecord(value) ||
+		findUnsupportedKey(value, ON_DEMAND_KEYS) !== undefined
+	) {
+		return invalidConfig("onDemand must contain only name and description");
+	}
+	const name = value["name"];
+	const description = value["description"];
+	if (
+		typeof name !== "string" ||
+		name.trim().length === 0 ||
+		name !== name.trim()
+	) {
+		return invalidConfig("onDemand.name must be a trimmed non-empty string");
+	}
+	if (
+		typeof description !== "string" ||
+		description.trim().length === 0 ||
+		description !== description.trim()
+	) {
+		return invalidConfig(
+			"onDemand.description must be a trimmed non-empty string",
+		);
+	}
+	return { kind: "valid", value: { name, description } };
 }
 
 /** Builds a fail-closed parser result with a safe diagnostic. */

@@ -101,4 +101,5 @@ export default function conveneCouncil(
 		},
 	};
 	registerPackageTool(pi, definition);
+	getAgentRuntimeComposition(pi).publishBaselineToolNames([TOOL_NAME]);
 }

@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 
 /** Suite directory owned only by this extension. */
@@ -59,18 +60,13 @@ export default function enableSearchTools(pi: ExtensionAPI): void {
 			pi.getAllTools().map((tool) => tool.name),
 		);
 		const excludedToolNames = new Set(config.config.exclude);
-		const activeToolNames = new Set(pi.getActiveTools());
-
-		for (const toolName of config.config.include) {
-			if (
-				availableToolNames.has(toolName) &&
-				!excludedToolNames.has(toolName)
-			) {
-				activeToolNames.add(toolName);
-			}
-		}
-
-		pi.setActiveTools([...activeToolNames]);
+		const includedToolNames = config.config.include.filter(
+			(toolName) =>
+				availableToolNames.has(toolName) && !excludedToolNames.has(toolName),
+		);
+		// The composition owns the final active list, so enabling defaults cannot
+		// restore a tool removed by an agent or child policy.
+		getAgentRuntimeComposition(pi).addBaselineToolNames(includedToolNames);
 	});
 }
 

@@ -74,7 +74,7 @@ test("does not reuse stale runtime composition objects from previous reloads", a
 	const module = await importIsolatedRuntimeCompositionModule("stale");
 	const composition = module.getAgentRuntimeComposition(pi);
 
-	expect(typeof composition.setSubagentsActiveToolFilter).toBe("function");
+	expect(typeof composition.setRestrictiveToolFilter).toBe("function");
 	expect(typeof composition.setConveneCouncilContribution).toBe("function");
 	expect(
 		handlers.filter((handler) => handler.event === "before_agent_start"),

@@ -641,6 +641,9 @@ function registerWorkflowRuntime(
 			refreshTools("lifecycle");
 		},
 	});
+	getAgentRuntimeComposition(pi).publishBaselineToolNames([
+		...WORKFLOW_TOOL_NAMES,
+	]);
 	pi.on("context", (event) => {
 		const activeNames = pi.getActiveTools();
 		const availability = resolveAvailability();
@@ -1238,36 +1241,27 @@ function reconcileTools(
 		selfSuppressedNames.clear();
 	}
 
-	// The extension records only names it removes for current system availability.
-	const removedNames = activeNames
-		.filter(isWorkflowToolName)
-		.filter((name) => !availableToolNames.has(name));
-	for (const name of removedNames) {
-		selfSuppressedNames.add(name);
+	// Suppression ownership remains separate from final list ownership because context projection uses it.
+	for (const name of activeNames.filter(isWorkflowToolName)) {
+		if (!availableToolNames.has(name)) {
+			selfSuppressedNames.add(name);
+		}
+	}
+	if (trigger === "lifecycle") {
+		for (const name of selfSuppressedNames) {
+			if (isWorkflowToolName(name) && availableToolNames.has(name)) {
+				selfSuppressedNames.delete(name);
+			}
+		}
 	}
 
-	// Ordinary lifecycle changes may restore only names previously removed by this extension.
-	const restoredNames =
-		trigger === "lifecycle"
-			? [...selfSuppressedNames]
-					.filter(isWorkflowToolName)
-					.filter(
-						(name) =>
-							availableToolNames.has(name) && !activeNames.includes(name),
-					)
-			: [];
-	for (const name of restoredNames) {
-		selfSuppressedNames.delete(name);
-	}
-
-	const removedNameSet: ReadonlySet<string> = new Set(removedNames);
-	const nextNames = [
-		...activeNames.filter((name) => !removedNameSet.has(name)),
-		...restoredNames,
-	];
-	if (removedNames.length > 0 || restoredNames.length > 0) {
-		pi.setActiveTools(nextNames);
-	}
+	getAgentRuntimeComposition(pi).setRestrictiveToolFilter(
+		"workflow-availability",
+		(candidates) =>
+			candidates.filter(
+				(name) => !isWorkflowToolName(name) || availableToolNames.has(name),
+			),
+	);
 }
 
 /** Narrows arbitrary Pi tool names to the workflow-owned finite set. */

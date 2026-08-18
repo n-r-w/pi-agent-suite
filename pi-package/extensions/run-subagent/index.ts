@@ -1,11 +1,13 @@
 import { join } from "node:path";
 import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import type {
+	AgentEndEvent,
 	AgentToolResult,
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
+import { isAbortedAgentRun } from "../../shared/agent-end-state";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
@@ -225,6 +227,9 @@ export default async function subagents(
 			dependencies.completeSimple ?? defaultCompleteSimple,
 		),
 	};
+	getAgentRuntimeComposition(pi).publishBaselineToolNames([
+		...SUBAGENT_TOOL_NAME_SET,
+	]);
 	registerLifecycleHandlers(pi, state);
 	configReady = readConfig();
 	// Pi awaits the factory promise before copying definitions into its first agent snapshot.
@@ -265,6 +270,7 @@ function registerLifecycleHandlers(
 		return state.initialization;
 	});
 	pi.on("message_end", (_event, ctx) => reconcileRuntime(state, ctx));
+	pi.on("agent_end", (event) => handleAgentEnd(state, event));
 	pi.on("session_shutdown", (_event, ctx) => handleSessionShutdown(state, ctx));
 	pi.on("tool_result", (event) => {
 		if (!SUBAGENT_TOOL_NAME_SET.has(event.toolName) || !event.isError) {
@@ -342,6 +348,29 @@ async function reconcileRuntime(
 	) {
 		await state.rootRuntime.store.reconcileActive(state.rootRuntime.writer);
 	}
+}
+
+/** Stops root-owned background work when Pi aborts the active main-agent run. */
+async function handleAgentEnd(
+	state: RuntimeState,
+	event: AgentEndEvent,
+): Promise<void> {
+	const rootRuntime = state.rootRuntime;
+	if (
+		state.workerBridge !== undefined ||
+		rootRuntime === undefined ||
+		!isAbortedAgentRun(event)
+	) {
+		return;
+	}
+	rootRuntime.recoveries.start(() =>
+		recoverRootShutdown({
+			coordinator: rootRuntime.coordinator,
+			store: rootRuntime.store,
+			owner: rootRuntime.owner,
+		}),
+	);
+	await rootRuntime.recoveries.drain();
 }
 
 /** Stops direct-owner work before releasing its sole session writer. */
