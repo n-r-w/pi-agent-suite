@@ -229,7 +229,13 @@ describe("mcp-wrapper and system-prompt integration", () => {
 						},
 						widgetLineBudget: 5,
 						mcpServers: {
-							fetch: { type: "stdio", command: "node", args: [], env: {} },
+							fetch: {
+								type: "stdio",
+								command: "node",
+								args: [],
+								env: {},
+								additionalInstructions: "Prefer the fetch tool.",
+							},
 						},
 					},
 				}),
@@ -252,6 +258,8 @@ Project rule
 <mcp_instructions>
   <server name="fetch">
 Use fetch for web pages.
+
+Prefer the fetch tool.
   </server>
 </mcp_instructions>`);
 		} finally {
@@ -352,6 +360,8 @@ Use fetch for web pages.
 <mcp_instructions>
   <server name="fetch">
 Use fetch for web pages.
+
+Prefer the fetch tool.
   </server>
 </mcp_instructions>`,
 			},
@@ -420,6 +430,7 @@ Use fetch for web pages.
 									command: "node",
 									args: [],
 									env: {},
+									additionalInstructions: "Prefer the fetch tool.",
 								},
 							},
 						},

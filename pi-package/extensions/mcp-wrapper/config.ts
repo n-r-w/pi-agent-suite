@@ -29,12 +29,14 @@ const STDIO_SERVER_KEYS = [
 	"env",
 	"cwd",
 	"onDemand",
+	"additionalInstructions",
 ] as const;
 const STREAMABLE_HTTP_SERVER_KEYS = [
 	"type",
 	"url",
 	"headers",
 	"onDemand",
+	"additionalInstructions",
 ] as const;
 const ON_DEMAND_KEYS = ["name", "description"] as const;
 
@@ -58,12 +60,14 @@ export type McpServerConfig =
 			readonly env: Readonly<Record<string, string>>;
 			readonly cwd?: string;
 			readonly onDemand?: McpOnDemandConfig;
+			readonly additionalInstructions?: string;
 	  }
 	| {
 			readonly type: "streamableHttp";
 			readonly url: string;
 			readonly headers: Readonly<Record<string, string>>;
 			readonly onDemand?: McpOnDemandConfig;
+			readonly additionalInstructions?: string;
 	  };
 
 export interface McpWrapperConfig {
@@ -300,29 +304,30 @@ function parseStdioServerConfig(
 	if (onDemand.kind === "invalid") {
 		return onDemand;
 	}
+	const additionalInstructions = parseAdditionalInstructions(
+		value["additionalInstructions"],
+	);
+	if (additionalInstructions.kind === "invalid") {
+		return additionalInstructions;
+	}
 
-	if (typeof command !== "string" || command.length === 0) {
-		return invalidConfig("stdio.command must be a non-empty string");
-	}
-	if (args !== undefined && !isStringArray(args)) {
-		return invalidConfig("stdio.args must be an array of strings");
-	}
-	if (env !== undefined && !isStringRecord(env)) {
-		return invalidConfig("stdio.env must be an object with string values");
-	}
-	if (cwd !== undefined && typeof cwd !== "string") {
-		return invalidConfig("stdio.cwd must be a string");
+	const fields = parseStdioServerFields(command, args, env, cwd);
+	if (fields.kind === "invalid") {
+		return fields;
 	}
 
 	return {
 		kind: "valid",
 		serverConfig: {
 			type: "stdio",
-			command,
-			args: args ?? [],
-			env: env ?? {},
-			...(cwd !== undefined ? { cwd } : {}),
+			command: fields.command,
+			args: fields.args,
+			env: fields.env,
+			...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}),
 			...(onDemand.value !== undefined ? { onDemand: onDemand.value } : {}),
+			...(additionalInstructions.value !== undefined
+				? { additionalInstructions: additionalInstructions.value }
+				: {}),
 		},
 	};
 }
@@ -346,6 +351,12 @@ function parseStreamableHttpServerConfig(
 	if (onDemand.kind === "invalid") {
 		return onDemand;
 	}
+	const additionalInstructions = parseAdditionalInstructions(
+		value["additionalInstructions"],
+	);
+	if (additionalInstructions.kind === "invalid") {
+		return additionalInstructions;
+	}
 
 	if (typeof url !== "string" || url.length === 0) {
 		return invalidConfig("streamableHttp.url must be a non-empty string");
@@ -363,7 +374,63 @@ function parseStreamableHttpServerConfig(
 			url,
 			headers: headers ?? {},
 			...(onDemand.value !== undefined ? { onDemand: onDemand.value } : {}),
+			...(additionalInstructions.value !== undefined
+				? { additionalInstructions: additionalInstructions.value }
+				: {}),
 		},
+	};
+}
+
+function parseStdioServerFields(
+	command: unknown,
+	args: unknown,
+	env: unknown,
+	cwd: unknown,
+):
+	| {
+			readonly kind: "valid";
+			readonly command: string;
+			readonly args: readonly string[];
+			readonly env: Readonly<Record<string, string>>;
+			readonly cwd: string | undefined;
+	  }
+	| InvalidConfigResult {
+	if (typeof command !== "string" || command.length === 0) {
+		return invalidConfig("stdio.command must be a non-empty string");
+	}
+	if (args !== undefined && !isStringArray(args)) {
+		return invalidConfig("stdio.args must be an array of strings");
+	}
+	if (env !== undefined && !isStringRecord(env)) {
+		return invalidConfig("stdio.env must be an object with string values");
+	}
+	if (cwd !== undefined && typeof cwd !== "string") {
+		return invalidConfig("stdio.cwd must be a string");
+	}
+	return {
+		kind: "valid",
+		command,
+		args: args ?? [],
+		env: env ?? {},
+		cwd,
+	};
+}
+
+/** Uses trimmed text only to detect presence while preserving nonblank input unchanged. */
+function parseAdditionalInstructions(
+	value: unknown,
+):
+	| { readonly kind: "valid"; readonly value: string | undefined }
+	| InvalidConfigResult {
+	if (value === undefined) {
+		return { kind: "valid", value: undefined };
+	}
+	if (typeof value !== "string") {
+		return invalidConfig("additionalInstructions must be a string");
+	}
+	return {
+		kind: "valid",
+		value: value.trim().length > 0 ? value : undefined,
 	};
 }
 

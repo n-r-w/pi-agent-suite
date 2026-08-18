@@ -26,6 +26,63 @@ describe("mcp-wrapper config", () => {
 		});
 	});
 
+	test("preserves nonblank additional instructions for both transports", () => {
+		const localText = "  First line\\n\\nSecond line  ";
+		const result = parseMcpWrapperConfig({
+			mcpServers: {
+				files: { command: "server", additionalInstructions: localText },
+				docs: {
+					type: "streamableHttp",
+					url: "https://example.com/mcp",
+					additionalInstructions: localText,
+				},
+			},
+		});
+
+		expect(result.kind).toBe("valid");
+		if (result.kind !== "valid") {
+			throw new Error(result.issue);
+		}
+		expect(result.config.mcpServers["files"]).toMatchObject({
+			additionalInstructions: localText,
+		});
+		expect(result.config.mcpServers["docs"]).toMatchObject({
+			additionalInstructions: localText,
+		});
+	});
+
+	test("omits empty and whitespace-only additional instructions", () => {
+		const result = parseMcpWrapperConfig({
+			mcpServers: {
+				empty: { command: "server", additionalInstructions: "" },
+				whitespace: { command: "server", additionalInstructions: " \n\t" },
+			},
+		});
+
+		expect(result.kind).toBe("valid");
+		if (result.kind !== "valid") {
+			throw new Error(result.issue);
+		}
+		expect(result.config.mcpServers["empty"]).not.toHaveProperty(
+			"additionalInstructions",
+		);
+		expect(result.config.mcpServers["whitespace"]).not.toHaveProperty(
+			"additionalInstructions",
+		);
+	});
+
+	test("rejects non-string additional instructions", () => {
+		for (const value of [null, 1, false, {}, []]) {
+			expect(
+				parseMcpWrapperConfig({
+					mcpServers: {
+						files: { command: "server", additionalInstructions: value },
+					},
+				}).kind,
+			).toBe("invalid");
+		}
+	});
+
 	test("accepts an empty mcpServers object without registering server configs", () => {
 		const result = parseMcpWrapperConfig({
 			settings: { enabled: true },

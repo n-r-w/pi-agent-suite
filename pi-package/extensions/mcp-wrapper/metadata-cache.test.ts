@@ -105,6 +105,12 @@ describe("mcp-wrapper metadata cache", () => {
 		expect(computeMcpServerConfigHash(config)).toBe(
 			computeMcpServerConfigHash({
 				...config,
+				additionalInstructions: "Use this server for files.",
+			}),
+		);
+		expect(computeMcpServerConfigHash(config)).toBe(
+			computeMcpServerConfigHash({
+				...config,
 				onDemand: { name: "files", description: "Read files" },
 			}),
 		);

@@ -475,6 +475,7 @@ async function handleSessionStart(
 		manager,
 		serverInstructionRecords: buildActiveServerInstructions(
 			startup.serverInstructions,
+			configResult.config.mcpServers,
 			catalog.tools,
 		),
 	};
@@ -597,16 +598,45 @@ function createDefaultMcpClientManager(
 /** Links server instructions to accepted Pi tool names for active-tool prompt filtering. */
 function buildActiveServerInstructions(
 	serverInstructions: readonly ServerInstructions[],
+	serverConfigs: Readonly<Record<string, McpServerConfig>>,
 	tools: readonly PiToolCatalogEntry[],
 ): readonly ServerInstructionRecord[] {
 	const toolNamesByServer = groupCatalogToolNamesByServer(tools);
+	const records = new Map<string, ServerInstructionRecord>();
 
-	return serverInstructions.flatMap((instructions) => {
+	for (const instructions of serverInstructions) {
 		const registeredPiToolNames = toolNamesByServer.get(instructions.serverKey);
-		return registeredPiToolNames === undefined
-			? []
-			: [{ ...instructions, registeredPiToolNames }];
-	});
+		if (registeredPiToolNames === undefined) {
+			continue;
+		}
+		const localText =
+			serverConfigs[instructions.serverKey]?.additionalInstructions;
+		records.set(instructions.serverKey, {
+			...instructions,
+			instructions: localText
+				? `${instructions.instructions}\n\n${localText}`
+				: instructions.instructions,
+			registeredPiToolNames,
+		});
+	}
+
+	const result = [...records.values()];
+	for (const [serverKey, config] of Object.entries(serverConfigs)) {
+		const registeredPiToolNames = toolNamesByServer.get(serverKey);
+		if (
+			registeredPiToolNames === undefined ||
+			config.additionalInstructions === undefined ||
+			records.has(serverKey)
+		) {
+			continue;
+		}
+		result.push({
+			serverKey,
+			instructions: config.additionalInstructions,
+			registeredPiToolNames,
+		});
+	}
+	return result;
 }
 
 function groupCatalogToolNamesByServer(

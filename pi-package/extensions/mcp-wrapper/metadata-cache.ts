@@ -67,7 +67,11 @@ export async function saveMcpWrapperCache(
 
 /** Builds a stable hash from fields that define one MCP server's discovered tools. */
 export function computeMcpServerConfigHash(config: McpServerConfig): string {
-	const { onDemand: _onDemand, ...connectionConfig } = config;
+	const {
+		onDemand: _onDemand,
+		additionalInstructions: _additionalInstructions,
+		...connectionConfig
+	} = config;
 	return createHash("sha256")
 		.update(stableStringify(connectionConfig))
 		.digest("hex");

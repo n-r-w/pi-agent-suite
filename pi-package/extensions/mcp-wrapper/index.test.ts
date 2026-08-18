@@ -501,6 +501,7 @@ describe("mcp-wrapper extension", () => {
 							command: "deferred",
 							args: [],
 							env: {},
+							additionalInstructions: "Use deferred search carefully.",
 							onDemand: {
 								name: "search-suite",
 								description: "Search when needed",
@@ -522,7 +523,9 @@ describe("mcp-wrapper extension", () => {
 		]);
 		expect(pi.getActiveTools()).toEqual(["activate_toolset", "eager_read"]);
 		expect(await runBeforeAgentStart(pi)).toContain("Use eager files.");
-		expect(await runBeforeAgentStart(pi)).not.toContain("Use deferred search.");
+		expect(await runBeforeAgentStart(pi)).not.toContain(
+			"Use deferred search carefully.",
+		);
 		expect(getToolsetRuntime(pi).getVisibleToolsets()).toEqual([
 			{
 				name: "search-suite",
@@ -544,7 +547,9 @@ describe("mcp-wrapper extension", () => {
 
 		expect(discoveryCalls).toBe(1);
 		expect(pi.getActiveTools()).toEqual(["eager_read", "deferred_search"]);
-		expect(await runBeforeAgentStart(pi)).toContain("Use deferred search.");
+		expect(await runBeforeAgentStart(pi)).toContain(
+			"Use deferred search carefully.",
+		);
 	});
 
 	test("restores resumed activation after cacheless live discovery finalizes the catalog", async () => {
@@ -600,6 +605,7 @@ describe("mcp-wrapper extension", () => {
 							command: "deferred",
 							args: [],
 							env: {},
+							additionalInstructions: "Use deferred search carefully.",
 							onDemand: {
 								name: "search-suite",
 								description: "Search when needed",
@@ -617,7 +623,9 @@ describe("mcp-wrapper extension", () => {
 
 		expect(pi.getActiveTools()).toEqual(["deferred_search"]);
 		expect(getToolsetRuntime(pi).getVisibleToolsets()).toEqual([]);
-		expect(await runBeforeAgentStart(pi)).toContain("Use deferred search.");
+		expect(await runBeforeAgentStart(pi)).toContain(
+			"Use deferred search carefully.",
+		);
 		expect(
 			notifications.some(({ message }) => message.includes("stale activated")),
 		).toBe(false);
@@ -1997,9 +2005,16 @@ describe("mcp-wrapper extension", () => {
 							command: "node",
 							args: [],
 							env: {},
+							additionalInstructions: "Local docs guidance.",
 						},
 						files: { type: "stdio", command: "node", args: [], env: {} },
-						empty: { type: "stdio", command: "node", args: [], env: {} },
+						empty: {
+							type: "stdio",
+							command: "node",
+							args: [],
+							env: {},
+							additionalInstructions: "No accepted tool guidance.",
+						},
 					},
 				},
 			}),
@@ -2016,8 +2031,56 @@ describe("mcp-wrapper extension", () => {
 <mcp_instructions>
   <server name="docs&amp;server">
 Use this server. Do not call &lt;private>.
+
+Local docs guidance.
   </server>
 </mcp_instructions>`);
+	});
+
+	test("renders local MCP instructions for an eligible server without protocol instructions", async () => {
+		const pi = createExtensionApiFake();
+		const manager = {
+			discoverServers: async () => ({
+				serverToolLists: [
+					{ serverKey: "files", tools: [{ name: "read", inputSchema: {} }] },
+				],
+				serverInstructions: [],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		} satisfies Pick<McpClientManager, "discoverServers" | "callTool">;
+
+		mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: {
+						files: {
+							type: "stdio",
+							command: "node",
+							args: [],
+							env: {},
+							additionalInstructions: "Use local file guidance.",
+						},
+					},
+				},
+			}),
+			createManager: () => managerWithCleanup(manager),
+		});
+
+		await runSessionStart(pi);
+		pi.setActiveTools([FILES_READ_TOOL_NAME]);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
+			"Use local file guidance.",
+		);
 	});
 
 	test("omits MCP initialize instructions when no registered MCP tool is active", async () => {
@@ -2106,6 +2169,7 @@ Use this server. Do not call &lt;private>.
 									command: "node",
 									args: [],
 									env: {},
+									additionalInstructions: "Files local guidance.",
 								},
 							}
 						: {},

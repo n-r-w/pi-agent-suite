@@ -34,7 +34,8 @@ By default, place the configuration at `agent-suite/mcp-wrapper/config.json`. If
       "onDemand": {
         "name": "workspace-files",
         "description": "Activate for workspace file operations."
-      }
+      },
+      "additionalInstructions": "Use file tools for workspace operations.\nKeep changes scoped to the requested files."
     },
     "docs": {
       "type": "streamableHttp",
@@ -95,6 +96,7 @@ Each `mcpServers` entry must be either a `stdio` server or a `streamableHttp` se
 | `env` | No | Object with string values | `{}` | Environment variables for the server process. Values are literal strings. Configured values override inherited environment variables with the same name. |
 | `cwd` | No | String | Not set by the extension | Working directory for the server process. |
 | `onDemand` | No | Object with `name` and `description` | Not set | Defers this server as one named toolset. See [On-demand toolsets](#on-demand-toolsets). |
+| `additionalInstructions` | No | String | Not set | Local instructions shown only when a tool from this server is final-active. JSON `\n` escapes represent newlines. |
 
 `streamableHttp` server parameters:
 
@@ -104,12 +106,17 @@ Each `mcpServers` entry must be either a `stdio` server or a `streamableHttp` se
 | `url` | Yes | Non-empty string | None | MCP server URL. |
 | `headers` | No | Object with string values | `{}` | HTTP headers sent to the MCP server. Values are literal strings. |
 | `onDemand` | No | Object with `name` and `description` | Not set | Defers this server as one named toolset. See [On-demand toolsets](#on-demand-toolsets). |
+| `additionalInstructions` | No | String | Not set | Local instructions shown only when a tool from this server is final-active. JSON `\n` escapes represent newlines. |
 
 ## Config rules
 
 - Only the parameters listed above are supported.
 - Placeholders such as `${VAR}` and `$env:VAR` are not expanded.
 - Commands, arguments, environment values, headers, and URLs are used as written.
+- `additionalInstructions` is omitted when absent, empty, or whitespace-only. Nonblank text is preserved as written, including surrounding whitespace and newlines.
+- When both server-provided MCP instructions and `additionalInstructions` exist, server-provided text comes first, followed by one blank line and local text.
+- Local instructions are included only when at least one generated Pi tool from that server remains in the runtime's final active tool set. Registration alone is not sufficient.
+- Changing only `additionalInstructions` does not invalidate cached MCP metadata or trigger discovery; the text is read from configuration on the next startup.
 - Changing only `onDemand.name` or `onDemand.description` does not invalidate cached MCP metadata.
 
 ## On-demand toolsets
