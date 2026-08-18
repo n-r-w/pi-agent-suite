@@ -1110,6 +1110,56 @@ describe("workflow extension lifecycle", () => {
 		).toEqual(["activated", "transitioned", "completed"]);
 	});
 
+	test("restores branch settings when leaving an active workflow branch", async () => {
+		// Purpose: session-tree navigation must restore the target branch runtime instead of leaking workflow settings.
+		// Inputs and expected output: a high-thinking branch activates an xhigh stage, then navigation before activation restores high.
+		// Edge case: the target branch contains no workflow-state entry.
+		// Dependencies: Pi session model/thinking entries, workflow activation, and lifecycle replay.
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		fake.thinkingLevel = "high";
+		const branchBeforeActivation = [
+			{
+				type: "model_change",
+				provider: "openai",
+				modelId: "current-model",
+			},
+			{ type: "thinking_level_change", thinkingLevel: "high" },
+		];
+
+		await runLifecycle(fake, "session_start", branchBeforeActivation);
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		expect(fake.thinkingLevel).toBe("xhigh");
+
+		await runLifecycle(fake, "session_tree", branchBeforeActivation);
+
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("high");
+	});
+
+	test("merges partial branch settings with the workflow restoration snapshot", async () => {
+		// Purpose: branch navigation must preserve an explicit target thinking level even when that branch has no model entry.
+		// Inputs and expected output: activation captures current-model/high, while the target branch overrides only thinking to low.
+		// Edge case: model and thinking session entries are independently optional.
+		// Dependencies: workflow activation snapshot and lifecycle branch reconciliation.
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		fake.thinkingLevel = "high";
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+
+		await runLifecycle(fake, "session_tree", [
+			{ type: "thinking_level_change", thinkingLevel: "low" },
+		]);
+
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("low");
+	});
+
 	/**
 	 * Proves replay of completed state does not reapply final-stage runtime settings.
 	 * Inputs and expected outputs: a completed branch is replayed into a fresh runtime and keeps the main model selected.

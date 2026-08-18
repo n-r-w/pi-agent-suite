@@ -5,6 +5,7 @@
 - PRB-02: The final stage model and thinking level remain active when the next agent run starts.
 - PRB-03: The runtime has no persisted restoration snapshot for the model and thinking level that were active before workflow activation.
 - PRB-04: A solution based on a TUI dialog or message classification cannot serve autonomous subagents, RPC sessions, or print mode.
+- PRB-05: Pi tree navigation restores branch messages but can leave the model and thinking level from the abandoned workflow branch active.
 
 ## Proposed Solution
 
@@ -35,7 +36,7 @@
 
 ### SOL-04: Completed workflow projection
 - A completed workflow must not be projected as `<active_workflow>` in the next agent context.
-- The workflow extension must not apply completed-workflow model settings during `session_start` or `session_tree`.
+- The workflow extension must not apply final-stage settings for a completed workflow during `session_start` or `session_tree`; it applies the persisted restoration snapshot instead.
 - Workflow tools must expose only the operations allowed by the completed state. The completed route remains available for rework transitions.
 - A rework transition from a completed workflow changes the state back to `active`, applies the target stage settings, and persists the new route.
 - After rework, the workflow context contains the target stage instructions and available transitions again.
@@ -63,7 +64,18 @@
 - Add a replay test: a completed entry restores completed state and does not apply final-stage settings during session synchronization.
 - Add a rework test: a completed route can transition through an allowed rework edge and applies the target stage settings.
 - Add a non-interactive test covering a subagent or a context without UI methods. Completion must not call TUI APIs.
+- Add a branch-navigation test in which leaving an active workflow restores the model and thinking level selected by the target branch.
+- Add a partial branch-settings test in which a target `thinking_level_change` overrides thinking while the activation snapshot supplies the model.
 - Run the existing workflow, model-runtime, type-check, lint, and full validation suites after implementation.
+
+### SOL-08: Branch runtime reconciliation
+- Before replaying workflow state on `session_tree`, retain the state of the abandoned branch as a restoration fallback.
+- Reconstruct target-branch model selection from `model_change` entries and assistant-message provider/model fields, matching Pi session context semantics.
+- Reconstruct target-branch thinking from `thinking_level_change` entries that satisfy the shared reasoning-level contract.
+- Overlay target-branch entries on the abandoned workflow restoration snapshot so independently recorded model and thinking changes remain effective.
+- When the target branch has no active workflow, apply the reconstructed target settings through the workflow model restoration operation.
+- When the target branch contains a completed workflow, apply its persisted restoration snapshot instead of final-stage settings.
+- When the target branch contains an active workflow, apply the active stage settings through the existing workflow, agent, and restoration precedence.
 
 ## Overengineering and Overspecification Considerations
 - Completion is driven by the existing `agent_settled` lifecycle event and does not introduce a new classifier, model request, or user prompt.
