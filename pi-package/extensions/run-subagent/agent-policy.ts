@@ -160,7 +160,7 @@ export function publishPromptContribution(
 				extensionDescription,
 			}),
 	});
-	composition.setSubagentsActiveToolFilter((toolNames) =>
+	composition.setRestrictiveToolFilter("subagent-depth", (toolNames) =>
 		filterSubagentTools(
 			toolNames,
 			composition.getMainAgentContribution()?.agent,
@@ -360,7 +360,7 @@ function filterSubagentTools(
 export function applyChildToolPolicy(pi: ExtensionAPI): void {
 	const policy = readSubagentToolPatterns();
 	if ("issue" in policy) {
-		pi.setActiveTools([]);
+		getAgentRuntimeComposition(pi).setRestrictiveToolNames("child-policy", []);
 		throw new Error(policy.issue);
 	}
 	if (policy.patterns === undefined) {
@@ -371,10 +371,13 @@ export function applyChildToolPolicy(pi: ExtensionAPI): void {
 		pi.getAllTools().map((tool) => tool.name),
 	);
 	if ("issue" in result) {
-		pi.setActiveTools([]);
+		getAgentRuntimeComposition(pi).setRestrictiveToolNames("child-policy", []);
 		throw new Error(result.issue);
 	}
-	pi.setActiveTools([...result.tools]);
+	getAgentRuntimeComposition(pi).setRestrictiveToolNames(
+		"child-policy",
+		result.tools,
+	);
 }
 
 /** Loads only definitions that can act as callable subagents. */

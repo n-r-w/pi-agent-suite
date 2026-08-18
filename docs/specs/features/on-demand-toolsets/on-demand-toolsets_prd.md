@@ -84,8 +84,8 @@ Keep specialized toolsets outside the model context until needed while allowing 
 
 ### Activation tool
 
-- The LLM must have access to a tool named `activate_toolset` while at least one deferred toolset remains in the active history branch.
-- `activate_toolset` must become unavailable after no deferred toolsets remain.
+- The LLM must have access to a tool named `activate_toolset` only when it is allowed for the current agent and at least one loaded, still-deferred toolset contains a tool allowed for that agent.
+- `activate_toolset` must become unavailable when no loaded, still-deferred toolset contains a tool allowed for the current agent, including after the final eligible activation.
 - The tool must have a required string parameter named `name`.
 - The tool parameter schema must enforce a minimum string length of one character independently of configuration validation.
 - `activate_toolset.name` must use exact, case-sensitive matching against the configured toolset name.
@@ -125,6 +125,7 @@ Keep specialized toolsets outside the model context until needed while allowing 
 - A new session must start with all configured deferred toolsets in deferred state.
 - A history branch containing a successful activation must treat that toolset as active.
 - Rewinding or branching to history before a successful activation must treat that toolset as deferred.
+- The runtime must restore state from the last valid activation snapshot in the active branch; malformed or unsupported snapshots must not change state.
 - Removing or renaming an activated toolset in configuration must produce a warning when the session is resumed.
 - After such a configuration change, `mcp-wrapper` must continue using the valid current configuration.
 - Historical availability is not guaranteed for tools removed or renamed through configuration changes.
@@ -143,6 +144,13 @@ Keep specialized toolsets outside the model context until needed while allowing 
   2. at least one deferred toolset contains a tool allowed for that agent.
 - Main agent and each subagent must maintain activation state independently in their separate pi sessions.
 - Activation in a main-agent session must not activate the same toolset in a subagent session, and vice versa.
+
+### Active-tool composition
+
+- `AgentRuntimeComposition` must be the sole production owner of final `pi.setActiveTools()` reconciliation.
+- The composition baseline defines stable relative order. Main-agent, child-policy, nested-depth, workflow-availability, vision-availability, and deferred-toolset layers may only remove names from upstream candidates.
+- A tool restored after a restriction is lifted must return at its baseline position. No layer may add or reorder an upstream-excluded tool.
+- Workflow and vision availability must be represented by their respective restrictive composition layers rather than independent final active-tool writes.
 
 ## Open Questions
 

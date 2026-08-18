@@ -225,6 +225,9 @@ export default async function subagents(
 			dependencies.completeSimple ?? defaultCompleteSimple,
 		),
 	};
+	getAgentRuntimeComposition(pi).publishBaselineToolNames([
+		...SUBAGENT_TOOL_NAME_SET,
+	]);
 	registerLifecycleHandlers(pi, state);
 	configReady = readConfig();
 	// Pi awaits the factory promise before copying definitions into its first agent snapshot.

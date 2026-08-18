@@ -229,21 +229,26 @@ describe("effective callable-agent policy", () => {
 		// Edge case: active tools are cleared before the invalid policy escapes.
 		// Dependencies: child tool-pattern environment parsing and public ExtensionAPI tool selection.
 		const previous = process.env[SUBAGENT_TOOL_PATTERNS_ENV];
-		const activeTools: string[][] = [];
+		let activeTools = ["subagent_start"];
 		process.env[SUBAGENT_TOOL_PATTERNS_ENV] = JSON.stringify(["run_subagent"]);
 		try {
 			let message = "";
 			try {
 				applyChildToolPolicy({
+					events: { emit() {}, on: () => () => {} },
+					on() {},
 					getAllTools: () => [{ name: "subagent_start" }],
-					setActiveTools: (names: string[]) => activeTools.push(names),
+					getActiveTools: () => activeTools,
+					setActiveTools: (names: string[]) => {
+						activeTools = [...names];
+					},
 				} as unknown as ExtensionAPI);
 			} catch (error) {
 				message = error instanceof Error ? error.message : String(error);
 			}
 			expect({ message, activeTools }).toEqual({
 				message: "tool pattern run_subagent did not match any available tool",
-				activeTools: [[]],
+				activeTools: [],
 			});
 		} finally {
 			if (previous === undefined) {

@@ -21,7 +21,7 @@
 - **CMP-01:** `shared/toolsets/contracts.ts` defines toolset metadata, provider registration, activation results, and persisted state details.
 - **CMP-02:** `shared/toolsets/runtime.ts` owns provider registrations, activation state, the `activate_toolset` definition, history reconstruction, and the deferred tool filter.
 - **CMP-03:** `shared/toolsets/rendering.ts` renders activation calls and results using Pi’s default tool shell.
-- **CMP-04:** `shared/agent-runtime-composition.ts` owns the unfiltered session tool baseline, the resolved current-agent restriction, ordered named filters, and the final active tool set.
+- **CMP-04:** `shared/agent-runtime-composition.ts` owns the stable session baseline order, resolved current-agent restriction, ordered named restrictive layers, and the final active tool set. It is the sole production owner of final `pi.setActiveTools()` writes.
 - **CMP-05:** `mcp-wrapper` remains responsible for MCP configuration, metadata discovery, cache refresh, generated tool definitions, MCP instructions, calls, and results.
 - **CMP-06:** `system-prompt` remains the sole owner of template-variable parsing and replacement.
 
@@ -33,17 +33,13 @@
 
 ### Tool availability composition
 
-- **SOL-04:** `AgentRuntimeComposition` computes candidates in this order:
-  1. session baseline established by Pi and `enable-tools`;
-  2. the tool list resolved for the current main or child agent;
-  3. current nested-depth restrictions;
-  4. deferred-toolset filtering.
-- **APC-01:** Named filters accept a candidate list and may only remove names. The composition intersects filter output with filter input so a filter cannot grant tools.
+- **SOL-04:** `AgentRuntimeComposition` starts from a stable session baseline, uses the resolved main or child agent tool list when present, then applies restrictive layers for child policy, nested depth, workflow availability, vision availability, and deferred toolsets.
+- **APC-01:** Named filters accept a candidate list and may only remove names. The composition intersects filter output with filter input, preserving baseline relative order; a filter cannot grant, reorder, or append tools. A restored tool returns at its baseline position.
 - **APC-02:** The composition exposes operations to update the session baseline, set or clear the current-agent tool list, register or remove a named filter, and reconcile `pi.getActiveTools()`.
-- **SOL-05:** `main-agent-selection`, child policy application, and `enable-tools` update the composition rather than leaving competing final calls to `pi.setActiveTools()`.
+- **SOL-05:** `main-agent-selection`, child policy application, `enable-tools`, workflow availability, and vision availability update the composition rather than leaving competing final calls to `pi.setActiveTools()`.
 - **SOL-06:** The toolset filter runs after agent and depth restrictions. It records the pre-deferred tool names needed to determine which triggers are visible.
 - **SOL-07:** Activating a toolset removes only its deferred restriction. It never adds a name absent from the pre-deferred candidate list.
-- **SOL-08:** Reconciliation runs after session setup, agent selection changes, child policy application, MCP catalog replacement, and successful activation. The existing `before_agent_start` reconciliation remains a final safety check.
+- **SOL-08:** Reconciliation runs after session setup, agent selection changes, child policy application, workflow or vision availability changes, MCP catalog replacement, and successful activation. The existing `before_agent_start` reconciliation remains a final safety check.
 
 ### MCP configuration
 
@@ -70,7 +66,7 @@
 - **STP-03:** Add all registered definitions to the composition baseline before applying current-agent and toolset filters.
 - **STP-04:** Register an MCP toolset only when metadata contains its discovered tool list.
 - **FLR-02:** A deferred server without loaded metadata has no toolset record, trigger, or activation route. Existing MCP startup diagnostics report the metadata failure.
-- **STP-05:** A successful `/mcp-refresh` reloads runtime state through the established reload path. Newly available metadata creates the toolset during the replacement session.
+- **STP-05:** A successful `/mcp-refresh` reloads runtime state through the established reload path. Newly available metadata creates the toolset during the replacement session; removed or unavailable metadata removes its trigger and activation route.
 - **SOL-10:** Eager servers never enter the deferred registry and retain their existing generated definitions, MCP instructions, call routing, result mapping, and presentation.
 - **SOL-11:** Deferred MCP instructions remain absent because the existing instruction handler already emits instructions only for active generated tool names.
 
@@ -108,7 +104,8 @@
   ```
 - **SOL-12:** The composition keeps `activate_toolset` active only when:
   - the current agent’s resolved tool list contains `activate_toolset`; and
-  - at least one deferred toolset contains a tool present before deferred filtering.
+  - at least one loaded, still-deferred toolset contains a tool present before deferred filtering.
+  It disappears after the final eligible activation.
 - **FLR-04:** Empty `name` fails JSON Schema validation.
 - **FLR-05:** A non-empty unknown name returns a tool error without changing activation state.
 - **SOL-13:** Repeated activation of an active name succeeds without changing state.
@@ -188,7 +185,7 @@
 - **DLV-02:** Add `pi-package/shared/toolsets/runtime.ts` and its adjacent tests.
 - **DLV-03:** Add `pi-package/shared/toolsets/rendering.ts` and its adjacent tests.
 - **DLV-04:** Update `pi-package/shared/agent-runtime-composition.ts` and its tests.
-- **DLV-05:** Update `main-agent-selection`, `run-subagent`, and `enable-tools` to use per-session composition.
+- **DLV-05:** Update `main-agent-selection`, `run-subagent`, `enable-tools`, workflow, and vision to use per-session composition.
 - **DLV-06:** Update `mcp-wrapper` configuration, metadata hashing, lifecycle, catalog registration, and behavior tests.
 - **DLV-07:** Update `system-prompt` macro handling, bundled template, documentation, and tests.
 - **DLV-08:** Update `docs/extensions/mcp-wrapper.md`.

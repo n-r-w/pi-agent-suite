@@ -49,7 +49,7 @@ function createExtensionApiFake(options?: {
 	const handlers: RegisteredHandler[] = [];
 	const setActiveToolsCalls: ActiveToolSetCall[] = [];
 
-	return {
+	const fake = {
 		handlers,
 		setActiveToolsCalls,
 		availableTools: options?.availableTools ?? [],
@@ -58,16 +58,23 @@ function createExtensionApiFake(options?: {
 			handlers.push({ eventName, handler });
 		},
 		getAllTools(): readonly ToolFake[] {
-			return this.availableTools;
+			return fake.availableTools;
 		},
 		getActiveTools(): readonly string[] {
-			return this.activeTools;
+			return fake.activeTools;
 		},
 		setActiveTools(names: readonly string[]): void {
 			setActiveToolsCalls.push({ names });
-			this.activeTools = names;
+			fake.activeTools = names;
 		},
-	} as ExtensionApiFake;
+		events: {
+			emit() {},
+			on() {
+				return () => {};
+			},
+		},
+	} as unknown as ExtensionApiFake;
+	return fake;
 }
 
 /** Creates a session context fake for invalid-config notifications. */
@@ -159,9 +166,7 @@ describe("enable-tools", () => {
 				createSessionContextFake(),
 			);
 
-			expect(pi.setActiveToolsCalls).toEqual([
-				{ names: ["read", "grep", "find", "ls"] },
-			]);
+			expect(pi.activeTools).toEqual(["read", "grep", "find", "ls"]);
 		});
 	});
 
@@ -192,7 +197,7 @@ describe("enable-tools", () => {
 				createSessionContextFake(),
 			);
 
-			expect(pi.setActiveToolsCalls).toEqual([{ names: ["read", "grep"] }]);
+			expect(pi.activeTools).toEqual(["read", "grep"]);
 		});
 	});
 

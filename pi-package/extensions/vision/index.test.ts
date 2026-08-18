@@ -6,6 +6,7 @@ import type {
 	ExtensionAPI,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import vision, { isMultimodal } from "./index";
 
 type Handler = (...args: never[]) => unknown;
@@ -119,6 +120,27 @@ describe("vision extension", () => {
 		expect(pi.getActiveTools()).toEqual(["read", "describe_image"]);
 		const select = pi.handlers.get("model_select")?.[0];
 		select?.({ model: { input: ["text", "image"] } } as never, {} as never);
+		expect(pi.getActiveTools()).toEqual(["read"]);
+	});
+
+	/**
+	 * Proves text-only model availability remains subordinate to upstream restrictions.
+	 * Input and expected output: configured vision is eligible, while an upstream layer permits only read.
+	 * Edge case: the later model lifecycle event must not restore the restricted vision tool.
+	 * Dependencies: shared active-tool composition and vision model synchronization.
+	 */
+	test("keeps the text-only model tool behind upstream restrictions", async () => {
+		const pi = createPi();
+		vision(pi, { readConfigFile: async () => configuredFile() });
+		getAgentRuntimeComposition(pi).setRestrictiveToolNames("upstream", [
+			"read",
+		]);
+
+		await pi.handlers.get("session_start")?.[0]?.(
+			{} as never,
+			context({ input: ["text"] }) as never,
+		);
+
 		expect(pi.getActiveTools()).toEqual(["read"]);
 	});
 

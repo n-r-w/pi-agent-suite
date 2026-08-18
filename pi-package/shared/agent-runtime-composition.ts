@@ -30,10 +30,7 @@ interface BeforeAgentStartEventLike {
 	readonly systemPrompt?: string;
 }
 
-type ActiveToolFilter = (
-	toolNames: readonly string[],
-	ctx: unknown,
-) => Promise<readonly string[]> | readonly string[];
+type ActiveToolFilter = (toolNames: readonly string[]) => readonly string[];
 
 /** Runtime composition owner for agent-related prompt and active-tool contributions. */
 export interface AgentRuntimeComposition {
@@ -43,7 +40,27 @@ export interface AgentRuntimeComposition {
 	clearMainAgentContribution(): void;
 	getMainAgentContribution(): MainAgentContribution | undefined;
 	setSubagentsContribution(contribution: PromptContribution | undefined): void;
-	setSubagentsActiveToolFilter(filter: ActiveToolFilter | undefined): void;
+	/** Records tools registered during extension loading without invoking Pi action methods. */
+	publishBaselineToolNames(toolNames: readonly string[]): void;
+	/** Adds registered baseline tools without allowing policy filters to be bypassed. */
+	addBaselineToolNames(toolNames: readonly string[]): void;
+	/** Replaces one owner's registered baseline-tool contribution. */
+	replaceBaselineToolNames(owner: string, toolNames: readonly string[]): void;
+	/** Stages one owner's baseline replacement for a coupled reconciliation. */
+	stageBaselineToolNames(owner: string, toolNames: readonly string[]): void;
+	/** Applies one named restrictive allowlist to the final active-tool pipeline. */
+	setRestrictiveToolNames(
+		name: string,
+		toolNames: readonly string[] | undefined,
+	): void;
+	/** Applies one named restrictive filter to every active-tool reconciliation. */
+	setRestrictiveToolFilter(
+		name: string,
+		filter: ActiveToolFilter | undefined,
+	): void;
+	/** Records an extension-loading filter without calling unavailable Pi action methods. */
+	publishRestrictiveToolFilter(name: string, filter: ActiveToolFilter): void;
+	reconcileActiveTools(): void;
 	setConsultAdvisorContribution(
 		contribution: PromptContribution | undefined,
 	): void;
@@ -143,10 +160,16 @@ export function markAgentRuntimeCompositionStale(pi: ExtensionAPI): void {
 class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private mainAgentContribution: MainAgentContribution | undefined;
 	private subagentsContribution: PromptContribution | undefined;
-	private subagentsActiveToolFilter: ActiveToolFilter | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
 	private conveneCouncilContribution: PromptContribution | undefined;
 	private baselineActiveTools: string[] | undefined;
+	private readonly pendingBaselineToolNames: string[] = [];
+	private readonly baselineToolNamesByOwner = new Map<
+		string,
+		readonly string[]
+	>();
+	private readonly restrictiveToolNames = new Map<string, readonly string[]>();
+	private readonly restrictiveToolFilters = new Map<string, ActiveToolFilter>();
 
 	public constructor(private readonly pi: ExtensionAPI) {
 		writeRuntimeDiagnostic("runtime-composition.before-agent-start.registered");
@@ -213,9 +236,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	public setMainAgentContribution(
 		contribution: MainAgentContribution | undefined,
 	): void {
-		if (this.baselineActiveTools === undefined) {
-			this.baselineActiveTools = this.pi.getActiveTools();
-		}
+		this.ensureBaselineActiveTools();
 
 		writeRuntimeDiagnostic("runtime-composition.main-agent.set", {
 			mainAgentId: contribution?.agent?.id ?? null,
@@ -225,11 +246,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			activeToolsBeforeSet: this.pi.getActiveTools(),
 		});
 		this.mainAgentContribution = contribution;
-		this.pi.setActiveTools(
-			contribution?.tools !== undefined
-				? [...contribution.tools]
-				: this.baselineActiveTools,
-		);
+		this.reconcileActiveTools();
 		writeRuntimeDiagnostic("runtime-composition.main-agent.tools-applied", {
 			mainAgentId: contribution?.agent?.id ?? null,
 			activeToolsAfterSet: this.pi.getActiveTools(),
@@ -258,10 +275,130 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		this.subagentsContribution = contribution;
 	}
 
-	public setSubagentsActiveToolFilter(
+	public publishBaselineToolNames(toolNames: readonly string[]): void {
+		for (const name of toolNames) {
+			if (
+				!this.pendingBaselineToolNames.includes(name) &&
+				!this.baselineActiveTools?.includes(name)
+			) {
+				this.pendingBaselineToolNames.push(name);
+			}
+		}
+	}
+
+	public addBaselineToolNames(toolNames: readonly string[]): void {
+		const baseline = this.ensureBaselineActiveTools();
+		for (const name of toolNames) {
+			if (!baseline.includes(name)) {
+				baseline.push(name);
+			}
+		}
+		this.reconcileActiveTools();
+	}
+
+	public replaceBaselineToolNames(
+		owner: string,
+		toolNames: readonly string[],
+	): void {
+		const baseline = this.ensureBaselineActiveTools();
+		const previousBaseline = [...baseline];
+		const previousContribution = this.baselineToolNamesByOwner.get(owner);
+		this.stageBaselineToolNames(owner, toolNames);
+		try {
+			this.reconcileActiveTools();
+		} catch (error) {
+			// Baseline ownership and Pi's active list must describe the same catalog.
+			baseline.splice(0, baseline.length, ...previousBaseline);
+			if (previousContribution === undefined) {
+				this.baselineToolNamesByOwner.delete(owner);
+			} else {
+				this.baselineToolNamesByOwner.set(owner, previousContribution);
+			}
+			this.reconcileActiveTools();
+			throw error;
+		}
+	}
+
+	public stageBaselineToolNames(
+		owner: string,
+		toolNames: readonly string[],
+	): void {
+		const baseline = this.ensureBaselineActiveTools();
+		const previousContribution = this.baselineToolNamesByOwner.get(owner);
+		const nextContribution = [...new Set(toolNames)];
+		const namesOwnedElsewhere = new Set(
+			[...this.baselineToolNamesByOwner.entries()]
+				.filter(([candidateOwner]) => candidateOwner !== owner)
+				.flatMap(([, names]) => names),
+		);
+		const removedNames = new Set(
+			(previousContribution ?? []).filter(
+				(name) =>
+					!nextContribution.includes(name) && !namesOwnedElsewhere.has(name),
+			),
+		);
+
+		baseline.splice(
+			0,
+			baseline.length,
+			...baseline.filter((name) => !removedNames.has(name)),
+		);
+		for (const name of nextContribution) {
+			if (!baseline.includes(name)) {
+				baseline.push(name);
+			}
+		}
+		this.baselineToolNamesByOwner.set(owner, nextContribution);
+	}
+
+	public setRestrictiveToolNames(
+		name: string,
+		toolNames: readonly string[] | undefined,
+	): void {
+		if (toolNames === undefined) {
+			this.restrictiveToolNames.delete(name);
+		} else {
+			this.restrictiveToolNames.set(name, [...toolNames]);
+		}
+		this.reconcileActiveTools();
+	}
+
+	public setRestrictiveToolFilter(
+		name: string,
 		filter: ActiveToolFilter | undefined,
 	): void {
-		this.subagentsActiveToolFilter = filter;
+		if (filter === undefined) {
+			this.restrictiveToolFilters.delete(name);
+		} else {
+			this.restrictiveToolFilters.set(name, filter);
+		}
+		this.reconcileActiveTools();
+	}
+
+	/** Records a restriction during extension loading and reconciles it only after Pi actions become available. */
+	public publishRestrictiveToolFilter(
+		name: string,
+		filter: ActiveToolFilter,
+	): void {
+		this.restrictiveToolFilters.set(name, filter);
+		if (this.baselineActiveTools !== undefined) {
+			this.reconcileActiveTools();
+		}
+	}
+
+	public reconcileActiveTools(): void {
+		const baseline = this.ensureBaselineActiveTools();
+		const source = this.mainAgentContribution?.tools ?? baseline;
+		const resolved = [...source];
+		for (const allowedNames of this.restrictiveToolNames.values()) {
+			intersectToolNames(resolved, allowedNames);
+		}
+		for (const filter of this.restrictiveToolFilters.values()) {
+			intersectToolNames(resolved, filter(resolved));
+		}
+		if (!areStringArraysEqual(this.pi.getActiveTools(), resolved)) {
+			this.pi.setActiveTools(resolved);
+		}
 	}
 
 	public setConsultAdvisorContribution(
@@ -276,20 +413,25 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		this.conveneCouncilContribution = contribution;
 	}
 
-	/** Applies dynamic tool filters after selected-agent restoration and before prompt composition. */
-	private async resolveActiveToolNames(
-		ctx: unknown,
-	): Promise<readonly string[]> {
-		const currentToolNames = this.pi.getActiveTools();
-		const filteredToolNames =
-			this.subagentsActiveToolFilter === undefined
-				? currentToolNames
-				: await this.subagentsActiveToolFilter(currentToolNames, ctx);
-		if (!areStringArraysEqual(currentToolNames, filteredToolNames)) {
-			this.pi.setActiveTools([...filteredToolNames]);
+	/** Captures Pi state lazily because action methods are unavailable during extension loading. */
+	private ensureBaselineActiveTools(): string[] {
+		if (this.baselineActiveTools === undefined) {
+			this.baselineActiveTools = [...this.pi.getActiveTools()];
 		}
+		const baseline = this.baselineActiveTools;
+		for (const name of this.pendingBaselineToolNames) {
+			if (!baseline.includes(name)) {
+				baseline.push(name);
+			}
+		}
+		this.pendingBaselineToolNames.length = 0;
+		return baseline;
+	}
 
-		return filteredToolNames;
+	/** Resolves every named restriction before composing tool-dependent prompts. */
+	private resolveActiveToolNames(_ctx: unknown): readonly string[] {
+		this.reconcileActiveTools();
+		return this.pi.getActiveTools();
 	}
 }
 
@@ -314,6 +456,19 @@ async function resolvePromptContribution(
 }
 
 /** Compares ordered tool-name lists to avoid redundant active-tool writes. */
+function intersectToolNames(
+	candidates: string[],
+	requestedNames: readonly string[],
+): void {
+	const requested = new Set(requestedNames);
+	for (let index = candidates.length - 1; index >= 0; index -= 1) {
+		const candidate = candidates[index];
+		if (candidate !== undefined && !requested.has(candidate)) {
+			candidates.splice(index, 1);
+		}
+	}
+}
+
 function areStringArraysEqual(
 	left: readonly string[],
 	right: readonly string[],

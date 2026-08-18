@@ -30,7 +30,11 @@ By default, place the configuration at `agent-suite/mcp-wrapper/config.json`. If
       "env": {
         "EXAMPLE_TOKEN": "value"
       },
-      "cwd": "/tmp"
+      "cwd": "/tmp",
+      "onDemand": {
+        "name": "workspace-files",
+        "description": "Activate for workspace file operations."
+      }
     },
     "docs": {
       "type": "streamableHttp",
@@ -90,6 +94,7 @@ Each `mcpServers` entry must be either a `stdio` server or a `streamableHttp` se
 | `args` | No | Array of strings | `[]` | Arguments passed to `command` unchanged. |
 | `env` | No | Object with string values | `{}` | Environment variables for the server process. Values are literal strings. Configured values override inherited environment variables with the same name. |
 | `cwd` | No | String | Not set by the extension | Working directory for the server process. |
+| `onDemand` | No | Object with `name` and `description` | Not set | Defers this server as one named toolset. See [On-demand toolsets](#on-demand-toolsets). |
 
 `streamableHttp` server parameters:
 
@@ -98,18 +103,45 @@ Each `mcpServers` entry must be either a `stdio` server or a `streamableHttp` se
 | `type` | Yes | `"streamableHttp"` | None | Connects to an MCP server over streamable HTTP. |
 | `url` | Yes | Non-empty string | None | MCP server URL. |
 | `headers` | No | Object with string values | `{}` | HTTP headers sent to the MCP server. Values are literal strings. |
+| `onDemand` | No | Object with `name` and `description` | Not set | Defers this server as one named toolset. See [On-demand toolsets](#on-demand-toolsets). |
 
 ## Config rules
 
 - Only the parameters listed above are supported.
 - Placeholders such as `${VAR}` and `$env:VAR` are not expanded.
 - Commands, arguments, environment values, headers, and URLs are used as written.
+- Changing only `onDemand.name` or `onDemand.description` does not invalidate cached MCP metadata.
+
+## On-demand toolsets
+
+Add `onDemand` to a `stdio` or `streamableHttp` server to defer that server's tools until the model activates its toolset:
+
+```json
+"onDemand": {
+  "name": "workspace-files",
+  "description": "Activate for workspace file operations."
+}
+```
+
+`onDemand` accepts exactly `name` and `description`. Each is a trimmed, non-empty string. Names are unique across `mcpServers` with exact, case-sensitive matching. Invalid declarations disable `mcp-wrapper` for the session and show its startup warning; pi continues to start.
+
+A server without `onDemand` is eager: its loaded tools are available under the normal MCP behavior. A deferred server's generated definitions are registered once its metadata loads, but its tools and MCP instructions remain unavailable until activation. A deferred server with unavailable metadata has no trigger or activation route; normal MCP startup diagnostics report the metadata failure.
+
+`activate_toolset` is available only if it is allowed for the current agent and a loaded, still-deferred toolset has at least one tool allowed for that agent. Activation is exact and case-sensitive. It exposes only that agent's allowed tools, is idempotent for an active toolset, and leaves the toolset deferred when activation fails. It disappears after the final eligible toolset is activated. Activation state is local to the pi session and active history branch; main and subagent sessions do not share it. A resumed branch restores its last valid activation snapshot; stale names from changed configuration are warned about and ignored.
+
+The activation result gives the model the status and complete list of currently available tool names, without tool parameters or descriptions. In both main-agent and subagent screens, collapsed rendering shows the status, count, and shortened list; expanded rendering shows the complete list.
+
+Activation uses already loaded MCP metadata. It does not create a separate MCP connection; normal MCP tool execution retains connection readiness and routing behavior.
 
 ## Manual cache refresh
 
 Use `/mcp-refresh` to rebuild cached MCP tool metadata from the configured servers.
 
-The command ignores the existing cache, discovers tools from every configured server, writes a new `cache.json`, and reloads the pi runtime. The reload applies added tools and removes tools that no longer exist.
+The command ignores the existing cache, discovers tools from every configured server, writes a new `cache.json`, and reloads the pi runtime. The replacement catalog applies additions and suppresses removed or obsolete MCP tool names. A newly loaded deferred server can then acquire a trigger; a removed or unavailable deferred server has none.
+
+## Active-tool composition
+
+`AgentRuntimeComposition` is the single owner of final active-tool reconciliation. It starts with a stable baseline order and applies main-agent, child/depth, workflow, vision, and deferred-toolset restrictions as remove-only layers. A tool restored after a restriction is lifted returns to its baseline position; no layer can add or reorder an upstream-excluded tool.
 
 ## Tool names
 

@@ -14,6 +14,7 @@ import type { McpClientManager } from "../../pi-package/extensions/mcp-wrapper/c
 import mcpWrapper from "../../pi-package/extensions/mcp-wrapper/index";
 import projectRules from "../../pi-package/extensions/project-rules/index";
 import systemPrompt from "../../pi-package/extensions/system-prompt/index";
+import { getAgentRuntimeComposition } from "../../pi-package/shared/agent-runtime-composition";
 
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
@@ -318,6 +319,7 @@ Use fetch for web pages.
 			});
 
 			await runSessionStart(pi);
+			getAgentRuntimeComposition(pi).setRestrictiveToolNames("test-policy", []);
 
 			expect(await runBeforeAgentStart(pi)).toBe(
 				"Suite template for /tmp/project",
@@ -426,7 +428,10 @@ Use fetch for web pages.
 				});
 
 				await runSessionStart(pi);
-				pi.setActiveTools([...toolNamesFromArgs(toolArgs.args)]);
+				getAgentRuntimeComposition(pi).setRestrictiveToolNames(
+					"test-policy",
+					toolNamesFromArgs(toolArgs.args),
+				);
 
 				expect(await runBeforeAgentStart(pi)).toBe(testCase.expectedPrompt);
 			} finally {

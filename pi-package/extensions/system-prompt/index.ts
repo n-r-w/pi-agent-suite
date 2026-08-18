@@ -6,11 +6,14 @@ import {
 	type ExtensionAPI,
 	formatSkillsForPrompt,
 } from "@earendil-works/pi-coding-agent";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
+import type { VisibleToolset } from "../../shared/toolsets/contracts";
+import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../run-subagent/contracts";
 
 const EXTENSION_DIR = "system-prompt";
@@ -26,6 +29,7 @@ const SUPPORTED_TEMPLATE_VARIABLES = [
 	"appendSystemPrompt",
 	"contextFiles",
 	"skills",
+	"toolsets",
 ] as const;
 const DEFAULT_SELECTED_TOOLS = ["read", "bash", "edit", "write"] as const;
 const TEMPLATE_VARIABLE_PATTERN = /{{\s*([^{}]+?)\s*}}/g;
@@ -90,9 +94,19 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 		}
 
 		const typedEvent = event as BeforeAgentStartEventLike;
+		const composition = getAgentRuntimeComposition(pi);
+		composition.reconcileActiveTools();
+		const options = {
+			...typedEvent.systemPromptOptions,
+			selectedTools: [...pi.getActiveTools()],
+		};
+		const toolsets = hasTemplateVariable(templateState.template, "toolsets")
+			? getToolsetRuntime(pi).getVisibleToolsets()
+			: [];
 		const systemPrompt = renderTemplate(
 			templateState.template,
-			typedEvent.systemPromptOptions,
+			options,
+			toolsets,
 		);
 		writeRuntimeDiagnostic("system-prompt.before-agent-start.applied", {
 			incomingPromptLength: incomingPrompt.length,
@@ -221,8 +235,9 @@ async function readTemplate(
 function renderTemplate(
 	template: string,
 	options: BuildSystemPromptOptions,
+	toolsets: readonly VisibleToolset[],
 ): string {
-	const values = buildTemplateValues(options);
+	const values = buildTemplateValues(options, toolsets);
 
 	return template.replace(
 		TEMPLATE_VARIABLE_PATTERN,
@@ -236,6 +251,7 @@ function renderTemplate(
 /** Builds the dynamic values allowed to cross from pi runtime state into the Markdown template. */
 function buildTemplateValues(
 	options: BuildSystemPromptOptions,
+	toolsets: readonly VisibleToolset[],
 ): Record<TemplateVariable, string> {
 	return {
 		date: getLocalDate(),
@@ -245,6 +261,7 @@ function buildTemplateValues(
 		appendSystemPrompt: options.appendSystemPrompt ?? "",
 		contextFiles: formatContextFiles(options),
 		skills: formatSkills(options),
+		toolsets: formatToolsets(toolsets),
 	};
 }
 
@@ -297,6 +314,42 @@ function formatSkills(options: BuildSystemPromptOptions): string {
 	}
 
 	return formatSkillsForPrompt(options.skills ?? []);
+}
+
+/** Formats the visible deferred catalog without exposing tool schemas or provider details. */
+function formatToolsets(toolsets: readonly VisibleToolset[]): string {
+	if (toolsets.length === 0) {
+		return "";
+	}
+
+	return [
+		"<toolsets>",
+		...toolsets.map(
+			({ name, description }) =>
+				`<toolset name="${escapeXmlAttribute(name)}" description="${escapeXmlAttribute(description)}"/>`,
+		),
+		"</toolsets>",
+	].join("\n");
+}
+
+/** Escapes XML-sensitive attribute characters while preserving all other Unicode text. */
+function escapeXmlAttribute(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&apos;");
+}
+
+/** Returns whether a template explicitly requests one supported dynamic value. */
+function hasTemplateVariable(
+	template: string,
+	expectedName: TemplateVariable,
+): boolean {
+	return [...template.matchAll(TEMPLATE_VARIABLE_PATTERN)].some(
+		(match) => match[1]?.trim() === expectedName,
+	);
 }
 
 /** Returns the local date string in the same YYYY-MM-DD shape used by pi's base prompt. */

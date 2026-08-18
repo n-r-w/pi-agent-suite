@@ -30,14 +30,14 @@ No token measurements or provider-specific limits have been collected.
 
 ## Reproduction Steps
 
-1. Configure several MCP servers in `mcp-wrapper`.
+1. Configure several MCP servers in `mcp-wrapper` without `onDemand`.
 2. Start a pi session with `mcp-wrapper` enabled.
 3. Inspect active tools and the tool definitions sent to the model provider.
-4. Observe that tools from all successfully discovered servers are available even when the current task needs only one specialized toolset.
+4. Observe that tools from all successfully discovered eager servers are available even when the current task needs only one specialized toolset.
 
-## Current State
+## Prior State
 
-Every successfully discovered MCP tool is registered for normal use. The system has no user-visible distinction between immediately available toolsets and toolsets that should become available only when relevant.
+Before this feature, every successfully discovered MCP tool was registered for normal use. There was no user-visible distinction between immediately available toolsets and toolsets that should become available only when relevant.
 
 ## Desired Outcome
 

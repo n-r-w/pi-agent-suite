@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import type {
-	BuildSystemPromptOptions,
-	ExtensionAPI,
+import {
+	type BuildSystemPromptOptions,
+	createEventBus,
+	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import systemPrompt from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -38,15 +40,26 @@ interface ContextFake {
 }
 
 /** Creates an ExtensionAPI fake that records lifecycle handlers registered by system-prompt. */
-function createExtensionApiFake(): ExtensionApiFake {
+function createExtensionApiFake(
+	initialActiveTools: readonly string[] = [],
+): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
+	let activeTools = [...initialActiveTools];
 
 	return {
 		handlers,
+		events: createEventBus(),
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
 		},
-	} as ExtensionApiFake;
+		registerTool(): void {},
+		getActiveTools(): readonly string[] {
+			return activeTools;
+		},
+		setActiveTools(toolNames: readonly string[]): void {
+			activeTools = [...toolNames];
+		},
+	} as unknown as ExtensionApiFake;
 }
 
 /** Creates the session context fake needed to observe startup warnings. */
@@ -257,7 +270,7 @@ describe("system-prompt", () => {
 				].join("\n"),
 			);
 			await writeSuiteConfig(suiteDir, { templateFile });
-			const pi = createExtensionApiFake();
+			const pi = createExtensionApiFake(["read", "bash", "hidden"]);
 			const context = createContextFake();
 
 			systemPrompt(pi);
@@ -353,6 +366,154 @@ describe("system-prompt", () => {
 					context.ctx,
 				),
 			).not.toContain("{{");
+		});
+	});
+
+	test("renders eligible deferred toolsets in runtime order with escaped attributes", async () => {
+		// Purpose: {{toolsets}} must expose only runtime-eligible deferred toolsets in its required XML form.
+		// Input and expected output: two eligible toolsets include Unicode and every XML-sensitive attribute character.
+		// Edge case: runtime order and literal Unicode survive while XML delimiters are escaped.
+		// Dependencies: shared runtime/composition and isolated system-prompt lifecycle fakes.
+		await withIsolatedAgentDir(async ({ suiteDir }) => {
+			const templateFile = join(suiteDir, "template.md");
+			await writeFile(templateFile, "{{toolsets}}");
+			await writeSuiteConfig(suiteDir, { templateFile });
+			const pi = createExtensionApiFake(["alpha_tool", "beta_tool"]);
+			systemPrompt(pi);
+			const runtime = getToolsetRuntime(pi);
+			runtime.replaceProvider("mcp", [
+				{
+					providerId: "mcp",
+					name: `alpha & <β> "'`,
+					description: `first > & < "' 工具`,
+					toolNames: ["alpha_tool"],
+					activate: async () => ["alpha_tool"],
+				},
+				{
+					providerId: "mcp",
+					name: "second",
+					description: "second suite",
+					toolNames: ["beta_tool"],
+					activate: async () => ["beta_tool"],
+				},
+			]);
+			const context = createContextFake();
+
+			await getRegisteredHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				context.ctx,
+			);
+
+			expect(
+				await runBeforeAgentStartHandlers(
+					pi,
+					createBeforeAgentStartEvent(),
+					context.ctx,
+				),
+			).toBe(
+				'<toolsets>\n<toolset name="alpha &amp; &lt;β&gt; &quot;&apos;" description="first &gt; &amp; &lt; &quot;&apos; 工具"/>\n<toolset name="second" description="second suite"/>\n</toolsets>',
+			);
+		});
+	});
+
+	test("removes the trigger after activation and restores it after history rewind", async () => {
+		// Purpose: prompt discovery must follow the runtime's active branch state.
+		// Input and expected output: one eligible toolset activates, then an empty history branch restores it.
+		// Edge case: activate_toolset is removed with the final trigger and restored on rewind.
+		// Dependencies: shared runtime history handler, composition, and isolated system-prompt lifecycle fakes.
+		await withIsolatedAgentDir(async ({ suiteDir }) => {
+			const templateFile = join(suiteDir, "template.md");
+			await writeFile(templateFile, "{{toolsets}}");
+			await writeSuiteConfig(suiteDir, { templateFile });
+			const pi = createExtensionApiFake(["files_read"]);
+			systemPrompt(pi);
+			const runtime = getToolsetRuntime(pi);
+			runtime.replaceProvider("mcp", [
+				{
+					providerId: "mcp",
+					name: "files",
+					description: "Read files",
+					toolNames: ["files_read"],
+					activate: async () => ["files_read"],
+				},
+			]);
+			const context = createContextFake();
+			await getRegisteredHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				context.ctx,
+			);
+
+			await runBeforeAgentStartHandlers(
+				pi,
+				createBeforeAgentStartEvent(),
+				context.ctx,
+			);
+			expect(pi.getActiveTools()).toContain("activate_toolset");
+			await runtime.activate("files");
+			expect(
+				await runBeforeAgentStartHandlers(
+					pi,
+					createBeforeAgentStartEvent(),
+					context.ctx,
+				),
+			).toBe("");
+			expect(pi.getActiveTools()).not.toContain("activate_toolset");
+
+			await getRegisteredHandler(pi, "session_tree")(
+				{ type: "session_tree" },
+				{
+					hasUI: false,
+					sessionManager: { getBranch: () => [] },
+				},
+			);
+			expect(
+				await runBeforeAgentStartHandlers(
+					pi,
+					createBeforeAgentStartEvent(),
+					context.ctx,
+				),
+			).toBe(
+				'<toolsets>\n<toolset name="files" description="Read files"/>\n</toolsets>',
+			);
+			expect(pi.getActiveTools()).toContain("activate_toolset");
+		});
+	});
+
+	test("places bundled toolsets between skills and active tools", async () => {
+		// Purpose: the bundled template must expose the deferred catalog at the approved structural location.
+		// Input and expected output: the bundled template renders one eligible toolset beside populated skills and active tools.
+		// Edge case: placement is asserted by required section boundaries rather than mutable prompt prose.
+		// Dependencies: bundled template loading plus the shared runtime/composition lifecycle.
+		await withIsolatedAgentDir(async () => {
+			const pi = createExtensionApiFake(["files_read"]);
+			systemPrompt(pi);
+			getToolsetRuntime(pi).replaceProvider("mcp", [
+				{
+					providerId: "mcp",
+					name: "files",
+					description: "Read files",
+					toolNames: ["files_read"],
+					activate: async () => ["files_read"],
+				},
+			]);
+			const context = createContextFake();
+			await getRegisteredHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				context.ctx,
+			);
+
+			const prompt = await runBeforeAgentStartHandlers(
+				pi,
+				createBeforeAgentStartEvent(),
+				context.ctx,
+			);
+			expect(prompt.indexOf("</skills>")).toBeGreaterThanOrEqual(0);
+			expect(prompt.indexOf("<toolsets>")).toBeGreaterThan(
+				prompt.indexOf("</skills>"),
+			);
+			expect(prompt.indexOf("<tools>")).toBeGreaterThan(
+				prompt.indexOf("<toolsets>"),
+			);
 		});
 	});
 

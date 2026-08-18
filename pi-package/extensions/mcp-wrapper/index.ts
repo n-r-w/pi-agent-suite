@@ -4,10 +4,16 @@ import type {
 	ExtensionContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition.ts";
 import {
 	registerPackageTool,
 	registerPackageToolPresentation,
 } from "../../shared/tool-presentation/registry.ts";
+import type { Toolset } from "../../shared/toolsets/contracts.ts";
+import {
+	getToolsetRuntime,
+	type ToolsetRuntime,
+} from "../../shared/toolsets/runtime.ts";
 import { McpClientManager, type ServerInstructions } from "./client-manager.ts";
 import {
 	type McpServerConfig,
@@ -33,6 +39,8 @@ import {
 } from "./tool-catalog.ts";
 
 const ISSUE_PREFIX = "[mcp-wrapper]";
+const MCP_TOOLSET_PROVIDER_ID = "mcp-wrapper";
+const MCP_BASELINE_OWNER = "mcp-wrapper";
 const STATUS_KEY_PREFIX = "mcp-";
 const PROMPT_SNIPPET_MAX_LENGTH = 100;
 const WORD_BOUNDARY_MIN_RATIO = 0.6;
@@ -66,12 +74,14 @@ export default async function mcpWrapper(
 	const createManager =
 		dependencies.createManager ?? createDefaultMcpClientManager;
 	const registeredToolDefinitions = new Map<string, ToolDefinition>();
+	const toolsetRuntime = getToolsetRuntime(pi);
 	const state: McpRuntimeState = {
 		activeManager: undefined,
 		lifecycleVersion: 0,
 		metadataWriteGeneration: 0,
 		preloadedStateConsumed: false,
 		serverInstructionRecords: [],
+		catalogToolNames: [],
 	};
 	const queueCacheSave = createQueuedCacheSave(saveCache);
 
@@ -90,6 +100,8 @@ export default async function mcpWrapper(
 		loadCache,
 		getActiveManager: () => state.activeManager,
 		registeredToolDefinitions,
+		toolsetRuntime,
+		state,
 	});
 	registerMcpSessionLifecycleHandlers({
 		pi,
@@ -100,6 +112,7 @@ export default async function mcpWrapper(
 		createManager,
 		queueCacheSave,
 		registeredToolDefinitions,
+		toolsetRuntime,
 	});
 	registerMcpInstructionPromptHandler(pi, () => state.serverInstructionRecords);
 
@@ -157,6 +170,8 @@ interface HandleSessionStartOptions {
 	readonly saveCache: (cache: McpWrapperMetadataCache) => Promise<void>;
 	readonly getMetadataWriteGeneration: () => number;
 	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
+	readonly toolsetRuntime: ToolsetRuntime;
+	readonly state: McpRuntimeState;
 }
 
 interface HandleSessionStartResult {
@@ -175,6 +190,7 @@ interface McpRuntimeState {
 	metadataWriteGeneration: number;
 	preloadedStateConsumed: boolean;
 	serverInstructionRecords: readonly ServerInstructionRecord[];
+	catalogToolNames: readonly string[];
 }
 
 /** Binds session events after cached tool definitions have started loading. */
@@ -187,6 +203,7 @@ function registerMcpSessionLifecycleHandlers(options: {
 	readonly createManager: McpManagerFactory;
 	readonly queueCacheSave: QueuedCacheSave;
 	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
+	readonly toolsetRuntime: ToolsetRuntime;
 }): void {
 	options.pi.on("session_start", async (_event, ctx) => {
 		const preloadedState = await options.preloadedStatePromise;
@@ -219,6 +236,8 @@ function registerMcpSessionLifecycleHandlers(options: {
 			saveCache: options.queueCacheSave,
 			getMetadataWriteGeneration: () => options.state.metadataWriteGeneration,
 			registeredToolDefinitions: options.registeredToolDefinitions,
+			toolsetRuntime: options.toolsetRuntime,
+			state: options.state,
 		});
 		if (sessionVersion !== options.state.lifecycleVersion) {
 			return;
@@ -234,6 +253,58 @@ function registerMcpSessionLifecycleHandlers(options: {
 		options.state.activeManager = undefined;
 		await manager?.closeAll();
 	});
+}
+
+function buildMcpToolsets(
+	servers: ValidMcpWrapperConfig["mcpServers"],
+	serverToolLists: readonly McpServerToolList[],
+	catalogTools: readonly PiToolCatalogEntry[],
+): readonly Toolset[] {
+	const loadedServerKeys = new Set(
+		serverToolLists.map((serverToolList) => serverToolList.serverKey),
+	);
+	const toolNamesByServer = new Map<string, string[]>();
+	for (const entry of catalogTools) {
+		const names = toolNamesByServer.get(entry.route.serverKey) ?? [];
+		names.push(entry.definition.name);
+		toolNamesByServer.set(entry.route.serverKey, names);
+	}
+
+	return Object.entries(servers).flatMap(([serverKey, server]) => {
+		if (server.onDemand === undefined || !loadedServerKeys.has(serverKey)) {
+			return [];
+		}
+		const toolNames = toolNamesByServer.get(serverKey) ?? [];
+		return [
+			{
+				providerId: MCP_TOOLSET_PROVIDER_ID,
+				name: server.onDemand.name,
+				description: server.onDemand.description,
+				toolNames,
+				// MCP metadata and definitions are already loaded; normal tool execution owns connection readiness.
+				activate: async () => toolNames,
+			},
+		];
+	});
+}
+
+function replaceRuntimeCatalog(
+	options: Pick<HandleSessionStartOptions, "pi" | "toolsetRuntime" | "state">,
+	toolsets: readonly Toolset[],
+	toolNames: readonly string[] = [],
+): void {
+	const previousToolNames = options.state.catalogToolNames;
+	const composition = getAgentRuntimeComposition(options.pi);
+	composition.stageBaselineToolNames(MCP_BASELINE_OWNER, toolNames);
+	try {
+		options.toolsetRuntime.replaceProvider(MCP_TOOLSET_PROVIDER_ID, toolsets);
+		options.state.catalogToolNames = [...toolNames];
+	} catch (error) {
+		// Baseline and activation routes are one catalog publication boundary.
+		composition.stageBaselineToolNames(MCP_BASELINE_OWNER, previousToolNames);
+		composition.reconcileActiveTools();
+		throw error;
+	}
 }
 
 interface HandleManualRefreshOptions {
@@ -283,6 +354,8 @@ async function preloadCachedTools(options: {
 	readonly loadCache: () => Promise<McpWrapperMetadataCache | null>;
 	readonly getActiveManager: () => McpManagerLike | undefined;
 	readonly registeredToolDefinitions: Map<string, ToolDefinition>;
+	readonly toolsetRuntime: ToolsetRuntime;
+	readonly state: McpRuntimeState;
 }): Promise<PreloadedMcpState> {
 	const configResult = await options.readConfig();
 	if (
@@ -309,14 +382,28 @@ async function preloadCachedTools(options: {
 
 	// Pi renders resumed messages before session_start, so cached definitions must
 	// exist now even though their execution manager becomes active during startup.
+	const catalogTools = buildPiToolCatalog(cachedToolLists).tools;
 	registerCatalogTools({
 		pi: options.pi,
-		tools: buildPiToolCatalog(cachedToolLists).tools,
+		tools: catalogTools,
 		getActiveManager: options.getActiveManager,
 		registeredToolDefinitions: options.registeredToolDefinitions,
 		servers: configResult.config.mcpServers,
 		widgetLineBudget: configResult.config.widgetLineBudget,
 	});
+	const catalogToolNames = catalogTools.map((entry) => entry.definition.name);
+	getAgentRuntimeComposition(options.pi).publishBaselineToolNames(
+		catalogToolNames,
+	);
+	options.toolsetRuntime.replaceProvider(
+		MCP_TOOLSET_PROVIDER_ID,
+		buildMcpToolsets(
+			configResult.config.mcpServers,
+			cachedToolLists,
+			catalogTools,
+		),
+	);
+	options.state.catalogToolNames = catalogToolNames;
 
 	return { configResult, cache };
 }
@@ -327,13 +414,16 @@ async function handleSessionStart(
 ): Promise<HandleSessionStartResult> {
 	const configResult = await options.readConfig();
 	if (configResult.kind === "invalid") {
+		replaceRuntimeCatalog(options, []);
 		options.ctx.ui.notify(`${ISSUE_PREFIX} ${configResult.issue}`, "warning");
 		return { manager: undefined, serverInstructionRecords: [] };
 	}
 	if (!configResult.config.enabled) {
+		replaceRuntimeCatalog(options, []);
 		return { manager: undefined, serverInstructionRecords: [] };
 	}
 	if (Object.keys(configResult.config.mcpServers).length === 0) {
+		replaceRuntimeCatalog(options, []);
 		return { manager: undefined, serverInstructionRecords: [] };
 	}
 
@@ -410,6 +500,11 @@ function registerStartupCatalog({
 		servers: config.mcpServers,
 		widgetLineBudget: config.widgetLineBudget,
 	});
+	replaceRuntimeCatalog(
+		options,
+		buildMcpToolsets(config.mcpServers, startup.serverToolLists, catalog.tools),
+		catalog.tools.map((entry) => entry.definition.name),
+	);
 	reportStartupDiagnostics(options.ctx, {
 		connectedServers: startup.discoveredServerKeys,
 		cachedServers: startup.cachedServerKeys,

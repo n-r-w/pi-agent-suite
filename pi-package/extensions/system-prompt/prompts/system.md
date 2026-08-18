@@ -83,6 +83,8 @@ Closing Prompt:
 </available_skills>
 </skills>
 
+{{toolsets}}
+
 <tools>
 <available>
 {{tools}}
