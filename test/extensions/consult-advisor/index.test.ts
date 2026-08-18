@@ -168,7 +168,7 @@ function createExtensionApiFake(
 	const commands: RegisteredCommandFake[] = [];
 	const activeToolCalls: string[][] = [];
 	const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
-	let activeTools: string[] = [];
+	let activeTools = [...allToolNames];
 
 	return {
 		handlers,

@@ -4,7 +4,7 @@ import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentRuntimeComposition } from "../agent-runtime-composition.ts";
-import { getToolsetRuntime } from "./runtime.ts";
+import { getToolsetRuntime, type ToolsetHistoryContext } from "./runtime.ts";
 
 type ToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0];
 type EventHandler = (event: unknown, ctx: unknown) => unknown;
@@ -111,16 +111,10 @@ describe("toolset runtime", () => {
 		}).not.toThrow();
 
 		runtimeReady = true;
-		for (const handler of handlers.get("session_start") ?? []) {
-			await handler(
-				{ type: "session_start" },
-				{
-					hasUI: false,
-					sessionManager: { getBranch: () => [] },
-					ui: { notify() {} },
-				},
-			);
-		}
+		runtime?.restoreFromBranch([], {
+			hasUI: false,
+			ui: { notify() {} },
+		});
 		expect(runtime).toBeDefined();
 		expect(activeTools).toEqual(["read", "activate_toolset"]);
 	});
@@ -207,6 +201,27 @@ describe("toolset runtime", () => {
 				toolNames: ["files_read"],
 			},
 		});
+	});
+
+	/**
+	 * Proves deferred activation remains inside the main-agent baseline intersection.
+	 * Input and expected output: a reordered main-agent allowlist restores the activated files tools as [read, files_read, files_write].
+	 * Edge case: the activation trigger remains available before activation but disappears when this is the last eligible toolset.
+	 * Dependencies: main-agent composition and the deferred-toolset restrictive filter reconcile on activation.
+	 */
+	test("restores deferred tools at baseline positions under a main-agent allowlist", async () => {
+		const controls = createFakePi(["read", "files_read", "files_write"]);
+		const runtime = getToolsetRuntime(controls.pi);
+		runtime.replaceProvider("mcp", [filesToolset()]);
+		getAgentRuntimeComposition(controls.pi).setMainAgentContribution({
+			prompt: "Main-agent prompt",
+			tools: ["files_write", "read", "activate_toolset", "files_read"],
+		});
+
+		expect(controls.activeTools).toEqual(["read", "activate_toolset"]);
+
+		await runtime.activate("files");
+		expect(controls.activeTools).toEqual(["read", "files_read", "files_write"]);
 	});
 
 	test("keeps activation available until every eligible toolset is active", async () => {
@@ -427,7 +442,7 @@ describe("toolset runtime", () => {
 		];
 		const ctx = historyContext(controls, () => branch);
 
-		await controls.emit("session_start", { type: "session_start" }, ctx);
+		runtime.restoreFromBranch(branch, ctx);
 		expect(controls.activeTools).toEqual(["files_read"]);
 		expect(runtime.getVisibleToolsets()).toEqual([]);
 
@@ -448,9 +463,8 @@ describe("toolset runtime", () => {
 			}),
 		];
 
-		await controls.emit(
-			"session_start",
-			{ type: "session_start" },
+		runtime.restoreFromBranch(
+			branch,
 			historyContext(controls, () => branch),
 		);
 
@@ -476,7 +490,9 @@ function activationResult(details: unknown): unknown {
 function historyContext(
 	controls: FakePiControls,
 	getBranch: () => readonly unknown[],
-): unknown {
+): ToolsetHistoryContext & {
+	readonly sessionManager: { getBranch(): readonly unknown[] };
+} {
 	return {
 		hasUI: true,
 		sessionManager: { getBranch },

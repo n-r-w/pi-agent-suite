@@ -547,6 +547,82 @@ describe("mcp-wrapper extension", () => {
 		expect(await runBeforeAgentStart(pi)).toContain("Use deferred search.");
 	});
 
+	test("restores resumed activation after cacheless live discovery finalizes the catalog", async () => {
+		// Purpose: startup restoration must validate history against live metadata rather than the empty preload catalog.
+		// Input and expected output: a cacheless resumed branch names the discovered toolset, which starts active without a stale warning.
+		// Edge case: the preload catalog is empty even though live discovery returns the same configured deferred server.
+		// Dependencies: shared toolset history restoration, MCP startup discovery, composition, and instruction filtering.
+		const pi = createExtensionApiFake();
+		const notifications: NotificationRecord[] = [];
+		const sessionManager = {
+			getBranch: () => [
+				{
+					type: "message",
+					message: {
+						role: "toolResult",
+						toolName: "activate_toolset",
+						isError: false,
+						details: { version: 1, activeToolsets: ["search-suite"] },
+					},
+				},
+			],
+		} as unknown as SessionManager;
+		const manager = managerWithCleanup({
+			discoverServers: async () => ({
+				serverToolLists: [
+					{
+						serverKey: "deferred",
+						tools: [{ name: "search", inputSchema: { type: "object" } }],
+					},
+				],
+				serverInstructions: [
+					{ serverKey: "deferred", instructions: "Use deferred search." },
+				],
+				failures: [],
+			}),
+			callTool: async () => ({ content: [] }),
+		});
+		await mcpWrapper(pi, {
+			readConfig: async () => ({
+				kind: "valid",
+				config: {
+					enabled: true,
+					timeouts: {
+						startupSeconds: 30,
+						listToolsSeconds: 15,
+						callSeconds: 120,
+						maxTotalSeconds: 180,
+					},
+					widgetLineBudget: 5,
+					mcpServers: {
+						deferred: {
+							type: "stdio",
+							command: "deferred",
+							args: [],
+							env: {},
+							onDemand: {
+								name: "search-suite",
+								description: "Search when needed",
+							},
+						},
+					},
+				},
+			}),
+			loadCache: async () => null,
+			saveCache: async () => {},
+			createManager: () => manager,
+		});
+
+		await runSessionStart(pi, notifications, [], sessionManager);
+
+		expect(pi.getActiveTools()).toEqual(["deferred_search"]);
+		expect(getToolsetRuntime(pi).getVisibleToolsets()).toEqual([]);
+		expect(await runBeforeAgentStart(pi)).toContain("Use deferred search.");
+		expect(
+			notifications.some(({ message }) => message.includes("stale activated")),
+		).toBe(false);
+	});
+
 	test("omits deferred activation routes when metadata loading fails", async () => {
 		// Purpose: only successfully loaded deferred metadata may enter the toolset catalog.
 		// Input and expected output: discovery failure leaves no visible trigger or exact activation route.
@@ -806,9 +882,9 @@ describe("mcp-wrapper extension", () => {
 	});
 
 	test("registers cached tools before session start", async () => {
-		// Purpose: resumed history needs MCP tool renderers before Pi emits session_start.
-		// Input and expected output: a complete cache registers one tool during awaited extension loading and does not register it again at session start.
-		// Edge case: cached registration must not start live MCP discovery.
+		// Purpose: resumed history needs MCP tool renderers and its activation catalog before Pi emits session_start.
+		// Input and expected output: a complete cache registers one deferred tool once and restores its branch activation at session start.
+		// Edge case: cached startup restoration must not wait for background live discovery.
 		// Dependencies: this test uses injected config, cache storage, and an in-memory manager fake.
 		await prepareSuiteCacheDir();
 		const pi = createExtensionApiFake();
@@ -817,6 +893,10 @@ describe("mcp-wrapper extension", () => {
 			command: "node",
 			args: [],
 			env: {},
+			onDemand: {
+				name: "files-suite",
+				description: "Use cached files",
+			},
 		};
 		await saveMcpWrapperCache({
 			version: 1,
@@ -881,12 +961,27 @@ describe("mcp-wrapper extension", () => {
 			},
 		]);
 		expect(discoveryCalls).toBe(0);
-		expect(await resolvesWithin(runSessionStart(pi), 25)).toBe(true);
+		const sessionManager = {
+			getBranch: () => [
+				{
+					type: "message",
+					message: {
+						role: "toolResult",
+						toolName: "activate_toolset",
+						isError: false,
+						details: { version: 1, activeToolsets: ["files-suite"] },
+					},
+				},
+			],
+		} as unknown as SessionManager;
+		expect(
+			await resolvesWithin(runSessionStart(pi, [], [], sessionManager), 25),
+		).toBe(true);
 		expect(pi.tools.map((tool) => tool.name)).toEqual([
 			"activate_toolset",
 			FILES_READ_TOOL_NAME,
 		]);
-		pi.setActiveTools([FILES_READ_TOOL_NAME]);
+		expect(pi.getActiveTools()).toEqual([FILES_READ_TOOL_NAME]);
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
 			"Use cached file instructions.",
 		);

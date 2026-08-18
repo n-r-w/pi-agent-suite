@@ -152,6 +152,7 @@ function registerMcpInstructionPromptHandler(
 }
 
 interface SessionStartContextLike {
+	readonly hasUI: boolean;
 	readonly sessionManager: ExtensionContext["sessionManager"];
 	readonly ui: {
 		notify(message: string, type?: "info" | "warning" | "error"): void;
@@ -242,6 +243,11 @@ function registerMcpSessionLifecycleHandlers(options: {
 		if (sessionVersion !== options.state.lifecycleVersion) {
 			return;
 		}
+		// Startup history is interpreted only after metadata publication establishes the finalized catalog.
+		options.toolsetRuntime.restoreFromBranch(
+			ctx.sessionManager.getBranch(),
+			ctx,
+		);
 		options.state.activeManager = result.manager;
 		options.state.serverInstructionRecords = result.serverInstructionRecords;
 	});
@@ -263,12 +269,7 @@ function buildMcpToolsets(
 	const loadedServerKeys = new Set(
 		serverToolLists.map((serverToolList) => serverToolList.serverKey),
 	);
-	const toolNamesByServer = new Map<string, string[]>();
-	for (const entry of catalogTools) {
-		const names = toolNamesByServer.get(entry.route.serverKey) ?? [];
-		names.push(entry.definition.name);
-		toolNamesByServer.set(entry.route.serverKey, names);
-	}
+	const toolNamesByServer = groupCatalogToolNamesByServer(catalogTools);
 
 	return Object.entries(servers).flatMap(([serverKey, server]) => {
 		if (server.onDemand === undefined || !loadedServerKeys.has(serverKey)) {
@@ -598,12 +599,7 @@ function buildActiveServerInstructions(
 	serverInstructions: readonly ServerInstructions[],
 	tools: readonly PiToolCatalogEntry[],
 ): readonly ServerInstructionRecord[] {
-	const toolNamesByServer = new Map<string, string[]>();
-	for (const entry of tools) {
-		const toolNames = toolNamesByServer.get(entry.route.serverKey) ?? [];
-		toolNames.push(entry.definition.name);
-		toolNamesByServer.set(entry.route.serverKey, toolNames);
-	}
+	const toolNamesByServer = groupCatalogToolNamesByServer(tools);
 
 	return serverInstructions.flatMap((instructions) => {
 		const registeredPiToolNames = toolNamesByServer.get(instructions.serverKey);
@@ -611,6 +607,18 @@ function buildActiveServerInstructions(
 			? []
 			: [{ ...instructions, registeredPiToolNames }];
 	});
+}
+
+function groupCatalogToolNamesByServer(
+	catalogTools: readonly PiToolCatalogEntry[],
+): Map<string, string[]> {
+	const toolNamesByServer = new Map<string, string[]>();
+	for (const entry of catalogTools) {
+		const names = toolNamesByServer.get(entry.route.serverKey) ?? [];
+		names.push(entry.definition.name);
+		toolNamesByServer.set(entry.route.serverKey, names);
+	}
+	return toolNamesByServer;
 }
 
 type McpDiscoveryResult = Awaited<

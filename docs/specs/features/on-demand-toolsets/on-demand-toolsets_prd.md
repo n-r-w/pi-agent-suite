@@ -105,8 +105,10 @@ Keep specialized toolsets outside the model context until needed while allowing 
 - A successful `activate_toolset` result sent to the LLM must contain the complete list of tool names made available to the current agent.
 - The LLM result must not contain tool parameters or individual tool descriptions.
 - A repeated activation of an active toolset must identify it as already active and contain its complete currently available tool-name list.
-- Collapsed TUI rendering must show activation status, tool count, and a shortened tool-name list.
-- Expanded TUI rendering must show the complete tool-name list.
+- The TUI call line must name the requested toolset.
+- The TUI result must start with `Activated:` or `Already active:` followed by comma-separated tool names; only the status label is success-colored.
+- Collapsed TUI rendering must show at most two wrapped content lines, append an ellipsis when content is hidden, and report the exact number of hidden wrapped lines with the standard expansion hint.
+- Expanded TUI rendering must show every tool name without truncation or an expansion hint.
 - TUI rendering must not show tool parameters or individual tool descriptions.
 - Main-agent and subagent screens must use the same collapsed and expanded rendering behavior.
 

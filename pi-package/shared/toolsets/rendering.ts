@@ -1,5 +1,5 @@
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Text } from "@earendil-works/pi-tui";
+import { type Component, Text, visibleWidth } from "@earendil-works/pi-tui";
 import { truncateTextByWidth } from "../display-width.ts";
 import type { ToolsetActivationPresentation } from "./contracts.ts";
 
@@ -25,10 +25,18 @@ class SingleLineCall implements Component {
 	) {}
 
 	public render(width: number): string[] {
-		const text =
-			this.theme.fg("toolTitle", this.theme.bold("activate_toolset ")) +
-			this.theme.fg("muted", this.name);
-		return [truncateTextByWidth(text, width)];
+		const prefix = "activate_toolset ";
+		const clippedPrefix = truncateTextByWidth(prefix, width);
+		const remainingWidth = Math.max(0, width - visibleWidth(clippedPrefix));
+		const clippedName =
+			clippedPrefix === prefix
+				? truncateTextByWidth(this.name, remainingWidth)
+				: "";
+		const styledName =
+			clippedName.length === 0 ? "" : this.theme.fg("muted", clippedName);
+		return [
+			this.theme.fg("toolTitle", this.theme.bold(clippedPrefix)) + styledName,
+		];
 	}
 
 	public invalidate(): void {}

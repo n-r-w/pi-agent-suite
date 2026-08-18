@@ -17,9 +17,8 @@ const ACTIVATE_TOOLSET_TOOL_NAME = "activate_toolset";
 const DEFERRED_TOOLSETS_FILTER_NAME = "deferred-toolsets";
 const TOOLSET_RUNTIME_REQUEST_CHANNEL = "pi-harness:toolset-runtime:request";
 
-interface HistoryContext {
+export interface ToolsetHistoryContext {
 	readonly hasUI: boolean;
-	readonly sessionManager: { getBranch(): readonly unknown[] };
 	readonly ui: {
 		notify(message: string, level: "warning"): void;
 	};
@@ -27,19 +26,19 @@ interface HistoryContext {
 
 export interface ToolsetRuntime {
 	replaceProvider(providerId: string, toolsets: readonly Toolset[]): void;
+	restoreFromBranch(
+		branch: readonly unknown[],
+		ctx: ToolsetHistoryContext,
+	): void;
 	getVisibleToolsets(): readonly VisibleToolset[];
 	activate(name: string): Promise<ToolsetActivation>;
 }
 
-interface ToolsetRuntimeHolder {
-	readonly runtime: ToolsetRuntime;
-}
-
 interface ToolsetRuntimeSlot {
-	holder: ToolsetRuntimeHolder | undefined;
+	runtime: ToolsetRuntime | undefined;
 }
 
-const holderByPi = new WeakMap<ExtensionAPI, ToolsetRuntimeHolder>();
+const runtimeByPi = new WeakMap<ExtensionAPI, ToolsetRuntime>();
 
 class ToolsetRuntimeImpl implements ToolsetRuntime {
 	private readonly toolsetsByProvider = new Map<string, readonly Toolset[]>();
@@ -93,11 +92,17 @@ class ToolsetRuntimeImpl implements ToolsetRuntime {
 			DEFERRED_TOOLSETS_FILTER_NAME,
 			(candidates) => this.filterDeferredTools(candidates),
 		);
-		const restoreActiveBranch = (_event: unknown, ctx: HistoryContext) => {
-			this.restoreFromBranch(ctx.sessionManager.getBranch(), ctx);
-		};
-		pi.on("session_start", restoreActiveBranch);
-		pi.on("session_tree", restoreActiveBranch);
+		pi.on(
+			"session_tree",
+			(
+				_event: unknown,
+				ctx: ToolsetHistoryContext & {
+					readonly sessionManager: { getBranch(): readonly unknown[] };
+				},
+			) => {
+				this.restoreFromBranch(ctx.sessionManager.getBranch(), ctx);
+			},
+		);
 	}
 
 	public replaceProvider(
@@ -187,9 +192,9 @@ class ToolsetRuntimeImpl implements ToolsetRuntime {
 		return { name, toolNames, alreadyActive: false };
 	}
 
-	private restoreFromBranch(
+	public restoreFromBranch(
 		branch: readonly unknown[],
-		ctx: HistoryContext,
+		ctx: ToolsetHistoryContext,
 	): void {
 		let snapshot: readonly string[] = [];
 		for (const entry of branch) {
@@ -266,33 +271,31 @@ class ToolsetRuntimeImpl implements ToolsetRuntime {
 }
 
 export function getToolsetRuntime(pi: ExtensionAPI): ToolsetRuntime {
-	const cached = holderByPi.get(pi);
+	const cached = runtimeByPi.get(pi);
 	if (cached !== undefined) {
-		return cached.runtime;
+		return cached;
 	}
 
-	const slot: ToolsetRuntimeSlot = { holder: undefined };
+	const slot: ToolsetRuntimeSlot = { runtime: undefined };
 	if (typeof pi.events?.emit === "function") {
 		pi.events.emit(TOOLSET_RUNTIME_REQUEST_CHANNEL, slot);
 	}
-	if (slot.holder !== undefined) {
-		holderByPi.set(pi, slot.holder);
-		return slot.holder.runtime;
+	if (slot.runtime !== undefined) {
+		runtimeByPi.set(pi, slot.runtime);
+		return slot.runtime;
 	}
 
-	const holder: ToolsetRuntimeHolder = {
-		runtime: new ToolsetRuntimeImpl(pi),
-	};
-	holderByPi.set(pi, holder);
+	const runtime = new ToolsetRuntimeImpl(pi);
+	runtimeByPi.set(pi, runtime);
 
 	// Pi loads shared modules separately for each extension, so the session event bus carries the singleton across ExtensionAPI objects.
 	if (typeof pi.events?.on === "function") {
 		pi.events.on(TOOLSET_RUNTIME_REQUEST_CHANNEL, (data: unknown) => {
-			(data as ToolsetRuntimeSlot).holder = holder;
+			(data as ToolsetRuntimeSlot).runtime = runtime;
 		});
 	}
 
-	return holder.runtime;
+	return runtime;
 }
 
 function validateProviderCatalog(

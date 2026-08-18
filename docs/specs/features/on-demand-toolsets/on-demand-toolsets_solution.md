@@ -152,9 +152,9 @@
   ```
 - **APC-15:** Repeated activation returns `already active` status followed by the complete currently available tool-name list.
 - **APC-16:** LLM content contains no tool parameters or individual tool descriptions.
-- **SOL-18:** `renderCall` uses a compact, width-bounded toolset name inside Pi’s default tool shell.
-- **SOL-19:** Collapsed `renderResult` shows status, tool count, the first bounded tool-name lines, and the standard `ctrl+o` hidden-content hint.
-- **SOL-20:** Expanded `renderResult` uses Pi `Text` to show the complete tool-name list.
+- **SOL-18:** `renderCall` uses a compact, width-bounded call line that names the requested toolset inside Pi’s default tool shell.
+- **SOL-19:** `renderResult` starts with `Activated:` or `Already active:` followed by comma-separated tool names; only the status label is success-colored. Collapsed rendering shows at most two wrapped content lines, appends an ellipsis when content is hidden, and reports the exact hidden wrapped-line count with the standard expansion hint. It shows no tool parameters or individual tool descriptions.
+- **SOL-20:** Expanded `renderResult` shows every tool name without truncation or an expansion hint.
 - **SOL-21:** Both main and subagent screens use the same registered tool definition and renderer.
 
 ### Testing strategy

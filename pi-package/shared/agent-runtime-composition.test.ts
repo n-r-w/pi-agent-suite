@@ -12,6 +12,7 @@ interface Handler {
 
 function createPi(
 	active: readonly string[],
+	registered: readonly string[] = active,
 ): ExtensionAPI & { readonly handlers: Handler[] } {
 	let activeTools = [...active];
 	const handlers: Handler[] = [];
@@ -23,6 +24,9 @@ function createPi(
 		},
 		getActiveTools(): readonly string[] {
 			return activeTools;
+		},
+		getAllTools() {
+			return registered.map((name) => ({ name }));
 		},
 		setActiveTools(names: readonly string[]): void {
 			activeTools = [...names];
@@ -122,6 +126,36 @@ describe("agent runtime composition", () => {
 		composition.addBaselineToolNames(["grep"]);
 
 		expect(pi.getActiveTools()).toEqual(["read", "grep"]);
+	});
+
+	/**
+	 * Proves every main-agent tool policy is a remove-only filter of the stable baseline.
+	 * Input and expected output: a reordered allowlist with registered baseline-external write preserves [read, edit]; clearing a narrower policy restores read under the child restriction.
+	 * Edge case: write is registered but absent from the baseline, so the policy cannot grant it.
+	 * Dependencies: main-agent contribution updates and named restrictive layers both trigger composition reconciliation.
+	 */
+	test("treats main-agent tools as a baseline-ordered remove-only filter", () => {
+		const pi = createPi(
+			["read", "grep", "edit"],
+			["read", "grep", "edit", "write"],
+		);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.setRestrictiveToolNames("child", ["read", "edit"]);
+		composition.setMainAgentContribution({
+			prompt: "Main-agent prompt",
+			tools: ["edit", "write", "read"],
+		});
+
+		expect(pi.getActiveTools()).toEqual(["read", "edit"]);
+
+		composition.setMainAgentContribution({
+			prompt: "Main-agent prompt",
+			tools: ["edit"],
+		});
+		expect(pi.getActiveTools()).toEqual(["edit"]);
+
+		composition.clearMainAgentContribution();
+		expect(pi.getActiveTools()).toEqual(["read", "edit"]);
 	});
 
 	test("restores eligible tools at their stable baseline positions", () => {

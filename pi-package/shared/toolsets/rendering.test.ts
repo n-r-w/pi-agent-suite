@@ -14,6 +14,11 @@ const theme = {
 	fg: (_color: string, text: string) => text,
 } as unknown as Theme;
 
+const ansiTheme = {
+	bold: (text: string) => `\u001b[1m${text}\u001b[22m`,
+	fg: (_color: string, text: string) => `\u001b[32m${text}\u001b[39m`,
+} as unknown as Theme;
+
 const toolNames = [
 	"files_read",
 	"files_write",
@@ -49,6 +54,46 @@ describe("activate_toolset rendering", () => {
 		expect(lines).toHaveLength(1);
 		expect(lines[0]).toContain("activate_toolset");
 		expect(visibleWidth(lines[0] ?? "")).toBeLessThanOrEqual(24);
+	});
+
+	/**
+	 * Purpose: narrow ANSI-styled rows must close every style after plain-text clipping.
+	 * Input and expected output: a 12-column call clips the fixed prefix to a complete styled row.
+	 * Edge case: the width is narrower than the fixed prefix and the row is rendered inside Box.
+	 * Dependencies: the equivalent ANSI theme and Pi visible-width contract.
+	 */
+	test("clips plain call text before applying ANSI styles", () => {
+		const line =
+			renderActivateToolsetCall(
+				{ name: "configured-toolset-name" },
+				ansiTheme,
+			).render(12)[0] ?? "";
+
+		expect(line).toBe("\u001b[32m\u001b[1mactivate_to…\u001b[22m\u001b[39m");
+		expect(visibleWidth(line)).toBeLessThanOrEqual(12);
+
+		const shell = new Box(1, 1);
+		shell.addChild(
+			renderActivateToolsetCall({ name: "configured-toolset-name" }, ansiTheme),
+		);
+		const shellLine = shell.render(14)[1] ?? "";
+		expect(shellLine).toContain(line);
+		expect(visibleWidth(shellLine)).toBeLessThanOrEqual(14);
+	});
+
+	/**
+	 * Purpose: fitting calls must retain the requested toolset name exactly.
+	 * Input and expected output: the 22-column prefix-plus-name call contains all five name characters.
+	 * Edge case: ANSI wrappers must not affect the fit calculation.
+	 * Dependencies: the equivalent ANSI theme and Pi visible-width contract.
+	 */
+	test("preserves the exact requested name when the full call fits", () => {
+		const line =
+			renderActivateToolsetCall({ name: "files" }, ansiTheme).render(22)[0] ??
+			"";
+
+		expect(line).toContain("files");
+		expect(visibleWidth(line)).toBe(22);
 	});
 
 	test("wraps comma-separated tools and reports exact hidden lines when collapsed", () => {

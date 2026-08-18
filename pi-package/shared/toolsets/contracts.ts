@@ -19,12 +19,6 @@ export interface ToolsetActivation {
 	readonly alreadyActive: boolean;
 }
 
-/** Full branch-local state; replay replaces activation state instead of merging events. */
-export interface ToolsetActivationSnapshotV1 {
-	readonly version: 1;
-	readonly activeToolsets: readonly string[];
-}
-
 export interface ToolsetActivationPresentation {
 	readonly name: string;
 	readonly status: "activated" | "already_active";
@@ -32,6 +26,8 @@ export interface ToolsetActivationPresentation {
 }
 
 /** Keeps replay state and typed presentation data together without parsing LLM text. */
-export interface ToolsetActivationDetails extends ToolsetActivationSnapshotV1 {
+export interface ToolsetActivationDetails {
+	readonly version: 1;
+	readonly activeToolsets: readonly string[];
 	readonly activation: ToolsetActivationPresentation;
 }

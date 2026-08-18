@@ -388,8 +388,10 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 
 	public reconcileActiveTools(): void {
 		const baseline = this.ensureBaselineActiveTools();
-		const source = this.mainAgentContribution?.tools ?? baseline;
-		const resolved = [...source];
+		const resolved = [...baseline];
+		if (this.mainAgentContribution?.tools !== undefined) {
+			intersectToolNames(resolved, this.mainAgentContribution.tools);
+		}
 		for (const allowedNames of this.restrictiveToolNames.values()) {
 			intersectToolNames(resolved, allowedNames);
 		}
