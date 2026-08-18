@@ -1645,6 +1645,95 @@ describe("subagents entry", () => {
 		});
 	});
 
+	test("recovers active root subagents when the main agent run is aborted", async () => {
+		// Purpose: aborting the main Pi agent must stop every active subagent owned by its root runtime.
+		// Input and expected output: only agent_end with a final aborted assistant message invokes root recovery for the active lease.
+		// Edge case: stop and error leave the child running, while abort retains root reconciliation for the open Pi session.
+		// Dependencies: registered lifecycle handlers, reconstructed root state, and root recovery tracking.
+		const rootSession = {
+			key: { ownerPiSessionId: "owner-pi", ownerLocalSessionId: 1 },
+			childPiSessionId: "aborted-root-child",
+			childSessionDir: suiteDir,
+			childSessionFile: join(suiteDir, "aborted-root-child.jsonl"),
+			agentId: "SubAgentCoder",
+			taskName: "Cancelled root work",
+			creationOrder: 1,
+			invocationId: "aborted-root-invocation",
+			runtimeLeaseId: "aborted-root-lease",
+			invocationMetadata: TEST_INVOCATION_METADATA,
+			state: "active" as const,
+		} satisfies LogicalSession;
+		const entries = [
+			{
+				type: "custom",
+				id: "aborted-root-accepted",
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				customType: SUBAGENT_JOURNAL_CUSTOM_TYPE,
+				data: {
+					kind: "session-accepted",
+					session: rootSession,
+				} satisfies JournalRecord,
+			},
+		];
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, entries);
+		const observedLeaseIds: string[][] = [];
+		let reconcileCalls = 0;
+		const runtimeFailure = await import("./runtime-failure");
+		const recoverySpy = spyOn(
+			runtimeFailure,
+			"recoverRootShutdown",
+		).mockImplementation(async (options) => {
+			if (!(options.store instanceof SessionStore)) {
+				throw new Error("root recovery store is not SessionStore");
+			}
+			const store = options.store;
+			const reconcileActive = store.reconcileActive.bind(store);
+			spyOn(store, "reconcileActive").mockImplementation(async (writer) => {
+				reconcileCalls += 1;
+				return reconcileActive(writer);
+			});
+			observedLeaseIds.push([
+				...(await options.coordinator.shutdown(options.owner)),
+			]);
+		});
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+
+			for (const stopReason of ["stop", "error"] as const) {
+				await pi.emit(
+					"agent_end",
+					{
+						type: "agent_end",
+						messages: [{ role: "assistant", stopReason }],
+					},
+					ctx,
+				);
+			}
+			expect(observedLeaseIds).toEqual([]);
+
+			await pi.emit(
+				"agent_end",
+				{
+					type: "agent_end",
+					messages: [{ role: "assistant", stopReason: "aborted" }],
+				},
+				ctx,
+			);
+			await pi.emit("message_end", { type: "message_end" }, ctx);
+
+			expect({ observedLeaseIds, reconcileCalls }).toEqual({
+				observedLeaseIds: [[rootSession.runtimeLeaseId]],
+				reconcileCalls: 1,
+			});
+		} finally {
+			recoverySpy.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
+
 	test("cancels registered root waits before rejection and later history delivery", async () => {
 		// Purpose: Pi abort must remove root wait admission before the registered tool rejects or later feedback is routed.
 		// Input and expected output: two aborted calls settle promptly with their Pi reasons; the second is admissible and child feedback reaches history once.

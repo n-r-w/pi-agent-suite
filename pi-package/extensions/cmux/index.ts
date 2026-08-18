@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { env as processEnv } from "node:process";
 import type {
-	AgentEndEvent,
 	ExtensionAPI,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -14,6 +13,7 @@ import {
 	isReadToolResult,
 	isWriteToolResult,
 } from "@earendil-works/pi-coding-agent";
+import { isCompletedAgentRun } from "../../shared/agent-end-state";
 import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
@@ -73,11 +73,6 @@ interface CmuxSessionContext {
 	};
 }
 
-type AssistantAgentMessage = Extract<
-	AgentEndEvent["messages"][number],
-	{ readonly role: "assistant" }
->;
-
 /** Optional dependencies that isolate environment and clock side effects. */
 export interface CmuxDependencies {
 	readonly env?: NodeJS.ProcessEnv;
@@ -109,7 +104,7 @@ export default function cmux(
 	});
 
 	pi.on("agent_end", async (event) => {
-		if (isChildAgentProcess(runtimeEnv) || !isCompletedWorkEvent(event)) {
+		if (isChildAgentProcess(runtimeEnv) || !isCompletedAgentRun(event)) {
 			return;
 		}
 
@@ -122,30 +117,6 @@ export default function cmux(
 		const body = summarizeSuccess(runState, durationMs);
 		await sendNotification(pi, body);
 	});
-}
-
-/** Returns true only for agent endings that represent completed assistant work. */
-function isCompletedWorkEvent(event: AgentEndEvent): boolean {
-	const lastAssistantMessage = findLastAssistantMessage(event.messages);
-	return (
-		lastAssistantMessage !== undefined &&
-		lastAssistantMessage.stopReason !== "error" &&
-		lastAssistantMessage.stopReason !== "aborted"
-	);
-}
-
-/** Finds the latest assistant message because tool results can follow assistant turns. */
-function findLastAssistantMessage(
-	messages: AgentEndEvent["messages"],
-): AssistantAgentMessage | undefined {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index];
-		if (message?.role === "assistant") {
-			return message;
-		}
-	}
-
-	return undefined;
 }
 
 /** Creates an empty run state for one agent run start time. */
