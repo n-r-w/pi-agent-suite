@@ -52,6 +52,10 @@ Expected response:
 ```
 4. Ask the agent `Try running each subagent to see how it works.`, type `Ctrl+Alt+S` or /subagents to open the subagent management screen, and see how the subagents run in parallel and return results.
 
+## Full configuration example
+
+A complete example with a set of agents, workflows, and more: https://github.com/n-r-w/pi-config
+
 ## What key problems does Pi Agent Suite solve?
 
 ### Different tasks require unique combinations of rules, available tools, models, and reasoning levels
