@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -249,9 +249,23 @@ function createSupervisor(
 	).supervisor;
 }
 
+function createSupervisorSessionsRoot(): string {
+	return mkdtempSync(join(tmpdir(), "run-subagent-supervisor-"));
+}
+
+let supervisorSessionsRoot = "";
+beforeAll(() => {
+	supervisorSessionsRoot = createSupervisorSessionsRoot();
+});
+afterAll(() => {
+	rmSync(supervisorSessionsRoot, { recursive: true, force: true });
+});
+
 interface SupervisorHarnessOptions {
 	readonly resolveLaunch?: InvocationSupervisorOptions["resolveLaunch"];
 	readonly onSpawnEnvironment?: (environment: NodeJS.ProcessEnv) => void;
+	readonly onSpawn?: (args: readonly string[], cwd: string) => void;
+	readonly sessionsDir?: string;
 	readonly childStartupConfig?: ChildStartupConfig;
 	readonly recordChildStartupAttempt?: (
 		record: ChildAuthStartupAttemptRecord,
@@ -294,9 +308,10 @@ function createSupervisorHarness(
 					contextWindow: 128_000,
 				},
 			})),
-		sessionsDir: "/tmp",
-		spawnProcess: (_command, _args, spawnOptions) => {
+		sessionsDir: options.sessionsDir ?? supervisorSessionsRoot,
+		spawnProcess: (_command, args, spawnOptions) => {
 			options.onSpawnEnvironment?.(spawnOptions.env);
+			options.onSpawn?.(args, spawnOptions.cwd);
 			const child = children[spawnCount];
 			if (child === undefined) {
 				throw new Error("controlled child process queue is exhausted");
@@ -1533,6 +1548,46 @@ describe("InvocationSupervisor", () => {
 		await supervisor.terminateLease(acceptance.runtimeLeaseId);
 	});
 
+	test("groups fresh child sessions by project and creates the directory before spawn", async () => {
+		// Purpose: fresh child sessions must not share one project directory.
+		// Input and expected output: a fresh launch uses the Pi-compatible project directory plus its child ID, already created at spawn time.
+		// Edge case: the launch has no saved child session path and therefore must select the generated fresh path.
+		// Dependencies: supervisor handle creation and child argument construction.
+		const child = createChildProcess();
+		const sessionsRoot = mkdtempSync(join(tmpdir(), "run-subagent-sessions-"));
+		const projectSessionsDir = join(sessionsRoot, "--tmp--");
+		const spawnRecords: Array<{ args: readonly string[]; cwd: string }> = [];
+		const harness = createSupervisorHarness(
+			[child],
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				onSpawn: (args, cwd) => spawnRecords.push({ args, cwd }),
+				sessionsDir: projectSessionsDir,
+			},
+		);
+
+		const acceptance = await acceptStart(harness.supervisor, child);
+		const record = spawnRecords[0];
+		expect(record).toBeDefined();
+		expect(record?.cwd).toBe("/tmp");
+		expect(record?.args).toContain("--session-dir");
+		const sessionDirIndex = record?.args.indexOf("--session-dir") ?? -1;
+		const sessionDir =
+			sessionDirIndex < 0 ? undefined : record?.args[sessionDirIndex + 1];
+		expect(sessionDir).toBe(
+			`${projectSessionsDir}/${acceptance.childPiSessionId}`,
+		);
+		expect(sessionDir === undefined ? false : existsSync(sessionDir)).toBe(
+			true,
+		);
+		expect(record?.args).toContain("--session-id");
+		await harness.supervisor.terminateLease(acceptance.runtimeLeaseId);
+		rmSync(sessionsRoot, { recursive: true, force: true });
+	});
+
 	test("waits for prior same-session teardown before continuation", async () => {
 		// Purpose: terminal continuation must hand off one saved session only after the prior process fully closes.
 		// Input and expected output: normal completion reaches the event sink, continuation remains unspawned until close, then one new prompt accepts on the same session reference.
@@ -1542,9 +1597,14 @@ describe("InvocationSupervisor", () => {
 		const priorChild = createChildProcess({ closeOnStdinEnd: false });
 		const continuationChild = createChildProcess();
 		const events: InvocationEvent[] = [];
+		const spawnRecords: Array<{ args: readonly string[]; cwd: string }> = [];
 		const harness = createSupervisorHarness(
 			[priorChild, continuationChild],
 			events,
+			undefined,
+			undefined,
+			true,
+			{ onSpawn: (args, cwd) => spawnRecords.push({ args, cwd }) },
 		);
 		const priorAcceptance = await acceptStart(harness.supervisor, priorChild);
 		emitSuccessfulCompletion(priorChild, "done");
@@ -1552,8 +1612,17 @@ describe("InvocationSupervisor", () => {
 		let continuationSettled = false;
 
 		// Act.
+		const legacySessionDir = mkdtempSync(
+			join(tmpdir(), "run-subagent-legacy-sessions-"),
+		);
+		const savedSession = terminalSession({
+			...priorAcceptance,
+			childPiSessionId: "saved-child-id",
+			childSessionDir: legacySessionDir,
+			childSessionFile: join(legacySessionDir, "saved-child.jsonl"),
+		});
 		const pendingContinuation = harness.supervisor
-			.continue(terminalSession(priorAcceptance), "Continue saved work")
+			.continue(savedSession, "Continue saved work")
 			.then((acceptance) => {
 				continuationSettled = true;
 				return acceptance;
@@ -1582,6 +1651,9 @@ describe("InvocationSupervisor", () => {
 		);
 
 		// Assert.
+		const continuationArgs = spawnRecords[1]?.args ?? [];
+		const continuationSessionDirIndex =
+			continuationArgs.indexOf("--session-dir");
 		expect({
 			eventCount: events.filter((event) => event.kind === "terminal").length,
 			beforeClose,
@@ -1591,10 +1663,16 @@ describe("InvocationSupervisor", () => {
 			continuationWriteCount,
 			sameChildPiSession:
 				continuationAcceptance.childPiSessionId ===
-				priorAcceptance.childPiSessionId,
-			sameSessionFile:
-				continuationAcceptance.childSessionFile ===
-				priorAcceptance.childSessionFile,
+				savedSession.childPiSessionId,
+			continuationSessionArgs:
+				continuationSessionDirIndex < 0
+					? undefined
+					: continuationArgs.slice(
+							continuationSessionDirIndex,
+							continuationSessionDirIndex + 4,
+						),
+			sameSessionDir:
+				continuationAcceptance.childSessionDir === savedSession.childSessionDir,
 		}).toEqual({
 			eventCount: 1,
 			beforeClose: {
@@ -1608,8 +1686,15 @@ describe("InvocationSupervisor", () => {
 			spawnCount: 2,
 			continuationWriteCount: 1,
 			sameChildPiSession: true,
-			sameSessionFile: true,
+			continuationSessionArgs: [
+				"--session-dir",
+				legacySessionDir,
+				"--session",
+				join(legacySessionDir, "saved-child.jsonl"),
+			],
+			sameSessionDir: true,
 		});
+		rmSync(legacySessionDir, { recursive: true, force: true });
 	});
 
 	test("coordinates feedback completion before same-session handoff", async () => {

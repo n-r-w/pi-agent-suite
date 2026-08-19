@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	normalizeChildPrompt,
@@ -351,7 +352,8 @@ export class InvocationSupervisor implements InvocationControl {
 		const runtimeLeaseId = randomUUID();
 		const childPiSessionId = request.childPiSessionId ?? randomUUID();
 		const childSessionDir =
-			request.childSessionDir ?? this.requireSessionsDir();
+			request.childSessionDir ??
+			join(this.requireSessionsDir(), childPiSessionId);
 		mkdirSync(childSessionDir, { recursive: true });
 		const process = this.spawnWorkerProcess(
 			request,

@@ -446,13 +446,13 @@ At a completion, process-exit, runtime-stop, or fail-stop boundary, the first ob
 
 ## Persistence and reopening
 
-Child sessions are stored under:
+Child sessions are stored under the suite's `run-subagent/sessions/` directory. The default path is:
 
 ```text
-~/.pi/agent/agent-suite/run-subagent/sessions/
+~/.pi/agent/agent-suite/run-subagent/sessions/<encoded-resolved-cwd>/<childPiSessionId>/
 ```
 
-When `PI_AGENT_SUITE_DIR` is set, the same `run-subagent/sessions/` path is used under that suite directory.
+When `PI_AGENT_SUITE_DIR` is set, the same `run-subagent/sessions/<encoded-resolved-cwd>/<childPiSessionId>/` path is used under that suite directory. Each project is grouped by Pi 0.84.2's encoded resolved working directory, and each fresh child gets its own `childPiSessionId` directory. Continuations reuse the persisted `childSessionDir` and `childSessionFile`; existing saved paths require no migration.
 
 The owning Pi session saves logical-session identity, direct-owner relationships, accepted continuations, terminal outcomes, and whether feedback was returned by a wait or added to history. This state remains outside model context. Reopening recursively restores every saved descendant with the same owner-local ID and saved child conversation, regardless of the current `maxDepth`. Lowering `maxDepth` prevents deeper `subagent_start` calls but does not hide historical sessions.
 
