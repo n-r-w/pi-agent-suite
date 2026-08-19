@@ -110,6 +110,7 @@ Current working directory: {{cwd}}
     **Options:**
     1. O1-1: {Option, pros, cons, recommendation}
     2. O1-2: {Option, pros, cons, recommendation}
+    
     ### Q2...
     ```
 
