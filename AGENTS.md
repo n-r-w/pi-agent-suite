@@ -69,3 +69,7 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 
 ## Pi Source Code
 /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist
+
+## Session files (use for debugging)
+- Main agents: ~/.pi/agent/sessions
+- Subagents: ~/.pi/agent/agent-suite/run-subagent/sessions
