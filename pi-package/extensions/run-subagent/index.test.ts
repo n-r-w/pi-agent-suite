@@ -16,6 +16,7 @@ import {
 	type ExtensionContext,
 	initTheme,
 	SessionManager,
+	type SessionStartEvent,
 	type Theme,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -112,7 +113,11 @@ interface RegisteredShortcutLike {
 }
 
 /** Builds the narrow public extension API surface needed by entry tests. */
-function createPiFake(): ExtensionAPI & {
+function createPiFake(
+	options: {
+		readonly appendEntry?: (customType: string, data: unknown) => void;
+	} = {},
+): ExtensionAPI & {
 	readonly appendedEntries: unknown[];
 	readonly commands: RegisteredCommandLike[];
 	readonly messageRenderers: Array<{
@@ -176,6 +181,10 @@ function createPiFake(): ExtensionAPI & {
 		) => shortcuts.push({ shortcut, ...options }),
 		appendEntry: (...args: unknown[]) => {
 			appendedEntries.push(args);
+			const [customType, data] = args;
+			if (typeof customType === "string") {
+				options.appendEntry?.(customType, data);
+			}
 		},
 		sendMessage: (...args: unknown[]) => {
 			sentMessages.push(args);
@@ -2598,6 +2607,344 @@ describe("subagents entry", () => {
 			grandchildSelectedAgentId: "NestedParent",
 			grandchildAvailability: { allowed: true, blocked: false },
 		});
+	});
+
+	test("materializes forked direct and nested sessions for root consumers", async () => {
+		// Purpose: a native fork must rebase retained terminal-success hierarchy before root reconstruction.
+		// Input and expected output: persisted direct and nested successful source sessions become independent fork-owned sessions that steer, wait, query, and management resolve without not_owner.
+		// Edge cases: maxDepth zero disables new delegation but retains nested hierarchy, and source paths must not survive in fork snapshots.
+		// Dependencies: public SessionManager fixtures, actual session_start fork emission, production materialization, management projection, and injected completion and supervisor fakes.
+		initTheme(undefined, false);
+		const configDir = join(suiteDir, "run-subagent");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "config.json"),
+			JSON.stringify({ enabled: true, maxDepth: 0 }),
+		);
+		const sourceRoot = createPersistedSession(join(suiteDir, "source-root"), {
+			id: "source-root",
+			text: "source root",
+		});
+		const sourceChild = createPersistedSession(join(suiteDir, "source-child"), {
+			id: "source-child",
+			text: "source child",
+		});
+		const sourceGrandchild = createPersistedSession(
+			join(suiteDir, "source-grandchild"),
+			{ id: "source-grandchild", text: "source grandchild" },
+		);
+		const sourceChildFile = sourceChild.getSessionFile();
+		const sourceGrandchildFile = sourceGrandchild.getSessionFile();
+		if (sourceChildFile === undefined || sourceGrandchildFile === undefined) {
+			throw new Error("source fixture sessions must be persisted");
+		}
+		const nested = {
+			key: {
+				ownerPiSessionId: sourceChild.getSessionId(),
+				ownerLocalSessionId: 1,
+			},
+			childPiSessionId: sourceGrandchild.getSessionId(),
+			childSessionDir: sourceGrandchild.getSessionDir(),
+			childSessionFile: sourceGrandchildFile,
+			agentId: "SubAgentCoder",
+			taskName: "Nested retained task",
+			creationOrder: 1,
+			invocationId: "nested-invocation",
+			runtimeLeaseId: "nested-lease",
+			invocationMetadata: TEST_INVOCATION_METADATA,
+			state: "terminal-success",
+		} satisfies LogicalSession;
+		sourceChild.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+			kind: "owner-snapshot",
+			ownerPiSessionId: sourceChild.getSessionId(),
+			sessions: [nested],
+		} satisfies JournalRecord);
+		const direct = {
+			key: {
+				ownerPiSessionId: sourceRoot.getSessionId(),
+				ownerLocalSessionId: 4,
+			},
+			childPiSessionId: sourceChild.getSessionId(),
+			childSessionDir: sourceChild.getSessionDir(),
+			childSessionFile: sourceChildFile,
+			agentId: "SubAgentCoder",
+			taskName: "Direct retained task",
+			creationOrder: 1,
+			invocationId: "direct-invocation",
+			runtimeLeaseId: "direct-lease",
+			invocationMetadata: TEST_INVOCATION_METADATA,
+			state: "terminal-success",
+		} satisfies LogicalSession;
+		sourceRoot.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+			kind: "owner-snapshot",
+			ownerPiSessionId: sourceRoot.getSessionId(),
+			sessions: [direct],
+		} satisfies JournalRecord);
+		const forkFile = sourceRoot.createBranchedSession(
+			sourceRoot.getLeafId() ?? "",
+		);
+		if (forkFile === undefined) {
+			throw new Error("fork fixture must be persisted");
+		}
+		const fork = SessionManager.open(forkFile, sourceRoot.getSessionDir());
+		let screen: ManagementScreen | undefined;
+		const pi = createPiFake({
+			appendEntry: (customType, data) =>
+				fork.appendCustomEntry(customType, data),
+		});
+		const ctx = {
+			...createContext(suiteDir, [], {
+				mode: "tui",
+				model: TEST_MODEL,
+				authenticated: true,
+				custom: async (factory: unknown) => {
+					screen = (
+						factory as (
+							tui: TUI,
+							theme: Theme,
+							keybindings: KeybindingsManager,
+							done: () => void,
+						) => ManagementScreen
+					)(
+						{
+							terminal: { rows: 18, columns: 100 },
+							requestRender: () => undefined,
+							setFocus: () => undefined,
+						} as unknown as TUI,
+						{
+							fg: (_color: string, text: string) => text,
+							bg: (_color: string, text: string) => text,
+							bold: (text: string) => text,
+						} as Theme,
+						new KeybindingsManager({
+							"tui.input.submit": { defaultKeys: "enter" },
+							"tui.select.up": { defaultKeys: "up" },
+							"tui.select.down": { defaultKeys: "down" },
+							"tui.select.pageUp": { defaultKeys: "pageUp" },
+							"tui.select.pageDown": { defaultKeys: "pageDown" },
+							"tui.select.confirm": { defaultKeys: "enter" },
+							"app.tools.expand": { defaultKeys: "ctrl+o" },
+						}),
+						() => undefined,
+					);
+					return undefined;
+				},
+			}),
+			sessionManager: fork,
+		} as ExtensionContext;
+		const response: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "fork query answer" }],
+			api: TEST_MODEL.api,
+			provider: TEST_MODEL.provider,
+			model: TEST_MODEL.id,
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 1,
+		};
+		const continueSpy = spyOn(
+			InvocationSupervisor.prototype,
+			"continue",
+		).mockResolvedValue({
+			invocationId: "continued-direct",
+			runtimeLeaseId: "continued-direct-lease",
+			childPiSessionId: "continued-direct-child",
+			childSessionDir: join(suiteDir, "continued"),
+			childSessionFile: join(suiteDir, "continued", "child.jsonl"),
+		});
+		try {
+			await subagents(pi, { completeSimple: async () => response });
+			await pi.emit(
+				"session_start",
+				{ type: "session_start", reason: "fork" } satisfies SessionStartEvent,
+				ctx,
+			);
+			const persisted = new SessionStore().fold(fork.getBranch()).sessions;
+			const forkedDirect = persisted.find(
+				(session) => session.key.ownerLocalSessionId === 4,
+			);
+			const command = pi.commands.find(({ name }) => name === "subagents");
+			await command?.handler("", ctx);
+			if (screen === undefined || forkedDirect === undefined) {
+				throw new Error("fork runtime did not reconstruct retained hierarchy");
+			}
+			screen.handleInput("\u001b[C");
+			const query = await getTool(pi, "subagent_query").execute(
+				"fork-query",
+				{ sessionId: 4, question: "What was retained?" },
+				undefined,
+				undefined,
+				ctx,
+			);
+			const wait = await getTool(pi, "subagent_wait").execute(
+				"fork-wait",
+				{ sessionIds: [4], timeout: 1 },
+				undefined,
+				undefined,
+				ctx,
+			);
+			const steer = await getTool(pi, "subagent_steer").execute(
+				"fork-steer",
+				{ sessionId: 4, prompt: "continue" },
+				undefined,
+				undefined,
+				ctx,
+			);
+
+			expect({
+				rootSnapshotWrites: pi.appendedEntries.filter(
+					(entry) =>
+						Array.isArray(entry) &&
+						entry[0] === SUBAGENT_JOURNAL_CUSTOM_TYPE &&
+						Reflect.get(entry[1] as object, "kind") === "owner-snapshot",
+				).length,
+				forkedOwner: forkedDirect.key.ownerPiSessionId,
+				independentChildId:
+					forkedDirect.childPiSessionId !== sourceChild.getSessionId(),
+				independentChildFile: forkedDirect.childSessionFile !== sourceChildFile,
+				query: query.content,
+				wait: readOutcome(wait),
+				steer: readOutcome(steer),
+				continueCalls: continueSpy.mock.calls.length,
+				hierarchyHasNested: screen
+					.render(100)
+					.join("\n")
+					.includes("Nested retained task"),
+			}).toEqual({
+				rootSnapshotWrites: 1,
+				forkedOwner: fork.getSessionId(),
+				independentChildId: true,
+				independentChildFile: true,
+				query: [{ type: "text", text: "fork query answer" }],
+				wait: "no_active_sessions",
+				steer: "accepted",
+				continueCalls: 1,
+				hierarchyHasNested: true,
+			});
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		} finally {
+			continueSpy.mockRestore();
+			screen?.dispose();
+		}
+	});
+
+	test("allocates above inherited direct IDs after fork materialization", async () => {
+		// Purpose: rebased direct sessions must seed owner-local allocation in the fork root.
+		// Input and expected output: inherited direct ID 7 followed by a new root start invokes the supervisor with owner-local ID 8.
+		// Edge case: the source owner ID differs from the fork owner ID, so stale ownership would reset allocation.
+		// Dependencies: public SessionManager fixtures, actual fork session_start emission, and a controlled invocation supervisor start fake.
+		const configDir = join(suiteDir, "run-subagent");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "config.json"),
+			JSON.stringify({ enabled: true, maxDepth: 1 }),
+		);
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Allowed.md"),
+			[
+				"---",
+				"description: Allowed",
+				"type: subagent",
+				"---",
+				"Allowed prompt",
+			].join("\n"),
+		);
+		const sourceRoot = createPersistedSession(
+			join(suiteDir, "allocation-root"),
+			{ id: "allocation-source", text: "root" },
+		);
+		const sourceChild = createPersistedSession(
+			join(suiteDir, "allocation-child"),
+			{ id: "allocation-child", text: "child" },
+		);
+		const sourceChildFile = sourceChild.getSessionFile();
+		if (sourceChildFile === undefined) {
+			throw new Error("allocation child must persist");
+		}
+		sourceRoot.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+			kind: "owner-snapshot",
+			ownerPiSessionId: sourceRoot.getSessionId(),
+			sessions: [
+				{
+					key: {
+						ownerPiSessionId: sourceRoot.getSessionId(),
+						ownerLocalSessionId: 7,
+					},
+					childPiSessionId: sourceChild.getSessionId(),
+					childSessionDir: sourceChild.getSessionDir(),
+					childSessionFile: sourceChildFile,
+					agentId: "Allowed",
+					taskName: "Inherited",
+					creationOrder: 1,
+					invocationId: "inherited",
+					runtimeLeaseId: "inherited-lease",
+					invocationMetadata: TEST_INVOCATION_METADATA,
+					state: "terminal-success",
+				},
+			],
+		} satisfies JournalRecord);
+		const forkFile = sourceRoot.createBranchedSession(
+			sourceRoot.getLeafId() ?? "",
+		);
+		if (forkFile === undefined) {
+			throw new Error("allocation fork must persist");
+		}
+		const fork = SessionManager.open(forkFile, sourceRoot.getSessionDir());
+		const pi = createPiFake({
+			appendEntry: (customType, data) =>
+				fork.appendCustomEntry(customType, data),
+		});
+		const ctx = {
+			...createContext(suiteDir, [], { model: TEST_MODEL }),
+			sessionManager: fork,
+		} as ExtensionContext;
+		getAgentRuntimeComposition(pi).setMainAgentContribution({
+			prompt: "Main",
+			tools: ["subagent_start"],
+			agent: { id: "Main", tools: ["subagent_start"], agents: ["Allowed"] },
+		});
+		const startSpy = spyOn(
+			InvocationSupervisor.prototype,
+			"start",
+		).mockResolvedValue({
+			invocationId: "new",
+			runtimeLeaseId: "new-lease",
+			childPiSessionId: "new-child",
+			childSessionDir: join(suiteDir, "new-child"),
+			childSessionFile: join(suiteDir, "new-child", "child.jsonl"),
+			modelId: "openai/test-model",
+			thinking: "high",
+			contextWindow: 128_000,
+		} as InvocationAcceptance);
+		try {
+			await subagents(pi);
+			await pi.emit(
+				"session_start",
+				{ type: "session_start", reason: "fork" } satisfies SessionStartEvent,
+				ctx,
+			);
+			await getTool(pi, "subagent_start").execute(
+				"allocation-start",
+				{ agentId: "Allowed", taskName: "New", prompt: "work" },
+				undefined,
+				undefined,
+				ctx,
+			);
+			expect(startSpy.mock.calls[0]?.[0].sessionKey).toEqual({
+				ownerPiSessionId: fork.getSessionId(),
+				ownerLocalSessionId: 8,
+			});
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		} finally {
+			startSpy.mockRestore();
+		}
 	});
 
 	test("returns no_active_sessions for a reconstructed terminal child", async () => {

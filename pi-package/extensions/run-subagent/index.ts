@@ -5,6 +5,7 @@ import type {
 	AgentToolResult,
 	ExtensionAPI,
 	ExtensionContext,
+	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { isAbortedAgentRun } from "../../shared/agent-end-state";
@@ -59,6 +60,7 @@ import {
 } from "./entry-config";
 import { readSubagentAgentId } from "./environment";
 import { errorMessage } from "./error-message";
+import { materializeForkHierarchy } from "./fork-hierarchy";
 import { InvocationSupervisor } from "./invocation-supervisor";
 import { parseFeedback, parseJournalRecord } from "./journal-codec";
 import {
@@ -265,8 +267,8 @@ function registerLifecycleHandlers(
 	pi: ExtensionAPI,
 	state: RuntimeState,
 ): void {
-	pi.on("session_start", (_event, ctx) => {
-		state.initialization = handleSessionStart(pi, state, ctx);
+	pi.on("session_start", (event, ctx) => {
+		state.initialization = handleSessionStart(pi, state, event, ctx);
 		return state.initialization;
 	});
 	pi.on("message_end", (_event, ctx) => reconcileRuntime(state, ctx));
@@ -289,6 +291,7 @@ function registerLifecycleHandlers(
 async function handleSessionStart(
 	pi: ExtensionAPI,
 	state: RuntimeState,
+	event: SessionStartEvent,
 	ctx: ExtensionContext,
 ): Promise<void> {
 	const config = await state.resolveConfig();
@@ -311,6 +314,11 @@ async function handleSessionStart(
 	state.workerBridge ??= installWorkerRuntimeBridge();
 	if (state.workerBridge === undefined) {
 		state.rootRuntime?.management?.dispose();
+		if (event.reason === "fork") {
+			materializeForkHierarchy(ctx.sessionManager, (snapshot) => {
+				pi.appendEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, snapshot);
+			});
+		}
 		state.rootRuntime = await createRootRuntime(pi, ctx, state);
 		registerManagementEntries(pi, state, ctx);
 		return;

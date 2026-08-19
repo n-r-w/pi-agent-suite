@@ -412,6 +412,12 @@ Accepted session IDs increase within each saved owner session and remain stable 
 
 The original callable agent identity remains attached to the saved logical session. A terminal continuation uses that agent's current definition resolved for the owning runtime's working directory.
 
+## Native fork behavior
+
+A Pi native `/fork` or `/clone` retains the selected root branch and creates a new root Pi session ID. At fork materialization, that root branch selects only direct children whose latest state is terminal success. Each copied child's current source branch recursively selects its direct terminal-success descendants. Every selected child is copied from its current source branch, so copied child history can be later than the selected root fork point.
+
+The copied hierarchy preserves each direct owner's local session IDs. Every included child receives a new Pi session ID and independent session file. `subagent_steer`, `subagent_wait`, `subagent_query`, owner-local ID allocation, and the management screen operate on the copied hierarchy without affecting the original hierarchy. Materialization includes retained terminal-success descendants regardless of `maxDepth`; `maxDepth` limits only new delegation.
+
 ## Process lifetime and terminal outcomes
 
 Each active invocation runs in a separate saved child Pi process owned by the Pi runtime that started it. The process remains supervised after start or steer acceptance and does not outlive its owning runtime.

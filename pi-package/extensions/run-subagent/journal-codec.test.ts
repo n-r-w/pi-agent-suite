@@ -24,6 +24,15 @@ const SESSION: LogicalSession = {
 	},
 	state: "active",
 } as unknown as LogicalSession;
+const {
+	ownerRuntimeLeaseId: _ownerRuntimeLeaseId,
+	...SESSION_WITHOUT_OWNER_LEASE
+} = SESSION;
+const SNAPSHOT_SESSION: LogicalSession = {
+	...SESSION_WITHOUT_OWNER_LEASE,
+	state: "terminal-success",
+};
+
 const FEEDBACK = {
 	feedbackId: "feedback-1",
 	invocationId: "invocation-1",
@@ -45,6 +54,16 @@ describe("journal codec", () => {
 		// Dependencies: production journal parser and representative subagent domain values.
 		const records: JournalRecord[] = [
 			{ kind: "session-accepted", session: SESSION },
+			{
+				kind: "owner-snapshot",
+				ownerPiSessionId: SNAPSHOT_SESSION.key.ownerPiSessionId,
+				sessions: [],
+			},
+			{
+				kind: "owner-snapshot",
+				ownerPiSessionId: SNAPSHOT_SESSION.key.ownerPiSessionId,
+				sessions: [SNAPSHOT_SESSION],
+			},
 			{
 				kind: "continuation-accepted",
 				sessionKey: SESSION.key,
@@ -118,6 +137,39 @@ describe("journal codec", () => {
 		} as unknown as SubagentFeedback;
 		const malformed: unknown[] = [
 			null,
+			{
+				kind: "owner-snapshot",
+				ownerPiSessionId: SNAPSHOT_SESSION.key.ownerPiSessionId,
+				sessions: [],
+				extra: true,
+			},
+			{
+				kind: "owner-snapshot",
+				ownerPiSessionId: SNAPSHOT_SESSION.key.ownerPiSessionId,
+			},
+			{
+				kind: "owner-snapshot",
+				ownerPiSessionId: SNAPSHOT_SESSION.key.ownerPiSessionId,
+				sessions: [{ ...SNAPSHOT_SESSION, state: "active" }],
+			},
+			{
+				kind: "owner-snapshot",
+				ownerPiSessionId: SNAPSHOT_SESSION.key.ownerPiSessionId,
+				sessions: [
+					{
+						...SNAPSHOT_SESSION,
+						key: {
+							...SNAPSHOT_SESSION.key,
+							ownerPiSessionId: "other-owner",
+						},
+					},
+				],
+			},
+			{
+				kind: "owner-snapshot",
+				ownerPiSessionId: SNAPSHOT_SESSION.key.ownerPiSessionId,
+				sessions: [{ ...SNAPSHOT_SESSION, ownerRuntimeLeaseId: "lease" }],
+			},
 			{},
 			{ kind: "unknown" },
 			{ kind: "session-accepted", session: { ...SESSION, state: "invalid" } },

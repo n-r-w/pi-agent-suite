@@ -119,6 +119,11 @@ export type AgentOperationEvidence =
 /** Records direct-owner state transitions outside model context. */
 export type JournalRecord =
 	| {
+			readonly kind: "owner-snapshot";
+			readonly ownerPiSessionId: string;
+			readonly sessions: readonly LogicalSession[];
+	  }
+	| {
 			readonly kind: "session-accepted";
 			readonly session: LogicalSession;
 	  }
