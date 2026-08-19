@@ -84,6 +84,7 @@ import {
 	SUBAGENT_HISTORY_CUSTOM_TYPE,
 	SUBAGENT_JOURNAL_CUSTOM_TYPE,
 } from "./persistence";
+import { projectSessionDirectory } from "./project-session-directory";
 import { QueryBranchAccess } from "./query-branch-access";
 import type { QueryBranchResponse } from "./query-branch-wire";
 import {
@@ -849,9 +850,9 @@ function createRootSupervisor(options: {
 		bridge: options.bridge,
 		childStartupConfig: options.childStartupConfig,
 		recordChildStartupAttempt: options.recordChildStartupAttempt,
-		sessionsDir: join(
-			getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR),
-			"sessions",
+		sessionsDir: projectSessionDirectory(
+			join(getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR), "sessions"),
+			options.ctx.cwd,
 		),
 		resolveLaunch: (request) =>
 			resolveLaunchConfiguration({
