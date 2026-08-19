@@ -432,6 +432,108 @@ describe("SessionStore", () => {
 		}
 	});
 
+	test("rebases fold state at the last owner snapshot boundary", () => {
+		// Purpose: an owner snapshot must replace stale session and reconciliation state while preserving later append-order updates.
+		// Input and expected output: two snapshots, a stale earlier session, and later continuation and terminal records produce only the last snapshot and its terminal session.
+		// Edge case: an empty first snapshot and a non-empty last snapshot prove that the last boundary wins and that zero-session snapshots are valid.
+		// Dependencies: public SessionManager custom entries, closed journal parsing, and SessionStore.fold.
+		const directory = mkdtempSync(join(tmpdir(), "subagents-owner-snapshot-"));
+		try {
+			const manager = createPersistedSession(directory);
+			const ownerPiSessionId = manager.getSessionId();
+			const staleSession: LogicalSession = {
+				key: { ownerPiSessionId, ownerLocalSessionId: 1 },
+				childPiSessionId: "stale-child",
+				childSessionDir: directory,
+				childSessionFile: join(directory, "stale-child.jsonl"),
+				agentId: "SubAgentCoder",
+				taskName: "Stale session",
+				creationOrder: 1,
+				invocationId: "stale-invocation",
+				runtimeLeaseId: "stale-lease",
+				invocationMetadata: INVOCATION_METADATA,
+				state: "active",
+			};
+			const snapshotSession: LogicalSession = {
+				...staleSession,
+				key: { ownerPiSessionId, ownerLocalSessionId: 2 },
+				childPiSessionId: "snapshot-child",
+				childSessionFile: join(directory, "snapshot-child.jsonl"),
+				invocationId: "snapshot-invocation",
+				runtimeLeaseId: "snapshot-lease",
+				state: "terminal-success",
+			};
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "session-accepted",
+				session: staleSession,
+			});
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "history-pending",
+				feedbackId: "stale-feedback",
+				invocationId: staleSession.invocationId,
+				sessionKey: staleSession.key,
+			});
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "owner-snapshot",
+				ownerPiSessionId,
+				sessions: [],
+			});
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "owner-snapshot",
+				ownerPiSessionId,
+				sessions: [snapshotSession],
+			});
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "continuation-accepted",
+				sessionKey: snapshotSession.key,
+				invocationId: "continued-invocation",
+				runtimeLeaseId: "continued-lease",
+				invocationMetadata: INVOCATION_METADATA,
+			});
+			manager.appendCustomEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, {
+				kind: "terminal",
+				sessionKey: snapshotSession.key,
+				invocationId: "continued-invocation",
+				state: "terminal-success",
+				disposition: "pending",
+			});
+
+			const folded = new SessionStore().fold(manager.getBranch());
+
+			expect(folded.records).toEqual([
+				{
+					kind: "owner-snapshot",
+					ownerPiSessionId,
+					sessions: [snapshotSession],
+				},
+				{
+					kind: "continuation-accepted",
+					sessionKey: snapshotSession.key,
+					invocationId: "continued-invocation",
+					runtimeLeaseId: "continued-lease",
+					invocationMetadata: INVOCATION_METADATA,
+				},
+				{
+					kind: "terminal",
+					sessionKey: snapshotSession.key,
+					invocationId: "continued-invocation",
+					state: "terminal-success",
+					disposition: "pending",
+				},
+			]);
+			expect(folded.sessions).toEqual([
+				{
+					...snapshotSession,
+					invocationId: "continued-invocation",
+					runtimeLeaseId: "continued-lease",
+					invocationMetadata: INVOCATION_METADATA,
+				},
+			]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	test("folds current parent lease from nested continuation records", () => {
 		// Purpose: durable continuation state must replace the nested session's prior parent runtime lease.
 		// Input and expected output: terminal session under old-parent becomes active under new-parent with the continued invocation and runtime lease.

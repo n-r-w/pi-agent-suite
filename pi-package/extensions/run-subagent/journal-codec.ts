@@ -30,6 +30,8 @@ const LOGICAL_SESSION_KEYS = [
 export function parseJournalRecord(value: unknown): JournalRecord | undefined {
 	const kind = readStringField(value, "kind");
 	switch (kind) {
+		case "owner-snapshot":
+			return parseOwnerSnapshotRecord(value);
 		case "session-accepted":
 			return parseAcceptedRecord(value);
 		case "continuation-accepted":
@@ -45,6 +47,38 @@ export function parseJournalRecord(value: unknown): JournalRecord | undefined {
 		default:
 			return undefined;
 	}
+}
+
+/** Parses one owner snapshot that establishes a new journal boundary. */
+function parseOwnerSnapshotRecord(value: unknown): JournalRecord | undefined {
+	if (!hasExactKeys(value, ["kind", "ownerPiSessionId", "sessions"])) {
+		return undefined;
+	}
+	const ownerPiSessionId = readStringField(value, "ownerPiSessionId");
+	const rawSessions = readField(value, "sessions");
+	if (ownerPiSessionId === undefined || !Array.isArray(rawSessions)) {
+		return undefined;
+	}
+	const sessions: LogicalSession[] = [];
+	for (const sessionValue of rawSessions) {
+		if (
+			typeof sessionValue !== "object" ||
+			sessionValue === null ||
+			Object.hasOwn(sessionValue, "ownerRuntimeLeaseId")
+		) {
+			return undefined;
+		}
+		const session = parseLogicalSession(sessionValue);
+		if (
+			session === undefined ||
+			session.key.ownerPiSessionId !== ownerPiSessionId ||
+			session.state !== "terminal-success"
+		) {
+			return undefined;
+		}
+		sessions.push(session);
+	}
+	return { kind: "owner-snapshot", ownerPiSessionId, sessions };
 }
 
 /** Parses one accepted-session journal record. */

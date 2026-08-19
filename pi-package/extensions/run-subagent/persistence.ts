@@ -274,6 +274,15 @@ export class SessionStore implements OwnerSessionStore {
 			if (record === undefined) {
 				continue;
 			}
+			if (record.kind === "owner-snapshot") {
+				records.length = 0;
+				sessions.clear();
+				records.push(record);
+				for (const session of record.sessions) {
+					sessions.set(keyOf(session.key), session);
+				}
+				continue;
+			}
 			records.push(record);
 			applyRecord(sessions, record);
 		}

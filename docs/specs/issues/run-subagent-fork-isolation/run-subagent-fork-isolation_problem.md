@@ -6,7 +6,7 @@ The `run-subagent` extension persists a root session's subagent hierarchy as cus
 
 ## Problem Statement
 
-When Pi creates a native fork of a root session that has retained subagents, `run-subagent` reconstructs journal entries with their original owner Pi session IDs. The forked root has a different Pi session ID, so the inherited subagents are inaccessible from the fork and may still reference mutable child session files used by the original hierarchy.
+When Pi creates a native fork of a root session that has retained subagents, `run-subagent` reconstructs the retained journal entries with their original owner Pi session IDs and child session file references. The forked root has a different Pi session ID, so inherited subagents are inaccessible from the fork and share mutable child state with the original hierarchy.
 
 ## Who is affected
 
@@ -41,19 +41,19 @@ The forked root receives a new Pi session ID, but retained `run-subagent` journa
 
 ## Desired Outcome
 
-A native root fork represents the retained root branch and retained subagent hierarchy as an independent historical snapshot. The fork can address every retained subagent by its owner-local ID. Work performed after the selected root fork point appears only in the hierarchy where that work occurred.
+A native root fork has an independent, accessible copy of the retained terminal-success subagent hierarchy. Each copied child uses its source branch when the fork is materialized. A child can therefore include history later than the selected root fork point.
 
 ## Success Metrics
 
 - An isolated native-fork behavior test can steer, wait for, and query inherited direct subagents through the forked root.
 - The forked management projection contains the retained subagent hierarchy.
 - Starting a new direct subagent in the fork does not reuse an inherited owner-local ID.
-- Continuing a subagent in the original hierarchy does not change the corresponding forked child session.
-- A fork created before a later child continuation contains child history only through the retained root fork point.
+- Continuing a subagent in either hierarchy does not change the corresponding child session in the other hierarchy.
+- A fork can include child history later than the selected root fork point while preserving independent child files and Pi session IDs.
 
 ## Scope
 
-The problem covers native Pi forks of root sessions, retained `run-subagent` journal state, inherited nested subagent sessions, owner-local identity, historical consistency, and isolation between original and forked session hierarchies.
+The problem covers native Pi forks of root sessions, retained `run-subagent` journal state, inherited nested terminal-success subagent sessions, owner-local identity, and isolation between original and forked session hierarchies.
 
 ## Out of Scope / Non-Goals
 
