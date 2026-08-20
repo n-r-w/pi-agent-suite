@@ -77,6 +77,9 @@ interface ConversationRowAnchor {
 /** Keeps the loading sentinel outside every persisted Pi entry identity. */
 const EARLIER_HISTORY_COMPONENT_KEY = "management:earlier-history";
 
+/** Converts a token ratio to an integer percentage. */
+const PERCENT_FACTOR = 100;
+
 /** Identifies shell-history zones that are valid only in Pi's top-level transcript. */
 const SHELL_INTEGRATION_ZONE_MARKERS = [
 	"\u001b]133;A\u0007",
@@ -138,6 +141,7 @@ interface ConversationComposition {
 	readonly metadata: {
 		readonly modelId?: string;
 		readonly contextTokens?: number;
+		readonly cacheHitRate?: number;
 	};
 }
 
@@ -151,6 +155,7 @@ function composeConversation(
 	const expandables: ExpandableComponent[] = [];
 	const pendingTools = new Map<string, ToolExecutionComponent>();
 	let latestAssistant: AssistantMessage | undefined;
+	const hasCacheActivity = hasAssistantCacheActivity(entries);
 	for (const entry of entries) {
 		if (entry.type === "custom_message") {
 			const component = createCustomComponent(entry, options);
@@ -213,7 +218,7 @@ function composeConversation(
 		components,
 		tools,
 		expandables,
-		metadata: assistantMetadata(latestAssistant),
+		metadata: assistantMetadata(latestAssistant, hasCacheActivity),
 	};
 }
 
@@ -535,15 +540,37 @@ function messageText(content: UserMessage["content"]): string {
 		.join("\n");
 }
 
+/** Reports whether the loaded branch has observed prompt cache activity. */
+function hasAssistantCacheActivity(
+	entries: readonly ConversationProjectionEntry[],
+): boolean {
+	return entries.some(
+		(entry) =>
+			entry.type === "message" &&
+			entry.message.role === "assistant" &&
+			(entry.message.usage.cacheRead > 0 || entry.message.usage.cacheWrite > 0),
+	);
+}
+
 /** Returns model and context values reported by the latest assistant message. */
 function assistantMetadata(
 	message: AssistantMessage | undefined,
+	hasCacheActivity: boolean,
 ): ConversationComposition["metadata"] {
 	if (message === undefined) {
 		return {};
 	}
+	const promptTokens =
+		message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
 	return {
 		modelId: `${message.provider}/${message.model}`,
 		contextTokens: message.usage.totalTokens,
+		...(hasCacheActivity && promptTokens > 0
+			? {
+					cacheHitRate: Math.round(
+						(message.usage.cacheRead / promptTokens) * PERCENT_FACTOR,
+					),
+				}
+			: {}),
 	};
 }
