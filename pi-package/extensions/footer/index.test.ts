@@ -80,6 +80,79 @@ afterEach(async () => {
 });
 
 describe("footer", () => {
+	test("shows rounded cache hit rate by default and when explicitly enabled", async () => {
+		// Purpose: footer must expose the latest prompt cache hit rate in the requested compact format.
+		// Input and expected output: 874 cached tokens out of 1,000 prompt tokens render as CH87 with default and explicit enablement.
+		// Edge case: the displayed value rounds to an integer and omits both the decimal fraction and percent sign.
+		// Dependencies: isolated suite directories and in-memory ExtensionAPI/session context fakes.
+		for (const showCacheHitRate of [undefined, true]) {
+			await withIsolatedSuiteDir(async (suiteDir) => {
+				await writeFooterConfig(suiteDir, {
+					enabled: true,
+					showApiCost: false,
+					...(showCacheHitRate === undefined ? {} : { showCacheHitRate }),
+				});
+
+				const pi = createExtensionApiFake();
+				let footerFactory:
+					| ((
+							tui: FooterTuiFake,
+							theme: FooterThemeFake,
+							footerData: FooterDataFake,
+					  ) => FooterComponentFake)
+					| undefined;
+				const ctx = createSessionContextFake(
+					(factory) => {
+						footerFactory = factory;
+					},
+					[
+						{
+							type: "message",
+							message: {
+								role: "assistant",
+								usage: {
+									input: 126,
+									cacheRead: 874,
+									cacheWrite: 0,
+									cost: { total: 0 },
+								},
+							},
+						},
+					],
+				);
+
+				footer(pi as unknown as ExtensionAPI);
+				await getSessionStartHandler(pi)({}, ctx);
+				expect(footerFactory).toBeDefined();
+				if (footerFactory === undefined) {
+					throw new Error("footer factory is not set");
+				}
+
+				const component = footerFactory(
+					{ requestRender() {} },
+					{
+						fg(_color, value) {
+							return value;
+						},
+					},
+					{
+						getExtensionStatuses: () => new Map([["context-projection", "~0"]]),
+						getGitBranch: () => null,
+					},
+				);
+
+				const segments = (component.render(200)[0] ?? "").split(" · ");
+				expect(segments).toEqual([
+					"footer-project",
+					"No agent",
+					"github-copilot/gpt-5.3-codex/medium",
+					"CH87",
+					"~0",
+				]);
+			});
+		}
+	});
+
 	test("shows provider together with model and thinking even when showProvider is false", async () => {
 		// Purpose: footer model segment must include provider when model and thinking are enabled.
 		// Input and expected output: config with showProvider=false still renders provider/model/thinking.
@@ -164,6 +237,7 @@ function createSessionContextFake(
 			footerData: FooterDataFake,
 		) => FooterComponentFake,
 	) => void,
+	entries: unknown[] = [],
 ): SessionContextFake {
 	return {
 		cwd: "/tmp/footer-project",
@@ -177,7 +251,7 @@ function createSessionContextFake(
 				return "session";
 			},
 			getEntries(): unknown[] {
-				return [];
+				return entries;
 			},
 		},
 		modelRegistry: {

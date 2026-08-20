@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`footer` installs this package's custom pi footer. It shows project, optional git branch, quota, API cost, active agent, model, projection status, MCP errors, context usage, and statuses without a primary-line representation.
+`footer` installs this package's custom pi footer. It shows project, optional git branch, quota, API cost, active agent, model, the latest prompt cache hit rate, projection status, MCP errors, context usage, and statuses without a primary-line representation.
 
 ## Configuration file
 
@@ -19,6 +19,7 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
   "showModel": true,
   "showThinkingLevel": true,
   "showApiCost": true,
+  "showCacheHitRate": true,
   "showGitBranch": false,
   "showAdditionalStatusLine": true
 }
@@ -33,6 +34,7 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
 | `showModel` | boolean | No | `true` | Shows the model name in the model segment. |
 | `showThinkingLevel` | boolean | No | `true` | Shows the model thinking level in the model segment. |
 | `showApiCost` | boolean | No | `true` | Shows the recorded API cost segment. |
+| `showCacheHitRate` | boolean | No | `true` | Shows the latest prompt cache hit rate as an integer such as `CH87`. |
 | `showGitBranch` | boolean | No | `false` | Shows the current git branch as `project(branch)` in the project segment. |
 | `showAdditionalStatusLine` | boolean | No | `true` | Shows extension statuses that have no representation on the primary line. |
 
@@ -45,6 +47,7 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
 - The additional status line is omitted when no unconsumed status has visible text.
 - Quota, context projection, the selected agent, and MCP errors remain on the primary line and are not duplicated.
 - Codex fast mode remains in the primary model segment when that segment is visible.
+- Cache hit rate is calculated as `cacheRead / (input + cacheRead + cacheWrite) * 100` for the latest assistant response and remains hidden until the session reports cache activity.
 - Primary-line segments never wrap or move to the additional line.
 - Each rendered line is truncated independently to the terminal width.
 - Context usage is shown as `used/threshold/window` when native pi compaction is enabled.

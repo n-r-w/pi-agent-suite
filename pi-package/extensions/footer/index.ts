@@ -63,6 +63,9 @@ const SHOW_THINKING_LEVEL_CONFIG_KEY = "showThinkingLevel";
 /** Config key that controls API cost visibility in the footer. */
 const SHOW_API_COST_CONFIG_KEY = "showApiCost";
 
+/** Config key that controls latest prompt cache hit rate visibility. */
+const SHOW_CACHE_HIT_RATE_CONFIG_KEY = "showCacheHitRate";
+
 /** Config key that controls git branch visibility in the project segment. */
 const SHOW_GIT_BRANCH_CONFIG_KEY = "showGitBranch";
 
@@ -75,6 +78,7 @@ const FOOTER_DISPLAY_CONFIG_KEYS = [
 	SHOW_MODEL_CONFIG_KEY,
 	SHOW_THINKING_LEVEL_CONFIG_KEY,
 	SHOW_API_COST_CONFIG_KEY,
+	SHOW_CACHE_HIT_RATE_CONFIG_KEY,
 	SHOW_GIT_BRANCH_CONFIG_KEY,
 	SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY,
 ] as const;
@@ -153,6 +157,7 @@ interface FooterConfig {
 	readonly showModel: boolean;
 	readonly showThinkingLevel: boolean;
 	readonly showApiCost: boolean;
+	readonly showCacheHitRate: boolean;
 	readonly showGitBranch: boolean;
 	readonly showAdditionalStatusLine: boolean;
 }
@@ -481,6 +486,36 @@ function buildApiCostSegment(
 	return `$${totalCost.toFixed(API_COST_DECIMAL_PLACES)}${usingSubscription ? " (sub)" : ""}`;
 }
 
+/** Builds the latest prompt cache hit rate using pi's normalized assistant usage. */
+function buildCacheHitRateSegment(
+	config: FooterConfig,
+	ctx: FooterSessionContext,
+): string | undefined {
+	if (!config.showCacheHitRate) {
+		return undefined;
+	}
+
+	let hasCacheActivity = false;
+	let latestCacheHitRate: number | undefined;
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (entry.type !== "message" || entry.message.role !== "assistant") {
+			continue;
+		}
+
+		const { input, cacheRead, cacheWrite } = entry.message.usage;
+		hasCacheActivity ||= cacheRead > 0 || cacheWrite > 0;
+		const promptTokens = input + cacheRead + cacheWrite;
+		latestCacheHitRate =
+			promptTokens > 0
+				? (cacheRead / promptTokens) * PERCENT_FACTOR
+				: undefined;
+	}
+
+	return hasCacheActivity && latestCacheHitRate !== undefined
+		? `CH${Math.round(latestCacheHitRate)}`
+		: undefined;
+}
+
 /** Builds the agent segment from the runtime contribution used for prompt composition. */
 function buildAgentSegment(renderState: FooterRenderState): string {
 	return sanitizeStatusText(renderState.agentLabel) || NO_AGENT_LABEL;
@@ -546,10 +581,12 @@ function renderFooterLines({
 	theme,
 	width,
 }: FooterRenderOptions): string[] {
+	const cacheHitRateSegment = buildCacheHitRateSegment(config, ctx);
 	const fixedPrioritySegments = [
 		buildStatusSegmentByKey(footerData, CODEX_QUOTA_STATUS_KEY),
 		buildApiCostSegment(config, ctx, sessionState),
 		buildAgentSegment(renderState),
+		cacheHitRateSegment,
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
 		buildContextSegment(renderState, theme, compactionSettings),
@@ -578,6 +615,7 @@ function renderFooterLines({
 		buildApiCostSegment(config, ctx, sessionState),
 		buildAgentSegment(renderState),
 		modelDisplaySegment,
+		cacheHitRateSegment,
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
 		buildContextSegment(renderState, theme, compactionSettings),
@@ -763,6 +801,7 @@ function buildFooterConfig(config: Record<string, unknown>): FooterConfig {
 		showModel: config[SHOW_MODEL_CONFIG_KEY] !== false,
 		showThinkingLevel: config[SHOW_THINKING_LEVEL_CONFIG_KEY] !== false,
 		showApiCost: config[SHOW_API_COST_CONFIG_KEY] !== false,
+		showCacheHitRate: config[SHOW_CACHE_HIT_RATE_CONFIG_KEY] !== false,
 		showGitBranch: config[SHOW_GIT_BRANCH_CONFIG_KEY] === true,
 		showAdditionalStatusLine:
 			config[SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY] !== false,
