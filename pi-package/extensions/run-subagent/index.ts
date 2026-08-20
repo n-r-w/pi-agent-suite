@@ -17,6 +17,7 @@ import {
 	type ChildStartupConfig,
 	readChildStartupConfig,
 } from "../../shared/child-startup-config";
+import { readFooterConfig } from "../../shared/footer-config";
 import { registerKnowledgeHierarchyClient } from "../../shared/knowledge-runtime";
 import {
 	type PackagePresentationEventBus,
@@ -805,6 +806,8 @@ async function createRootRuntime(
 	});
 	addReconstructedSessions(catalog, await store.reconstructActive(writer));
 	coordinator.registerOwner(owner);
+	const footerConfig =
+		ctx.mode === "tui" ? await readFooterConfig() : undefined;
 	const management =
 		ctx.mode === "tui"
 			? createRootManagementRuntime({
@@ -816,6 +819,9 @@ async function createRootRuntime(
 					coordinator,
 					supervisor,
 					sessionSnapshots,
+					showCacheHitRate:
+						footerConfig?.kind === "enabled" &&
+						footerConfig.config.showCacheHitRate,
 				})
 			: undefined;
 	return {
@@ -929,6 +935,7 @@ function createRootManagementRuntime(options: {
 	readonly coordinator: SubagentCoordinator;
 	readonly supervisor: InvocationSupervisor;
 	readonly sessionSnapshots: SessionSnapshotLoader;
+	readonly showCacheHitRate: boolean;
 }): RootManagementRuntime {
 	const projection = new ManagementProjectionRuntime({
 		rootOwnerPiSessionId: options.owner.ownerPiSessionId,
@@ -971,6 +978,7 @@ function createRootManagementRuntime(options: {
 		tools,
 		submission,
 		retained,
+		showCacheHitRate: options.showCacheHitRate,
 	});
 	return {
 		projection,

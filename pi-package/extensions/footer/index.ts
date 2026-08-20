@@ -11,7 +11,6 @@ import {
 	getAgentRuntimeComposition,
 	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
-import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 import {
 	CODEX_FAST_ENABLED_STATUS,
 	CODEX_FAST_STATUS_KEY,
@@ -23,6 +22,10 @@ import {
 	sliceTextSuffixByWidth,
 	truncateTextByWidth,
 } from "../../shared/display-width";
+import {
+	type FooterConfig,
+	readFooterConfig,
+} from "../../shared/footer-config";
 import { sumHelperApiCost } from "../../shared/helper-api-cost";
 
 /** Footer label shown when no main-agent runtime contribution is active. */
@@ -41,53 +44,6 @@ const PRIMARY_LINE_STATUS_KEYS = new Set([
 	CODEX_QUOTA_STATUS_KEY,
 	CONTEXT_PROJECTION_STATUS_KEY,
 ]);
-
-/** Suite directory owned only by this extension. */
-const FOOTER_EXTENSION_DIR = "footer";
-
-/** Legacy config file name supported for existing installations. */
-const FOOTER_LEGACY_CONFIG_FILE = "footer.json";
-
-/** Config key that disables or enables the custom footer. */
-const ENABLED_CONFIG_KEY = "enabled";
-
-/** Config key that controls provider visibility when model or thinking is hidden. */
-const SHOW_PROVIDER_CONFIG_KEY = "showProvider";
-
-/** Config key that controls model-name visibility in the model display segment. */
-const SHOW_MODEL_CONFIG_KEY = "showModel";
-
-/** Config key that controls thinking-level visibility in the model display segment. */
-const SHOW_THINKING_LEVEL_CONFIG_KEY = "showThinkingLevel";
-
-/** Config key that controls API cost visibility in the footer. */
-const SHOW_API_COST_CONFIG_KEY = "showApiCost";
-
-/** Config key that controls latest prompt cache hit rate visibility. */
-const SHOW_CACHE_HIT_RATE_CONFIG_KEY = "showCacheHitRate";
-
-/** Config key that controls git branch visibility in the project segment. */
-const SHOW_GIT_BRANCH_CONFIG_KEY = "showGitBranch";
-
-/** Config key that controls the line for statuses without a primary-line representation. */
-const SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY = "showAdditionalStatusLine";
-
-/** Optional boolean keys that control individual footer display areas. */
-const FOOTER_DISPLAY_CONFIG_KEYS = [
-	SHOW_PROVIDER_CONFIG_KEY,
-	SHOW_MODEL_CONFIG_KEY,
-	SHOW_THINKING_LEVEL_CONFIG_KEY,
-	SHOW_API_COST_CONFIG_KEY,
-	SHOW_CACHE_HIT_RATE_CONFIG_KEY,
-	SHOW_GIT_BRANCH_CONFIG_KEY,
-	SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY,
-] as const;
-
-/** Config keys accepted by the footer config object. */
-const FOOTER_CONFIG_KEYS = [
-	ENABLED_CONFIG_KEY,
-	...FOOTER_DISPLAY_CONFIG_KEYS,
-] as const;
 
 /** Separator between footer segments in the current minimal renderer. */
 export const SEGMENT_SEPARATOR = " · ";
@@ -152,25 +108,10 @@ interface FooterSessionState {
 
 type FooterModelState = Model<Api>;
 
-interface FooterConfig {
-	readonly showProvider: boolean;
-	readonly showModel: boolean;
-	readonly showThinkingLevel: boolean;
-	readonly showApiCost: boolean;
-	readonly showCacheHitRate: boolean;
-	readonly showGitBranch: boolean;
-	readonly showAdditionalStatusLine: boolean;
-}
-
 interface FooterCompactionSettings {
 	readonly enabled: boolean;
 	readonly reserveTokens: number;
 }
-
-type FooterConfigResult =
-	| { readonly kind: "enabled"; readonly config: FooterConfig }
-	| { readonly kind: "disabled" }
-	| { readonly kind: "invalid" };
 
 /** Render input assembled from session-owned state. */
 interface FooterRenderState {
@@ -740,77 +681,6 @@ function readFooterCompactionSettings(
 		enabled: compactionSettings.enabled,
 		reserveTokens: compactionSettings.reserveTokens,
 	};
-}
-
-/** Reads footer config while missing config keeps the footer enabled with defaults. */
-async function readFooterConfig(): Promise<FooterConfigResult> {
-	const configFile = await readExtensionConfigFile({
-		extensionDir: FOOTER_EXTENSION_DIR,
-		legacyConfigFileName: FOOTER_LEGACY_CONFIG_FILE,
-	});
-	if (configFile.kind === "missing") {
-		return { kind: "enabled", config: buildFooterConfig({}) };
-	}
-	if (configFile.kind === "read-error") {
-		return { kind: "invalid" };
-	}
-
-	try {
-		const config: unknown = JSON.parse(configFile.file.content);
-		return parseFooterConfig(config);
-	} catch {
-		return { kind: "invalid" };
-	}
-}
-
-/** Parses the footer config contract. */
-function parseFooterConfig(config: unknown): FooterConfigResult {
-	if (!isRecord(config)) {
-		return { kind: "invalid" };
-	}
-
-	const unsupportedKey = Object.keys(config).find(
-		(key) => !(FOOTER_CONFIG_KEYS as readonly string[]).includes(key),
-	);
-	if (unsupportedKey !== undefined) {
-		return { kind: "invalid" };
-	}
-
-	const enabled = config[ENABLED_CONFIG_KEY];
-	if (enabled !== undefined && typeof enabled !== "boolean") {
-		return { kind: "invalid" };
-	}
-	if (enabled === false) {
-		return { kind: "disabled" };
-	}
-
-	const invalidDisplayValue = FOOTER_DISPLAY_CONFIG_KEYS.some(
-		(key) => config[key] !== undefined && typeof config[key] !== "boolean",
-	);
-	if (invalidDisplayValue) {
-		return { kind: "invalid" };
-	}
-
-	return { kind: "enabled", config: buildFooterConfig(config) };
-}
-
-/** Builds footer config by applying defaults for omitted fields. */
-function buildFooterConfig(config: Record<string, unknown>): FooterConfig {
-	return {
-		showProvider: config[SHOW_PROVIDER_CONFIG_KEY] !== false,
-		showModel: config[SHOW_MODEL_CONFIG_KEY] !== false,
-		showThinkingLevel: config[SHOW_THINKING_LEVEL_CONFIG_KEY] !== false,
-		showApiCost: config[SHOW_API_COST_CONFIG_KEY] !== false,
-		showCacheHitRate: config[SHOW_CACHE_HIT_RATE_CONFIG_KEY] !== false,
-		showGitBranch: config[SHOW_GIT_BRANCH_CONFIG_KEY] === true,
-		showAdditionalStatusLine:
-			config[SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY] !== false,
-	};
-}
-
-/** Returns true when a runtime value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Extension entry point for custom footer runtime behavior. */

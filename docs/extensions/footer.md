@@ -29,12 +29,12 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
 
 | Name | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `enabled` | boolean | No | `true` | Enables this custom footer. Set to `false` to keep this footer from being installed. |
+| `enabled` | boolean | No | `true` | Enables this custom footer and its cache hit rate display on the subagent management screen. |
 | `showProvider` | boolean | No | `true` | Shows the model provider in the model segment. When `showModel` and `showThinkingLevel` are both `true`, the provider is shown even if `showProvider` is `false`. |
 | `showModel` | boolean | No | `true` | Shows the model name in the model segment. |
 | `showThinkingLevel` | boolean | No | `true` | Shows the model thinking level in the model segment. |
 | `showApiCost` | boolean | No | `true` | Shows the recorded API cost segment. |
-| `showCacheHitRate` | boolean | No | `true` | Shows the latest prompt cache hit rate as an integer such as `CH87`. |
+| `showCacheHitRate` | boolean | No | `true` | Shows the latest prompt cache hit rate as an integer such as `CH87` in the main footer and selected subagent header. |
 | `showGitBranch` | boolean | No | `false` | Shows the current git branch as `project(branch)` in the project segment. |
 | `showAdditionalStatusLine` | boolean | No | `true` | Shows extension statuses that have no representation on the primary line. |
 
@@ -43,7 +43,7 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
 - The config file must contain a JSON object.
 - Only the parameters listed above are supported.
 - Each parameter value must be a boolean.
-- Invalid config prevents this custom footer from being installed.
+- Invalid config prevents this custom footer from being installed and hides the cache hit rate on the subagent management screen.
 - The additional status line is omitted when no unconsumed status has visible text.
 - Quota, context projection, the selected agent, and MCP errors remain on the primary line and are not duplicated.
 - Codex fast mode remains in the primary model segment when that segment is visible.

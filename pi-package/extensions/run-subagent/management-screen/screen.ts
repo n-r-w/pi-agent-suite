@@ -125,6 +125,7 @@ interface ManagementScreenOptions {
 	readonly submission: ManagementMessageSubmission;
 	readonly retained: ManagementRetainedState;
 	readonly toolsExpanded: boolean;
+	readonly showCacheHitRate: boolean;
 	readonly notify: (message: string) => void;
 	readonly close: () => void;
 }
@@ -948,11 +949,23 @@ export class ManagementScreen implements Component, Focusable {
 			),
 			selectedNode.state,
 		);
+		const cacheHitRate =
+			this.options.showCacheHitRate &&
+			headerMetadata?.modelId === conversationMetadata.modelId
+				? conversationMetadata.cacheHitRate
+				: undefined;
+		const selectedMetadata =
+			headerMetadata === undefined
+				? undefined
+				: {
+						...headerMetadata,
+						...(cacheHitRate === undefined ? {} : { cacheHitRate }),
+					};
 		return renderSelectedSessionHeader({
 			nodes: this.view.nodes,
 			selectedStableKey,
 			...(initialPrompt === undefined ? {} : { initialPrompt }),
-			...(headerMetadata === undefined ? {} : { metadata: headerMetadata }),
+			...(selectedMetadata === undefined ? {} : { metadata: selectedMetadata }),
 			...(this.view.selectedWorkflowStatus === undefined
 				? {}
 				: { workflowStatus: this.view.selectedWorkflowStatus }),
@@ -1066,6 +1079,7 @@ interface ManagementScreenFactoryOptions {
 	readonly tools: ToolPresentationRegistry;
 	readonly submission: ManagementMessageSubmission;
 	readonly retained: ManagementRetainedState;
+	readonly showCacheHitRate: boolean;
 }
 
 /** Creates one stable public custom-component factory for both TUI entries. */
@@ -1084,6 +1098,7 @@ export function createManagementScreenFactory(
 			retained: options.retained,
 			// Pi invokes the factory for every open, so each overlay samples the main conversation independently.
 			toolsExpanded: options.ctx.ui.getToolsExpanded(),
+			showCacheHitRate: options.showCacheHitRate,
 			notify: (message) => options.ctx.ui.notify(message, "error"),
 			close: () => done(undefined),
 		});

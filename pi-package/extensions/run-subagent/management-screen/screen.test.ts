@@ -165,6 +165,8 @@ function conversationEntry(text: string): UserConversationEntry {
 /** Creates one projected assistant message with model and context metadata. */
 function assistantConversationEntry(
 	totalTokens = 120,
+	cacheRead = 0,
+	input = 100,
 ): ConversationProjectionEntry {
 	const message: AssistantMessage = {
 		role: "assistant",
@@ -173,9 +175,9 @@ function assistantConversationEntry(
 		provider: "openai-codex",
 		model: "gpt-5.6-sol",
 		usage: {
-			input: 100,
+			input,
 			output: 20,
-			cacheRead: 0,
+			cacheRead,
 			cacheWrite: 0,
 			totalTokens,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -369,6 +371,7 @@ function createScreen(
 		readonly rows?: number;
 		readonly toolsExpanded?: boolean;
 		readonly theme?: Theme;
+		readonly showCacheHitRate?: boolean;
 	} = {},
 ) {
 	initTheme(undefined, false);
@@ -398,6 +401,7 @@ function createScreen(
 		submission,
 		retained,
 		toolsExpanded: options.toolsExpanded ?? false,
+		showCacheHitRate: options.showCacheHitRate ?? false,
 		notify: (message) => notifications.push(message),
 		close: () => {
 			closeCalls += 1;
@@ -855,6 +859,39 @@ describe("management screen", () => {
 			matchingUsage: true,
 			staleUsageHidden: true,
 		});
+		fixture.screen.dispose();
+	});
+
+	test("shows the latest cache hit rate between model and context usage", () => {
+		// Purpose: the selected subagent header must match the main footer's compact cache hit presentation.
+		// Inputs and expected output: 874 cached tokens out of 1,000 prompt tokens render as CH87 between the model and context.
+		// Edge case: the rate omits both the decimal fraction and percent sign while preserving the existing context value.
+		// Dependencies: enabled management-screen cache display, selected conversation metadata, and selected-header rendering.
+		const node = {
+			...selectedNode(),
+			invocationMetadata: {
+				startedAtMs: 1_700_000_000_000,
+				elapsedMs: 2_000,
+				modelId: "openai-codex/gpt-5.6-sol",
+				thinking: "medium",
+				contextWindow: 190_000,
+			},
+		};
+		const fixture = createScreen({ node, showCacheHitRate: true });
+		fixture.source.publish({
+			...fixture.source.getView(),
+			revision: 2,
+			selectedConversation: [assistantConversationEntry(1_020, 874, 126)],
+			affectedStableKeys: [node.stableKey],
+		});
+
+		const rows = fixture.screen.render(120);
+
+		expect(
+			rows.some((line) =>
+				line.includes("openai-codex/gpt-5.6-sol/medium · CH87 · 1.0k/190k"),
+			),
+		).toBe(true);
 		fixture.screen.dispose();
 	});
 
@@ -1608,6 +1645,7 @@ describe("management screen", () => {
 			tools,
 			submission,
 			retained,
+			showCacheHitRate: true,
 		});
 
 		// ACT: open through ctx.ui.custom, construct the component, and close it through Escape.
@@ -1842,6 +1880,7 @@ describe("management screen", () => {
 			submission: new SubmissionFake(),
 			retained,
 			toolsExpanded: false,
+			showCacheHitRate: true,
 			notify: () => undefined,
 			close: () => undefined,
 		});

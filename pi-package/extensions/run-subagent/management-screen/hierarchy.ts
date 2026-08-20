@@ -37,6 +37,7 @@ interface SelectedSessionMetadata {
 	readonly elapsedMs?: number;
 	readonly modelId?: string;
 	readonly thinking?: string;
+	readonly cacheHitRate?: number;
 	readonly contextTokens?: number;
 	readonly contextWindow?: number;
 	readonly projectionSavedTokens?: number;
@@ -522,9 +523,13 @@ function renderSelectedMetadata(
 					"muted",
 					`${metadata.modelId}${metadata.thinking === undefined ? "" : `/${metadata.thinking}`}`,
 				);
+	const cacheHitRate =
+		metadata.cacheHitRate === undefined
+			? undefined
+			: theme.fg("muted", `CH${metadata.cacheHitRate}`);
 	const context = renderContext(metadata, theme, { normalColor: "muted" });
 	return truncateToWidth(
-		[elapsed, model, context]
+		[elapsed, model, cacheHitRate, context]
 			.filter((field): field is string => field !== undefined)
 			.join(theme.fg("muted", SELECTED_DETAIL_SEPARATOR)),
 		width,
