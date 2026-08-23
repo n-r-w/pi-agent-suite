@@ -100,6 +100,7 @@ const CREATED_STAGE_KEYS = new Set([
 	"model",
 ]);
 const CREATED_MODEL_KEYS = new Set(["thinking"]);
+const STAGE_EDIT_KEYS = new Set(["stageId", "description", "prompt", "model"]);
 const TRIGGER_KEYS = new Set(["type"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
@@ -218,6 +219,60 @@ export function transitionWorkflow(
 		status: "active",
 		route: state.route.slice(0, targetIndex + 1),
 	};
+}
+
+/** Replaces only the editable fields of one stage in the current active workflow. */
+export function editWorkflowStage(
+	state: WorkflowState,
+	value: unknown,
+	source: string,
+): WorkflowState {
+	if (state.status !== "active") {
+		throw new Error("no workflow is active");
+	}
+	if (state.source !== "dynamic") {
+		throw new Error(
+			"only workflows created through workflow_create can be inspected or edited",
+		);
+	}
+	try {
+		const root = requireObject(value, "stage edit", STAGE_EDIT_KEYS);
+		const stageId = readTechnicalIdentifier(root, "stageId");
+		const description = readSingleLineText(root, "description");
+		const prompt = readPromptText(root, "prompt");
+		const model = requireObject(
+			Reflect.get(root, "model"),
+			"model",
+			CREATED_MODEL_KEYS,
+		);
+		const thinking = Reflect.get(model, "thinking");
+		if (!isReasoningLevel(thinking)) {
+			throw new Error("model.thinking is invalid");
+		}
+		const stageIndex = state.workflow.stages.findIndex(
+			(stage) => stage.id === stageId,
+		);
+		if (stageIndex < 0) {
+			throw new Error(`stage ${stageId} does not exist in active workflow`);
+		}
+		const stage = state.workflow.stages[stageIndex];
+		if (stage === undefined) {
+			throw new Error(`stage ${stageId} does not exist in active workflow`);
+		}
+		const stages = [...state.workflow.stages];
+		stages[stageIndex] = {
+			...stage,
+			description,
+			prompt,
+			model: { ...stage.model, thinking },
+		};
+		return {
+			...state,
+			workflow: { ...state.workflow, stages },
+		};
+	} catch (error) {
+		throw new Error(`${source}: ${errorMessage(error)}`);
+	}
 }
 
 /** Derives every stage status from route membership and the active route tail. */
@@ -355,6 +410,9 @@ function replayWorkflowStateEntry(
 			...(restoration !== undefined ? { restoration } : {}),
 		};
 	}
+	if (kind === "stage_edited") {
+		return replayWorkflowStageEdit(state, data);
+	}
 	if (kind === "transitioned") {
 		assertExactKeys(data, new Set(["kind", "route"]), "transitioned entry");
 		if (state === undefined) {
@@ -379,7 +437,32 @@ function replayWorkflowStateEntry(
 		return completeWorkflow(completed);
 	}
 	throw new Error(
-		"entry kind must be activated, created, transitioned, or completed",
+		"entry kind must be activated, created, stage_edited, transitioned, or completed",
+	);
+}
+
+/** Applies one persisted edit only to an active dynamic workflow snapshot. */
+function replayWorkflowStageEdit(
+	state: WorkflowState | undefined,
+	data: Record<string, unknown>,
+): WorkflowState {
+	assertExactKeys(
+		data,
+		new Set(["kind", "stageId", "description", "prompt", "model"]),
+		"stage_edited entry",
+	);
+	if (state === undefined) {
+		throw new Error("stage_edited entry has no active snapshot");
+	}
+	return editWorkflowStage(
+		state,
+		{
+			stageId: Reflect.get(data, "stageId"),
+			description: Reflect.get(data, "description"),
+			prompt: Reflect.get(data, "prompt"),
+			model: Reflect.get(data, "model"),
+		},
+		"stage_edited entry",
 	);
 }
 

@@ -7,11 +7,15 @@ import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
 
 export const WORKFLOW_CREATE_TOOL = "workflow_create";
 export const WORKFLOW_ACTIVATE_TOOL = "workflow_activate";
+export const WORKFLOW_GET_STAGE_TOOL = "workflow_get_stage";
+export const WORKFLOW_EDIT_STAGE_TOOL = "workflow_edit_stage";
 export const WORKFLOW_TRANSITION_TOOL = "workflow_transition";
 
 export type WorkflowToolName =
 	| typeof WORKFLOW_CREATE_TOOL
 	| typeof WORKFLOW_ACTIVATE_TOOL
+	| typeof WORKFLOW_GET_STAGE_TOOL
+	| typeof WORKFLOW_EDIT_STAGE_TOOL
 	| typeof WORKFLOW_TRANSITION_TOOL;
 
 /** Inputs required to resolve workflow capabilities without using Pi runtime state. */
@@ -65,6 +69,13 @@ export function resolveWorkflowAvailability(
 	}
 	if (activationOptions.length > 0) {
 		availableToolNames.add(WORKFLOW_ACTIVATE_TOOL);
+	}
+	if (
+		projectedState?.source === "dynamic" &&
+		projectedState.status === "active"
+	) {
+		availableToolNames.add(WORKFLOW_GET_STAGE_TOOL);
+		availableToolNames.add(WORKFLOW_EDIT_STAGE_TOOL);
 	}
 	if (projectedState !== undefined || allowedCatalog.length > 0) {
 		availableToolNames.add(WORKFLOW_TRANSITION_TOOL);

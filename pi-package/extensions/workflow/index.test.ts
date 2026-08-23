@@ -461,11 +461,13 @@ afterEach(async () => {
 
 describe("workflow extension lifecycle", () => {
 	/** Proves configured definitions exist before lifecycle policy resolution. */
-	test("registers the three sequential workflow tools during initialization", async () => {
+	test("registers the five sequential workflow tools during initialization", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		expect(fake.tools.map(({ name }) => name)).toEqual([
 			"workflow_activate",
+			"workflow_get_stage",
+			"workflow_edit_stage",
 			"workflow_transition",
 			"workflow_create",
 		]);
@@ -474,7 +476,45 @@ describe("workflow extension lifecycle", () => {
 		).toBe(true);
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree");
-		expect(fake.tools).toHaveLength(3);
+		expect(fake.tools).toHaveLength(5);
+	});
+
+	/**
+	 * Proves both stage tools have closed schemas without a workflow identifier or immutable stage fields.
+	 * Input and expected output: get accepts only stageId; edit requires stageId, description, prompt, and thinking.
+	 * Edge cases: extended thinking is valid, while partial edits, workflowId, id, initial, final, triggers, and model.id are rejected.
+	 * Dependencies: registered TypeBox schemas only.
+	 */
+	test("exposes closed stage get and edit schemas", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const get = requireTool(fake, "workflow_get_stage");
+		const edit = requireTool(fake, "workflow_edit_stage");
+		const getSchema = get.parameters as Parameters<typeof Check>[0];
+		const editSchema = edit.parameters as Parameters<typeof Check>[0];
+		const validEdit = {
+			stageId: "start",
+			description: "Revised start",
+			prompt: "Use the revised requirements.",
+			model: { thinking: "xhigh" },
+		};
+
+		expect(Check(getSchema, { stageId: "start" })).toBe(true);
+		expect(Check(getSchema, { stageId: "start", workflowId: "other" })).toBe(
+			false,
+		);
+		expect(Check(editSchema, validEdit)).toBe(true);
+		for (const invalid of [
+			{ ...validEdit, workflowId: "other" },
+			{ ...validEdit, id: "replacement" },
+			{ ...validEdit, initial: true },
+			{ ...validEdit, final: true },
+			{ ...validEdit, triggers: [] },
+			{ ...validEdit, model: { thinking: "high", id: "openai/model" } },
+			{ stageId: "start", description: "Partial" },
+		] as const) {
+			expect(Check(editSchema, invalid)).toBe(false);
+		}
 	});
 
 	/**
@@ -678,6 +718,8 @@ describe("workflow extension lifecycle", () => {
 		});
 		expect(fake.activeTools).toEqual([
 			"read",
+			"workflow_get_stage",
+			"workflow_edit_stage",
 			"workflow_transition",
 			"workflow_create",
 		]);
@@ -699,6 +741,243 @@ describe("workflow extension lifecycle", () => {
 			'<active_workflow id="dynamic-delivery" active_stage_id="done"',
 		);
 		expect(content).not.toContain("<workflow_activation_options");
+	});
+
+	/**
+	 * Proves registered stage tools reject direct calls until a workflow is active.
+	 * Input and expected output: no saved state hides both tools and both executions fail with the same active-workflow error.
+	 * Edge case: registered definitions remain callable in the test despite availability filtering.
+	 * Dependencies: lifecycle reconciliation and execution-time state checks.
+	 */
+	test("requires an active workflow for stage tools", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const get = requireTool(fake, "workflow_get_stage");
+		const edit = requireTool(fake, "workflow_edit_stage");
+
+		expect(fake.activeTools).not.toContain("workflow_get_stage");
+		expect(fake.activeTools).not.toContain("workflow_edit_stage");
+		await expect(get.execute("get", { stageId: "start" })).rejects.toThrow(
+			"no workflow is active",
+		);
+		await expect(
+			edit.execute("edit", {
+				stageId: "start",
+				description: "Start",
+				prompt: "Start only after activation.",
+				model: { thinking: "medium" },
+			}),
+		).rejects.toThrow("no workflow is active");
+	});
+
+	/**
+	 * Proves catalog workflows never expose or execute stage inspection and editing.
+	 * Input and expected output: activating one catalog workflow keeps both tools hidden and direct calls reject it.
+	 * Edge case: workflow_transition remains available for the same active catalog workflow.
+	 * Dependencies: workflow source tracking, availability filtering, and execution-time source checks.
+	 */
+	test("rejects stage tools for catalog workflows", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		const get = requireTool(fake, "workflow_get_stage");
+		const edit = requireTool(fake, "workflow_edit_stage");
+
+		expect(fake.activeTools).not.toContain("workflow_get_stage");
+		expect(fake.activeTools).not.toContain("workflow_edit_stage");
+		expect(fake.activeTools).toContain("workflow_transition");
+		await expect(get.execute("get", { stageId: "start" })).rejects.toThrow(
+			"workflow_create",
+		);
+		await expect(
+			edit.execute("edit", {
+				stageId: "start",
+				description: "Catalog stage",
+				prompt: "Catalog stages cannot be edited.",
+				model: { thinking: "medium" },
+			}),
+		).rejects.toThrow("workflow_create");
+	});
+
+	/**
+	 * Proves stage tools read and change active and non-active stages in only the current active workflow.
+	 * Input and expected output: dynamic creation exposes both tools; edits persist and appear in the next provider context.
+	 * Edge cases: editing a non-active stage does not change current thinking, while editing the active stage applies thinking immediately.
+	 * Dependencies: workflow availability, session persistence, provider-context projection, and model runtime application.
+	 */
+	test("gets and edits stages in the current active workflow", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const create = requireTool(fake, "workflow_create");
+		await create.execute("create", createArguments());
+		const get = requireTool(fake, "workflow_get_stage");
+		const edit = requireTool(fake, "workflow_edit_stage");
+		const transition = requireTool(fake, "workflow_transition");
+
+		expect(fake.activeTools).toEqual(
+			expect.arrayContaining(["workflow_get_stage", "workflow_edit_stage"]),
+		);
+		const initial = (await get.execute("get-start", {
+			stageId: "start",
+		})) as { content: Array<{ type: string; text: string }> };
+		expect(JSON.parse(initial.content[0]?.text ?? "null")).toEqual({
+			id: "start",
+			description: "Start",
+			prompt: "Start dynamic work",
+			model: { thinking: "medium" },
+			initial: true,
+			final: false,
+		});
+
+		await edit.execute("edit-done", {
+			stageId: "done",
+			description: "Revised done",
+			prompt: "Use the revised final-stage requirements.",
+			model: { thinking: "high" },
+		});
+		expect(fake.thinkingLevel).toBe("medium");
+		const revisedDone = (await get.execute("get-done", {
+			stageId: "done",
+		})) as { content: Array<{ type: string; text: string }> };
+		expect(JSON.parse(revisedDone.content[0]?.text ?? "null")).toMatchObject({
+			id: "done",
+			description: "Revised done",
+			prompt: "Use the revised final-stage requirements.",
+			model: { thinking: "high" },
+			initial: false,
+			final: true,
+		});
+
+		await transition.execute("transition", { stageId: "done" });
+		expect(fake.thinkingLevel).toBe("high");
+		await edit.execute("edit-active", {
+			stageId: "done",
+			description: "Correct final stage",
+			prompt: "Follow the corrected requirements now.",
+			model: { thinking: "low" },
+		});
+		expect(fake.thinkingLevel).toBe("low");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["created", "stage_edited", "transitioned", "stage_edited"]);
+		const context = await runContext(fake, []);
+		const content = String(
+			(context as { messages: Array<{ content: unknown }> }).messages[0]
+				?.content,
+		);
+		expect(content).toContain("Correct final stage");
+		expect(content).toContain("Follow the corrected requirements now.");
+	});
+
+	/**
+	 * Proves stage edits survive session replay and are unavailable once the workflow is completed.
+	 * Input and expected output: replaying created and stage_edited entries returns revised stage content; settlement hides both tools.
+	 * Edge case: direct calls against a completed saved snapshot fail instead of reading or changing it.
+	 * Dependencies: session entry replay, agent settlement, and active-tool reconciliation.
+	 */
+	test("replays stage edits and hides stage tools after completion", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_create").execute(
+			"create",
+			createArguments(),
+		);
+		const get = requireTool(fake, "workflow_get_stage");
+		const edit = requireTool(fake, "workflow_edit_stage");
+		await edit.execute("edit", {
+			stageId: "done",
+			description: "Saved revision",
+			prompt: "Replay these corrected requirements.",
+			model: { thinking: "high" },
+		});
+		const branch = fake.appended.map(({ customType, data }) => ({
+			type: "custom",
+			customType,
+			data,
+		}));
+		await runLifecycle(fake, "session_tree", branch);
+		const replayed = (await get.execute("get-replayed", {
+			stageId: "done",
+		})) as { content: Array<{ text: string }> };
+		expect(JSON.parse(replayed.content[0]?.text ?? "null")).toMatchObject({
+			description: "Saved revision",
+			prompt: "Replay these corrected requirements.",
+			model: { thinking: "high" },
+		});
+
+		await requireTool(fake, "workflow_transition").execute("done", {
+			stageId: "done",
+		});
+		await runAgentSettled(fake);
+		expect(fake.activeTools).not.toContain("workflow_get_stage");
+		expect(fake.activeTools).not.toContain("workflow_edit_stage");
+		await expect(
+			get.execute("completed-get", { stageId: "done" }),
+		).rejects.toThrow("no workflow is active");
+		await expect(
+			edit.execute("completed-edit", {
+				stageId: "done",
+				description: "Disallowed",
+				prompt: "Do not edit a completed workflow.",
+				model: { thinking: "medium" },
+			}),
+		).rejects.toThrow("no workflow is active");
+	});
+
+	/**
+	 * Proves invalid or unpersisted edits leave the active snapshot and runtime settings unchanged.
+	 * Input and expected output: unknown stages reject without append; append failure rolls back active-stage thinking.
+	 * Edge case: get and edit share the same unknown-stage diagnostic.
+	 * Dependencies: exact tool validation and atomic workflow model persistence.
+	 */
+	test("preserves active state when stage editing fails", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_create").execute(
+			"create",
+			createArguments(),
+		);
+		const get = requireTool(fake, "workflow_get_stage");
+		const edit = requireTool(fake, "workflow_edit_stage");
+		const appendedBeforeFailure = fake.appended.length;
+		await expect(
+			get.execute("missing-get", { stageId: "missing" }),
+		).rejects.toThrow("stage missing");
+		await expect(
+			edit.execute("missing-edit", {
+				stageId: "missing",
+				description: "Missing",
+				prompt: "This stage does not exist.",
+				model: { thinking: "high" },
+			}),
+		).rejects.toThrow("stage missing");
+		expect(fake.appended).toHaveLength(appendedBeforeFailure);
+
+		fake.appendError = new Error("append failed");
+		await expect(
+			edit.execute("failed-edit", {
+				stageId: "start",
+				description: "Unpersisted revision",
+				prompt: "This change must roll back.",
+				model: { thinking: "high" },
+			}),
+		).rejects.toThrow("append failed");
+		expect(fake.thinkingLevel).toBe("medium");
+		const current = (await get.execute("get-current", {
+			stageId: "start",
+		})) as { content: Array<{ text: string }> };
+		expect(JSON.parse(current.content[0]?.text ?? "null")).toMatchObject({
+			description: "Start",
+			prompt: "Start dynamic work",
+			model: { thinking: "medium" },
+		});
 	});
 
 	/**
@@ -1356,11 +1635,8 @@ describe("workflow extension lifecycle", () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
-		const activate = fake.tools[0];
-		const transition = fake.tools[1];
-		if (activate === undefined || transition === undefined) {
-			throw new Error("tools missing");
-		}
+		const activate = requireTool(fake, "workflow_activate");
+		const transition = requireTool(fake, "workflow_transition");
 		expect(
 			await activate.execute("call", { workflowId: "delivery" }),
 		).toMatchObject({
@@ -1381,11 +1657,8 @@ describe("workflow extension lifecycle", () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
-		const activate = fake.tools[0];
-		const transition = fake.tools[1];
-		if (activate === undefined || transition === undefined) {
-			throw new Error("tools missing");
-		}
+		const activate = requireTool(fake, "workflow_activate");
+		const transition = requireTool(fake, "workflow_transition");
 		await activate.execute("call", { workflowId: "delivery" });
 		await transition.execute("call", { stageId: "done" });
 		const entriesBeforeReactivation = [...fake.appended];

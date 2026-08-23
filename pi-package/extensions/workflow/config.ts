@@ -18,6 +18,8 @@ export interface WorkflowPrompts {
 	readonly extensionDescription: string;
 	readonly createDescription: string;
 	readonly activateDescription: string;
+	readonly getStageDescription: string;
+	readonly editStageDescription: string;
 	readonly transitionDescription: string;
 }
 
@@ -25,6 +27,8 @@ const CONFIG_KEYS = new Set([
 	"extensionDescriptionPromptFile",
 	"createDescriptionPromptFile",
 	"activateDescriptionPromptFile",
+	"getStageDescriptionPromptFile",
+	"editStageDescriptionPromptFile",
 	"transitionDescriptionPromptFile",
 ]);
 
@@ -138,6 +142,16 @@ export async function loadWorkflowPrompts(
 				config["activateDescriptionPromptFile"] ??
 					join(bundledDirectory, "activate-description.md"),
 				"activateDescriptionPromptFile",
+			),
+			getStageDescription: await readPrompt(
+				config["getStageDescriptionPromptFile"] ??
+					join(bundledDirectory, "get-stage-description.md"),
+				"getStageDescriptionPromptFile",
+			),
+			editStageDescription: await readPrompt(
+				config["editStageDescriptionPromptFile"] ??
+					join(bundledDirectory, "edit-stage-description.md"),
+				"editStageDescriptionPromptFile",
 			),
 			transitionDescription: await readPrompt(
 				config["transitionDescriptionPromptFile"] ??

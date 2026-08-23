@@ -168,7 +168,12 @@ async function applyToolResultHandlers(
 /** Executes one workflow tool through the same start/result event boundaries as Pi. */
 async function executeTool(
 	fixture: WorkflowRenderingFixture,
-	name: "workflow_activate" | "workflow_transition" | "workflow_create",
+	name:
+		| "workflow_activate"
+		| "workflow_get_stage"
+		| "workflow_edit_stage"
+		| "workflow_transition"
+		| "workflow_create",
 	args: Record<string, unknown>,
 ): Promise<ExecutedTool> {
 	const definition = fixture.tools.find((candidate) => candidate.name === name);
@@ -219,7 +224,12 @@ async function executeTool(
 /** Resolves the renderer used by the subagent session screen. */
 function resolveSessionDefinition(
 	fixture: WorkflowRenderingFixture,
-	name: "workflow_activate" | "workflow_transition" | "workflow_create",
+	name:
+		| "workflow_activate"
+		| "workflow_get_stage"
+		| "workflow_edit_stage"
+		| "workflow_transition"
+		| "workflow_create",
 ): ToolDefinition {
 	const resolution = createToolPresentationRegistry(
 		"/tmp",
@@ -468,6 +478,100 @@ describe("workflow semantic tool rendering", () => {
 		]);
 		expect(activeRejected.result.join("\n")).toContain("Error:");
 		expect(sessionRejected).toEqual(activeRejected);
+	});
+
+	/**
+	 * Proves stage inspection and editing use the same semantic rows in active and reconstructed session screens.
+	 * Input and expected output: get shows the saved stage; edit shows replacement fields in collapsed and expanded modes.
+	 * Edge case: successful TUI result rows hide model-visible get JSON and internal edit success JSON.
+	 * Dependencies: presentation events, package registry reconstruction, dynamic workflow state, and YAML rendering.
+	 */
+	test("renders stage get and edit identically in active and subagent screens", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		await executeTool(
+			fixture,
+			"workflow_create",
+			createArguments("dynamic-delivery", "Dynamic delivery process"),
+		);
+		const get = await executeTool(fixture, "workflow_get_stage", {
+			stageId: "implementation",
+		});
+		const edit = await executeTool(fixture, "workflow_edit_stage", {
+			stageId: "implementation",
+			description: "Revised implementation",
+			prompt: "Follow the corrected implementation requirements.",
+			model: { thinking: "high" },
+		});
+
+		for (const execution of [get, edit]) {
+			const toolName = execution.definition.name as
+				| "workflow_get_stage"
+				| "workflow_edit_stage";
+			const active = renderCompletedTool(execution.definition, execution);
+			const session = renderCompletedTool(
+				resolveSessionDefinition(fixture, toolName),
+				execution,
+			);
+			expect(session).toEqual(active);
+			expect(active.result).toEqual([]);
+			expect(active.call.at(-1)).toBe(
+				`Content: ${keyText("app.tools.expand")} to show`,
+			);
+
+			const activeExpanded = renderCompletedTool(
+				execution.definition,
+				execution,
+				PLAIN_THEME,
+				100,
+				true,
+			);
+			const sessionExpanded = renderCompletedTool(
+				resolveSessionDefinition(fixture, toolName),
+				execution,
+				PLAIN_THEME,
+				100,
+				true,
+			);
+			expect(sessionExpanded).toEqual(activeExpanded);
+			expect(activeExpanded.result).toEqual([]);
+			expect(activeExpanded.call).toContain("--- Stage ---");
+			expect(activeExpanded.call).toContain("--- Content ---");
+		}
+
+		expect(renderCompletedTool(get.definition, get).call).toContain(
+			"Stage: implementation · Implementation stage",
+		);
+		expect(renderCompletedTool(edit.definition, edit).call).toContain(
+			"Stage: implementation · Revised implementation",
+		);
+		expect(
+			renderCompletedTool(
+				get.definition,
+				get,
+				PLAIN_THEME,
+				100,
+				true,
+			).call.join("\n"),
+		).toContain("prompt: Implement the change");
+		expect(
+			renderCompletedTool(
+				edit.definition,
+				edit,
+				PLAIN_THEME,
+				100,
+				true,
+			).call.join("\n"),
+		).toContain("prompt: Follow the corrected implementation requirements.");
+		expect(get.result.content).toEqual([
+			{
+				type: "text",
+				text: '{"id":"implementation","description":"Implementation stage","prompt":"Implement the change","model":{"thinking":"medium"},"initial":true,"final":false}',
+			},
+		]);
+		expect(edit.result.content).toEqual([
+			{ type: "text", text: '{"success":true}' },
+		]);
 	});
 
 	/** Proves the transition snapshot keeps the source stage after state mutation. */

@@ -214,6 +214,32 @@ describe("child RPC prompt completion", () => {
 		});
 	});
 
+	test("accepts a completed over-window answer after successful compaction without retry", () => {
+		// Purpose: successful overflow compaction must not replace an already completed assistant answer with a false failure.
+		// Input and expected output: an over-window stop response and successful non-retrying compaction succeed on agent_settled.
+		// Edge case: Pi sets willRetry false because a completed assistant response cannot be continued.
+		// Dependencies: pure shared completion state and Pi's documented compaction_end result contract.
+		// Arrange
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		const completed = overflowMessage();
+		completion.handleSessionEvent(messageEnd(completed));
+		completion.handleSessionEvent(agentEnd());
+
+		// Act
+		const compactionEnd = completion.handleSessionEvent({
+			type: "compaction_end",
+			reason: "overflow",
+			result: { summary: "compacted" },
+			aborted: false,
+			willRetry: false,
+		});
+		const settled = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(compactionEnd).toEqual({ kind: "wait" });
+		expect(settled).toEqual({ kind: "success", message: completed });
+	});
+
 	test("accepts a successful post-compaction answer on agent_settled", () => {
 		// Purpose: successful overflow recovery must replace the provisional overflow failure.
 		// Input and expected output: overflow, compaction retry, and recovered answer remain pending until agent_settled succeeds.

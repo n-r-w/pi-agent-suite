@@ -111,6 +111,8 @@ test("workflow entry activates a configured workflow and projects its initial st
 	await lifecycle({ type: "session_start" }, context);
 	expect(tools.map(({ name }) => name)).toEqual([
 		"workflow_activate",
+		"workflow_get_stage",
+		"workflow_edit_stage",
 		"workflow_transition",
 		"workflow_create",
 	]);
