@@ -20,9 +20,11 @@
 - Add `model?: ModelSettings` to `WorkflowDefinition`.
 - Add `model?: ModelSettings` to `WorkflowStage`.
 - Extend catalog YAML parsing to accept `model` at the workflow and stage levels.
-- Leave the `workflow_create` schema unchanged. It continues to expose only its existing workflow and stage fields.
-- Keep the catalog parser key set separate from the existing `workflow_create` parser key set so adding catalog fields does not change the dynamic schema.
-- Validate saved catalog snapshots with model settings and keep saved dynamic snapshots in their existing shape.
+- Extend `workflow_create` with a required closed `model` object on every stage.
+- Require `model.thinking` in every `workflow_create` stage and allow only `low`, `medium`, and `high`.
+- Reject root model settings in `workflow_create`.
+- Keep the catalog and `workflow_create` parser key sets separate. Catalog model settings accept `id` and all shared thinking levels. Dynamic stage model settings accept only `thinking` with the three allowed values.
+- Validate saved catalog and dynamic snapshots against their source-specific model contracts.
 
 Workflow YAML shape:
 
@@ -60,7 +62,7 @@ model:
 - Append the workflow entry only after runtime settings are applied successfully.
 - Keep the previous workflow state when validation or runtime application fails.
 - Restore the previous model and thinking level when session persistence fails after runtime application.
-- Do not add model or thinking arguments to workflow tools; the LLM continues to provide only workflow and stage IDs.
+- Do not add model or thinking arguments to `workflow_activate` or `workflow_transition`. `workflow_create` accepts thinking settings only inside its stage definitions.
 
 ### SOL-06: Lifecycle synchronization
 - Cache the current model and model registry in workflow runtime state.
@@ -86,7 +88,7 @@ model:
 ### SOL-08: Validation
 - Add shared-contract tests for model IDs, all seven thinking levels, optional fields, and model capability checks.
 - Add workflow parser tests for workflow-level and stage-level settings.
-- Keep `workflow_create` schema tests focused on its existing closed shape; catalog model settings are tested through the catalog parser.
+- Add `workflow_create` schema and domain tests for required stage-level `thinking`, the `low`, `medium`, and `high` value set, rejection of root model settings, and rejection of model IDs.
 - Add precedence tests for model and thinking independently.
 - Add activation, advance, and rework transition tests.
 - Add failure tests for unknown models, unsupported thinking levels, `setModel() === false`, thrown model-application errors, and persistence errors.
@@ -94,8 +96,8 @@ model:
 - Update workflow and agent documentation with the shared settings shape and the `max` thinking level.
 
 ## Overengineering and Overspecification Considerations
-- Workflow tool parameters remain unchanged.
-- No model fields are added to `workflow_create`; dynamic workflow behavior remains unchanged.
+- `workflow_activate` and `workflow_transition` parameters remain unchanged.
+- `workflow_create` does not accept model IDs or thinking levels outside `low`, `medium`, and `high`.
 - No model discovery or provider management is added.
 - No second runtime settings store is introduced.
 - Shared validation is centralized, while API-specific application remains local to avoid a universal adapter with incompatible failure behavior.

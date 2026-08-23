@@ -106,6 +106,16 @@ const WORKFLOW_TRIGGER_SCHEMA = Type.Object(
 	{ additionalProperties: false },
 );
 
+/** Closed thinking-only model shape exposed to workflow_create validation. */
+const WORKFLOW_CREATE_MODEL_SCHEMA = Type.Object(
+	{
+		thinking: StringEnum(["low", "medium", "high"] as const, {
+			description: "Thinking level applied while this workflow scope is active",
+		}),
+	},
+	{ additionalProperties: false },
+);
+
 /** Closed workflow_create stage shape exposed to Pi tool validation. */
 const WORKFLOW_STAGE_SCHEMA = Type.Object(
 	{
@@ -141,6 +151,7 @@ Completion criteria:
 				description: "Ordered triggers invoked after this stage is persisted",
 			}),
 		),
+		model: WORKFLOW_CREATE_MODEL_SCHEMA,
 		initial: Type.Optional(
 			Type.Boolean({
 				description:

@@ -50,13 +50,16 @@ When the selected agent is unavailable, such as in child subagent processes or s
 
 ## Scope
 - Ready-made workflows from the YAML catalog.
-- Optional model and thinking settings at workflow and stage levels.
+- Dynamic workflows created through `workflow_create`.
+- Optional model and thinking settings at workflow and stage levels in catalog YAML.
+- Required `thinking` settings on every `workflow_create` stage.
 - Workflow activation.
 - Stage transitions.
 - Model and thinking priority relative to the selected agent and current Pi runtime values.
 
 ## Out of Scope / Non-Goals
-- Settings for dynamic workflows created through `workflow_create`.
+- Model IDs for dynamic workflows created through `workflow_create`.
+- Dynamic workflow thinking levels other than `low`, `medium`, and `high`.
 - Automatic model selection by the LLM.
 - Changes to agent configuration semantics.
 - Provider model discovery or provider availability management.

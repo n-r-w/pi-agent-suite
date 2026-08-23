@@ -49,6 +49,22 @@ function changedValue(changes: Record<string, unknown>): unknown {
 	return { ...(validValue() as Record<string, unknown>), ...changes };
 }
 
+/** Builds a valid dynamic definition with required thinking settings on every stage. */
+function validCreatedValue(
+	thinking: "low" | "medium" | "high" = "medium",
+): Record<string, unknown> {
+	const value = validValue() as {
+		stages: Record<string, unknown>[];
+	};
+	return {
+		...value,
+		stages: value.stages.map((stage) => ({
+			...stage,
+			model: { thinking },
+		})),
+	};
+}
+
 describe("workflow definition validation", () => {
 	/** Proves valid closed YAML-domain input becomes a normalized typed graph. */
 	test("accepts a valid branching workflow", () => {
@@ -140,41 +156,97 @@ describe("workflow definition validation", () => {
 	/**
 	 * Proves workflow_create accepts one closed object and delegates graph rules to the workflow validator.
 	 * Input and expected output: a valid object including id becomes one normalized definition; unknown keys and invalid graphs fail.
-	 * Edge cases: the dynamic root rejects both an unknown field and a padded id.
+	 * Edge cases: the dynamic root rejects unknown fields, root model settings, and a padded id.
 	 * Dependencies: the shared workflow definition and graph validators.
 	 */
 	test("validates complete dynamic workflow definitions", () => {
 		const created = validateCreatedWorkflowDefinition(
-			{ id: "delivery", ...(validValue() as Record<string, unknown>) },
+			{ id: "delivery", ...validCreatedValue() },
 			"workflow_create",
 		);
 		expect(created.id).toBe("delivery");
+		expect(created).not.toHaveProperty("model");
 		expect(created.stages).toHaveLength(5);
 		expect(() =>
 			validateCreatedWorkflowDefinition(
-				{
-					id: "delivery",
-					...(validValue() as Record<string, unknown>),
-					extra: true,
-				},
+				{ id: "delivery", ...validCreatedValue(), extra: true },
 				"workflow_create",
 			),
 		).toThrow("workflow_create");
 		expect(() =>
 			validateCreatedWorkflowDefinition(
-				{ id: " delivery", ...(validValue() as Record<string, unknown>) },
+				{ id: " delivery", ...validCreatedValue() },
 				"workflow_create",
 			),
 		).toThrow("id must be");
 		expect(() =>
 			validateCreatedWorkflowDefinition(
-				{
-					id: "delivery",
-					...(changedValue({ transitions: [] }) as Record<string, unknown>),
-				},
+				{ id: "delivery", ...validCreatedValue(), transitions: [] },
 				"workflow_create",
 			),
 		).toThrow("workflow_create");
+		expect(() =>
+			validateCreatedWorkflowDefinition(
+				{
+					id: "delivery",
+					...validCreatedValue(),
+					model: { thinking: "medium" },
+				},
+				"workflow_create",
+			),
+		).toThrow("unsupported key");
+	});
+
+	/**
+	 * Proves dynamic workflow parsing requires thinking-only model settings on every stage.
+	 * Inputs and expected outputs: low, medium, and high become normalized model settings on all stages.
+	 * Edge cases: missing settings, unsupported levels, model IDs, unknown keys, and empty model objects are rejected.
+	 * Dependencies: the workflow_create domain boundary and shared workflow graph validation.
+	 */
+	test("requires thinking-only dynamic model settings on every stage", () => {
+		for (const thinking of ["low", "medium", "high"] as const) {
+			const created = validateCreatedWorkflowDefinition(
+				{ id: "delivery", ...validCreatedValue(thinking) },
+				"workflow_create",
+			);
+			expect(
+				created.stages.every((stage) => stage.model?.thinking === thinking),
+			).toBe(true);
+		}
+
+		const missingValue = validCreatedValue() as {
+			stages: Record<string, unknown>[];
+		};
+		delete missingValue.stages[0]?.["model"];
+		expect(() =>
+			validateCreatedWorkflowDefinition(
+				{ id: "delivery", ...missingValue },
+				"workflow_create",
+			),
+		).toThrow("stages[0].model.thinking");
+
+		for (const model of [
+			{ thinking: "off" },
+			{ thinking: "minimal" },
+			{ thinking: "xhigh" },
+			{ thinking: "max" },
+			{ thinking: "unknown" },
+			{ id: "openai/gpt-test" },
+			{ thinking: "high", id: "openai/gpt-test" },
+			{ thinking: "high", extra: true },
+			{},
+		] as const) {
+			const value = validCreatedValue() as {
+				stages: Record<string, unknown>[];
+			};
+			value.stages[0] = { ...value.stages[0], model };
+			expect(() =>
+				validateCreatedWorkflowDefinition(
+					{ id: "delivery", ...value },
+					"workflow_create",
+				),
+			).toThrow("model");
+		}
 	});
 
 	/**
