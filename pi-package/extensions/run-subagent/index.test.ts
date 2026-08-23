@@ -229,6 +229,7 @@ function createContext(
 		readonly model?: Model<Api>;
 		readonly onAuthRequest?: () => void;
 		readonly setWidget?: (...args: unknown[]) => void;
+		readonly signal?: AbortSignal;
 	} = {},
 ): ExtensionContext {
 	return {
@@ -236,6 +237,7 @@ function createContext(
 		mode: options.mode ?? "rpc",
 		hasUI: options.mode === "tui",
 		model: options.model,
+		signal: options.signal,
 		ui: {
 			custom: options.custom ?? (async () => undefined),
 			getToolsExpanded: () => false,
@@ -1654,11 +1656,11 @@ describe("subagents entry", () => {
 		});
 	});
 
-	test("recovers active root subagents when the main agent run is aborted", async () => {
-		// Purpose: aborting the main Pi agent must stop every active subagent owned by its root runtime.
-		// Input and expected output: only agent_end with a final aborted assistant message invokes root recovery for the active lease.
-		// Edge case: stop and error leave the child running, while abort retains root reconciliation for the open Pi session.
-		// Dependencies: registered lifecycle handlers, reconstructed root state, and root recovery tracking.
+	test("recovers active root subagents when Pi reports cancellation as an error", async () => {
+		// Purpose: aborting the main Pi agent must stop every active subagent even when Pi reports the final assistant outcome as an error.
+		// Input and expected output: an aborted ExtensionContext signal with stopReason error invokes root recovery for the active lease.
+		// Edge case: stop and error without an aborted signal leave the child running while cancelled error retains root reconciliation.
+		// Dependencies: registered lifecycle handlers, reconstructed root state, AbortController, and root recovery tracking.
 		const rootSession = {
 			key: { ownerPiSessionId: "owner-pi", ownerLocalSessionId: 1 },
 			childPiSessionId: "aborted-root-child",
@@ -1723,13 +1725,15 @@ describe("subagents entry", () => {
 			}
 			expect(observedLeaseIds).toEqual([]);
 
+			const cancellation = new AbortController();
+			cancellation.abort();
 			await pi.emit(
 				"agent_end",
 				{
 					type: "agent_end",
-					messages: [{ role: "assistant", stopReason: "aborted" }],
+					messages: [{ role: "assistant", stopReason: "error" }],
 				},
-				ctx,
+				createContext(suiteDir, entries, { signal: cancellation.signal }),
 			);
 			await pi.emit("message_end", { type: "message_end" }, ctx);
 

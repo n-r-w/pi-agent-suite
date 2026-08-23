@@ -274,7 +274,7 @@ function registerLifecycleHandlers(
 		return state.initialization;
 	});
 	pi.on("message_end", (_event, ctx) => reconcileRuntime(state, ctx));
-	pi.on("agent_end", (event) => handleAgentEnd(state, event));
+	pi.on("agent_end", (event, ctx) => handleAgentEnd(state, event, ctx));
 	pi.on("session_shutdown", (_event, ctx) => handleSessionShutdown(state, ctx));
 	pi.on("tool_result", (event) => {
 		if (!SUBAGENT_TOOL_NAME_SET.has(event.toolName) || !event.isError) {
@@ -364,12 +364,13 @@ async function reconcileRuntime(
 async function handleAgentEnd(
 	state: RuntimeState,
 	event: AgentEndEvent,
+	ctx: ExtensionContext,
 ): Promise<void> {
 	const rootRuntime = state.rootRuntime;
 	if (
 		state.workerBridge !== undefined ||
 		rootRuntime === undefined ||
-		!isAbortedAgentRun(event)
+		(!isAbortedAgentRun(event) && ctx.signal?.aborted !== true)
 	) {
 		return;
 	}

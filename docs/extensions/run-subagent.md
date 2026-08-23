@@ -381,7 +381,7 @@ A timeout, a no-active result, or feedback from an unselected child does not cha
 
 ## Pi cancellation
 
-When the main Pi agent run ends with a final assistant `stopReason` of `aborted`, the root runtime stops every active child in its complete ownership hierarchy. Active waits cease, each affected invocation becomes terminal abort, forced-abort feedback is withheld, and saved logical sessions remain available for later continuation. The root runtime and its writer remain active for the next user prompt; only `session_shutdown` disposes them.
+When the main Pi agent run is cancelled, the root runtime stops every active child in its complete ownership hierarchy. The `agent_end` handler recognizes cancellation from either a final assistant `stopReason` of `aborted` or an aborted active `ExtensionContext.signal`. The signal check covers cancellation during a tool call when Pi reports the final assistant outcome as `error`. Active waits cease, each affected invocation becomes terminal abort, forced-abort feedback is withheld, and saved logical sessions remain available for later continuation. The root runtime and its writer remain active for the next user prompt; only `session_shutdown` disposes them.
 
 Pi cancellation uses one ordering boundary for each root or nested operation:
 
