@@ -120,6 +120,10 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 		if (event["reason"] !== "overflow" || event["willRetry"] === true) {
 			return this.wait();
 		}
+		if (event["result"] !== undefined && event["aborted"] !== true) {
+			this.pendingFailureReason = undefined;
+			return this.wait();
+		}
 
 		this.pendingFailureReason = readEventError(
 			event,
