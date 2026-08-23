@@ -26,6 +26,7 @@
   3. Prefer concrete facts over prose.
   4. Keep the summary concise, but do not remove information required to understand the result.
   5. Use stable sections with plain text labels. Do not use XML or HTML tags inside the summary because the caller escapes summary text before inserting it into `<summary>`.
+  6. Use ASD-STE100 - Simplified Technical English.
 </summary_rules>
 
 <section_rules>

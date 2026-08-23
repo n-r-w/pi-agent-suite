@@ -27,5 +27,5 @@ File Path:
 </context_instructions>
 
 <constraints>
-ENGLISH only. NO OTHER LANGUAGE IS ALLOWED.
+MUST be written in ASD-STE100 - Simplified Technical English.
 </constraints>
