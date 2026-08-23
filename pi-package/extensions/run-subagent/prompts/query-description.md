@@ -4,6 +4,7 @@ USAGE:
 1. To get information about current progress of subagent.
 2. To clarify details of subagent's work if its answer is insufficient.
 3. Can be called for both an active subagent and one that has completed its work.
+4. Question MUST be written in ASD-STE100 - Simplified Technical English.
 
 CONSTRAINTS:
 1. Tool does not change state of subagent session and does not control it.
