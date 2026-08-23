@@ -1,170 +1,255 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { projectWorkflowContext } from "./context";
+import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
 import {
-	activateWorkflow,
+	completeWorkflow,
+	createWorkflow,
+	editWorkflowStage,
 	transitionWorkflow,
-	validateWorkflowDefinition,
+	validateCreatedWorkflowDefinition,
 } from "./workflow";
 
-const prompts = {
-	extensionDescription: "Use <stages> & choose safely.",
-	createDescription: "create",
-	activateDescription: "activate",
-	getStageDescription: "get stage",
-	editStageDescription: "edit stage",
-	transitionDescription: "transition",
-};
-
-/** Creates a graph whose text and identifiers prove XML text and attribute escaping. */
-function workflow(
-	id = "delivery",
-	prompt: unknown = "Follow <global> & stay safe.",
-): ReturnType<typeof validateWorkflowDefinition> {
-	return validateWorkflowDefinition(
-		id,
+function workflow() {
+	return validateCreatedWorkflowDefinition(
 		{
+			id: "delivery",
 			description: "Build & review",
-			prompt,
+			prompt: "Follow <global> & stay safe.",
 			stages: [
 				{
-					id: "start",
-					description: 'Start "now"',
-					prompt: "Start <carefully>",
+					id: "implementation",
+					description: 'Implement "now"',
+					prompt: "Implement <carefully>",
+					model: { thinking: "medium" },
 					initial: true,
 				},
 				{
-					id: "done",
-					description: "Done",
+					id: "review",
+					description: "Review result",
 					prompt: "Review & finish",
+					model: { thinking: "medium" },
 					final: true,
 				},
 			],
 			transitions: [
-				{ from: "start", to: "done", type: "advance" },
-				{ from: "done", to: "start", type: "rework" },
+				{ from: "implementation", to: "review", type: "advance" },
+				{ from: "review", to: "implementation", type: "rework" },
 			],
 		},
-		"fixture.yaml",
+		"fixture",
 	);
 }
 
-/** Reads content only from the custom message produced by the projection boundary. */
-function customContent(message: AgentMessage | undefined): string {
-	if (message?.role !== "custom") {
-		throw new Error("expected a custom workflow message");
-	}
-	return String(message.content);
+function createJournal(): {
+	readonly journal: WorkflowJournal;
+	readonly records: WorkflowJournalRecord[];
+} {
+	const records: WorkflowJournalRecord[] = [];
+	return {
+		journal: new WorkflowJournal((record) => records.push(record)),
+		records,
+	};
 }
 
-describe("workflow context projection", () => {
-	/** Proves prior chained messages are preserved and exactly one hidden transient message is appended. */
-	test("projects activation options before activation", () => {
-		const prior = [
-			{ role: "user", content: "keep me", timestamp: 1 },
-		] as AgentMessage[];
-		const projected = projectWorkflowContext(
-			prior,
-			prompts,
-			[workflow()],
-			undefined,
-		);
-		expect(projected).toHaveLength(2);
-		expect(projected[0]).toBe(prior[0]);
-		expect(projected[1]).toMatchObject({
-			role: "custom",
+describe("workflow journal", () => {
+	test("publishes activation and the initial stage definition in one hidden record", () => {
+		// Purpose: workflow activation must establish the complete graph and current-stage instructions once.
+		// Input and expected output: a dynamic workflow emits workflow_activated followed by an inline initial-stage activation.
+		// Edge case: XML-sensitive configured text is escaped and the inactive-stage prompt is not exposed.
+		// Dependencies: validated workflow state and the journal publisher callback.
+		const { journal, records } = createJournal();
+		journal.activate(createWorkflow(workflow()));
+
+		expect(records).toHaveLength(1);
+		expect(records[0]).toMatchObject({
 			customType: "workflow",
 			display: false,
+			details: {
+				version: 1,
+				kind: "activation",
+				workflowId: "delivery",
+				stageId: "implementation",
+			},
 		});
-		const content = customContent(projected[1]);
-		expect(content).toContain("Use &lt;stages&gt; &amp; choose safely.");
+		const content = records[0]?.content ?? "";
+		expect(content.indexOf("<workflow_activated")).toBeLessThan(
+			content.indexOf("<workflow_stage_activated"),
+		);
+		expect(content).toContain('id="delivery" source="dynamic"');
+		expect(content).toContain("Follow &lt;global&gt; &amp; stay safe.");
 		expect(content).toContain(
+			'id="implementation" description="Implement &quot;now&quot;" initial="true"',
+		);
+		expect(content).toContain('guidelines="inline"');
+		expect(content).toContain("Implement &lt;carefully&gt;");
+		expect(content).not.toContain("Review &amp; finish");
+	});
+
+	test("reuses known stage definitions while repeating route-dependent transitions", () => {
+		// Purpose: repeated stage entry must preserve activation history without repeating stage prompts.
+		// Input and expected output: first review entry is inline, then rework and advance entries reuse known definitions.
+		// Edge case: every activation still carries its current outgoing transition.
+		// Dependencies: immutable workflow transitions and journal-local known-stage tracking.
+		const { journal, records } = createJournal();
+		let state = createWorkflow(workflow());
+		journal.activate(state);
+		state = transitionWorkflow(state, "review");
+		journal.enterStage(state);
+		state = transitionWorkflow(state, "implementation");
+		journal.enterStage(state);
+		state = transitionWorkflow(state, "review");
+		journal.enterStage(state);
+
+		expect(records[1]?.content).toContain(
+			'<workflow_stage_activated workflow_id="delivery" stage_id="review" guidelines="inline">',
+		);
+		expect(records[1]?.content).toContain("Review &amp; finish");
+		expect(records[2]?.content).toContain('guidelines="reuse"');
+		expect(records[2]?.content).toContain(
+			'<transition to="review" type="advance" />',
+		);
+		expect(records[3]?.content).toContain('guidelines="reuse"');
+		expect(records[3]?.content).toContain(
+			'<transition to="implementation" type="rework" />',
+		);
+	});
+
+	test("publishes complete edited stage definitions and completion records", () => {
+		// Purpose: edits and completion must replace model-visible stage data without snapshot repetition.
+		// Input and expected output: one active-stage edit emits a complete update, then final completion emits rework options.
+		// Edge case: completion carries no completed-stage prompt.
+		// Dependencies: dynamic stage editing, transition validation, and workflow completion.
+		const { journal, records } = createJournal();
+		let state = createWorkflow(workflow());
+		journal.activate(state);
+		state = editWorkflowStage(
+			state,
+			{
+				stageId: "implementation",
+				description: "Implement corrected change",
+				prompt: "Use corrected <requirements>.",
+				model: { thinking: "high" },
+			},
+			"test",
+		);
+		journal.updateStage(state, "implementation");
+		state = transitionWorkflow(state, "review");
+		journal.enterStage(state);
+		const completed = completeWorkflow(state);
+		journal.complete(completed);
+
+		expect(records[1]?.content).toContain(
+			'<workflow_stage_updated workflow_id="delivery" stage_id="implementation" active="true">',
+		);
+		expect(records[1]?.content).toContain(
+			'<stage_definition description="Implement corrected change" initial="true">',
+		);
+		expect(records[1]?.content).toContain(
+			"Use corrected &lt;requirements&gt;.",
+		);
+		expect(records[3]?.content).toContain(
+			'<workflow_completed id="delivery" completed_stage_id="review">',
+		);
+		expect(records[3]?.content).toContain(
+			'<transition to="implementation" type="rework" />',
+		);
+		expect(records[3]?.content).not.toContain("Review &amp; finish");
+	});
+
+	test("restores the active stage after an inactive stage update", () => {
+		// Purpose: an inactive-stage definition update must not replace the lifecycle active-stage marker.
+		// Input and expected output: activation plus an inactive review edit restores as compatible with implementation still active.
+		// Edge case: the edited stage ID differs from the route tail.
+		// Dependencies: journal metadata restoration and dynamic stage editing.
+		const { journal, records } = createJournal();
+		let state = createWorkflow(workflow());
+		journal.activate(state);
+		state = editWorkflowStage(
+			state,
+			{
+				stageId: "review",
+				description: "Revised review",
+				prompt: "Use revised review.",
+				model: { thinking: "high" },
+			},
+			"test",
+		);
+		journal.updateStage(state, "review");
+		const restored = new WorkflowJournal(() => {});
+		restored.restore(
+			records.map((message) => ({
+				type: "custom_message",
+				...message,
+			})),
+		);
+
+		expect(restored.isCurrent(state)).toBe(true);
+	});
+
+	test("rejects restoration that omits the latest stage definition edit", () => {
+		// Purpose: restoration repair must detect state that is newer than the latest model-facing workflow record.
+		// Input and expected output: activation records followed by an unrecorded stage edit are incompatible with edited state.
+		// Edge case: workflow ID, status, and route-tail stage remain unchanged across the edit.
+		// Dependencies: workflow-definition revision metadata and journal restoration.
+		const { journal, records } = createJournal();
+		let state = createWorkflow(workflow());
+		journal.activate(state);
+		state = editWorkflowStage(
+			state,
+			{
+				stageId: "implementation",
+				description: "Unrecorded correction",
+				prompt: "Use the corrected definition.",
+				model: { thinking: "high" },
+			},
+			"test",
+		);
+		const restored = new WorkflowJournal(() => {});
+		restored.restore(
+			records.map((message) => ({
+				type: "custom_message",
+				...message,
+			})),
+		);
+
+		expect(restored.isCurrent(state)).toBe(false);
+	});
+
+	test("preserves activation-option deduplication during repair checkpoints", () => {
+		// Purpose: branch repair must not republish unchanged catalog availability in the same context segment.
+		// Input and expected output: equal options before and after a checkpoint produce one options record.
+		// Edge case: checkpoint still publishes the complete active workflow state.
+		// Dependencies: checkpoint lifecycle rendering and activation-options deduplication.
+		const { journal, records } = createJournal();
+		const state = createWorkflow(workflow());
+		journal.activationOptions([workflow()]);
+		journal.checkpoint(state);
+		journal.activationOptions([workflow()]);
+
+		expect(records).toHaveLength(2);
+		expect(records[0]?.content).toContain("<workflow_activation_options>");
+		expect(records[1]?.content).toContain("<workflow_checkpoint");
+	});
+
+	test("resets known stages at checkpoints and deduplicates activation options", () => {
+		// Purpose: compaction repair must inline current instructions and availability must change only when its rendered value changes.
+		// Input and expected output: one active checkpoint is followed by one options record despite two equivalent publications.
+		// Edge case: an empty options list emits the explicit self-closing replacement record.
+		// Dependencies: checkpoint rendering, known-stage reset, and ordered catalog options.
+		const { journal, records } = createJournal();
+		const state = createWorkflow(workflow());
+		journal.checkpoint(state);
+		journal.activationOptions([workflow()]);
+		journal.activationOptions([workflow()]);
+		journal.activationOptions([]);
+
+		expect(records[0]?.content).toContain(
+			'<workflow_checkpoint id="delivery" status="active" active_stage_id="implementation">',
+		);
+		expect(records[0]?.content).toContain("<active_stage_guidelines>");
+		expect(records[1]?.content).toContain(
 			'<workflow id="delivery" description="Build &amp; review" />',
 		);
-		expect(content).not.toContain("<active_workflow");
-	});
-
-	/**
-	 * Proves active context contains persistent workflow guidance and only the current stage prompt.
-	 * Input and expected output: activation projects both escaped prompts, then transition retains workflow guidance and replaces the stage prompt.
-	 * Edge case: XML metacharacters in both prompts remain element text.
-	 * Dependencies: validated workflow state and context projection.
-	 */
-	test("projects one active snapshot without exposing its route", () => {
-		const activeWorkflow = workflow();
-		const initialContent = customContent(
-			projectWorkflowContext(
-				[],
-				prompts,
-				[],
-				activateWorkflow(activeWorkflow),
-			)[0],
-		);
-		expect(initialContent).toContain(
-			"<guidelines>\nFollow &lt;global&gt; &amp; stay safe.\n  </guidelines>\n  <active_stage_guidelines>\nStart &lt;carefully&gt;\n  </active_stage_guidelines>",
-		);
-
-		const state = transitionWorkflow(activateWorkflow(activeWorkflow), "done");
-		const other = workflow("other");
-		const projected = projectWorkflowContext([], prompts, [other], state);
-		const content = customContent(projected[0]);
-		expect(content).toContain(
-			'<workflow id="other" description="Build &amp; review" />',
-		);
-		expect(content).not.toContain('<workflow id="delivery" description=');
-		expect(content).toContain(
-			'<active_workflow id="delivery" active_stage_id="done">\n  <guidelines>\nFollow &lt;global&gt; &amp; stay safe.\n  </guidelines>\n  <active_stage_guidelines>\nReview &amp; finish\n  </active_stage_guidelines>',
-		);
-		expect(content).not.toContain("Start &lt;carefully&gt;");
-		expect(content).toContain(
-			'id="start" description="Start &quot;now&quot;" status="completed" initial="true"',
-		);
-		expect(content).toContain(
-			'id="done" description="Done" status="in_progress" final="true"',
-		);
-		expect(content).toContain('<transition to="start" type="rework" />');
-		expect(content).not.toContain("<route");
-	});
-
-	/**
-	 * Proves absent workflow guidance emits no empty XML section.
-	 * Input and expected output: a whitespace-only workflow prompt projects the active stage without `<guidelines>`.
-	 * Edge case: normalization happens before projection rather than rendering whitespace.
-	 * Dependencies: workflow validation and context projection.
-	 */
-	test("omits empty workflow guidelines", () => {
-		const activeWorkflow = workflow("empty", " \n\t ");
-		const content = customContent(
-			projectWorkflowContext(
-				[],
-				prompts,
-				[],
-				activateWorkflow(activeWorkflow),
-			)[0],
-		);
-		expect(content).not.toContain("<guidelines>");
-		expect(content).toContain("<active_stage_guidelines>");
-	});
-
-	/**
-	 * Proves empty activation options are omitted while universal guidance and saved state remain projectable.
-	 * Input and expected output: no options first produces guidelines only, then saved state adds active_workflow.
-	 * Edge case: neither context shape contains a self-closing activation element.
-	 * Dependencies: context projection and one validated catalog state.
-	 */
-	test("omits empty activation options", () => {
-		const guidelinesOnly = customContent(
-			projectWorkflowContext([], prompts, [], undefined)[0],
-		);
-		expect(guidelinesOnly).toContain("<workflow_guidelines>");
-		expect(guidelinesOnly).not.toContain("<workflow_activation_options");
-		expect(guidelinesOnly).not.toContain("<active_workflow");
-
-		const state = activateWorkflow(workflow());
-		const savedContent = customContent(
-			projectWorkflowContext([], prompts, [], state)[0],
-		);
-		expect(savedContent).not.toContain("<workflow_activation_options");
-		expect(savedContent).toContain("<active_workflow");
+		expect(records[2]?.content).toBe("<workflow_activation_options />");
+		expect(records).toHaveLength(3);
 	});
 });

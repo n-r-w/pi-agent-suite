@@ -23,7 +23,11 @@ import {
 	type WorkflowTriggerRunResult,
 } from "../../shared/workflow-trigger-runtime";
 import workflowExtension from "./index";
-import { activateWorkflow, validateWorkflowDefinition } from "./workflow";
+import {
+	activateWorkflow,
+	validateWorkflowDefinition,
+	WORKFLOW_STATE_JOURNAL_VERSION,
+} from "./workflow";
 
 type WidgetFactory = (tui: TUI, theme: Theme) => Component;
 type WidgetContent = string[] | WidgetFactory | undefined;
@@ -31,6 +35,7 @@ type WidgetContent = string[] | WidgetFactory | undefined;
 interface FakeTool {
 	readonly name: string;
 	readonly description: string;
+	readonly promptGuidelines?: readonly string[];
 	readonly executionMode?: string;
 	readonly parameters: unknown;
 	readonly execute: (...args: unknown[]) => Promise<unknown>;
@@ -41,6 +46,13 @@ interface FakePi {
 	readonly listeners: Map<string, Set<(...args: unknown[]) => void>>;
 	readonly tools: FakeTool[];
 	readonly appended: Array<{ customType: string; data: unknown }>;
+	readonly messages: Array<{
+		readonly customType: string;
+		readonly content: string;
+		readonly display: boolean;
+		readonly details: unknown;
+		readonly options: unknown;
+	}>;
 	readonly notifications: Array<{ message: string; type: string | undefined }>;
 	readonly modelSetCalls: Model<Api>[];
 	readonly modelRegistry: ExtensionContext["modelRegistry"];
@@ -243,6 +255,7 @@ function activatedEntry(): unknown {
 			workflow,
 			route: state.route,
 			restoration: { modelId: "openai/current-model", thinking: "medium" },
+			journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 		},
 	};
 }
@@ -269,6 +282,7 @@ async function createFakePi(): Promise<FakePi> {
 		listeners: new Map(),
 		tools: [],
 		appended: [],
+		messages: [],
 		notifications,
 		modelSetCalls: [],
 		modelRegistry: {
@@ -318,6 +332,23 @@ async function createFakePi(): Promise<FakePi> {
 				throw fake.appendError;
 			}
 			fake.appended.push({ customType, data });
+		},
+		sendMessage(
+			message: {
+				customType: string;
+				content: unknown;
+				display: boolean;
+				details?: unknown;
+			},
+			options?: unknown,
+		) {
+			fake.messages.push({
+				customType: message.customType,
+				content: String(message.content),
+				display: message.display,
+				details: message.details,
+				options,
+			});
 		},
 		registerFlag(
 			name: string,
@@ -399,6 +430,15 @@ async function runLifecycle(
 	);
 }
 
+/** Invokes the post-compaction lifecycle handler. */
+async function runSessionCompact(fake: FakePi): Promise<void> {
+	const handler = fake.handlers.get("session_compact");
+	if (handler === undefined) {
+		throw new Error("missing session_compact handler");
+	}
+	await handler({ type: "session_compact" });
+}
+
 /** Invokes the session-level settlement handler without providing a UI context. */
 async function runAgentSettled(fake: FakePi): Promise<void> {
 	const handler = fake.handlers.get("agent_settled");
@@ -424,16 +464,22 @@ function renderLatestStatus(fake: FakePi, width: number): string[] {
 		.map((row) => stripVTControlCharacters(row));
 }
 
-/** Invokes the context handler and returns its optional replacement. */
-async function runContext(
-	fake: FakePi,
-	messages: readonly unknown[],
-): Promise<unknown> {
-	const handler = fake.handlers.get("context");
-	if (handler === undefined) {
-		throw new Error("context handler missing");
-	}
-	return handler({ messages }, {});
+/** Returns content from the latest persisted workflow lifecycle record. */
+function latestWorkflowContent(fake: FakePi): string | undefined {
+	return (
+		[...fake.messages]
+			.reverse()
+			.find(({ details }) => isWorkflowLifecycleDetails(details)) ??
+		fake.messages.at(-1)
+	)?.content;
+}
+
+function isWorkflowLifecycleDetails(details: unknown): boolean {
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		Reflect.get(details, "kind") !== "activation_options"
+	);
 }
 
 afterEach(async () => {
@@ -473,6 +519,15 @@ describe("workflow extension lifecycle", () => {
 		]);
 		expect(
 			fake.tools.every(({ executionMode }) => executionMode === "sequential"),
+		).toBe(true);
+		const workflowGuideline = fake.tools[0]?.promptGuidelines?.[0];
+		expect(workflowGuideline?.length).toBeGreaterThan(0);
+		expect(
+			fake.tools.every(
+				({ promptGuidelines }) =>
+					promptGuidelines?.length === 1 &&
+					promptGuidelines[0] === workflowGuideline,
+			),
 		).toBe(true);
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree");
@@ -600,7 +655,7 @@ describe("workflow extension lifecycle", () => {
 	 * Proves a valid empty catalog keeps workflow_create and universal guidance without activation options.
 	 * Input and expected output: no YAML and no saved state leave only workflow_create active and project guidelines only.
 	 * Edge case: workflow_activate and workflow_transition are system-suppressed independently.
-	 * Dependencies: lifecycle reconciliation, prompt loading, and provider-context projection.
+	 * Dependencies: lifecycle reconciliation, prompt loading, and activation-options journaling.
 	 */
 	test("keeps creation active for an empty catalog", async () => {
 		await createSuite();
@@ -608,14 +663,9 @@ describe("workflow extension lifecycle", () => {
 		await runLifecycle(fake, "session_start");
 
 		expect(fake.activeTools).toEqual(["read", "workflow_create"]);
-		const context = await runContext(fake, []);
-		const content = String(
-			(context as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
-		expect(content).toContain("<workflow_guidelines>");
-		expect(content).not.toContain("<workflow_activation_options");
-		expect(content).not.toContain("<active_workflow");
+		const content = latestWorkflowContent(fake);
+		expect(content).toBe("<workflow_activation_options />");
+		expect(fake.handlers.has("context")).toBe(false);
 	});
 
 	/**
@@ -673,7 +723,7 @@ describe("workflow extension lifecycle", () => {
 			readonly data: Record<string, unknown>;
 		};
 		const activatedData = activated.data;
-		const { restoration: _restoration, ...legacyData } = activatedData;
+		const { journalVersion: _journalVersion, ...legacyData } = activatedData;
 		const legacyBranch = [
 			{ ...activated, data: legacyData },
 			{
@@ -694,6 +744,13 @@ describe("workflow extension lifecycle", () => {
 				type: "warning",
 			},
 		]);
+		expect(
+			fake.messages.some(
+				({ details }) =>
+					isWorkflowLifecycleDetails(details) &&
+					(details as Record<string, unknown>)["kind"] === "checkpoint",
+			),
+		).toBe(false);
 		expect(fake.activeTools).toContain("workflow_activate");
 		expect(fake.activeTools).toContain("workflow_transition");
 	});
@@ -732,13 +789,9 @@ describe("workflow extension lifecycle", () => {
 			fake.appended.map(({ data }) => (data as { kind: string }).kind),
 		).toEqual(["created", "transitioned"]);
 		expect(triggerCalls).toEqual([]);
-		const context = await runContext(fake, []);
-		const content = String(
-			(context as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const content = latestWorkflowContent(fake);
 		expect(content).toContain(
-			'<active_workflow id="dynamic-delivery" active_stage_id="done"',
+			'<workflow_stage_activated workflow_id="dynamic-delivery" stage_id="done"',
 		);
 		expect(content).not.toContain("<workflow_activation_options");
 	});
@@ -805,9 +858,9 @@ describe("workflow extension lifecycle", () => {
 
 	/**
 	 * Proves stage tools read and change active and non-active stages in only the current active workflow.
-	 * Input and expected output: dynamic creation exposes both tools; edits persist and appear in the next provider context.
+	 * Input and expected output: dynamic creation exposes both tools; edits persist in the workflow journal.
 	 * Edge cases: editing a non-active stage does not change current thinking, while editing the active stage applies thinking immediately.
-	 * Dependencies: workflow availability, session persistence, provider-context projection, and model runtime application.
+	 * Dependencies: workflow availability, session persistence, workflow journaling, and model runtime application.
 	 */
 	test("gets and edits stages in the current active workflow", async () => {
 		await createSuite();
@@ -865,11 +918,7 @@ describe("workflow extension lifecycle", () => {
 		expect(
 			fake.appended.map(({ data }) => (data as { kind: string }).kind),
 		).toEqual(["created", "stage_edited", "transitioned", "stage_edited"]);
-		const context = await runContext(fake, []);
-		const content = String(
-			(context as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const content = latestWorkflowContent(fake);
 		expect(content).toContain("Correct final stage");
 		expect(content).toContain("Follow the corrected requirements now.");
 	});
@@ -1154,15 +1203,9 @@ describe("workflow extension lifecycle", () => {
 			create.execute("create", createArguments("new-delivery")),
 		).rejects.toThrow("append failed");
 		fake.appendError = undefined;
-		const retained = String(
-			(
-				(await runContext(fake, [])) as {
-					messages: Array<{ content: unknown }>;
-				}
-			).messages[0]?.content,
-		);
+		const retained = latestWorkflowContent(fake);
 		expect(retained).toContain(
-			'<active_workflow id="delivery" active_stage_id="done"',
+			'<workflow_stage_activated workflow_id="delivery" stage_id="done"',
 		);
 
 		await create.execute("create", createArguments("new-delivery"));
@@ -1171,15 +1214,9 @@ describe("workflow extension lifecycle", () => {
 			create.execute("create", createArguments("new-delivery")),
 		).rejects.toThrow("already active");
 		expect(fake.appended).toEqual(entriesBeforeDuplicate);
-		const replaced = String(
-			(
-				(await runContext(fake, [])) as {
-					messages: Array<{ content: unknown }>;
-				}
-			).messages[0]?.content,
-		);
+		const replaced = latestWorkflowContent(fake);
 		expect(replaced).toContain(
-			'<active_workflow id="new-delivery" active_stage_id="start"',
+			'<workflow_stage_activated workflow_id="new-delivery" stage_id="start"',
 		);
 	});
 
@@ -1258,6 +1295,7 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.thinkingLevel).toBe("xhigh");
 		expect(fake.appended[0]?.data).toMatchObject({
 			kind: "activated",
+			journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 			workflow: {
 				model: { id: "openai/workflow-model", thinking: "high" },
 			},
@@ -1544,7 +1582,7 @@ describe("workflow extension lifecycle", () => {
 	 * Proves completion removes active-stage instructions while retaining the rework route.
 	 * Inputs and expected outputs: a settled final stage projects completed state without active-stage guidance; rework restores active settings and context.
 	 * Edge cases: the completed state must remain available even though the final-stage model has been restored.
-	 * Dependencies: completion persistence, context projection, and route transition application.
+	 * Dependencies: completion persistence, workflow journaling, and route transition application.
 	 */
 	test("projects completion and supports rework", async () => {
 		await createSuite(modelYaml());
@@ -1556,30 +1594,17 @@ describe("workflow extension lifecycle", () => {
 		await transition.execute("transition", { stageId: "done" });
 		await runAgentSettled(fake);
 
-		const completedContext = String(
-			(
-				(await runContext(fake, [])) as {
-					messages: Array<{ content: unknown }>;
-				}
-			).messages[0]?.content,
-		);
-		expect(completedContext).toContain("<completed_workflow");
-		expect(completedContext).not.toContain("<active_workflow");
-		expect(completedContext).not.toContain("<active_stage_guidelines>");
+		const completedContext = latestWorkflowContent(fake);
+		expect(completedContext).toContain("<workflow_completed");
+		expect(completedContext).not.toContain("<stage_guidelines>");
 
 		await transition.execute("rework", { stageId: "start" });
 
 		expect(fake.model?.id).toBe("workflow-model");
 		expect(fake.thinkingLevel).toBe("xhigh");
-		const activeContext = String(
-			(
-				(await runContext(fake, [])) as {
-					messages: Array<{ content: unknown }>;
-				}
-			).messages[0]?.content,
-		);
-		expect(activeContext).toContain("<active_workflow");
-		expect(activeContext).toContain("<active_stage_guidelines>");
+		const activeContext = latestWorkflowContent(fake);
+		expect(activeContext).toContain("<workflow_stage_activated");
+		expect(activeContext).toContain('guidelines="reuse"');
 	});
 
 	/**
@@ -1675,12 +1700,8 @@ describe("workflow extension lifecycle", () => {
 		expect(
 			(transitionedEntry.data as { route: readonly string[] }).route,
 		).toEqual(["start", "done"]);
-		const result = await runContext(fake, []);
-		const content = String(
-			(result as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
-		expect(content).toContain('active_stage_id="done"');
+		const content = latestWorkflowContent(fake);
+		expect(content).toContain('stage_id="done"');
 		expect(content).toContain('<transition to="start" type="rework" />');
 	});
 
@@ -1699,15 +1720,11 @@ describe("workflow extension lifecycle", () => {
 
 		await activate.execute("activate", { workflowId: "delivery" });
 		expect(fake.activeTools).toEqual(["read"]);
-		const context = await runContext(fake, []);
-		const content = String(
-			(context as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const content = latestWorkflowContent(fake);
 		expect(content).toContain(
-			'<active_workflow id="delivery" active_stage_id="start"',
+			'<workflow_stage_activated workflow_id="delivery" stage_id="start"',
 		);
-		expect(content).toContain("<active_stage_guidelines>\nStart work");
+		expect(content).toContain("<stage_guidelines>\nStart work");
 		expect(content).not.toContain("<workflow_activation_options");
 	});
 
@@ -1732,43 +1749,101 @@ describe("workflow extension lifecycle", () => {
 			activate.execute("call", { workflowId: "delivery", extra: true }),
 		).rejects.toThrow();
 		const triggerCalls = captureTriggers(fake);
+		const messageCount = fake.messages.length;
 		fake.appendError = new Error("append failed");
 		await expect(
 			activate.execute("call", { workflowId: "delivery" }),
 		).rejects.toThrow("append failed");
 		expect(triggerCalls).toEqual([]);
+		expect(fake.messages).toHaveLength(messageCount);
 		fake.appendError = undefined;
-		const result = await runContext(fake, []);
-		expect(
-			String(
-				(result as { messages: Array<{ content: unknown }> }).messages[0]
-					?.content,
-			),
-		).not.toContain("<active_workflow");
 	});
 
-	/** Proves either current workflow tool independently enables complete projection. */
-	test("projects while any workflow tool is active", async () => {
+	/** Proves workflow records enter the active tool loop through Pi's steering queue. */
+	test("delivers workflow records to the next provider request", async () => {
+		// Purpose: a journal record published during tool execution must join the active loop context.
+		// Input and expected output: activation uses steer delivery without forcing a separate agent turn.
+		// Edge case: triggerTurn false would persist the message but omit it from the active loop snapshot.
+		// Dependencies: workflow activation and the public sendMessage delivery contract.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
-		const incoming = [{ role: "user", content: "preserve", timestamp: 1 }];
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		const activation = fake.messages.find(({ details }) =>
+			isWorkflowLifecycleDetails(details),
+		);
 
-		for (const activeTools of [
-			["read", "workflow_activate"],
-			["read", "workflow_transition"],
-			["read", "workflow_activate", "workflow_transition"],
-		]) {
-			fake.activeTools = activeTools;
-			const eligible = await runContext(fake, incoming);
-			expect(eligible).toBeDefined();
-			const messages = (eligible as { messages: unknown[] }).messages;
-			expect(messages[0]).toBe(incoming[0]);
-			expect(messages).toHaveLength(2);
-		}
+		expect(activation?.options).toEqual({ deliverAs: "steer" });
+	});
 
-		fake.activeTools = ["read"];
-		expect(await runContext(fake, incoming)).toBeUndefined();
+	/** Proves compaction starts a new activation-options segment without an active workflow. */
+	test("re-publishes activation options after inactive compaction", async () => {
+		// Purpose: every compaction must establish workflow availability in the new provider-visible segment.
+		// Input and expected output: delivery availability is published once at startup and once after inactive compaction.
+		// Edge case: no active or completed workflow exists to produce a checkpoint.
+		// Dependencies: session_compact wiring and activation-options deduplication reset.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const initialOptions = fake.messages.at(-1)?.content;
+
+		await runSessionCompact(fake);
+
+		expect(fake.messages).toHaveLength(2);
+		expect(fake.messages.at(-1)?.content).toBe(initialOptions);
+	});
+
+	/** Proves compaction creates one checkpoint and forgets definitions outside that checkpoint. */
+	test("checkpoints after compaction and inlines the first later stage entry", async () => {
+		// Purpose: post-compaction history must restore exact active instructions without trusting the summary.
+		// Input and expected output: review compaction emits one checkpoint, then rework inlines implementation guidance again.
+		// Edge case: unchanged activation options are re-published because compaction removed the prior record from provider context.
+		// Dependencies: session_compact wiring, checkpoint rendering, and known-stage reset.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		const transition = requireTool(fake, "workflow_transition");
+		await transition.execute("advance", { stageId: "done" });
+		const beforeCompaction = fake.messages.length;
+
+		await runSessionCompact(fake);
+		expect(fake.messages).toHaveLength(beforeCompaction + 2);
+		expect(fake.messages.at(-2)?.content).toContain(
+			'<workflow_checkpoint id="delivery" status="active" active_stage_id="done"',
+		);
+		expect(fake.messages.at(-1)?.content).toBe(
+			"<workflow_activation_options />",
+		);
+
+		await transition.execute("rework", { stageId: "start" });
+		expect(fake.messages.at(-1)?.content).toContain('guidelines="inline"');
+		expect(fake.messages.at(-1)?.content).toContain("Start work");
+	});
+
+	/** Proves restored journal records prevent duplicate legacy-repair checkpoints. */
+	test("deduplicates compatible restore checkpoints", async () => {
+		// Purpose: repeated session restoration must not append the same checkpoint and options again.
+		// Input and expected output: state-only history is repaired once, then the repaired branch produces no new message.
+		// Edge case: the availability record follows the checkpoint in the repaired branch.
+		// Dependencies: workflow-state replay and journal detail restoration.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		const stateEntry = activatedEntry();
+		await runLifecycle(fake, "session_start", [stateEntry]);
+		const repairedMessages = fake.messages.map((message) => ({
+			type: "custom_message",
+			...message,
+		}));
+		const messageCount = fake.messages.length;
+
+		await runLifecycle(fake, "session_tree", [stateEntry, ...repairedMessages]);
+
+		expect(fake.messages).toHaveLength(messageCount);
 	});
 
 	/**
@@ -1796,26 +1871,20 @@ describe("workflow extension lifecycle", () => {
 		await transition.execute("finish-delivery", { stageId: "done" });
 
 		setMainWorkflowPolicy(fake, ["review"]);
-		const switchedContext = await runContext(fake, []);
-		const switchedContent = String(
-			(switchedContext as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const switchedContent = latestWorkflowContent(fake);
 		expect(switchedContent).toContain(
-			'<active_workflow id="delivery" active_stage_id="done"',
+			'<workflow_stage_activated workflow_id="delivery" stage_id="done"',
 		);
-		expect(switchedContent).toContain("<workflow_activation_options>");
-		expect(switchedContent).toContain('id="review"');
+		expect(fake.messages.at(-1)?.content).toContain(
+			"<workflow_activation_options>",
+		);
+		expect(fake.messages.at(-1)?.content).toContain('id="review"');
 
 		await transition.execute("reopen-delivery", { stageId: "start" });
 		await activate.execute("activate-review", { workflowId: "review" });
-		const replacedContext = await runContext(fake, []);
-		const replacedContent = String(
-			(replacedContext as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const replacedContent = latestWorkflowContent(fake);
 		expect(replacedContent).toContain(
-			'<active_workflow id="review" active_stage_id="start"',
+			'<workflow_stage_activated workflow_id="review" stage_id="start"',
 		);
 	});
 
@@ -1838,25 +1907,17 @@ describe("workflow extension lifecycle", () => {
 		const transition = requireTool(fake, "workflow_transition");
 		const activate = requireTool(fake, "workflow_activate");
 
-		const initialContext = await runContext(fake, []);
-		const initialContent = String(
-			(initialContext as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const initialContent = latestWorkflowContent(fake);
 		expect(initialContent).toContain(
-			'<active_workflow id="delivery" active_stage_id="start"',
+			'<workflow_checkpoint id="delivery" status="active" active_stage_id="start"',
 		);
-		expect(initialContent).toContain('id="review"');
+		expect(fake.messages.at(-1)?.content).toContain('id="review"');
 
 		await transition.execute("finish-delivery", { stageId: "done" });
 		await activate.execute("activate-review", { workflowId: "review" });
-		const replacedContext = await runContext(fake, []);
-		const replacedContent = String(
-			(replacedContext as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const replacedContent = latestWorkflowContent(fake);
 		expect(replacedContent).toContain(
-			'<active_workflow id="review" active_stage_id="start"',
+			'<workflow_stage_activated workflow_id="review" stage_id="start"',
 		);
 	});
 
@@ -1879,7 +1940,7 @@ describe("workflow extension lifecycle", () => {
 		).rejects.toThrow(expectedIssue);
 
 		expect(fake.activeTools).toEqual(["read"]);
-		expect(await runContext(fake, [])).toBeUndefined();
+		expect(latestWorkflowContent(fake)).toBeUndefined();
 		expect(fake.appended).toEqual([]);
 		const transition = fake.tools.find(
 			({ name }) => name === "workflow_transition",
@@ -1999,25 +2060,17 @@ describe("workflow extension lifecycle", () => {
 		setMainWorkflowPolicy(fake, policy);
 		const transition = requireTool(fake, "workflow_transition");
 
-		const initialContext = await runContext(fake, []);
-		expect(initialContext).toBeDefined();
-		const initialContent = String(
-			(initialContext as { messages: Array<{ content: unknown }> }).messages[0]
-				?.content,
-		);
+		const initialContent = latestWorkflowContent(fake);
+		expect(initialContent).toBeDefined();
 		expect(initialContent).not.toContain("<workflow_activation_options");
 		expect(initialContent).toContain(
-			'<active_workflow id="delivery" active_stage_id="start"',
+			'<workflow_checkpoint id="delivery" status="active" active_stage_id="start"',
 		);
 
 		await transition.execute("finish-delivery", { stageId: "done" });
 		expect(fake.appended).toHaveLength(1);
-		const transitionedContext = await runContext(fake, []);
-		const transitionedContent = String(
-			(transitionedContext as { messages: Array<{ content: unknown }> })
-				.messages[0]?.content,
-		);
-		expect(transitionedContent).toContain('active_stage_id="done"');
+		const transitionedContent = latestWorkflowContent(fake);
+		expect(transitionedContent).toContain('stage_id="done"');
 	});
 
 	test("does not publish workflow status outside TUI mode", async () => {

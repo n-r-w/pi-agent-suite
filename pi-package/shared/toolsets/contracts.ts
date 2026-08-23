@@ -3,6 +3,8 @@ export interface Toolset {
 	readonly name: string;
 	readonly description: string;
 	readonly toolNames: readonly string[];
+	/** Model-facing context persisted with the first successful activation result. */
+	readonly activationContext?: string;
 	/** Confirms provider readiness and returns the registered names available for composition. */
 	readonly activate: () => Promise<readonly string[]>;
 }
@@ -17,6 +19,7 @@ export interface ToolsetActivation {
 	readonly name: string;
 	readonly toolNames: readonly string[];
 	readonly alreadyActive: boolean;
+	readonly activationContext?: string;
 }
 
 export interface ToolsetActivationPresentation {

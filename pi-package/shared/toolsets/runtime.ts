@@ -189,7 +189,14 @@ class ToolsetRuntimeImpl implements ToolsetRuntime {
 			getAgentRuntimeComposition(this.pi).reconcileActiveTools();
 			throw error;
 		}
-		return { name, toolNames, alreadyActive: false };
+		return {
+			name,
+			toolNames,
+			alreadyActive: false,
+			...(toolset.activationContext === undefined
+				? {}
+				: { activationContext: toolset.activationContext }),
+		};
 	}
 
 	public restoreFromBranch(
@@ -338,9 +345,12 @@ function formatActivationContent(activation: ToolsetActivation): string {
 	const status = activation.alreadyActive
 		? `Toolset "${activation.name}" is already active.`
 		: `Activated toolset "${activation.name}".`;
-	return `${status}\nAvailable tools:\n${activation.toolNames
+	const summary = `${status}\nAvailable tools:\n${activation.toolNames
 		.map((name) => `- ${name}`)
 		.join("\n")}`;
+	return activation.activationContext === undefined
+		? summary
+		: `${summary}\n\n${activation.activationContext}`;
 }
 
 function readActivationName(params: unknown): string {

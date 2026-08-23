@@ -165,6 +165,82 @@ function writePromptDumpExtension(directory: string): string {
 	return extensionPath;
 }
 
+/** Writes a debug extension that dumps the final provider tool payload before network access. */
+function writeProviderToolPayloadDumpExtension(directory: string): string {
+	const extensionPath = join(directory, "dump-provider-tools.ts");
+	writeFileSync(
+		extensionPath,
+		[
+			'import { writeFileSync } from "node:fs";',
+			"",
+			"export default function dumpProviderTools(pi) {",
+			...RUNTIME_TEST_PROVIDER_LINES,
+			"\tpi.registerTool({",
+			'\t\tname: "audit_lookup",',
+			'\t\tlabel: "Audit Lookup",',
+			'\t\tdescription: "Find one audit record by query.",',
+			"\t\tparameters: {",
+			'\t\t\ttype: "object",',
+			"\t\t\tproperties: {",
+			'\t\t\t\tquery: { type: "string", description: "Exact audit query." },',
+			"\t\t\t},",
+			'\t\t\trequired: ["query"],',
+			"\t\t\tadditionalProperties: false,",
+			"\t\t},",
+			'\t\texecute: async () => ({ content: [{ type: "text", text: "ok" }] }),',
+			"\t});",
+			'\tpi.on("session_start", () => pi.setActiveTools(["audit_lookup"]));',
+			'\tpi.on("before_provider_request", (event) => {',
+			"\t\tconst dumpFile = process.env.PI_PROVIDER_TOOL_DUMP_FILE;",
+			'\t\tif (dumpFile === undefined) throw new Error("PI_PROVIDER_TOOL_DUMP_FILE is required");',
+			"\t\twriteFileSync(dumpFile, JSON.stringify({ activeTools: pi.getActiveTools(), payload: event.payload }, null, 2));",
+			"\t\tprocess.exit(23);",
+			"\t});",
+			"}",
+		].join("\n"),
+	);
+	return extensionPath;
+}
+
+/** Writes a deterministic provider that activates one workflow and dumps the next request context. */
+function writeWorkflowLoopDumpExtension(directory: string): string {
+	const extensionPath = join(directory, "dump-workflow-loop.ts");
+	writeFileSync(
+		extensionPath,
+		[
+			'import { writeFileSync } from "node:fs";',
+			'import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";',
+			"let calls = 0;",
+			"const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };",
+			"export default function dumpWorkflowLoop(pi) {",
+			'\tpi.registerProvider("workflow-loop", {',
+			'\t\tname: "Workflow Loop",',
+			'\t\tapi: "openai-completions",',
+			'\t\tbaseUrl: "http://127.0.0.1:1/v1",',
+			'\t\tapiKey: "test",',
+			'\t\tmodels: [{ id: "fake", name: "Fake", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],',
+			"\t\tstreamSimple(model, context) {",
+			"\t\t\tconst stream = createAssistantMessageEventStream();",
+			"\t\t\tqueueMicrotask(() => {",
+			"\t\t\t\tcalls += 1;",
+			"\t\t\t\tif (calls === 2) {",
+			"\t\t\t\t\twriteFileSync(process.env.PI_WORKFLOW_LOOP_DUMP_FILE, JSON.stringify(context.messages, null, 2));",
+			"\t\t\t\t\tprocess.exit(23);",
+			"\t\t\t\t}",
+			'\t\t\t\tconst output = { role: "assistant", content: [{ type: "toolCall", id: "activate-1", name: "workflow_activate", arguments: { workflowId: "delivery" } }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: Date.now() };',
+			'\t\t\t\tstream.push({ type: "start", partial: output });',
+			'\t\t\t\tstream.push({ type: "done", reason: "toolUse", message: output });',
+			"\t\t\t\tstream.end();",
+			"\t\t\t});",
+			"\t\t\treturn stream;",
+			"\t\t},",
+			"\t});",
+			"}",
+		].join("\n"),
+	);
+	return extensionPath;
+}
+
 /** Writes a debug extension that exits from context before any provider request. */
 function writeWorkflowRuntimeDumpExtension(
 	directory: string,
@@ -706,6 +782,142 @@ test("runtime package loading snapshots configured subagent descriptions on the 
 	}
 });
 
+test("provider payload carries active tool definitions without prompt inventory", () => {
+	// Purpose: Pi provider serialization, not system-prompt prose, owns active tool names, descriptions, and parameter schemas.
+	// Input and expected output: one active custom tool appears as the only provider tool with both description levels intact.
+	// Edge case: the process exits from before_provider_request before any network connection.
+	// Dependencies: local Pi CLI, an isolated runtime provider, and a temporary debug extension.
+	const scratchDir = mkdtempSync(join(tmpdir(), "pi-provider-tools-"));
+	const projectDir = mkdtempSync(join(tmpdir(), "pi-provider-tools-project-"));
+	const dumpFile = join(scratchDir, "provider-tools.json");
+	const extensionPath = writeProviderToolPayloadDumpExtension(scratchDir);
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"--model",
+				RUNTIME_TEST_MODEL,
+				"-p",
+				"-e",
+				extensionPath,
+				"inspect provider tools",
+			],
+			{
+				cwd: projectDir,
+				encoding: "utf8",
+				env: { ...process.env, PI_PROVIDER_TOOL_DUMP_FILE: dumpFile },
+				timeout: 30_000,
+			},
+		);
+		if (result.status !== 23) {
+			throw new Error(`${result.stdout}\n${result.stderr}`);
+		}
+		const dump = JSON.parse(readFileSync(dumpFile, "utf8")) as {
+			readonly activeTools: readonly string[];
+			readonly payload: {
+				readonly tools: readonly {
+					readonly function: {
+						readonly name: string;
+						readonly description: string;
+						readonly parameters: {
+							readonly properties: {
+								readonly query: { readonly description: string };
+							};
+						};
+					};
+				}[];
+			};
+		};
+		expect(dump.activeTools).toEqual(["audit_lookup"]);
+		expect(dump.payload.tools).toHaveLength(1);
+		expect(dump.payload.tools[0]?.function).toMatchObject({
+			name: "audit_lookup",
+			description: "Find one audit record by query.",
+			parameters: {
+				properties: {
+					query: { description: "Exact audit query." },
+				},
+			},
+		});
+	} finally {
+		rmSync(projectDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+	}
+});
+
+test("workflow activation reaches the next provider request in the active tool loop", () => {
+	// Purpose: workflow journal records published by a tool must enter the active agent loop rather than only persisted session state.
+	// Input and expected output: a deterministic provider activates delivery, then its second request contains activation and stage records.
+	// Edge case: activation options change from the catalog list to an explicit empty replacement after activation.
+	// Dependencies: real Pi CLI, package loading, sendMessage steer delivery, and an isolated workflow catalog.
+	const scratchDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-"));
+	const projectDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-project-"));
+	const suiteDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-suite-"));
+	const workflowsDir = join(suiteDir, "workflow", "workflows");
+	mkdirSync(workflowsDir, { recursive: true });
+	writeFileSync(
+		join(workflowsDir, "delivery.yaml"),
+		"description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start live check\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish live check\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n",
+	);
+	const dumpFile = join(scratchDir, "workflow-loop.json");
+	const extensionPath = writeWorkflowLoopDumpExtension(scratchDir);
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"--model",
+				"workflow-loop/fake",
+				"-p",
+				"-e",
+				join(process.cwd(), "pi-package"),
+				"-e",
+				extensionPath,
+				"activate delivery",
+			],
+			{
+				cwd: projectDir,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					PI_AGENT_SUITE_DIR: suiteDir,
+					PI_WORKFLOW_LOOP_DUMP_FILE: dumpFile,
+				},
+				timeout: 30_000,
+			},
+		);
+		if (result.status !== 23) {
+			throw new Error(`${result.stdout}\n${result.stderr}`);
+		}
+		const dumpedMessages = JSON.parse(readFileSync(dumpFile, "utf8")) as {
+			readonly content: readonly {
+				readonly type: string;
+				readonly text?: string;
+			}[];
+		}[];
+		const context = dumpedMessages
+			.flatMap(({ content }) => content.map(({ text }) => text ?? ""))
+			.join("\n");
+		const activationIndex = context.indexOf(
+			'<workflow_activated id="delivery"',
+		);
+		const stageIndex = context.indexOf(
+			'<workflow_stage_activated workflow_id="delivery" stage_id="start"',
+		);
+		expect(activationIndex).toBeGreaterThanOrEqual(0);
+		expect(stageIndex).toBeGreaterThan(activationIndex);
+		expect(context).toContain("<available_transitions>");
+		expect(context).toContain("<workflow_activation_options />");
+	} finally {
+		rmSync(projectDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+		rmSync(suiteDir, { recursive: true, force: true });
+	}
+});
+
 test("runtime package loading applies system-prompt before agent runtime contributions", () => {
 	// Purpose: real package load order must let system-prompt replace only the base prompt and keep selected-agent prompt additions after it.
 	// Input and expected output: suite config points system-prompt to a temp Markdown template, and selected TestAgent still appears later.
@@ -725,7 +937,7 @@ test("runtime package loading applies system-prompt before agent runtime contrib
 	});
 	writeFileSync(
 		customTemplateFile,
-		"Suite system prompt\n\nTools:\n{{tools}}\n\n{{unknown-from-test}}",
+		"Suite system prompt\n\nTool guidelines:\n{{toolGuidelines}}\n\n{{unknown-from-test}}",
 	);
 	writeFileSync(
 		join(agentDir, "agent-suite", "system-prompt", "config.json"),
@@ -1062,11 +1274,9 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 				}
 			}
 			if (runtimeCase.projectsWorkflow) {
-				expect(workflowMessages).toHaveLength(1);
-				expect(String(workflowMessages[0]?.content)).toContain(
-					"WORKFLOW_RUNTIME_GUIDELINES",
-				);
-				const workflowContent = String(workflowMessages[0]?.content);
+				expect(workflowMessages.length).toBeGreaterThan(0);
+				expect(runtime.systemPrompt).toContain("WORKFLOW_RUNTIME_GUIDELINES");
+				const workflowContent = String(workflowMessages.at(-1)?.content);
 				if (expectedWorkflowTools.includes("workflow_activate")) {
 					expect(workflowContent).toContain("<workflow_activation_options>");
 					const expectedWorkflowIds = new Set<string>(
@@ -1082,12 +1292,14 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 						}
 					}
 				} else {
-					expect(workflowContent).not.toContain("<workflow_activation_options");
+					expect(workflowContent).toBe("<workflow_activation_options />");
 				}
 			} else {
-				expect(workflowMessages).toHaveLength(0);
-				expect(JSON.stringify(runtime.contextMessages)).not.toContain(
-					"<workflow_",
+				expect(runtime.systemPrompt).not.toContain(
+					"WORKFLOW_RUNTIME_GUIDELINES",
+				);
+				expect(workflowMessages.at(-1)?.content).toBe(
+					"<workflow_activation_options />",
 				);
 			}
 		} finally {

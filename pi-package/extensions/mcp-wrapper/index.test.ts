@@ -65,6 +65,12 @@ interface NotificationRecord {
 
 interface ExtensionApiFake extends ExtensionAPI {
 	readonly activeToolHistory: string[][];
+	readonly messages: Array<{
+		readonly customType: string;
+		readonly content: string;
+		readonly display: boolean;
+		readonly details: unknown;
+	}>;
 	readonly commands: Array<
 		Omit<RegisteredCommand, "name" | "sourceInfo"> & { readonly name: string }
 	>;
@@ -103,10 +109,12 @@ function createExtensionApiFake(
 	const handlers: RegisteredHandler[] = [];
 	const tools: ToolDefinition[] = [];
 	const activeToolHistory: string[][] = [];
+	const messages: ExtensionApiFake["messages"] = [];
 	let activeTools: readonly string[] = [];
 
 	return {
 		activeToolHistory,
+		messages,
 		commands,
 		handlers,
 		tools,
@@ -149,6 +157,14 @@ function createExtensionApiFake(
 			return undefined;
 		},
 		setThinkingLevel(): void {},
+		sendMessage(message: Parameters<ExtensionAPI["sendMessage"]>[0]): void {
+			messages.push({
+				customType: message.customType,
+				content: String(message.content),
+				display: message.display,
+				details: message.details,
+			});
+		},
 		appendEntry(): void {},
 		getSessionHistory() {
 			return [];
@@ -184,6 +200,21 @@ async function runSessionStart(
 					statuses.push({ key, text });
 				},
 			},
+		} as unknown as ExtensionContext);
+	}
+}
+
+async function runSessionCompact(
+	pi: ExtensionApiFake,
+	sessionManager: SessionManager,
+): Promise<void> {
+	const handlers = pi.handlers.filter(
+		(handler) => handler.eventName === "session_compact",
+	);
+	expect(handlers.length).toBeGreaterThan(0);
+	for (const handler of handlers) {
+		await handler.handler({ type: "session_compact" }, {
+			sessionManager,
 		} as unknown as ExtensionContext);
 	}
 }
@@ -249,6 +280,18 @@ async function resolvesWithin(
 			setTimeout(() => resolve(false), milliseconds),
 		),
 	])) as boolean;
+}
+
+function sessionManagerFromMessages(
+	messages: ExtensionApiFake["messages"],
+): SessionManager {
+	return {
+		getBranch: () =>
+			messages.map((message) => ({
+				type: "custom_message",
+				...message,
+			})),
+	} as unknown as SessionManager;
 }
 
 async function runBeforeAgentStart(
@@ -454,9 +497,9 @@ describe("mcp-wrapper extension", () => {
 
 	test("publishes loaded eager and deferred MCP catalogs through composition", async () => {
 		// Purpose: loaded metadata must register every definition while only eager tools start active.
-		// Input and expected output: eager and deferred servers load; activation exposes the deferred tool and instructions.
-		// Edge case: activation uses the already loaded catalog without another discovery or connection step.
-		// Dependencies: shared toolset runtime, composition, MCP manager routing, and instruction filtering.
+		// Input and expected output: eager instructions persist at startup; activation exposes the deferred tool and its instructions in the result.
+		// Edge case: activation uses the loaded catalog without another discovery or repeated instruction record.
+		// Dependencies: shared toolset runtime, composition, MCP manager routing, and persistent custom messages.
 		const pi = createExtensionApiFake();
 		let discoveryCalls = 0;
 		const manager = {
@@ -522,10 +565,19 @@ describe("mcp-wrapper extension", () => {
 			"deferred_search",
 		]);
 		expect(pi.getActiveTools()).toEqual(["activate_toolset", "eager_read"]);
-		expect(await runBeforeAgentStart(pi)).toContain("Use eager files.");
-		expect(await runBeforeAgentStart(pi)).not.toContain(
-			"Use deferred search carefully.",
-		);
+		expect(await runBeforeAgentStart(pi)).toBe("Base prompt");
+		expect(pi.messages).toEqual([
+			{
+				customType: "mcp-instructions",
+				content:
+					'<mcp_instructions>\n  <server name="eager">\nUse eager files.\n  </server>\n</mcp_instructions>',
+				display: false,
+				details: {
+					version: 1,
+					serverKeys: ["eager"],
+				},
+			},
+		]);
 		expect(getToolsetRuntime(pi).getVisibleToolsets()).toEqual([
 			{
 				name: "search-suite",
@@ -534,10 +586,20 @@ describe("mcp-wrapper extension", () => {
 			},
 		]);
 
+		const restoredSessionManager = {
+			getBranch: () =>
+				pi.messages.map((message) => ({
+					type: "custom_message",
+					...message,
+				})),
+		} as unknown as SessionManager;
+		await runSessionStart(pi, [], [], restoredSessionManager);
+		expect(pi.messages).toHaveLength(1);
+
 		const activation = pi.tools.find(
 			(tool) => tool.name === "activate_toolset",
 		);
-		await activation?.execute(
+		const activationResult = await activation?.execute(
 			"activate-1",
 			{ name: "search-suite" },
 			undefined,
@@ -545,11 +607,45 @@ describe("mcp-wrapper extension", () => {
 			{} as ExtensionContext,
 		);
 
-		expect(discoveryCalls).toBe(1);
+		expect(discoveryCalls).toBe(2);
 		expect(pi.getActiveTools()).toEqual(["eager_read", "deferred_search"]);
-		expect(await runBeforeAgentStart(pi)).toContain(
-			"Use deferred search carefully.",
-		);
+		expect(activationResult?.content).toEqual([
+			{
+				type: "text",
+				text: expect.stringContaining("Use deferred search carefully."),
+			},
+		]);
+		expect(await runBeforeAgentStart(pi)).toBe("Base prompt");
+		expect(pi.messages).toHaveLength(1);
+
+		const activatedSessionManager = {
+			getBranch: () => [
+				...pi.messages.map((message) => ({
+					type: "custom_message",
+					...message,
+				})),
+				{
+					type: "message",
+					message: {
+						role: "toolResult",
+						toolName: "activate_toolset",
+						isError: false,
+						content: activationResult?.content,
+						details: activationResult?.details,
+					},
+				},
+			],
+		} as unknown as SessionManager;
+		await runSessionStart(pi, [], [], activatedSessionManager);
+		expect(pi.messages).toHaveLength(1);
+
+		const compactedSessionManager = {
+			getBranch: () => [{ type: "compaction" }],
+		} as unknown as SessionManager;
+		await runSessionCompact(pi, compactedSessionManager);
+		expect(pi.messages).toHaveLength(2);
+		expect(pi.messages[1]?.content).toContain("Use eager files.");
+		expect(pi.messages[1]?.content).toContain("Use deferred search carefully.");
 	});
 
 	test("restores resumed activation after cacheless live discovery finalizes the catalog", async () => {
@@ -623,9 +719,8 @@ describe("mcp-wrapper extension", () => {
 
 		expect(pi.getActiveTools()).toEqual(["deferred_search"]);
 		expect(getToolsetRuntime(pi).getVisibleToolsets()).toEqual([]);
-		expect(await runBeforeAgentStart(pi)).toContain(
-			"Use deferred search carefully.",
-		);
+		expect(pi.messages[0]?.content).toContain("Use deferred search carefully.");
+		expect(await runBeforeAgentStart(pi)).toBe("Base prompt");
 		expect(
 			notifications.some(({ message }) => message.includes("stale activated")),
 		).toBe(false);
@@ -990,9 +1085,8 @@ describe("mcp-wrapper extension", () => {
 			FILES_READ_TOOL_NAME,
 		]);
 		expect(pi.getActiveTools()).toEqual([FILES_READ_TOOL_NAME]);
-		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
-			"Use cached file instructions.",
-		);
+		expect(pi.messages[0]?.content).toContain("Use cached file instructions.");
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
 	});
 
 	test("registers a manual MCP cache refresh command", async () => {
@@ -1485,10 +1579,8 @@ describe("mcp-wrapper extension", () => {
 		});
 
 		await runSessionStart(pi);
-		pi.setActiveTools([FILES_READ_TOOL_NAME]);
-		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
-			"Use this server for files.",
-		);
+		expect(pi.messages[0]?.content).toContain("Use this server for files.");
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
 
 		await runSessionShutdown(pi);
 
@@ -2021,20 +2113,19 @@ describe("mcp-wrapper extension", () => {
 			createManager: () => managerWithCleanup(manager),
 		});
 
-		await runSessionStart(pi);
 		getAgentRuntimeComposition(pi).setRestrictiveToolNames("test-policy", [
 			"docs_server_search",
 		]);
+		await runSessionStart(pi);
 
-		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe(`Base prompt
-
-<mcp_instructions>
+		expect(pi.messages[0]?.content).toBe(`<mcp_instructions>
   <server name="docs&amp;server">
 Use this server. Do not call &lt;private>.
 
 Local docs guidance.
   </server>
 </mcp_instructions>`);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
 	});
 
 	test("renders local MCP instructions for an eligible server without protocol instructions", async () => {
@@ -2085,10 +2176,7 @@ Local docs guidance.
 		});
 
 		await runSessionStart(pi);
-		pi.setActiveTools(["alpha_read", "beta_search"]);
-		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe(`Base prompt
-
-<mcp_instructions>
+		expect(pi.messages[0]?.content).toBe(`<mcp_instructions>
   <server name="alpha">
 Alpha local guidance.
   </server>
@@ -2096,6 +2184,7 @@ Alpha local guidance.
 Beta local guidance.
   </server>
 </mcp_instructions>`);
+		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
 	});
 
 	test("omits MCP initialize instructions when no registered MCP tool is active", async () => {
@@ -2140,26 +2229,35 @@ Beta local guidance.
 			createManager: () => managerWithCleanup(manager),
 		});
 
-		await runSessionStart(pi);
 		getAgentRuntimeComposition(pi).setRestrictiveToolNames("test-policy", []);
+		await runSessionStart(pi);
 
+		expect(pi.messages).toEqual([]);
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
 	});
 
-	test("clears MCP initialize instructions when a later startup registers no tools", async () => {
+	test("replaces MCP instructions when configured servers are removed", async () => {
+		// Purpose: restoration must replace stale instructions rather than only proving coverage for active servers.
+		// Input and expected output: files plus search becomes files only, then an explicit empty replacement.
+		// Edge case: retained files instructions must not hide stale search instructions in an older aggregate record.
+		// Dependencies: live discovery, session restoration, and MCP instruction replacement semantics.
 		const pi = createExtensionApiFake();
-		let enabled = true;
+		let configuredServers: Array<"files" | "search"> = ["files", "search"];
 		const manager = {
 			discoverServers: async () => ({
-				serverToolLists: [
-					{
-						serverKey: "files",
-						tools: [{ name: "read", inputSchema: { type: "object" } }],
-					},
-				],
-				serverInstructions: [
-					{ serverKey: "files", instructions: "Use this server for files." },
-				],
+				serverToolLists: configuredServers.map((serverKey) => ({
+					serverKey,
+					tools: [
+						{
+							name: serverKey === "files" ? "read" : "lookup",
+							inputSchema: { type: "object" },
+						},
+					],
+				})),
+				serverInstructions: configuredServers.map((serverKey) => ({
+					serverKey,
+					instructions: `Use this server for ${serverKey}.`,
+				})),
 				failures: [],
 			}),
 			callTool: async () => ({ content: [] }),
@@ -2169,7 +2267,7 @@ Beta local guidance.
 			readConfig: async () => ({
 				kind: "valid",
 				config: {
-					enabled,
+					enabled: configuredServers.length > 0,
 					timeouts: {
 						startupSeconds: 30,
 						listToolsSeconds: 15,
@@ -2177,31 +2275,48 @@ Beta local guidance.
 						maxTotalSeconds: 180,
 					},
 					widgetLineBudget: 5,
-					mcpServers: enabled
-						? {
-								files: {
-									type: "stdio",
-									command: "node",
-									args: [],
-									env: {},
-									additionalInstructions: "Files local guidance.",
-								},
-							}
-						: {},
+					mcpServers: {
+						...(configuredServers.includes("files")
+							? {
+									files: {
+										type: "stdio" as const,
+										command: "node",
+										args: [],
+										env: {},
+									},
+								}
+							: {}),
+						...(configuredServers.includes("search")
+							? {
+									search: {
+										type: "stdio" as const,
+										command: "node",
+										args: [],
+										env: {},
+									},
+								}
+							: {}),
+					},
 				},
 			}),
 			createManager: () => managerWithCleanup(manager),
 		});
 
 		await runSessionStart(pi);
-		pi.setActiveTools([FILES_READ_TOOL_NAME]);
-		expect(await runBeforeAgentStart(pi, "Base prompt")).toContain(
-			"<mcp_instructions>",
-		);
+		expect(pi.messages).toHaveLength(1);
+		expect(pi.messages[0]?.content).toContain('name="files"');
+		expect(pi.messages[0]?.content).toContain('name="search"');
 
-		enabled = false;
-		await runSessionStart(pi);
+		configuredServers = ["files"];
+		await runSessionStart(pi, [], [], sessionManagerFromMessages(pi.messages));
+		expect(pi.messages).toHaveLength(2);
+		expect(pi.messages[1]?.content).toContain('name="files"');
+		expect(pi.messages[1]?.content).not.toContain('name="search"');
 
+		configuredServers = [];
+		await runSessionStart(pi, [], [], sessionManagerFromMessages(pi.messages));
+		expect(pi.messages).toHaveLength(3);
+		expect(pi.messages[2]?.content).toBe("<mcp_instructions />");
 		expect(await runBeforeAgentStart(pi, "Base prompt")).toBe("Base prompt");
 	});
 
