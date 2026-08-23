@@ -158,7 +158,7 @@ Current working directory: {{cwd}}
     - **O1-1**: {Option}
         - Pros: {Pros}
         - Cons: {Cons}
-        - Recommendation: {why this option is recommended?}
+        - Recommendation: {rationale why this option is recommended}
     - **O1-2**: {Option}
         - Pros: {Pros}
         - Cons: {Cons}
@@ -170,7 +170,7 @@ Current working directory: {{cwd}}
     1. Status section is optional. Omit it when no status information is needed.
     2. Every option MUST include pros and cons.
     3. At least one option per question MUST include recommendation.
-    4. Include recommendation only for recommended options.
+    4. Include recommendation only for recommended options. MUST explain WHY it is recommended.
     5. Pros and cons MUST describe technical and user effects.
     </questions>
 
