@@ -51,7 +51,8 @@ Every catalog or dynamic workflow requires:
 - an optional root `prompt` for guidance that applies to every stage;
 - an optional ordered `triggers` list containing only closed trigger objects;
 - supported trigger types `local_knowledge_accumulation` and `global_knowledge_accumulation`;
-- an optional root `model` object and optional stage `model` objects in catalog YAML;
+- optional root and stage `model` objects in catalog YAML;
+- a required `model` object on every `workflow_create` stage with one required `thinking` field set to `low`, `medium`, or `high`;
 - unique stage IDs and valid transition endpoints;
 - an acyclic `advance` graph in which every stage is reachable;
 - no outgoing `advance` from final stages;
@@ -127,12 +128,18 @@ A final-stage agent run remains active until `agent_settled`. The settlement res
       "id": "implementation",
       "description": "Implement the change",
       "prompt": "Implement and test the change.",
+      "model": {
+        "thinking": "medium"
+      },
       "initial": true
     },
     {
       "id": "review",
       "description": "Review the result",
       "prompt": "Review the implementation.",
+      "model": {
+        "thinking": "high"
+      },
       "final": true
     }
   ],
@@ -148,7 +155,7 @@ A final-stage agent run remains active until `agent_settled`. The settlement res
 
 A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. A replaced dynamic workflow cannot be reactivated. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
 
-The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets. The `workflow_create` schema remains unchanged and does not expose model settings; model settings are available only in catalog YAML.
+The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. YAML catalog definitions use the same structural text rules without those tool-specific budgets. `workflow_create` requires a closed `model` object on every stage. Every stage model requires `thinking`. The allowed values are `low`, `medium`, and `high`. Root model settings, `model.id`, and other thinking levels are rejected.
 
 `workflow_create` remains available with a missing or empty catalog when the agent's `tools` policy permits it. A catalog error blocks creation because ID collisions cannot be checked against an incomplete namespace. Dynamic workflows are never written to YAML.
 
@@ -208,10 +215,14 @@ stages:
   - id: implementation
     description: Implement the approved change
     prompt: Implement and test the change
+    model:
+      thinking: medium
     initial: true
   - id: review
     description: Review the result
     prompt: Review the implementation
+    model:
+      thinking: high
     final: true
 transitions:
   - from: implementation

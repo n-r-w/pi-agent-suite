@@ -132,12 +132,14 @@ function createArguments(id = "dynamic-delivery"): Record<string, unknown> {
 				id: "start",
 				description: "Start",
 				prompt: "Start dynamic work",
+				model: { thinking: "medium" },
 				initial: true,
 			},
 			{
 				id: "done",
 				description: "Done",
 				prompt: "Finish dynamic work",
+				model: { thinking: "medium" },
 				final: true,
 			},
 		],
@@ -501,6 +503,56 @@ describe("workflow extension lifecycle", () => {
 			const stages = invalid["stages"] as Record<string, unknown>[];
 			stages[0] = { ...stages[0], triggers };
 			expect(Check(schema, invalid)).toBe(false);
+		}
+	});
+
+	/**
+	 * Proves the dynamic TypeBox boundary requires thinking-only model settings on every stage.
+	 * Inputs and expected outputs: low, medium, and high pass on every stage; other levels and model IDs fail.
+	 * Edge cases: root model settings and stages without model settings are rejected.
+	 * Dependencies: the registered workflow_create TypeBox schema.
+	 */
+	test("requires thinking-only model settings on every stage", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const create = requireTool(fake, "workflow_create");
+		const schema = create.parameters as Parameters<typeof Check>[0];
+
+		const rootModel = createArguments();
+		rootModel["model"] = { thinking: "medium" };
+		expect(Check(schema, rootModel)).toBe(false);
+
+		for (const stageIndex of [0, 1] as const) {
+			const missingModel = createArguments();
+			const stages = missingModel["stages"] as Record<string, unknown>[];
+			delete stages[stageIndex]?.["model"];
+			expect(Check(schema, missingModel)).toBe(false);
+		}
+
+		for (const thinking of ["low", "medium", "high"] as const) {
+			const valid = createArguments();
+			const stages = valid["stages"] as Record<string, unknown>[];
+			for (const stage of stages) {
+				stage["model"] = { thinking };
+			}
+			expect(Check(schema, valid)).toBe(true);
+		}
+
+		for (const model of [
+			{ thinking: "off" },
+			{ thinking: "minimal" },
+			{ thinking: "xhigh" },
+			{ thinking: "max" },
+			{ thinking: "unknown" },
+			{ id: "openai/gpt-test" },
+			{ thinking: "high", id: "openai/gpt-test" },
+			{ thinking: "high", extra: true },
+			{},
+		] as const) {
+			const invalidStage = createArguments();
+			const stages = invalidStage["stages"] as Record<string, unknown>[];
+			stages[0] = { ...stages[0], model };
+			expect(Check(schema, invalidStage)).toBe(false);
 		}
 	});
 

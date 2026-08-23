@@ -97,7 +97,9 @@ const CREATED_STAGE_KEYS = new Set([
 	"triggers",
 	"initial",
 	"final",
+	"model",
 ]);
+const CREATED_MODEL_KEYS = new Set(["thinking"]);
 const TRIGGER_KEYS = new Set(["type"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
@@ -133,7 +135,7 @@ export function validateCreatedWorkflowDefinition(
 	try {
 		const root = requireObject(value, "workflow", CREATED_ROOT_KEYS);
 		const id = readSingleLineText(root, "id").normalize("NFC");
-		return parseWorkflowDefinition(id, root, false);
+		return parseWorkflowDefinition(id, root, "created");
 	} catch (error) {
 		throw new Error(`${source}: ${errorMessage(error)}`);
 	}
@@ -417,12 +419,15 @@ function validateSavedWorkflow(
 		allowModelSettings ? SAVED_WORKFLOW_KEYS : SAVED_DYNAMIC_WORKFLOW_KEYS,
 	);
 	const id = readSingleLineText(saved, "id").normalize("NFC");
+	if (!allowModelSettings) {
+		return parseWorkflowDefinition(id, saved, "saved-created");
+	}
 	return validateWorkflowDefinition(
 		id,
 		{
 			description: Reflect.get(saved, "description"),
 			prompt: Reflect.get(saved, "prompt"),
-			...(allowModelSettings ? { model: Reflect.get(saved, "model") } : {}),
+			model: Reflect.get(saved, "model"),
 			stages: Reflect.get(saved, "stages"),
 			transitions: Reflect.get(saved, "transitions"),
 		},
@@ -491,20 +496,21 @@ function validateRoute(
 function parseWorkflowDefinition(
 	id: string,
 	root: Readonly<Record<string, unknown>>,
-	allowModelSettings = true,
+	modelSettingsSource: "catalog" | "created" | "saved-created" = "catalog",
 ): WorkflowDefinition {
 	const description = readSingleLineText(root, "description");
 	const prompt = readOptionalPromptText(root, "prompt");
-	const model = allowModelSettings
-		? parseModelSettings(Reflect.get(root, "model"), "workflow.model")
-		: undefined;
+	const model =
+		modelSettingsSource === "catalog"
+			? parseModelSettings(Reflect.get(root, "model"), "workflow.model")
+			: undefined;
 	const rawStages = requireArray(Reflect.get(root, "stages"), "stages");
 	const rawTransitions = requireArray(
 		Reflect.get(root, "transitions"),
 		"transitions",
 	);
 	const stages = rawStages.map((stage, index) =>
-		parseStage(stage, index, allowModelSettings),
+		parseStage(stage, index, modelSettingsSource),
 	);
 	const transitions = rawTransitions.map((transition, index) =>
 		parseTransition(transition, index),
@@ -522,16 +528,24 @@ function parseWorkflowDefinition(
 function parseStage(
 	value: unknown,
 	index: number,
-	allowModelSettings: boolean,
+	modelSettingsSource: "catalog" | "created" | "saved-created",
 ): WorkflowStage {
 	const stage = requireObject(
 		value,
 		`stages[${index}]`,
-		allowModelSettings ? STAGE_KEYS : CREATED_STAGE_KEYS,
+		modelSettingsSource === "catalog" ? STAGE_KEYS : CREATED_STAGE_KEYS,
 	);
-	const model = allowModelSettings
-		? parseModelSettings(Reflect.get(stage, "model"), `stages[${index}].model`)
-		: undefined;
+	const model =
+		modelSettingsSource === "catalog"
+			? parseModelSettings(
+					Reflect.get(stage, "model"),
+					`stages[${index}].model`,
+				)
+			: parseCreatedModelSettings(
+					Reflect.get(stage, "model"),
+					`stages[${index}].model`,
+					modelSettingsSource === "created",
+				);
 	return {
 		id: readTechnicalIdentifier(stage, "id"),
 		description: readSingleLineText(stage, "description"),
@@ -541,6 +555,26 @@ function parseStage(
 		final: readOptionalBoolean(stage, "final"),
 		...(model === undefined ? {} : { model }),
 	};
+}
+
+/** Parses optional thinking-only model settings accepted by workflow_create. */
+function parseCreatedModelSettings(
+	value: unknown,
+	fieldPath: string,
+	required = false,
+): ModelSettings | undefined {
+	if (value === undefined) {
+		if (required) {
+			throw new Error(`${fieldPath}.thinking is required`);
+		}
+		return undefined;
+	}
+	const model = requireObject(value, fieldPath, CREATED_MODEL_KEYS);
+	const thinking = Reflect.get(model, "thinking");
+	if (thinking !== "low" && thinking !== "medium" && thinking !== "high") {
+		throw new Error(`${fieldPath}.thinking must be one of low, medium, high`);
+	}
+	return { thinking };
 }
 
 /** Parses the optional ordered trigger list without collapsing duplicates. */
