@@ -132,10 +132,14 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 		prompt: Type.String({
 			description: `Instructions for this stage. Format:
 \`\`\`
-Goal: [Stage-specific goal]
+Goal: [Stage-specific goal. Describes resulting state to achieve. NOT rules, actions or completion criteria]
 
 Rules:
 1. [Stage-specific instructions]
+2. ...
+
+Actions:
+1. [Stage-specific actions]
 2. ...
 
 Completion criteria:
