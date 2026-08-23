@@ -13,6 +13,7 @@ import {
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import {
 	isReasoningLevel,
+	REASONING_LEVELS,
 	type ReasoningLevel,
 } from "../../shared/reasoning-levels";
 import {
@@ -36,6 +37,8 @@ import {
 	resolveWorkflowAvailability,
 	WORKFLOW_ACTIVATE_TOOL,
 	WORKFLOW_CREATE_TOOL,
+	WORKFLOW_EDIT_STAGE_TOOL,
+	WORKFLOW_GET_STAGE_TOOL,
 	WORKFLOW_TRANSITION_TOOL,
 	type WorkflowAvailability,
 	type WorkflowToolName,
@@ -64,6 +67,7 @@ import {
 	renderWorkflowActivateCall,
 	renderWorkflowCreateCall,
 	renderWorkflowResult,
+	renderWorkflowStageCall,
 	renderWorkflowTransitionCall,
 	type WorkflowToolPresentationDetails,
 } from "./tool-rendering.ts";
@@ -71,6 +75,7 @@ import {
 	activateWorkflow,
 	completeWorkflow,
 	createWorkflow,
+	editWorkflowStage,
 	replayWorkflowStateWithWarnings,
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
@@ -85,6 +90,8 @@ const WORKFLOW_STATE_ENTRY = "workflow-state";
 const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set([
 	WORKFLOW_CREATE_TOOL,
 	WORKFLOW_ACTIVATE_TOOL,
+	WORKFLOW_GET_STAGE_TOOL,
+	WORKFLOW_EDIT_STAGE_TOOL,
 	WORKFLOW_TRANSITION_TOOL,
 ]);
 const SUCCESS_RESULT = {
@@ -175,6 +182,39 @@ Completion criteria:
 					"Whether this stage may complete workflow. At least one stage must be true",
 			}),
 		),
+	},
+	{ additionalProperties: false },
+);
+
+/** Closed thinking-only model shape exposed to workflow_edit_stage validation. */
+const WORKFLOW_EDIT_STAGE_MODEL_SCHEMA = Type.Object(
+	{
+		thinking: StringEnum(REASONING_LEVELS, {
+			description: "Thinking level applied when this stage is active",
+		}),
+	},
+	{ additionalProperties: false },
+);
+
+/** Closed workflow_edit_stage boundary without immutable stage fields. */
+const WORKFLOW_EDIT_STAGE_SCHEMA = Type.Object(
+	{
+		stageId: technicalIdentifierSchema({
+			description: "Existing stage ID in current active workflow",
+			minLength: 1,
+			maxLength: 32,
+		}),
+		description: singleLineTextSchema({
+			description: "Replacement short single-line summary of stage outcome",
+			minLength: 1,
+			maxLength: 128,
+		}),
+		prompt: Type.String({
+			description: "Replacement instructions for this stage",
+			minLength: 10,
+			maxLength: 8192,
+		}),
+		model: WORKFLOW_EDIT_STAGE_MODEL_SCHEMA,
 	},
 	{ additionalProperties: false },
 );
@@ -988,6 +1028,8 @@ async function loadPromptsForInitialization(
 /** Registers all sequential definitions through the package presentation registry. */
 function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
 	registerWorkflowActivateTool(options);
+	registerWorkflowGetStageTool(options);
+	registerWorkflowEditStageTool(options);
 	registerWorkflowTransitionTool(options);
 	registerWorkflowCreateTool(options);
 }
@@ -1144,6 +1186,180 @@ function registerWorkflowActivateTool(
 			return SUCCESS_RESULT;
 		},
 	});
+}
+
+/** Registers stage inspection for the current active dynamic workflow. */
+function registerWorkflowGetStageTool(
+	options: RegisterWorkflowToolsOptions,
+): void {
+	const { pi, prompts, getCatalog, getState } = options;
+	registerPackageTool(pi, {
+		name: WORKFLOW_GET_STAGE_TOOL,
+		label: "Get workflow stage",
+		description: prompts.getStageDescription,
+		parameters: Type.Object(
+			{
+				stageId: technicalIdentifierSchema({
+					description: "Existing stage ID in current active workflow",
+					minLength: 1,
+					maxLength: 32,
+				}),
+			},
+			{ additionalProperties: false },
+		),
+		executionMode: "sequential",
+		renderCall(args, theme, context) {
+			primeWorkflowRenderState(
+				context,
+				createWorkflowPresentationDetails(
+					WORKFLOW_GET_STAGE_TOOL,
+					args,
+					getCatalog(),
+					getState(),
+				),
+			);
+			return renderWorkflowStageCall(
+				WORKFLOW_GET_STAGE_TOOL,
+				args,
+				theme,
+				context,
+			);
+		},
+		renderResult: renderWorkflowResult,
+		async execute(...[_toolCallId, params]) {
+			const stageId = readExactStringArgument(params, "stageId");
+			const current = requireEditableWorkflow(options, WORKFLOW_GET_STAGE_TOOL);
+			const stage = current.workflow.stages.find(({ id }) => id === stageId);
+			if (stage === undefined) {
+				throw new Error(`stage ${stageId} does not exist in active workflow`);
+			}
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: JSON.stringify({
+							id: stage.id,
+							description: stage.description,
+							prompt: stage.prompt,
+							model: { thinking: stage.model?.thinking },
+							initial: stage.initial,
+							final: stage.final,
+						}),
+					},
+				],
+				details: {},
+			};
+		},
+	});
+}
+
+/** Registers atomic stage replacement for the current active dynamic workflow. */
+function registerWorkflowEditStageTool(
+	options: RegisterWorkflowToolsOptions,
+): void {
+	const { pi, prompts, runtime, getCatalog, getState, setState } = options;
+	registerPackageTool(pi, {
+		name: WORKFLOW_EDIT_STAGE_TOOL,
+		label: "Edit workflow stage",
+		description: prompts.editStageDescription,
+		parameters: WORKFLOW_EDIT_STAGE_SCHEMA,
+		executionMode: "sequential",
+		renderCall(args, theme, context) {
+			primeWorkflowRenderState(
+				context,
+				createWorkflowPresentationDetails(
+					WORKFLOW_EDIT_STAGE_TOOL,
+					args,
+					getCatalog(),
+					getState(),
+				),
+			);
+			return renderWorkflowStageCall(
+				WORKFLOW_EDIT_STAGE_TOOL,
+				args,
+				theme,
+				context,
+			);
+		},
+		renderResult: renderWorkflowResult,
+		async execute(...[_toolCallId, params]) {
+			const current = requireEditableWorkflow(
+				options,
+				WORKFLOW_EDIT_STAGE_TOOL,
+			);
+			const candidate = editWorkflowStage(
+				current,
+				params,
+				WORKFLOW_EDIT_STAGE_TOOL,
+			);
+			const stageId = readStringArgumentField(params, "stageId");
+			const stage = candidate.workflow.stages.find(({ id }) => id === stageId);
+			const thinking = stage?.model?.thinking;
+			if (stage === undefined || thinking === undefined) {
+				throw new Error(`stage ${stageId} does not exist in active workflow`);
+			}
+			const data = {
+				kind: "stage_edited",
+				stageId,
+				description: stage.description,
+				prompt: stage.prompt,
+				model: { thinking },
+			};
+			let persisted = candidate;
+			if (current.route.at(-1) === stageId) {
+				persisted = await commitWorkflowStateChange(
+					pi,
+					runtime,
+					candidate,
+					data,
+				);
+			} else {
+				pi.appendEntry(WORKFLOW_STATE_ENTRY, data);
+			}
+			setState(persisted);
+			return SUCCESS_RESULT;
+		},
+	});
+}
+
+/** Returns the current active dynamic workflow after standard capability checks. */
+function requireEditableWorkflow(
+	options: RegisterWorkflowToolsOptions,
+	toolName: typeof WORKFLOW_GET_STAGE_TOOL | typeof WORKFLOW_EDIT_STAGE_TOOL,
+): WorkflowState {
+	const current = options.getState();
+	if (current === undefined || current.status !== "active") {
+		throw new Error("no workflow is active");
+	}
+	if (current.source !== "dynamic") {
+		throw new Error(
+			"only workflows created through workflow_create can be inspected or edited",
+		);
+	}
+	const policy = options.getPolicy();
+	if (policy.kind === "error") {
+		throw new Error(policy.issue);
+	}
+	const availability = options.resolveAvailability();
+	if (
+		availability.projectedState !== current ||
+		!availability.availableToolNames.has(toolName)
+	) {
+		throw new Error(`workflow ${current.workflow.id} is not available`);
+	}
+	return current;
+}
+
+/** Reads one required string field after a domain validator accepted the object. */
+function readStringArgumentField(value: unknown, key: string): string {
+	const candidate =
+		typeof value === "object" && value !== null
+			? Reflect.get(value, key)
+			: undefined;
+	if (typeof candidate !== "string") {
+		throw new Error(`${key} must be a string`);
+	}
+	return candidate;
 }
 
 /** Registers transition behavior and its source-to-target presentation. */

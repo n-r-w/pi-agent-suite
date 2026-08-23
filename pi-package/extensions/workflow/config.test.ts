@@ -156,6 +156,11 @@ describe("workflow prompt configuration", () => {
 		);
 		await writeFile(join(bundled, "create-description.md"), " create \n");
 		await writeFile(join(bundled, "activate-description.md"), " activate \n");
+		await writeFile(join(bundled, "get-stage-description.md"), " get stage \n");
+		await writeFile(
+			join(bundled, "edit-stage-description.md"),
+			" edit stage \n",
+		);
 		await writeFile(
 			join(bundled, "transition-description.md"),
 			" transition \n",
@@ -171,6 +176,8 @@ describe("workflow prompt configuration", () => {
 			extensionDescription: "guidelines",
 			createDescription: "custom creation",
 			activateDescription: "activate",
+			getStageDescription: "get stage",
+			editStageDescription: "edit stage",
 			transitionDescription: "transition",
 		});
 	});
@@ -191,6 +198,8 @@ describe("workflow prompt configuration", () => {
 			"extension-description.md",
 			"create-description.md",
 			"activate-description.md",
+			"get-stage-description.md",
+			"edit-stage-description.md",
 			"transition-description.md",
 		]) {
 			await writeFile(join(bundled, file), "default");
@@ -216,6 +225,8 @@ describe("workflow prompt configuration", () => {
 			"extension-description.md",
 			"create-description.md",
 			"activate-description.md",
+			"get-stage-description.md",
+			"edit-stage-description.md",
 			"transition-description.md",
 		]) {
 			await writeFile(join(bundled, file), "default");

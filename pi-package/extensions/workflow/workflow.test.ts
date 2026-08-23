@@ -674,6 +674,140 @@ describe("workflow state", () => {
 		).toThrow("workflow-state");
 	});
 
+	/**
+	 * Proves a persisted stage edit changes the replayed session snapshot without replacing workflow identity or graph state.
+	 * Input and expected output: one active snapshot followed by a stage_edited entry updates description, prompt, and thinking.
+	 * Edge cases: editing a non-active stage preserves its id, flags, triggers, route, transitions, source, and restoration settings.
+	 * Dependencies: saved workflow validation and ordered custom-entry replay.
+	 */
+	test("replays persisted stage edits into the workflow snapshot", () => {
+		const workflow = validateCreatedWorkflowDefinition(
+			{ id: "dynamic-delivery", ...validCreatedValue() },
+			"workflow_create",
+		);
+		const replayed = replayWorkflowState([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow,
+					route: ["a"],
+					restoration: {
+						modelId: "openai/current-model",
+						thinking: "medium",
+					},
+				},
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "stage_edited",
+					stageId: "b",
+					description: "Revised B",
+					prompt: "Use the revised requirements.",
+					model: { thinking: "xhigh" },
+				},
+			},
+		]);
+
+		expect(replayed).toMatchObject({
+			source: "dynamic",
+			route: ["a"],
+			status: "active",
+			restoration: {
+				modelId: "openai/current-model",
+				thinking: "medium",
+			},
+		});
+		expect(replayed?.workflow.stages[1]).toEqual({
+			id: "b",
+			description: "Revised B",
+			prompt: "Use the revised requirements.",
+			triggers: [
+				{ type: "local_knowledge_accumulation" },
+				{ type: "global_knowledge_accumulation" },
+				{ type: "local_knowledge_accumulation" },
+			],
+			initial: false,
+			final: false,
+			model: { thinking: "xhigh" },
+		});
+		expect(replayed?.workflow.transitions).toEqual(workflow.transitions);
+	});
+
+	/**
+	 * Proves malformed persisted edits cannot silently corrupt a saved workflow snapshot.
+	 * Input and expected output: an edit before activation and an unknown stage both reject replay.
+	 * Edge cases: immutable flags and extra fields are rejected by the closed entry shape.
+	 * Dependencies: stage edit replay validation only.
+	 */
+	test("rejects invalid persisted stage edits", () => {
+		const catalogWorkflow = validateWorkflowDefinition(
+			"delivery",
+			validValue(),
+			SOURCE,
+		);
+		const dynamicWorkflow = validateCreatedWorkflowDefinition(
+			{ id: "dynamic-delivery", ...validCreatedValue() },
+			"workflow_create",
+		);
+		const edit = {
+			type: "custom",
+			customType: "workflow-state",
+			data: {
+				kind: "stage_edited",
+				stageId: "missing",
+				description: "Revised",
+				prompt: "Use the revised requirements.",
+				model: { thinking: "high" },
+			},
+		};
+		const restoration = {
+			modelId: "openai/current-model",
+			thinking: "medium",
+		};
+		const activation = {
+			type: "custom",
+			customType: "workflow-state",
+			data: {
+				kind: "activated",
+				workflow: catalogWorkflow,
+				route: ["a"],
+				restoration,
+			},
+		};
+		const creation = {
+			type: "custom",
+			customType: "workflow-state",
+			data: {
+				kind: "created",
+				workflow: dynamicWorkflow,
+				route: ["a"],
+				restoration,
+			},
+		};
+
+		expect(() => replayWorkflowState([edit])).toThrow("active snapshot");
+		expect(() =>
+			replayWorkflowState([
+				activation,
+				{ ...edit, data: { ...edit.data, stageId: "b" } },
+			]),
+		).toThrow("workflow_create");
+		expect(() => replayWorkflowState([creation, edit])).toThrow("missing");
+		expect(() =>
+			replayWorkflowState([
+				creation,
+				{
+					...edit,
+					data: { ...edit.data, stageId: "b", initial: true },
+				},
+			]),
+		).toThrow("unsupported key");
+	});
+
 	/** Proves pre-restoration workflow chains are ignored instead of blocking session replay. */
 	test("ignores legacy workflow state chains", () => {
 		const workflow = validateWorkflowDefinition(

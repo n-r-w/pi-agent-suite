@@ -3,10 +3,13 @@ import {
 	resolveWorkflowAvailability,
 	WORKFLOW_ACTIVATE_TOOL,
 	WORKFLOW_CREATE_TOOL,
+	WORKFLOW_EDIT_STAGE_TOOL,
+	WORKFLOW_GET_STAGE_TOOL,
 	WORKFLOW_TRANSITION_TOOL,
 } from "./availability";
 import {
 	activateWorkflow,
+	completeWorkflow,
 	createWorkflow,
 	validateWorkflowDefinition,
 	type WorkflowDefinition,
@@ -58,6 +61,51 @@ describe("workflow availability", () => {
 		expect(toolNames(result)).toEqual([WORKFLOW_CREATE_TOOL]);
 		expect(result.activationOptions).toEqual([]);
 		expect(result.projectedState).toBeUndefined();
+	});
+
+	/**
+	 * Proves stage inspection and editing exist only while the current workflow is active.
+	 * Input and expected output: one active dynamic workflow exposes get and edit; completing it removes both.
+	 * Edge case: the completed snapshot remains projected for rework while stage tools stay unavailable.
+	 * Dependencies: pure availability resolution and workflow completion state.
+	 */
+	test("exposes stage tools only for an active workflow", () => {
+		const active = createWorkflow(workflow("dynamic"));
+		const activeResult = resolveWorkflowAvailability({
+			catalog: [],
+			catalogValid: true,
+			policy: { kind: "resolved", policy: undefined },
+			state: active,
+		});
+		const completedResult = resolveWorkflowAvailability({
+			catalog: [],
+			catalogValid: true,
+			policy: { kind: "resolved", policy: undefined },
+			state: completeWorkflow(active),
+		});
+		const catalogWorkflow = workflow("catalog");
+		const catalogResult = resolveWorkflowAvailability({
+			catalog: [catalogWorkflow],
+			catalogValid: true,
+			policy: { kind: "resolved", policy: undefined },
+			state: activateWorkflow(catalogWorkflow),
+		});
+
+		expect(toolNames(activeResult)).toEqual([
+			"workflow_create",
+			"workflow_edit_stage",
+			"workflow_get_stage",
+			"workflow_transition",
+		]);
+		expect(toolNames(completedResult)).toEqual([
+			"workflow_create",
+			"workflow_transition",
+		]);
+		expect(toolNames(catalogResult)).toEqual([
+			"workflow_create",
+			"workflow_transition",
+		]);
+		expect(completedResult.projectedState?.status).toBe("completed");
 	});
 
 	/**
@@ -169,6 +217,8 @@ describe("workflow availability", () => {
 		expect(dynamicResult.projectedState).toBe(dynamicState);
 		expect(toolNames(dynamicResult)).toEqual([
 			WORKFLOW_CREATE_TOOL,
+			WORKFLOW_EDIT_STAGE_TOOL,
+			WORKFLOW_GET_STAGE_TOOL,
 			WORKFLOW_TRANSITION_TOOL,
 		]);
 	});
@@ -194,7 +244,11 @@ describe("workflow availability", () => {
 			state: dynamicState,
 		});
 
-		expect(toolNames(catalogFailure)).toEqual([WORKFLOW_TRANSITION_TOOL]);
+		expect(toolNames(catalogFailure)).toEqual([
+			WORKFLOW_EDIT_STAGE_TOOL,
+			WORKFLOW_GET_STAGE_TOOL,
+			WORKFLOW_TRANSITION_TOOL,
+		]);
 		expect(catalogFailure.projectedState).toBe(dynamicState);
 		expect(toolNames(policyFailure)).toEqual([]);
 		expect(policyFailure.projectedState).toBeUndefined();

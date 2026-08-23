@@ -98,6 +98,8 @@ Optional prompt overrides belong in `~/.pi/agent/agent-suite/workflow/config.jso
   "extensionDescriptionPromptFile": "/absolute/path/extension-description.md",
   "createDescriptionPromptFile": "/absolute/path/create-description.md",
   "activateDescriptionPromptFile": "/absolute/path/activate-description.md",
+  "getStageDescriptionPromptFile": "/absolute/path/get-stage-description.md",
+  "editStageDescriptionPromptFile": "/absolute/path/edit-stage-description.md",
   "transitionDescriptionPromptFile": "/absolute/path/transition-description.md"
 }
 ```
@@ -108,7 +110,7 @@ Each configured path must be absolute and reference a readable file with non-emp
 
 ## Tools
 
-All workflow tools run sequentially and return model-visible success content `{"success":true}`.
+All workflow tools run sequentially. Mutating tools return model-visible success content `{"success":true}`. `workflow_get_stage` returns the requested stage as JSON.
 
 After creation, activation, advance, or rework persists the entered stage, its triggers run sequentially in listed order. Duplicate triggers are preserved. A reported or thrown trigger failure stops the remaining stage triggers but does not change workflow success. Restoring an active stage during session start or branch reconstruction runs no triggers.
 
@@ -163,11 +165,36 @@ The `workflow_create` TypeBox schema adds LLM-facing length and collection-size 
 
 `workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. Activation replaces prior workflow state. Only the exact active workflow ID after NFC normalization is excluded from options. The tool is unavailable when policy filtering and that exclusion leave no activation options.
 
+### `workflow_get_stage`
+
+`workflow_get_stage` is available only while a workflow created through `workflow_create` is active. It accepts only `stageId` and reads that stage from the current workflow. It does not accept `workflowId` and cannot read catalog workflows.
+
+The JSON result contains `id`, `description`, `prompt`, `model.thinking`, `initial`, and `final`. The tool rejects an unknown stage without changing workflow state.
+
+### `workflow_edit_stage`
+
+`workflow_edit_stage` has the same dynamic active-workflow availability rule. It requires one closed replacement object:
+
+```json
+{
+  "stageId": "implementation",
+  "description": "Implement the corrected change",
+  "prompt": "Follow the corrected requirements.",
+  "model": {
+    "thinking": "high"
+  }
+}
+```
+
+The tool replaces only `description`, `prompt`, and `model.thinking`. It preserves `id`, `initial`, `final`, `triggers`, transitions, workflow fields, route, status, source, and restoration settings. All replacement fields are required. `model.thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+
+The edit appends a `stage_edited` session entry. Editing the active stage applies its thinking level immediately and updates the prompt and description used by the next provider request. Editing another stage stores the new fields without changing current runtime thinking. A later transition applies that stage's edited thinking level. Editing does not enter the stage and does not run its triggers.
+
 ### `workflow_transition`
 
 `workflow_transition` moves the active workflow to one target listed in `<available_transitions>`. Permission for `workflow_create` does not grant transition permission.
 
-Every tool rechecks its input and current state before appending a session entry. Creation and activation also recheck the policy information they require. A malformed policy blocks all workflow operations. Validation or persistence errors leave the previous workflow state unchanged.
+Every tool rechecks its input and current state before reading or appending session state. Creation and activation also recheck the policy information they require. A malformed policy blocks all workflow operations. Validation or persistence errors leave the previous workflow state unchanged.
 
 ## Compact session status panel
 
@@ -181,7 +208,7 @@ The row contains the workflow ID and active stage description. It never includes
 
 A completed workflow is still retained for rework, but its provider context uses `<completed_workflow>` and omits `<active_stage_guidelines>` until rework makes the workflow active again.
 
-Creation, activation, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row or the saved active workflow. The agent's tool policy still controls provider-context availability. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
+Creation, activation, stage editing, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row or the saved active workflow. The agent's tool policy still controls provider-context availability. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
 
 ## Tool presentation
 
@@ -195,6 +222,14 @@ Content: ctrl+o to show
 
 workflow_activate
 Workflow: delivery · Software delivery
+
+workflow_get_stage
+Stage: implementation · Implement the approved change
+Content: ctrl+o to show
+
+workflow_edit_stage
+Stage: implementation · Implement the corrected change
+Content: ctrl+o to show
 
 workflow_transition
 From: implementation · Implement the approved change
@@ -230,13 +265,14 @@ transitions:
     type: advance
 ```
 
-Collapsed mode wraps references to the available width and shows at most four content rows per reference. Expanded mode shows complete references and creation YAML. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage references are stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These two stored sources keep the active screen and subagent session screen consistent.
+Collapsed mode wraps references to the available width and shows at most four content rows per reference. Expanded mode shows complete references, creation YAML, and stage YAML for `workflow_get_stage` and `workflow_edit_stage`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage references are stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These two stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 
 The extension computes tool availability independently:
 - `workflow_create` requires a valid catalog, including a valid empty catalog;
 - `workflow_activate` requires at least one allowed activation option;
+- `workflow_get_stage` and `workflow_edit_stage` require an active dynamic workflow created through `workflow_create`;
 - `workflow_transition` requires a projected active state or at least one allowed catalog workflow.
 
 The agent's `tools` policy remains a second gate. The extension never restores a tool removed by that policy.
@@ -264,11 +300,12 @@ Catalog activation options are filtered through `workflows`. The current active 
 
 ## Session snapshots
 
-Catalog activation stores an `activated` snapshot with the validated workflow definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Later transitions store only the updated route and preserve the workflow source and restoration settings. Completion stores a `completed` snapshot with the final route. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
+Catalog activation stores an `activated` snapshot with the validated workflow definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Stage edits store the stage ID and normalized replacement fields. Later transitions store only the updated route and preserve the workflow source and restoration settings. Completion stores a `completed` snapshot with the final route. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
 
 The active branch reconstructs state on session start and branch changes:
 - `activated` restores catalog-backed active state and its restoration settings;
 - `created` restores dynamic active state and its restoration settings;
+- `stage_edited` replaces `description`, `prompt`, and `model.thinking` in the preceding active dynamic snapshot;
 - `transitioned` updates the route of the preceding snapshot;
 - `completed` restores completed state and the persisted pre-workflow runtime settings without applying final-stage settings.
 

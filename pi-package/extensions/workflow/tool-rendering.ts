@@ -44,6 +44,16 @@ interface WorkflowContent {
 	readonly transitions: readonly unknown[];
 }
 
+/** Contains the stage fields exposed by get and accepted by edit. */
+interface WorkflowStageContent {
+	readonly id: string;
+	readonly description: string;
+	readonly prompt: string;
+	readonly model: Readonly<Record<string, unknown>>;
+	readonly initial?: boolean;
+	readonly final?: boolean;
+}
+
 /** Persists creation identity supplied before validation or state replacement. */
 interface WorkflowCreatePresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
@@ -67,10 +77,19 @@ interface WorkflowTransitionPresentation {
 	readonly to: WorkflowPresentationReference;
 }
 
+/** Persists one stage and its model-visible editable content. */
+interface WorkflowStagePresentation {
+	readonly presentationKind: typeof PRESENTATION_KIND;
+	readonly toolName: "workflow_get_stage" | "workflow_edit_stage";
+	readonly stage: WorkflowPresentationReference;
+	readonly content?: WorkflowStageContent;
+}
+
 export type WorkflowToolPresentationDetails =
 	| WorkflowCreatePresentation
 	| WorkflowActivatePresentation
-	| WorkflowTransitionPresentation;
+	| WorkflowTransitionPresentation
+	| WorkflowStagePresentation;
 
 /** Stores presentation evidence shared by one call/result renderer pair. */
 interface WorkflowRenderState {
@@ -107,6 +126,9 @@ export function createWorkflowPresentationDetails(
 	}
 	if (toolName === "workflow_transition") {
 		return createWorkflowTransitionPresentation(args, state);
+	}
+	if (toolName === "workflow_get_stage" || toolName === "workflow_edit_stage") {
+		return createWorkflowStagePresentation(toolName, args, state);
 	}
 	return undefined;
 }
@@ -178,6 +200,77 @@ function createWorkflowTransitionPresentation(
 	};
 }
 
+/** Captures stage content from saved state for get or replacement arguments for edit. */
+function createWorkflowStagePresentation(
+	toolName: "workflow_get_stage" | "workflow_edit_stage",
+	args: unknown,
+	state: WorkflowState | undefined,
+): WorkflowStagePresentation | undefined {
+	const stageId = readInputString(args, "stageId");
+	if (stageId === undefined) {
+		return undefined;
+	}
+	const savedStage = state?.workflow.stages.find(({ id }) => id === stageId);
+	const description =
+		toolName === "workflow_edit_stage"
+			? readInputString(args, "description")
+			: savedStage?.description;
+	let content: WorkflowStageContent | undefined;
+	if (toolName === "workflow_edit_stage") {
+		content = createEditedStageContent(
+			args,
+			savedStage?.initial,
+			savedStage?.final,
+		);
+	} else if (savedStage !== undefined) {
+		content = {
+			id: savedStage.id,
+			description: savedStage.description,
+			prompt: savedStage.prompt,
+			model: { thinking: savedStage.model?.thinking },
+			initial: savedStage.initial,
+			final: savedStage.final,
+		};
+	}
+	return {
+		presentationKind: PRESENTATION_KIND,
+		toolName,
+		stage: createReference(stageId, description),
+		...(content === undefined ? {} : { content }),
+	};
+}
+
+/** Reads the closed editable stage fields without inventing immutable flags. */
+function createEditedStageContent(
+	args: unknown,
+	initial: boolean | undefined,
+	final: boolean | undefined,
+): WorkflowStageContent | undefined {
+	if (!isRecord(args) || !isRecord(args["model"])) {
+		return undefined;
+	}
+	const id = readInputString(args, "stageId");
+	const description = readInputString(args, "description");
+	const prompt = readInputString(args, "prompt");
+	const thinking = readInputString(args["model"], "thinking");
+	if (
+		id === undefined ||
+		description === undefined ||
+		prompt === undefined ||
+		thinking === undefined
+	) {
+		return undefined;
+	}
+	return {
+		id,
+		description,
+		prompt,
+		model: { thinking },
+		...(initial === undefined ? {} : { initial }),
+		...(final === undefined ? {} : { final }),
+	};
+}
+
 /** Keeps live pending calls semantic until persisted result evidence is available. */
 export function primeWorkflowRenderState(
 	context: WorkflowToolRenderContext,
@@ -234,10 +327,14 @@ export function renderWorkflowActivateCall(
 
 /** Shares bounded workflow-reference rows between create and activate calls. */
 function renderWorkflowReferenceCall(options: {
-	readonly toolName: "workflow_create" | "workflow_activate";
+	readonly toolName:
+		| "workflow_create"
+		| "workflow_activate"
+		| "workflow_get_stage"
+		| "workflow_edit_stage";
 	readonly workflow: WorkflowPresentationReference | undefined;
 	readonly stage: WorkflowPresentationReference | undefined;
-	readonly content?: WorkflowContent | undefined;
+	readonly content?: WorkflowContent | WorkflowStageContent | undefined;
 	readonly theme: Theme;
 	readonly context: WorkflowToolRenderContext;
 }): Component {
@@ -307,6 +404,27 @@ export function renderWorkflowTransitionCall(
 	});
 }
 
+/** Renders one stage inspection or edit with bounded semantic content. */
+export function renderWorkflowStageCall(
+	toolName: "workflow_get_stage" | "workflow_edit_stage",
+	args: unknown,
+	theme: Theme,
+	context: WorkflowToolRenderContext,
+): Component {
+	const presentation = readStagePresentation(context, toolName);
+	const fallback = createWorkflowStagePresentation(toolName, args, undefined);
+	return renderWorkflowReferenceCall({
+		toolName,
+		workflow: undefined,
+		stage: presentation?.stage ?? fallback?.stage,
+		content:
+			presentation?.content ??
+			(context.argsComplete ? fallback?.content : undefined),
+		theme,
+		context,
+	});
+}
+
 /** Restores persisted evidence and hides successful internal result content. */
 export function renderWorkflowResult(
 	result: AgentToolResult<unknown>,
@@ -344,6 +462,12 @@ function parseWorkflowPresentationDetails(
 	}
 	if (value["toolName"] === "workflow_activate") {
 		return parseWorkflowReferencePresentation(value, "workflow_activate");
+	}
+	if (
+		value["toolName"] === "workflow_get_stage" ||
+		value["toolName"] === "workflow_edit_stage"
+	) {
+		return parseStagePresentation(value, value["toolName"]);
 	}
 	return value["toolName"] === "workflow_transition"
 		? parseTransitionPresentation(value)
@@ -389,6 +513,58 @@ function parseTransitionPresentation(
 	};
 }
 
+/** Parses one persisted stage reference and its optional content. */
+function parseStagePresentation(
+	value: Record<string, unknown>,
+	toolName: "workflow_get_stage" | "workflow_edit_stage",
+): WorkflowStagePresentation | undefined {
+	const stage = parseReference(value["stage"]);
+	const content = parseStageContent(value["content"]);
+	if (
+		stage === undefined ||
+		(value["content"] !== undefined && content === undefined)
+	) {
+		return undefined;
+	}
+	return {
+		presentationKind: PRESENTATION_KIND,
+		toolName,
+		stage,
+		...(content === undefined ? {} : { content }),
+	};
+}
+
+/** Parses persisted stage content before rendering it as YAML. */
+function parseStageContent(value: unknown): WorkflowStageContent | undefined {
+	if (!isRecord(value) || !isRecord(value["model"])) {
+		return undefined;
+	}
+	const id = value["id"];
+	const description = value["description"];
+	const prompt = value["prompt"];
+	const thinking = value["model"]["thinking"];
+	const initial = value["initial"];
+	const final = value["final"];
+	if (
+		!isNonEmptyString(id) ||
+		!isNonEmptyString(description) ||
+		!isNonEmptyString(prompt) ||
+		!isNonEmptyString(thinking) ||
+		(initial !== undefined && typeof initial !== "boolean") ||
+		(final !== undefined && typeof final !== "boolean")
+	) {
+		return undefined;
+	}
+	return {
+		id,
+		description,
+		prompt,
+		model: { thinking },
+		...(initial === undefined ? {} : { initial }),
+		...(final === undefined ? {} : { final }),
+	};
+}
+
 /** Reads creation evidence from the shared row state. */
 function readCreatePresentation(
 	context: WorkflowToolRenderContext,
@@ -419,6 +595,15 @@ function readTransitionPresentation(
 		: undefined;
 }
 
+/** Reads stage evidence from the shared row state. */
+function readStagePresentation(
+	context: WorkflowToolRenderContext,
+	toolName: "workflow_get_stage" | "workflow_edit_stage",
+): WorkflowStagePresentation | undefined {
+	const presentation = (context.state as WorkflowRenderState).presentation;
+	return presentation?.toolName === toolName ? presentation : undefined;
+}
+
 /** Renders one standalone bright workflow tool name. */
 function renderToolName(toolName: string, width: number, theme: Theme): string {
 	return theme.fg("toolTitle", theme.bold(sliceTextByWidth(toolName, width)));
@@ -426,7 +611,7 @@ function renderToolName(toolName: string, width: number, theme: Theme): string {
 
 /** Renders catalog-shaped workflow YAML or its configurable expansion hint. */
 function renderWorkflowContent(options: {
-	readonly content: WorkflowContent;
+	readonly content: WorkflowContent | WorkflowStageContent;
 	readonly expanded: boolean;
 	readonly width: number;
 	readonly theme: Theme;
@@ -548,7 +733,7 @@ function parseReference(
 
 /** Selects YAML serialization that fits without display-layer line wrapping. */
 function serializeWorkflowContent(
-	content: WorkflowContent,
+	content: WorkflowContent | WorkflowStageContent,
 	width: number,
 ): readonly string[] {
 	const renderWidth = Math.max(1, Math.floor(width));

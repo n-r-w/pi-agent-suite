@@ -11,6 +11,8 @@ const prompts = {
 	extensionDescription: "Use <stages> & choose safely.",
 	createDescription: "create",
 	activateDescription: "activate",
+	getStageDescription: "get stage",
+	editStageDescription: "edit stage",
 	transitionDescription: "transition",
 };
 
