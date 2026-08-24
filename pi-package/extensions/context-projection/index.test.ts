@@ -2354,6 +2354,60 @@ describe("context-projection", () => {
 		});
 	});
 
+	test("keeps every workflow tool result visible during ordinary projection", async () => {
+		// Purpose: workflow records intended for the main model must remain complete outside compaction.
+		// Input and expected output: old large results from every workflow tool remain unchanged and no projection state is recorded.
+		// Edge case: protection is mandatory without projectionIgnoredTools configuration.
+		// Dependencies: the ordinary context hook runs against an isolated branch containing all workflow tool names.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const { pi, contextHandler } = installContextProjectionTestHarness();
+			const workflowToolNames = [
+				"workflow_create",
+				"workflow_activate",
+				"workflow_get_stage",
+				"workflow_edit_stage",
+				"workflow_transition",
+			] as const;
+			const branchEntries = [messageEntry("01", userMessage(), null)];
+			let parentId = "01";
+			for (const [index, toolName] of workflowToolNames.entries()) {
+				const assistantEntryId = String(index * 2 + 2).padStart(2, "0");
+				const resultEntryId = String(index * 2 + 3).padStart(2, "0");
+				const toolCallId = `call-${toolName}`;
+				branchEntries.push(
+					messageEntry(
+						assistantEntryId,
+						assistantMessage(toolCallId),
+						parentId,
+					),
+					messageEntry(
+						resultEntryId,
+						toolResultMessage(toolCallId, `${toolName} output `.repeat(5), {
+							toolName,
+						}),
+						assistantEntryId,
+					),
+				);
+				parentId = resultEntryId;
+			}
+			const originalMessages = messagesFromBranch(branchEntries);
+			const context = createContextFake(branchEntries);
+
+			const result = await contextHandler(
+				{ type: "context", messages: originalMessages },
+				context.ctx,
+			);
+
+			expect(result).toBeUndefined();
+			expect(messagesFromBranch(branchEntries)).toEqual(originalMessages);
+			expect(pi.appendEntryCalls).toEqual([]);
+		});
+	});
+
 	test("keeps consult_advisor and configured ignored tool results visible during projection", async () => {
 		// Purpose: projection must preserve advisor output and user-configured tool results while still projecting other eligible results.
 		// Input and expected output: consult_advisor and subagent_start outputs remain unchanged, while bash output is replaced with the omitted notice.

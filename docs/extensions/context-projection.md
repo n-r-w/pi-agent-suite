@@ -66,7 +66,7 @@ Enabled projection requires `custom-compaction` to resolve to a valid configurat
 | `minToolResultTokensL3` | No | Non-negative integer | `1000` | Minimum token count for a tool result to be projected at L3. |
 | `keepRecentTurns` | No | Non-negative integer | `10` | Minimum number of newest tool-use turns kept visible. A tool-use turn is an assistant tool call plus its matching tool results. |
 | `keepRecentTurnsPercent` | No | Number from `0` to `1` | `0.2` | Fraction of newest tool-use turns kept visible in long sessions. The extension uses the larger value from `keepRecentTurns` and this percentage. |
-| `projectionIgnoredTools` | No | Array of unique non-empty strings | `[]` | Tool names whose results stay visible. `consult_advisor` and `convene_council` always stay visible, even when omitted from this list. |
+| `projectionIgnoredTools` | No | Array of unique non-empty strings | `[]` | Tool names whose results stay visible. `consult_advisor`, `convene_council`, and tools whose names start with `workflow_` always stay visible during ordinary projection, even when omitted from this list. |
 | `omittedNotice` | No | Non-empty string | `Result omitted. Run tool again for full result.` | Text that replaces projected tool results when summary mode is disabled or a summary cannot be used. |
 | `summaryNotice` | No | Non-empty string | `Full result omitted. Summary below. Run tool again for full result.` | Text written in `<notice>` when a projected tool result includes a generated summary. |
 | `summary` | No | Object | Summary disabled | Configures optional generated summaries for projected tool results. |
