@@ -24,7 +24,6 @@ const CONFIG_KEYS = [ENABLED_CONFIG_KEY, TEMPLATE_FILE_CONFIG_KEY] as const;
 const SUPPORTED_TEMPLATE_VARIABLES = [
 	"date",
 	"cwd",
-	"tools",
 	"toolGuidelines",
 	"appendSystemPrompt",
 	"contextFiles",
@@ -256,7 +255,6 @@ function buildTemplateValues(
 	return {
 		date: getLocalDate(),
 		cwd: options.cwd.replace(/\\/g, "/"),
-		tools: formatTools(options),
 		toolGuidelines: formatToolGuidelines(options),
 		appendSystemPrompt: options.appendSystemPrompt ?? "",
 		contextFiles: formatContextFiles(options),
@@ -265,26 +263,12 @@ function buildTemplateValues(
 	};
 }
 
-/** Formats visible active tools as the one-line prompt snippets exposed by pi. */
-function formatTools(options: BuildSystemPromptOptions): string {
-	const tools = options.selectedTools ?? [...DEFAULT_SELECTED_TOOLS];
-	const visibleTools = tools.filter((name) =>
-		Boolean(options.toolSnippets?.[name]),
-	);
-	if (visibleTools.length === 0) {
-		return "(none)";
-	}
-
-	return visibleTools
-		.map((name) => `- ${name}: ${options.toolSnippets?.[name] ?? ""}`)
-		.join("\n");
-}
-
 /** Formats only dynamic promptGuidelines supplied by active tools or extensions. */
 function formatToolGuidelines(options: BuildSystemPromptOptions): string {
-	return (options.promptGuidelines ?? [])
+	const normalized = (options.promptGuidelines ?? [])
 		.map((guideline) => guideline.trim())
-		.filter((guideline) => guideline.length > 0)
+		.filter((guideline) => guideline.length > 0);
+	return [...new Set(normalized)]
 		.map((guideline) => `- ${guideline}`)
 		.join("\n");
 }

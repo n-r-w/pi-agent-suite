@@ -48,7 +48,7 @@ import {
 	loadWorkflowPrompts,
 	type WorkflowPrompts,
 } from "./config";
-import { projectWorkflowContext } from "./context";
+import { WorkflowJournal } from "./context";
 import { readWorkflowPolicyEnvironment } from "./environment";
 import {
 	applyWorkflowModelRestoration,
@@ -79,6 +79,7 @@ import {
 	replayWorkflowStateWithWarnings,
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
+	WORKFLOW_STATE_JOURNAL_VERSION,
 	type WorkflowDefinition,
 	type WorkflowRestorationSettings,
 	type WorkflowState,
@@ -311,6 +312,8 @@ interface WorkflowRuntime {
 	currentModel: ExtensionContext["model"];
 	modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	readonly selfSuppressedNames: Set<string>;
+	readonly journal: WorkflowJournal;
+	journalReady: boolean;
 }
 
 /** Groups runtime registration dependencies without widening the tool boundary. */
@@ -406,6 +409,7 @@ async function setEnteredWorkflowState(
 
 /** Creates the initial mutable workflow state from catalog-wide and prompt loading results. */
 function createWorkflowRuntimeState(
+	pi: ExtensionAPI,
 	catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>,
 	promptError: Error | undefined,
 ): WorkflowRuntime {
@@ -418,6 +422,10 @@ function createWorkflowRuntimeState(
 		currentModel: undefined,
 		modelRegistry: undefined,
 		selfSuppressedNames: new Set<string>(),
+		journal: new WorkflowJournal((record) => {
+			pi.sendMessage(record, { deliverAs: "steer" });
+		}),
+		journalReady: false,
 	};
 }
 
@@ -427,6 +435,18 @@ function publishWorkflowStatus(
 	runtime: WorkflowRuntime,
 ): void {
 	indicator?.publish(runtime.state);
+}
+
+/** Publishes the current model-visible catalog subset after active-tool reconciliation. */
+function publishWorkflowActivationOptions(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+	availability: WorkflowAvailability,
+): void {
+	const options = pi.getActiveTools().includes(WORKFLOW_ACTIVATE_TOOL)
+		? availability.activationOptions
+		: [];
+	runtime.journal.activationOptions(options);
 }
 
 /** Reports all skipped catalog workflows in one startup notification. */
@@ -497,7 +517,11 @@ export default async function workflowExtension(
 		catalogPublication.error === undefined
 			? loadedCatalog
 			: { workflows: [], error: catalogPublication.error };
-	const runtime = createWorkflowRuntimeState(catalogResult, promptResult.error);
+	const runtime = createWorkflowRuntimeState(
+		pi,
+		catalogResult,
+		promptResult.error,
+	);
 	const statusHolder: WorkflowStatusHolder = { indicator: undefined };
 	const getPolicy = createWorkflowPolicyReader(pi);
 	const refreshTools = (trigger: ReconciliationTrigger): void => {
@@ -509,6 +533,9 @@ export default async function workflowExtension(
 			trigger,
 		);
 		publishWorkflowStatus(statusHolder.indicator, runtime);
+		if (runtime.journalReady) {
+			publishWorkflowActivationOptions(pi, runtime, availability);
+		}
 	};
 
 	if (promptResult.error === undefined) {
@@ -583,57 +610,20 @@ async function completeSettledWorkflow(
 		}
 		throw error;
 	}
-	runtime.state = completeWorkflow(state);
+	const completed = completeWorkflow(state);
+	runtime.journal.complete(completed);
+	runtime.state = completed;
 	refreshTools("lifecycle");
 }
 
 /** Registers session and model lifecycle synchronization without reapplying manual model changes. */
 function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
-	const {
-		pi,
-		runtime,
-		catalogResult,
-		promptError,
-		getPolicy,
-		refreshTools,
-		statusHolder,
-		warnings,
-	} = options;
+	const { pi, runtime, getPolicy, refreshTools, statusHolder, warnings } =
+		options;
 	let reportedReplayWarningKey: string | undefined;
-	const synchronize = async (ctx: {
-		readonly mode: ExtensionContext["mode"];
-		readonly ui: ExtensionContext["ui"];
-		readonly model: ExtensionContext["model"];
-		readonly modelRegistry: ExtensionContext["modelRegistry"];
-		readonly sessionManager: { getBranch(): readonly unknown[] };
-	}): Promise<void> => {
-		if (ctx.mode === "tui") {
-			statusHolder.indicator ??= installWorkflowStatusIndicator(pi, ctx.ui);
-		}
-		try {
-			const branch = ctx.sessionManager.getBranch();
-			const previousState = runtime.state;
-			synchronizeWorkflowRuntime({
-				pi,
-				branch,
-				runtime,
-				catalogResult,
-				promptError,
-				getPolicy,
-				model: ctx.model,
-				modelRegistry: ctx.modelRegistry,
-			});
-			await synchronizeWorkflowModelRuntime(pi, runtime, branch, previousState);
-		} finally {
-			publishWorkflowStatus(statusHolder.indicator, runtime);
-		}
-	};
-	pi.on("model_select", (event) => {
-		runtime.currentModel = event.model;
-	});
-	pi.on("agent_settled", async () => {
-		await completeSettledWorkflow(pi, runtime, refreshTools);
-	});
+	const synchronize = createWorkflowSynchronizer(options);
+	registerWorkflowRunLifecycle(pi, runtime, refreshTools);
+	registerWorkflowCompaction(pi, runtime, getPolicy);
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
 	).on(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
@@ -663,6 +653,91 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 	});
 }
 
+interface WorkflowSynchronizationContext {
+	readonly mode: ExtensionContext["mode"];
+	readonly ui: ExtensionContext["ui"];
+	readonly model: ExtensionContext["model"];
+	readonly modelRegistry: ExtensionContext["modelRegistry"];
+	readonly sessionManager: { getBranch(): readonly unknown[] };
+}
+
+/** Creates the shared session-start and branch-navigation synchronization operation. */
+function createWorkflowSynchronizer(
+	options: WorkflowLifecycleOptions,
+): (ctx: WorkflowSynchronizationContext) => Promise<void> {
+	const { pi, runtime, catalogResult, promptError, getPolicy, statusHolder } =
+		options;
+	return async (ctx) => {
+		if (ctx.mode === "tui") {
+			statusHolder.indicator ??= installWorkflowStatusIndicator(pi, ctx.ui);
+		}
+		try {
+			const branch = ctx.sessionManager.getBranch();
+			const previousState = runtime.state;
+			runtime.journalReady = false;
+			synchronizeWorkflowRuntime({
+				pi,
+				branch,
+				runtime,
+				catalogResult,
+				promptError,
+				getPolicy,
+				model: ctx.model,
+				modelRegistry: ctx.modelRegistry,
+			});
+			await synchronizeWorkflowModelRuntime(pi, runtime, branch, previousState);
+			runtime.journal.restore(branch);
+			if (
+				runtime.state !== undefined &&
+				!runtime.journal.isCurrent(runtime.state)
+			) {
+				runtime.journal.checkpoint(runtime.state);
+			}
+			runtime.journalReady = true;
+			publishWorkflowActivationOptions(
+				pi,
+				runtime,
+				resolveRuntimeAvailability(runtime, getPolicy()),
+			);
+		} finally {
+			publishWorkflowStatus(statusHolder.indicator, runtime);
+		}
+	};
+}
+
+/** Registers model selection and final-stage settlement handlers. */
+function registerWorkflowRunLifecycle(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+	refreshTools: (trigger: ReconciliationTrigger) => void,
+): void {
+	pi.on("model_select", (event) => {
+		runtime.currentModel = event.model;
+	});
+	pi.on("agent_settled", async () => {
+		await completeSettledWorkflow(pi, runtime, refreshTools);
+	});
+}
+
+/** Registers the post-compaction workflow checkpoint. */
+function registerWorkflowCompaction(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+	getPolicy: () => WorkflowPolicyResolution,
+): void {
+	pi.on("session_compact", () => {
+		runtime.journal.startContextSegment();
+		if (runtime.state !== undefined) {
+			runtime.journal.checkpoint(runtime.state);
+		}
+		publishWorkflowActivationOptions(
+			pi,
+			runtime,
+			resolveRuntimeAvailability(runtime, getPolicy()),
+		);
+	});
+}
+
 /** Reads immutable child transport or the current canonical main-agent metadata. */
 function createWorkflowPolicyReader(
 	pi: ExtensionAPI,
@@ -681,7 +756,7 @@ function createWorkflowPolicyReader(
 		};
 }
 
-/** Registers tools and one filtered context projection over shared runtime state. */
+/** Registers workflow tools over shared runtime state. */
 function registerWorkflowRuntime(
 	options: RegisterWorkflowRuntimeOptions,
 ): void {
@@ -706,28 +781,6 @@ function registerWorkflowRuntime(
 	getAgentRuntimeComposition(pi).publishBaselineToolNames([
 		...WORKFLOW_TOOL_NAMES,
 	]);
-	pi.on("context", (event) => {
-		const activeNames = pi.getActiveTools();
-		const availability = resolveAvailability();
-		// Suppression preserves a tool permission only while an active state remains projectable.
-		const hasSuppressedWorkflowPermission =
-			availability.projectedState !== undefined &&
-			hasAnyWorkflowTool([...runtime.selfSuppressedNames]);
-		if (!hasAnyWorkflowTool(activeNames) && !hasSuppressedWorkflowPermission) {
-			return undefined;
-		}
-		const activationOptions = activeNames.includes(WORKFLOW_ACTIVATE_TOOL)
-			? availability.activationOptions
-			: [];
-		return {
-			messages: projectWorkflowContext(
-				event.messages,
-				prompts,
-				activationOptions,
-				availability.projectedState,
-			),
-		};
-	});
 }
 
 /** Persists row-local UI evidence so live and replayed sessions render identically. */
@@ -979,9 +1032,14 @@ async function commitWorkflowStateChange(
 	);
 	runtime.currentModel = application.currentModel;
 	const persistedData =
-		(kind === "activated" || kind === "created") &&
-		persistedCandidate.restoration !== undefined
-			? { ...data, restoration: persistedCandidate.restoration }
+		kind === "activated" || kind === "created"
+			? {
+					...data,
+					...(persistedCandidate.restoration === undefined
+						? {}
+						: { restoration: persistedCandidate.restoration }),
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				}
 			: data;
 	try {
 		pi.appendEntry(WORKFLOW_STATE_ENTRY, persistedData);
@@ -1084,6 +1142,7 @@ async function executeWorkflowCreate(
 		workflow: candidate.workflow,
 		route: candidate.route,
 	});
+	runtime.journal.activate(persisted);
 	await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
 	return SUCCESS_RESULT;
 }
@@ -1097,6 +1156,7 @@ function registerWorkflowCreateTool(
 		name: WORKFLOW_CREATE_TOOL,
 		label: "Create workflow",
 		description: prompts.createDescription,
+		promptGuidelines: [prompts.extensionDescription],
 		parameters: WORKFLOW_CREATE_SCHEMA,
 		executionMode: "sequential",
 		renderCall(args, theme, context) {
@@ -1136,6 +1196,7 @@ function registerWorkflowActivateTool(
 		name: WORKFLOW_ACTIVATE_TOOL,
 		label: "Activate workflow",
 		description: prompts.activateDescription,
+		promptGuidelines: [prompts.extensionDescription],
 		parameters: Type.Object(
 			{
 				workflowId: singleLineTextSchema({
@@ -1182,6 +1243,7 @@ function registerWorkflowActivateTool(
 					route: candidate.route,
 				},
 			);
+			runtime.journal.activate(persisted);
 			await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
@@ -1197,6 +1259,7 @@ function registerWorkflowGetStageTool(
 		name: WORKFLOW_GET_STAGE_TOOL,
 		label: "Get workflow stage",
 		description: prompts.getStageDescription,
+		promptGuidelines: [prompts.extensionDescription],
 		parameters: Type.Object(
 			{
 				stageId: technicalIdentifierSchema({
@@ -1262,6 +1325,7 @@ function registerWorkflowEditStageTool(
 		name: WORKFLOW_EDIT_STAGE_TOOL,
 		label: "Edit workflow stage",
 		description: prompts.editStageDescription,
+		promptGuidelines: [prompts.extensionDescription],
 		parameters: WORKFLOW_EDIT_STAGE_SCHEMA,
 		executionMode: "sequential",
 		renderCall(args, theme, context) {
@@ -1316,6 +1380,7 @@ function registerWorkflowEditStageTool(
 			} else {
 				pi.appendEntry(WORKFLOW_STATE_ENTRY, data);
 			}
+			runtime.journal.updateStage(persisted, stageId);
 			setState(persisted);
 			return SUCCESS_RESULT;
 		},
@@ -1380,6 +1445,7 @@ function registerWorkflowTransitionTool(
 		name: WORKFLOW_TRANSITION_TOOL,
 		label: "Transition workflow",
 		description: prompts.transitionDescription,
+		promptGuidelines: [prompts.extensionDescription],
 		parameters: Type.Object(
 			{
 				stageId: technicalIdentifierSchema({
@@ -1426,6 +1492,7 @@ function registerWorkflowTransitionTool(
 					route: candidate.route,
 				},
 			);
+			runtime.journal.enterStage(persisted);
 			await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
@@ -1479,7 +1546,7 @@ function reconcileTools(
 		selfSuppressedNames.clear();
 	}
 
-	// Suppression ownership remains separate from final list ownership because context projection uses it.
+	// Suppression ownership remains separate from final list ownership for branch restoration.
 	for (const name of activeNames.filter(isWorkflowToolName)) {
 		if (!availableToolNames.has(name)) {
 			selfSuppressedNames.add(name);
@@ -1505,9 +1572,4 @@ function reconcileTools(
 /** Narrows arbitrary Pi tool names to the workflow-owned finite set. */
 function isWorkflowToolName(name: string): name is WorkflowToolName {
 	return WORKFLOW_TOOL_NAMES.has(name);
-}
-
-/** Enables projection when the current agent can call at least one workflow tool. */
-function hasAnyWorkflowTool(activeNames: readonly string[]): boolean {
-	return activeNames.some(isWorkflowToolName);
 }

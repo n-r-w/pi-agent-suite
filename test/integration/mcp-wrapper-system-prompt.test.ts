@@ -38,16 +38,19 @@ interface RegisteredHandler {
 interface ExtensionApiFake extends ExtensionAPI {
 	readonly handlers: RegisteredHandler[];
 	readonly tools: ToolDefinition[];
+	readonly messages: Array<{ readonly content: string }>;
 }
 
 function createExtensionApiFake(): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
 	const tools: ToolDefinition[] = [];
+	const messages: Array<{ readonly content: string }> = [];
 	let activeTools: readonly string[] = [];
 
 	return {
 		handlers,
 		tools,
+		messages,
 		events: {
 			emit(): void {},
 			on(): () => void {
@@ -86,6 +89,9 @@ function createExtensionApiFake(): ExtensionApiFake {
 			return undefined;
 		},
 		setThinkingLevel(): void {},
+		sendMessage(message: Parameters<ExtensionAPI["sendMessage"]>[0]): void {
+			messages.push({ content: String(message.content) });
+		},
 		appendEntry(): void {},
 		getSessionHistory() {
 			return [];
@@ -243,8 +249,6 @@ describe("mcp-wrapper and system-prompt integration", () => {
 			});
 
 			await runSessionStart(pi);
-			pi.setActiveTools(["fetch_fetch"]);
-
 			expect(
 				await runBeforeAgentStart(pi, projectDir),
 			).toBe(`Suite template for ${projectDir}
@@ -253,15 +257,8 @@ describe("mcp-wrapper and system-prompt integration", () => {
   <project_rule path=".pi/rules/project.md">
 Project rule
   </project_rule>
-</project_rules>
-
-<mcp_instructions>
-  <server name="fetch">
-Use fetch for web pages.
-
-Prefer the fetch tool.
-  </server>
-</mcp_instructions>`);
+</project_rules>`);
+			expect(pi.messages[0]?.content).toContain("Use fetch for web pages.");
 		} finally {
 			await rm(suiteDir, { recursive: true, force: true });
 			await rm(projectDir, { recursive: true, force: true });
@@ -326,9 +323,10 @@ Prefer the fetch tool.
 				createManager: () => manager,
 			});
 
-			await runSessionStart(pi);
 			getAgentRuntimeComposition(pi).setRestrictiveToolNames("test-policy", []);
+			await runSessionStart(pi);
 
+			expect(pi.messages).toEqual([]);
 			expect(await runBeforeAgentStart(pi)).toBe(
 				"Suite template for /tmp/project",
 			);
@@ -345,25 +343,17 @@ Prefer the fetch tool.
 		const cases: ReadonlyArray<{
 			readonly name: string;
 			readonly councilTools: readonly string[] | undefined;
-			readonly expectedPrompt: string;
+			readonly expectedMessageCount: number;
 		}> = [
 			{
 				name: "read-only participant",
 				councilTools: undefined,
-				expectedPrompt: "Suite template for /tmp/project",
+				expectedMessageCount: 0,
 			},
 			{
 				name: "participant with fetch MCP tool",
 				councilTools: ["fetch_fetch"],
-				expectedPrompt: `Suite template for /tmp/project
-
-<mcp_instructions>
-  <server name="fetch">
-Use fetch for web pages.
-
-Prefer the fetch tool.
-  </server>
-</mcp_instructions>`,
+				expectedMessageCount: 1,
 			},
 		];
 
@@ -438,13 +428,16 @@ Prefer the fetch tool.
 					createManager: () => manager,
 				});
 
-				await runSessionStart(pi);
 				getAgentRuntimeComposition(pi).setRestrictiveToolNames(
 					"test-policy",
 					toolNamesFromArgs(toolArgs.args),
 				);
+				await runSessionStart(pi);
 
-				expect(await runBeforeAgentStart(pi)).toBe(testCase.expectedPrompt);
+				expect(pi.messages).toHaveLength(testCase.expectedMessageCount);
+				expect(await runBeforeAgentStart(pi)).toBe(
+					"Suite template for /tmp/project",
+				);
 			} finally {
 				await rm(suiteDir, { recursive: true, force: true });
 			}

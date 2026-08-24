@@ -114,6 +114,7 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 			thinkingLevel = level;
 		},
 		appendEntry(): void {},
+		sendMessage(): void {},
 	} as unknown as ExtensionAPI;
 	const renderingModel = {
 		provider: "test",

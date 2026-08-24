@@ -230,12 +230,6 @@ Skills guidelines:
 
 {{toolsets}}
 
-<tools>
-<available>
-{{tools}}
-</available>
-
-<guidelines>
+<tool_guidelines>
 {{toolGuidelines}}
-</guidelines>
-</tools>
+</tool_guidelines>

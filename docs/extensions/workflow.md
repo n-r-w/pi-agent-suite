@@ -106,7 +106,7 @@ Optional prompt overrides belong in `~/.pi/agent/agent-suite/workflow/config.jso
 
 Each configured path must be absolute and reference a readable file with non-empty content after trimming. Unknown fields and invalid files reject the prompt configuration atomically.
 
-`extensionDescriptionPromptFile` supplies universal active-workflow guidance. The other files replace the Pi tool description for the corresponding tool. Pi includes descriptions only for active tools, so tool-specific rules are not duplicated in `<workflow_guidelines>`.
+`extensionDescriptionPromptFile` supplies one `promptGuidelines` contribution on each workflow tool. The system prompt formatter normalizes duplicate contributions, so the guidance appears once while any workflow tool is active. The other files replace the Pi tool description for the corresponding tool.
 
 ## Tools
 
@@ -206,7 +206,7 @@ Workflow: TuiBrainstorming · Generate and discuss TUI concepts
 
 The row contains the workflow ID and active stage description. It never includes stage IDs or transitions. The shared separator and the complete Workflow row use Pi's dim color. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed. The row is clipped to the terminal width and ends with `…` when content is hidden.
 
-A completed workflow is still retained for rework, but its provider context uses `<completed_workflow>` and omits `<active_stage_guidelines>` until rework makes the workflow active again.
+A completed workflow is still retained for rework. Its latest journal record uses `<workflow_completed>` and contains no completed-stage prompt. Rework appends a new `<workflow_stage_activated>` record.
 
 Creation, activation, stage editing, transition, session start, and branch changes replace the row with the saved active state. Changing the selected agent or its workflow allowlist does not hide this row or the saved active workflow. The agent's tool policy still controls provider-context availability. A branch without saved active workflow state removes only the `Workflow` row; other shared panel rows remain visible.
 
@@ -277,30 +277,28 @@ The extension computes tool availability independently:
 - `workflow_create` requires a valid catalog, including a valid empty catalog;
 - `workflow_activate` requires at least one allowed activation option;
 - `workflow_get_stage` and `workflow_edit_stage` require an active dynamic workflow created through `workflow_create`;
-- `workflow_transition` requires a projected active state or at least one allowed catalog workflow.
+- `workflow_transition` requires a saved workflow state or at least one allowed catalog workflow.
 
 The agent's `tools` policy remains a second gate. The extension never restores a tool removed by that policy.
 
-`<workflow_guidelines>` contains only universal workflow rules. Context is projected while at least one workflow tool is active. The current active workflow also remains projected when the extension temporarily suppresses the last workflow tool granted by the agent policy. A policy reset that removes that tool permission stops the projection without deleting the saved workflow snapshot. `<workflow_activation_options>` is included only when `workflow_activate` is active and at least one option exists. An empty or self-closing activation-options element is not emitted.
+Workflow state entries remain authoritative for runtime reconstruction. Model-facing workflow data uses hidden, persistent messages with `customType: "workflow"`, `display: false`, and `deliverAs: "steer"`. During a tool loop, steering inserts the record into the next provider request. When Pi is idle, the same call persists the record without starting a turn. The extension does not register a `context` handler and does not append a transient workflow snapshot before provider calls.
 
-An active workflow projects shared workflow guidance before the current stage guidance:
+The journal is append-only:
+- Activation appends `<workflow_activated>` with root guidance, stage descriptions, and the complete transition graph. The same message then appends `<workflow_stage_activated guidelines="inline">` for the initial stage.
+- First entry into a stage appends its prompt with `guidelines="inline"`.
+- Repeated entry into a known unchanged stage uses `guidelines="reuse"` and does not repeat the prompt.
+- Every stage activation includes current outgoing `<available_transitions>`. Route-dependent `rework` options are recalculated for each entry.
+- `workflow_edit_stage` appends `<workflow_stage_updated>` with the complete replacement description and prompt.
+- `agent_settled` appends `<workflow_completed>` with available rework transitions and no completed-stage prompt. Settlement runs after the active agent loop ends, so the completion record reaches the next user-triggered provider request.
+- An empty transition set is represented by `<available_transitions />`.
 
-```xml
-<active_workflow id="delivery" active_stage_id="implementation">
-  <guidelines>
-Follow these guidelines throughout the workflow.
-  </guidelines>
-  <active_stage_guidelines>
-Implement only the approved scope.
-Follow the project testing rules.
-  </active_stage_guidelines>
-  ...
-</active_workflow>
-```
+Activation availability uses separate `<workflow_activation_options>` records. The extension publishes one at session initialization and after policy, catalog, or workflow changes only when the rendered options change. `<workflow_activation_options />` explicitly replaces an older non-empty list.
 
-The root workflow prompt is projected in `<guidelines>` for every active stage and omitted when absent. Only the active stage prompt is projected in `<active_stage_guidelines>`; a transition replaces it on the next context request. A completed workflow uses `<completed_workflow completed_stage_id="...">` and projects no stage prompt.
+After `session_compact`, the extension resets journal deduplication for the new provider-visible segment. It appends one `<workflow_checkpoint>` when workflow state exists, then publishes `<workflow_activation_options>` or `<workflow_activation_options />`. Without workflow state, it publishes activation options without a checkpoint. A repair checkpoint outside compaction preserves activation-options deduplication. Other stage definitions become unknown. The first later entry into another stage therefore uses `guidelines="inline"`.
 
-Catalog activation options are filtered through `workflows`. The current active state remains projectable and transitionable under every resolved policy, regardless of whether it came from catalog activation or `workflow_create`.
+New `activated` and `created` workflow-state snapshots require `journalVersion: 1`. State without this field belongs to the old format, is ignored with a warning, and produces no repair checkpoint. On session start and branch navigation, the extension scans `custom_message` workflow entries after the latest `compaction` or `branch_summary` entry. Every lifecycle record carries a SHA-256 revision of the normalized workflow definition. Current-format compatibility requires matching workflow ID, status, route-tail stage, and definition revision. A current-format state without a compatible lifecycle record receives one checkpoint.
+
+Catalog activation options are filtered through `workflows`. A resolved policy can change new activation options without deleting or blocking the saved workflow state.
 
 ## Session snapshots
 

@@ -106,9 +106,11 @@ const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
 const SAVED_DYNAMIC_WORKFLOW_KEYS = new Set(CREATED_ROOT_KEYS);
 const RESTORATION_KEYS = new Set(["modelId", "thinking"]);
-const LEGACY_WORKFLOW_STATE_KEYS = new Set(["kind", "workflow", "route"]);
 
-/** Warning emitted when a workflow snapshot predates persisted restoration settings. */
+/** Journal contract required by persisted workflow root snapshots. */
+export const WORKFLOW_STATE_JOURNAL_VERSION = 1;
+
+/** Warning emitted when a workflow snapshot predates the current persisted state contract. */
 export const WORKFLOW_LEGACY_STATE_WARNING =
 	"[workflow] ignored workflow state from an older format; start a new workflow to continue";
 
@@ -374,7 +376,10 @@ function classifyWorkflowReplayAction(
 ): "ignore" | "legacy" | "replay" {
 	const kind = Reflect.get(data, "kind");
 	if (ignoringLegacyState) {
-		return kind === "activated" || kind === "created" ? "replay" : "ignore";
+		if (kind !== "activated" && kind !== "created") {
+			return "ignore";
+		}
+		return isLegacyWorkflowStateData(data) ? "legacy" : "replay";
 	}
 	return isLegacyWorkflowStateData(data) ? "legacy" : "replay";
 }
@@ -392,9 +397,10 @@ function replayWorkflowStateEntry(
 	if (kind === "activated" || kind === "created") {
 		assertExactKeys(
 			data,
-			new Set(["kind", "workflow", "route", "restoration"]),
+			new Set(["kind", "workflow", "route", "restoration", "journalVersion"]),
 			`${kind} entry`,
 		);
+		requireWorkflowJournalVersion(data);
 		const workflow = validateSavedWorkflow(
 			Reflect.get(data, "workflow"),
 			kind === "activated",
@@ -467,6 +473,14 @@ function replayWorkflowStageEdit(
 }
 
 /** Identifies an activation or creation entry from before restoration was persisted. */
+function requireWorkflowJournalVersion(
+	data: Readonly<Record<string, unknown>>,
+): void {
+	if (Reflect.get(data, "journalVersion") !== WORKFLOW_STATE_JOURNAL_VERSION) {
+		throw new Error(`journalVersion must be ${WORKFLOW_STATE_JOURNAL_VERSION}`);
+	}
+}
+
 function isLegacyWorkflowStateData(
 	data: Readonly<Record<string, unknown>>,
 ): boolean {
@@ -474,11 +488,7 @@ function isLegacyWorkflowStateData(
 	if (kind !== "activated" && kind !== "created") {
 		return false;
 	}
-	const keys = Object.keys(data);
-	return (
-		keys.length === LEGACY_WORKFLOW_STATE_KEYS.size &&
-		keys.every((key) => LEGACY_WORKFLOW_STATE_KEYS.has(key))
-	);
+	return !Object.hasOwn(data, "journalVersion");
 }
 
 /** Identifies every entry claiming workflow ownership before outer-shape validation. */

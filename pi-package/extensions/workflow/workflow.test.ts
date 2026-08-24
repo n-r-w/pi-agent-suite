@@ -8,6 +8,7 @@ import {
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
 	validateWorkflowDefinition,
+	WORKFLOW_STATE_JOURNAL_VERSION,
 } from "./workflow";
 
 const SOURCE = "/tmp/workflow.yaml";
@@ -554,6 +555,7 @@ describe("workflow state", () => {
 					workflow,
 					route: ["a"],
 					restoration: { modelId: "openai/current-model", thinking: "medium" },
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 				},
 			},
 			{
@@ -588,6 +590,7 @@ describe("workflow state", () => {
 						modelId: "openai/current-model",
 						thinking: "medium",
 					},
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 				},
 			},
 			{
@@ -668,6 +671,7 @@ describe("workflow state", () => {
 						workflow: dynamicWorkflow,
 						route: ["a"],
 						source: "dynamic",
+						journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 					},
 				},
 			]),
@@ -697,6 +701,7 @@ describe("workflow state", () => {
 						modelId: "openai/current-model",
 						thinking: "medium",
 					},
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 				},
 			},
 			{
@@ -776,6 +781,7 @@ describe("workflow state", () => {
 				workflow: catalogWorkflow,
 				route: ["a"],
 				restoration,
+				journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 			},
 		};
 		const creation = {
@@ -786,6 +792,7 @@ describe("workflow state", () => {
 				workflow: dynamicWorkflow,
 				route: ["a"],
 				restoration,
+				journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 			},
 		};
 
@@ -808,8 +815,8 @@ describe("workflow state", () => {
 		).toThrow("unsupported key");
 	});
 
-	/** Proves pre-restoration workflow chains are ignored instead of blocking session replay. */
-	test("ignores legacy workflow state chains", () => {
+	/** Proves workflow chains without the journal contract are ignored instead of repaired. */
+	test("ignores workflow state without a journal contract", () => {
 		const workflow = validateWorkflowDefinition(
 			"delivery",
 			validValue(),
@@ -819,7 +826,15 @@ describe("workflow state", () => {
 			{
 				type: "custom",
 				customType: "workflow-state",
-				data: { kind: "activated", workflow, route: ["a"] },
+				data: {
+					kind: "activated",
+					workflow,
+					route: ["a"],
+					restoration: {
+						modelId: "openai/current-model",
+						thinking: "medium",
+					},
+				},
 			},
 			{
 				type: "custom",

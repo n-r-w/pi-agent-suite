@@ -114,41 +114,7 @@ export default async function mcpWrapper(
 		registeredToolDefinitions,
 		toolsetRuntime,
 	});
-	registerMcpInstructionPromptHandler(pi, () => state.serverInstructionRecords);
-
 	await preloadedStatePromise;
-}
-
-interface BeforeAgentStartEventLike {
-	readonly systemPrompt: string;
-}
-
-/** Adds instructions only for MCP servers that own at least one active generated tool. */
-function registerMcpInstructionPromptHandler(
-	pi: ExtensionAPI,
-	getServerInstructionRecords: () => readonly ServerInstructionRecord[],
-): void {
-	pi.on("before_agent_start", (event) => {
-		const serverInstructionRecords = getServerInstructionRecords();
-		if (serverInstructionRecords.length === 0) {
-			return undefined;
-		}
-
-		const activeToolNames = new Set(pi.getActiveTools());
-		const visibleServerInstructions = serverInstructionRecords.filter(
-			(serverInstructions) =>
-				serverInstructions.registeredPiToolNames.some((toolName) =>
-					activeToolNames.has(toolName),
-				),
-		);
-		if (visibleServerInstructions.length === 0) {
-			return undefined;
-		}
-
-		return {
-			systemPrompt: `${(event as BeforeAgentStartEventLike).systemPrompt}\n\n${renderMcpInstructions(visibleServerInstructions)}`,
-		};
-	});
 }
 
 interface SessionStartContextLike {
@@ -250,6 +216,19 @@ function registerMcpSessionLifecycleHandlers(options: {
 		);
 		options.state.activeManager = result.manager;
 		options.state.serverInstructionRecords = result.serverInstructionRecords;
+		persistActiveServerInstructions(
+			options.pi,
+			result.serverInstructionRecords,
+			ctx.sessionManager.getBranch(),
+		);
+	});
+
+	options.pi.on("session_compact", (_event, ctx) => {
+		persistActiveServerInstructions(
+			options.pi,
+			options.state.serverInstructionRecords,
+			ctx.sessionManager.getBranch(),
+		);
 	});
 
 	options.pi.on("session_shutdown", async () => {
@@ -265,23 +244,31 @@ function buildMcpToolsets(
 	servers: ValidMcpWrapperConfig["mcpServers"],
 	serverToolLists: readonly McpServerToolList[],
 	catalogTools: readonly PiToolCatalogEntry[],
+	serverInstructionRecords: readonly ServerInstructionRecord[] = [],
 ): readonly Toolset[] {
 	const loadedServerKeys = new Set(
 		serverToolLists.map((serverToolList) => serverToolList.serverKey),
 	);
 	const toolNamesByServer = groupCatalogToolNamesByServer(catalogTools);
+	const instructionsByServer = new Map(
+		serverInstructionRecords.map((record) => [record.serverKey, record]),
+	);
 
 	return Object.entries(servers).flatMap(([serverKey, server]) => {
 		if (server.onDemand === undefined || !loadedServerKeys.has(serverKey)) {
 			return [];
 		}
 		const toolNames = toolNamesByServer.get(serverKey) ?? [];
+		const instructions = instructionsByServer.get(serverKey);
 		return [
 			{
 				providerId: MCP_TOOLSET_PROVIDER_ID,
 				name: server.onDemand.name,
 				description: server.onDemand.description,
 				toolNames,
+				...(instructions === undefined
+					? {}
+					: { activationContext: renderMcpInstructions([instructions]) }),
 				// MCP metadata and definitions are already loaded; normal tool execution owns connection readiness.
 				activate: async () => toolNames,
 			},
@@ -464,21 +451,20 @@ async function handleSessionStart(
 	}
 
 	const catalog = buildPiToolCatalog(startup.serverToolLists);
+	const serverInstructionRecords = buildActiveServerInstructions(
+		startup.serverInstructions,
+		configResult.config.mcpServers,
+		catalog.tools,
+	);
 	registerStartupCatalog({
 		options,
 		startup,
 		catalog,
 		config: configResult.config,
+		serverInstructionRecords,
 	});
 
-	return {
-		manager,
-		serverInstructionRecords: buildActiveServerInstructions(
-			startup.serverInstructions,
-			configResult.config.mcpServers,
-			catalog.tools,
-		),
-	};
+	return { manager, serverInstructionRecords };
 }
 
 /** Publishes one startup catalog through normal registration and shared runtime presentation. */
@@ -487,11 +473,13 @@ function registerStartupCatalog({
 	startup,
 	catalog,
 	config,
+	serverInstructionRecords,
 }: {
 	readonly options: HandleSessionStartOptions;
 	readonly startup: StartupMetadata;
 	readonly catalog: PiToolCatalog;
 	readonly config: ValidMcpWrapperConfig;
+	readonly serverInstructionRecords: readonly ServerInstructionRecord[];
 }): void {
 	reportStatuses(options.ctx, startup, catalog.rejected);
 	registerCatalogTools({
@@ -504,7 +492,12 @@ function registerStartupCatalog({
 	});
 	replaceRuntimeCatalog(
 		options,
-		buildMcpToolsets(config.mcpServers, startup.serverToolLists, catalog.tools),
+		buildMcpToolsets(
+			config.mcpServers,
+			startup.serverToolLists,
+			catalog.tools,
+			serverInstructionRecords,
+		),
 		catalog.tools.map((entry) => entry.definition.name),
 	);
 	reportStartupDiagnostics(options.ctx, {
@@ -959,12 +952,140 @@ function renderMcpInstructions(
 ): string {
 	return [
 		"<mcp_instructions>",
-		...serverInstructions.map(
-			(instructions) =>
-				`  <server name="${escapeMcpInstructionAttribute(instructions.serverKey)}">\n${escapeMcpInstructionText(instructions.instructions)}\n  </server>`,
-		),
+		...serverInstructions.map(renderMcpServerInstruction),
 		"</mcp_instructions>",
 	].join("\n");
+}
+
+function renderMcpServerInstruction(instructions: ServerInstructions): string {
+	return `  <server name="${escapeMcpInstructionAttribute(instructions.serverKey)}">\n${escapeMcpInstructionText(instructions.instructions)}\n  </server>`;
+}
+
+/** Persists instructions for servers whose generated tools are active after startup restoration. */
+function persistActiveServerInstructions(
+	pi: ExtensionAPI,
+	records: readonly ServerInstructionRecord[],
+	branch: readonly unknown[],
+): void {
+	const activeToolNames = new Set(pi.getActiveTools());
+	const visible = records.filter((record) =>
+		record.registeredPiToolNames.some((name) => activeToolNames.has(name)),
+	);
+	const content =
+		visible.length === 0
+			? "<mcp_instructions />"
+			: renderMcpInstructions(visible);
+	if (hasCurrentMcpInstructions(branch, visible)) {
+		return;
+	}
+	pi.sendMessage(
+		{
+			customType: "mcp-instructions",
+			content,
+			display: false,
+			details: {
+				version: 1,
+				serverKeys: visible.map(({ serverKey }) => serverKey),
+			},
+		},
+		{ deliverAs: "steer" },
+	);
+}
+
+/** Checks instruction coverage in replacements and successful activation results after the latest context boundary. */
+function hasCurrentMcpInstructions(
+	branch: readonly unknown[],
+	records: readonly ServerInstructionRecord[],
+): boolean {
+	const expectedBlocks = new Set(records.map(renderMcpServerInstruction));
+	const currentBlocks = readEffectiveMcpInstructionBlocks(branch);
+	return (
+		currentBlocks.size === expectedBlocks.size &&
+		[...expectedBlocks].every((block) => currentBlocks.has(block))
+	);
+}
+
+interface McpInstructionCarrier {
+	readonly kind: "activation" | "replacement";
+	readonly content: string;
+}
+
+function readCurrentMcpInstructionCarriers(
+	branch: readonly unknown[],
+): McpInstructionCarrier[] {
+	const carriers: McpInstructionCarrier[] = [];
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index];
+		if (!isRecord(entry)) {
+			continue;
+		}
+		if (entry["type"] === "compaction" || entry["type"] === "branch_summary") {
+			break;
+		}
+		const carrier = readMcpInstructionCarrier(entry);
+		if (carrier !== undefined) {
+			carriers.push(carrier);
+		}
+	}
+	return carriers;
+}
+
+function readEffectiveMcpInstructionBlocks(
+	branch: readonly unknown[],
+): Set<string> {
+	const blocks = new Set<string>();
+	for (const carrier of readCurrentMcpInstructionCarriers(branch)) {
+		for (const block of extractMcpInstructionBlocks(carrier.content)) {
+			blocks.add(block);
+		}
+		if (carrier.kind === "replacement") {
+			break;
+		}
+	}
+	return blocks;
+}
+
+function extractMcpInstructionBlocks(content: string): readonly string[] {
+	return (
+		content.match(/ {2}<server name="[^"]*">\n[\s\S]*?\n {2}<\/server>/g) ?? []
+	);
+}
+
+function readMcpInstructionCarrier(
+	entry: Record<string, unknown>,
+): McpInstructionCarrier | undefined {
+	if (
+		entry["type"] === "custom_message" &&
+		entry["customType"] === "mcp-instructions" &&
+		typeof entry["content"] === "string"
+	) {
+		return { kind: "replacement", content: entry["content"] };
+	}
+	if (entry["type"] !== "message") {
+		return undefined;
+	}
+	const message = entry["message"];
+	if (
+		!isRecord(message) ||
+		message["role"] !== "toolResult" ||
+		message["toolName"] !== "activate_toolset" ||
+		message["isError"] !== false ||
+		!Array.isArray(message["content"])
+	) {
+		return undefined;
+	}
+	const content = message["content"]
+		.filter(
+			(part): part is { readonly type: "text"; readonly text: string } =>
+				isRecord(part) &&
+				part["type"] === "text" &&
+				typeof part["text"] === "string",
+		)
+		.map(({ text }) => text)
+		.join("\n");
+	return content.includes("<mcp_instructions")
+		? { kind: "activation", content }
+		: undefined;
 }
 
 function escapeMcpInstructionText(value: string): string {
@@ -1076,6 +1197,10 @@ function formatRejectedTool(rejected: RejectedPiToolRoute): string {
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildStatusKey(serverKey: string): string {

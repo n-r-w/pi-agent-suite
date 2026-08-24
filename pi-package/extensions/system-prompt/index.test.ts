@@ -207,6 +207,7 @@ function createBeforeAgentStartEvent(
 			promptGuidelines: [
 				"Use read before editing files.",
 				"  ",
+				"  Use read before editing files.  ",
 				"Use bash only when command output is needed.",
 			],
 			appendSystemPrompt: "Append text",
@@ -246,7 +247,7 @@ describe("system-prompt", () => {
 	test("renders only requested dynamic variables from the Markdown template", async () => {
 		// Purpose: a template must own all static prose while variables inject only runtime values.
 		// Input and expected output: a custom template references every supported variable plus one unknown placeholder.
-		// Edge case: tools without prompt snippets, blank tool guidelines, and unknown placeholders are omitted.
+		// Edge case: blank and normalized duplicate tool guidelines plus unknown placeholders are omitted.
 		// Dependencies: this test uses isolated temp config/template files and in-memory pi lifecycle fakes.
 		await withIsolatedAgentDir(async ({ suiteDir }) => {
 			const templateFile = join(suiteDir, "template.md");
@@ -256,8 +257,6 @@ describe("system-prompt", () => {
 					"Static header",
 					"Date: {{date}}",
 					"CWD: {{cwd}}",
-					"Tools:",
-					"{{tools}}",
 					"Tool guidelines:",
 					"{{toolGuidelines}}",
 					"Append:",
@@ -294,10 +293,9 @@ describe("system-prompt", () => {
 			expect(prompt).toContain("Static header");
 			expect(prompt).toMatch(DATE_LINE_PATTERN);
 			expect(prompt).toContain("CWD: /tmp/project");
-			expect(prompt).toContain("- read: Read file contents");
-			expect(prompt).toContain("- bash: Execute shell commands");
-			expect(prompt).not.toContain("hidden");
-			expect(prompt).toContain("- Use read before editing files.");
+			expect(prompt.match(/- Use read before editing files\./g)).toHaveLength(
+				1,
+			);
 			expect(prompt).toContain(
 				"- Use bash only when command output is needed.",
 			);
@@ -479,9 +477,9 @@ describe("system-prompt", () => {
 		});
 	});
 
-	test("places bundled toolsets between skills and active tools", async () => {
+	test("places bundled toolsets between skills and tool guidelines", async () => {
 		// Purpose: the bundled template must expose the deferred catalog at the approved structural location.
-		// Input and expected output: the bundled template renders one eligible toolset beside populated skills and active tools.
+		// Input and expected output: the bundled template renders one eligible toolset between populated skills and guidelines.
 		// Edge case: placement is asserted by required section boundaries rather than mutable prompt prose.
 		// Dependencies: bundled template loading plus the shared runtime/composition lifecycle.
 		await withIsolatedAgentDir(async () => {
@@ -511,7 +509,7 @@ describe("system-prompt", () => {
 			expect(prompt.indexOf("<toolsets>")).toBeGreaterThan(
 				prompt.indexOf("</skills>"),
 			);
-			expect(prompt.indexOf("<tools>")).toBeGreaterThan(
+			expect(prompt.indexOf("<tool_guidelines>")).toBeGreaterThan(
 				prompt.indexOf("<toolsets>"),
 			);
 		});

@@ -154,6 +154,41 @@ describe("toolset runtime", () => {
 		expect(activeTools).toEqual(["read", "activate_toolset"]);
 	});
 
+	test("persists provider activation context only on first activation", async () => {
+		// Purpose: provider instructions must reach the next model call through the persisted activation result.
+		// Input and expected output: one toolset adds activation context on first activation and omits it on an idempotent retry.
+		// Edge case: the active toolset remains callable through the runtime after its trigger disappears.
+		// Dependencies: activate_toolset result formatting and provider-owned activation metadata.
+		const controls = createFakePi(["files_read", "files_write"]);
+		const runtime = getToolsetRuntime(controls.pi);
+		runtime.replaceProvider("mcp", [
+			{
+				...filesToolset(),
+				activationContext:
+					"<provider_instructions>Use files.</provider_instructions>",
+			},
+		]);
+		getAgentRuntimeComposition(controls.pi).reconcileActiveTools();
+		const activationTool = controls.definitions.get("activate_toolset");
+
+		const first = await activationTool?.execute(
+			"call-context",
+			{ name: "files" },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		const repeated = await runtime.activate("files");
+
+		expect(first?.content).toEqual([
+			{
+				type: "text",
+				text: 'Activated toolset "files".\nAvailable tools:\n- files_read\n- files_write\n\n<provider_instructions>Use files.</provider_instructions>',
+			},
+		]);
+		expect(repeated.activationContext).toBeUndefined();
+	});
+
 	test("activates only allowed tools and removes the final activation trigger", async () => {
 		const { pi, definitions, activeTools } = createFakePi([
 			"read",

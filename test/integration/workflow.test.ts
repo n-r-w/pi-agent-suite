@@ -40,6 +40,10 @@ test("workflow entry activates a configured workflow and projects its initial st
 		execute: (...args: unknown[]) => Promise<unknown>;
 	}> = [];
 	const appended: Array<{ customType: string; data: unknown }> = [];
+	const messages: Array<{
+		readonly content: string;
+		readonly details: unknown;
+	}> = [];
 	let activeTools = ["read"];
 	let thinkingLevel = "medium";
 	const pi = {
@@ -71,6 +75,12 @@ test("workflow entry activates a configured workflow and projects its initial st
 		},
 		appendEntry(customType: string, data: unknown) {
 			appended.push({ customType, data });
+		},
+		sendMessage(message: { content: unknown; details?: unknown }) {
+			messages.push({
+				content: String(message.content),
+				details: message.details,
+			});
 		},
 		events: {
 			emit() {},
@@ -123,18 +133,18 @@ test("workflow entry activates a configured workflow and projects its initial st
 	await activate.execute("call", { workflowId: "delivery" });
 	expect(appended).toHaveLength(1);
 	expect(appended[0]?.customType).toBe("workflow-state");
-	const contextHandler = handlers.get("context");
-	if (contextHandler === undefined) {
-		throw new Error("context handler missing");
-	}
-	const prior = { role: "user", content: "preserve", timestamp: 1 };
-	const result = await contextHandler({ messages: [prior] }, {});
-	const messages = (result as { messages: Array<{ content: unknown }> })
-		.messages;
-	expect(messages[0]).toBe(prior);
-	expect(String(messages[1]?.content)).toContain('active_stage_id="start"');
-	expect(String(messages[1]?.content)).toContain(
-		"<active_stage_guidelines>\nStart work\n  </active_stage_guidelines>",
+	expect(handlers.has("context")).toBe(false);
+	const activation = messages.find(
+		({ details }) =>
+			typeof details === "object" &&
+			details !== null &&
+			Reflect.get(details, "kind") === "activation",
+	);
+	expect(activation?.content).toContain(
+		'<workflow_stage_activated workflow_id="delivery" stage_id="start"',
+	);
+	expect(activation?.content).toContain(
+		"<stage_guidelines>\nStart work\n  </stage_guidelines>",
 	);
 });
 
