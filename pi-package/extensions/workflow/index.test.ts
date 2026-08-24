@@ -1517,6 +1517,43 @@ describe("workflow extension lifecycle", () => {
 		).toEqual(["activated", "transitioned", "completed"]);
 	});
 
+	/**
+	 * Proves an unsuccessful agent run cannot complete its active final workflow stage.
+	 * Inputs and expected outputs: each aborted or failed assistant outcome followed by agent_settled leaves the final stage active and keeps its runtime settings.
+	 * Edge cases: the unsuccessful outcome occurs after transition into the final stage but before its required action succeeds.
+	 * Dependencies: turn_end outcome tracking, agent_settled lifecycle handling, and final-stage completion persistence.
+	 */
+	test.each([
+		"aborted",
+		"error",
+	] as const)("keeps the final stage active after an %s run settles", async (stopReason) => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		await requireTool(fake, "workflow_transition").execute("transition", {
+			stageId: "done",
+		});
+
+		await runTurn(fake, 0, undefined, {
+			role: "assistant",
+			content: [],
+			stopReason,
+		});
+		await runAgentSettled(fake);
+
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("high");
+		expect(
+			fake.appended.map(({ data }) => (data as { kind: string }).kind),
+		).toEqual(["activated", "transitioned"]);
+		expect(latestWorkflowContent(fake)).toContain(
+			'<workflow_stage_activated workflow_id="delivery" stage_id="done"',
+		);
+	});
+
 	test("restores branch settings when leaving an active workflow branch", async () => {
 		// Purpose: session-tree navigation must restore the target branch runtime instead of leaking workflow settings.
 		// Inputs and expected output: a high-thinking branch activates an xhigh stage, then navigation before activation restores high.
