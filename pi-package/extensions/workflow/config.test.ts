@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadWorkflowCatalog, loadWorkflowPrompts } from "./config";
+import { loadWorkflowCatalog, loadWorkflowConfiguration } from "./config";
 
 const temporaryDirectories: string[] = [];
 
@@ -144,8 +144,13 @@ describe("workflow catalog configuration", () => {
 	});
 });
 
-describe("workflow prompt configuration", () => {
-	/** Proves bundled defaults and partial absolute overrides are loaded and trimmed atomically. */
+describe("workflow configuration", () => {
+	/**
+	 * Proves prompt defaults, a partial override, and the default reminder interval load atomically.
+	 * Input and expected output: one prompt override and an omitted interval return trimmed prompts and interval 50.
+	 * Edge case: omission uses the documented default without requiring a config file field.
+	 * Dependencies: isolated prompt files and the workflow configuration loader.
+	 */
 	test("loads defaults and one configured override", async () => {
 		const root = await createTemporaryDirectory();
 		const bundled = join(root, "bundled");
@@ -172,7 +177,8 @@ describe("workflow prompt configuration", () => {
 			configPath,
 			JSON.stringify({ createDescriptionPromptFile: override }),
 		);
-		expect(await loadWorkflowPrompts(configPath, bundled)).toEqual({
+		expect(await loadWorkflowConfiguration(configPath, bundled)).toEqual({
+			reminderToolCallInterval: 50,
 			extensionDescription: "guidelines",
 			createDescription: "custom creation",
 			activateDescription: "activate",
@@ -182,7 +188,39 @@ describe("workflow prompt configuration", () => {
 		});
 	});
 
-	/** Proves malformed JSON, unknown keys, relative paths, unreadable files, and empty prompts fail closed. */
+	/**
+	 * Proves valid configured reminder intervals are retained.
+	 * Input and expected output: zero and a positive safe integer return unchanged.
+	 * Edge case: zero disables reminders without being replaced by the default.
+	 * Dependencies: isolated prompt files and the workflow configuration loader.
+	 */
+	test.each([0, 75])("retains reminder interval %i", async (interval) => {
+		const root = await createTemporaryDirectory();
+		const bundled = join(root, "bundled");
+		await mkdir(bundled);
+		for (const file of [
+			"extension-description.md",
+			"create-description.md",
+			"activate-description.md",
+			"get-stage-description.md",
+			"edit-stage-description.md",
+			"transition-description.md",
+		]) {
+			await writeFile(join(bundled, file), "default");
+		}
+		const configPath = join(root, "config.json");
+		await writeFile(
+			configPath,
+			JSON.stringify({ reminderToolCallInterval: interval }),
+		);
+
+		expect(
+			(await loadWorkflowConfiguration(configPath, bundled))
+				.reminderToolCallInterval,
+		).toBe(interval);
+	});
+
+	/** Proves malformed JSON, unknown keys, invalid fields, unreadable files, and empty prompts fail closed. */
 	test.each([
 		["malformed JSON", "{"],
 		["unknown key", JSON.stringify({ unknown: "/tmp/x" })],
@@ -190,6 +228,13 @@ describe("workflow prompt configuration", () => {
 			"relative path",
 			JSON.stringify({ createDescriptionPromptFile: "relative.md" }),
 		],
+		["negative interval", JSON.stringify({ reminderToolCallInterval: -1 })],
+		["fractional interval", JSON.stringify({ reminderToolCallInterval: 1.5 })],
+		[
+			"unsafe interval",
+			JSON.stringify({ reminderToolCallInterval: Number.MAX_SAFE_INTEGER + 1 }),
+		],
+		["string interval", JSON.stringify({ reminderToolCallInterval: "50" })],
 	])("rejects %s", async (_case, config) => {
 		const root = await createTemporaryDirectory();
 		const bundled = join(root, "bundled");
@@ -206,9 +251,9 @@ describe("workflow prompt configuration", () => {
 		}
 		const configPath = join(root, "config.json");
 		await writeFile(configPath, config);
-		await expect(loadWorkflowPrompts(configPath, bundled)).rejects.toThrow(
-			configPath,
-		);
+		await expect(
+			loadWorkflowConfiguration(configPath, bundled),
+		).rejects.toThrow(configPath);
 	});
 
 	/**
@@ -240,9 +285,9 @@ describe("workflow prompt configuration", () => {
 				configPath,
 				JSON.stringify({ createDescriptionPromptFile: override }),
 			);
-			await expect(loadWorkflowPrompts(configPath, bundled)).rejects.toThrow(
-				configPath,
-			);
+			await expect(
+				loadWorkflowConfiguration(configPath, bundled),
+			).rejects.toThrow(configPath);
 		}
 	});
 });

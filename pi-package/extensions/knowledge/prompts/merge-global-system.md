@@ -32,7 +32,7 @@ You are responsible for merging knowledge from multiple sources into a single kn
   2. Return only the final replacement Markdown.
   3. Keep result within the stated token limit.
   4. MUST NOT place duplicate information between the strategic and tactical sections.
-  5. MUST use ONLY English unless maintaining original language is essential for accuracy.
+  5. MUST use ASD-STE100 - Simplified Technical English, unless maintaining original language is essential for accuracy.
   6. Group related knowledge into single statements when possible.
 </merge_rules>
 

@@ -23,7 +23,14 @@ export interface WorkflowPrompts {
 	readonly transitionDescription: string;
 }
 
+export interface WorkflowConfiguration extends WorkflowPrompts {
+	readonly reminderToolCallInterval: number;
+}
+
+const DEFAULT_REMINDER_TOOL_CALL_INTERVAL = 50;
+
 const CONFIG_KEYS = new Set([
+	"reminderToolCallInterval",
 	"extensionDescriptionPromptFile",
 	"createDescriptionPromptFile",
 	"activateDescriptionPromptFile",
@@ -120,41 +127,42 @@ async function readCatalogFile(
 	}
 }
 
-/** Loads the closed optional prompt config and resolves all four files as one result. */
-export async function loadWorkflowPrompts(
+/** Loads the closed workflow config and resolves every prompt and setting atomically. */
+export async function loadWorkflowConfiguration(
 	configPath: string,
 	bundledDirectory: string,
-): Promise<WorkflowPrompts> {
+): Promise<WorkflowConfiguration> {
 	try {
-		const config = await readPromptConfig(configPath);
+		const config = await readWorkflowConfig(configPath);
 		return {
+			reminderToolCallInterval: config.reminderToolCallInterval,
 			extensionDescription: await readPrompt(
-				config["extensionDescriptionPromptFile"] ??
+				config.promptFiles["extensionDescriptionPromptFile"] ??
 					join(bundledDirectory, "extension-description.md"),
 				"extensionDescriptionPromptFile",
 			),
 			createDescription: await readPrompt(
-				config["createDescriptionPromptFile"] ??
+				config.promptFiles["createDescriptionPromptFile"] ??
 					join(bundledDirectory, "create-description.md"),
 				"createDescriptionPromptFile",
 			),
 			activateDescription: await readPrompt(
-				config["activateDescriptionPromptFile"] ??
+				config.promptFiles["activateDescriptionPromptFile"] ??
 					join(bundledDirectory, "activate-description.md"),
 				"activateDescriptionPromptFile",
 			),
 			getStageDescription: await readPrompt(
-				config["getStageDescriptionPromptFile"] ??
+				config.promptFiles["getStageDescriptionPromptFile"] ??
 					join(bundledDirectory, "get-stage-description.md"),
 				"getStageDescriptionPromptFile",
 			),
 			editStageDescription: await readPrompt(
-				config["editStageDescriptionPromptFile"] ??
+				config.promptFiles["editStageDescriptionPromptFile"] ??
 					join(bundledDirectory, "edit-stage-description.md"),
 				"editStageDescriptionPromptFile",
 			),
 			transitionDescription: await readPrompt(
-				config["transitionDescriptionPromptFile"] ??
+				config.promptFiles["transitionDescriptionPromptFile"] ??
 					join(bundledDirectory, "transition-description.md"),
 				"transitionDescriptionPromptFile",
 			),
@@ -164,16 +172,24 @@ export async function loadWorkflowPrompts(
 	}
 }
 
-/** Parses absent configuration as defaults and rejects unknown or non-string fields. */
-async function readPromptConfig(
+interface ParsedWorkflowConfiguration {
+	readonly promptFiles: Readonly<Record<string, string>>;
+	readonly reminderToolCallInterval: number;
+}
+
+/** Parses absent configuration as defaults and rejects unknown or invalid fields. */
+async function readWorkflowConfig(
 	configPath: string,
-): Promise<Record<string, string>> {
+): Promise<ParsedWorkflowConfiguration> {
 	let content: string;
 	try {
 		content = await readFile(configPath, "utf8");
 	} catch (error) {
 		if (isFileNotFound(error)) {
-			return {};
+			return {
+				promptFiles: {},
+				reminderToolCallInterval: DEFAULT_REMINDER_TOOL_CALL_INTERVAL,
+			};
 		}
 		throw new Error(`could not read configuration: ${errorMessage(error)}`);
 	}
@@ -186,22 +202,40 @@ async function readPromptConfig(
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new Error("configuration must be an object");
 	}
-	const result: Record<string, string> = {};
+	const promptFiles: Record<string, string> = {};
+	let reminderToolCallInterval = DEFAULT_REMINDER_TOOL_CALL_INTERVAL;
 	for (const [key, candidate] of Object.entries(value)) {
 		if (!CONFIG_KEYS.has(key)) {
 			throw new Error(`unsupported configuration key ${key}`);
 		}
-		if (
-			typeof candidate !== "string" ||
-			candidate.length === 0 ||
-			candidate.trim() !== candidate ||
-			!isAbsolute(candidate)
-		) {
-			throw new Error(`${key} must be a non-empty absolute path`);
+		if (key === "reminderToolCallInterval") {
+			reminderToolCallInterval = parseReminderToolCallInterval(candidate);
+			continue;
 		}
-		result[key] = candidate;
+		promptFiles[key] = parsePromptFilePath(key, candidate);
 	}
-	return result;
+	return { promptFiles, reminderToolCallInterval };
+}
+
+function parseReminderToolCallInterval(candidate: unknown): number {
+	if (!Number.isSafeInteger(candidate) || Number(candidate) < 0) {
+		throw new Error(
+			"reminderToolCallInterval must be a non-negative safe integer",
+		);
+	}
+	return Number(candidate);
+}
+
+function parsePromptFilePath(key: string, candidate: unknown): string {
+	if (
+		typeof candidate !== "string" ||
+		candidate.length === 0 ||
+		candidate.trim() !== candidate ||
+		!isAbsolute(candidate)
+	) {
+		throw new Error(`${key} must be a non-empty absolute path`);
+	}
+	return candidate;
 }
 
 /** Reads and trims one required prompt while reporting the owning config field. */

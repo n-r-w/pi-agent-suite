@@ -45,7 +45,8 @@ import {
 } from "./availability.ts";
 import {
 	loadWorkflowCatalog,
-	loadWorkflowPrompts,
+	loadWorkflowConfiguration,
+	type WorkflowConfiguration,
 	type WorkflowPrompts,
 } from "./config";
 import { WorkflowJournal } from "./context";
@@ -57,6 +58,7 @@ import {
 	resolveWorkflowModelSettings,
 	rollbackWorkflowModelSettings,
 } from "./model-runtime";
+import { WorkflowReminderScheduler } from "./reminder-scheduler";
 import {
 	installWorkflowStatusIndicator,
 	type WorkflowStatusIndicator,
@@ -306,13 +308,14 @@ interface RegisterWorkflowToolsOptions {
 interface WorkflowRuntime {
 	catalog: readonly WorkflowDefinition[];
 	catalogError: Error | undefined;
-	promptError: Error | undefined;
+	configurationError: Error | undefined;
 	state: WorkflowState | undefined;
 	replayWarnings: readonly string[];
 	currentModel: ExtensionContext["model"];
 	modelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	readonly selfSuppressedNames: Set<string>;
 	readonly journal: WorkflowJournal;
+	readonly reminderScheduler: WorkflowReminderScheduler;
 	journalReady: boolean;
 }
 
@@ -335,7 +338,7 @@ interface SynchronizeWorkflowRuntimeOptions {
 	readonly branch: readonly unknown[];
 	readonly runtime: WorkflowRuntime;
 	readonly catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>;
-	readonly promptError: Error | undefined;
+	readonly configurationError: Error | undefined;
 	readonly getPolicy: () => WorkflowPolicyResolution;
 	readonly model: ExtensionContext["model"];
 	readonly modelRegistry: ExtensionContext["modelRegistry"];
@@ -351,7 +354,7 @@ interface WorkflowLifecycleOptions {
 	readonly pi: ExtensionAPI;
 	readonly runtime: WorkflowRuntime;
 	readonly catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>;
-	readonly promptError: Error | undefined;
+	readonly configurationError: Error | undefined;
 	readonly getPolicy: () => WorkflowPolicyResolution;
 	readonly refreshTools: (trigger: ReconciliationTrigger) => void;
 	readonly statusHolder: WorkflowStatusHolder;
@@ -407,16 +410,20 @@ async function setEnteredWorkflowState(
 	await runEnteredStageTriggers(pi, state, invocation);
 }
 
-/** Creates the initial mutable workflow state from catalog-wide and prompt loading results. */
+/** Creates the initial mutable workflow state from catalog-wide and configuration loading results. */
 function createWorkflowRuntimeState(
 	pi: ExtensionAPI,
 	catalogResult: Awaited<ReturnType<typeof loadWorkflowCatalog>>,
-	promptError: Error | undefined,
+	configurationError: Error | undefined,
+	reminderToolCallInterval: number,
 ): WorkflowRuntime {
+	const reminderScheduler = new WorkflowReminderScheduler(
+		reminderToolCallInterval,
+	);
 	return {
 		catalog: catalogResult.error === undefined ? catalogResult.workflows : [],
 		catalogError: catalogResult.error,
-		promptError,
+		configurationError,
 		state: undefined,
 		replayWarnings: [],
 		currentModel: undefined,
@@ -424,9 +431,27 @@ function createWorkflowRuntimeState(
 		selfSuppressedNames: new Set<string>(),
 		journal: new WorkflowJournal((record) => {
 			pi.sendMessage(record, { deliverAs: "steer" });
+			if (recordCarriesCurrentWorkflowState(record.details)) {
+				reminderScheduler.workflowStatePublished();
+			}
 		}),
+		reminderScheduler,
 		journalReady: false,
 	};
+}
+
+/** Identifies records that start a fresh reminder interval. */
+function recordCarriesCurrentWorkflowState(
+	details: Readonly<Record<string, unknown>>,
+): boolean {
+	const kind = details["kind"];
+	return (
+		kind === "activation" ||
+		kind === "stage_activation" ||
+		kind === "checkpoint" ||
+		kind === "reminder" ||
+		(kind === "stage_update" && details["active"] === true)
+	);
 }
 
 /** Publishes saved session state independently from the selected agent's workflow policy. */
@@ -503,9 +528,9 @@ export default async function workflowExtension(
 	pi: ExtensionAPI,
 ): Promise<void> {
 	const extensionDirectory = getSuiteExtensionDir(EXTENSION_DIRECTORY);
-	const [loadedCatalog, promptResult] = await Promise.all([
+	const [loadedCatalog, configurationResult] = await Promise.all([
 		loadWorkflowCatalog(join(extensionDirectory, "workflows")),
-		loadPromptsForInitialization(extensionDirectory),
+		loadConfigurationForInitialization(extensionDirectory),
 	]);
 	const catalogPublication = publishWorkflowCatalogPolicy({
 		ids: loadedCatalog.workflows.map(({ id }) => id),
@@ -520,7 +545,8 @@ export default async function workflowExtension(
 	const runtime = createWorkflowRuntimeState(
 		pi,
 		catalogResult,
-		promptResult.error,
+		configurationResult.error,
+		configurationResult.configuration?.reminderToolCallInterval ?? 0,
 	);
 	const statusHolder: WorkflowStatusHolder = { indicator: undefined };
 	const getPolicy = createWorkflowPolicyReader(pi);
@@ -538,10 +564,10 @@ export default async function workflowExtension(
 		}
 	};
 
-	if (promptResult.error === undefined) {
+	if (configurationResult.error === undefined) {
 		registerWorkflowRuntime({
 			pi,
-			prompts: promptResult.prompts,
+			prompts: configurationResult.configuration,
 			runtime,
 			getPolicy,
 			refreshTools,
@@ -551,7 +577,7 @@ export default async function workflowExtension(
 		pi,
 		runtime,
 		catalogResult,
-		promptError: promptResult.error,
+		configurationError: configurationResult.error,
 		getPolicy,
 		refreshTools,
 		statusHolder,
@@ -630,6 +656,7 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 		refreshTools("policy-reset");
 	});
 	pi.on("session_start", async (_event, ctx) => {
+		runtime.reminderScheduler.reset();
 		await synchronize(ctx);
 		reportWorkflowCatalogWarnings(ctx, warnings);
 		reportedReplayWarningKey = reportReplayWarningsOnce(
@@ -639,6 +666,7 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 		);
 	});
 	pi.on("session_tree", async (_event, ctx) => {
+		runtime.reminderScheduler.reset();
 		await synchronize(ctx);
 		reportedReplayWarningKey = reportReplayWarningsOnce(
 			ctx,
@@ -665,8 +693,14 @@ interface WorkflowSynchronizationContext {
 function createWorkflowSynchronizer(
 	options: WorkflowLifecycleOptions,
 ): (ctx: WorkflowSynchronizationContext) => Promise<void> {
-	const { pi, runtime, catalogResult, promptError, getPolicy, statusHolder } =
-		options;
+	const {
+		pi,
+		runtime,
+		catalogResult,
+		configurationError,
+		getPolicy,
+		statusHolder,
+	} = options;
 	return async (ctx) => {
 		if (ctx.mode === "tui") {
 			statusHolder.indicator ??= installWorkflowStatusIndicator(pi, ctx.ui);
@@ -680,7 +714,7 @@ function createWorkflowSynchronizer(
 				branch,
 				runtime,
 				catalogResult,
-				promptError,
+				configurationError,
 				getPolicy,
 				model: ctx.model,
 				modelRegistry: ctx.modelRegistry,
@@ -762,6 +796,7 @@ function registerWorkflowRuntime(
 ): void {
 	const { pi, prompts, runtime, getPolicy, refreshTools } = options;
 	registerWorkflowPresentationRuntime(pi, runtime);
+	registerWorkflowReminderRuntime(pi, runtime);
 	const resolveAvailability = (): WorkflowAvailability =>
 		resolveRuntimeAvailability(runtime, getPolicy());
 	registerWorkflowTools({
@@ -781,6 +816,44 @@ function registerWorkflowRuntime(
 	getAgentRuntimeComposition(pi).publishBaselineToolNames([
 		...WORKFLOW_TOOL_NAMES,
 	]);
+}
+
+/** Schedules at most one reminder after each complete tool batch. */
+function registerWorkflowReminderRuntime(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+): void {
+	let finalizedToolResultCount = 0;
+	let terminatingToolResultCount = 0;
+	pi.on("turn_start", () => {
+		finalizedToolResultCount = 0;
+		terminatingToolResultCount = 0;
+		runtime.reminderScheduler.startTurn();
+	});
+	pi.on("tool_execution_end", (event) => {
+		finalizedToolResultCount++;
+		if (event.result?.terminate === true) {
+			terminatingToolResultCount++;
+		}
+	});
+	pi.on("turn_end", (event) => {
+		const state = runtime.state;
+		const toolResultCount = event.toolResults.length;
+		const allToolResultsTerminate =
+			toolResultCount > 0 &&
+			finalizedToolResultCount === toolResultCount &&
+			terminatingToolResultCount === toolResultCount;
+		if (
+			runtime.reminderScheduler.completeTurn(
+				toolResultCount,
+				state?.status === "active",
+				allToolResultsTerminate,
+			) &&
+			state !== undefined
+		) {
+			runtime.journal.reminder(state);
+		}
+	});
 }
 
 /** Persists row-local UI evidence so live and replayed sessions render identically. */
@@ -822,8 +895,8 @@ function resolveRuntimeAvailability(
 	runtime: WorkflowRuntime,
 	policy: WorkflowPolicyResolution,
 ): WorkflowAvailability {
-	// Prompt loading is atomic, so one prompt error disables every registered capability.
-	if (runtime.promptError !== undefined) {
+	// Configuration loading is atomic, so one error disables every registered capability.
+	if (runtime.configurationError !== undefined) {
 		return {
 			activationOptions: [],
 			projectedState: undefined,
@@ -847,7 +920,7 @@ function synchronizeWorkflowRuntime(
 		branch,
 		runtime,
 		catalogResult,
-		promptError,
+		configurationError,
 		getPolicy,
 		model,
 		modelRegistry,
@@ -870,7 +943,7 @@ function synchronizeWorkflowRuntime(
 	runtime.catalog =
 		catalogResult.error === undefined ? catalogResult.workflows : [];
 	runtime.catalogError = catalogResult.error;
-	runtime.promptError = promptError;
+	runtime.configurationError = configurationError;
 	const policy = getPolicy();
 	const availability = resolveRuntimeAvailability(runtime, policy);
 	reconcileTools(
@@ -883,10 +956,10 @@ function synchronizeWorkflowRuntime(
 		throw new Error(policy.issue);
 	}
 	if (
-		promptError !== undefined &&
+		configurationError !== undefined &&
 		(catalogResult.error === undefined || runtime.state !== undefined)
 	) {
-		throw promptError;
+		throw configurationError;
 	}
 	if (catalogResult.error !== undefined && runtime.state === undefined) {
 		throw catalogResult.error;
@@ -1062,16 +1135,19 @@ function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/** Resolves prompt metadata atomically without falling back from configured errors. */
-async function loadPromptsForInitialization(
+/** Resolves workflow configuration atomically without falling back from configured errors. */
+async function loadConfigurationForInitialization(
 	extensionDirectory: string,
 ): Promise<
-	| { readonly prompts: WorkflowPrompts; readonly error?: undefined }
-	| { readonly prompts?: undefined; readonly error: Error }
+	| {
+			readonly configuration: WorkflowConfiguration;
+			readonly error?: undefined;
+	  }
+	| { readonly configuration?: undefined; readonly error: Error }
 > {
 	try {
 		return {
-			prompts: await loadWorkflowPrompts(
+			configuration: await loadWorkflowConfiguration(
 				join(extensionDirectory, "config.json"),
 				join(dirname(fileURLToPath(import.meta.url)), "prompts"),
 			),
