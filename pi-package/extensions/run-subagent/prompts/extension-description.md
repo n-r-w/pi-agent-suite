@@ -15,6 +15,7 @@
     5) If `subagent_wait` does not return results within allotted time, either increase timeout and repeat `subagent_wait`, or perform other work that does not depend on results of subagents.
     6) Use `subagent_query` if information is insufficient and you clarify something without needing to steer subagent's work.
     7) Use `subagent_steer` for steering subagent's work ONLY WITHIN ONE subtask. For new subtasks, launch a new subagent.
+    8) It is RECOMMENDED to implement using subagents and verify their work using main agent, and not other way around.
 
 **COST AND TIME EFFICIENCY:**
 1. Goal: optimizing time and money costs by selecting minimum sufficient level of sub-agents abilities
