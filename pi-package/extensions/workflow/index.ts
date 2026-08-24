@@ -313,6 +313,7 @@ interface WorkflowRuntime {
 	replayWarnings: readonly string[];
 	currentModel: ExtensionContext["model"];
 	modelRegistry: ExtensionContext["modelRegistry"] | undefined;
+	lastTurnFailed: boolean;
 	readonly selfSuppressedNames: Set<string>;
 	readonly journal: WorkflowJournal;
 	readonly reminderScheduler: WorkflowReminderScheduler;
@@ -428,6 +429,7 @@ function createWorkflowRuntimeState(
 		replayWarnings: [],
 		currentModel: undefined,
 		modelRegistry: undefined,
+		lastTurnFailed: false,
 		selfSuppressedNames: new Set<string>(),
 		journal: new WorkflowJournal((record, delivery) => {
 			pi.sendMessage(record, { deliverAs: delivery });
@@ -749,7 +751,11 @@ function registerWorkflowRunLifecycle(
 		runtime.currentModel = event.model;
 	});
 	pi.on("agent_settled", async () => {
-		await completeSettledWorkflow(pi, runtime, refreshTools);
+		const settledRunFailed = runtime.lastTurnFailed;
+		runtime.lastTurnFailed = false;
+		if (!settledRunFailed) {
+			await completeSettledWorkflow(pi, runtime, refreshTools);
+		}
 	});
 }
 
@@ -837,6 +843,10 @@ function registerWorkflowReminderRuntime(
 		}
 	});
 	pi.on("turn_end", (event) => {
+		runtime.lastTurnFailed =
+			event.message.role === "assistant" &&
+			(event.message.stopReason === "aborted" ||
+				event.message.stopReason === "error");
 		const state = runtime.state;
 		const toolResultCount = event.toolResults.length;
 		const hasReasoning =
