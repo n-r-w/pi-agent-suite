@@ -3,7 +3,7 @@
 ## Problem Statement
 
 - **PRB-01:** A long-running active stage publishes no new workflow state until a lifecycle change or compaction occurs.
-- **PRB-02:** A reminder must follow the configured tool-call interval and contain only the active workflow and stage IDs.
+- **PRB-02:** A reminder must follow the configured activity interval and contain only the active workflow and stage IDs.
 
 ## Proposed Solution
 
@@ -11,7 +11,7 @@
 
 - **CFG-01:** Add `reminderToolCallInterval` to `workflow/config.json`.
 - **CFG-02:** Accept safe integers greater than or equal to `0`. Default to `50`. A value of `0` disables reminders.
-- **DEC-04:** The default of `50` comes from 6,467 active-stage intervals across 688 workflow sessions. The threshold is reached by 2.83% of intervals and produces about 0.43 reminders per workflow session.
+- **DEC-04:** The default remains `50`. The source analysis measured 6,467 tool-call intervals across 688 workflow sessions, but it did not measure reasoning turns and does not predict reminder frequency under activity counting.
 - **CFG-03:** Extend the existing strict atomic configuration parser. Invalid values follow the existing workflow configuration failure path.
 
 ```json
@@ -22,8 +22,8 @@
 
 ### Reminder scheduler
 
-- **SOL-01:** Add a small scheduler that owns the tool-call count and tracks whether current workflow state was published during the active model turn.
-- **SOL-02:** Count calls from `turn_end.toolResults.length` instead of `tool_execution_start`.
+- **SOL-01:** Add a small scheduler that owns the activity count and tracks whether current workflow state was published during the active model turn.
+- **SOL-02:** At `turn_end`, count the greater of `event.toolResults.length` and one reasoning unit. A final assistant message has one reasoning unit when any `thinking` block contains text, a `thinkingSignature`, or `redacted: true`.
 - **DEC-01:** Pi emits `turn_end` after the complete tool batch and before it reads queued `steer` messages for the next model request.
 - **DEC-02:** Scheduling at `turn_end` produces at most one reminder per parallel batch and uses workflow state after every tool has finished.
 
@@ -31,10 +31,11 @@
 
 - **ALG-01:** Clear the per-turn workflow-publication marker when a model turn starts.
 - **ALG-02:** Workflow activation, stage entry, current-stage editing, checkpoint publication, and reminder publication reset the counter.
-- **ALG-03:** When current workflow state was published during a tool batch, do not count that batch. The model receives the fresh state with all results from that batch.
-- **ALG-04:** Otherwise, add `turn_end.toolResults.length` to the counter.
-- **ALG-05:** When the interval is reached and workflow status remains `active`, publish one reminder through `deliverAs: "steer"`.
-- **ALG-06:** Reset the counter to zero after publication. Discard overshoot because the reminder follows the complete batch.
+- **ALG-03:** When current workflow state was published during a turn, do not count that turn. The model receives the fresh state with the turn result.
+- **ALG-04:** Otherwise, add the greater of the completed tool-call count and one reasoning unit. Multiple reasoning blocks contribute one unit per completed turn.
+- **ALG-05:** When the interval is reached during a reasoning-only turn and workflow status remains `active`, publish one reminder through `deliverAs: "nextTurn"`. Pi queues the reminder for the next user prompt without starting a provider request.
+- **ALG-06:** When the interval is reached during a non-terminating tool turn and workflow status remains `active`, publish one reminder through `deliverAs: "steer"`.
+- **ALG-07:** Reset the counter to zero after publication. Discard overshoot because one completed turn produces at most one reminder.
 
 ### Message contract
 
@@ -74,14 +75,14 @@
   - Edge case: XML-sensitive ID characters are escaped.
   - Dependencies: `WorkflowJournal` and validated workflow state.
 - **TST-03:** Scheduler behavior test.
-  - Purpose: Prove threshold, reset, and batching behavior.
-  - Input and expected output: Batches of `20` and `30` calls with interval `50` produce one reminder decision.
+  - Purpose: Prove threshold, reset, reasoning, and batching behavior.
+  - Input and expected output: Batches of `20` and `30` calls with interval `50` produce one reminder decision. Two reasoning-only turns reach interval `2` and produce one reminder decision.
   - Edge cases: A batch of `125` produces one decision; fresh workflow state resets the interval.
   - Dependencies: A scheduler with no Pi runtime dependency.
 - **TST-04:** Extension event test.
-  - Purpose: Prove the connection between `turn_end`, active workflow state, and the journal.
-  - Input and expected output: Reaching the interval sends one reminder with `deliverAs: "steer"`.
-  - Edge case: A stage transition in the same batch leaves only the fresh stage record for the next request.
+  - Purpose: Prove the connection between `turn_end`, active workflow state, reasoning, and the journal.
+  - Input and expected output: Plain reasoning and signature-only encrypted reasoning each contribute one unit. A tool turn at the interval sends one reminder with `deliverAs: "steer"`; a reasoning-only turn at the interval sends one reminder with `deliverAs: "nextTurn"`.
+  - Edge cases: Multiple reasoning blocks in one turn contribute one unit; an empty unsigned block contributes none; `nextTurn` does not start a provider request; a stage transition in the same batch leaves only the fresh stage record for the next request.
   - Dependencies: The existing fake Pi in `pi-package/extensions/workflow/index.test.ts`.
 - **TST-05:** Real Pi integration test.
   - Purpose: Prove that the reminder reaches the next provider request.

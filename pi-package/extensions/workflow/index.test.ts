@@ -435,6 +435,7 @@ async function runTurn(
 	fake: FakePi,
 	toolCallCount: number,
 	terminateResults?: readonly boolean[],
+	message: unknown = {},
 ): Promise<void> {
 	const start = fake.handlers.get("turn_start");
 	const end = fake.handlers.get("turn_end");
@@ -460,7 +461,7 @@ async function runTurn(
 	await end({
 		type: "turn_end",
 		turnIndex: 0,
-		message: {},
+		message,
 		toolResults: Array.from({ length: toolCallCount }, () => ({})),
 	});
 }
@@ -1824,6 +1825,88 @@ describe("workflow extension lifecycle", () => {
 			display: false,
 			details: { kind: "reminder" },
 			options: { deliverAs: "steer" },
+		});
+	});
+
+	/**
+	 * Proves completed reasoning contributes one retained activity unit per turn.
+	 * Input and expected output: plain and encrypted reasoning plus two tool calls reach interval four.
+	 * Edge cases: multiple blocks count once, an empty unsigned block counts zero, and below-threshold reasoning-only turns remain silent.
+	 * Dependencies: final assistant messages, turn-end scheduling, and journal publication.
+	 */
+	test("counts one final reasoning unit per completed turn", async () => {
+		const suite = await createSuite(validYaml());
+		await writeFile(
+			join(suite, "workflow", "config.json"),
+			JSON.stringify({ reminderToolCallInterval: 4 }),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.messages.length = 0;
+
+		await runTurn(fake, 0, undefined, {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "First" },
+				{ type: "thinking", thinking: "Second" },
+			],
+		});
+		await runTurn(fake, 0, undefined, {
+			role: "assistant",
+			content: [
+				{
+					type: "thinking",
+					thinking: "",
+					thinkingSignature: '{"encrypted_content":"opaque"}',
+				},
+			],
+		});
+		await runTurn(fake, 0, undefined, {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "" }],
+		});
+		await runTurn(fake, 1);
+		expect(fake.messages).toEqual([]);
+
+		await runTurn(fake, 1);
+		expect(fake.messages).toHaveLength(1);
+		expect(fake.messages[0]?.details).toMatchObject({ kind: "reminder" });
+	});
+
+	/**
+	 * Proves a reasoning-only interval queues a reminder for the next user turn.
+	 * Input and expected output: two reasoning-only turns at interval two publish one `nextTurn` reminder.
+	 * Edge case: publication occurs without any tool result or immediate follow-up request.
+	 * Dependencies: final assistant messages, turn-end scheduling, and journal publication.
+	 */
+	test("queues reasoning-only reminders for the next user turn", async () => {
+		const suite = await createSuite(validYaml());
+		await writeFile(
+			join(suite, "workflow", "config.json"),
+			JSON.stringify({ reminderToolCallInterval: 2 }),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.messages.length = 0;
+		const reasoningMessage = {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "Reasoning" }],
+		};
+
+		await runTurn(fake, 0, undefined, reasoningMessage);
+		expect(fake.messages).toEqual([]);
+		await runTurn(fake, 0, undefined, reasoningMessage);
+
+		expect(fake.messages).toHaveLength(1);
+		expect(fake.messages[0]).toMatchObject({
+			details: { kind: "reminder" },
+			options: { deliverAs: "nextTurn" },
 		});
 	});
 

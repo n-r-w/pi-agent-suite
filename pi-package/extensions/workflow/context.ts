@@ -14,6 +14,8 @@ export interface WorkflowJournalRecord {
 	readonly details: Readonly<Record<string, unknown>>;
 }
 
+export type WorkflowJournalDelivery = "steer" | "nextTurn";
+
 type WorkflowJournalKind =
 	| "activation"
 	| "stage_activation"
@@ -33,7 +35,10 @@ export class WorkflowJournal {
 	private activationOptionsContent: string | undefined;
 
 	public constructor(
-		private readonly publish: (record: WorkflowJournalRecord) => void,
+		private readonly publish: (
+			record: WorkflowJournalRecord,
+			delivery: WorkflowJournalDelivery,
+		) => void,
 	) {}
 
 	public activate(state: WorkflowState): void {
@@ -76,7 +81,10 @@ export class WorkflowJournal {
 	}
 
 	/** Publishes only the current active identifiers without changing journal stage knowledge. */
-	public reminder(state: WorkflowState): void {
+	public reminder(
+		state: WorkflowState,
+		delivery: WorkflowJournalDelivery = "steer",
+	): void {
 		if (state.status !== "active") {
 			throw new Error("workflow reminder record requires active state");
 		}
@@ -88,6 +96,7 @@ export class WorkflowJournal {
 			state,
 			{
 				stageId: stage.id,
+				delivery,
 			},
 		);
 	}
@@ -127,12 +136,15 @@ export class WorkflowJournal {
 			return;
 		}
 		this.activationOptionsContent = content;
-		this.publish({
-			customType: "workflow",
-			content,
-			display: false,
-			details: { version: 1, kind: "activation_options" },
-		});
+		this.publish(
+			{
+				customType: "workflow",
+				content,
+				display: false,
+				details: { version: 1, kind: "activation_options" },
+			},
+			"steer",
+		);
 	}
 
 	/** Clears journal-local state when Pi starts a new provider-visible context segment. */
@@ -222,22 +234,29 @@ export class WorkflowJournal {
 		content: string,
 		kind: Exclude<WorkflowJournalKind, "activation_options">,
 		state: WorkflowState,
-		metadata: Readonly<Record<string, unknown>> & { readonly stageId: string },
+		publication: Readonly<Record<string, unknown>> & {
+			readonly stageId: string;
+			readonly delivery?: WorkflowJournalDelivery;
+		},
 	): void {
-		this.publish({
-			customType: "workflow",
-			content,
-			display: false,
-			details: {
-				version: 1,
-				kind,
-				workflowId: state.workflow.id,
-				status: state.status,
-				currentStageId: state.route.at(-1),
-				workflowRevision: getWorkflowRevision(state.workflow),
-				...metadata,
+		const { delivery = "steer", ...metadata } = publication;
+		this.publish(
+			{
+				customType: "workflow",
+				content,
+				display: false,
+				details: {
+					version: 1,
+					kind,
+					workflowId: state.workflow.id,
+					status: state.status,
+					currentStageId: state.route.at(-1),
+					workflowRevision: getWorkflowRevision(state.workflow),
+					...metadata,
+				},
 			},
-		});
+			delivery,
+		);
 	}
 }
 

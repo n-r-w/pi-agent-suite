@@ -429,8 +429,8 @@ function createWorkflowRuntimeState(
 		currentModel: undefined,
 		modelRegistry: undefined,
 		selfSuppressedNames: new Set<string>(),
-		journal: new WorkflowJournal((record) => {
-			pi.sendMessage(record, { deliverAs: "steer" });
+		journal: new WorkflowJournal((record, delivery) => {
+			pi.sendMessage(record, { deliverAs: delivery });
 			if (recordCarriesCurrentWorkflowState(record.details)) {
 				reminderScheduler.workflowStatePublished();
 			}
@@ -839,6 +839,16 @@ function registerWorkflowReminderRuntime(
 	pi.on("turn_end", (event) => {
 		const state = runtime.state;
 		const toolResultCount = event.toolResults.length;
+		const hasReasoning =
+			event.message.role === "assistant" &&
+			event.message.content.some(
+				(block) =>
+					block.type === "thinking" &&
+					(block.thinking.trim() !== "" ||
+						(block.thinkingSignature !== undefined &&
+							block.thinkingSignature.trim() !== "") ||
+						block.redacted === true),
+			);
 		const allToolResultsTerminate =
 			toolResultCount > 0 &&
 			finalizedToolResultCount === toolResultCount &&
@@ -846,12 +856,16 @@ function registerWorkflowReminderRuntime(
 		if (
 			runtime.reminderScheduler.completeTurn(
 				toolResultCount,
+				hasReasoning,
 				state?.status === "active",
 				allToolResultsTerminate,
 			) &&
 			state !== undefined
 		) {
-			runtime.journal.reminder(state);
+			runtime.journal.reminder(
+				state,
+				toolResultCount === 0 ? "nextTurn" : "steer",
+			);
 		}
 	});
 }
