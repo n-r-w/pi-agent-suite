@@ -5,7 +5,7 @@
 </task>
 
 <language>
-  Use ENGLISH language ONLY, except for text where changing language would change its meaning.
+  MUST use ASD-STE100 - Simplified Technical English, except for text where changing language would change its meaning.
 </language>
 
 <summary_rules>

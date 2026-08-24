@@ -26,7 +26,7 @@ const TOOL_PARAMETERS = Type.Object(
 			minLength: 1,
 			maxLength: 2048,
 			description:
-				"Question or instruction to answer about image. Use English only unless maintaining original language is essential for accuracy.",
+				"Question or instruction to answer about image. MUST use ASD-STE100 - Simplified Technical English, unless maintaining original language is essential for accuracy.",
 		}),
 	},
 	{ additionalProperties: false },

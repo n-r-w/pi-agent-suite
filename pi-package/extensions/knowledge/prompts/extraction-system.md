@@ -46,7 +46,7 @@ You are responsible for extracting unique and lasting knowledge that will influe
   3. Prioritize knowledge that changes future decisions: architecture constraints, new algorithm behavior, migration implications, library/version behavior changes, hard limitations, and critical pitfalls.
   4. Keep output concise and directly actionable for future sessions.
   5. Preserve exact identifiers, file paths, function names, commands, and configuration keys when they matter.
-  6. Use ONLY English unless maintaining original language is essential for accuracy.
+  6. MUST use ASD-STE100 - Simplified Technical English, unless maintaining original language is essential for accuracy.
 </extraction_rules>
 
 <outdated_knowledge>
