@@ -223,13 +223,17 @@ Content: ctrl+o to show
 workflow_activate
 Workflow: delivery · Software delivery
 
-workflow_get_stage
-Stage: implementation · Implement the approved change
-Content: ctrl+o to show
+workflow_get_stage: implementation
+Description: Implement the approved change
+Prompt: Implement and test the change
+Thinking: medium
+Initial: true
+... (1 more line, 5 total, ctrl+o to expand)
 
-workflow_edit_stage
-Stage: implementation · Implement the corrected change
-Content: ctrl+o to show
+workflow_edit_stage: implementation
+Description: Implement the approved change -> Implement the corrected change
+Prompt: Implement and test the change -> Follow the corrected requirements.
+Thinking: medium -> high
 
 workflow_transition
 From: implementation · Implement the approved change
@@ -265,7 +269,7 @@ transitions:
     type: advance
 ```
 
-Collapsed mode wraps references to the available width and shows at most four content rows per reference. Expanded mode shows complete references, creation YAML, and stage YAML for `workflow_get_stage` and `workflow_edit_stage`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage references are stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These two stored sources keep the active screen and subagent session screen consistent.
+Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and shows at most four content rows before Pi's expansion hint. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels use Pi's bold `toolTitle` color, values use `toolOutput`, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 

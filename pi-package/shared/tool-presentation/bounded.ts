@@ -21,6 +21,7 @@ interface BoundedToolResultOptions {
 	readonly collapsedContentLineLimit: number;
 	readonly showHiddenLineHint: boolean;
 	readonly showExpandedErrorLabel: boolean;
+	readonly renderCollapsedLines?: (width: number) => readonly string[];
 }
 
 /** Renders one JSON call preview within a visual-line budget. */
@@ -64,14 +65,17 @@ export class BoundedToolResult implements Component {
 			return this.renderExpanded(width);
 		}
 		const color = this.options.isError ? "error" : "toolOutput";
-		const visualLines = new Text(
-			this.options.theme.fg(
-				color,
-				normalizeCollapsedToolText(this.options.text),
-			),
-			0,
-			0,
-		).render(width);
+		// Semantic callers can supply styled rows while this class keeps one shared budget and hint.
+		const visualLines =
+			this.options.renderCollapsedLines?.(width) ??
+			new Text(
+				this.options.theme.fg(
+					color,
+					normalizeCollapsedToolText(this.options.text),
+				),
+				0,
+				0,
+			).render(width);
 		if (
 			!this.options.showHiddenLineHint ||
 			visualLines.length <= this.options.collapsedContentLineLimit

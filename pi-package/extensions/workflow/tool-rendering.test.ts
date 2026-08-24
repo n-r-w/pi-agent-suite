@@ -504,65 +504,162 @@ describe("workflow semantic tool rendering", () => {
 			model: { thinking: "high" },
 		});
 
-		for (const execution of [get, edit]) {
-			const toolName = execution.definition.name as
-				| "workflow_get_stage"
-				| "workflow_edit_stage";
-			const active = renderCompletedTool(execution.definition, execution);
-			const session = renderCompletedTool(
-				resolveSessionDefinition(fixture, toolName),
-				execution,
-			);
-			expect(session).toEqual(active);
-			expect(active.result).toEqual([]);
-			expect(active.call.at(-1)).toBe(
-				`Content: ${keyText("app.tools.expand")} to show`,
-			);
-
-			const activeExpanded = renderCompletedTool(
-				execution.definition,
-				execution,
-				PLAIN_THEME,
-				100,
-				true,
-			);
-			const sessionExpanded = renderCompletedTool(
-				resolveSessionDefinition(fixture, toolName),
-				execution,
-				PLAIN_THEME,
-				100,
-				true,
-			);
-			expect(sessionExpanded).toEqual(activeExpanded);
-			expect(activeExpanded.result).toEqual([]);
-			expect(activeExpanded.call).toContain("--- Stage ---");
-			expect(activeExpanded.call).toContain("--- Content ---");
-		}
-
-		expect(renderCompletedTool(get.definition, get).call).toContain(
-			"Stage: implementation · Implementation stage",
+		const getCollapsed = renderCompletedTool(
+			get.definition,
+			get,
+			PLAIN_THEME,
+			500,
 		);
-		expect(renderCompletedTool(edit.definition, edit).call).toContain(
-			"Stage: implementation · Revised implementation",
+		const getSessionCollapsed = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_get_stage"),
+			get,
+			PLAIN_THEME,
+			500,
+		);
+		expect(getSessionCollapsed).toEqual(getCollapsed);
+		expect(getCollapsed.call.slice(0, -1)).toEqual([
+			"workflow_get_stage: implementation",
+			"Description: Implementation stage",
+			"Prompt: Implement the change",
+			"Thinking: medium",
+			"Initial: true",
+		]);
+		expect(getCollapsed.call.at(-1)).toMatch(HIDDEN_LINE_HINT);
+		expect(getCollapsed.result).toEqual([]);
+
+		const getExpanded = renderCompletedTool(
+			get.definition,
+			get,
+			PLAIN_THEME,
+			100,
+			true,
 		);
 		expect(
 			renderCompletedTool(
-				get.definition,
+				resolveSessionDefinition(fixture, "workflow_get_stage"),
 				get,
 				PLAIN_THEME,
 				100,
 				true,
-			).call.join("\n"),
-		).toContain("prompt: Implement the change");
+			),
+		).toEqual(getExpanded);
+		expect(getExpanded).toEqual({
+			call: [
+				"workflow_get_stage: implementation",
+				"--- Description ---",
+				"Implementation stage",
+				"--- Prompt ---",
+				"Implement the change",
+				"--- Thinking ---",
+				"medium",
+				"--- Initial ---",
+				"true",
+				"--- Final ---",
+				"false",
+			],
+			result: [],
+		});
+
+		const editCollapsed = renderCompletedTool(
+			edit.definition,
+			edit,
+			PLAIN_THEME,
+			500,
+		);
 		expect(
 			renderCompletedTool(
-				edit.definition,
+				resolveSessionDefinition(fixture, "workflow_edit_stage"),
+				edit,
+				PLAIN_THEME,
+				500,
+			),
+		).toEqual(editCollapsed);
+		expect(editCollapsed).toEqual({
+			call: [
+				"workflow_edit_stage: implementation",
+				"Description: Implementation stage -> Revised implementation",
+				"Prompt: Implement the change -> Follow the corrected implementation requirements.",
+				"Thinking: medium -> high",
+			],
+			result: [],
+		});
+		const styledEdit = renderCompletedTool(
+			edit.definition,
+			edit,
+			MARKED_THEME,
+			500,
+		);
+		expect(styledEdit.call[1]).toBe(
+			"<toolTitle><bold>Description:</bold></toolTitle><toolOutput> Implementation stage </toolOutput><success>-></success><toolOutput> Revised implementation</toolOutput>",
+		);
+		expect(styledEdit.call[2]).toContain(
+			"<toolTitle><bold>Prompt:</bold></toolTitle>",
+		);
+
+		const editExpanded = renderCompletedTool(
+			edit.definition,
+			edit,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		expect(
+			renderCompletedTool(
+				resolveSessionDefinition(fixture, "workflow_edit_stage"),
 				edit,
 				PLAIN_THEME,
 				100,
 				true,
-			).call.join("\n"),
-		).toContain("prompt: Follow the corrected implementation requirements.");
+			),
+		).toEqual(editExpanded);
+		expect(editExpanded).toEqual({
+			call: [
+				"workflow_edit_stage: implementation",
+				"--- Description ---",
+				"Implementation stage",
+				"->",
+				"Revised implementation",
+				"--- Prompt ---",
+				"Implement the change",
+				"->",
+				"Follow the corrected implementation requirements.",
+				"--- Thinking ---",
+				"medium",
+				"->",
+				"high",
+			],
+			result: [],
+		});
+		const styledExpandedEdit = renderCompletedTool(
+			edit.definition,
+			edit,
+			MARKED_THEME,
+			100,
+			true,
+		);
+		expect(styledExpandedEdit.call[1]).toBe(
+			"<muted>--- Description ---</muted>",
+		);
+		expect(styledExpandedEdit.call[3]).toBe("<success>-></success>");
+
+		const unchanged = await executeTool(fixture, "workflow_edit_stage", {
+			stageId: "implementation",
+			description: "Revised implementation",
+			prompt: "Follow the corrected implementation requirements.",
+			model: { thinking: "high" },
+		});
+		expect(
+			renderCompletedTool(
+				unchanged.definition,
+				unchanged,
+				PLAIN_THEME,
+				100,
+				true,
+			),
+		).toEqual({
+			call: ["workflow_edit_stage: implementation", "No changes."],
+			result: [],
+		});
 		expect(get.result.content).toEqual([
 			{
 				type: "text",
@@ -571,6 +668,80 @@ describe("workflow semantic tool rendering", () => {
 		]);
 		expect(edit.result.content).toEqual([
 			{ type: "text", text: '{"success":true}' },
+		]);
+	});
+
+	/** Proves multiline stage values retain labels and unambiguous edit boundaries. */
+	test("renders multiline stage values as labeled semantic blocks", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const args = createArguments(
+			"dynamic-delivery",
+			"Dynamic delivery process",
+		);
+		const implementation = (args["stages"] as Record<string, unknown>[])[0];
+		if (implementation === undefined) {
+			throw new Error("implementation stage fixture is missing");
+		}
+		implementation["prompt"] = "Inspect current state.\nImplement the change.";
+		await executeTool(fixture, "workflow_create", args);
+		const get = await executeTool(fixture, "workflow_get_stage", {
+			stageId: "implementation",
+		});
+		const edit = await executeTool(fixture, "workflow_edit_stage", {
+			stageId: "implementation",
+			description: "Implementation stage",
+			prompt: "Read corrected requirements.\nImplement the corrected change.",
+			model: { thinking: "medium" },
+		});
+
+		const getExpanded = renderCompletedTool(
+			get.definition,
+			get,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		expect(getExpanded.call).toContain("--- Prompt ---");
+		expect(getExpanded.call).toContain("Inspect current state.");
+		expect(getExpanded.call).toContain("Implement the change.");
+
+		const editExpanded = renderCompletedTool(
+			edit.definition,
+			edit,
+			PLAIN_THEME,
+			100,
+			true,
+		);
+		expect(editExpanded.call).toEqual([
+			"workflow_edit_stage: implementation",
+			"--- Prompt ---",
+			"Inspect current state.",
+			"Implement the change.",
+			"->",
+			"Read corrected requirements.",
+			"Implement the corrected change.",
+		]);
+
+		const getCollapsed = renderCompletedTool(
+			get.definition,
+			get,
+			PLAIN_THEME,
+			500,
+		);
+		expect(getCollapsed.call).toContain(
+			"Prompt: Inspect current state. Implement the change.",
+		);
+		expect(getCollapsed.call).not.toContain("  Inspect current state.");
+		const editCollapsed = renderCompletedTool(
+			edit.definition,
+			edit,
+			PLAIN_THEME,
+			500,
+		);
+		expect(editCollapsed.call).toEqual([
+			"workflow_edit_stage: implementation",
+			"Prompt: Inspect current state. Implement the change. -> Read corrected requirements. Implement the corrected change.",
 		]);
 	});
 
@@ -817,6 +988,29 @@ describe("workflow semantic tool rendering", () => {
 			20,
 			true,
 		);
+		const stageGet = await executeTool(fixture, "workflow_get_stage", {
+			stageId: "implementation",
+		});
+		const narrowStageGet = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_get_stage"),
+			stageGet,
+			PLAIN_THEME,
+			20,
+			true,
+		);
+		const stageEdit = await executeTool(fixture, "workflow_edit_stage", {
+			stageId: "implementation",
+			description: "A revised implementation description",
+			prompt: "A revised implementation prompt that wraps",
+			model: { thinking: "high" },
+		});
+		const narrowStageEdit = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_edit_stage"),
+			stageEdit,
+			PLAIN_THEME,
+			20,
+			true,
+		);
 		const contentIndex = expandedCreation.call.indexOf("--- Content ---");
 		const yamlLines = expandedCreation.call.slice(contentIndex + 1);
 		const { description, prompt, stages, transitions } = creationArgs;
@@ -837,6 +1031,8 @@ describe("workflow semantic tool rendering", () => {
 			...rendered.result,
 			...collapsedCreation.call,
 			...expandedCreation.call,
+			...narrowStageGet.call,
+			...narrowStageEdit.call,
 		]) {
 			shell.addChild({ render: () => [line], invalidate: () => {} });
 		}
