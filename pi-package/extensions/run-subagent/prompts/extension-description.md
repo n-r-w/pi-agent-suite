@@ -79,7 +79,8 @@
 </context>
 
 <guidelines>
-    <!-- relevant guidelines if any -->
+    1. MUST USE `ASD-STE100` - Simplified Technical English in your response
+    <!-- other relevant guidelines if any -->
 </guidelines>
 
 <guessing_prevention_protocol>
