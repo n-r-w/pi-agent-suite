@@ -14,6 +14,7 @@ import {
 import { stringify } from "yaml";
 import { sliceTextByWidth } from "../../shared/display-width.ts";
 import { renderLabeledWrappedText } from "../../shared/labeled-wrapped-text.ts";
+import { normalizeCollapsedToolText } from "../../shared/terminal-display-text.ts";
 import {
 	BoundedToolResult,
 	getToolResultText,
@@ -21,6 +22,7 @@ import {
 import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
 
 const PRESENTATION_KIND = "workflow-tool";
+const STAGE_CHANGE_ARROW = "->";
 /** Matches the standard four-row collapsed content budget used by package tools. */
 const COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT = 4;
 /** Reserves indentation, quotes, and continuation markers around wrapped YAML scalars. */
@@ -77,12 +79,13 @@ interface WorkflowTransitionPresentation {
 	readonly to: WorkflowPresentationReference;
 }
 
-/** Persists one stage and its model-visible editable content. */
+/** Persists one stage and the values needed to render reads or edits. */
 interface WorkflowStagePresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
 	readonly toolName: "workflow_get_stage" | "workflow_edit_stage";
 	readonly stage: WorkflowPresentationReference;
 	readonly content?: WorkflowStageContent;
+	readonly editedContent?: WorkflowStageContent;
 }
 
 export type WorkflowToolPresentationDetails =
@@ -211,32 +214,27 @@ function createWorkflowStagePresentation(
 		return undefined;
 	}
 	const savedStage = state?.workflow.stages.find(({ id }) => id === stageId);
-	const description =
+	const content =
+		savedStage === undefined
+			? undefined
+			: {
+					id: savedStage.id,
+					description: savedStage.description,
+					prompt: savedStage.prompt,
+					model: { thinking: savedStage.model?.thinking },
+					initial: savedStage.initial,
+					final: savedStage.final,
+				};
+	const editedContent =
 		toolName === "workflow_edit_stage"
-			? readInputString(args, "description")
-			: savedStage?.description;
-	let content: WorkflowStageContent | undefined;
-	if (toolName === "workflow_edit_stage") {
-		content = createEditedStageContent(
-			args,
-			savedStage?.initial,
-			savedStage?.final,
-		);
-	} else if (savedStage !== undefined) {
-		content = {
-			id: savedStage.id,
-			description: savedStage.description,
-			prompt: savedStage.prompt,
-			model: { thinking: savedStage.model?.thinking },
-			initial: savedStage.initial,
-			final: savedStage.final,
-		};
-	}
+			? createEditedStageContent(args, savedStage?.initial, savedStage?.final)
+			: undefined;
 	return {
 		presentationKind: PRESENTATION_KIND,
 		toolName,
-		stage: createReference(stageId, description),
+		stage: createReference(stageId, savedStage?.description),
 		...(content === undefined ? {} : { content }),
+		...(editedContent === undefined ? {} : { editedContent }),
 	};
 }
 
@@ -413,15 +411,18 @@ export function renderWorkflowStageCall(
 ): Component {
 	const presentation = readStagePresentation(context, toolName);
 	const fallback = createWorkflowStagePresentation(toolName, args, undefined);
-	return renderWorkflowReferenceCall({
-		toolName,
-		workflow: undefined,
-		stage: presentation?.stage ?? fallback?.stage,
-		content:
-			presentation?.content ??
-			(context.argsComplete ? fallback?.content : undefined),
-		theme,
-		context,
+	const resolved = presentation ?? fallback;
+	return new WorkflowRows((width) => {
+		const stageId = resolved?.stage.id;
+		const title = stageId === undefined ? toolName : `${toolName}: ${stageId}`;
+		const attributes =
+			toolName === "workflow_get_stage"
+				? createStageAttributes(resolved?.content)
+				: createStageChanges(resolved?.content, resolved?.editedContent);
+		return [
+			renderToolName(title, width, theme),
+			...renderStageAttributes(attributes, context.expanded, width, theme),
+		];
 	});
 }
 
@@ -520,9 +521,11 @@ function parseStagePresentation(
 ): WorkflowStagePresentation | undefined {
 	const stage = parseReference(value["stage"]);
 	const content = parseStageContent(value["content"]);
+	const editedContent = parseStageContent(value["editedContent"]);
 	if (
 		stage === undefined ||
-		(value["content"] !== undefined && content === undefined)
+		(value["content"] !== undefined && content === undefined) ||
+		(value["editedContent"] !== undefined && editedContent === undefined)
 	) {
 		return undefined;
 	}
@@ -531,6 +534,7 @@ function parseStagePresentation(
 		toolName,
 		stage,
 		...(content === undefined ? {} : { content }),
+		...(editedContent === undefined ? {} : { editedContent }),
 	};
 }
 
@@ -607,6 +611,130 @@ function readStagePresentation(
 /** Renders one standalone bright workflow tool name. */
 function renderToolName(toolName: string, width: number, theme: Theme): string {
 	return theme.fg("toolTitle", theme.bold(sliceTextByWidth(toolName, width)));
+}
+
+interface StageAttributeRow {
+	readonly label: string;
+	readonly value: string;
+	readonly nextValue?: string;
+}
+
+/** Selects every stage field shown by the read tool. */
+function createStageAttributes(
+	content: WorkflowStageContent | undefined,
+): readonly StageAttributeRow[] | undefined {
+	if (content === undefined) {
+		return undefined;
+	}
+	return [
+		{ label: "Description", value: content.description },
+		{ label: "Prompt", value: content.prompt },
+		{ label: "Thinking", value: String(content.model["thinking"]) },
+		...(content.initial === undefined
+			? []
+			: [{ label: "Initial", value: String(content.initial) }]),
+		...(content.final === undefined
+			? []
+			: [{ label: "Final", value: String(content.final) }]),
+	];
+}
+
+/** Selects only editable fields whose captured old and new values differ. */
+function createStageChanges(
+	content: WorkflowStageContent | undefined,
+	editedContent: WorkflowStageContent | undefined,
+): readonly StageAttributeRow[] | undefined {
+	if (content === undefined || editedContent === undefined) {
+		return undefined;
+	}
+	const editableValues: ReadonlyArray<readonly [string, string, string]> = [
+		["Description", content.description, editedContent.description],
+		["Prompt", content.prompt, editedContent.prompt],
+		[
+			"Thinking",
+			String(content.model["thinking"]),
+			String(editedContent.model["thinking"]),
+		],
+	];
+	return editableValues
+		.filter(([, previous, next]) => previous !== next)
+		.map(([label, value, nextValue]) => ({ label, value, nextValue }));
+}
+
+/** Renders one collapsed attribute after normalizing its source line breaks. */
+function renderCollapsedStageAttribute(
+	attribute: StageAttributeRow,
+	width: number,
+	theme: Theme,
+): readonly string[] {
+	const value = normalizeCollapsedToolText(attribute.value);
+	const nextValue =
+		attribute.nextValue === undefined
+			? undefined
+			: normalizeCollapsedToolText(attribute.nextValue);
+	const label = theme.fg("toolTitle", theme.bold(`${attribute.label}:`));
+	const renderedValue =
+		nextValue === undefined
+			? theme.fg("toolOutput", ` ${value}`)
+			: `${theme.fg("toolOutput", ` ${value} `)}${theme.fg("success", STAGE_CHANGE_ARROW)}${theme.fg("toolOutput", ` ${nextValue}`)}`;
+	return new Text(`${label}${renderedValue}`, 0, 0).render(width);
+}
+
+/** Renders one expanded attribute as a standard named section. */
+function renderExpandedStageAttribute(
+	attribute: StageAttributeRow,
+	width: number,
+	theme: Theme,
+): readonly string[] {
+	return [
+		...new Text(theme.fg("muted", `--- ${attribute.label} ---`), 0, 0).render(
+			width,
+		),
+		...new Text(theme.fg("toolOutput", attribute.value), 0, 0).render(width),
+		...(attribute.nextValue === undefined
+			? []
+			: [
+					...new Text(theme.fg("success", STAGE_CHANGE_ARROW), 0, 0).render(
+						width,
+					),
+					...new Text(theme.fg("toolOutput", attribute.nextValue), 0, 0).render(
+						width,
+					),
+				]),
+	];
+}
+
+/** Applies one shared collapsed budget after rendering independent attributes. */
+function renderStageAttributes(
+	attributes: readonly StageAttributeRow[] | undefined,
+	expanded: boolean,
+	width: number,
+	theme: Theme,
+): readonly string[] {
+	if (attributes === undefined) {
+		return [];
+	}
+	if (attributes.length === 0) {
+		return new Text(theme.fg("toolOutput", "No changes."), 0, 0).render(width);
+	}
+	if (expanded) {
+		return attributes.flatMap((attribute) =>
+			renderExpandedStageAttribute(attribute, width, theme),
+		);
+	}
+	return new BoundedToolResult({
+		text: "",
+		theme,
+		isError: false,
+		expanded: false,
+		collapsedContentLineLimit: COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT,
+		showHiddenLineHint: true,
+		showExpandedErrorLabel: false,
+		renderCollapsedLines: (renderWidth) =>
+			attributes.flatMap((attribute) =>
+				renderCollapsedStageAttribute(attribute, renderWidth, theme),
+			),
+	}).render(width);
 }
 
 /** Renders catalog-shaped workflow YAML or its configurable expansion hint. */
