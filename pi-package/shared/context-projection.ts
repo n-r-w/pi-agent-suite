@@ -73,6 +73,9 @@ const SUMMARY_CONFIG_KEY = "summary";
 const CONSULT_ADVISOR_TOOL_NAME = "consult_advisor";
 const CONVENE_COUNCIL_TOOL_NAME = "convene_council";
 
+/** Workflow tool results are durable model instructions outside compaction. */
+const WORKFLOW_TOOL_NAME_PREFIX = "workflow_";
+
 /** Built-in tool names whose results are excluded from projection. */
 const BUILT_IN_PROJECTION_IGNORED_TOOLS = [
 	CONSULT_ADVISOR_TOOL_NAME,
@@ -1265,6 +1268,7 @@ function shouldKeepToolResultVisible(
 	ignoredTools: ReadonlySet<string>,
 ): boolean {
 	return (
+		message.toolName.startsWith(WORKFLOW_TOOL_NAME_PREFIX) ||
 		ignoredTools.has(message.toolName) ||
 		isLoadedSkillReadResult(message, readPathsByToolCallId, loadedSkillRoots)
 	);
