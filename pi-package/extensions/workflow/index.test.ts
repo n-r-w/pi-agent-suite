@@ -430,14 +430,33 @@ async function runLifecycle(
 	);
 }
 
-/** Invokes one complete model turn with a caller-owned completed tool count. */
-async function runTurn(fake: FakePi, toolCallCount: number): Promise<void> {
+/** Invokes one complete model turn with caller-owned finalized tool results. */
+async function runTurn(
+	fake: FakePi,
+	toolCallCount: number,
+	terminateResults?: readonly boolean[],
+): Promise<void> {
 	const start = fake.handlers.get("turn_start");
 	const end = fake.handlers.get("turn_end");
 	if (start === undefined || end === undefined) {
 		throw new Error("missing workflow reminder turn handlers");
 	}
 	await start({ type: "turn_start", turnIndex: 0, timestamp: Date.now() });
+	if (terminateResults !== undefined) {
+		const toolEnd = fake.handlers.get("tool_execution_end");
+		if (toolEnd === undefined) {
+			throw new Error("missing workflow reminder tool execution handler");
+		}
+		for (const [index, terminate] of terminateResults.entries()) {
+			await toolEnd({
+				type: "tool_execution_end",
+				toolCallId: `tool-${index}`,
+				toolName: "fixture",
+				result: { terminate },
+				isError: false,
+			});
+		}
+	}
 	await end({
 		type: "turn_end",
 		turnIndex: 0,
@@ -1806,6 +1825,36 @@ describe("workflow extension lifecycle", () => {
 			details: { kind: "reminder" },
 			options: { deliverAs: "steer" },
 		});
+	});
+
+	/**
+	 * Proves an all-terminating batch cannot queue a reminder while a mixed batch still counts.
+	 * Input and expected output: two terminating results emit nothing, then one terminating and one ordinary result emit a reminder.
+	 * Edge case: both batches independently reach the configured interval.
+	 * Dependencies: finalized tool execution events, turn-end scheduling, and journal publication.
+	 */
+	test("suppresses reminders only when every tool result terminates", async () => {
+		const suite = await createSuite(validYaml());
+		await writeFile(
+			join(suite, "workflow", "config.json"),
+			JSON.stringify({ reminderToolCallInterval: 2 }),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.messages.length = 0;
+
+		await runTurn(fake, 2, [true, true]);
+		expect(fake.messages).toEqual([]);
+
+		await runTurn(fake, 2, [true, false]);
+		expect(
+			fake.messages.filter(({ content }) =>
+				content.includes("workflow_reminder"),
+			),
+		).toHaveLength(1);
 	});
 
 	/**

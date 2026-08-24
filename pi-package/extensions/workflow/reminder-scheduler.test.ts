@@ -12,11 +12,11 @@ describe("workflow reminder scheduler", () => {
 		const scheduler = new WorkflowReminderScheduler(50);
 
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(20, true)).toBe(false);
+		expect(scheduler.completeTurn(20, true, false)).toBe(false);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(30, true)).toBe(true);
+		expect(scheduler.completeTurn(30, true, false)).toBe(true);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(49, true)).toBe(false);
+		expect(scheduler.completeTurn(49, true, false)).toBe(false);
 	});
 
 	/**
@@ -29,9 +29,9 @@ describe("workflow reminder scheduler", () => {
 		const scheduler = new WorkflowReminderScheduler(50);
 
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(125, true)).toBe(true);
+		expect(scheduler.completeTurn(125, true, false)).toBe(true);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(49, true)).toBe(false);
+		expect(scheduler.completeTurn(49, true, false)).toBe(false);
 	});
 
 	/**
@@ -44,14 +44,46 @@ describe("workflow reminder scheduler", () => {
 		const scheduler = new WorkflowReminderScheduler(50);
 
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(40, true)).toBe(false);
+		expect(scheduler.completeTurn(40, true, false)).toBe(false);
 		scheduler.startTurn();
 		scheduler.workflowStatePublished();
-		expect(scheduler.completeTurn(20, true)).toBe(false);
+		expect(scheduler.completeTurn(20, true, false)).toBe(false);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(49, true)).toBe(false);
+		expect(scheduler.completeTurn(49, true, false)).toBe(false);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(1, true)).toBe(true);
+		expect(scheduler.completeTurn(1, true, false)).toBe(true);
+	});
+
+	/**
+	 * Proves an all-terminating batch suppresses its decision without discarding completed-call progress.
+	 * Input and expected output: two terminating calls do not schedule, then one ordinary call reaches interval three.
+	 * Edge case: the suppressed batch remains counted for a later non-terminating batch.
+	 * Dependencies: the Pi-independent scheduler only.
+	 */
+	test("suppresses only all-terminating tool batches", () => {
+		const scheduler = new WorkflowReminderScheduler(3);
+
+		scheduler.startTurn();
+		expect(scheduler.completeTurn(2, true, true)).toBe(false);
+		scheduler.startTurn();
+		expect(scheduler.completeTurn(1, true, false)).toBe(true);
+	});
+
+	/**
+	 * Proves a zero-tool turn cannot release a reminder deferred by an all-terminating batch.
+	 * Input and expected output: two terminating calls retain interval progress, zero calls do nothing, then one ordinary call schedules.
+	 * Edge case: retained progress already equals the configured interval before the zero-tool turn.
+	 * Dependencies: the Pi-independent scheduler only.
+	 */
+	test("does not schedule retained progress on a zero-tool turn", () => {
+		const scheduler = new WorkflowReminderScheduler(2);
+
+		scheduler.startTurn();
+		expect(scheduler.completeTurn(2, true, true)).toBe(false);
+		scheduler.startTurn();
+		expect(scheduler.completeTurn(0, true, false)).toBe(false);
+		scheduler.startTurn();
+		expect(scheduler.completeTurn(1, true, false)).toBe(true);
 	});
 
 	/**
@@ -63,17 +95,19 @@ describe("workflow reminder scheduler", () => {
 	test("resets for lifecycle events and suppresses inactive or disabled reminders", () => {
 		const scheduler = new WorkflowReminderScheduler(50);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(49, true)).toBe(false);
+		expect(scheduler.completeTurn(49, true, false)).toBe(false);
 		scheduler.reset();
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(1, true)).toBe(false);
+		expect(scheduler.completeTurn(1, true, false)).toBe(false);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(49, false)).toBe(false);
+		expect(scheduler.completeTurn(49, false, false)).toBe(false);
 		scheduler.startTurn();
-		expect(scheduler.completeTurn(49, true)).toBe(false);
+		expect(scheduler.completeTurn(49, true, false)).toBe(false);
 
 		const disabled = new WorkflowReminderScheduler(0);
 		disabled.startTurn();
-		expect(disabled.completeTurn(Number.MAX_SAFE_INTEGER, true)).toBe(false);
+		expect(disabled.completeTurn(Number.MAX_SAFE_INTEGER, true, false)).toBe(
+			false,
+		);
 	});
 });

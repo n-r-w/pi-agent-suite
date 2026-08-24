@@ -23,7 +23,11 @@ export class WorkflowReminderScheduler {
 	}
 
 	/** Returns one reminder decision for the complete batch and discards any overshoot. */
-	public completeTurn(toolCallCount: number, workflowActive: boolean): boolean {
+	public completeTurn(
+		toolCallCount: number,
+		workflowActive: boolean,
+		allToolResultsTerminate: boolean,
+	): boolean {
 		if (
 			this.interval === 0 ||
 			!workflowActive ||
@@ -34,8 +38,11 @@ export class WorkflowReminderScheduler {
 			}
 			return false;
 		}
+		if (toolCallCount === 0) {
+			return false;
+		}
 		this.toolCallCount += toolCallCount;
-		if (this.toolCallCount < this.interval) {
+		if (allToolResultsTerminate || this.toolCallCount < this.interval) {
 			return false;
 		}
 		this.toolCallCount = 0;

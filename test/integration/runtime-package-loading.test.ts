@@ -245,6 +245,48 @@ function writeWorkflowLoopDumpExtension(directory: string): string {
 	return extensionPath;
 }
 
+/** Writes a provider whose second parallel tool batch terminates every result. */
+function writeTerminatingWorkflowLoopExtension(directory: string): string {
+	const extensionPath = join(directory, "terminate-workflow-loop.ts");
+	writeFileSync(
+		extensionPath,
+		[
+			'import { writeFileSync } from "node:fs";',
+			'import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";',
+			'import { Type } from "typebox";',
+			"let calls = 0;",
+			"const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };",
+			"export default function terminateWorkflowLoop(pi) {",
+			"\tconst dump = () => writeFileSync(process.env.PI_WORKFLOW_LOOP_DUMP_FILE, JSON.stringify({ calls }));",
+			'\tpi.registerTool({ name: "terminate_tick", label: "Terminate tick", description: "Complete and terminate one deterministic test call", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "done" }], details: {}, terminate: true }) });',
+			'\tpi.on("before_agent_start", () => pi.setActiveTools([...pi.getActiveTools(), "workflow_activate", "terminate_tick"]));',
+			'\tpi.on("agent_end", () => { dump(); process.exit(23); });',
+			'\tpi.registerProvider("workflow-loop", {',
+			'\t\tname: "Workflow Loop",',
+			'\t\tapi: "openai-completions",',
+			'\t\tbaseUrl: "http://127.0.0.1:1/v1",',
+			'\t\tapiKey: "test",',
+			'\t\tmodels: [{ id: "fake", name: "Fake", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],',
+			"\t\tstreamSimple(model) {",
+			"\t\t\tconst stream = createAssistantMessageEventStream();",
+			"\t\t\tqueueMicrotask(() => {",
+			"\t\t\t\tcalls += 1;",
+			"\t\t\t\tif (calls > 2) { dump(); process.exit(24); }",
+			'\t\t\t\tconst content = calls === 1 ? [{ type: "toolCall", id: "activate-1", name: "workflow_activate", arguments: { workflowId: "delivery" } }] : [{ type: "toolCall", id: "terminate-1", name: "terminate_tick", arguments: {} }, { type: "toolCall", id: "terminate-2", name: "terminate_tick", arguments: {} }];',
+			'\t\t\t\tconst output = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: Date.now() };',
+			'\t\t\t\tstream.push({ type: "start", partial: output });',
+			'\t\t\t\tstream.push({ type: "done", reason: "toolUse", message: output });',
+			"\t\t\t\tstream.end();",
+			"\t\t\t});",
+			"\t\t\treturn stream;",
+			"\t\t},",
+			"\t});",
+			"}",
+		].join("\n"),
+	);
+	return extensionPath;
+}
+
 /** Writes a debug extension that exits from context before any provider request. */
 function writeWorkflowRuntimeDumpExtension(
 	directory: string,
@@ -930,6 +972,71 @@ test("workflow reminder reaches the next provider request in the active tool loo
 				/<workflow_reminder id="delivery" active_stage_id="start" \/>/g,
 			),
 		).toHaveLength(1);
+	} finally {
+		rmSync(projectDir, { recursive: true, force: true });
+		rmSync(scratchDir, { recursive: true, force: true });
+		rmSync(suiteDir, { recursive: true, force: true });
+	}
+});
+
+test("terminating workflow tool batches do not request another provider turn", () => {
+	// Purpose: an all-terminating finalized tool batch must not queue a periodic workflow reminder.
+	// Input and expected output: two parallel terminating tools at interval two end the agent after exactly two provider requests.
+	// Edge case: Pi polls steer messages after turn_end even though every finalized tool result terminates.
+	// Dependencies: real Pi CLI, tool_execution_end final results, turn-end scheduling, and an isolated workflow catalog.
+	const scratchDir = mkdtempSync(join(tmpdir(), "pi-workflow-terminate-"));
+	const projectDir = mkdtempSync(
+		join(tmpdir(), "pi-workflow-terminate-project-"),
+	);
+	const suiteDir = mkdtempSync(join(tmpdir(), "pi-workflow-terminate-suite-"));
+	const workflowsDir = join(suiteDir, "workflow", "workflows");
+	mkdirSync(workflowsDir, { recursive: true });
+	writeFileSync(
+		join(workflowsDir, "delivery.yaml"),
+		"description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start live check\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish live check\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n",
+	);
+	writeFileSync(
+		join(suiteDir, "workflow", "config.json"),
+		JSON.stringify({ reminderToolCallInterval: 2 }),
+	);
+	const dumpFile = join(scratchDir, "workflow-terminate.json");
+	const extensionPath = writeTerminatingWorkflowLoopExtension(scratchDir);
+	const childEnv: NodeJS.ProcessEnv = {
+		...process.env,
+		PI_AGENT_SUITE_DIR: suiteDir,
+		PI_WORKFLOW_LOOP_DUMP_FILE: dumpFile,
+	};
+	delete childEnv[CHILD_AGENT_PROCESS_ENV];
+	delete childEnv[SUBAGENT_AGENT_ID_ENV];
+	delete childEnv[SUBAGENT_DEPTH_ENV];
+	delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
+	delete childEnv[SUBAGENT_WORKFLOW_IDS_ENV];
+	try {
+		const result = spawnSync(
+			"pi",
+			[
+				"--no-session",
+				"--no-extensions",
+				"--model",
+				"workflow-loop/fake",
+				"-p",
+				"-e",
+				join(process.cwd(), "pi-package"),
+				"-e",
+				extensionPath,
+				"activate delivery",
+			],
+			{
+				cwd: projectDir,
+				encoding: "utf8",
+				env: childEnv,
+				timeout: 30_000,
+			},
+		);
+		expect(result.status).toBe(23);
+		expect(
+			JSON.parse(readFileSync(dumpFile, "utf8")) as { readonly calls: number },
+		).toEqual({ calls: 2 });
 	} finally {
 		rmSync(projectDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });

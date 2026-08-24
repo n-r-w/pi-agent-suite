@@ -823,15 +823,31 @@ function registerWorkflowReminderRuntime(
 	pi: ExtensionAPI,
 	runtime: WorkflowRuntime,
 ): void {
+	let finalizedToolResultCount = 0;
+	let terminatingToolResultCount = 0;
 	pi.on("turn_start", () => {
+		finalizedToolResultCount = 0;
+		terminatingToolResultCount = 0;
 		runtime.reminderScheduler.startTurn();
+	});
+	pi.on("tool_execution_end", (event) => {
+		finalizedToolResultCount++;
+		if (event.result?.terminate === true) {
+			terminatingToolResultCount++;
+		}
 	});
 	pi.on("turn_end", (event) => {
 		const state = runtime.state;
+		const toolResultCount = event.toolResults.length;
+		const allToolResultsTerminate =
+			toolResultCount > 0 &&
+			finalizedToolResultCount === toolResultCount &&
+			terminatingToolResultCount === toolResultCount;
 		if (
 			runtime.reminderScheduler.completeTurn(
-				event.toolResults.length,
+				toolResultCount,
 				state?.status === "active",
+				allToolResultsTerminate,
 			) &&
 			state !== undefined
 		) {
