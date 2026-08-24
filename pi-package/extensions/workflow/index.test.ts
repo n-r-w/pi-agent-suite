@@ -430,6 +430,22 @@ async function runLifecycle(
 	);
 }
 
+/** Invokes one complete model turn with a caller-owned completed tool count. */
+async function runTurn(fake: FakePi, toolCallCount: number): Promise<void> {
+	const start = fake.handlers.get("turn_start");
+	const end = fake.handlers.get("turn_end");
+	if (start === undefined || end === undefined) {
+		throw new Error("missing workflow reminder turn handlers");
+	}
+	await start({ type: "turn_start", turnIndex: 0, timestamp: Date.now() });
+	await end({
+		type: "turn_end",
+		turnIndex: 0,
+		message: {},
+		toolResults: Array.from({ length: toolCallCount }, () => ({})),
+	});
+}
+
 /** Invokes the post-compaction lifecycle handler. */
 async function runSessionCompact(fake: FakePi): Promise<void> {
 	const handler = fake.handlers.get("session_compact");
@@ -1757,6 +1773,100 @@ describe("workflow extension lifecycle", () => {
 		expect(triggerCalls).toEqual([]);
 		expect(fake.messages).toHaveLength(messageCount);
 		fake.appendError = undefined;
+	});
+
+	/**
+	 * Proves completed calls across turn-end events publish one persistent steered reminder.
+	 * Input and expected output: batches of two and one at interval three emit the active workflow marker.
+	 * Edge case: the threshold is reached across separate provider turns.
+	 * Dependencies: workflow activation, Pi turn handlers, scheduler, and journal publication.
+	 */
+	test("publishes periodic reminders from completed turn tool calls", async () => {
+		const suite = await createSuite(validYaml());
+		await writeFile(
+			join(suite, "workflow", "config.json"),
+			JSON.stringify({ reminderToolCallInterval: 3 }),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.messages.length = 0;
+
+		await runTurn(fake, 2);
+		expect(fake.messages).toEqual([]);
+		await runTurn(fake, 1);
+
+		expect(fake.messages).toHaveLength(1);
+		expect(fake.messages[0]).toMatchObject({
+			customType: "workflow",
+			content: '<workflow_reminder id="delivery" active_stage_id="start" />',
+			display: false,
+			details: { kind: "reminder" },
+			options: { deliverAs: "steer" },
+		});
+	});
+
+	/**
+	 * Proves fresh workflow state suppresses the same turn's batch and session lifecycle resets progress.
+	 * Input and expected output: a transition in a threshold batch emits only stage state, and session_tree drops prior calls.
+	 * Edge case: one parallel batch exceeds the interval but still emits at most one later reminder.
+	 * Dependencies: workflow transition, session_tree, Pi turn handlers, scheduler, and journal publication.
+	 */
+	test("resets periodic reminder progress on state publication and session lifecycle", async () => {
+		const suite = await createSuite(validYaml());
+		await writeFile(
+			join(suite, "workflow", "config.json"),
+			JSON.stringify({ reminderToolCallInterval: 2 }),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.messages.length = 0;
+		const start = fake.handlers.get("turn_start");
+		const end = fake.handlers.get("turn_end");
+		if (start === undefined || end === undefined) {
+			throw new Error("missing workflow reminder turn handlers");
+		}
+		await start({ type: "turn_start", turnIndex: 0, timestamp: Date.now() });
+		await requireTool(fake, "workflow_transition").execute("transition", {
+			stageId: "done",
+		});
+		await end({
+			type: "turn_end",
+			turnIndex: 0,
+			message: {},
+			toolResults: [{}, {}, {}, {}, {}],
+		});
+		expect(
+			fake.messages.filter(({ details }) =>
+				isWorkflowLifecycleDetails(details),
+			),
+		).toHaveLength(1);
+		expect(
+			fake.messages.some(({ content }) =>
+				content.includes("workflow_reminder"),
+			),
+		).toBe(false);
+
+		fake.messages.length = 0;
+		await runTurn(fake, 1);
+		await runLifecycle(fake, "session_tree", [activatedEntry()]);
+		await runTurn(fake, 1);
+		expect(
+			fake.messages.some(({ content }) =>
+				content.includes("workflow_reminder"),
+			),
+		).toBe(false);
+		await runTurn(fake, 5);
+		expect(
+			fake.messages.filter(({ content }) =>
+				content.includes("workflow_reminder"),
+			),
+		).toHaveLength(1);
 	});
 
 	/** Proves workflow records enter the active tool loop through Pi's steering queue. */

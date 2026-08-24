@@ -20,6 +20,7 @@ type WorkflowJournalKind =
 	| "stage_update"
 	| "completion"
 	| "checkpoint"
+	| "reminder"
 	| "activation_options";
 
 /** Publishes append-only hidden workflow records and tracks definitions known in the current context segment. */
@@ -72,6 +73,23 @@ export class WorkflowJournal {
 			stageId,
 			active: state.status === "active" && state.route.at(-1) === stageId,
 		});
+	}
+
+	/** Publishes only the current active identifiers without changing journal stage knowledge. */
+	public reminder(state: WorkflowState): void {
+		if (state.status !== "active") {
+			throw new Error("workflow reminder record requires active state");
+		}
+		const stage = requireCurrentStage(state);
+		this.setCurrentState(state);
+		this.publishRecord(
+			renderWorkflowReminder(state, stage.id),
+			"reminder",
+			state,
+			{
+				stageId: stage.id,
+			},
+		);
 	}
 
 	public complete(state: WorkflowState): void {
@@ -282,6 +300,10 @@ function renderStageUpdate(state: WorkflowState, stage: WorkflowStage): string {
 		"  </stage_definition>",
 		"</workflow_stage_updated>",
 	].join("\n");
+}
+
+function renderWorkflowReminder(state: WorkflowState, stageId: string): string {
+	return `<workflow_reminder id="${escapeXml(state.workflow.id)}" active_stage_id="${escapeXml(stageId)}" />`;
 }
 
 function renderWorkflowCompletion(

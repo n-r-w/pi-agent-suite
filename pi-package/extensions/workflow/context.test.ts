@@ -51,6 +51,49 @@ function createJournal(): {
 }
 
 describe("workflow journal", () => {
+	/**
+	 * Proves a reminder publishes only escaped current identifiers and reminder metadata.
+	 * Input and expected output: active state with XML-sensitive IDs emits one self-closing marker.
+	 * Edge case: ampersands and quotes are escaped in both identifier attributes.
+	 * Dependencies: active workflow state and the journal publisher callback.
+	 */
+	test("publishes a compact active workflow reminder", () => {
+		const { journal, records } = createJournal();
+		const state = createWorkflow(workflow());
+		const stageId = 'implementation&"';
+		const escapedState = {
+			...state,
+			workflow: {
+				...state.workflow,
+				id: 'delivery&"',
+				stages: state.workflow.stages.map((stage, index) =>
+					index === 0 ? { ...stage, id: stageId } : stage,
+				),
+			},
+			route: [stageId],
+		};
+
+		journal.reminder(escapedState);
+
+		expect(records).toEqual([
+			{
+				customType: "workflow",
+				content:
+					'<workflow_reminder id="delivery&amp;&quot;" active_stage_id="implementation&amp;&quot;" />',
+				display: false,
+				details: {
+					version: 1,
+					kind: "reminder",
+					workflowId: 'delivery&"',
+					status: "active",
+					currentStageId: stageId,
+					workflowRevision: expect.any(String),
+					stageId,
+				},
+			},
+		]);
+	});
+
 	test("publishes activation and the initial stage definition in one hidden record", () => {
 		// Purpose: workflow activation must establish the complete graph and current-stage instructions once.
 		// Input and expected output: a dynamic workflow emits workflow_activated followed by an inline initial-stage activation.

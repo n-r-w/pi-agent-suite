@@ -89,12 +89,13 @@ NFC-equivalent duplicates, unknown names, and NFC-equivalent catalog ID collisio
 
 For child Pi processes, the launcher transports the resolved catalog policy in `PI_SUBAGENT_WORKFLOW_IDS`. This variable is owned by the launcher and should not be configured manually.
 
-## Prompt overrides
+## Workflow configuration
 
-Optional prompt overrides belong in `~/.pi/agent/agent-suite/workflow/config.json`, or the corresponding `PI_AGENT_SUITE_DIR` path:
+Workflow settings and optional prompt overrides belong in `~/.pi/agent/agent-suite/workflow/config.json`, or the corresponding `PI_AGENT_SUITE_DIR` path:
 
 ```json
 {
+  "reminderToolCallInterval": 50,
   "extensionDescriptionPromptFile": "/absolute/path/extension-description.md",
   "createDescriptionPromptFile": "/absolute/path/create-description.md",
   "activateDescriptionPromptFile": "/absolute/path/activate-description.md",
@@ -104,7 +105,7 @@ Optional prompt overrides belong in `~/.pi/agent/agent-suite/workflow/config.jso
 }
 ```
 
-Each configured path must be absolute and reference a readable file with non-empty content after trimming. Unknown fields and invalid files reject the prompt configuration atomically.
+`reminderToolCallInterval` defaults to `50`. It accepts safe integers greater than or equal to `0`. A value of `0` disables periodic reminders. Each configured prompt path must be absolute and reference a readable file with non-empty content after trimming. Unknown fields, invalid intervals, and invalid files reject the complete workflow configuration atomically.
 
 `extensionDescriptionPromptFile` supplies one `promptGuidelines` contribution on each workflow tool. The system prompt formatter normalizes duplicate contributions, so the guidance appears once while any workflow tool is active. The other files replace the Pi tool description for the corresponding tool.
 
@@ -290,7 +291,10 @@ The journal is append-only:
 - Every stage activation includes current outgoing `<available_transitions>`. Route-dependent `rework` options are recalculated for each entry.
 - `workflow_edit_stage` appends `<workflow_stage_updated>` with the complete replacement description and prompt.
 - `agent_settled` appends `<workflow_completed>` with available rework transitions and no completed-stage prompt. Settlement runs after the active agent loop ends, so the completion record reaches the next user-triggered provider request.
+- Periodic publication appends `<workflow_reminder id="workflow-id" active_stage_id="stage-id" />`. The marker contains only XML-escaped workflow and active stage IDs.
 - An empty transition set is represented by `<available_transitions />`.
+
+While a workflow is active, the extension counts completed tool calls from each `turn_end` event. When the count reaches `reminderToolCallInterval`, it appends one reminder before the next provider request and resets the count to zero. One parallel tool batch produces at most one reminder, and calls beyond the threshold are discarded. Workflow activation, stage entry, current-stage editing, checkpoint publication, and reminder publication reset the count. If one of these records is published during a turn, the extension does not count that turn's tool batch. Session start and branch changes also reset the runtime count. Completed workflows and an interval of `0` produce no reminders.
 
 Activation availability uses separate `<workflow_activation_options>` records. The extension publishes one at session initialization and after policy, catalog, or workflow changes only when the rendered options change. `<workflow_activation_options />` explicitly replaces an older non-empty list.
 

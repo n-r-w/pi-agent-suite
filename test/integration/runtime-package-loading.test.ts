@@ -202,7 +202,7 @@ function writeProviderToolPayloadDumpExtension(directory: string): string {
 	return extensionPath;
 }
 
-/** Writes a deterministic provider that activates one workflow and dumps the next request context. */
+/** Writes a deterministic provider that activates a workflow, runs a parallel tool batch, and dumps the next context. */
 function writeWorkflowLoopDumpExtension(directory: string): string {
 	const extensionPath = join(directory, "dump-workflow-loop.ts");
 	writeFileSync(
@@ -210,9 +210,12 @@ function writeWorkflowLoopDumpExtension(directory: string): string {
 		[
 			'import { writeFileSync } from "node:fs";',
 			'import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";',
+			'import { Type } from "typebox";',
 			"let calls = 0;",
 			"const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };",
 			"export default function dumpWorkflowLoop(pi) {",
+			'\tpi.registerTool({ name: "reminder_tick", label: "Reminder tick", description: "Complete one deterministic reminder test call", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) });',
+			'\tpi.on("before_agent_start", () => pi.setActiveTools([...pi.getActiveTools(), "workflow_activate", "reminder_tick"]));',
 			'\tpi.registerProvider("workflow-loop", {',
 			'\t\tname: "Workflow Loop",',
 			'\t\tapi: "openai-completions",',
@@ -223,11 +226,12 @@ function writeWorkflowLoopDumpExtension(directory: string): string {
 			"\t\t\tconst stream = createAssistantMessageEventStream();",
 			"\t\t\tqueueMicrotask(() => {",
 			"\t\t\t\tcalls += 1;",
-			"\t\t\t\tif (calls === 2) {",
+			"\t\t\t\tif (calls === 3) {",
 			"\t\t\t\t\twriteFileSync(process.env.PI_WORKFLOW_LOOP_DUMP_FILE, JSON.stringify(context.messages, null, 2));",
 			"\t\t\t\t\tprocess.exit(23);",
 			"\t\t\t\t}",
-			'\t\t\t\tconst output = { role: "assistant", content: [{ type: "toolCall", id: "activate-1", name: "workflow_activate", arguments: { workflowId: "delivery" } }], api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: Date.now() };',
+			'\t\t\t\tconst content = calls === 1 ? [{ type: "toolCall", id: "activate-1", name: "workflow_activate", arguments: { workflowId: "delivery" } }] : [{ type: "toolCall", id: "tick-1", name: "reminder_tick", arguments: {} }, { type: "toolCall", id: "tick-2", name: "reminder_tick", arguments: {} }];',
+			'\t\t\t\tconst output = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: Date.now() };',
 			'\t\t\t\tstream.push({ type: "start", partial: output });',
 			'\t\t\t\tstream.push({ type: "done", reason: "toolUse", message: output });',
 			"\t\t\t\tstream.end();",
@@ -847,11 +851,11 @@ test("provider payload carries active tool definitions without prompt inventory"
 	}
 });
 
-test("workflow activation reaches the next provider request in the active tool loop", () => {
-	// Purpose: workflow journal records published by a tool must enter the active agent loop rather than only persisted session state.
-	// Input and expected output: a deterministic provider activates delivery, then its second request contains activation and stage records.
-	// Edge case: activation options change from the catalog list to an explicit empty replacement after activation.
-	// Dependencies: real Pi CLI, package loading, sendMessage steer delivery, and an isolated workflow catalog.
+test("workflow reminder reaches the next provider request in the active tool loop", () => {
+	// Purpose: periodic workflow reminders must enter the active agent loop rather than only persisted session state.
+	// Input and expected output: a deterministic provider activates delivery, completes two parallel tools, then receives the reminder.
+	// Edge case: one parallel batch reaches the interval and produces one reminder before the next request.
+	// Dependencies: real Pi CLI, package loading, turn-end scheduling, sendMessage steer delivery, and an isolated workflow catalog.
 	const scratchDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-"));
 	const projectDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-project-"));
 	const suiteDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-suite-"));
@@ -861,8 +865,22 @@ test("workflow activation reaches the next provider request in the active tool l
 		join(workflowsDir, "delivery.yaml"),
 		"description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start live check\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish live check\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n",
 	);
+	writeFileSync(
+		join(suiteDir, "workflow", "config.json"),
+		JSON.stringify({ reminderToolCallInterval: 2 }),
+	);
 	const dumpFile = join(scratchDir, "workflow-loop.json");
 	const extensionPath = writeWorkflowLoopDumpExtension(scratchDir);
+	const childEnv: NodeJS.ProcessEnv = {
+		...process.env,
+		PI_AGENT_SUITE_DIR: suiteDir,
+		PI_WORKFLOW_LOOP_DUMP_FILE: dumpFile,
+	};
+	delete childEnv[CHILD_AGENT_PROCESS_ENV];
+	delete childEnv[SUBAGENT_AGENT_ID_ENV];
+	delete childEnv[SUBAGENT_DEPTH_ENV];
+	delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
+	delete childEnv[SUBAGENT_WORKFLOW_IDS_ENV];
 	try {
 		const result = spawnSync(
 			"pi",
@@ -881,11 +899,7 @@ test("workflow activation reaches the next provider request in the active tool l
 			{
 				cwd: projectDir,
 				encoding: "utf8",
-				env: {
-					...process.env,
-					PI_AGENT_SUITE_DIR: suiteDir,
-					PI_WORKFLOW_LOOP_DUMP_FILE: dumpFile,
-				},
+				env: childEnv,
 				timeout: 30_000,
 			},
 		);
@@ -911,6 +925,11 @@ test("workflow activation reaches the next provider request in the active tool l
 		expect(stageIndex).toBeGreaterThan(activationIndex);
 		expect(context).toContain("<available_transitions>");
 		expect(context).toContain("<workflow_activation_options />");
+		expect(
+			context.match(
+				/<workflow_reminder id="delivery" active_stage_id="start" \/>/g,
+			),
+		).toHaveLength(1);
 	} finally {
 		rmSync(projectDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });
