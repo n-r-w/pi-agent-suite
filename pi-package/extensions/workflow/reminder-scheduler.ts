@@ -1,6 +1,6 @@
-/** Counts completed tool calls between workflow-state publications without depending on Pi. */
+/** Counts model activity between workflow-state publications without depending on Pi. */
 export class WorkflowReminderScheduler {
-	private toolCallCount = 0;
+	private activityCount = 0;
 	private workflowStatePublishedThisTurn = false;
 
 	public constructor(private readonly interval: number) {}
@@ -10,21 +10,22 @@ export class WorkflowReminderScheduler {
 		this.workflowStatePublishedThisTurn = false;
 	}
 
-	/** Starts a fresh interval and excludes the current turn's complete tool batch. */
+	/** Starts a fresh interval and excludes the current turn's activity. */
 	public workflowStatePublished(): void {
-		this.toolCallCount = 0;
+		this.activityCount = 0;
 		this.workflowStatePublishedThisTurn = true;
 	}
 
 	/** Drops process-local progress after session or branch lifecycle changes. */
 	public reset(): void {
-		this.toolCallCount = 0;
+		this.activityCount = 0;
 		this.workflowStatePublishedThisTurn = false;
 	}
 
-	/** Returns one reminder decision for the complete batch and discards any overshoot. */
+	/** Returns one reminder decision for the completed turn and discards any overshoot. */
 	public completeTurn(
 		toolCallCount: number,
+		hasReasoning: boolean,
 		workflowActive: boolean,
 		allToolResultsTerminate: boolean,
 	): boolean {
@@ -34,18 +35,19 @@ export class WorkflowReminderScheduler {
 			this.workflowStatePublishedThisTurn
 		) {
 			if (!workflowActive) {
-				this.toolCallCount = 0;
+				this.activityCount = 0;
 			}
 			return false;
 		}
-		if (toolCallCount === 0) {
+		const turnActivity = Math.max(toolCallCount, hasReasoning ? 1 : 0);
+		if (turnActivity === 0) {
 			return false;
 		}
-		this.toolCallCount += toolCallCount;
-		if (allToolResultsTerminate || this.toolCallCount < this.interval) {
+		this.activityCount += turnActivity;
+		if (allToolResultsTerminate || this.activityCount < this.interval) {
 			return false;
 		}
-		this.toolCallCount = 0;
+		this.activityCount = 0;
 		return true;
 	}
 }
