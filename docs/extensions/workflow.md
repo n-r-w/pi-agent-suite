@@ -59,6 +59,8 @@ Every catalog or dynamic workflow requires:
 - at least one outgoing `advance` from non-final stages;
 - `rework` transitions only to strict `advance` ancestors.
 
+At runtime, an `advance` transition appends its target to the recorded route. A `rework` transition is available only when its target is already in that route. Being a strict `advance` ancestor satisfies graph validation but does not make an unvisited stage available for `rework`. If an alternative `advance` path skipped the target stage, the workflow must first return to a visited stage and then enter the skipped stage through `advance`. A successful `rework` truncates the recorded route after its target stage.
+
 Surrounding prompt whitespace is removed. An omitted or empty root prompt means that the workflow has no shared guidance.
 
 Catalog YAML model settings use independently optional `id` and `thinking` fields. `id` accepts either `provider/model` or an alias from `model-aliases/config.json`. The effective values are resolved independently with stage settings taking priority over workflow settings, followed by the selected agent and the current Pi runtime value. When a level omits `thinking`, the alias default thinking of that level's model applies. When the selected agent is unavailable, such as in child subagent processes or sessions without a selected agent, the pre-workflow restoration snapshot supplies the model and thinking for stages that omit them at the stage, workflow, and agent levels. Unknown models and thinking levels unsupported by the resolved model fail before workflow state is persisted. Settings are applied during activation, stage transitions, and session synchronization. Manual model changes in Pi or main-agent changes are not automatically overwritten.
