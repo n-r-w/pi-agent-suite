@@ -228,6 +228,7 @@ function registerMcpSessionLifecycleHandlers(options: {
 			options.pi,
 			options.state.serverInstructionRecords,
 			ctx.sessionManager.getBranch(),
+			false,
 		);
 	});
 
@@ -966,6 +967,7 @@ function persistActiveServerInstructions(
 	pi: ExtensionAPI,
 	records: readonly ServerInstructionRecord[],
 	branch: readonly unknown[],
+	triggerTurn?: boolean,
 ): void {
 	const activeToolNames = new Set(pi.getActiveTools());
 	const visible = records.filter((record) =>
@@ -988,7 +990,10 @@ function persistActiveServerInstructions(
 				serverKeys: visible.map(({ serverKey }) => serverKey),
 			},
 		},
-		{ deliverAs: "steer" },
+		{
+			deliverAs: "steer",
+			...(triggerTurn === undefined ? {} : { triggerTurn }),
+		},
 	);
 }
 
