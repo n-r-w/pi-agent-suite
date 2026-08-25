@@ -5,7 +5,6 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
-	Context,
 	Model,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
@@ -17,6 +16,7 @@ import type {
 	SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { buildActiveToolDefinitions } from "../../shared/active-tool-definitions";
 import { readSuiteConfigFileSync } from "../../shared/agent-suite-storage";
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
@@ -264,7 +264,7 @@ async function handleSessionBeforeCompact(
 			mainModel: ctx.model,
 			...projectedContexts,
 			mainSystemPrompt: ctx.getSystemPrompt(),
-			activeTools: collectActiveTools(pi),
+			activeTools: buildActiveToolDefinitions(pi),
 			mainModelReserveTokens: event.preparation.settings.reserveTokens,
 			safetyMarginTokens: ADAPTIVE_SAFETY_MARGIN_TOKENS,
 			retry: resolved.config.retry,
@@ -546,19 +546,6 @@ function renderFileCandidatesPrompt(
 		}
 		return macro === MODIFIED_FILES_MACRO ? modifiedFiles : macro;
 	});
-}
-
-/** Returns only active public tool schemas for prospective main-request sizing. */
-function collectActiveTools(pi: ExtensionAPI): NonNullable<Context["tools"]> {
-	const activeNames = new Set(pi.getActiveTools());
-	return pi
-		.getAllTools()
-		.filter((tool) => activeNames.has(tool.name))
-		.map((tool) => ({
-			name: tool.name,
-			description: tool.description,
-			parameters: tool.parameters,
-		}));
 }
 
 /** Builds the durable Pi result with its original boundary and file operations. */

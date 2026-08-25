@@ -1,10 +1,8 @@
 import { basename } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import {
-	type ExtensionAPI,
-	getAgentDir,
-	type SessionEntry,
-	SettingsManager,
+import type {
+	ExtensionAPI,
+	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -27,6 +25,10 @@ import {
 	readFooterConfig,
 } from "../../shared/footer-config";
 import { sumHelperApiCost } from "../../shared/helper-api-cost";
+import {
+	type NativeCompactionSettings,
+	readNativeCompactionSettings,
+} from "../../shared/native-compaction-settings";
 
 /** Footer label shown when no main-agent runtime contribution is active. */
 const NO_AGENT_LABEL = "No agent";
@@ -108,10 +110,10 @@ interface FooterSessionState {
 
 type FooterModelState = Model<Api>;
 
-interface FooterCompactionSettings {
-	readonly enabled: boolean;
-	readonly reserveTokens: number;
-}
+type FooterCompactionSettings = Extract<
+	NativeCompactionSettings,
+	{ readonly status: "enabled" }
+>;
 
 /** Render input assembled from session-owned state. */
 interface FooterRenderState {
@@ -343,7 +345,7 @@ function calculateCompactionLimit(
 	contextWindow: number,
 	settings: FooterCompactionSettings | undefined,
 ): number | undefined {
-	if (settings === undefined || !settings.enabled) {
+	if (settings === undefined) {
 		return undefined;
 	}
 
@@ -650,7 +652,11 @@ async function installSessionFooter(
 		return;
 	}
 
-	const compactionSettings = readFooterCompactionSettings(ctx.cwd);
+	const nativeCompactionSettings = readNativeCompactionSettings(ctx.cwd);
+	const compactionSettings =
+		nativeCompactionSettings.status === "enabled"
+			? nativeCompactionSettings
+			: undefined;
 	state.projectName = await resolveProjectName(pi, ctx.cwd);
 	state.model = ctx.model;
 	ctx.ui.setFooter((tui, theme, footerData) =>
@@ -665,22 +671,6 @@ async function installSessionFooter(
 			tui,
 		}),
 	);
-}
-
-/** Reads native pi compaction settings for footer display without surfacing settings errors as footer errors. */
-function readFooterCompactionSettings(
-	cwd: string,
-): FooterCompactionSettings | undefined {
-	const settings = SettingsManager.create(cwd, getAgentDir());
-	const compactionSettings = settings.getCompactionSettings();
-	if (settings.drainErrors().length > 0 || !compactionSettings.enabled) {
-		return undefined;
-	}
-
-	return {
-		enabled: compactionSettings.enabled,
-		reserveTokens: compactionSettings.reserveTokens,
-	};
 }
 
 /** Extension entry point for custom footer runtime behavior. */

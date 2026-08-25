@@ -149,6 +149,15 @@ async function writePiSettings(
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify(config));
 }
 
+/** Writes project-native pi settings for precedence checks. */
+async function writeProjectPiSettings(
+	cwd: string,
+	config: PiSettingsConfig,
+): Promise<void> {
+	await mkdir(join(cwd, ".pi"), { recursive: true });
+	await writeFile(join(cwd, ".pi", "settings.json"), JSON.stringify(config));
+}
+
 /** Writes one extension config into the isolated pi agent directory. */
 async function writeConfig(
 	agentDir: string,
@@ -818,15 +827,43 @@ describe("footer", () => {
 		});
 	});
 
+	test("uses project native compaction settings over agent settings", async () => {
+		// Purpose: footer compaction display must preserve Pi's project settings precedence.
+		// Input and expected output: project reserveTokens 10000 overrides agent reserveTokens 16000 and renders `42k/190k/200k`.
+		// Edge case: both valid settings files define the same nested field.
+		// Dependencies: isolated agent and project directories, SettingsManager, and in-memory footer fakes.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const cwd = await mkdtemp(join(tmpdir(), "pi-footer-project-"));
+			try {
+				await writePiSettings(agentDir, {
+					compaction: { reserveTokens: 16_000 },
+				});
+				await writeProjectPiSettings(cwd, {
+					compaction: { reserveTokens: 10_000 },
+				});
+				const { footerRenderer } = await installFooterTestHarness({ cwd });
+				const footerComponent = createFooterComponent(
+					footerRenderer,
+					createFooterDataFake(),
+				);
+
+				const renderedText = footerComponent.render(120).join("\n");
+
+				expect(renderedText).toContain("42k/190k/200k");
+				expect(renderedText).not.toContain("42k/184k/200k");
+			} finally {
+				await rm(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
 	test("omits the compaction limit when native compaction settings are invalid", async () => {
 		// Purpose: a pi settings error must not break footer rendering.
-		// Input and expected output: invalid reserveTokens renders `42k/200k`.
+		// Input and expected output: malformed settings JSON renders `42k/200k`.
 		// Edge case: footer keeps rendering without showing a threshold from invalid settings.
 		// Dependencies: this test uses isolated pi settings and in-memory fakes.
 		await withIsolatedAgentDir(async (agentDir) => {
-			await writePiSettings(agentDir, {
-				compaction: { reserveTokens: -1 },
-			});
+			await writeFile(join(agentDir, "settings.json"), "{");
 			const { footerRenderer } = await installFooterTestHarness();
 			const footerComponent = createFooterComponent(
 				footerRenderer,
