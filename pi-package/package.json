@@ -35,6 +35,7 @@
 			"./extensions/codex-quota/index.ts",
 			"./extensions/custom-compaction/index.ts",
 			"./extensions/context-projection/index.ts",
+			"./extensions/compaction-trigger/index.ts",
 			"./extensions/completion-sound/index.ts",
 			"./extensions/cmux/index.ts",
 			"./extensions/main-agent-selection/index.ts",
