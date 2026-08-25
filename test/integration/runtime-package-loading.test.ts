@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { defaultPackagePath } from "../../pi-package/extensions/run-subagent/invocation-process";
 
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -535,11 +536,11 @@ test("runtime child loading removes subagent context at maxDepth", () => {
 	}
 });
 
-test("loads Subagents in isolated offline modes", () => {
-	// Purpose: real Pi must load the subagent entry alone and through the complete package without discovered extensions or model access.
-	// Input and expected output: both explicit offline targets use one isolated TestAgent policy and exit successfully without extension diagnostics.
+test("loads the complete package in isolated main and run-subagent child modes", () => {
+	// Purpose: real Pi must load standalone run-subagent and the complete package in both production package paths.
+	// Inputs and expected outputs: all three isolated targets load without extension diagnostics.
 	// Edge case: print mode receives no prompt because Pi prohibits prompts while offline.
-	// Dependencies: local Pi CLI, production extension entry points, and isolated temporary project and agent state.
+	// Dependencies: local Pi CLI, run-subagent package-path contract, package-order test, and temporary project and agent state.
 	const repositoryDir = process.cwd();
 	let projectDir: string | undefined;
 	let agentDir: string | undefined;
@@ -558,24 +559,50 @@ test("loads Subagents in isolated offline modes", () => {
 		delete childEnv[SUBAGENT_AGENT_ID_ENV];
 		delete childEnv[SUBAGENT_DEPTH_ENV];
 		delete childEnv[SUBAGENT_TOOL_PATTERNS_ENV];
+		delete childEnv[SUBAGENT_WORKFLOW_IDS_ENV];
+		delete childEnv["PI_SESSION_FILE"];
+		delete childEnv["PI_SESSION_ID"];
+		delete childEnv["PI_SUBAGENT_OWNER_PI_SESSION_ID"];
+		delete childEnv["PI_SUBAGENT_RUNTIME_LEASE_ID"];
+		const standaloneSubagentPath = join(
+			repositoryDir,
+			"pi-package",
+			"extensions",
+			"run-subagent",
+			"index.ts",
+		);
+		const mainPackagePath = join(repositoryDir, "pi-package");
+		const childPackagePath = defaultPackagePath();
+		expect(realpathSync(childPackagePath)).toBe(realpathSync(mainPackagePath));
 		const targets = [
-			join(
-				repositoryDir,
-				"pi-package",
-				"extensions",
-				"run-subagent",
-				"index.ts",
-			),
-			join(repositoryDir, "pi-package"),
+			{ packagePath: standaloneSubagentPath, env: childEnv },
+			{ packagePath: mainPackagePath, env: childEnv },
+			{
+				packagePath: childPackagePath,
+				env: {
+					...childEnv,
+					[CHILD_AGENT_PROCESS_ENV]: "1",
+					[SUBAGENT_AGENT_ID_ENV]: "SubAgentExtractor",
+					[SUBAGENT_DEPTH_ENV]: "1",
+					[SUBAGENT_TOOL_PATTERNS_ENV]: JSON.stringify(["read"]),
+				},
+			},
 		];
 		for (const target of targets) {
 			const result = spawnSync(
 				"pi",
-				["--no-session", "--no-extensions", "--offline", "-p", "-e", target],
+				[
+					"--no-session",
+					"--no-extensions",
+					"--offline",
+					"-p",
+					"-e",
+					target.packagePath,
+				],
 				{
 					cwd: projectDir,
 					encoding: "utf8",
-					env: childEnv,
+					env: target.env,
 					timeout: 30_000,
 				},
 			);
