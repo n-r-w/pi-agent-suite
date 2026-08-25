@@ -129,12 +129,12 @@ const WORKFLOW_CREATE_MODEL_SCHEMA = Type.Object(
 /** Closed workflow_create stage shape exposed to Pi tool validation. */
 const WORKFLOW_STAGE_SCHEMA = Type.Object(
 	{
-		id: technicalIdentifierSchema({
+		id: Type.String({
 			description: "Unique stage ID referenced by transitions",
 			minLength: 1,
 			maxLength: 32,
 		}),
-		description: singleLineTextSchema({
+		description: Type.String({
 			description: "Short single-line summary of stage outcome",
 			minLength: 1,
 			maxLength: 128,
@@ -225,12 +225,12 @@ const WORKFLOW_EDIT_STAGE_SCHEMA = Type.Object(
 /** Closed workflow_create transition shape exposed to Pi tool validation. */
 const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 	{
-		from: technicalIdentifierSchema({
+		from: Type.String({
 			description: "Source stage ID",
 			minLength: 1,
 			maxLength: 32,
 		}),
-		to: technicalIdentifierSchema({
+		to: Type.String({
 			description: "Target stage ID",
 			minLength: 1,
 			maxLength: 32,
@@ -246,13 +246,13 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 /** Complete workflow_create boundary shape; graph invariants remain domain validation. */
 const WORKFLOW_CREATE_SCHEMA = Type.Object(
 	{
-		id: singleLineTextSchema({
+		id: Type.String({
 			description:
 				"Unique workflow ID. Must not match any other workflow ID after NFC normalization",
 			minLength: 6,
 			maxLength: 32,
 		}),
-		description: singleLineTextSchema({
+		description: Type.String({
 			description: "Single-line summary of workflow's purpose",
 			minLength: 1,
 			maxLength: 256,

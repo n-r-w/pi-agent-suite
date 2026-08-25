@@ -638,6 +638,52 @@ describe("workflow extension lifecycle", () => {
 	});
 
 	/**
+	 * Proves the provider-facing create schema delegates exact string checks to workflow execution.
+	 * Inputs and expected outputs: structurally valid strings pass TypeBox, then execution rejects invalid workflow text.
+	 * Edge cases: root text, stage text and IDs, and transition endpoints cover every constrained create string.
+	 * Dependencies: the registered workflow_create schema and validateCreatedWorkflowDefinition.
+	 */
+	test("delegates exact create string checks to workflow execution", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const create = requireTool(fake, "workflow_create");
+		const schema = create.parameters as Parameters<typeof Check>[0];
+		const cases = [
+			(args: Record<string, unknown>) => {
+				args["id"] = " dynamic-delivery";
+			},
+			(args: Record<string, unknown>) => {
+				args["description"] = "Dynamic\ndelivery";
+			},
+			(args: Record<string, unknown>) => {
+				const stages = args["stages"] as Record<string, unknown>[];
+				stages[0] = { ...stages[0], id: "start stage" };
+			},
+			(args: Record<string, unknown>) => {
+				const stages = args["stages"] as Record<string, unknown>[];
+				stages[0] = { ...stages[0], description: "Start\nwork" };
+			},
+			(args: Record<string, unknown>) => {
+				const transitions = args["transitions"] as Record<string, unknown>[];
+				transitions[0] = { ...transitions[0], from: "start stage" };
+			},
+			(args: Record<string, unknown>) => {
+				const transitions = args["transitions"] as Record<string, unknown>[];
+				transitions[0] = { ...transitions[0], to: "done stage" };
+			},
+		] as const;
+
+		for (const mutate of cases) {
+			const args = createArguments();
+			mutate(args);
+			expect(Check(schema, args)).toBe(true);
+			await expect(create.execute("create", args)).rejects.toThrow(
+				"workflow_create",
+			);
+		}
+	});
+
+	/**
 	 * Proves the dynamic TypeBox boundary requires thinking-only model settings on every stage.
 	 * Inputs and expected outputs: low, medium, and high pass on every stage; other levels and model IDs fail.
 	 * Edge cases: root model settings and stages without model settings are rejected.
