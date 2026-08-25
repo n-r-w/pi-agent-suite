@@ -38,6 +38,7 @@ export class WorkflowJournal {
 		private readonly publish: (
 			record: WorkflowJournalRecord,
 			delivery: WorkflowJournalDelivery,
+			triggerTurn?: boolean,
 		) => void,
 	) {}
 
@@ -115,7 +116,7 @@ export class WorkflowJournal {
 		);
 	}
 
-	public checkpoint(state: WorkflowState): void {
+	public checkpoint(state: WorkflowState, triggerTurn?: boolean): void {
 		const stage = requireCurrentStage(state);
 		this.knownStages.clear();
 		if (state.status === "active") {
@@ -126,11 +127,17 @@ export class WorkflowJournal {
 			renderWorkflowCheckpoint(state, stage),
 			"checkpoint",
 			state,
-			{ stageId: stage.id },
+			{
+				stageId: stage.id,
+				...(triggerTurn === undefined ? {} : { triggerTurn }),
+			},
 		);
 	}
 
-	public activationOptions(workflows: readonly WorkflowDefinition[]): void {
+	public activationOptions(
+		workflows: readonly WorkflowDefinition[],
+		triggerTurn?: boolean,
+	): void {
 		const content = renderActivationOptions(workflows);
 		if (content === this.activationOptionsContent) {
 			return;
@@ -144,6 +151,7 @@ export class WorkflowJournal {
 				details: { version: 1, kind: "activation_options" },
 			},
 			"steer",
+			triggerTurn,
 		);
 	}
 
@@ -237,9 +245,10 @@ export class WorkflowJournal {
 		publication: Readonly<Record<string, unknown>> & {
 			readonly stageId: string;
 			readonly delivery?: WorkflowJournalDelivery;
+			readonly triggerTurn?: boolean;
 		},
 	): void {
-		const { delivery = "steer", ...metadata } = publication;
+		const { delivery = "steer", triggerTurn, ...metadata } = publication;
 		this.publish(
 			{
 				customType: "workflow",
@@ -256,6 +265,7 @@ export class WorkflowJournal {
 				},
 			},
 			delivery,
+			triggerTurn,
 		);
 	}
 }

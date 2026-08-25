@@ -431,8 +431,11 @@ function createWorkflowRuntimeState(
 		modelRegistry: undefined,
 		lastTurnFailed: false,
 		selfSuppressedNames: new Set<string>(),
-		journal: new WorkflowJournal((record, delivery) => {
-			pi.sendMessage(record, { deliverAs: delivery });
+		journal: new WorkflowJournal((record, delivery, triggerTurn) => {
+			pi.sendMessage(record, {
+				deliverAs: delivery,
+				...(triggerTurn === undefined ? {} : { triggerTurn }),
+			});
 			if (recordCarriesCurrentWorkflowState(record.details)) {
 				reminderScheduler.workflowStatePublished();
 			}
@@ -469,11 +472,12 @@ function publishWorkflowActivationOptions(
 	pi: ExtensionAPI,
 	runtime: WorkflowRuntime,
 	availability: WorkflowAvailability,
+	triggerTurn?: boolean,
 ): void {
 	const options = pi.getActiveTools().includes(WORKFLOW_ACTIVATE_TOOL)
 		? availability.activationOptions
 		: [];
-	runtime.journal.activationOptions(options);
+	runtime.journal.activationOptions(options, triggerTurn);
 }
 
 /** Reports all skipped catalog workflows in one startup notification. */
@@ -768,12 +772,13 @@ function registerWorkflowCompaction(
 	pi.on("session_compact", () => {
 		runtime.journal.startContextSegment();
 		if (runtime.state !== undefined) {
-			runtime.journal.checkpoint(runtime.state);
+			runtime.journal.checkpoint(runtime.state, false);
 		}
 		publishWorkflowActivationOptions(
 			pi,
 			runtime,
 			resolveRuntimeAvailability(runtime, getPolicy()),
+			false,
 		);
 	});
 }

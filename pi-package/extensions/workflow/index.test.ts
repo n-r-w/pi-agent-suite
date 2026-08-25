@@ -2072,6 +2072,10 @@ describe("workflow extension lifecycle", () => {
 
 		expect(fake.messages).toHaveLength(2);
 		expect(fake.messages.at(-1)?.content).toBe(initialOptions);
+		expect(fake.messages.at(-1)?.options).toEqual({
+			deliverAs: "steer",
+			triggerTurn: false,
+		});
 	});
 
 	/** Proves compaction creates one checkpoint and forgets definitions outside that checkpoint. */
@@ -2098,6 +2102,10 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.messages.at(-1)?.content).toBe(
 			"<workflow_activation_options />",
 		);
+		expect(fake.messages.slice(-2).map(({ options }) => options)).toEqual([
+			{ deliverAs: "steer", triggerTurn: false },
+			{ deliverAs: "steer", triggerTurn: false },
+		]);
 
 		await transition.execute("rework", { stageId: "start" });
 		expect(fake.messages.at(-1)?.content).toContain('guidelines="inline"');

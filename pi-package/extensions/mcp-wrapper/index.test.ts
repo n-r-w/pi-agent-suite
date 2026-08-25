@@ -71,6 +71,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 		readonly display: boolean;
 		readonly details: unknown;
 	}>;
+	readonly messageOptions: Parameters<ExtensionAPI["sendMessage"]>[1][];
 	readonly commands: Array<
 		Omit<RegisteredCommand, "name" | "sourceInfo"> & { readonly name: string }
 	>;
@@ -110,11 +111,13 @@ function createExtensionApiFake(
 	const tools: ToolDefinition[] = [];
 	const activeToolHistory: string[][] = [];
 	const messages: ExtensionApiFake["messages"] = [];
+	const messageOptions: ExtensionApiFake["messageOptions"] = [];
 	let activeTools: readonly string[] = [];
 
 	return {
 		activeToolHistory,
 		messages,
+		messageOptions,
 		commands,
 		handlers,
 		tools,
@@ -157,13 +160,17 @@ function createExtensionApiFake(
 			return undefined;
 		},
 		setThinkingLevel(): void {},
-		sendMessage(message: Parameters<ExtensionAPI["sendMessage"]>[0]): void {
+		sendMessage(
+			message: Parameters<ExtensionAPI["sendMessage"]>[0],
+			options?: Parameters<ExtensionAPI["sendMessage"]>[1],
+		): void {
 			messages.push({
 				customType: message.customType,
 				content: String(message.content),
 				display: message.display,
 				details: message.details,
 			});
+			messageOptions.push(options);
 		},
 		appendEntry(): void {},
 		getSessionHistory() {
@@ -646,6 +653,10 @@ describe("mcp-wrapper extension", () => {
 		expect(pi.messages).toHaveLength(2);
 		expect(pi.messages[1]?.content).toContain("Use eager files.");
 		expect(pi.messages[1]?.content).toContain("Use deferred search carefully.");
+		expect(pi.messageOptions[1]).toEqual({
+			deliverAs: "steer",
+			triggerTurn: false,
+		});
 	});
 
 	test("restores resumed activation after cacheless live discovery finalizes the catalog", async () => {
