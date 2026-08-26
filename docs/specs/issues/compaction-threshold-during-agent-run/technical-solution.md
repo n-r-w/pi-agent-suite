@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-- PRB-01: Pi checks the automatic compaction threshold after `agent_end`, so one active agent run can send additional model requests after the calculated context reaches `contextWindow - reserveTokens`.
+- PRB-01: Pi checks the automatic compaction threshold after `agent_end`, so one active agent run can send additional model requests after projection-aware context usage reaches `contextWindow - reserveTokens`.
 - PRB-02: After an extension aborts an over-threshold request, Pi can complete native threshold compaction before `agent_settled`; an unconditional `ctx.compact()` call at `agent_settled` then starts a redundant attempt that fails.
 - CNS-01: Pi source code must not change.
 - CNS-02: `custom-compaction` remains responsible only for custom summary generation through `session_before_compact`.
@@ -11,17 +11,15 @@
 ## Behavioral Contract
 
 - FRQ-01: Threshold enforcement applies to every active model with a positive `contextWindow`.
-- FRQ-02: Before each model request, the calculated provider-visible context is compared with `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)`.
-- FRQ-03: When the calculated context reaches the compaction threshold, compaction completes before the original over-threshold request is sent.
+- FRQ-02: Before each model request, the projection-aware context usage shown in the footer is compared with `contextWindow - reserveTokens`.
+- FRQ-03: When the visible context usage reaches the compaction threshold, compaction completes before the original over-threshold request is sent.
 - FRQ-04: After successful compaction, the interrupted task continues automatically with preserved tool results and without user input.
 - FRQ-05: When compaction fails, the over-threshold request remains blocked and the agent stops with an explicit error.
 - FRQ-06: Main and child Pi sessions use the same behavior when the package is loaded.
 - FRQ-07: Compaction initiation uses Pi's existing compaction pipeline and therefore preserves `session_before_compact`, custom summary generation, standard fallback, `CompactionEntry` persistence, and context rebuilding.
 - FRQ-08: Threshold enforcement is disabled when Pi's `compaction.enabled` is `false`.
-- FRQ-09: Threshold enforcement is disabled when `compaction-trigger` has `enabled: false`.
-- FRQ-10: When `compaction-trigger/config.json` is absent or omits a field, `enabled` resolves to `true` and `thresholdDeltaPercent` resolves to `0`.
-- FRQ-11: A successful native post-run compaction prevents a second manual compaction for the same threshold crossing.
-- FRQ-12: When native post-run compaction does not succeed, the trigger initiates manual compaction after the interrupted run settles.
+- FRQ-09: A successful native post-run compaction prevents a second manual compaction for the same threshold crossing.
+- FRQ-10: When native post-run compaction does not succeed, the trigger initiates manual compaction after the interrupted run settles.
 
 ## Proposed Solution
 
@@ -31,22 +29,22 @@
 - DEC-01: Register `compaction-trigger` after `context-projection` in `pi-package/package.json`. Pi chains `context` handlers in registration order, so the trigger evaluates the final provider-visible messages after projection.
 - DEC-02: Do not add threshold detection to `custom-compaction` or `context-projection`.
 
-### Extension configuration
+### Native configuration
 
-- CFG-01: Read optional settings from `compaction-trigger/config.json` through the suite configuration path.
-- CFG-02: `enabled` is a boolean that defaults to `true`.
-- CFG-03: `thresholdDeltaPercent` is a non-negative percentage of `contextWindow` that defaults to `0`.
-- CFG-04: `enabled: false` disables only `compaction-trigger`; it does not change Pi's native compaction settings or pipeline.
+- CFG-01: Read `compaction.enabled` and `compaction.reserveTokens` through Pi's native settings rules.
+- CFG-02: `compaction.enabled: false` disables threshold enforcement without changing other extension behavior.
+- CFG-03: `compaction-trigger` has no separate configuration file.
 
 ### Request-size calculation
 
-- ALG-01: On every `context` event, build the provider-visible request representation from `ctx.getSystemPrompt()`, `convertToLlm(event.messages)`, and the active tool definitions.
-- ALG-02: Calculate a serialized estimate with `estimateSerializedInputTokens`. Also calculate a usage-backed estimate from the last assistant response with nonzero provider context usage whose `stopReason` is neither `aborted` nor `error` and whose timestamp is newer than the latest compaction entry, plus `estimateTokens` for later messages. Assistant usage at or before the latest compaction timestamp is ignored. Use the larger estimate for threshold enforcement.
-- ALG-03: Read `compaction.enabled` and `reserveTokens` through Pi's `SettingsManager`, including project settings precedence.
-- ALG-04: Calculate `effectiveThreshold` as `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)`.
-- ALG-05: Block the request when `estimatedTokens >= effectiveThreshold`. The `contextWindow` cap prevents the extension from permitting a request beyond the model's maximum context.
-- DEC-03: Extract the existing active-tool collection from `custom-compaction` into a shared helper so compaction budgeting and threshold enforcement use the same tool representation.
-- DEC-04: Extract native compaction-settings reading from `footer` into a shared helper. The footer output and `custom-compaction` behavior remain unchanged.
+- ALG-01: On every `context` event, read `ctx.getContextUsage()` and pass it through `getProjectionAwareContextUsage` with the active session ID.
+- ALG-02: Use the resulting token count as the single source for both footer display and threshold enforcement. Pending projection savings therefore affect both consumers in the same way.
+- ALG-03: When context usage is unknown, allow the request so Pi can establish a known value from the next provider response.
+- ALG-04: Read `compaction.enabled` and `reserveTokens` through Pi's native settings rules, including project settings precedence.
+- ALG-05: Calculate `effectiveThreshold` as `contextWindow - reserveTokens`.
+- ALG-06: Block the request when the projection-aware token count is greater than or equal to `effectiveThreshold`.
+- DEC-03: Reuse the shared projection-aware usage calculation instead of maintaining a second serialized or provider-usage estimator in the trigger.
+- DEC-04: Reuse the shared native compaction-settings reader. The footer output and `custom-compaction` behavior remain unchanged.
 
 ### Interruption and compaction lifecycle
 
@@ -89,15 +87,15 @@
 - ACC-07: An integration test uses a real `AgentSession`, an isolated fake provider, and an isolated tool result to prove that the original over-threshold request is not sent, native post-run compaction runs through `session_before_compact`, no redundant manual compaction starts, and the task resumes after the rebuilt context.
 - ACC-08: Package-loading checks prove one `compaction-trigger` registration in main and child Pi processes.
 - ACC-09: Implementation follows RED-GREEN-REFACTOR. Each behavior test must fail for its expected assertion before production code is added.
-- ACC-10: Unit tests prove default extension settings, `enabled: false`, a positive `thresholdDeltaPercent`, equality with the effective threshold, and the `contextWindow` cap.
-- ACC-11: An integration test loads a nonzero `thresholdDeltaPercent` from isolated suite configuration and proves the configured threshold through a real `AgentSession`.
+- ACC-10: Unit tests prove equality with the native threshold, unknown post-compaction usage, and pending projection savings.
+- ACC-11: A unit test proves that a higher serialized estimate cannot override a lower projection-aware usage value shown in the footer.
 
 ## Overengineering and Overspecification Considerations
 
 - SOL-01: The solution adds one extension because existing extensions have different responsibilities.
-- SOL-02: The solution uses existing Pi events and shared token estimation. It adds no dependency, provider-specific branch, model allowlist, or independent summary format.
+- SOL-02: The solution uses existing Pi events and the shared projection-aware usage calculation. It adds no dependency, provider-specific branch, model allowlist, or independent summary format.
 - SOL-03: The state machine contains only lifecycle states needed to prevent duplicate compaction, unsafe continuation, and retry loops.
-- SOL-04: The optional extension configuration adds only `enabled` and `thresholdDeltaPercent`. Pi model metadata and native compaction settings remain inputs to the effective threshold.
+- SOL-04: The trigger uses Pi model metadata and native compaction settings without a separate extension configuration.
 
 ## Open Questions
 
@@ -108,7 +106,7 @@ No unresolved questions remain.
 - REF-01: [Problem Statement](problem-statement.md) - Approved problem scope, evidence, and constraints.
 - REF-02: [Domain Glossary](domain-glossary.md) - Terms used by this solution.
 - REF-03: [Custom compaction extension](../../../extensions/custom-compaction.md) - Existing custom summary behavior.
-- REF-04: `pi-package/shared/context-size.ts` - Existing provider-visible token estimation.
-- REF-05: `pi-package/extensions/footer/index.ts` - Existing native compaction-settings reader.
+- REF-04: `pi-package/shared/context-projection.ts` - Shared projection-aware context usage.
+- REF-05: `pi-package/extensions/footer/index.ts` - Footer consumer of projection-aware context usage.
 - REF-06: `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` - Public `context`, `agent_settled`, `ctx.abort()`, and `ctx.compact()` contracts.
 - REF-07: `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js` - Agent settlement, manual compaction, and continuation behavior.

@@ -1,18 +1,10 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	AgentSettledEvent,
 	ContextEvent,
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import {
-	calculateContextTokens,
-	convertToLlm,
-	estimateTokens,
-	getLatestCompactionEntry,
-} from "@earendil-works/pi-coding-agent";
-import { buildActiveToolDefinitions } from "../../shared/active-tool-definitions";
-import { estimateSerializedInputTokens } from "../../shared/context-size";
+import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import { readNativeCompactionSettings } from "../../shared/native-compaction-settings";
 
 const CONTINUATION_TYPE = "compaction-trigger-continuation";
@@ -62,43 +54,10 @@ function reportFailure(pi: ExtensionAPI): void {
 	);
 }
 
-/** Estimates current context from the last trusted provider usage anchor. */
-function estimateUsageBackedTokens(
-	messages: readonly AgentMessage[],
-	latestCompactionTimestamp: number | undefined,
-): number | undefined {
-	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index];
-		if (
-			message?.role !== "assistant" ||
-			message.stopReason === "aborted" ||
-			message.stopReason === "error" ||
-			(latestCompactionTimestamp !== undefined &&
-				message.timestamp <= latestCompactionTimestamp)
-		) {
-			continue;
-		}
-
-		const contextTokens = calculateContextTokens(message.usage);
-		if (contextTokens <= 0) {
-			continue;
-		}
-
-		// Provider usage preserves replayed reasoning and prior provider framing that local serialization omits.
-		return messages
-			.slice(index + 1)
-			.reduce(
-				(total, trailingMessage) => total + estimateTokens(trailingMessage),
-				contextTokens,
-			);
-	}
-	return undefined;
-}
-
 /** Evaluates the final projected request and advances interruption state. */
 function handleContext(
 	pi: ExtensionAPI,
-	event: ContextEvent,
+	_event: ContextEvent,
 	ctx: ExtensionContext,
 	lifecycle: TriggerLifecycle,
 ): { messages: [] } | undefined {
@@ -125,24 +84,17 @@ function handleContext(
 		return blockRequest(ctx);
 	}
 
-	const serializedEstimate = estimateSerializedInputTokens({
-		systemPrompt: ctx.getSystemPrompt(),
-		messages: convertToLlm(event.messages),
-		tools: buildActiveToolDefinitions(pi),
-	});
-	const latestCompaction = getLatestCompactionEntry(
-		ctx.sessionManager.getBranch(),
-	);
-	const latestCompactionTimestamp =
-		latestCompaction === null
-			? undefined
-			: Date.parse(latestCompaction.timestamp);
-	const estimatedTokens = Math.max(
-		serializedEstimate,
-		estimateUsageBackedTokens(event.messages, latestCompactionTimestamp) ?? 0,
+	// The trigger and footer share this projection-aware source so visible usage matches threshold behavior.
+	const usage = getProjectionAwareContextUsage(
+		ctx.sessionManager.getSessionId(),
+		ctx.getContextUsage(),
 	);
 	const threshold = model.contextWindow - settings.reserveTokens;
-	if (estimatedTokens < threshold) {
+	if (
+		usage === undefined ||
+		usage.tokens === null ||
+		usage.tokens < threshold
+	) {
 		if (lifecycle.state === "resuming") {
 			lifecycle.state = "idle";
 		}

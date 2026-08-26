@@ -3,14 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	type CompactOptions,
-	calculateContextTokens,
 	convertToLlm,
 	type ExtensionAPI,
-	estimateTokens,
 } from "@earendil-works/pi-coding-agent";
+import { addPendingProjectionSavings } from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import compactionTrigger from "./index";
 
@@ -70,10 +69,17 @@ interface TestContext {
 	readonly compactCalls: CompactOptions[];
 	readonly sessionManager: {
 		getBranch(): Array<{ readonly type: string; readonly timestamp: string }>;
+		getSessionId(): string;
 	};
 	abort(): void;
 	compact(options?: CompactOptions): void;
-	getSystemPrompt(): string;
+	getContextUsage():
+		| {
+				readonly tokens: number | null;
+				readonly contextWindow: number;
+				readonly percent: number | null;
+		  }
+		| undefined;
 }
 
 /** Creates an isolated native settings location for one extension scenario. */
@@ -115,12 +121,6 @@ function createPi(): TestPi {
 		): void {
 			sentMessages.push({ message, options });
 		},
-		getActiveTools(): string[] {
-			return [];
-		},
-		getAllTools(): [] {
-			return [];
-		},
 	} as unknown as TestPi;
 }
 
@@ -129,7 +129,10 @@ function createContext(
 	cwd: string,
 	contextWindow: number | undefined,
 	hasActiveSignal = true,
-	latestCompactionTimestamp?: number,
+	contextTokens: number | null | undefined = contextWindow === undefined
+		? undefined
+		: contextWindow - RESERVE_TOKENS,
+	sessionId = "compaction-trigger-test-session",
 ): TestContext {
 	const controller = new AbortController();
 	const abortCalls = { count: 0 };
@@ -144,15 +147,8 @@ function createContext(
 		abortCalls,
 		compactCalls,
 		sessionManager: {
-			getBranch: () =>
-				latestCompactionTimestamp === undefined
-					? []
-					: [
-							{
-								type: "compaction",
-								timestamp: new Date(latestCompactionTimestamp).toISOString(),
-							},
-						],
+			getBranch: () => [],
+			getSessionId: () => sessionId,
 		},
 		abort(): void {
 			abortCalls.count += 1;
@@ -161,8 +157,16 @@ function createContext(
 		compact(options: CompactOptions = {}): void {
 			compactCalls.push(options);
 		},
-		getSystemPrompt(): string {
-			return "system";
+		getContextUsage() {
+			if (contextWindow === undefined || contextTokens === undefined) {
+				return undefined;
+			}
+			return {
+				tokens: contextTokens,
+				contextWindow,
+				percent:
+					contextTokens === null ? null : (contextTokens / contextWindow) * 100,
+			};
 		},
 	};
 }
@@ -175,30 +179,6 @@ function userMessage(
 	return {
 		role: "user",
 		content: [{ type: "text", text }],
-		timestamp,
-	};
-}
-
-/** Creates one successful assistant response with provider-reported context usage. */
-function assistantMessage(
-	totalTokens: number,
-	timestamp = 1,
-): AssistantMessage {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text: "provider response" }],
-		api: "openai-responses",
-		provider: "openai-codex",
-		model: "gpt-test",
-		usage: {
-			input: totalTokens,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
 		timestamp,
 	};
 }
@@ -256,9 +236,12 @@ describe("compaction trigger", () => {
 			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
 		});
 		const messages = [userMessage()];
+		const estimate = estimatedTokens(messages);
 		const ctx = createContext(
 			cwd,
-			estimatedTokens(messages) + RESERVE_TOKENS + 1,
+			estimate + RESERVE_TOKENS + 1,
+			true,
+			estimate,
 		);
 		const harness = install();
 
@@ -268,6 +251,57 @@ describe("compaction trigger", () => {
 		expect(ctx.abortCalls.count).toBe(0);
 		expect(ctx.compactCalls).toHaveLength(0);
 		expect(harness.pi.sentMessages).toHaveLength(0);
+	});
+
+	test("uses the footer context usage instead of a higher serialized estimate", async () => {
+		// Purpose: the trigger decision must match the projection-aware token count shown in the footer.
+		// Input and expected output: visible usage is one token below the threshold while serialization reaches it, so the request continues.
+		// Edge case: competing estimates fall on opposite sides of the inclusive threshold.
+		// Dependencies: ExtensionContext context usage, shared projection-aware usage, isolated settings, and the direct context handler.
+		const { cwd } = await createSettingsFixture({
+			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
+		});
+		const messages = [userMessage("large visible input ".repeat(2_000))];
+		const serializedEstimate = estimatedTokens(messages);
+		const contextWindow = serializedEstimate + RESERVE_TOKENS;
+		const ctx = createContext(cwd, contextWindow, true, serializedEstimate - 1);
+		const harness = install();
+
+		const result = await harness.context({ type: "context", messages }, ctx);
+
+		expect(result).toBeUndefined();
+		expect(ctx.abortCalls.count).toBe(0);
+	});
+
+	test("subtracts pending projection savings from the trigger usage", async () => {
+		// Purpose: a projection completed in the current context event must affect the trigger before provider dispatch.
+		// Input and expected output: raw usage equals the threshold and one pending saved token makes the request safe.
+		// Edge case: pending savings cross the inclusive threshold by exactly one token.
+		// Dependencies: shared pending projection state, ExtensionContext context usage, isolated settings, and the direct context handler.
+		const { cwd } = await createSettingsFixture({
+			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
+		});
+		const messages = [userMessage("projected input ".repeat(2_000))];
+		const serializedEstimate = estimatedTokens(messages);
+		const contextWindow = serializedEstimate + RESERVE_TOKENS;
+		const sessionId = "pending-projection-trigger-session";
+		addPendingProjectionSavings(sessionId, 1, {
+			branchLeafId: "active-leaf",
+			entryIds: ["projected-entry"],
+		});
+		const ctx = createContext(
+			cwd,
+			contextWindow,
+			true,
+			serializedEstimate,
+			sessionId,
+		);
+		const harness = install();
+
+		const result = await harness.context({ type: "context", messages }, ctx);
+
+		expect(result).toBeUndefined();
+		expect(ctx.abortCalls.count).toBe(0);
 	});
 
 	test("passes through when native compaction is disabled", async () => {
@@ -364,69 +398,30 @@ describe("compaction trigger", () => {
 		expect(ctx.compactCalls).toHaveLength(0);
 	});
 
-	test("interrupts when provider usage reaches the threshold above the serialized estimate", async () => {
-		// Purpose: provider usage must preserve context that local serialization cannot count.
-		// Input and expected output: successful provider usage plus one trailing message equals the threshold, so the handler aborts and clears the messages.
-		// Edge case: usage-backed equality triggers while the serialized estimate remains below the threshold.
-		// Dependencies: public calculateContextTokens and estimateTokens helpers, isolated settings, and the direct context handler.
+	test("waits for known footer usage after compaction", async () => {
+		// Purpose: a compacted context with unknown usage must resume until Pi reports the next visible token count.
+		// Input and expected output: unknown resumed usage passes, while the next known equality usage aborts.
+		// Edge case: the transition from unknown to known usage occurs inside one resumed lifecycle.
+		// Dependencies: successful compaction callback, ExtensionContext context usage, and the direct context handler.
 		const { cwd } = await createSettingsFixture({
 			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
 		});
-		const anchor = assistantMessage(10_000);
-		const trailingMessage = userMessage("continue after hidden reasoning");
-		const messages = [anchor, trailingMessage];
-		const usageBackedEstimate =
-			calculateContextTokens(anchor.usage) + estimateTokens(trailingMessage);
-		expect(estimatedTokens(messages)).toBeLessThan(usageBackedEstimate);
-		const ctx = createContext(cwd, usageBackedEstimate + RESERVE_TOKENS, false);
+		const messages = [userMessage()];
+		const threshold = estimatedTokens(messages);
+		const initialCtx = createContext(cwd, threshold + RESERVE_TOKENS);
 		const harness = install();
-
-		const result = await harness.context({ type: "context", messages }, ctx);
-
-		expect(result).toEqual({ messages: [] });
-		expect(ctx.abortCalls.count).toBe(1);
-	});
-
-	test("ignores pre-compaction usage and trusts later assistant usage", async () => {
-		// Purpose: compaction must invalidate old provider usage until a new assistant response succeeds.
-		// Input and expected output: pre-compaction usage above the threshold does not block a safe resumed request, while equal post-compaction usage aborts the next request.
-		// Edge case: assistant usage at or before the latest compaction timestamp is not a trusted anchor.
-		// Dependencies: public sessionManager branch access, provider usage helpers, and the resuming lifecycle.
-		const { cwd } = await createSettingsFixture({
-			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
-		});
-		const initialMessages = [userMessage()];
-		const initialCtx = createContext(
-			cwd,
-			estimatedTokens(initialMessages) + RESERVE_TOKENS,
-		);
-		const harness = install();
-		await harness.context(
-			{ type: "context", messages: initialMessages },
-			initialCtx,
-		);
+		await harness.context({ type: "context", messages }, initialCtx);
 		await harness.agentSettled({ type: "agent_settled" }, initialCtx);
 		initialCtx.compactCalls[0]?.onComplete?.({} as never);
 
-		const compactionTimestamp = 2_000;
-		const oldAnchor = assistantMessage(10_000, compactionTimestamp - 1);
-		const resumedMessage = userMessage(
-			"continue from compacted context",
-			compactionTimestamp + 1,
-		);
-		const resumedMessages = [oldAnchor, resumedMessage];
-		const usageThreshold =
-			calculateContextTokens(oldAnchor.usage) + estimateTokens(resumedMessage);
-		expect(estimatedTokens(resumedMessages)).toBeLessThan(usageThreshold);
 		const resumedCtx = createContext(
 			cwd,
-			usageThreshold + RESERVE_TOKENS,
+			threshold + RESERVE_TOKENS,
 			true,
-			compactionTimestamp,
+			null,
 		);
-
 		const resumedResult = await harness.context(
-			{ type: "context", messages: resumedMessages },
+			{ type: "context", messages },
 			resumedCtx,
 		);
 
@@ -434,24 +429,9 @@ describe("compaction trigger", () => {
 		expect(resumedCtx.abortCalls.count).toBe(0);
 		expect(diagnostics(harness.pi)).toHaveLength(0);
 
-		const newAnchor = assistantMessage(10_000, compactionTimestamp + 2);
-		const trailingMessage = userMessage(
-			"continue after new provider response",
-			compactionTimestamp + 3,
-		);
-		const currentMessages = [oldAnchor, newAnchor, trailingMessage];
-		const currentThreshold =
-			calculateContextTokens(newAnchor.usage) + estimateTokens(trailingMessage);
-		expect(estimatedTokens(currentMessages)).toBeLessThan(currentThreshold);
-		const currentCtx = createContext(
-			cwd,
-			currentThreshold + RESERVE_TOKENS,
-			true,
-			compactionTimestamp,
-		);
-
+		const currentCtx = createContext(cwd, threshold + RESERVE_TOKENS);
 		const currentResult = await harness.context(
-			{ type: "context", messages: currentMessages },
+			{ type: "context", messages },
 			currentCtx,
 		);
 
@@ -604,7 +584,7 @@ describe("compaction trigger", () => {
 		// Purpose: a compacted request that now fits must proceed and re-arm future threshold detection.
 		// Input and expected output: the first resumed request below threshold passes, then a later equality request interrupts.
 		// Edge case: state changes to idle only after the safe resumed request is measured.
-		// Dependencies: successful callback, serialized input estimator, and idle threshold behavior.
+		// Dependencies: successful callback, ExtensionContext context usage, and idle threshold behavior.
 		const { cwd } = await createSettingsFixture({
 			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
 		});
@@ -615,7 +595,12 @@ describe("compaction trigger", () => {
 		await harness.context({ type: "context", messages }, ctx);
 		await harness.agentSettled({ type: "agent_settled" }, ctx);
 		ctx.compactCalls[0]?.onComplete?.({} as never);
-		const safeCtx = createContext(cwd, thresholdWindow + 1);
+		const safeCtx = createContext(
+			cwd,
+			thresholdWindow + 1,
+			true,
+			estimatedTokens(messages),
+		);
 
 		const safeResult = await harness.context(
 			{ type: "context", messages },

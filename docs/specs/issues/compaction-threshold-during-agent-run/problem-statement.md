@@ -39,12 +39,12 @@ Pi checks the threshold after the low-level agent run stops and before `agent_se
 
 ## Desired Outcome
 
-Before Pi sends a model request whose calculated context reaches the effective compaction threshold, exactly one successful compaction completes and the interrupted task continues automatically with preserved tool results. The effective threshold can extend beyond Pi's native threshold but never beyond the active model's `contextWindow`.
+Before Pi sends a model request whose projection-aware context usage reaches the compaction threshold shown in the footer, exactly one successful compaction completes and the interrupted task continues automatically with preserved tool results.
 
 ## Success Metrics
 
-- No model request is sent with calculated context at or above the effective compaction threshold while Pi compaction and threshold enforcement are enabled.
-- The effective compaction threshold equals `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)`.
+- No model request is sent with projection-aware context usage at or above the compaction threshold while Pi compaction and threshold enforcement are enabled.
+- The footer and `compaction-trigger` use the same projection-aware token count and the threshold `contextWindow - reserveTokens`.
 - The active task continues after successful compaction without user input.
 - A successful native post-run compaction is not followed by a redundant manual compaction.
 - A compaction failure blocks the over-threshold request and produces an explicit error.
@@ -54,7 +54,7 @@ Before Pi sends a model request whose calculated context reaches the effective c
 - Any active model with a positive `contextWindow`.
 - Main and child Pi sessions.
 - Threshold checks during active agent runs.
-- An optional percentage delta between Pi's native threshold and the enforced threshold.
+- One projection-aware context usage source for the footer and threshold enforcement.
 - Coordination between native post-run compaction and manual compaction initiation.
 - Automatic task continuation after successful compaction.
 

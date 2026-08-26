@@ -3,8 +3,9 @@
 ## Definitions
 
 - native compaction threshold: `contextWindow - reserveTokens` when Pi's `compaction.enabled` is `true`.
-- compaction threshold: `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)` when Pi compaction and `compaction-trigger` are enabled.
-- threshold crossing: The calculated context for the next model request is at or above the compaction threshold.
+- compaction threshold: `contextWindow - reserveTokens` when Pi compaction and `compaction-trigger` are enabled.
+- projection-aware context usage: The token count shown in the footer after pending context-projection savings are subtracted.
+- threshold crossing: Projection-aware context usage for the next model request is at or above the compaction threshold.
 - compaction initiation: Blocking the next model request and starting Pi's configured compaction mechanism.
 
 ## Context and Problem
@@ -13,7 +14,7 @@ Pi checks the compaction threshold after `agent_end`. One active agent run can c
 
 ## Goal
 
-Complete compaction before sending a model request whose calculated context reaches the compaction threshold, then continue the interrupted task without user input.
+Complete compaction before sending a model request whose projection-aware context usage reaches the compaction threshold, then continue the interrupted task without user input.
 
 ## Scenarios
 
@@ -23,8 +24,7 @@ Complete compaction before sending a model request whose calculated context reac
 - Native post-run compaction does not succeed, manual compaction completes, and the interrupted task continues.
 - Compaction fails and the over-threshold request remains blocked.
 - Automatic compaction is disabled in Pi settings.
-- Threshold enforcement is disabled in `compaction-trigger` settings.
-- A positive `thresholdDeltaPercent` moves enforcement beyond the native threshold without exceeding `contextWindow`.
+- Context projection reduces the visible usage below the threshold during an active agent run.
 
 ## Scope and Non-Scope
 
@@ -32,7 +32,7 @@ In scope:
 
 - Every active model with a positive `contextWindow`.
 - Threshold checks before model requests during an active agent run.
-- Optional `compaction-trigger/config.json` settings for threshold enforcement.
+- One projection-aware context usage source for the footer and threshold enforcement.
 - Main and child Pi sessions.
 - Coordination between native post-run compaction and manual compaction initiation.
 - Automatic continuation after successful compaction.
@@ -47,10 +47,10 @@ Out of scope:
 
 ## Requirements
 
-- Before each model request, the calculated context must be compared with `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)` for the active model.
-  Justification: A check after `agent_end` cannot prevent an over-threshold request inside the active run, and the cap prevents enforcement beyond the model's maximum context.
-- When the calculated context reaches the threshold, compaction must complete before the original over-threshold request is sent.
-  Justification: The configured threshold must constrain every model request, not only requests between agent runs.
+- Before each model request, projection-aware context usage must be compared with `contextWindow - reserveTokens` for the active model.
+  Justification: A check after `agent_end` cannot prevent an over-threshold request inside the active run.
+- When projection-aware context usage reaches the threshold, compaction must complete before the original over-threshold request is sent.
+  Justification: The compaction threshold must constrain every model request, not only requests between agent runs.
 - Threshold enforcement must apply to every active model with a positive `contextWindow`.
   Justification: The threshold belongs to model metadata and Pi settings rather than a model allowlist.
 - After successful compaction, the interrupted task must continue with preserved tool results and without user input.
@@ -67,14 +67,12 @@ Out of scope:
   Justification: Initiation and summary generation are separate responsibilities.
 - `custom-compaction` must retain its summary-generation responsibility and behavior.
   Justification: Threshold detection does not belong to the summary generator.
+- The footer and `compaction-trigger` must use the same projection-aware context usage value.
+  Justification: The visible token count must predict whether threshold enforcement will allow or block the next request.
 - Pi source code must not change.
   Justification: The deployed Pi package is outside the permitted implementation scope.
-- When `compaction-trigger/config.json` is absent or omits a field, `enabled` must default to `true` and `thresholdDeltaPercent` must default to `0`.
-  Justification: Default settings must preserve enforcement at Pi's native compaction threshold.
 - When Pi's `compaction.enabled` is `false`, threshold enforcement must not initiate compaction or alter the model request.
   Justification: An explicit Pi setting must take precedence over automatic behavior.
-- When `compaction-trigger` has `enabled: false`, the extension must not initiate compaction or alter the model request.
-  Justification: Threshold enforcement must have an extension-local disable switch without changing Pi's native compaction behavior.
 
 ## Open Questions
 
