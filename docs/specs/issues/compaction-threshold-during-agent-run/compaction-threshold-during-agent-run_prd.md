@@ -9,7 +9,7 @@
 
 ## Context and Problem
 
-Pi checks the compaction threshold after `agent_end`. One active agent run can contain multiple model requests and tool calls, so a later request can reach the threshold before Pi initiates compaction.
+Pi checks the compaction threshold after `agent_end`. One active agent run can contain multiple model requests and tool calls, so a later request can reach the threshold before Pi initiates compaction. After an extension interrupts that request, Pi can complete native post-run compaction before `agent_settled`; starting manual compaction without recognizing that success produces a redundant failure.
 
 ## Goal
 
@@ -19,7 +19,8 @@ Complete compaction before sending a model request whose calculated context reac
 
 - A main Pi session reaches the threshold during a tool-call sequence.
 - A child Pi session reaches the threshold during a tool-call sequence.
-- Compaction succeeds and the interrupted task continues.
+- Native post-run compaction succeeds before `agent_settled`, no second compaction starts, and the interrupted task continues.
+- Native post-run compaction does not succeed, manual compaction completes, and the interrupted task continues.
 - Compaction fails and the over-threshold request remains blocked.
 - Automatic compaction is disabled in Pi settings.
 - Threshold enforcement is disabled in `compaction-trigger` settings.
@@ -33,6 +34,7 @@ In scope:
 - Threshold checks before model requests during an active agent run.
 - Optional `compaction-trigger/config.json` settings for threshold enforcement.
 - Main and child Pi sessions.
+- Coordination between native post-run compaction and manual compaction initiation.
 - Automatic continuation after successful compaction.
 - Explicit failure when compaction cannot complete.
 
@@ -55,6 +57,10 @@ Out of scope:
   Justification: Threshold enforcement must not turn normal long-running tasks into manual recovery flows.
 - When compaction fails, the over-threshold request must remain blocked and the agent must stop with an explicit error.
   Justification: Sending the request after failure would violate the configured threshold.
+- A successful native post-run compaction must not be followed by a redundant manual compaction for the same threshold crossing.
+  Justification: The session is already rebuilt, so a second attempt fails and incorrectly blocks continuation.
+- When native post-run compaction does not succeed, threshold enforcement must initiate Pi's configured compaction pipeline after the interrupted run settles.
+  Justification: Thresholds below Pi's native threshold still require extension-initiated compaction.
 - Main and child Pi sessions must use the same threshold behavior.
   Justification: Both session types run the same package extensions and can execute long tool-call sequences.
 - Compaction initiation must use Pi's configured compaction pipeline, including `session_before_compact` handlers and standard fallback behavior.

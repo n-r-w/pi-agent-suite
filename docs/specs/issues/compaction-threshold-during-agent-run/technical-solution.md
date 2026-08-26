@@ -3,6 +3,7 @@
 ## Problem Statement
 
 - PRB-01: Pi checks the automatic compaction threshold after `agent_end`, so one active agent run can send additional model requests after the calculated context reaches `contextWindow - reserveTokens`.
+- PRB-02: After an extension aborts an over-threshold request, Pi can complete native threshold compaction before `agent_settled`; an unconditional `ctx.compact()` call at `agent_settled` then starts a redundant attempt that fails.
 - CNS-01: Pi source code must not change.
 - CNS-02: `custom-compaction` remains responsible only for custom summary generation through `session_before_compact`.
 - CNS-03: `context-projection` remains responsible only for context projection. Its internal reusable calculations can be shared without moving compaction initiation into that extension.
@@ -19,6 +20,8 @@
 - FRQ-08: Threshold enforcement is disabled when Pi's `compaction.enabled` is `false`.
 - FRQ-09: Threshold enforcement is disabled when `compaction-trigger` has `enabled: false`.
 - FRQ-10: When `compaction-trigger/config.json` is absent or omits a field, `enabled` resolves to `true` and `thresholdDeltaPercent` resolves to `0`.
+- FRQ-11: A successful native post-run compaction prevents a second manual compaction for the same threshold crossing.
+- FRQ-12: When native post-run compaction does not succeed, the trigger initiates manual compaction after the interrupted run settles.
 
 ## Proposed Solution
 
@@ -47,14 +50,16 @@
 
 ### Interruption and compaction lifecycle
 
-- ENT-01: One extension instance keeps a local lifecycle state with the closed values `idle`, `interrupting`, `compacting`, `resuming`, and `failed`.
+- ENT-01: One extension instance keeps a local lifecycle state with the closed values `idle`, `interrupting`, `compacted`, `compacting`, `resuming`, and `failed`.
 - STP-01: In `idle`, an under-threshold `context` event returns no replacement and leaves the request unchanged.
 - STP-02: In `idle`, an at-threshold or over-threshold `context` event changes the state to `interrupting`, calls `ctx.abort()`, and returns an empty message list so the original large message array cannot reach the provider path.
-- STP-03: The `agent_settled` handler changes `interrupting` to `compacting` and calls `ctx.compact()`.
-- STP-04: `ctx.compact()` follows Pi's manual compaction path. Pi emits `session_before_compact`, accepts a custom result or standard fallback, persists the resulting `CompactionEntry`, and rebuilds the active context.
-- STP-05: The `onComplete` callback changes the state to `resuming` and sends one hidden `compaction-trigger-continuation` custom message with `triggerTurn: true`.
-- STP-06: The first under-threshold `context` event in `resuming` changes the state to `idle` and lets the resumed model request proceed.
-- STP-07: A session start or replacement resets non-active trigger state so lifecycle state cannot leak between sessions.
+- STP-03: A successful `session_compact` event in `interrupting` changes the state to `compacted`. This records that Pi rebuilt the context before `agent_settled`.
+- STP-04: In `agent_settled`, `compacted` changes to `resuming` and sends one hidden continuation without calling `ctx.compact()`.
+- STP-05: In `agent_settled`, `interrupting` changes to `compacting` and calls `ctx.compact()` because no successful compaction was observed.
+- STP-06: Manual `ctx.compact()` follows Pi's compaction path. Pi emits `session_before_compact`, accepts a custom result or standard fallback, persists the resulting `CompactionEntry`, and rebuilds the active context.
+- STP-07: The manual `onComplete` callback changes the state to `resuming` and sends one hidden `compaction-trigger-continuation` custom message with `triggerTurn: true`.
+- STP-08: The first under-threshold `context` event in `resuming` changes the state to `idle` and lets the resumed model request proceed.
+- STP-09: A session start or replacement resets non-active trigger state so lifecycle state cannot leak between sessions.
 
 ### Continuation contract
 
@@ -63,9 +68,10 @@
 
 ### Failure handling
 
-- FLR-01: A `ctx.compact()` error changes the state to `failed`, does not send a continuation message, and appends a visible non-triggering diagnostic that states that compaction failed and the next model request was blocked.
-- FLR-02: When the resumed context still reaches the threshold after one successful compaction, the extension aborts the resumed run and reports FLR-01 instead of starting another compaction cycle.
-- FLR-03: Invalid native compaction settings produce the same blocked-request diagnostic rather than sending a request without an enforceable threshold.
+- FLR-01: A manual `ctx.compact()` error changes the state to `failed`, does not send a continuation message, and appends a visible non-triggering diagnostic that states that compaction failed and the next model request was blocked.
+- FLR-02: A failed native post-run compaction leaves the state as `interrupting`, so `agent_settled` starts one manual compaction attempt.
+- FLR-03: When the resumed context still reaches the threshold after one successful compaction, the extension aborts the resumed run and reports FLR-01 instead of starting another compaction cycle.
+- FLR-04: Invalid native compaction settings produce the same blocked-request diagnostic rather than sending a request without an enforceable threshold.
 
 ### Public API limitation
 
@@ -75,15 +81,16 @@
 ### Verification
 
 - ACC-01: A unit test proves that an under-threshold context does not abort, compact, replace messages, or enqueue continuation.
-- ACC-02: A unit test proves that reaching the threshold aborts the active run and defers exactly one `ctx.compact()` call until `agent_settled`.
+- ACC-02: A unit test proves that reaching the threshold aborts the active run and calls `ctx.compact()` at `agent_settled` when no successful `session_compact` event occurs.
 - ACC-03: A unit test proves that Pi's `compaction.enabled: false` disables threshold enforcement.
-- ACC-04: A unit test proves successful compaction sends exactly one hidden continuation and returns to `idle` only after an under-threshold resumed context.
-- ACC-05: Unit tests prove compaction failure and an over-threshold resumed context stop without another model request or compaction loop.
-- ACC-06: An integration test uses a real `AgentSession`, an isolated fake provider, and an isolated tool result to prove that the original over-threshold request is not sent, compaction runs through `session_before_compact`, and the task resumes after the rebuilt context.
-- ACC-07: Package-loading checks prove one `compaction-trigger` registration in main and child Pi processes.
-- ACC-08: Implementation follows RED-GREEN-REFACTOR. Each behavior test must fail for its expected assertion before production code is added.
-- ACC-09: Unit tests prove default extension settings, `enabled: false`, a positive `thresholdDeltaPercent`, equality with the effective threshold, and the `contextWindow` cap.
-- ACC-10: An integration test loads a nonzero `thresholdDeltaPercent` from isolated suite configuration and proves the configured threshold through a real `AgentSession`.
+- ACC-04: A unit test proves that a successful `session_compact` event before `agent_settled` suppresses manual `ctx.compact()` and sends exactly one hidden continuation.
+- ACC-05: A unit test proves successful manual compaction sends exactly one hidden continuation and returns to `idle` only after an under-threshold resumed context.
+- ACC-06: Unit tests prove compaction failure and an over-threshold resumed context stop without another model request or compaction loop.
+- ACC-07: An integration test uses a real `AgentSession`, an isolated fake provider, and an isolated tool result to prove that the original over-threshold request is not sent, native post-run compaction runs through `session_before_compact`, no redundant manual compaction starts, and the task resumes after the rebuilt context.
+- ACC-08: Package-loading checks prove one `compaction-trigger` registration in main and child Pi processes.
+- ACC-09: Implementation follows RED-GREEN-REFACTOR. Each behavior test must fail for its expected assertion before production code is added.
+- ACC-10: Unit tests prove default extension settings, `enabled: false`, a positive `thresholdDeltaPercent`, equality with the effective threshold, and the `contextWindow` cap.
+- ACC-11: An integration test loads a nonzero `thresholdDeltaPercent` from isolated suite configuration and proves the configured threshold through a real `AgentSession`.
 
 ## Overengineering and Overspecification Considerations
 

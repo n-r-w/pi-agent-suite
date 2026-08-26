@@ -2,7 +2,8 @@
 
 - active agent run: Processing that starts when Pi accepts a task and ends at `agent_settled`.
 - automatic compaction: Compaction initiated without a user `/compact` command.
-- compaction initiation: Blocking the next model request and starting Pi's compaction mechanism.
+- compaction coordination: Selection between a successful native post-run compaction and a manual compaction that is still required after request interruption.
+- compaction initiation: Blocking the next model request and starting Pi's compaction mechanism when no successful compaction has already completed for the threshold crossing.
 - compaction threshold: The effective threshold enforced by `compaction-trigger` before a model request.
 - context projection: A provider-visible replacement of selected context content that does not rewrite persisted session history.
 - `context-projection`: The extension responsible for context projection.
@@ -11,6 +12,7 @@
 - immediate compaction: Compaction that completes before Pi sends the next model request whose calculated context reaches the compaction threshold.
 - maximum context: The active model's `contextWindow` value.
 - model request: One provider request made by the agent loop for the active model.
+- native post-run compaction: Automatic compaction performed by Pi after the low-level agent run ends and before `agent_settled`.
 - native compaction threshold: The value `contextWindow - reserveTokens` when Pi's `compaction.enabled` is `true`.
 - threshold crossing: The state in which the calculated context for the next model request is at or above the compaction threshold.
 - threshold delta percentage: The non-negative `thresholdDeltaPercent` value. It permits the enforced threshold to exceed the native compaction threshold by a percentage of `contextWindow`, subject to the maximum-context cap.
