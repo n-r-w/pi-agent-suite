@@ -14,7 +14,7 @@ The extension uses the active model's `contextWindow` and Pi's native `compactio
 contextWindow - reserveTokens
 ```
 
-The extension runs after `context-projection`. For each `context` event, it estimates the final provider-visible request from the effective system prompt, projected messages, and active tool definitions. It blocks the request when the estimate is equal to or greater than the threshold.
+The extension runs after `context-projection`. For each `context` event, it calculates a serialized estimate from the effective system prompt, projected messages, and active tool definitions. It also calculates a usage-backed estimate from the last successful assistant provider usage plus estimates for later messages. Threshold enforcement uses the larger estimate, so provider-reported context can preserve replayed reasoning and provider framing that local serialization does not count. The extension blocks the request when this estimate is equal to or greater than the threshold.
 
 The extension has no configuration file.
 

@@ -3,11 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
 	type CompactOptions,
+	calculateContextTokens,
 	convertToLlm,
 	type ExtensionAPI,
+	estimateTokens,
 } from "@earendil-works/pi-coding-agent";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import compactionTrigger from "./index";
@@ -155,6 +157,27 @@ function userMessage(text = "continue the current task"): AgentMessage {
 	return {
 		role: "user",
 		content: [{ type: "text", text }],
+		timestamp: 1,
+	};
+}
+
+/** Creates one successful assistant response with provider-reported context usage. */
+function assistantMessage(totalTokens: number): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "provider response" }],
+		api: "openai-responses",
+		provider: "openai-codex",
+		model: "gpt-test",
+		usage: {
+			input: totalTokens,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
 		timestamp: 1,
 	};
 }
@@ -318,6 +341,29 @@ describe("compaction trigger", () => {
 		expect(result).toEqual({ messages: [] });
 		expect(ctx.abortCalls.count).toBe(1);
 		expect(ctx.compactCalls).toHaveLength(0);
+	});
+
+	test("interrupts when provider usage reaches the threshold above the serialized estimate", async () => {
+		// Purpose: provider usage must preserve context that local serialization cannot count.
+		// Input and expected output: successful provider usage plus one trailing message equals the threshold, so the handler aborts and clears the messages.
+		// Edge case: usage-backed equality triggers while the serialized estimate remains below the threshold.
+		// Dependencies: public calculateContextTokens and estimateTokens helpers, isolated settings, and the direct context handler.
+		const { cwd } = await createSettingsFixture({
+			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
+		});
+		const anchor = assistantMessage(10_000);
+		const trailingMessage = userMessage("continue after hidden reasoning");
+		const messages = [anchor, trailingMessage];
+		const usageBackedEstimate =
+			calculateContextTokens(anchor.usage) + estimateTokens(trailingMessage);
+		expect(estimatedTokens(messages)).toBeLessThan(usageBackedEstimate);
+		const ctx = createContext(cwd, usageBackedEstimate + RESERVE_TOKENS, false);
+		const harness = install();
+
+		const result = await harness.context({ type: "context", messages }, ctx);
+
+		expect(result).toEqual({ messages: [] });
+		expect(ctx.abortCalls.count).toBe(1);
 	});
 
 	test("defers one compaction until the interrupted agent settles", async () => {

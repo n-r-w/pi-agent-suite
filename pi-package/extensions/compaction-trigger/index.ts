@@ -1,10 +1,15 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	AgentSettledEvent,
 	ContextEvent,
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import {
+	calculateContextTokens,
+	convertToLlm,
+	estimateTokens,
+} from "@earendil-works/pi-coding-agent";
 import { buildActiveToolDefinitions } from "../../shared/active-tool-definitions";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import { readNativeCompactionSettings } from "../../shared/native-compaction-settings";
@@ -56,6 +61,36 @@ function reportFailure(pi: ExtensionAPI): void {
 	);
 }
 
+/** Estimates current context from the last trusted provider usage anchor. */
+function estimateUsageBackedTokens(
+	messages: readonly AgentMessage[],
+): number | undefined {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (
+			message?.role !== "assistant" ||
+			message.stopReason === "aborted" ||
+			message.stopReason === "error"
+		) {
+			continue;
+		}
+
+		const contextTokens = calculateContextTokens(message.usage);
+		if (contextTokens <= 0) {
+			continue;
+		}
+
+		// Provider usage preserves replayed reasoning and prior provider framing that local serialization omits.
+		return messages
+			.slice(index + 1)
+			.reduce(
+				(total, trailingMessage) => total + estimateTokens(trailingMessage),
+				contextTokens,
+			);
+	}
+	return undefined;
+}
+
 /** Evaluates the final projected request and advances interruption state. */
 function handleContext(
 	pi: ExtensionAPI,
@@ -86,11 +121,15 @@ function handleContext(
 		return blockRequest(ctx);
 	}
 
-	const estimatedTokens = estimateSerializedInputTokens({
+	const serializedEstimate = estimateSerializedInputTokens({
 		systemPrompt: ctx.getSystemPrompt(),
 		messages: convertToLlm(event.messages),
 		tools: buildActiveToolDefinitions(pi),
 	});
+	const estimatedTokens = Math.max(
+		serializedEstimate,
+		estimateUsageBackedTokens(event.messages) ?? 0,
+	);
 	const threshold = model.contextWindow - settings.reserveTokens;
 	if (estimatedTokens < threshold) {
 		if (lifecycle.state === "resuming") {
