@@ -4,10 +4,13 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+	COMPACTION_TRIGGER_CONTINUATION_TYPE,
+	COMPACTION_TRIGGER_INTERRUPTION_TYPE,
+} from "../../shared/compaction-trigger-protocol";
 import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import { readNativeCompactionSettings } from "../../shared/native-compaction-settings";
 
-const CONTINUATION_TYPE = "compaction-trigger-continuation";
 const DIAGNOSTIC_TYPE = "compaction-trigger-diagnostic";
 const CONTINUATION_MESSAGE =
 	"Continue the interrupted task from the compacted context and preserved tool results.";
@@ -40,6 +43,18 @@ function blockRequest(ctx: ExtensionContext): { messages: [] } {
 function interruptRequest(ctx: ExtensionContext): { messages: [] } {
 	ctx.abort();
 	return { messages: [] };
+}
+
+/** Announces that the interrupted child run will continue after compaction. */
+function announceInterruption(pi: ExtensionAPI): void {
+	pi.sendMessage(
+		{
+			customType: COMPACTION_TRIGGER_INTERRUPTION_TYPE,
+			content: "",
+			display: false,
+		},
+		{ triggerTurn: false },
+	);
 }
 
 /** Reports a terminal trigger failure without starting another model turn. */
@@ -108,8 +123,9 @@ function handleContext(
 		return blockRequest(ctx);
 	}
 
-	// Set interruption first because abort can synchronously advance run settlement.
+	// Publish the child-lifecycle marker before abort can advance run settlement.
 	lifecycle.state = "interrupting";
+	announceInterruption(pi);
 	return interruptRequest(ctx);
 }
 
@@ -121,7 +137,7 @@ function resumeInterruptedRun(
 	lifecycle.state = "resuming";
 	pi.sendMessage(
 		{
-			customType: CONTINUATION_TYPE,
+			customType: COMPACTION_TRIGGER_CONTINUATION_TYPE,
 			content: CONTINUATION_MESSAGE,
 			display: false,
 		},

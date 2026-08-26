@@ -14,6 +14,7 @@ import { estimateSerializedInputTokens } from "../../shared/context-size";
 import compactionTrigger from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const INTERRUPTION_TYPE = "compaction-trigger-interruption";
 const CONTINUATION_TYPE = "compaction-trigger-continuation";
 const DIAGNOSTIC_TYPE = "compaction-trigger-diagnostic";
 const RESERVE_TOKENS = 100;
@@ -396,6 +397,16 @@ describe("compaction trigger", () => {
 		expect(result).toEqual({ messages: [] });
 		expect(ctx.abortCalls.count).toBe(1);
 		expect(ctx.compactCalls).toHaveLength(0);
+		expect(harness.pi.sentMessages).toEqual([
+			{
+				message: {
+					customType: INTERRUPTION_TYPE,
+					content: "",
+					display: false,
+				},
+				options: { triggerTurn: false },
+			},
+		]);
 	});
 
 	test("waits for known footer usage after compaction", async () => {
@@ -478,6 +489,14 @@ describe("compaction trigger", () => {
 		expect(harness.pi.sentMessages).toEqual([
 			{
 				message: {
+					customType: INTERRUPTION_TYPE,
+					content: "",
+					display: false,
+				},
+				options: { triggerTurn: false },
+			},
+			{
+				message: {
 					customType: CONTINUATION_TYPE,
 					content: expect.any(String),
 					display: false,
@@ -506,6 +525,14 @@ describe("compaction trigger", () => {
 		await harness.agentSettled({ type: "agent_settled" }, ctx);
 
 		expect(harness.pi.sentMessages).toEqual([
+			{
+				message: {
+					customType: INTERRUPTION_TYPE,
+					content: "",
+					display: false,
+				},
+				options: { triggerTurn: false },
+			},
 			{
 				message: {
 					customType: CONTINUATION_TYPE,

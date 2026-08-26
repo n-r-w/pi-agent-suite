@@ -17,6 +17,7 @@ import {
 	createChildAuthStartupDiagnosticRecorder,
 } from "../../shared/child-auth-startup-diagnostic";
 import type { ChildStartupConfig } from "../../shared/child-startup-config";
+import { COMPACTION_TRIGGER_INTERRUPTION_TYPE } from "../../shared/compaction-trigger-protocol";
 import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
@@ -1318,6 +1319,89 @@ describe("InvocationSupervisor", () => {
 			contextWindow: 128_000,
 			terminalEvents: 0,
 		});
+	});
+
+	test("keeps a child supervised through threshold compaction continuation", async () => {
+		// Purpose: a trigger-owned abort must not stop the child before its post-compaction answer.
+		// Input and expected output: marker, aborted answer, and intermediate settlement emit no terminal event; the resumed answer succeeds.
+		// Edge case: manual compaction reports willRetry false because the extension owns continuation.
+		// Dependencies: controlled RPC stream, shared completion state, and production supervisor teardown.
+		const child = createChildProcess();
+		const events: InvocationEvent[] = [];
+		const supervisor = createSupervisor(child, events);
+		const acceptance = await acceptStart(supervisor, child);
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "custom",
+						customType: COMPACTION_TRIGGER_INTERRUPTION_TYPE,
+						content: "",
+						display: false,
+						timestamp: 1,
+					},
+				})}\n${JSON.stringify({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [],
+						api: "openai-responses",
+						provider: "openai",
+						model: "test-model",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "error",
+						errorMessage: "This operation was aborted",
+						timestamp: 1,
+					},
+				})}\n${JSON.stringify({ type: "agent_settled" })}\n`,
+			),
+		);
+		await Promise.resolve();
+
+		expect(events).toHaveLength(0);
+		expect(child.stdinWrites).toHaveLength(1);
+
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "compaction_end",
+					reason: "manual",
+					result: { summary: "compacted" },
+					aborted: false,
+					willRetry: false,
+				})}\n`,
+			),
+		);
+		emitSuccessfulCompletion(child, "continued");
+		while (events.length === 0) {
+			await Promise.resolve();
+		}
+
+		expect(events).toEqual([
+			{
+				kind: "terminal",
+				invocationId: acceptance.invocationId,
+				status: "success",
+				text: "continued",
+				contextTokens: 0,
+			},
+		]);
 	});
 
 	test("accepts active steering and emits one shared completion decision", async () => {

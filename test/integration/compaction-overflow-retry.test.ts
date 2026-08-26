@@ -20,6 +20,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import compactionTrigger from "../../pi-package/extensions/compaction-trigger";
+import {
+	type ChildRpcPromptDecision,
+	createChildRpcPromptCompletion,
+} from "../../pi-package/shared/child-rpc-completion";
 import { estimateSerializedInputTokens } from "../../pi-package/shared/context-size";
 
 const MODEL: Model<"openai-completions"> = {
@@ -111,7 +115,7 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 	// Purpose: prove native post-run compaction satisfies the interrupted threshold cycle without a second manual attempt.
 	// Inputs and expected outputs: an aborted provider entry reports an error, Pi compacts once, and one hidden continuation reaches the rebuilt request.
 	// Edge cases: the provider stream function receives an aborted signal with zero usage, which makes Pi estimate the saved context.
-	// Dependencies: real AgentSession lifecycle, in-memory session storage, temporary native settings, and inline extension contracts.
+	// Dependencies: real AgentSession lifecycle, child RPC completion state, in-memory session storage, temporary native settings, and inline extension contracts.
 	const cwd = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-session-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-agent-"));
 	const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
@@ -124,6 +128,7 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 	let providerDispatches = 0;
 	let dispatchNumber = 0;
 	let compactionCalls = 0;
+	const terminalDecisions: ChildRpcPromptDecision[] = [];
 	const model: Model<"openai-completions"> = {
 		...MODEL,
 		provider: "compaction-integration",
@@ -279,6 +284,17 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 				readonly agent: { streamFunction: StreamFn };
 			}
 		).agent.streamFunction = fakeStream;
+		const completion = createChildRpcPromptCompletion({
+			modelProvider: model.provider,
+			modelId: model.id,
+			contextWindow: model.contextWindow,
+		});
+		session.subscribe((event) => {
+			const decision = completion.handleSessionEvent(event);
+			if (decision.kind !== "wait") {
+				terminalDecisions.push(decision);
+			}
+		});
 
 		await session.prompt("Use isolated_result and continue from its result.");
 		for (
@@ -295,6 +311,8 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 		expect(providerEntries).toEqual([false, true, false]);
 		expect(providerDispatches).toBe(2);
 		expect(compactionCalls).toBe(1);
+		expect(terminalDecisions).toHaveLength(1);
+		expect(terminalDecisions[0]?.kind).toBe("success");
 		const entries = sessionManager.getEntries();
 		expect(entries.filter((entry) => entry.type === "compaction")).toHaveLength(
 			1,

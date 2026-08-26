@@ -30,12 +30,13 @@ In these cases, the extension does not abort the run, replace messages, or initi
 ## Lifecycle
 
 1. An under-threshold request proceeds without changes.
-2. When a request reaches the threshold, the extension aborts the active run and replaces that request's messages with an empty list. A compliant provider performs no outbound dispatch for the aborted request.
-3. After Pi emits `agent_settled`, the extension calls `ctx.compact()` once.
-4. Pi runs its configured compaction pipeline. This includes `session_before_compact`, custom summary generation or standard fallback, `CompactionEntry` persistence, and context rebuilding.
-5. After compaction succeeds, the extension appends one hidden `compaction-trigger-continuation` message with `triggerTurn: true`.
-6. The continuation tells the model to continue the interrupted task from the compacted context and preserved tool results. No user input is required.
-7. The first resumed context estimate must be below the threshold. The extension then returns to its idle state and allows the rebuilt request to proceed.
+2. When a request reaches the threshold, the extension appends one empty hidden `compaction-trigger-interruption` message with `triggerTurn: false`. The marker tells `run-subagent` that the child invocation remains active through the interruption and continuation.
+3. The extension aborts the active run and replaces that request's messages with an empty list. A compliant provider performs no outbound dispatch for the aborted request.
+4. After Pi emits `agent_settled`, the extension calls `ctx.compact()` once.
+5. Pi runs its configured compaction pipeline. This includes `session_before_compact`, custom summary generation or standard fallback, `CompactionEntry` persistence, and context rebuilding.
+6. After compaction succeeds, the extension appends one hidden `compaction-trigger-continuation` message with `triggerTurn: true`.
+7. The continuation tells the model to continue the interrupted task from the compacted context and preserved tool results. No user input is required.
+8. The first resumed context estimate must be below the threshold. The extension then returns to its idle state and allows the rebuilt request to proceed.
 
 ## Failure behavior
 
@@ -49,7 +50,7 @@ A failed cycle sends no continuation and starts no second compaction. Further re
 
 ## Main and child sessions
 
-Main Pi sessions and run-subagent child sessions load the same package registration for `compaction-trigger`. They use the same threshold calculation and lifecycle.
+Main Pi sessions and `run-subagent` child sessions load the same package registration for `compaction-trigger`. They use the same threshold calculation and compaction lifecycle. In a child session, `run-subagent` keeps the invocation active after the first `agent_settled` that follows `compaction-trigger-interruption`. The first assistant result from the continued run restores normal terminal handling. A failed manual compaction terminates the child with its compaction error.
 
 ## Compaction reason
 
