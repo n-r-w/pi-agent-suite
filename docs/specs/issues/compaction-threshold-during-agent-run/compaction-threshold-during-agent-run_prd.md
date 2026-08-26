@@ -2,7 +2,8 @@
 
 ## Definitions
 
-- compaction threshold: `contextWindow - reserveTokens` when `compaction.enabled` is `true`.
+- native compaction threshold: `contextWindow - reserveTokens` when Pi's `compaction.enabled` is `true`.
+- compaction threshold: `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)` when Pi compaction and `compaction-trigger` are enabled.
 - threshold crossing: The calculated context for the next model request is at or above the compaction threshold.
 - compaction initiation: Blocking the next model request and starting Pi's configured compaction mechanism.
 
@@ -21,6 +22,8 @@ Complete compaction before sending a model request whose calculated context reac
 - Compaction succeeds and the interrupted task continues.
 - Compaction fails and the over-threshold request remains blocked.
 - Automatic compaction is disabled in Pi settings.
+- Threshold enforcement is disabled in `compaction-trigger` settings.
+- A positive `thresholdDeltaPercent` moves enforcement beyond the native threshold without exceeding `contextWindow`.
 
 ## Scope and Non-Scope
 
@@ -28,6 +31,7 @@ In scope:
 
 - Every active model with a positive `contextWindow`.
 - Threshold checks before model requests during an active agent run.
+- Optional `compaction-trigger/config.json` settings for threshold enforcement.
 - Main and child Pi sessions.
 - Automatic continuation after successful compaction.
 - Explicit failure when compaction cannot complete.
@@ -41,8 +45,8 @@ Out of scope:
 
 ## Requirements
 
-- Before each model request, the calculated context must be compared with `contextWindow - reserveTokens` for the active model.
-  Justification: A check after `agent_end` cannot prevent an over-threshold request inside the active run.
+- Before each model request, the calculated context must be compared with `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)` for the active model.
+  Justification: A check after `agent_end` cannot prevent an over-threshold request inside the active run, and the cap prevents enforcement beyond the model's maximum context.
 - When the calculated context reaches the threshold, compaction must complete before the original over-threshold request is sent.
   Justification: The configured threshold must constrain every model request, not only requests between agent runs.
 - Threshold enforcement must apply to every active model with a positive `contextWindow`.
@@ -59,8 +63,12 @@ Out of scope:
   Justification: Threshold detection does not belong to the summary generator.
 - Pi source code must not change.
   Justification: The deployed Pi package is outside the permitted implementation scope.
-- When `compaction.enabled` is `false`, threshold enforcement must not initiate compaction or alter the model request.
+- When `compaction-trigger/config.json` is absent or omits a field, `enabled` must default to `true` and `thresholdDeltaPercent` must default to `0`.
+  Justification: Default settings must preserve enforcement at Pi's native compaction threshold.
+- When Pi's `compaction.enabled` is `false`, threshold enforcement must not initiate compaction or alter the model request.
   Justification: An explicit Pi setting must take precedence over automatic behavior.
+- When `compaction-trigger` has `enabled: false`, the extension must not initiate compaction or alter the model request.
+  Justification: Threshold enforcement must have an extension-local disable switch without changing Pi's native compaction behavior.
 
 ## Open Questions
 

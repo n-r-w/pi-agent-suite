@@ -10,13 +10,15 @@
 ## Behavioral Contract
 
 - FRQ-01: Threshold enforcement applies to every active model with a positive `contextWindow`.
-- FRQ-02: Before each model request, the calculated provider-visible context is compared with `contextWindow - reserveTokens`.
+- FRQ-02: Before each model request, the calculated provider-visible context is compared with `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)`.
 - FRQ-03: When the calculated context reaches the compaction threshold, compaction completes before the original over-threshold request is sent.
 - FRQ-04: After successful compaction, the interrupted task continues automatically with preserved tool results and without user input.
 - FRQ-05: When compaction fails, the over-threshold request remains blocked and the agent stops with an explicit error.
 - FRQ-06: Main and child Pi sessions use the same behavior when the package is loaded.
 - FRQ-07: Compaction initiation uses Pi's existing compaction pipeline and therefore preserves `session_before_compact`, custom summary generation, standard fallback, `CompactionEntry` persistence, and context rebuilding.
-- FRQ-08: Threshold enforcement is disabled when `compaction.enabled` is `false`.
+- FRQ-08: Threshold enforcement is disabled when Pi's `compaction.enabled` is `false`.
+- FRQ-09: Threshold enforcement is disabled when `compaction-trigger` has `enabled: false`.
+- FRQ-10: When `compaction-trigger/config.json` is absent or omits a field, `enabled` resolves to `true` and `thresholdDeltaPercent` resolves to `0`.
 
 ## Proposed Solution
 
@@ -26,12 +28,20 @@
 - DEC-01: Register `compaction-trigger` after `context-projection` in `pi-package/package.json`. Pi chains `context` handlers in registration order, so the trigger evaluates the final provider-visible messages after projection.
 - DEC-02: Do not add threshold detection to `custom-compaction` or `context-projection`.
 
+### Extension configuration
+
+- CFG-01: Read optional settings from `compaction-trigger/config.json` through the suite configuration path.
+- CFG-02: `enabled` is a boolean that defaults to `true`.
+- CFG-03: `thresholdDeltaPercent` is a non-negative percentage of `contextWindow` that defaults to `0`.
+- CFG-04: `enabled: false` disables only `compaction-trigger`; it does not change Pi's native compaction settings or pipeline.
+
 ### Request-size calculation
 
 - ALG-01: On every `context` event, build the provider-visible request representation from `ctx.getSystemPrompt()`, `convertToLlm(event.messages)`, and the active tool definitions.
 - ALG-02: Estimate request tokens with `estimateSerializedInputTokens` from `pi-package/shared/context-size.ts`.
 - ALG-03: Read `compaction.enabled` and `reserveTokens` through Pi's `SettingsManager`, including project settings precedence.
-- ALG-04: Compare the estimate with the active model threshold using `estimatedTokens >= contextWindow - reserveTokens`.
+- ALG-04: Calculate `effectiveThreshold` as `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)`.
+- ALG-05: Block the request when `estimatedTokens >= effectiveThreshold`. The `contextWindow` cap prevents the extension from permitting a request beyond the model's maximum context.
 - DEC-03: Extract the existing active-tool collection from `custom-compaction` into a shared helper so compaction budgeting and threshold enforcement use the same tool representation.
 - DEC-04: Extract native compaction-settings reading from `footer` into a shared helper. The footer output and `custom-compaction` behavior remain unchanged.
 
@@ -66,19 +76,21 @@
 
 - ACC-01: A unit test proves that an under-threshold context does not abort, compact, replace messages, or enqueue continuation.
 - ACC-02: A unit test proves that reaching the threshold aborts the active run and defers exactly one `ctx.compact()` call until `agent_settled`.
-- ACC-03: A unit test proves that `compaction.enabled: false` disables threshold enforcement.
+- ACC-03: A unit test proves that Pi's `compaction.enabled: false` disables threshold enforcement.
 - ACC-04: A unit test proves successful compaction sends exactly one hidden continuation and returns to `idle` only after an under-threshold resumed context.
 - ACC-05: Unit tests prove compaction failure and an over-threshold resumed context stop without another model request or compaction loop.
 - ACC-06: An integration test uses a real `AgentSession`, an isolated fake provider, and an isolated tool result to prove that the original over-threshold request is not sent, compaction runs through `session_before_compact`, and the task resumes after the rebuilt context.
 - ACC-07: Package-loading checks prove one `compaction-trigger` registration in main and child Pi processes.
 - ACC-08: Implementation follows RED-GREEN-REFACTOR. Each behavior test must fail for its expected assertion before production code is added.
+- ACC-09: Unit tests prove default extension settings, `enabled: false`, a positive `thresholdDeltaPercent`, equality with the effective threshold, and the `contextWindow` cap.
+- ACC-10: An integration test loads a nonzero `thresholdDeltaPercent` from isolated suite configuration and proves the configured threshold through a real `AgentSession`.
 
 ## Overengineering and Overspecification Considerations
 
 - SOL-01: The solution adds one extension because existing extensions have different responsibilities.
 - SOL-02: The solution uses existing Pi events and shared token estimation. It adds no dependency, provider-specific branch, model allowlist, or independent summary format.
 - SOL-03: The state machine contains only lifecycle states needed to prevent duplicate compaction, unsafe continuation, and retry loops.
-- SOL-04: No configuration file is added. Pi's model and compaction settings remain the single threshold source.
+- SOL-04: The optional extension configuration adds only `enabled` and `thresholdDeltaPercent`. Pi model metadata and native compaction settings remain inputs to the effective threshold.
 
 ## Open Questions
 

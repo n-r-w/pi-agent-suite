@@ -36,11 +36,12 @@ Pi checks the threshold after the active agent run stops. `custom-compaction` re
 
 ## Desired Outcome
 
-Before Pi sends a model request whose calculated context reaches the compaction threshold, compaction completes and the interrupted task continues automatically with preserved tool results.
+Before Pi sends a model request whose calculated context reaches the effective compaction threshold, compaction completes and the interrupted task continues automatically with preserved tool results. The effective threshold can extend beyond Pi's native threshold but never beyond the active model's `contextWindow`.
 
 ## Success Metrics
 
-- No model request is sent with calculated context at or above `contextWindow - reserveTokens` while Pi compaction is enabled.
+- No model request is sent with calculated context at or above the effective compaction threshold while Pi compaction and threshold enforcement are enabled.
+- The effective compaction threshold equals `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)`.
 - The active task continues after successful compaction without user input.
 - A compaction failure blocks the over-threshold request and produces an explicit error.
 
@@ -49,6 +50,7 @@ Before Pi sends a model request whose calculated context reaches the compaction 
 - Any active model with a positive `contextWindow`.
 - Main and child Pi sessions.
 - Threshold checks during active agent runs.
+- An optional percentage delta between Pi's native threshold and the enforced threshold.
 - Automatic task continuation after successful compaction.
 
 ## Out of Scope / Non-Goals
@@ -63,7 +65,8 @@ Before Pi sends a model request whose calculated context reaches the compaction 
 - The solution must use the public Pi extension API.
 - `custom-compaction` remains a summary-generation mechanism.
 - `context-projection` remains a context-projection mechanism. Its internal reusable calculations may be shared without changing that responsibility.
-- When `compaction.enabled` is `false`, no threshold-triggered compaction is initiated.
+- When Pi's `compaction.enabled` is `false`, no threshold-triggered compaction is initiated.
+- When `compaction-trigger` has `enabled: false`, the extension does not initiate compaction or alter model requests.
 
 ## Assumptions
 
