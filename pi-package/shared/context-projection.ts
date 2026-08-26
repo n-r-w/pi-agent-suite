@@ -899,7 +899,7 @@ export function mapEventMessagesToBranchEntries(
 		const eventMessage = eventMessages[eventIndex];
 		if (
 			eventMessage !== undefined &&
-			isDeepStrictEqual(mappedEntry.message, eventMessage)
+			isMatchingContextMessage(mappedEntry, eventMessage)
 		) {
 			eventMappedEntries.push({
 				entry: mappedEntry.entry,
@@ -917,6 +917,28 @@ export function mapEventMessagesToBranchEntries(
 	}
 
 	return eventIndex === eventMessages.length ? eventMappedEntries : undefined;
+}
+
+/** Matches live custom messages without the timestamp that Pi regenerates during persistence. */
+function isMatchingContextMessage(
+	mappedEntry: MappedContextEntry,
+	eventMessage: AgentMessage,
+): boolean {
+	if (isDeepStrictEqual(mappedEntry.message, eventMessage)) {
+		return true;
+	}
+	if (
+		mappedEntry.entry.type !== "custom_message" ||
+		mappedEntry.message.role !== "custom" ||
+		eventMessage.role !== "custom"
+	) {
+		return false;
+	}
+
+	const { timestamp: _persistedTimestamp, ...persistedMessage } =
+		mappedEntry.message;
+	const { timestamp: _liveTimestamp, ...liveMessage } = eventMessage;
+	return isDeepStrictEqual(persistedMessage, liveMessage);
 }
 
 /** Identifies provider errors that Pi keeps in session history but removes from agent state before an automatic retry. */

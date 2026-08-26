@@ -124,6 +124,7 @@ Diagnostic entries never contain prompts, tool-result text, authentication data,
 - Missing configuration keeps projection disabled.
 - Most invalid projection settings disable projection. Non-absolute summary prompt paths, invalid projection level ordering, removed `placeholder`, and an invalid or disabled `custom-compaction` dependency stop startup.
 - Projection only changes the provider context for the current request. It does not rewrite stored session messages.
+- Live custom messages can map to persisted `custom_message` entries when only their timestamps differ. Differences in role, custom type, content, display, or details make mapping fail safe without projection.
 - Adaptive compaction reuses recorded summary replacements in its discarded range and can generate missing L3 summaries before building the durable summary source. Omission-only replacements are never used as durable summary input.
 - Only successful text tool results can be projected.
 - Failed tool results, non-text tool results, ignored tools, tool results protected by `keepRecentTurns` or `keepRecentTurnsPercent`, and `read` results for files under loaded skill directories stay visible.

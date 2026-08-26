@@ -3081,6 +3081,70 @@ describe("context-projection", () => {
 		});
 	});
 
+	test("projects after Pi persists a live custom message with a new timestamp", async () => {
+		// Purpose: workflow and other extension messages must not disable projection for the rest of a live run.
+		// Input and expected output: a custom message differs from its session entry only by timestamp, so the eligible tool result is projected.
+		// Edge case: the provider context must retain the live custom message object and its original timestamp.
+		// Dependencies: isolated config, context hook, and in-memory Pi custom message and branch fixtures.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0 }),
+			);
+			const { pi, contextHandler } = installContextProjectionTestHarness();
+			const persistedCustomMessage = {
+				type: "custom_message",
+				customType: "workflow",
+				content: "workflow state",
+				display: false,
+				details: { version: 1 },
+				id: "02",
+				parentId: "01",
+				timestamp: "2026-08-26T16:00:00.001Z",
+			} as SessionEntry;
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				persistedCustomMessage,
+				messageEntry("03", assistantMessage("call-old"), "02"),
+				messageEntry(
+					"04",
+					toolResultMessage("call-old", "old output ".repeat(5)),
+					"03",
+				),
+			];
+			const regularMessages = messagesFromBranch(branchEntries);
+			const liveCustomMessage = {
+				role: "custom",
+				customType: "workflow",
+				content: "workflow state",
+				display: false,
+				details: { version: 1 },
+				timestamp: Date.parse("2026-08-26T16:00:00.000Z"),
+			} as AgentMessage;
+			const liveMessages = [
+				regularMessages[0] as AgentMessage,
+				liveCustomMessage,
+				...regularMessages.slice(1),
+			];
+			const context = createContextFake(branchEntries, {
+				tokens: 900,
+				contextWindow: 1_000,
+			});
+
+			const result = (await contextHandler(
+				{ type: "context", messages: liveMessages },
+				context.ctx,
+			)) as { messages?: AgentMessage[] } | undefined;
+
+			expect(result?.messages?.[1]).toBe(liveMessages[1]);
+			expect(result?.messages?.[3]).toEqual({
+				...(liveMessages[3] as AgentMessage),
+				content: [{ type: "text", text: OMITTED_NOTICE }],
+			} as AgentMessage);
+			expect(pi.appendEntryCalls).toHaveLength(1);
+		});
+	});
+
 	test("skips projection when context messages do not exactly map to active branch messages", async () => {
 		// Purpose: mapping ambiguity must prefer a no-op over changing provider context.
 		// Input and expected output: event message content differs from session history, so no messages are returned and no state is stored.
