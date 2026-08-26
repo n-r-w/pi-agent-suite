@@ -20,6 +20,7 @@ const FAILURE_MESSAGE =
 type TriggerState =
 	| "idle"
 	| "interrupting"
+	| "compacted"
 	| "compacting"
 	| "resuming"
 	| "failed";
@@ -110,18 +111,39 @@ function handleContext(
 	return interruptRequest(ctx);
 }
 
-/** Starts one deferred compaction and owns its terminal callbacks. */
+/** Sends one hidden continuation after a successful compaction. */
+function resumeInterruptedRun(
+	pi: ExtensionAPI,
+	lifecycle: TriggerLifecycle,
+): void {
+	lifecycle.state = "resuming";
+	pi.sendMessage(
+		{
+			customType: CONTINUATION_TYPE,
+			content: CONTINUATION_MESSAGE,
+			display: false,
+		},
+		{ triggerTurn: true },
+	);
+}
+
+/** Starts manual compaction only when native post-run compaction did not finish. */
 function handleAgentSettled(
 	pi: ExtensionAPI,
 	_event: AgentSettledEvent,
 	ctx: ExtensionContext,
 	lifecycle: TriggerLifecycle,
 ): void {
+	if (lifecycle.state === "compacted") {
+		// Pi rebuilt the context through native post-run compaction before settlement.
+		resumeInterruptedRun(pi, lifecycle);
+		return;
+	}
 	if (lifecycle.state !== "interrupting") {
 		return;
 	}
 
-	// Compaction starts only after the aborted agent run has fully settled.
+	// Start manual compaction only when Pi did not compact during post-run handling.
 	lifecycle.state = "compacting";
 	try {
 		ctx.compact({
@@ -130,15 +152,7 @@ function handleAgentSettled(
 				if (lifecycle.state !== "compacting") {
 					return;
 				}
-				lifecycle.state = "resuming";
-				pi.sendMessage(
-					{
-						customType: CONTINUATION_TYPE,
-						content: CONTINUATION_MESSAGE,
-						display: false,
-					},
-					{ triggerTurn: true },
-				);
+				resumeInterruptedRun(pi, lifecycle);
 			},
 			onError: () => {
 				if (lifecycle.state !== "compacting") {
@@ -169,6 +183,12 @@ export default function compactionTrigger(pi: ExtensionAPI): void {
 		}
 	});
 	pi.on("context", (event, ctx) => handleContext(pi, event, ctx, lifecycle));
+	pi.on("session_compact", () => {
+		if (lifecycle.state === "interrupting") {
+			// Native post-run compaction completes before Pi emits agent_settled.
+			lifecycle.state = "compacted";
+		}
+	});
 	pi.on("agent_settled", (event, ctx) =>
 		handleAgentSettled(pi, event, ctx, lifecycle),
 	);

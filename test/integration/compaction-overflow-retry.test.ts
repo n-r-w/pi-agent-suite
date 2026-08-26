@@ -108,9 +108,9 @@ function completedStream(
 }
 
 test("threshold interruption compacts and resumes through real AgentSession boundaries", async () => {
-	// Purpose: prove Pi blocks the original threshold-crossing dispatch and resumes from compacted tool state.
-	// Inputs and expected outputs: a deterministic tool result crosses the limit, one inline compaction persists, and one hidden continuation reaches the rebuilt request.
-	// Edge cases: the provider stream function is entered with an aborted signal, which is not counted as an outbound dispatch.
+	// Purpose: prove native post-run compaction satisfies the interrupted threshold cycle without a second manual attempt.
+	// Inputs and expected outputs: an aborted provider entry reports an error, Pi compacts once, and one hidden continuation reaches the rebuilt request.
+	// Edge cases: the provider stream function receives an aborted signal with zero usage, which makes Pi estimate the saved context.
 	// Dependencies: real AgentSession lifecycle, in-memory session storage, temporary native settings, and inline extension contracts.
 	const cwd = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-session-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-agent-"));
@@ -146,7 +146,7 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 		providerEntries.push(aborted);
 		if (aborted) {
 			return completedStream(
-				fakeAssistantMessage(streamModel, [], "aborted"),
+				fakeAssistantMessage(streamModel, [], "error"),
 				"stop",
 			);
 		}
@@ -304,7 +304,7 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 				(entry) =>
 					entry.type === "message" &&
 					entry.message.role === "assistant" &&
-					entry.message.stopReason === "aborted",
+					entry.message.stopReason === "error",
 			),
 		).toHaveLength(1);
 		const continuationEntry = entries

@@ -173,6 +173,7 @@ function install(pi = createPi()): {
 	readonly pi: TestPi;
 	readonly context: RegisteredHandler["handler"];
 	readonly agentSettled: RegisteredHandler["handler"];
+	readonly sessionCompact: RegisteredHandler["handler"];
 	readonly sessionStart: RegisteredHandler["handler"];
 } {
 	compactionTrigger(pi);
@@ -184,6 +185,9 @@ function install(pi = createPi()): {
 			fallback,
 		agentSettled:
 			pi.handlers.find(({ eventName }) => eventName === "agent_settled")
+				?.handler ?? fallback,
+		sessionCompact:
+			pi.handlers.find(({ eventName }) => eventName === "session_compact")
 				?.handler ?? fallback,
 		sessionStart:
 			pi.handlers.find(({ eventName }) => eventName === "session_start")
@@ -334,6 +338,34 @@ describe("compaction trigger", () => {
 		await harness.agentSettled({ type: "agent_settled" }, ctx);
 
 		expect(ctx.compactCalls).toHaveLength(1);
+	});
+
+	test("continues without manual compaction after native compaction succeeds", async () => {
+		// Purpose: native post-run compaction must satisfy the interrupted threshold cycle.
+		// Input and expected output: session_compact before settlement sends one continuation without a manual compact call.
+		// Edge case: agent_settled must not treat an already rebuilt context as uncompacted.
+		// Dependencies: session_compact and agent_settled event ordering.
+		const { cwd } = await createSettingsFixture({
+			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
+		});
+		const messages = [userMessage()];
+		const ctx = createContext(cwd, estimatedTokens(messages) + RESERVE_TOKENS);
+		const harness = install();
+		await harness.context({ type: "context", messages }, ctx);
+		await harness.sessionCompact({ type: "session_compact" }, ctx);
+		await harness.agentSettled({ type: "agent_settled" }, ctx);
+
+		expect(ctx.compactCalls).toHaveLength(0);
+		expect(harness.pi.sentMessages).toEqual([
+			{
+				message: {
+					customType: CONTINUATION_TYPE,
+					content: expect.any(String),
+					display: false,
+				},
+				options: { triggerTurn: true },
+			},
+		]);
 	});
 
 	test("sends one hidden continuation after successful compaction", async () => {
