@@ -23,8 +23,9 @@
 
   <constraints_and_preferences>
     <!--
-    1. Any constraints, preferences, or requirements mentioned by user
-    2. Or "(none)" if none were mentioned
+    1. User-facing language
+    2. Any constraints, preferences, or requirements mentioned by user
+    3. Or "(none)" if none were mentioned
     -->
   </constraints_and_preferences>
 
