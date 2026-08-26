@@ -16,6 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
 	addPendingProjectionSavings,
+	buildContextEntryMapping,
 	getProjectionAwareContextUsage,
 	replayContextProjection,
 	resetPendingProjectionSavings,
@@ -198,6 +199,7 @@ function installContextProjectionTestHarness(dependencies?: {
 	readonly pi: ExtensionApiFake;
 	readonly sessionStartHandler: (event: unknown, ctx: unknown) => unknown;
 	readonly sessionTreeHandler: (event: unknown, ctx: unknown) => unknown;
+	readonly sessionCompactHandler: (event: unknown, ctx: unknown) => unknown;
 	readonly beforeAgentStartHandler: (event: unknown, ctx: unknown) => unknown;
 	readonly contextHandler: (
 		event: unknown,
@@ -221,6 +223,10 @@ function installContextProjectionTestHarness(dependencies?: {
 	if (typeof sessionTreeHandler !== "function") {
 		throw new Error("expected session_tree handler to be registered");
 	}
+
+	const sessionCompactHandler = pi.handlers.find(
+		(registeredHandler) => registeredHandler.eventName === "session_compact",
+	)?.handler;
 
 	const beforeAgentStartHandler = pi.handlers.find(
 		(registeredHandler) => registeredHandler.eventName === "before_agent_start",
@@ -250,6 +256,10 @@ function installContextProjectionTestHarness(dependencies?: {
 			event: unknown,
 			ctx: unknown,
 		) => unknown,
+		sessionCompactHandler:
+			typeof sessionCompactHandler === "function"
+				? (sessionCompactHandler as (event: unknown, ctx: unknown) => unknown)
+				: () => undefined,
 		beforeAgentStartHandler:
 			typeof beforeAgentStartHandler === "function"
 				? (beforeAgentStartHandler as (event: unknown, ctx: unknown) => unknown)
@@ -442,6 +452,7 @@ function projectionStateEntry(
 		readonly replacementText: string;
 	}>,
 	parentId: string | null,
+	appliedLevel?: "L1" | "L2" | "L3",
 ): SessionEntry {
 	return {
 		type: "custom",
@@ -449,7 +460,10 @@ function projectionStateEntry(
 		parentId,
 		timestamp: `2026-01-01T00:01:${id}.000Z`,
 		customType: CUSTOM_TYPE,
-		data: { projectedEntries },
+		data:
+			appliedLevel === undefined
+				? { projectedEntries }
+				: { projectedEntries, appliedLevel },
 	} as SessionEntry;
 }
 
@@ -629,9 +643,13 @@ describe("context-projection", () => {
 				agentDir,
 				createValidConfig({ keepRecentTurns: 0 }),
 			);
+			const projectingContext = createContextFake(branchEntries, {
+				tokens: 950,
+				contextWindow: 1_000,
+			});
 			result = await contextHandler(
 				{ type: "context", messages: messagesFromBranch(branchEntries) },
-				context.ctx,
+				projectingContext.ctx,
 			);
 			expect(result).toEqual({
 				messages: [
@@ -643,18 +661,23 @@ describe("context-projection", () => {
 					},
 				],
 			});
-			expect(context.uiCalls.at(-2)).toEqual({
+			expect(projectingContext.uiCalls.at(-2)).toEqual({
 				method: "setStatus",
 				args: ["context-projection", "<warning>~1</warning>"],
 			});
-			expect(context.uiCalls.at(-1)).toEqual({
+			expect(projectingContext.uiCalls.at(-1)).toEqual({
 				method: "notify",
-				args: ["Context projected: L1, ~1 saved", "info"],
+				args: ["Context projected: L2, ~1 saved", "info"],
 			});
 			expect(pi.appendEntryCalls).toEqual([
 				{
 					customType: CUSTOM_TYPE,
+					data: { appliedLevel: "L1", projectedEntries: [] },
+				},
+				{
+					customType: CUSTOM_TYPE,
 					data: {
+						appliedLevel: "L2",
 						projectedEntries: [
 							{ entryId: "03", replacementText: OMITTED_NOTICE },
 						],
@@ -665,10 +688,10 @@ describe("context-projection", () => {
 			await writeCustomConfig(agentDir, createValidConfig({ enabled: false }));
 			result = await contextHandler(
 				{ type: "context", messages: messagesFromBranch(branchEntries) },
-				context.ctx,
+				projectingContext.ctx,
 			);
 			expect(result).toBeUndefined();
-			expect(context.uiCalls.at(-1)).toEqual({
+			expect(projectingContext.uiCalls.at(-1)).toEqual({
 				method: "setStatus",
 				args: ["context-projection", undefined],
 			});
@@ -865,7 +888,12 @@ describe("context-projection", () => {
 				context.ctx,
 			);
 			expect(result).toBeUndefined();
-			expect(harness.pi.appendEntryCalls).toEqual([]);
+			expect(harness.pi.appendEntryCalls).toEqual([
+				{
+					customType: CUSTOM_TYPE,
+					data: { appliedLevel: "L1", projectedEntries: [] },
+				},
+			]);
 
 			harness = installContextProjectionTestHarness();
 			context = createContextFake(branchEntries, {
@@ -918,6 +946,267 @@ describe("context-projection", () => {
 						content: [{ type: "text", text: OMITTED_NOTICE }],
 					},
 				],
+			});
+		});
+	});
+
+	test("discovers new projections only when the active level moves deeper", async () => {
+		// Purpose: repeated requests inside one projection level must keep the provider prefix stable.
+		// Input and expected output: L1 projects once, usage rebounds above L1, a repeated L1 keeps new output, and a direct L3 jump projects it.
+		// Edge case: usage oscillation cannot repeat L1, and the later transition skips L2 with one additional state entry.
+		// Dependencies: isolated config, mutable in-memory branch, context hook, and assistant usage reset hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					minToolResultTokensL1: 0,
+					minToolResultTokensL2: 0,
+					minToolResultTokensL3: 0,
+				}),
+			);
+			const { pi, contextHandler, messageEndHandler } =
+				installContextProjectionTestHarness();
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-old"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-old", "old output ".repeat(5)),
+					"02",
+				),
+			];
+			const l1Context = createContextFake(branchEntries, {
+				tokens: 900,
+				contextWindow: 1_000,
+			});
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				l1Context.ctx,
+			);
+			expect(pi.appendEntryCalls).toHaveLength(1);
+			expect(pi.appendEntryCalls[0]?.data).toMatchObject({
+				appliedLevel: "L1",
+			});
+			messageEndHandler(
+				{ type: "message_end", message: assistantMessage("usage-reset") },
+				l1Context.ctx,
+			);
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				createContextFake(branchEntries, {
+					tokens: 850,
+					contextWindow: 1_000,
+				}).ctx,
+			);
+			expect(pi.appendEntryCalls).toHaveLength(1);
+
+			branchEntries.push(
+				messageEntry("04", assistantMessage("call-new"), "03"),
+				messageEntry(
+					"05",
+					toolResultMessage("call-new", "new output ".repeat(5)),
+					"04",
+				),
+			);
+			const sameLevelResult = (await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				createContextFake(branchEntries, {
+					tokens: 925,
+					contextWindow: 1_000,
+				}).ctx,
+			)) as { messages?: AgentMessage[] } | undefined;
+			expect(pi.appendEntryCalls).toHaveLength(1);
+			const latestEntry = branchEntries.at(-1);
+			expect(sameLevelResult?.messages?.at(-1)).toEqual(
+				latestEntry?.type === "message" ? latestEntry.message : undefined,
+			);
+
+			const l3Result = (await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				createContextFake(branchEntries, {
+					tokens: 1_000,
+					contextWindow: 1_000,
+				}).ctx,
+			)) as { messages?: AgentMessage[] } | undefined;
+			expect(pi.appendEntryCalls).toHaveLength(2);
+			expect(pi.appendEntryCalls[1]?.data).toMatchObject({
+				appliedLevel: "L3",
+			});
+			expect(l3Result?.messages?.at(-1)).toMatchObject({
+				role: "toolResult",
+				toolCallId: "call-new",
+				content: [{ type: "text", text: OMITTED_NOTICE }],
+			});
+		});
+	});
+
+	test("records a crossed level even when it has no projection candidates", async () => {
+		// Purpose: an empty threshold crossing must not allow later same-level history mutations.
+		// Input and expected output: L1 with no tool results records a checkpoint, then a new L1 tool result stays visible.
+		// Edge case: the checkpoint has an empty projectedEntries array and does not change provider messages.
+		// Dependencies: isolated config, mutable in-memory branch, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0, minToolResultTokensL1: 0 }),
+			);
+			const { pi, contextHandler } = installContextProjectionTestHarness();
+			const branchEntries = [messageEntry("01", userMessage(), null)];
+			const l1Context = createContextFake(branchEntries, {
+				tokens: 900,
+				contextWindow: 1_000,
+			});
+
+			const emptyResult = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				l1Context.ctx,
+			);
+			expect(emptyResult).toBeUndefined();
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: CUSTOM_TYPE,
+					data: { appliedLevel: "L1", projectedEntries: [] },
+				},
+			]);
+
+			branchEntries.push(
+				messageEntry("02", assistantMessage("call-new"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-new", "new output ".repeat(5)),
+					"02",
+				),
+			);
+			const sameLevelResult = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				l1Context.ctx,
+			);
+
+			expect(sameLevelResult).toBeUndefined();
+			expect(pi.appendEntryCalls).toHaveLength(1);
+		});
+	});
+
+	test("restores applied levels per branch and resets them after compaction", async () => {
+		// Purpose: threshold checkpoints must survive lifecycle reconstruction but not a completed compaction.
+		// Input and expected output: restored L2 blocks discovery, while the same branch can project at L2 after compaction resets the checkpoint.
+		// Edge case: the persisted checkpoint contains no projected replacements.
+		// Dependencies: isolated config, session lifecycle hooks, compaction mapping, and in-memory branch entries.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0, minToolResultTokensL2: 0 }),
+			);
+			const { pi, contextHandler, sessionStartHandler, sessionCompactHandler } =
+				installContextProjectionTestHarness();
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-old"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-old", "old output ".repeat(5)),
+					"02",
+				),
+				projectionStateEntry("04", [], "03", "L2"),
+			];
+			const l2Context = createContextFake(branchEntries, {
+				tokens: 950,
+				contextWindow: 1_000,
+			});
+			await sessionStartHandler({ type: "session_start" }, l2Context.ctx);
+
+			const restoredResult = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				l2Context.ctx,
+			);
+			expect(restoredResult).toBeUndefined();
+			expect(pi.appendEntryCalls).toEqual([]);
+
+			const compactionEntry = {
+				type: "compaction",
+				id: "05",
+				parentId: "04",
+				timestamp: "2026-01-01T00:02:00.000Z",
+				summary: "compacted history",
+				firstKeptEntryId: "01",
+				tokensBefore: 950,
+			} as SessionEntry;
+			branchEntries.push(compactionEntry);
+			await sessionCompactHandler(
+				{ type: "session_compact", compactionEntry },
+				l2Context.ctx,
+			);
+
+			const compactedResult = await contextHandler(
+				{
+					type: "context",
+					messages: buildContextEntryMapping(branchEntries).map(
+						(entry) => entry.message,
+					),
+				},
+				l2Context.ctx,
+			);
+			expect(compactedResult).toBeDefined();
+			expect(pi.appendEntryCalls).toHaveLength(1);
+			expect(pi.appendEntryCalls[0]?.data).toMatchObject({
+				appliedLevel: "L2",
+			});
+		});
+	});
+
+	test("restores the applied level of the selected branch", async () => {
+		// Purpose: branch navigation must not reuse the previous branch's threshold checkpoint.
+		// Input and expected output: branch A has applied L1, while branch B has no checkpoint and projects its eligible result at L1.
+		// Edge case: both branches use the same usage and threshold configuration.
+		// Dependencies: isolated config, session start and tree hooks, and two in-memory branch contexts.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({ keepRecentTurns: 0, minToolResultTokensL1: 0 }),
+			);
+			const { pi, contextHandler, sessionStartHandler, sessionTreeHandler } =
+				installContextProjectionTestHarness();
+			const branchA = [
+				messageEntry("a1", userMessage(), null),
+				messageEntry("a2", assistantMessage("call-a"), "a1"),
+				messageEntry(
+					"a3",
+					toolResultMessage("call-a", "branch A output ".repeat(5)),
+					"a2",
+				),
+				projectionStateEntry("a4", [], "a3", "L1"),
+			];
+			const branchAContext = createContextFake(branchA);
+			await sessionStartHandler({ type: "session_start" }, branchAContext.ctx);
+			expect(
+				await contextHandler(
+					{ type: "context", messages: messagesFromBranch(branchA) },
+					branchAContext.ctx,
+				),
+			).toBeUndefined();
+
+			const branchB = [
+				messageEntry("b1", userMessage(), null),
+				messageEntry("b2", assistantMessage("call-b"), "b1"),
+				messageEntry(
+					"b3",
+					toolResultMessage("call-b", "branch B output ".repeat(5)),
+					"b2",
+				),
+			];
+			const branchBContext = createContextFake(branchB);
+			await sessionTreeHandler({ type: "session_tree" }, branchBContext.ctx);
+			const branchBResult = await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchB) },
+				branchBContext.ctx,
+			);
+
+			expect(branchBResult).toBeDefined();
+			expect(pi.appendEntryCalls).toHaveLength(1);
+			expect(pi.appendEntryCalls[0]?.data).toMatchObject({
+				appliedLevel: "L1",
 			});
 		});
 	});
@@ -1063,6 +1352,7 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
+						appliedLevel: "L1",
 						projectedEntries: [
 							{ entryId: "03", replacementText: OMITTED_NOTICE },
 						],
@@ -1152,6 +1442,7 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
+						appliedLevel: "L1",
 						projectedEntries: [
 							{ entryId: "06", replacementText: OMITTED_NOTICE },
 						],
@@ -1665,6 +1956,7 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
+						appliedLevel: "L1",
 						projectedEntries: [
 							{
 								entryId: "03",
@@ -1823,6 +2115,7 @@ describe("context-projection", () => {
 			);
 			expect(summaryPromptText.text.match(/<\/tool_result>/g)).toHaveLength(1);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				appliedLevel: "L1",
 				projectedEntries: [
 					{
 						entryId: "03",
@@ -1884,6 +2177,7 @@ describe("context-projection", () => {
 			});
 			expect(completion.calls).toHaveLength(1);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				appliedLevel: "L1",
 				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
@@ -2011,6 +2305,7 @@ describe("context-projection", () => {
 				},
 			]);
 			expect(pi.appendEntryCalls[2]?.data).toEqual({
+				appliedLevel: "L1",
 				projectedEntries: [
 					{
 						entryId: "03",
@@ -2104,6 +2399,7 @@ describe("context-projection", () => {
 				},
 			});
 			expect(pi.appendEntryCalls[1]?.data).toEqual({
+				appliedLevel: "L1",
 				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
@@ -2144,6 +2440,7 @@ describe("context-projection", () => {
 			);
 
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				appliedLevel: "L1",
 				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 			expect(
@@ -2209,6 +2506,7 @@ describe("context-projection", () => {
 				},
 			});
 			expect(pi.appendEntryCalls[1]?.data).toEqual({
+				appliedLevel: "L1",
 				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
 			});
 		});
@@ -2309,6 +2607,7 @@ describe("context-projection", () => {
 			expect(maxActiveCalls).toBe(2);
 			expect(completion.calls).toHaveLength(3);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				appliedLevel: "L1",
 				projectedEntries: [
 					{
 						entryId: "03",
@@ -2356,7 +2655,7 @@ describe("context-projection", () => {
 
 	test("keeps every workflow tool result visible during ordinary projection", async () => {
 		// Purpose: workflow records intended for the main model must remain complete outside compaction.
-		// Input and expected output: old large results from every workflow tool remain unchanged and no projection state is recorded.
+		// Input and expected output: old large workflow results remain unchanged while the crossed L1 checkpoint is recorded without replacements.
 		// Edge case: protection is mandatory without projectionIgnoredTools configuration.
 		// Dependencies: the ordinary context hook runs against an isolated branch containing all workflow tool names.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -2404,7 +2703,12 @@ describe("context-projection", () => {
 
 			expect(result).toBeUndefined();
 			expect(messagesFromBranch(branchEntries)).toEqual(originalMessages);
-			expect(pi.appendEntryCalls).toEqual([]);
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: CUSTOM_TYPE,
+					data: { appliedLevel: "L1", projectedEntries: [] },
+				},
+			]);
 		});
 	});
 
@@ -2477,6 +2781,7 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
+						appliedLevel: "L1",
 						projectedEntries: [
 							{ entryId: "07", replacementText: OMITTED_NOTICE },
 						],
@@ -2625,6 +2930,7 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
+						appliedLevel: "L1",
 						projectedEntries: [
 							{ entryId: "03", replacementText: "first omitted notice" },
 						],
@@ -2847,6 +3153,7 @@ describe("context-projection", () => {
 				{
 					customType: CUSTOM_TYPE,
 					data: {
+						appliedLevel: "L1",
 						projectedEntries: [
 							{ entryId: "05", replacementText: OMITTED_NOTICE },
 						],
@@ -2984,7 +3291,7 @@ describe("context-projection", () => {
 
 	test("does not let stored projection state override loaded skill root protection", async () => {
 		// Purpose: persisted projection state must not hide a tool result after it is classified as loaded skill context.
-		// Input and expected output: a stored projected entry under a loaded skill root remains unprojected and no new state is written.
+		// Input and expected output: a stored projected skill entry remains visible while the missing L1 checkpoint is recorded without replacements.
 		// Edge case: the critical result was projected by older state before this protection existed.
 		// Dependencies: this test uses session_start reconstruction plus before_agent_start skill-root discovery.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -3061,7 +3368,12 @@ describe("context-projection", () => {
 			);
 
 			expect(result).toBeUndefined();
-			expect(pi.appendEntryCalls).toEqual([]);
+			expect(pi.appendEntryCalls).toEqual([
+				{
+					customType: CUSTOM_TYPE,
+					data: { appliedLevel: "L1", projectedEntries: [] },
+				},
+			]);
 			expect(
 				getProjectionAwareContextUsage(
 					"context-projection-test-session",
@@ -3481,7 +3793,7 @@ describe("context-projection", () => {
 
 	test("rejects invalid percent-based recent turn config", async () => {
 		// Purpose: runtime config validation must fail closed for malformed percent values.
-		// Input and expected output: missing, negative, above-one, and non-number percent values return undefined and append no custom entry.
+		// Input and expected output: an omitted percent uses defaults and records L1, while malformed explicit values append no entry.
 		// Edge case: all other config fields are valid and usage is below the projection threshold.
 		// Dependencies: this test writes only isolated config files and uses fixture context branches.
 		const invalidPercentValues: unknown[] = [undefined, -0.1, 1.1, "0.1"];
@@ -3510,14 +3822,23 @@ describe("context-projection", () => {
 				);
 
 				expect(result).toBeUndefined();
-				expect(pi.appendEntryCalls).toEqual([]);
+				expect(pi.appendEntryCalls).toEqual(
+					keepRecentTurnsPercent === undefined
+						? [
+								{
+									customType: CUSTOM_TYPE,
+									data: { appliedLevel: "L1", projectedEntries: [] },
+								},
+							]
+						: [],
+				);
 			});
 		}
 	});
 
 	test("does not project failed, non-text, small, disabled, or invalidly configured tool results", async () => {
 		// Purpose: projection must fail closed for disallowed result types and configuration states.
-		// Input and expected output: each case returns undefined and appends no custom entry.
+		// Input and expected output: disallowed results record an empty L1 checkpoint, while disabled or invalid configs append no state.
 		// Edge case: invalid field type disables projection even when usage is below threshold.
 		// Dependencies: this test writes only isolated custom config files and uses fixture context branches.
 		const nonProjectedMessages: AgentMessage[] = [
@@ -3550,7 +3871,12 @@ describe("context-projection", () => {
 				);
 
 				expect(result).toBeUndefined();
-				expect(pi.appendEntryCalls).toEqual([]);
+				expect(pi.appendEntryCalls).toEqual([
+					{
+						customType: CUSTOM_TYPE,
+						data: { appliedLevel: "L1", projectedEntries: [] },
+					},
+				]);
 				expect(context.uiCalls).toEqual([
 					{
 						method: "setStatus",

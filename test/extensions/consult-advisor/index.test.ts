@@ -1636,6 +1636,7 @@ describe("consult-advisor", () => {
 			expect(advisorReplacement.text).toContain("Generated projection summary");
 			expect(advisorReplacement.text).not.toContain("old output old output");
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				appliedLevel: "L3",
 				projectedEntries: [
 					{
 						entryId: "2",
