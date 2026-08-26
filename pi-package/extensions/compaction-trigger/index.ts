@@ -9,6 +9,7 @@ import {
 	calculateContextTokens,
 	convertToLlm,
 	estimateTokens,
+	getLatestCompactionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { buildActiveToolDefinitions } from "../../shared/active-tool-definitions";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
@@ -64,13 +65,16 @@ function reportFailure(pi: ExtensionAPI): void {
 /** Estimates current context from the last trusted provider usage anchor. */
 function estimateUsageBackedTokens(
 	messages: readonly AgentMessage[],
+	latestCompactionTimestamp: number | undefined,
 ): number | undefined {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const message = messages[index];
 		if (
 			message?.role !== "assistant" ||
 			message.stopReason === "aborted" ||
-			message.stopReason === "error"
+			message.stopReason === "error" ||
+			(latestCompactionTimestamp !== undefined &&
+				message.timestamp <= latestCompactionTimestamp)
 		) {
 			continue;
 		}
@@ -126,9 +130,16 @@ function handleContext(
 		messages: convertToLlm(event.messages),
 		tools: buildActiveToolDefinitions(pi),
 	});
+	const latestCompaction = getLatestCompactionEntry(
+		ctx.sessionManager.getBranch(),
+	);
+	const latestCompactionTimestamp =
+		latestCompaction === null
+			? undefined
+			: Date.parse(latestCompaction.timestamp);
 	const estimatedTokens = Math.max(
 		serializedEstimate,
-		estimateUsageBackedTokens(event.messages) ?? 0,
+		estimateUsageBackedTokens(event.messages, latestCompactionTimestamp) ?? 0,
 	);
 	const threshold = model.contextWindow - settings.reserveTokens;
 	if (estimatedTokens < threshold) {

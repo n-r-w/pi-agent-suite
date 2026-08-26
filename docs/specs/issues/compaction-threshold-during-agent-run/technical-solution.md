@@ -41,7 +41,7 @@
 ### Request-size calculation
 
 - ALG-01: On every `context` event, build the provider-visible request representation from `ctx.getSystemPrompt()`, `convertToLlm(event.messages)`, and the active tool definitions.
-- ALG-02: Calculate a serialized estimate with `estimateSerializedInputTokens`. Also calculate a usage-backed estimate from the last assistant response with nonzero provider context usage whose `stopReason` is neither `aborted` nor `error`, plus `estimateTokens` for later messages. Use the larger estimate for threshold enforcement.
+- ALG-02: Calculate a serialized estimate with `estimateSerializedInputTokens`. Also calculate a usage-backed estimate from the last assistant response with nonzero provider context usage whose `stopReason` is neither `aborted` nor `error` and whose timestamp is newer than the latest compaction entry, plus `estimateTokens` for later messages. Assistant usage at or before the latest compaction timestamp is ignored. Use the larger estimate for threshold enforcement.
 - ALG-03: Read `compaction.enabled` and `reserveTokens` through Pi's `SettingsManager`, including project settings precedence.
 - ALG-04: Calculate `effectiveThreshold` as `min(contextWindow, contextWindow - reserveTokens + contextWindow * thresholdDeltaPercent / 100)`.
 - ALG-05: Block the request when `estimatedTokens >= effectiveThreshold`. The `contextWindow` cap prevents the extension from permitting a request beyond the model's maximum context.

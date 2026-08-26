@@ -68,6 +68,9 @@ interface TestContext {
 	readonly signal: AbortSignal | undefined;
 	readonly abortCalls: { count: number };
 	readonly compactCalls: CompactOptions[];
+	readonly sessionManager: {
+		getBranch(): Array<{ readonly type: string; readonly timestamp: string }>;
+	};
 	abort(): void;
 	compact(options?: CompactOptions): void;
 	getSystemPrompt(): string;
@@ -126,6 +129,7 @@ function createContext(
 	cwd: string,
 	contextWindow: number | undefined,
 	hasActiveSignal = true,
+	latestCompactionTimestamp?: number,
 ): TestContext {
 	const controller = new AbortController();
 	const abortCalls = { count: 0 };
@@ -139,6 +143,17 @@ function createContext(
 		signal: hasActiveSignal ? controller.signal : undefined,
 		abortCalls,
 		compactCalls,
+		sessionManager: {
+			getBranch: () =>
+				latestCompactionTimestamp === undefined
+					? []
+					: [
+							{
+								type: "compaction",
+								timestamp: new Date(latestCompactionTimestamp).toISOString(),
+							},
+						],
+		},
 		abort(): void {
 			abortCalls.count += 1;
 			controller.abort();
@@ -153,16 +168,22 @@ function createContext(
 }
 
 /** Creates one provider-visible user message fixture. */
-function userMessage(text = "continue the current task"): AgentMessage {
+function userMessage(
+	text = "continue the current task",
+	timestamp = 1,
+): AgentMessage {
 	return {
 		role: "user",
 		content: [{ type: "text", text }],
-		timestamp: 1,
+		timestamp,
 	};
 }
 
 /** Creates one successful assistant response with provider-reported context usage. */
-function assistantMessage(totalTokens: number): AssistantMessage {
+function assistantMessage(
+	totalTokens: number,
+	timestamp = 1,
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "provider response" }],
@@ -178,7 +199,7 @@ function assistantMessage(totalTokens: number): AssistantMessage {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
-		timestamp: 1,
+		timestamp,
 	};
 }
 
@@ -364,6 +385,78 @@ describe("compaction trigger", () => {
 
 		expect(result).toEqual({ messages: [] });
 		expect(ctx.abortCalls.count).toBe(1);
+	});
+
+	test("ignores pre-compaction usage and trusts later assistant usage", async () => {
+		// Purpose: compaction must invalidate old provider usage until a new assistant response succeeds.
+		// Input and expected output: pre-compaction usage above the threshold does not block a safe resumed request, while equal post-compaction usage aborts the next request.
+		// Edge case: assistant usage at or before the latest compaction timestamp is not a trusted anchor.
+		// Dependencies: public sessionManager branch access, provider usage helpers, and the resuming lifecycle.
+		const { cwd } = await createSettingsFixture({
+			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
+		});
+		const initialMessages = [userMessage()];
+		const initialCtx = createContext(
+			cwd,
+			estimatedTokens(initialMessages) + RESERVE_TOKENS,
+		);
+		const harness = install();
+		await harness.context(
+			{ type: "context", messages: initialMessages },
+			initialCtx,
+		);
+		await harness.agentSettled({ type: "agent_settled" }, initialCtx);
+		initialCtx.compactCalls[0]?.onComplete?.({} as never);
+
+		const compactionTimestamp = 2_000;
+		const oldAnchor = assistantMessage(10_000, compactionTimestamp - 1);
+		const resumedMessage = userMessage(
+			"continue from compacted context",
+			compactionTimestamp + 1,
+		);
+		const resumedMessages = [oldAnchor, resumedMessage];
+		const usageThreshold =
+			calculateContextTokens(oldAnchor.usage) + estimateTokens(resumedMessage);
+		expect(estimatedTokens(resumedMessages)).toBeLessThan(usageThreshold);
+		const resumedCtx = createContext(
+			cwd,
+			usageThreshold + RESERVE_TOKENS,
+			true,
+			compactionTimestamp,
+		);
+
+		const resumedResult = await harness.context(
+			{ type: "context", messages: resumedMessages },
+			resumedCtx,
+		);
+
+		expect(resumedResult).toBeUndefined();
+		expect(resumedCtx.abortCalls.count).toBe(0);
+		expect(diagnostics(harness.pi)).toHaveLength(0);
+
+		const newAnchor = assistantMessage(10_000, compactionTimestamp + 2);
+		const trailingMessage = userMessage(
+			"continue after new provider response",
+			compactionTimestamp + 3,
+		);
+		const currentMessages = [oldAnchor, newAnchor, trailingMessage];
+		const currentThreshold =
+			calculateContextTokens(newAnchor.usage) + estimateTokens(trailingMessage);
+		expect(estimatedTokens(currentMessages)).toBeLessThan(currentThreshold);
+		const currentCtx = createContext(
+			cwd,
+			currentThreshold + RESERVE_TOKENS,
+			true,
+			compactionTimestamp,
+		);
+
+		const currentResult = await harness.context(
+			{ type: "context", messages: currentMessages },
+			currentCtx,
+		);
+
+		expect(currentResult).toEqual({ messages: [] });
+		expect(currentCtx.abortCalls.count).toBe(1);
 	});
 
 	test("defers one compaction until the interrupted agent settles", async () => {
