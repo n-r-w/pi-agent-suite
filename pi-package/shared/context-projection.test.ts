@@ -10,6 +10,7 @@ import {
 	estimatePendingProjectionSavings,
 	getProjectionAwareContextUsage,
 	type MappedContextEntry,
+	mapEventMessagesToBranchEntries,
 	projectContextMessages,
 	readContextProjectionConfig,
 	replayContextProjection,
@@ -846,5 +847,90 @@ describe("context projection replay", () => {
 				expect(replayed).not.toContain(OMITTED_NOTICE);
 			}
 		});
+	});
+});
+
+describe("context entry mapping", () => {
+	test("matches a live custom message when persistence assigned a different timestamp", () => {
+		// Purpose: Pi assigns separate timestamps to the live custom message and its persisted session entry.
+		// Input and expected output: otherwise identical workflow messages map to the same session entry despite different timestamps.
+		// Edge case: the mismatch can be only one millisecond and still fails strict deep equality.
+		// Dependencies: in-memory Pi custom message and session entry shapes.
+		const branchEntry = {
+			type: "custom_message",
+			customType: "workflow",
+			content: "workflow state",
+			display: false,
+			details: { version: 1 },
+			id: "custom-1",
+			parentId: null,
+			timestamp: "2026-08-26T16:00:00.001Z",
+		} as SessionEntry;
+		const liveMessage = {
+			role: "custom",
+			customType: "workflow",
+			content: "workflow state",
+			display: false,
+			details: { version: 1 },
+			timestamp: Date.parse("2026-08-26T16:00:00.000Z"),
+		} as AgentMessage;
+
+		const mapped = mapEventMessagesToBranchEntries(
+			[liveMessage],
+			[branchEntry],
+		);
+
+		expect(mapped).toEqual([{ entry: branchEntry, message: liveMessage }]);
+	});
+
+	test("rejects custom message differences outside timestamp", () => {
+		// Purpose: timestamp tolerance must not weaken branch-to-runtime message identity.
+		// Input and expected output: changes to content, custom type, details, or display prevent mapping.
+		// Edge case: each case still uses the expected independent runtime timestamp.
+		// Dependencies: in-memory Pi custom message and session entry shapes.
+		const branchEntry = {
+			type: "custom_message",
+			customType: "workflow",
+			content: "workflow state",
+			display: false,
+			details: { version: 1 },
+			id: "custom-1",
+			parentId: null,
+			timestamp: "2026-08-26T16:00:00.001Z",
+		} as SessionEntry;
+		const liveMessage = {
+			role: "custom",
+			customType: "workflow",
+			content: "workflow state",
+			display: false,
+			details: { version: 1 },
+			timestamp: Date.parse("2026-08-26T16:00:00.000Z"),
+		} as AgentMessage;
+		const mismatches = [
+			{ ...liveMessage, content: "different state" },
+			{ ...liveMessage, customType: "different-type" },
+			{ ...liveMessage, details: { version: 2 } },
+			{ ...liveMessage, display: true },
+		] as AgentMessage[];
+
+		for (const mismatch of mismatches) {
+			expect(
+				mapEventMessagesToBranchEntries([mismatch], [branchEntry]),
+			).toBeUndefined();
+		}
+	});
+
+	test("keeps strict timestamp matching for ordinary messages", () => {
+		// Purpose: only Pi custom-message persistence regenerates timestamps independently.
+		// Input and expected output: otherwise identical user messages with different timestamps do not map.
+		// Edge case: the mismatch is one millisecond.
+		// Dependencies: in-memory Pi message and session entry shapes.
+		const persistedMessage = userMessage("request");
+		const branchEntry = messageEntry("user-1", persistedMessage, null);
+		const liveMessage = { ...persistedMessage, timestamp: 2 } as AgentMessage;
+
+		expect(
+			mapEventMessagesToBranchEntries([liveMessage], [branchEntry]),
+		).toBeUndefined();
 	});
 });

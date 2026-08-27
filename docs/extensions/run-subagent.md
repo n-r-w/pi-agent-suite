@@ -368,6 +368,8 @@ Each normally terminal invocation produces one feedback value with status `succe
 
 Feedback returned by a wait is not duplicated in owner history. If several selected children finish before one wait settles, the wait returns one feedback value and the others enter owner history. Those other values cannot be consumed by a later wait.
 
+A hidden `compaction-trigger-interruption` message marks threshold compaction as part of the active child invocation. The following intermediate `agent_settled` produces no feedback and does not stop the child process. The first assistant result after compaction restores normal completion handling. Failed manual compaction produces failure feedback with the compaction diagnostic. Parent cancellation and transport failure remain immediate terminal outcomes.
+
 If normal feedback is selected for a matching wait but the owning runtime stops before that wait can return, the feedback is saved for owner history and delivered once when the owner session reopens.
 
 History delivery includes `Duration: N seconds` between the completion header and child output or error. `N` follows the same total-invocation rounding rule as `elapsedSeconds`. When final invocation metadata contains context usage and positive projection savings, the `subagent_wait` card and direct feedback header render the shared `~saved/current/window` context value.

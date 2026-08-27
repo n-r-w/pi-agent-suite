@@ -2,6 +2,7 @@ import {
 	type AssistantMessage,
 	isContextOverflow,
 } from "@earendil-works/pi-ai";
+import { isCompactionTriggerInterruptionMessage } from "./compaction-trigger-protocol";
 
 export interface ChildRpcRuntimeFacts {
 	readonly modelProvider: string;
@@ -22,6 +23,7 @@ export interface ChildRpcPromptCompletion {
 }
 
 type OverflowClassification = "none" | "same-model" | "cross-model";
+type ThresholdContinuationState = "none" | "interrupting" | "resuming";
 
 const PARENT_ABORT_REASON = "parent abort";
 const ASSISTANT_FAILURE_REASON = "child assistant request failed";
@@ -41,6 +43,7 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 	private terminal: ChildRpcPromptDecision | undefined;
 	private lastAssistantMessage: AssistantMessage | undefined;
 	private pendingFailureReason: string | undefined;
+	private thresholdContinuation: ThresholdContinuationState = "none";
 
 	constructor(private readonly runtimeFacts: ChildRpcRuntimeFacts) {}
 
@@ -78,10 +81,19 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 
 	/** Records the latest valid assistant message and its provisional outcome. */
 	private handleMessageEnd(message: unknown): ChildRpcPromptDecision {
+		if (isCompactionTriggerInterruptionMessage(message)) {
+			// The marker arrives before the trigger aborts the active request.
+			this.thresholdContinuation = "interrupting";
+			return this.wait();
+		}
 		if (!isAssistantMessage(message)) {
 			return this.wait();
 		}
 
+		if (this.thresholdContinuation === "resuming") {
+			// The first assistant result after compaction owns the final settlement.
+			this.thresholdContinuation = "none";
+		}
 		this.lastAssistantMessage = message;
 		const overflow = classifyOverflow(message, this.runtimeFacts);
 		if (overflow === "cross-model") {
@@ -117,6 +129,22 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 	private handleCompactionEnd(
 		event: Record<string, unknown>,
 	): ChildRpcPromptDecision {
+		if (
+			this.thresholdContinuation === "resuming" &&
+			event["reason"] === "manual" &&
+			(event["result"] === undefined ||
+				event["result"] === null ||
+				event["aborted"] === true)
+		) {
+			return this.fail(
+				readEventError(
+					event,
+					event["aborted"] === true
+						? "child threshold compaction aborted"
+						: "child threshold compaction failed",
+				),
+			);
+		}
 		if (event["reason"] !== "overflow" || event["willRetry"] === true) {
 			return this.wait();
 		}
@@ -136,6 +164,14 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 
 	/** Finalizes the latest provisional result after Pi exhausts automatic continuation. */
 	private handleAgentSettled(): ChildRpcPromptDecision {
+		if (this.thresholdContinuation === "interrupting") {
+			// compaction-trigger starts compaction from this settlement callback.
+			this.thresholdContinuation = "resuming";
+			return this.wait();
+		}
+		if (this.thresholdContinuation === "resuming") {
+			return this.wait();
+		}
 		if (this.pendingFailureReason !== undefined) {
 			return this.fail(this.pendingFailureReason);
 		}

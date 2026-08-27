@@ -7,10 +7,12 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
+	type AppliedProjectionLevel,
 	addPendingProjectionSavings,
 	CONTEXT_PROJECTION_CUSTOM_TYPE,
 	type ContextProjectionConfig,
 	type ContextProjectionConfigResult,
+	collectAppliedProjectionLevel,
 	collectLoadedSkillRoots,
 	collectProjectedReplacements,
 	estimatePendingProjectionSavings,
@@ -18,6 +20,7 @@ import {
 	estimateSavedTokens,
 	getProjectionAwareContextUsage,
 	hasValidAssistantContextUsage,
+	isProjectionLevelDeeper,
 	type MappedContextEntry,
 	mapEventMessagesToBranchEntries,
 	type ProjectedEntryState,
@@ -54,6 +57,7 @@ interface HandleContextProjectionOptions {
 	readonly event: ContextEvent;
 	readonly ctx: ExtensionContext;
 	readonly projectedReplacementsByEntryId: Map<string, string>;
+	readonly appliedProjectionLevel: AppliedProjectionLevel | undefined;
 	readonly publishedStatusText: string | undefined;
 	readonly loadedSkillRoots: readonly string[];
 	readonly completeSimple: CompleteSimple;
@@ -61,17 +65,36 @@ interface HandleContextProjectionOptions {
 
 interface HandleContextProjectionResult {
 	readonly contextResult: { readonly messages?: AgentMessage[] } | undefined;
+	readonly appliedProjectionLevel: AppliedProjectionLevel | undefined;
 	readonly statusText: string | undefined;
 }
 
 interface ContextProjectionChangeResultOptions {
-	readonly pi: Pick<ExtensionAPI, "appendEntry">;
 	readonly ctx: ExtensionContext;
 	readonly config: Extract<ContextProjectionConfigResult, { kind: "valid" }>;
-	readonly projectedReplacementsByEntryId: Map<string, string>;
+	readonly appliedProjectionLevel: AppliedProjectionLevel | undefined;
 	readonly publishedStatusText: string | undefined;
 	readonly activeProjectionLevel: ProjectionLevel | undefined;
 	readonly decision: ProjectionDecision;
+}
+
+interface ContextProjectionNoChangeResultOptions {
+	readonly ctx: ExtensionContext;
+	readonly config: ContextProjectionConfigResult;
+	readonly appliedProjectionLevel: AppliedProjectionLevel | undefined;
+	readonly publishedStatusText: string | undefined;
+	readonly projectedSavedTokens?: number;
+}
+
+interface ContextEventProjectionDecisionOptions {
+	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
+	readonly event: ContextEvent;
+	readonly ctx: ExtensionContext;
+	readonly config: ContextProjectionConfig;
+	readonly projectedReplacementsByEntryId: Map<string, string>;
+	readonly loadedSkillRoots: readonly string[];
+	readonly discoveryLevel: ProjectionLevel | undefined;
+	readonly completeSimple: CompleteSimple;
 }
 
 type CompleteSimple = ToolResultSummaryCompleteSimple;
@@ -112,7 +135,15 @@ interface SummaryReplacementOptions {
 	readonly progress: ProjectionProgressReporter;
 }
 
-interface RecordNewProjectedEntriesOptions {
+interface RecordProjectionTransitionOptions {
+	readonly pi: Pick<ExtensionAPI, "appendEntry">;
+	readonly ctx: ExtensionContext;
+	readonly projectedReplacementsByEntryId: Map<string, string>;
+	readonly discoveryLevel: ProjectionLevel | undefined;
+	readonly decision: ProjectionDecision;
+}
+
+interface RecordProjectionStateOptions {
 	readonly pi: Pick<ExtensionAPI, "appendEntry">;
 	readonly cwd: string;
 	readonly sessionId: string;
@@ -120,6 +151,7 @@ interface RecordNewProjectedEntriesOptions {
 	readonly projectedReplacementsByEntryId: Map<string, string>;
 	readonly newProjectedEntries: readonly ProjectedEntryState[];
 	readonly newSavedTokens: number;
+	readonly appliedLevel: AppliedProjectionLevel;
 }
 
 /** Extension entry point for provider-context projection of old tool results. */
@@ -129,6 +161,7 @@ export default function contextProjection(
 ): void {
 	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	let projectedReplacementsByEntryId = new Map<string, string>();
+	let appliedProjectionLevel: AppliedProjectionLevel | undefined;
 	let publishedStatusText: string | undefined;
 	let loadedSkillRoots: readonly string[] = [];
 
@@ -136,9 +169,10 @@ export default function contextProjection(
 		readonly cwd: string;
 		readonly sessionManager: { getBranch(): SessionEntry[] };
 	}): void => {
-		projectedReplacementsByEntryId = collectProjectedReplacements(
-			ctx.sessionManager.getBranch(),
-		);
+		const branchEntries = ctx.sessionManager.getBranch();
+		projectedReplacementsByEntryId =
+			collectProjectedReplacements(branchEntries);
+		appliedProjectionLevel = collectAppliedProjectionLevel(branchEntries);
 		publishRuntimeProjectedReplacements(
 			ctx.cwd,
 			projectedReplacementsByEntryId,
@@ -172,6 +206,11 @@ export default function contextProjection(
 		await publishCurrentStatus(ctx);
 	});
 
+	pi.on("session_compact", async (_event, ctx) => {
+		reconstructProjectionState(ctx);
+		await publishCurrentStatus(ctx);
+	});
+
 	pi.on("before_agent_start", (event) => {
 		loadedSkillRoots = collectLoadedSkillRoots(event);
 	});
@@ -182,10 +221,12 @@ export default function contextProjection(
 			event,
 			ctx,
 			projectedReplacementsByEntryId,
+			appliedProjectionLevel,
 			publishedStatusText,
 			loadedSkillRoots,
 			completeSimple,
 		});
+		appliedProjectionLevel = result.appliedProjectionLevel;
 		publishedStatusText = result.statusText;
 		return result.contextResult;
 	});
@@ -203,6 +244,7 @@ async function handleContextProjection({
 	event,
 	ctx,
 	projectedReplacementsByEntryId,
+	appliedProjectionLevel,
 	publishedStatusText,
 	loadedSkillRoots,
 	completeSimple,
@@ -211,11 +253,12 @@ async function handleContextProjection({
 	syncPendingProjectionSavings(ctx, config, loadedSkillRoots);
 	assertNoFatalConfigIssue(config);
 	if (config.kind !== "valid") {
-		return createContextProjectionNoChangeResult(
+		return createContextProjectionNoChangeResult({
 			ctx,
 			config,
+			appliedProjectionLevel,
 			publishedStatusText,
-		);
+		});
 	}
 
 	const currentProjectedSavedTokens = estimateCurrentProjectedSavedTokens(
@@ -224,53 +267,88 @@ async function handleContextProjection({
 		projectedReplacementsByEntryId,
 		loadedSkillRoots,
 	);
-	const createNoChangeResult = (): HandleContextProjectionResult =>
-		createContextProjectionNoChangeResult(
+	const createNoChangeResult = (
+		nextAppliedLevel = appliedProjectionLevel,
+	): HandleContextProjectionResult =>
+		createContextProjectionNoChangeResult({
 			ctx,
 			config,
+			appliedProjectionLevel: nextAppliedLevel,
 			publishedStatusText,
-			currentProjectedSavedTokens,
-		);
-	const activeProjectionLevel = resolveActiveProjectionLevel(
-		ctx,
-		config.config,
+			projectedSavedTokens: currentProjectedSavedTokens,
+		});
+	const discoveryLevel = resolveProjectionDiscoveryLevel(
+		resolveActiveProjectionLevel(ctx, config.config),
+		appliedProjectionLevel,
 	);
-	if (
-		!hasProjectionWork(activeProjectionLevel, projectedReplacementsByEntryId)
-	) {
+	if (!hasProjectionWork(discoveryLevel, projectedReplacementsByEntryId)) {
 		return createNoChangeResult();
 	}
 
+	const decision = await createContextEventProjectionDecision({
+		pi,
+		event,
+		ctx,
+		config: config.config,
+		projectedReplacementsByEntryId,
+		loadedSkillRoots,
+		discoveryLevel,
+		completeSimple,
+	});
+	if (decision === undefined) {
+		return createNoChangeResult();
+	}
+	recordProjectionTransition({
+		pi,
+		ctx,
+		projectedReplacementsByEntryId,
+		discoveryLevel,
+		decision,
+	});
+	const nextAppliedLevel = discoveryLevel?.label ?? appliedProjectionLevel;
+	if (!decision.changed) {
+		return createNoChangeResult(nextAppliedLevel);
+	}
+
+	return createContextProjectionChangeResult({
+		ctx,
+		config,
+		appliedProjectionLevel: nextAppliedLevel,
+		publishedStatusText,
+		activeProjectionLevel: discoveryLevel,
+		decision,
+	});
+}
+
+/** Maps one context event and creates its replay or threshold-transition decision. */
+async function createContextEventProjectionDecision({
+	pi,
+	event,
+	ctx,
+	config,
+	projectedReplacementsByEntryId,
+	loadedSkillRoots,
+	discoveryLevel,
+	completeSimple,
+}: ContextEventProjectionDecisionOptions): Promise<
+	ProjectionDecision | undefined
+> {
 	const mappedContext = mapEventMessagesToBranchEntries(
 		event.messages,
 		ctx.sessionManager.getBranch(),
 	);
 	if (mappedContext === undefined) {
-		return createNoChangeResult();
+		return undefined;
 	}
-
-	const decision = await createProjectionDecision({
-		pi,
-		ctx,
-		config: config.config,
-		mappedContext,
-		projectedReplacementsByEntryId,
-		loadedSkillRoots,
-		activeProjectionLevel,
-		completeSimple,
-	});
-	if (!decision.changed) {
-		return createNoChangeResult();
-	}
-
-	return createContextProjectionChangeResult({
+	return createProjectionDecision({
 		pi,
 		ctx,
 		config,
+		mappedContext,
 		projectedReplacementsByEntryId,
-		publishedStatusText,
-		activeProjectionLevel,
-		decision,
+		loadedSkillRoots,
+		activeProjectionLevel: discoveryLevel,
+		completeSimple,
 	});
 }
 
@@ -283,6 +361,23 @@ function hasProjectionWork(
 		activeProjectionLevel !== undefined ||
 		projectedReplacementsByEntryId.size > 0
 	);
+}
+
+/** Returns the newly crossed projection level, keeping applied levels monotonic until compaction. */
+function resolveProjectionDiscoveryLevel(
+	activeProjectionLevel: ProjectionLevel | undefined,
+	appliedProjectionLevel: AppliedProjectionLevel | undefined,
+): ProjectionLevel | undefined {
+	if (activeProjectionLevel === undefined) {
+		return undefined;
+	}
+	if (
+		appliedProjectionLevel === undefined ||
+		isProjectionLevelDeeper(activeProjectionLevel.label, appliedProjectionLevel)
+	) {
+		return activeProjectionLevel;
+	}
+	return undefined;
 }
 
 /** Creates the final projection decision, enriching new projected entries with summaries when available. */
@@ -554,23 +649,13 @@ function collectNewProjectionSummaryCandidates({
 }
 
 function createContextProjectionChangeResult({
-	pi,
 	ctx,
 	config,
-	projectedReplacementsByEntryId,
+	appliedProjectionLevel,
 	publishedStatusText,
 	activeProjectionLevel,
 	decision,
 }: ContextProjectionChangeResultOptions): HandleContextProjectionResult {
-	recordNewProjectedEntries({
-		pi,
-		cwd: ctx.cwd,
-		sessionId: ctx.sessionManager.getSessionId(),
-		branchLeafId: ctx.sessionManager.getLeafId(),
-		projectedReplacementsByEntryId,
-		newProjectedEntries: decision.newProjectedEntries,
-		newSavedTokens: decision.newSavedTokens,
-	});
 	const statusText = publishProjectionStatus(
 		ctx,
 		config,
@@ -589,19 +674,22 @@ function createContextProjectionChangeResult({
 	}
 	return {
 		contextResult: { messages: decision.messages },
+		appliedProjectionLevel,
 		statusText,
 	};
 }
 
 /** Returns an unchanged provider context result while keeping footer status current. */
-function createContextProjectionNoChangeResult(
-	ctx: ExtensionContext,
-	config: ContextProjectionConfigResult,
-	publishedStatusText: string | undefined,
+function createContextProjectionNoChangeResult({
+	ctx,
+	config,
+	appliedProjectionLevel,
+	publishedStatusText,
 	projectedSavedTokens = 0,
-): HandleContextProjectionResult {
+}: ContextProjectionNoChangeResultOptions): HandleContextProjectionResult {
 	return {
 		contextResult: undefined,
+		appliedProjectionLevel,
 		statusText: publishProjectionStatus(
 			ctx,
 			config,
@@ -721,8 +809,31 @@ function formatProjectionStatus(
 	return READY_STATUS_TEXT;
 }
 
-/** Persists newly projected entries as one branch-local extension-owned custom entry. */
-function recordNewProjectedEntries({
+/** Persists state only when the current context crossed a deeper projection threshold. */
+function recordProjectionTransition({
+	pi,
+	ctx,
+	projectedReplacementsByEntryId,
+	discoveryLevel,
+	decision,
+}: RecordProjectionTransitionOptions): void {
+	if (discoveryLevel === undefined) {
+		return;
+	}
+	recordProjectionState({
+		pi,
+		cwd: ctx.cwd,
+		sessionId: ctx.sessionManager.getSessionId(),
+		branchLeafId: ctx.sessionManager.getLeafId(),
+		projectedReplacementsByEntryId,
+		newProjectedEntries: decision.newProjectedEntries,
+		newSavedTokens: decision.newSavedTokens,
+		appliedLevel: discoveryLevel.label,
+	});
+}
+
+/** Persists one crossed threshold and its batch of new branch-local replacements. */
+function recordProjectionState({
 	pi,
 	cwd,
 	sessionId,
@@ -730,23 +841,27 @@ function recordNewProjectedEntries({
 	projectedReplacementsByEntryId,
 	newProjectedEntries,
 	newSavedTokens,
-}: RecordNewProjectedEntriesOptions): void {
-	if (newProjectedEntries.length === 0) {
-		return;
-	}
-
-	if (branchLeafId === null) {
+	appliedLevel,
+}: RecordProjectionStateOptions): void {
+	if (newProjectedEntries.length > 0 && branchLeafId === null) {
 		throw new Error(
 			"cannot record pending projection savings without an active branch leaf",
 		);
 	}
 
-	const projectionState = { projectedEntries: newProjectedEntries };
+	const projectionState: {
+		appliedLevel?: AppliedProjectionLevel;
+		projectedEntries: ProjectedEntryState[];
+	} = {
+		appliedLevel,
+		projectedEntries: [...newProjectedEntries],
+	};
 	try {
 		pi.appendEntry(CONTEXT_PROJECTION_CUSTOM_TYPE, projectionState);
 	} catch (error) {
 		// Pi keeps this data object in the in-memory branch before persistence can fail.
-		// Clearing it prevents failed projection state from being replayed in this process.
+		// Clearing every state field prevents failed projection state from being replayed.
+		delete projectionState.appliedLevel;
 		projectionState.projectedEntries = [];
 		throw error;
 	}
@@ -755,6 +870,9 @@ function recordNewProjectedEntries({
 			projectedEntry.entryId,
 			projectedEntry.replacementText,
 		);
+	}
+	if (newProjectedEntries.length === 0 || branchLeafId === null) {
+		return;
 	}
 	publishRuntimeProjectedReplacements(cwd, projectedReplacementsByEntryId);
 	addPendingProjectionSavings(sessionId, estimateSavedTokens(newSavedTokens), {

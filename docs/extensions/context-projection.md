@@ -58,11 +58,11 @@ Enabled projection requires `custom-compaction` to resolve to a valid configurat
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | Disabled when omitted or set to `false` | Enables projection. Set `true` to allow the extension to replace eligible old tool results. |
 | `projectCompactionSource` | No | Boolean | `true` | Before custom compaction, generates missing summaries for eligible tool results in Pi's discarded range. `false` leaves results without existing summaries to Pi's standard 2,000-character truncation. |
-| `projectionRemainingTokensL1` | No | Non-negative integer | `70000` | Starts L1 projection when remaining context tokens are at or below this value. Must be greater than or equal to `projectionRemainingTokensL2`. |
+| `projectionRemainingTokensL1` | No | Non-negative integer | `70000` | Defines the L1 threshold. When L1 is the deepest newly reached level, the extension applies one L1 batch. Must be greater than or equal to `projectionRemainingTokensL2`. |
 | `minToolResultTokensL1` | No | Non-negative integer | `4000` | Minimum token count for a tool result to be projected at L1. |
-| `projectionRemainingTokensL2` | No | Non-negative integer | `50000` | Starts L2 projection when remaining context tokens are at or below this value. Must be between L1 and L3. |
+| `projectionRemainingTokensL2` | No | Non-negative integer | `50000` | Defines the L2 threshold. When L2 is deeper than the applied level, the extension applies one L2 batch. Must be between L1 and L3. |
 | `minToolResultTokensL2` | No | Non-negative integer | `2000` | Minimum token count for a tool result to be projected at L2. |
-| `projectionRemainingTokensL3` | No | Non-negative integer | `30000` | Starts L3 projection when remaining context tokens are at or below this value. Must be less than or equal to `projectionRemainingTokensL2`. |
+| `projectionRemainingTokensL3` | No | Non-negative integer | `30000` | Defines the L3 threshold. When L3 is deeper than the applied level, the extension applies one L3 batch. Must be less than or equal to `projectionRemainingTokensL2`. |
 | `minToolResultTokensL3` | No | Non-negative integer | `1000` | Minimum token count for a tool result to be projected at L3. |
 | `keepRecentTurns` | No | Non-negative integer | `10` | Minimum number of newest tool-use turns kept visible. A tool-use turn is an assistant tool call plus its matching tool results. |
 | `keepRecentTurnsPercent` | No | Number from `0` to `1` | `0.2` | Fraction of newest tool-use turns kept visible in long sessions. The extension uses the larger value from `keepRecentTurns` and this percentage. |
@@ -71,7 +71,20 @@ Enabled projection requires `custom-compaction` to resolve to a valid configurat
 | `summaryNotice` | No | Non-empty string | `Full result omitted. Summary below. Run tool again for full result.` | Text written in `<notice>` when a projected tool result includes a generated summary. |
 | `summary` | No | Object | Summary disabled | Configures optional generated summaries for projected tool results. |
 
-If multiple projection levels use the same remaining-token threshold, the extension uses the lowest matching `minToolResultTokens*` value for those levels.
+If multiple projection levels use the same remaining-token threshold, the extension activates the deepest matching level and uses the lowest matching `minToolResultTokens*` value.
+
+## Threshold transitions
+
+Before every provider request, the extension computes the active level from projection-aware remaining tokens. New projection discovery runs only when that level is deeper than the `appliedLevel` recorded after the latest successful compaction.
+
+- The first L1, L2, or L3 transition creates one projection batch with that level's `minToolResultTokens*` value.
+- A direct jump across multiple thresholds creates one batch at the deepest reached level.
+- Usage moving above and below an applied threshold does not repeat that level.
+- A crossed level is recorded even when no tool result is eligible.
+- Existing replacements are replayed on every request without discovering new entries inside the applied level.
+- Successful compaction resets the applied level. Session startup and tree navigation restore the selected branch's level from `context-projection` session entries.
+
+This limits old provider-context changes to at most three batches between successful compactions. The checkpoint entry itself is extension state and is not sent in provider context.
 
 ## Summary parameters
 
@@ -124,6 +137,7 @@ Diagnostic entries never contain prompts, tool-result text, authentication data,
 - Missing configuration keeps projection disabled.
 - Most invalid projection settings disable projection. Non-absolute summary prompt paths, invalid projection level ordering, removed `placeholder`, and an invalid or disabled `custom-compaction` dependency stop startup.
 - Projection only changes the provider context for the current request. It does not rewrite stored session messages.
+- Live custom messages can map to persisted `custom_message` entries when only their timestamps differ. Differences in role, custom type, content, display, or details make mapping fail safe without projection.
 - Adaptive compaction reuses recorded summary replacements in its discarded range and can generate missing L3 summaries before building the durable summary source. Omission-only replacements are never used as durable summary input.
 - Only successful text tool results can be projected.
 - Failed tool results, non-text tool results, ignored tools, tool results protected by `keepRecentTurns` or `keepRecentTurnsPercent`, and `read` results for files under loaded skill directories stay visible.

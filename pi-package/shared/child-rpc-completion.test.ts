@@ -40,6 +40,20 @@ function messageEnd(message: AssistantMessage): Record<string, unknown> {
 	return { type: "message_end", message };
 }
 
+/** Builds the hidden marker that announces a threshold-compaction continuation. */
+function compactionInterruption(): Record<string, unknown> {
+	return {
+		type: "message_end",
+		message: {
+			role: "custom",
+			customType: "compaction-trigger-interruption",
+			content: "",
+			display: false,
+			timestamp: 1,
+		},
+	};
+}
+
 /** Builds a low-level child RPC agent_end event. */
 function agentEnd(): Record<string, unknown> {
 	return { type: "agent_end" };
@@ -267,6 +281,80 @@ describe("child RPC prompt completion", () => {
 		// Assert
 		expect(recoveredRunEnd).toEqual({ kind: "wait" });
 		expect(settled).toEqual({ kind: "success", message: recovered });
+	});
+
+	test("keeps a threshold compaction continuation inside one child prompt", () => {
+		// Purpose: the parent must not terminate a child between a trigger-owned abort and its resumed answer.
+		// Input and expected output: an interruption marker and aborted request survive the intermediate settlement, then the resumed answer succeeds.
+		// Edge case: manual compaction does not set willRetry even though the extension starts a continuation.
+		// Dependencies: pure shared completion state and the compaction-trigger lifecycle marker.
+		// Arrange
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		const recovered = assistantMessage({
+			content: [{ type: "text", text: "continued after compaction" }],
+		});
+		completion.handleSessionEvent(compactionInterruption());
+		completion.handleSessionEvent(
+			messageEnd(
+				assistantMessage({
+					stopReason: "error",
+					errorMessage: "This operation was aborted",
+				}),
+			),
+		);
+
+		// Act
+		const interruptedSettlement = completion.handleSessionEvent(agentSettled());
+		const compactionEnd = completion.handleSessionEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: { summary: "compacted" },
+			aborted: false,
+			willRetry: false,
+		});
+		completion.handleSessionEvent(messageEnd(recovered));
+		const resumedSettlement = completion.handleSessionEvent(agentSettled());
+
+		// Assert
+		expect(interruptedSettlement).toEqual({ kind: "wait" });
+		expect(compactionEnd).toEqual({ kind: "wait" });
+		expect(resumedSettlement).toEqual({ kind: "success", message: recovered });
+	});
+
+	test("fails a marked child when manual compaction fails", () => {
+		// Purpose: suppressing the interrupted settlement must not hide a terminal compaction failure.
+		// Input and expected output: a marked aborted request waits once, then failed manual compaction returns its diagnostic.
+		// Edge case: no second agent_settled event follows failed manual compaction.
+		// Dependencies: pure shared completion state and Pi's manual compaction event contract.
+		// Arrange
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		completion.handleSessionEvent(compactionInterruption());
+		completion.handleSessionEvent(
+			messageEnd(
+				assistantMessage({
+					stopReason: "error",
+					errorMessage: "This operation was aborted",
+				}),
+			),
+		);
+
+		// Act
+		const interruptedSettlement = completion.handleSessionEvent(agentSettled());
+		const compactionEnd = completion.handleSessionEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: null,
+			aborted: false,
+			willRetry: false,
+			errorMessage: "Compaction failed: quota exhausted",
+		});
+
+		// Assert
+		expect(interruptedSettlement).toEqual({ kind: "wait" });
+		expect(compactionEnd).toEqual({
+			kind: "failure",
+			reason: "Compaction failed: quota exhausted",
+		});
 	});
 
 	test("transport failure and parent abort remain immediate terminal outcomes", () => {

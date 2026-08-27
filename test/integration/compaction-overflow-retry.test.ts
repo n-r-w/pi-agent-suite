@@ -1,10 +1,30 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type {
+	Api,
 	AssistantMessage,
 	Model,
 	UserMessage,
 } from "@earendil-works/pi-ai/compat";
-import { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	AgentSession,
+	convertToLlm,
+	createAgentSession,
+	DefaultResourceLoader,
+	SessionManager,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import compactionTrigger from "../../pi-package/extensions/compaction-trigger";
+import {
+	type ChildRpcPromptDecision,
+	createChildRpcPromptCompletion,
+} from "../../pi-package/shared/child-rpc-completion";
+import { estimateSerializedInputTokens } from "../../pi-package/shared/context-size";
 
 const MODEL: Model<"openai-completions"> = {
 	api: "openai-completions",
@@ -30,25 +50,318 @@ function userMessage(text: string, timestamp: number): UserMessage {
 function assistantMessage(
 	stopReason: AssistantMessage["stopReason"],
 	timestamp: number,
+	text = "response",
+	inputTokens = 100,
 ): AssistantMessage {
 	return {
 		role: "assistant",
-		content: [{ type: "text", text: "response" }],
+		content: [{ type: "text", text }],
 		api: MODEL.api,
 		provider: MODEL.provider,
 		model: MODEL.id,
 		usage: {
-			input: 100,
+			input: inputTokens,
 			output: 10,
 			cacheRead: 0,
 			cacheWrite: 0,
-			totalTokens: 110,
+			totalTokens: inputTokens + 10,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason,
 		timestamp,
 	};
 }
+
+/** Builds one deterministic provider response without token or cost side effects. */
+function fakeAssistantMessage(
+	model: Model<Api>,
+	content: AssistantMessage["content"],
+	stopReason: AssistantMessage["stopReason"],
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason,
+		timestamp: Date.now(),
+	};
+}
+
+/** Emits one complete assistant response through Pi's real stream contract. */
+function completedStream(
+	message: AssistantMessage,
+	reason: "stop" | "toolUse",
+) {
+	const stream = createAssistantMessageEventStream();
+	queueMicrotask(() => {
+		stream.push({ type: "start", partial: message });
+		stream.push({ type: "done", reason, message });
+		stream.end();
+	});
+	return stream;
+}
+
+test("threshold interruption compacts and resumes through real AgentSession boundaries", async () => {
+	// Purpose: prove compaction-trigger owns a tolerated threshold when Pi automatic compaction is disabled.
+	// Inputs and expected outputs: 25 percent tolerance crosses the artificial model window, Pi compacts once manually, and one hidden continuation reaches the rebuilt request.
+	// Edge cases: the provider stream function receives an aborted signal with zero usage, which makes Pi estimate the saved context.
+	// Dependencies: real AgentSession lifecycle, child RPC completion state, isolated extension config, in-memory session storage, and inline extension contracts.
+	const cwd = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-session-"));
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-agent-"));
+	const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
+	const previousSuiteDir = process.env["PI_AGENT_SUITE_DIR"];
+	const suiteDir = join(agentDir, "agent-suite");
+	process.env["PI_CODING_AGENT_DIR"] = agentDir;
+	process.env["PI_AGENT_SUITE_DIR"] = suiteDir;
+
+	const toolResult = `retained-tool-state:${"result-data ".repeat(1_900)}`;
+	const providerEntries: boolean[] = [];
+	const contextTokens: number[] = [];
+	const outboundMessages: unknown[][] = [];
+	let providerDispatches = 0;
+	let dispatchNumber = 0;
+	let compactionCalls = 0;
+	const terminalDecisions: ChildRpcPromptDecision[] = [];
+	const model: Model<"openai-completions"> = {
+		...MODEL,
+		provider: "compaction-integration",
+		id: "fake",
+		contextWindow: 8_000,
+		maxTokens: 500,
+	};
+	const sessionManager = SessionManager.inMemory(cwd);
+	const settingsManager = SettingsManager.inMemory({
+		compaction: {
+			enabled: false,
+			reserveTokens: 1_000,
+			keepRecentTokens: 3_000,
+		},
+		retry: { enabled: false },
+	});
+	let session: AgentSession | undefined;
+	const fakeStream = ((streamModel, context, options) => {
+		const aborted = options?.signal?.aborted ?? false;
+		providerEntries.push(aborted);
+		if (aborted) {
+			return completedStream(
+				fakeAssistantMessage(streamModel, [], "error"),
+				"stop",
+			);
+		}
+		providerDispatches += 1;
+		dispatchNumber += 1;
+		outboundMessages.push(structuredClone(context.messages));
+		if (dispatchNumber === 1) {
+			return completedStream(
+				fakeAssistantMessage(
+					streamModel,
+					[
+						{
+							type: "toolCall",
+							id: "isolated-call",
+							name: "isolated_result",
+							arguments: {},
+						},
+					],
+					"toolUse",
+				),
+				"toolUse",
+			);
+		}
+		return completedStream(
+			fakeAssistantMessage(
+				streamModel,
+				[{ type: "text", text: "continued" }],
+				"stop",
+			),
+			"stop",
+		);
+	}) satisfies StreamFn;
+
+	try {
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		mkdirSync(join(suiteDir, "compaction-trigger"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".pi", "settings.json"),
+			JSON.stringify({
+				compaction: {
+					enabled: false,
+					reserveTokens: 1_000,
+					keepRecentTokens: 3_000,
+				},
+			}),
+		);
+		writeFileSync(
+			join(suiteDir, "compaction-trigger", "config.json"),
+			JSON.stringify({ enabled: true, tolerancePercent: 25 }),
+		);
+		sessionManager.appendMessage(userMessage("old task", 1));
+		sessionManager.appendMessage(
+			assistantMessage(
+				"stop",
+				2,
+				`old-context:${"history-data ".repeat(2_300)}`,
+				5_000,
+			),
+		);
+
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			extensionFactories: [
+				(pi) => {
+					pi.registerTool({
+						name: "isolated_result",
+						label: "Isolated result",
+						description: "Return deterministic retained state.",
+						parameters: Type.Object({}),
+						execute: async () => ({
+							content: [{ type: "text", text: toolResult }],
+							details: {},
+						}),
+					});
+					pi.on("context", (event, ctx) => {
+						contextTokens.push(
+							estimateSerializedInputTokens({
+								systemPrompt: ctx.getSystemPrompt(),
+								messages: convertToLlm(event.messages),
+								tools: [],
+							}),
+						);
+					});
+					pi.registerProvider(model.provider, {
+						name: "Compaction integration",
+						baseUrl: "http://127.0.0.1:1/v1",
+						apiKey: "test",
+						api: model.api,
+						models: [model],
+						streamSimple: fakeStream,
+					});
+					pi.on("session_before_compact", (event) => {
+						compactionCalls += 1;
+						const currentTurn = event.branchEntries.find(
+							(entry) =>
+								entry.type === "message" &&
+								entry.message.role === "user" &&
+								JSON.stringify(entry.message.content).includes(
+									"Use isolated_result",
+								),
+						);
+						if (currentTurn === undefined) {
+							throw new Error(
+								"current tool turn was not available for compaction",
+							);
+						}
+						return {
+							compaction: {
+								summary: "Old task was compacted.",
+								firstKeptEntryId: currentTurn.id,
+								tokensBefore: event.preparation.tokensBefore,
+							},
+						};
+					});
+				},
+				compactionTrigger,
+			],
+		});
+		await resourceLoader.reload();
+		({ session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			thinkingLevel: "off",
+			resourceLoader,
+			sessionManager,
+			settingsManager,
+			tools: ["isolated_result"],
+		}));
+		// Pi owns the Agent, so the test replaces only its public stream contract.
+		(
+			session as unknown as {
+				readonly agent: { streamFunction: StreamFn };
+			}
+		).agent.streamFunction = fakeStream;
+		const completion = createChildRpcPromptCompletion({
+			modelProvider: model.provider,
+			modelId: model.id,
+			contextWindow: model.contextWindow,
+		});
+		session.subscribe((event) => {
+			const decision = completion.handleSessionEvent(event);
+			if (decision.kind !== "wait") {
+				terminalDecisions.push(decision);
+			}
+		});
+
+		await session.prompt("Use isolated_result and continue from its result.");
+		for (
+			let attempt = 0;
+			attempt < 100 && providerDispatches < 2;
+			attempt += 1
+		) {
+			await Bun.sleep(10);
+		}
+
+		expect(contextTokens[0]).toBeLessThan(9_000);
+		expect(contextTokens[1]).toBeGreaterThanOrEqual(9_000);
+		expect(contextTokens[2]).toBeLessThan(9_000);
+		expect(providerEntries).toEqual([false, true, false]);
+		expect(providerDispatches).toBe(2);
+		expect(compactionCalls).toBe(1);
+		expect(terminalDecisions).toHaveLength(1);
+		expect(terminalDecisions[0]?.kind).toBe("success");
+		const entries = sessionManager.getEntries();
+		expect(entries.filter((entry) => entry.type === "compaction")).toHaveLength(
+			1,
+		);
+		expect(
+			entries.filter(
+				(entry) =>
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					entry.message.stopReason === "error",
+			),
+		).toHaveLength(1);
+		const continuationEntry = entries
+			.filter((entry) => entry.type === "custom_message")
+			.find((entry) => entry.customType === "compaction-trigger-continuation");
+		expect(continuationEntry).toBeDefined();
+		if (continuationEntry === undefined) {
+			throw new Error("compaction continuation was not persisted");
+		}
+		expect(continuationEntry.display).toBeFalse();
+		const rebuiltMessages = outboundMessages[1] ?? [];
+		expect(JSON.stringify(rebuiltMessages)).toContain(
+			JSON.stringify(continuationEntry.content),
+		);
+		expect(JSON.stringify(rebuiltMessages)).toContain(toolResult);
+	} finally {
+		session?.dispose();
+		if (previousAgentDir === undefined) {
+			delete process.env["PI_CODING_AGENT_DIR"];
+		} else {
+			process.env["PI_CODING_AGENT_DIR"] = previousAgentDir;
+		}
+		if (previousSuiteDir === undefined) {
+			delete process.env["PI_AGENT_SUITE_DIR"];
+		} else {
+			process.env["PI_AGENT_SUITE_DIR"] = previousSuiteDir;
+		}
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
 
 test("overflow compaction retries after passive context restoration", async () => {
 	// Purpose: interrupted work must continue after compaction restores hidden extension context.

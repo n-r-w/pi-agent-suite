@@ -160,8 +160,10 @@ export type ContextProjectionConfigResult =
 
 export type ContextProjectionSummaryConfig = ToolResultSummaryConfig;
 
+export type AppliedProjectionLevel = "L1" | "L2" | "L3";
+
 export interface ProjectionLevel {
-	readonly label: "L1" | "L2" | "L3";
+	readonly label: AppliedProjectionLevel;
 	readonly remainingTokens: number;
 	readonly minToolResultTokens: number;
 }
@@ -191,6 +193,7 @@ export interface ProjectedEntryState {
 
 interface ContextProjectionStateEntryData {
 	readonly projectedEntries: readonly ProjectedEntryState[];
+	readonly appliedLevel?: AppliedProjectionLevel;
 }
 
 export interface MappedContextEntry {
@@ -789,6 +792,34 @@ export function collectProjectedReplacements(
 	return collectProjectedReplacementsFromEntries(branchEntries);
 }
 
+/** Restores the deepest projection threshold recorded after the latest compaction. */
+export function collectAppliedProjectionLevel(
+	branchEntries: readonly SessionEntry[],
+): AppliedProjectionLevel | undefined {
+	let appliedLevel: AppliedProjectionLevel | undefined;
+	for (const entry of branchEntries) {
+		if (entry.type === "compaction") {
+			appliedLevel = undefined;
+			continue;
+		}
+		if (
+			entry.type !== "custom" ||
+			entry.customType !== CONTEXT_PROJECTION_CUSTOM_TYPE ||
+			!isProjectionStateEntryData(entry.data) ||
+			entry.data.appliedLevel === undefined
+		) {
+			continue;
+		}
+		if (
+			appliedLevel === undefined ||
+			isProjectionLevelDeeper(entry.data.appliedLevel, appliedLevel)
+		) {
+			appliedLevel = entry.data.appliedLevel;
+		}
+	}
+	return appliedLevel;
+}
+
 /** Collects projection state appended after the latest valid provider usage. */
 function collectPendingProjectedReplacements(
 	branchEntries: readonly SessionEntry[],
@@ -899,7 +930,7 @@ export function mapEventMessagesToBranchEntries(
 		const eventMessage = eventMessages[eventIndex];
 		if (
 			eventMessage !== undefined &&
-			isDeepStrictEqual(mappedEntry.message, eventMessage)
+			isMatchingContextMessage(mappedEntry, eventMessage)
 		) {
 			eventMappedEntries.push({
 				entry: mappedEntry.entry,
@@ -917,6 +948,28 @@ export function mapEventMessagesToBranchEntries(
 	}
 
 	return eventIndex === eventMessages.length ? eventMappedEntries : undefined;
+}
+
+/** Matches live custom messages without the timestamp that Pi regenerates during persistence. */
+function isMatchingContextMessage(
+	mappedEntry: MappedContextEntry,
+	eventMessage: AgentMessage,
+): boolean {
+	if (isDeepStrictEqual(mappedEntry.message, eventMessage)) {
+		return true;
+	}
+	if (
+		mappedEntry.entry.type !== "custom_message" ||
+		mappedEntry.message.role !== "custom" ||
+		eventMessage.role !== "custom"
+	) {
+		return false;
+	}
+
+	const { timestamp: _persistedTimestamp, ...persistedMessage } =
+		mappedEntry.message;
+	const { timestamp: _liveTimestamp, ...liveMessage } = eventMessage;
+	return isDeepStrictEqual(persistedMessage, liveMessage);
 }
 
 /** Identifies provider errors that Pi keeps in session history but removes from agent state before an automatic retry. */
@@ -1388,9 +1441,35 @@ function isProjectionStateEntryData(
 	}
 
 	const projectedEntries = data["projectedEntries"];
+	const appliedLevel = data["appliedLevel"];
 	return (
 		Array.isArray(projectedEntries) &&
-		projectedEntries.every(isProjectedEntryState)
+		projectedEntries.every(isProjectedEntryState) &&
+		(appliedLevel === undefined || isAppliedProjectionLevel(appliedLevel))
+	);
+}
+
+/** Returns true for the closed projection threshold labels stored in session state. */
+function isAppliedProjectionLevel(
+	value: unknown,
+): value is AppliedProjectionLevel {
+	return value === "L1" || value === "L2" || value === "L3";
+}
+
+const PROJECTION_LEVEL_ORDER: readonly AppliedProjectionLevel[] = [
+	"L1",
+	"L2",
+	"L3",
+];
+
+/** Returns whether one threshold is deeper than a previously applied threshold. */
+export function isProjectionLevelDeeper(
+	candidate: AppliedProjectionLevel,
+	applied: AppliedProjectionLevel,
+): boolean {
+	return (
+		PROJECTION_LEVEL_ORDER.indexOf(candidate) >
+		PROJECTION_LEVEL_ORDER.indexOf(applied)
 	);
 }
 
