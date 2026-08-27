@@ -1222,6 +1222,39 @@ describe("InvocationSupervisor", () => {
 		});
 	});
 
+	test("skips message update activity while preserving message end activity", async () => {
+		// Purpose: streaming child updates must not refresh the selected conversation, while durable child events still do.
+		// Input and expected output: one message_update followed by one message_end produces one activity notification.
+		// Edge case: message_update still uses the normal event route before activity routing.
+		// Dependencies: controlled child-process RPC streams and production supervisor activity subscriptions.
+		const child = createChildProcess();
+		const supervisor = createSupervisor(child, []);
+		const acceptance = await acceptStart(supervisor, child);
+		const activity: string[] = [];
+		const unsubscribe = supervisor.subscribeActivity((invocationId) =>
+			activity.push(invocationId),
+		);
+
+		child.stdout?.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					type: "message_update",
+					message: { role: "assistant", content: [] },
+					assistantMessageEvent: { type: "text_delta", delta: "partial" },
+				})}\n${JSON.stringify({
+					type: "message_end",
+					message: { role: "assistant" },
+				})}\n`,
+			),
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+		unsubscribe();
+
+		expect(activity).toEqual([acceptance.invocationId]);
+	});
+
 	test("clears transient notification when a permanent message arrives", async () => {
 		// Purpose: a durable journal entry (message_end) must clear the transient notification so the spinner returns to live status.
 		// Input and expected output: notification captured from extension_ui_request, then cleared after message_end.
