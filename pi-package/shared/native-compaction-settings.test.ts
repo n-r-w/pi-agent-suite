@@ -58,17 +58,20 @@ describe("native compaction settings", () => {
 		});
 	});
 
-	test("returns disabled settings as a distinct result", async () => {
-		// Purpose: callers must distinguish an intentional disable from invalid settings.
-		// Input and expected output: enabled false returns only the disabled status.
-		// Edge case: reserveTokens is present but must not make disabled settings usable.
+	test("returns disabled settings with reserve tokens", async () => {
+		// Purpose: manual threshold owners need reserveTokens even when Pi automatic compaction is disabled.
+		// Input and expected output: enabled false returns disabled status with reserveTokens 12000.
+		// Edge case: disabled still prevents Pi automatic compaction while preserving threshold input.
 		// Dependencies: SettingsManager and isolated agent settings.
 		const { agentDir, cwd } = await createSettingsFixture();
 		await writeSettings(agentDir, {
 			compaction: { enabled: false, reserveTokens: 12_000 },
 		});
 
-		expect(readNativeCompactionSettings(cwd)).toEqual({ status: "disabled" });
+		expect(readNativeCompactionSettings(cwd)).toEqual({
+			status: "disabled",
+			reserveTokens: 12_000,
+		});
 	});
 
 	test("returns invalid when SettingsManager reports errors", async () => {

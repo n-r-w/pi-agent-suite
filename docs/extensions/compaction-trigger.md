@@ -2,30 +2,45 @@
 
 ## Purpose
 
-`compaction-trigger` enforces Pi's automatic compaction threshold during an active agent run. It blocks a model request when the final provider-visible context estimate reaches the threshold, runs Pi's configured compaction pipeline after the interrupted run settles, and continues the task after successful compaction.
+`compaction-trigger` enforces a configurable compaction threshold during an active agent run. It blocks a model request when the final provider-visible context estimate reaches the threshold, runs Pi's configured compaction pipeline after the interrupted run settles, and continues the task after successful compaction.
 
 The extension owns threshold detection and compaction initiation. `custom-compaction` remains responsible for summary generation through `session_before_compact`. `context-projection` remains responsible for provider-visible projection.
 
 ## Threshold source
 
-The extension uses the active model's `contextWindow` and Pi's native `compaction.enabled` and `compaction.reserveTokens` settings. Project settings take precedence over agent settings through Pi's native settings rules. The threshold is:
+The extension uses the active model's `contextWindow`, Pi's native `compaction.reserveTokens`, and its own `tolerancePercent`. Project settings take precedence over agent settings for `reserveTokens` through Pi's native settings rules. The threshold is:
 
 ```text
-contextWindow - reserveTokens
+contextWindow - reserveTokens + contextWindow * tolerancePercent / 100
 ```
+
+`tolerancePercent` has no upper limit and the result is not capped at `contextWindow`. The declared window can therefore represent a billing boundary below the provider's real capacity. For example, `contextWindow: 275000`, `reserveTokens: 16384`, and `tolerancePercent: 250` produce a threshold of 946116 tokens. The user is responsible for keeping the threshold within the provider's real capacity and intended pricing range.
 
 The extension runs after `context-projection`. For each `context` event, it uses the same projection-aware `ctx.getContextUsage()` value as the footer. Pending projection savings reduce both the displayed usage and the trigger input. The extension blocks the request when the visible token count is equal to or greater than the threshold. When Pi reports unknown usage after compaction, the request proceeds until the next provider response establishes a known value.
 
-The extension has no configuration file.
+## Configuration
+
+The optional configuration file is `~/.pi/agent/agent-suite/compaction-trigger/config.json`. `PI_AGENT_SUITE_DIR` replaces the `~/.pi/agent/agent-suite` directory when set.
+
+```json
+{
+  "enabled": true,
+  "tolerancePercent": 0
+}
+```
+
+- `enabled` defaults to `true` and must be a boolean.
+- `tolerancePercent` defaults to `0` and must be a finite non-negative number. Values greater than `100` and fractional values are valid.
+- Unknown fields, malformed JSON, and invalid field values make the configuration invalid. An invalid configuration blocks model requests and appends one visible non-triggering diagnostic instead of selecting defaults.
+- Configuration is read once when the extension loads. Restart Pi after changing the file.
 
 ## Disabled behavior
 
-The extension does not enforce the threshold when either condition applies:
+When `enabled` is `false`, the extension registers no lifecycle handlers. It does not abort runs, replace messages, initiate compaction, or append service messages. Pi's native compaction behavior remains controlled by `compaction.enabled`.
 
-- `compaction.enabled` is `false`.
-- The active model has no positive `contextWindow`.
+`compaction-trigger` remains active when `compaction.enabled` is `false`. It continues to use `compaction.reserveTokens` and calls the public `ctx.compact()` API when its own threshold is reached. Disable native automatic compaction when `tolerancePercent` must postpone compaction beyond Pi's declared `contextWindow`; otherwise Pi can compact first at its native threshold. Disabling native automatic compaction also disables Pi's automatic overflow recovery, so a provider rejection beyond its real capacity remains a failed run.
 
-In these cases, the extension does not abort the run, replace messages, or initiate compaction.
+The extension also passes requests through when the active model has no positive `contextWindow`.
 
 ## Lifecycle
 
@@ -42,6 +57,7 @@ In these cases, the extension does not abort the run, replace messages, or initi
 
 The extension blocks the request, stops the cycle, and appends a visible non-triggering diagnostic when:
 
+- its configuration is invalid;
 - native compaction settings are invalid;
 - `ctx.compact()` throws or reports an error;
 - the first context estimate after successful compaction still reaches the threshold.

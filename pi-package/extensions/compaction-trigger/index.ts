@@ -10,12 +10,19 @@ import {
 } from "../../shared/compaction-trigger-protocol";
 import { getProjectionAwareContextUsage } from "../../shared/context-projection";
 import { readNativeCompactionSettings } from "../../shared/native-compaction-settings";
+import {
+	type CompactionTriggerConfig,
+	readCompactionTriggerConfig,
+} from "./config";
 
 const DIAGNOSTIC_TYPE = "compaction-trigger-diagnostic";
+const PERCENT_SCALE = 100;
 const CONTINUATION_MESSAGE =
 	"Continue the interrupted task from the compacted context and preserved tool results.";
 const FAILURE_MESSAGE =
 	"Compaction failed or did not reduce the request below the context threshold. The next model request was blocked.";
+const CONFIG_FAILURE_MESSAGE =
+	"compaction-trigger config is invalid. The next model request was blocked.";
 
 /** Closed lifecycle states that prevent overlapping compaction and continuation. */
 type TriggerState =
@@ -29,6 +36,7 @@ type TriggerState =
 /** Mutable state shared by the extension's event handlers and compact callbacks. */
 interface TriggerLifecycle {
 	state: TriggerState;
+	readonly config: CompactionTriggerConfig;
 }
 
 /** Blocks an active provider request while leaving settled callbacks untouched. */
@@ -58,11 +66,14 @@ function announceInterruption(pi: ExtensionAPI): void {
 }
 
 /** Reports a terminal trigger failure without starting another model turn. */
-function reportFailure(pi: ExtensionAPI): void {
+function reportFailure(
+	pi: ExtensionAPI,
+	content: string = FAILURE_MESSAGE,
+): void {
 	pi.sendMessage(
 		{
 			customType: DIAGNOSTIC_TYPE,
-			content: FAILURE_MESSAGE,
+			content,
 			display: true,
 		},
 		{ triggerTurn: false },
@@ -90,9 +101,6 @@ function handleContext(
 	}
 
 	const settings = readNativeCompactionSettings(ctx.cwd);
-	if (settings.status === "disabled") {
-		return undefined;
-	}
 	if (settings.status === "invalid") {
 		lifecycle.state = "failed";
 		reportFailure(pi);
@@ -104,7 +112,11 @@ function handleContext(
 		ctx.sessionManager.getSessionId(),
 		ctx.getContextUsage(),
 	);
-	const threshold = model.contextWindow - settings.reserveTokens;
+	// The user owns real provider capacity, so tolerance is not capped at the declared window.
+	const threshold =
+		model.contextWindow -
+		settings.reserveTokens +
+		(model.contextWindow * lifecycle.config.tolerancePercent) / PERCENT_SCALE;
 	if (
 		usage === undefined ||
 		usage.tokens === null ||
@@ -188,7 +200,26 @@ function handleAgentSettled(
 
 /** Registers threshold detection, deferred compaction, and one-shot continuation. */
 export default function compactionTrigger(pi: ExtensionAPI): void {
-	const lifecycle: TriggerLifecycle = { state: "idle" };
+	const configResult = readCompactionTriggerConfig();
+	if (configResult.kind === "disabled") {
+		return;
+	}
+	if (configResult.kind === "invalid") {
+		let reported = false;
+		pi.on("context", (_event, ctx) => {
+			if (!reported) {
+				reported = true;
+				reportFailure(pi, CONFIG_FAILURE_MESSAGE);
+			}
+			return blockRequest(ctx);
+		});
+		return;
+	}
+
+	const lifecycle: TriggerLifecycle = {
+		state: "idle",
+		config: configResult.config,
+	};
 
 	pi.on("session_start", () => {
 		// Session replacement clears terminal state but never rewinds active compaction work.

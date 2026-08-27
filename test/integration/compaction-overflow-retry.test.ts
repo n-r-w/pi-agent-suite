@@ -112,16 +112,19 @@ function completedStream(
 }
 
 test("threshold interruption compacts and resumes through real AgentSession boundaries", async () => {
-	// Purpose: prove native post-run compaction satisfies the interrupted threshold cycle without a second manual attempt.
-	// Inputs and expected outputs: an aborted provider entry reports an error, Pi compacts once, and one hidden continuation reaches the rebuilt request.
+	// Purpose: prove compaction-trigger owns a tolerated threshold when Pi automatic compaction is disabled.
+	// Inputs and expected outputs: 25 percent tolerance crosses the artificial model window, Pi compacts once manually, and one hidden continuation reaches the rebuilt request.
 	// Edge cases: the provider stream function receives an aborted signal with zero usage, which makes Pi estimate the saved context.
-	// Dependencies: real AgentSession lifecycle, child RPC completion state, in-memory session storage, temporary native settings, and inline extension contracts.
+	// Dependencies: real AgentSession lifecycle, child RPC completion state, isolated extension config, in-memory session storage, and inline extension contracts.
 	const cwd = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-session-"));
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-compaction-trigger-agent-"));
 	const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
+	const previousSuiteDir = process.env["PI_AGENT_SUITE_DIR"];
+	const suiteDir = join(agentDir, "agent-suite");
 	process.env["PI_CODING_AGENT_DIR"] = agentDir;
+	process.env["PI_AGENT_SUITE_DIR"] = suiteDir;
 
-	const toolResult = `retained-tool-state:${"result-data ".repeat(900)}`;
+	const toolResult = `retained-tool-state:${"result-data ".repeat(1_900)}`;
 	const providerEntries: boolean[] = [];
 	const contextTokens: number[] = [];
 	const outboundMessages: unknown[][] = [];
@@ -139,7 +142,7 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 	const sessionManager = SessionManager.inMemory(cwd);
 	const settingsManager = SettingsManager.inMemory({
 		compaction: {
-			enabled: true,
+			enabled: false,
 			reserveTokens: 1_000,
 			keepRecentTokens: 3_000,
 		},
@@ -187,15 +190,20 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 
 	try {
 		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		mkdirSync(join(suiteDir, "compaction-trigger"), { recursive: true });
 		writeFileSync(
 			join(cwd, ".pi", "settings.json"),
 			JSON.stringify({
 				compaction: {
-					enabled: true,
+					enabled: false,
 					reserveTokens: 1_000,
 					keepRecentTokens: 3_000,
 				},
 			}),
+		);
+		writeFileSync(
+			join(suiteDir, "compaction-trigger", "config.json"),
+			JSON.stringify({ enabled: true, tolerancePercent: 25 }),
 		);
 		sessionManager.appendMessage(userMessage("old task", 1));
 		sessionManager.appendMessage(
@@ -305,9 +313,9 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 			await Bun.sleep(10);
 		}
 
-		expect(contextTokens[0]).toBeLessThan(7_000);
-		expect(contextTokens[1]).toBeGreaterThanOrEqual(7_000);
-		expect(contextTokens[2]).toBeLessThan(7_000);
+		expect(contextTokens[0]).toBeLessThan(9_000);
+		expect(contextTokens[1]).toBeGreaterThanOrEqual(9_000);
+		expect(contextTokens[2]).toBeLessThan(9_000);
 		expect(providerEntries).toEqual([false, true, false]);
 		expect(providerDispatches).toBe(2);
 		expect(compactionCalls).toBe(1);
@@ -344,6 +352,11 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 			delete process.env["PI_CODING_AGENT_DIR"];
 		} else {
 			process.env["PI_CODING_AGENT_DIR"] = previousAgentDir;
+		}
+		if (previousSuiteDir === undefined) {
+			delete process.env["PI_AGENT_SUITE_DIR"];
+		} else {
+			process.env["PI_AGENT_SUITE_DIR"] = previousSuiteDir;
 		}
 		rmSync(cwd, { recursive: true, force: true });
 		rmSync(agentDir, { recursive: true, force: true });

@@ -14,18 +14,25 @@ import { estimateSerializedInputTokens } from "../../shared/context-size";
 import compactionTrigger from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const INTERRUPTION_TYPE = "compaction-trigger-interruption";
 const CONTINUATION_TYPE = "compaction-trigger-continuation";
 const DIAGNOSTIC_TYPE = "compaction-trigger-diagnostic";
 const RESERVE_TOKENS = 100;
 const tempDirs: string[] = [];
 const previousAgentDir = process.env[AGENT_DIR_ENV];
+const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
 
 afterEach(async () => {
 	if (previousAgentDir === undefined) {
 		delete process.env[AGENT_DIR_ENV];
 	} else {
 		process.env[AGENT_DIR_ENV] = previousAgentDir;
+	}
+	if (previousSuiteDir === undefined) {
+		delete process.env[AGENT_SUITE_DIR_ENV];
+	} else {
+		process.env[AGENT_SUITE_DIR_ENV] = previousSuiteDir;
 	}
 	await Promise.all(
 		tempDirs
@@ -87,15 +94,28 @@ interface TestContext {
 async function createSettingsFixture(settings: unknown): Promise<{
 	readonly agentDir: string;
 	readonly cwd: string;
+	readonly suiteDir: string;
 }> {
 	const root = await mkdtemp(join(tmpdir(), "pi-compaction-trigger-"));
 	tempDirs.push(root);
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "project");
-	await Promise.all([mkdir(agentDir), mkdir(cwd)]);
+	const suiteDir = join(root, "suite");
+	await Promise.all([mkdir(agentDir), mkdir(cwd), mkdir(suiteDir)]);
 	process.env[AGENT_DIR_ENV] = agentDir;
+	process.env[AGENT_SUITE_DIR_ENV] = suiteDir;
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings));
-	return { agentDir, cwd };
+	return { agentDir, cwd, suiteDir };
+}
+
+/** Writes one isolated compaction-trigger config. */
+async function writeTriggerConfig(
+	suiteDir: string,
+	config: unknown,
+): Promise<void> {
+	const extensionDir = join(suiteDir, "compaction-trigger");
+	await mkdir(extensionDir, { recursive: true });
+	await writeFile(join(extensionDir, "config.json"), JSON.stringify(config));
 }
 
 /** Replaces native settings inside an existing isolated fixture. */
@@ -305,23 +325,115 @@ describe("compaction trigger", () => {
 		expect(ctx.abortCalls.count).toBe(0);
 	});
 
-	test("passes through when native compaction is disabled", async () => {
-		// Purpose: compaction.enabled false must disable threshold enforcement.
-		// Input and expected output: a request above a nominal threshold returns no replacement and does not abort.
-		// Edge case: the model window is smaller than the estimated input.
-		// Dependencies: shared native settings reader.
+	test("enforces its threshold when Pi automatic compaction is disabled", async () => {
+		// Purpose: extension activation must remain independent from compaction.enabled.
+		// Input and expected output: disabled Pi compaction with zero tolerance still interrupts at the configured reserve boundary.
+		// Edge case: ctx.compact remains a manual operation even while automatic compaction is disabled.
+		// Dependencies: shared native settings reader and extension defaults.
 		const { cwd } = await createSettingsFixture({
 			compaction: { enabled: false, reserveTokens: RESERVE_TOKENS },
 		});
 		const messages = [userMessage()];
-		const ctx = createContext(cwd, 1);
+		const ctx = createContext(cwd, 1_000, true, 900);
 		const harness = install();
 
 		const result = await harness.context({ type: "context", messages }, ctx);
 
+		expect(result).toEqual({ messages: [] });
+		expect(ctx.abortCalls.count).toBe(1);
+	});
+
+	test("accepts tolerance beyond one artificial context window", async () => {
+		// Purpose: users must move the trigger beyond an artificial billing boundary without an automatic cap.
+		// Input and expected output: 250 percent tolerance on a 1000-token window passes at 3399 and interrupts at 3400.
+		// Edge case: the effective threshold is greater than three times the model contextWindow.
+		// Dependencies: isolated extension config and disabled Pi automatic compaction.
+		const { cwd, suiteDir } = await createSettingsFixture({
+			compaction: { enabled: false, reserveTokens: RESERVE_TOKENS },
+		});
+		await writeTriggerConfig(suiteDir, {
+			enabled: true,
+			tolerancePercent: 250,
+		});
+		const harness = install();
+		const messages = [userMessage()];
+		const below = createContext(cwd, 1_000, true, 3_399);
+		const boundary = createContext(cwd, 1_000, true, 3_400);
+
+		const belowResult = await harness.context(
+			{ type: "context", messages },
+			below,
+		);
+		const boundaryResult = await harness.context(
+			{ type: "context", messages },
+			boundary,
+		);
+
+		expect(belowResult).toBeUndefined();
+		expect(below.abortCalls.count).toBe(0);
+		expect(boundaryResult).toEqual({ messages: [] });
+		expect(boundary.abortCalls.count).toBe(1);
+	});
+
+	test("does nothing when the extension config disables it", async () => {
+		// Purpose: users must disable only compaction-trigger without changing Pi compaction settings.
+		// Input and expected output: disabled extension ignores an over-threshold context and registers no lifecycle behavior.
+		// Edge case: Pi automatic compaction remains enabled in native settings.
+		// Dependencies: isolated extension config and native settings.
+		const { cwd, suiteDir } = await createSettingsFixture({
+			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
+		});
+		await writeTriggerConfig(suiteDir, { enabled: false });
+		const harness = install();
+		const ctx = createContext(cwd, 1_000, true, 5_000);
+
+		const result = await harness.context(
+			{ type: "context", messages: [userMessage()] },
+			ctx,
+		);
+
 		expect(result).toBeUndefined();
 		expect(ctx.abortCalls.count).toBe(0);
+		expect(harness.pi.handlers).toHaveLength(0);
 		expect(harness.pi.sentMessages).toHaveLength(0);
+	});
+
+	test("blocks an invalid extension config with one diagnostic", async () => {
+		// Purpose: invalid trigger settings must not silently select a different threshold.
+		// Input and expected output: negative tolerance blocks the request and emits one visible non-triggering diagnostic.
+		// Edge case: repeated contexts do not duplicate the diagnostic.
+		// Dependencies: strict extension config parsing and terminal trigger state.
+		const { cwd, suiteDir } = await createSettingsFixture({
+			compaction: { enabled: false, reserveTokens: RESERVE_TOKENS },
+		});
+		await writeTriggerConfig(suiteDir, { tolerancePercent: -1 });
+		const harness = install();
+		const first = createContext(cwd, 1_000, true, 0);
+		const second = createContext(cwd, 1_000, true, 0);
+
+		const firstResult = await harness.context(
+			{ type: "context", messages: [userMessage()] },
+			first,
+		);
+		const secondResult = await harness.context(
+			{ type: "context", messages: [userMessage()] },
+			second,
+		);
+
+		expect(firstResult).toEqual({ messages: [] });
+		expect(secondResult).toEqual({ messages: [] });
+		expect(first.abortCalls.count).toBe(1);
+		expect(second.abortCalls.count).toBe(1);
+		expect(diagnostics(harness.pi)).toEqual([
+			{
+				message: {
+					customType: DIAGNOSTIC_TYPE,
+					content: expect.any(String),
+					display: true,
+				},
+				options: { triggerTurn: false },
+			},
+		]);
 	});
 
 	test("blocks invalid settings with one visible non-triggering diagnostic", async () => {

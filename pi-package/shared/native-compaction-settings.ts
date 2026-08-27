@@ -6,7 +6,10 @@ export type NativeCompactionSettings =
 			readonly status: "enabled";
 			readonly reserveTokens: number;
 	  }
-	| { readonly status: "disabled" }
+	| {
+			readonly status: "disabled";
+			readonly reserveTokens: number;
+	  }
 	| { readonly status: "invalid" };
 
 /** Reads Pi's merged native compaction settings and preserves load errors as state. */
@@ -18,12 +21,8 @@ export function readNativeCompactionSettings(
 	if (settings.drainErrors().length > 0) {
 		return { status: "invalid" };
 	}
-	if (!compactionSettings.enabled) {
-		return { status: "disabled" };
-	}
-
 	return {
-		status: "enabled",
+		status: compactionSettings.enabled ? "enabled" : "disabled",
 		reserveTokens: compactionSettings.reserveTokens,
 	};
 }
