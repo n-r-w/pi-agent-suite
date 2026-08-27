@@ -692,7 +692,7 @@ export class InvocationSupervisor implements InvocationControl {
 			this.handleRpcResponse(handle, value);
 			return;
 		}
-		if (type !== undefined) {
+		if (type !== undefined && type !== "message_update") {
 			for (const listener of this.activityListeners) {
 				listener(handle.acceptance.invocationId);
 			}
