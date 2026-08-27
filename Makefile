@@ -8,7 +8,7 @@ PI_PACKAGES := \
 	@earendil-works/pi-coding-agent \
 	@earendil-works/pi-tui
 
-.PHONY: pi-versions pi-update release-check release-patch release-minor release-major release-tag release-github release-next-steps
+.PHONY: audit pi-versions pi-update release-check release-patch release-minor release-major release-tag release-github release-next-steps verify
 
 # Reports the pinned and latest published version of every Pi development package.
 pi-versions:
@@ -37,16 +37,19 @@ pi-update:
 	bun run verify
 	./node_modules/.bin/pi --version
 
-release-check:
+audit:
+	bun audit
+
+release-check: audit
 	bun run release:check
 
-release-patch:
+release-patch: audit
 	bun run release:prepare:patch
 
-release-minor:
+release-minor: audit
 	bun run release:prepare:minor
 
-release-major:
+release-major: audit
 	bun run release:prepare:major
 
 release-tag:
@@ -70,5 +73,5 @@ release-next-steps:
 	@echo "Create GitHub Release and publish $(PACKAGE_NAME) to npm:"
 	@echo "  make release-github"
 
-verify:
+verify: audit
 	bun run verify
