@@ -173,7 +173,7 @@ export default function consultAdvisor(
 		label: "Consult advisor",
 		description:
 			"Ask an independent advisor a focused question. The advisor knows everything you know. " +
-			"It can't call tools, only answer questions." +
+			"Advisor CAN'T CALL TOOLS, ONLY ANSWER QUESTIONS." +
 			"REMEMBER: advisor is not a replacement for your own reasoning - it is a second opinion.",
 		parameters: ConsultAdvisorParameters,
 		executionMode: "sequential",
