@@ -37,8 +37,9 @@ pi-update:
 	bun run verify
 	./node_modules/.bin/pi --version
 
+# Audits the package's locked production dependency tree.
 audit:
-	bun audit
+	cd $(PACKAGE_DIR) && npm audit --omit=dev --audit-level=low
 
 release-check: audit
 	bun run release:check
