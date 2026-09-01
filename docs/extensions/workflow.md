@@ -215,13 +215,17 @@ Creation, activation, stage editing, transition, session start, and branch chang
 
 ## Tool presentation
 
-The default Pi tool shell renders workflow references instead of displaying internal success JSON. Collapsed `workflow_create` output also identifies the configured `app.tools.expand` binding:
+The default Pi tool shell renders workflow references instead of displaying internal success JSON. While `workflow_create` arguments stream, each received type-compatible `description`, `prompt`, `stages`, or `transitions` field appears as YAML. The initial stage row appears as soon as its stage data arrives. Collapsed mode shows up to three visual YAML lines after the separate `Content:` label. When more YAML lines exist, the standard hint reports the hidden line count and the configured `app.tools.expand` binding:
 
 ```text
 workflow_create
 Workflow: task-delivery · Task-specific delivery workflow
 Stage: implementation · Implement the approved change
-Content: ctrl+o to show
+Content:
+description: Task-specific delivery workflow
+prompt: Follow the approved scope.
+stages:
+... (16 more lines, 19 total, ctrl+o to expand)
 
 workflow_activate
 Workflow: delivery · Software delivery
@@ -243,7 +247,7 @@ From: implementation · Implement the approved change
 To: review · Review the implementation
 ```
 
-Expanded `workflow_create` output shows catalog-shaped YAML. The workflow ID remains in the `Workflow` section because catalog files derive it from the file name:
+When the YAML has three or fewer visual lines, collapsed mode shows every line and omits the hidden-content hint. Expanded `workflow_create` output shows all received workflow content as catalog-shaped YAML. The workflow ID remains in the `Workflow` section because catalog files derive it from the file name:
 
 ```text
 workflow_create
@@ -253,6 +257,7 @@ task-delivery · Task-specific delivery workflow
 implementation · Implement the approved change
 --- Content ---
 description: Task-specific delivery workflow
+prompt: Follow the approved scope.
 stages:
   - id: implementation
     description: Implement the approved change
@@ -272,7 +277,7 @@ transitions:
     type: advance
 ```
 
-Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and shows at most four content rows before Pi's expansion hint. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels use Pi's bold `toolTitle` color, values use `toolOutput`, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
+Compact `Workflow:`, `Stage:`, `From:`, `To:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and shows at most four content rows before Pi's expansion hint. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 
