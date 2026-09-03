@@ -61,6 +61,7 @@ interface WorkflowRuntimeDump {
 		readonly role: string;
 		readonly customType?: string;
 		readonly content: unknown;
+		readonly details?: unknown;
 	}[];
 	readonly systemPrompt: string;
 }
@@ -1426,35 +1427,23 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 					expect(runtime.activeToolDescriptions[name]).toBeUndefined();
 				}
 			}
-			if (runtimeCase.projectsWorkflow) {
-				expect(workflowMessages.length).toBeGreaterThan(0);
-				expect(runtime.systemPrompt).toContain("WORKFLOW_RUNTIME_GUIDELINES");
-				const workflowContent = String(workflowMessages.at(-1)?.content);
-				if (expectedWorkflowTools.includes("workflow_activate")) {
-					expect(workflowContent).toContain("<workflow_activation_options>");
-					const expectedWorkflowIds = new Set<string>(
-						"expectedWorkflowIds" in runtimeCase
-							? runtimeCase.expectedWorkflowIds
-							: [],
-					);
-					for (const workflowId of ["delivery", "review"]) {
-						if (expectedWorkflowIds.has(workflowId)) {
-							expect(workflowContent).toContain(`id="${workflowId}"`);
-						} else {
-							expect(workflowContent).not.toContain(`id="${workflowId}"`);
-						}
-					}
-				} else {
-					expect(workflowContent).toBe("<workflow_activation_options />");
-				}
-			} else {
-				expect(runtime.systemPrompt).not.toContain(
-					"WORKFLOW_RUNTIME_GUIDELINES",
+			const activationOptionMessages = workflowMessages.filter((message) => {
+				const details = message.details;
+				return (
+					typeof details === "object" &&
+					details !== null &&
+					Reflect.get(details, "kind") === "activation_options"
 				);
-				expect(workflowMessages.at(-1)?.content).toBe(
-					"<workflow_activation_options />",
-				);
+			});
+			let expectedActivationOptionRecords = Number(
+				expectedWorkflowTools.includes("workflow_activate"),
+			);
+			if (runtimeCase.mode === "main-reset") {
+				expectedActivationOptionRecords = 2;
 			}
+			expect(activationOptionMessages).toHaveLength(
+				expectedActivationOptionRecords,
+			);
 		} finally {
 			rmSync(agentDir, { recursive: true, force: true });
 			rmSync(projectDir, { recursive: true, force: true });

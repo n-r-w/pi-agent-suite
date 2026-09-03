@@ -743,10 +743,18 @@ describe("workflow extension lifecycle", () => {
 		await createSuite();
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
+		await runLifecycle(fake, "session_tree");
+		await runSessionCompact(fake);
 
 		expect(fake.activeTools).toEqual(["read", "workflow_create"]);
-		const content = latestWorkflowContent(fake);
-		expect(content).toBe("<workflow_activation_options />");
+		expect(
+			fake.messages.filter(
+				({ details }) =>
+					typeof details === "object" &&
+					details !== null &&
+					Reflect.get(details, "kind") === "activation_options",
+			),
+		).toHaveLength(0);
 		expect(fake.handlers.has("context")).toBe(false);
 	});
 
@@ -2128,7 +2136,7 @@ describe("workflow extension lifecycle", () => {
 	test("checkpoints after compaction and inlines the first later stage entry", async () => {
 		// Purpose: post-compaction history must restore exact active instructions without trusting the summary.
 		// Input and expected output: review compaction emits one checkpoint, then rework inlines implementation guidance again.
-		// Edge case: unchanged activation options are re-published because compaction removed the prior record from provider context.
+		// Edge case: compaction publishes no empty activation-options record when no options remain.
 		// Dependencies: session_compact wiring, checkpoint rendering, and known-stage reset.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
@@ -2141,21 +2149,23 @@ describe("workflow extension lifecycle", () => {
 		const beforeCompaction = fake.messages.length;
 
 		await runSessionCompact(fake);
-		expect(fake.messages).toHaveLength(beforeCompaction + 2);
-		expect(fake.messages.at(-2)?.content).toContain(
-			'<workflow_checkpoint id="delivery" status="active" active_stage_id="done"',
-		);
-		expect(fake.messages.at(-1)?.content).toBe(
-			"<workflow_activation_options />",
-		);
-		expect(fake.messages.slice(-2).map(({ options }) => options)).toEqual([
-			{ deliverAs: "steer", triggerTurn: false },
-			{ deliverAs: "steer", triggerTurn: false },
-		]);
+		expect(fake.messages).toHaveLength(beforeCompaction + 1);
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "checkpoint",
+			workflowId: "delivery",
+			currentStageId: "done",
+		});
+		expect(fake.messages.at(-1)?.options).toEqual({
+			deliverAs: "steer",
+			triggerTurn: false,
+		});
 
 		await transition.execute("rework", { stageId: "start" });
-		expect(fake.messages.at(-1)?.content).toContain('guidelines="inline"');
-		expect(fake.messages.at(-1)?.content).toContain("Start work");
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "stage_activation",
+			workflowId: "delivery",
+			stageId: "start",
+		});
 	});
 
 	/** Proves restored journal records prevent duplicate legacy-repair checkpoints. */
@@ -2177,6 +2187,38 @@ describe("workflow extension lifecycle", () => {
 		await runLifecycle(fake, "session_tree", [stateEntry, ...repairedMessages]);
 
 		expect(fake.messages).toHaveLength(messageCount);
+	});
+
+	/**
+	 * Proves saved workflow state continues after an agent temporarily hides workflow tools.
+	 * Input and expected output: activation state remains saved while only read is active, then transition resumes after its tool returns.
+	 * Edge case: selected-agent tool policy removes every workflow tool without removing the saved route.
+	 * Dependencies: runtime composition reconciliation, persisted workflow entries, and transition execution.
+	 */
+	test("continues saved workflow after compatible tools return", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+
+		setMainWorkflowPolicy(fake, ["delivery"], ["read"]);
+		expect(fake.activeTools).toEqual(["read"]);
+		expect(fake.appended.at(-1)?.data).toMatchObject({
+			kind: "activated",
+			route: ["start"],
+		});
+
+		setMainWorkflowPolicy(fake, ["delivery"], ["read", "workflow_transition"]);
+		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
+		await requireTool(fake, "workflow_transition").execute("continue", {
+			stageId: "done",
+		});
+		expect(fake.appended.at(-1)?.data).toMatchObject({
+			kind: "transitioned",
+			route: ["start", "done"],
+		});
 	});
 
 	/**

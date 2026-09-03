@@ -8,11 +8,11 @@ import {
 	validateCreatedWorkflowDefinition,
 } from "./workflow";
 
-function workflow() {
+function workflow(description = "Build & review") {
 	return validateCreatedWorkflowDefinition(
 		{
 			id: "delivery",
-			description: "Build & review",
+			description,
 			prompt: "Follow <global> & stay safe.",
 			stages: [
 				{
@@ -255,6 +255,105 @@ describe("workflow journal", () => {
 		);
 
 		expect(restored.isCurrent(state)).toBe(false);
+	});
+
+	test("publishes activation options only when the segment value changes", () => {
+		// Purpose: activation options publish only a new segment value or a replacement for a prior value.
+		// Input and expected output: initial empty, repeated empty, restored equal, and changed values produce the listed record counts.
+		// Edge cases: empty replacement follows non-empty options, and restored non-empty options remain deduplicated.
+		// Dependencies: journal restoration and activation-options metadata.
+		const cases = [
+			{
+				name: "initial empty",
+				run: () => {
+					const { journal, records } = createJournal();
+					journal.activationOptions([]);
+					return records;
+				},
+				expectedCount: 0,
+			},
+			{
+				name: "initial non-empty",
+				run: () => {
+					const { journal, records } = createJournal();
+					journal.activationOptions([workflow()]);
+					return records;
+				},
+				expectedCount: 1,
+			},
+			{
+				name: "non-empty replacement",
+				run: () => {
+					const { journal, records } = createJournal();
+					journal.activationOptions([workflow()]);
+					journal.activationOptions([]);
+					return records;
+				},
+				expectedCount: 2,
+			},
+			{
+				name: "non-empty after empty replacement",
+				run: () => {
+					const { journal, records } = createJournal();
+					journal.activationOptions([workflow()]);
+					journal.activationOptions([]);
+					journal.activationOptions([workflow()]);
+					return records;
+				},
+				expectedCount: 3,
+			},
+			{
+				name: "repeated empty replacement",
+				run: () => {
+					const { journal, records } = createJournal();
+					journal.activationOptions([workflow()]);
+					journal.activationOptions([]);
+					journal.activationOptions([]);
+					return records;
+				},
+				expectedCount: 2,
+			},
+			{
+				name: "restored non-empty",
+				run: () => {
+					const source = createJournal();
+					source.journal.activationOptions([workflow()]);
+					const restored = createJournal();
+					restored.journal.restore(
+						source.records.map((record) => ({
+							type: "custom_message",
+							...record,
+						})),
+					);
+					restored.journal.activationOptions([workflow()]);
+					return restored.records;
+				},
+				expectedCount: 0,
+			},
+			{
+				name: "changed non-empty",
+				run: () => {
+					const { journal, records } = createJournal();
+					journal.activationOptions([workflow()]);
+					journal.activationOptions([workflow("Review delivery")]);
+					return records;
+				},
+				expectedCount: 2,
+			},
+		] as const;
+
+		for (const testCase of cases) {
+			const records = testCase.run();
+			expect(records, testCase.name).toHaveLength(testCase.expectedCount);
+			expect(
+				records.every(
+					(record) =>
+						record.customType === "workflow" &&
+						record.details["kind"] === "activation_options",
+				),
+				testCase.name,
+			).toBe(true);
+		}
 	});
 
 	test("preserves activation-option deduplication during repair checkpoints", () => {

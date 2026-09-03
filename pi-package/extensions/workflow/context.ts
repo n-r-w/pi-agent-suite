@@ -142,6 +142,10 @@ export class WorkflowJournal {
 		if (content === this.activationOptionsContent) {
 			return;
 		}
+		// An empty value is useful only when it replaces options published in this context segment.
+		if (this.activationOptionsContent === undefined && workflows.length === 0) {
+			return;
+		}
 		this.activationOptionsContent = content;
 		this.publish(
 			{
