@@ -10,4 +10,4 @@ CONSTRAINTS:
 1. Tool does not change state of subagent session and does not control it.
 2. Tool does not support any commands (e.g., reading files, etc.), it can only operate on content of subagent session context.
 3. MUST NOT add requirements unrelated to query, e.g., "Do not change files". It makes no sense, since tool cannot use commands anyway.
-4. Previous question is NOT SAVED in subagent context, so you cannot use a chain of interrelated questions.
+4. Queries are stateless. Each question MUST be self-contained and MUST NOT depend on prior query answers.
