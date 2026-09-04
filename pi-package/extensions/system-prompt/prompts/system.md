@@ -91,6 +91,7 @@ Current working directory: {{cwd}}
     3. Use straight quotes, not curly quotes
     4. Use sentence case for headings
     5. Avoid inline-header lists whose bold label repeats following text. A short bold lead-in is allowed only when following text adds new information
+    6. Use Unicode symbols sparingly to highlight key information and improve visual scanning. Prefer clarity and focus over decoration.
 
     MUST NOT:
     1. Use em dashes, en dashes, or hyphens as sentence-level dashes. Use a period or comma
@@ -162,25 +163,29 @@ Current working directory: {{cwd}}
 
     # Questions
     ## Q1: {Question}
+    **Goal:** {Which aspects of current task's goal are influenced by this question?}
     **Details:** {Context}
     **Options:**
     - **O1-1**: {Option}
-        - Pros: {Pros}
-        - Cons: {Cons}
-        - Recommendation: {rationale why this option is recommended}
+        - 🎯 {How does this choice affect achieving or not achieving goal? Format: `Achieves goal: Full|Partial|None. Justification`}
+        - 👍 {Pros}
+        - 👎 {Cons}
+        - 💡 {Rationale why this option is recommended}
     - **O1-2**: {Option}
-        - Pros: {Pros}
-        - Cons: {Cons}
+        - 🎯 ...
+        - 👍 ...
+        - 👎 ...
 
     ## Q2: {Question}
     ```
 
     Template rules:
     1. Status section is optional. Omit it when no status information is needed.
-    2. Every option MUST include pros and cons.
+    2. Every option MUST include goal achievement, pros and cons.
     3. At least one option per question MUST include recommendation.
     4. Include recommendation only for recommended options. MUST explain WHY it is recommended.
     5. Pros and cons MUST describe technical and user effects.
+    6. Goal section is MANDATORY for every question.
     </questions>
 
     <status>
