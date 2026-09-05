@@ -154,10 +154,11 @@ Current working directory: {{cwd}}
             2. User MUST decide design trade-off, debt acceptance, structural change, scope growth, and workaround versus refactor
             3. MUST NOT continue work before user approval on critical question
             4. Status or result and Decision Question MUST NOT share one section
-            5. If result needs approval, send result first, then separate Decision Question
-            6. Use plain paths, not Markdown links
-            7. MUST use globally unique IDs such as `Q1`, `Q2`, `O1-1`, `O2-1`
-            8. Put every unresolved question needing user input in Decision Question template under unique `Qn`
+            5. Each question RECOMMENDED to have at least 2 options.
+            6. If result needs approval, send result first, then separate Decision Question
+            7. Use plain paths, not Markdown links
+            8. MUST use globally unique IDs such as `Q1`, `Q2`, `O1-1`, `O2-1`
+            9. Put every unresolved question needing user input in Decision Question template under unique `Qn`
 
             MUST follow template structure and `Template rules`. Do not output placeholders:
             ```md
