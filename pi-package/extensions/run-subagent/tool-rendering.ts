@@ -1,7 +1,12 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
-	createCodingTools,
-	createReadOnlyTools,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { rejectPresentationExecution } from "../../shared/tool-presentation/bounded.ts";
@@ -13,35 +18,41 @@ import {
 import { createUniversalToolDefinition } from "../../shared/tool-presentation/universal.ts";
 
 /** Describes the closed presentation category selected for one conversation tool. */
-type ToolPresentationResolution =
-	| { readonly category: "builtin"; readonly definition: undefined }
-	| {
-			readonly category: "package" | "unknown";
-			readonly definition: ToolDefinition;
-	  };
+interface ToolPresentationResolution {
+	readonly category: "builtin" | "package" | "unknown";
+	readonly definition: ToolDefinition;
+}
 
 /** Resolves one tool through the three public presentation paths. */
 export interface ToolPresentationRegistry {
 	resolve(toolName: string): ToolPresentationResolution;
 }
 
-/** Creates one registry that classifies built-ins through Pi's public definition factory. */
+/** Creates display-only presentations from Pi definitions and package renderers. */
 export function createToolPresentationRegistry(
 	cwd: string,
 	presentationEvents: PackagePresentationEventBus,
 ): ToolPresentationRegistry {
-	const builtInNames = new Set(
-		[...createCodingTools(cwd), ...createReadOnlyTools(cwd)].map(
-			(tool) => tool.name,
-		),
+	const builtInDefinitions = new Map(
+		[
+			createReadToolDefinition(cwd),
+			createBashToolDefinition(cwd),
+			createEditToolDefinition(cwd),
+			createWriteToolDefinition(cwd),
+			createGrepToolDefinition(cwd),
+			createFindToolDefinition(cwd),
+			createLsToolDefinition(cwd),
+		].map((definition) => [
+			definition.name,
+			createPresentationDefinition(definition),
+		]),
 	);
 	const unknownDefinitions = new Map<string, ToolDefinition>();
 	return {
 		resolve(toolName): ToolPresentationResolution {
-			if (builtInNames.has(toolName)) {
-				// Undefined is intentional: ToolExecutionComponent then selects its own
-				// public built-in definition path for the active working directory.
-				return { category: "builtin", definition: undefined };
+			const builtInDefinition = builtInDefinitions.get(toolName);
+			if (builtInDefinition !== undefined) {
+				return { category: "builtin", definition: builtInDefinition };
 			}
 
 			const packagePresentation = getPackageToolPresentation(
@@ -72,7 +83,7 @@ function createPresentationDefinition(
 	return {
 		name: presentation.name,
 		label: presentation.label,
-		description: `Display package-owned tool ${presentation.name}.`,
+		description: `Display tool ${presentation.name}.`,
 		parameters: Type.Unknown(),
 		renderShell: presentation.renderShell ?? "default",
 		...(presentation.renderCall === undefined
