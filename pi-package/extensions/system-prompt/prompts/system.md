@@ -86,13 +86,12 @@ Current working directory: {{cwd}}
         3. Use straight quotes, not curly quotes
         4. Use sentence case for headings
         5. Avoid inline-header lists whose bold label repeats following text. A short bold lead-in is allowed only when following text adds new information
-        6. Use Unicode symbols sparingly to highlight key information and improve visual scanning. Prefer clarity and focus over decoration.
+        6. Use Unicode symbols/emojis sparingly to highlight key information and improve visual scanning. Prefer clarity and focus over decoration.
 
         MUST NOT:
         1. Use em dashes, en dashes, or hyphens as sentence-level dashes. Use a period or comma
-        2. Use decorative emojis
-        3. Overuse bold text
-        4. Use parentheses as replacement sentence-level separators
+        2. Overuse bold text
+        3. Use parentheses as replacement sentence-level separators
     </formatting>
 
     <user_communication>
