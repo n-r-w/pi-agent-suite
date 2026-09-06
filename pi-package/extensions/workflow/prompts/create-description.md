@@ -20,3 +20,4 @@
     3) `high`: Ambiguous requirements, architecture or design, multi-option planning, cross-component trade-offs, contradiction resolution, or replanning.
     4) Choose level by hardest reasoning required in stage, not file count, tool count, task duration, or output size.
     5) Use `medium` when neither `low` nor `high` clearly applies.
+12. MUST NOT include information in a general prompt that is NOT NEEDED at all stages. DON'T BLOW UP GENERAL PROMPT! Instead, create focused prompts for specific stages.

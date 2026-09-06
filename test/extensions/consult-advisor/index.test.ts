@@ -87,6 +87,7 @@ interface CompletionThrowOutcome {
 type CompletionOutcome = CompletionResponseOutcome | CompletionThrowOutcome;
 
 interface ContextFake {
+	isIdle(): boolean;
 	readonly cwd: string;
 	readonly hasUI?: boolean;
 	readonly model: Model<Api> | undefined;
@@ -256,6 +257,7 @@ function createContext(
 	}> = [];
 	return {
 		cwd: "/tmp/project",
+		isIdle: () => true,
 		notifications,
 		model: models[0],
 		...(hasUI !== undefined ? { hasUI } : {}),

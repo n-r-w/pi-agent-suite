@@ -12,7 +12,6 @@ import type {
 import {
 	createEventBus,
 	initTheme,
-	keyText,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { Box, type TUI, visibleWidth } from "@earendil-works/pi-tui";
@@ -397,9 +396,95 @@ describe("workflow semantic tool rendering", () => {
 	});
 
 	/**
+	 * Proves partial workflow fields render as they arrive without persisting incomplete identity.
+	 * Input and expected output: successive incomplete arguments add YAML and the initial stage.
+	 * Edge case: YAML with at most three visual lines has no hidden-content hint.
+	 * Dependencies: current render arguments, shared renderer state, and session reconstruction.
+	 */
+	test("streams bounded workflow creation YAML in active and subagent screens", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const activeDefinition = fixture.tools.find(
+			({ name }) => name === "workflow_create",
+		);
+		const sessionDefinition = resolveSessionDefinition(
+			fixture,
+			"workflow_create",
+		);
+		if (
+			activeDefinition?.renderCall === undefined ||
+			sessionDefinition.renderCall === undefined
+		) {
+			throw new Error("workflow_create renderer missing");
+		}
+		const activeRenderCall = activeDefinition.renderCall;
+		const sessionRenderCall = sessionDefinition.renderCall;
+		const activeContext = createToolRenderContext({
+			args: {},
+			expanded: false,
+			isError: false,
+		});
+		const sessionContext = createToolRenderContext({
+			args: {},
+			expanded: false,
+			isError: false,
+		});
+		activeContext.argsComplete = false;
+		sessionContext.argsComplete = false;
+		const renderBoth = (args: Record<string, unknown>) => {
+			const active = activeRenderCall(args, PLAIN_THEME, activeContext)
+				.render(80)
+				.map((line) => line.trimEnd());
+			const session = sessionRenderCall(args, PLAIN_THEME, sessionContext)
+				.render(80)
+				.map((line) => line.trimEnd());
+			expect(session).toEqual(active);
+			return active;
+		};
+
+		expect(renderBoth({})).toEqual(["workflow_create"]);
+		expect(
+			renderBoth({
+				id: "streaming-delivery",
+				description: "Streaming delivery process",
+			}),
+		).toEqual([
+			"workflow_create",
+			"Workflow: streaming-delivery · Streaming delivery process",
+			"Content:",
+			"description: Streaming delivery process",
+		]);
+
+		const partialArgs = createArguments(
+			"streaming-delivery",
+			"Streaming delivery process",
+		);
+		const collapsed = renderBoth(partialArgs);
+		expect(collapsed.slice(0, 4)).toEqual([
+			"workflow_create",
+			"Workflow: streaming-delivery · Streaming delivery process",
+			"Stage: implementation · Implementation stage",
+			"Content:",
+		]);
+		expect(collapsed.slice(4, -1)).toHaveLength(3);
+		expect(collapsed.at(-1)).toMatch(HIDDEN_LINE_HINT);
+
+		activeContext.expanded = true;
+		sessionContext.expanded = true;
+		const expanded = renderBoth(partialArgs);
+		const contentIndex = expanded.indexOf("--- Content ---");
+		const content = parse(expanded.slice(contentIndex + 1).join("\n"));
+		expect(content["description"]).toBe(partialArgs["description"]);
+		expect(typeof content["prompt"]).toBe("string");
+		expect(Array.isArray(content["stages"])).toBe(true);
+		expect(Array.isArray(content["transitions"])).toBe(true);
+		expect(content).not.toHaveProperty("id");
+	});
+
+	/**
 	 * Proves creation shows complete semantic content in active and reconstructed session rendering.
-	 * Input and expected output: collapsed calls show references and the active expansion binding; expanded calls show catalog-shaped YAML.
-	 * Edge case: an exact catalog collision retains the submitted identity and configurable hint.
+	 * Input and expected output: collapsed calls show bounded YAML; expanded calls show catalog-shaped YAML.
+	 * Edge case: an exact catalog collision retains the submitted identity and YAML preview.
 	 * Dependencies: presentation events, package registry reconstruction, Pi keybindings, and create tool execution.
 	 */
 	test("renders workflow creation before and after execution", async () => {
@@ -415,15 +500,15 @@ describe("workflow semantic tool rendering", () => {
 			resolveSessionDefinition(fixture, "workflow_create"),
 			created,
 		);
-		expect(activeCreated).toEqual({
-			call: [
-				"workflow_create",
-				"Workflow: dynamic-delivery · Dynamic delivery process",
-				"Stage: implementation · Implementation stage",
-				`Content: ${keyText("app.tools.expand")} to show`,
-			],
-			result: [],
-		});
+		expect(activeCreated.call.slice(0, 4)).toEqual([
+			"workflow_create",
+			"Workflow: dynamic-delivery · Dynamic delivery process",
+			"Stage: implementation · Implementation stage",
+			"Content:",
+		]);
+		expect(activeCreated.call.slice(4, -1)).toHaveLength(3);
+		expect(activeCreated.call.at(-1)).toMatch(HIDDEN_LINE_HINT);
+		expect(activeCreated.result).toEqual([]);
 		expect(sessionCreated).toEqual(activeCreated);
 
 		const activeExpanded = renderCompletedTool(
@@ -449,15 +534,12 @@ describe("workflow semantic tool rendering", () => {
 			"implementation · Implementation stage",
 			"--- Content ---",
 		]);
-		expect(activeExpanded.call.join("\n")).toContain(
-			"description: Dynamic delivery process\nprompt: Follow delivery rules\nstages:\n  - id: implementation",
-		);
-		expect(activeExpanded.call.join("\n")).toContain(
-			"transitions:\n  - from: implementation\n    to: review\n    type: advance",
-		);
-		expect(activeExpanded.call.join("\n")).not.toContain(
-			"id: dynamic-delivery",
-		);
+		const expandedContent = parse(activeExpanded.call.slice(6).join("\n"));
+		expect(expandedContent.description).toBe("Dynamic delivery process");
+		expect(typeof expandedContent.prompt).toBe("string");
+		expect(Array.isArray(expandedContent.stages)).toBe(true);
+		expect(Array.isArray(expandedContent.transitions)).toBe(true);
+		expect(expandedContent).not.toHaveProperty("id");
 		expect(sessionExpanded).toEqual(activeExpanded);
 
 		const rejected = await executeTool(
@@ -471,14 +553,73 @@ describe("workflow semantic tool rendering", () => {
 			resolveSessionDefinition(fixture, "workflow_create"),
 			rejected,
 		);
-		expect(activeRejected.call).toEqual([
+		expect(activeRejected.call.slice(0, 4)).toEqual([
 			"workflow_create",
 			"Workflow: delivery · Conflicting delivery process",
 			"Stage: implementation · Implementation stage",
-			`Content: ${keyText("app.tools.expand")} to show`,
+			"Content:",
 		]);
+		expect(activeRejected.call.slice(4, -1)).toHaveLength(3);
+		expect(activeRejected.call.at(-1)).toMatch(HIDDEN_LINE_HINT);
 		expect(activeRejected.result.join("\n")).toContain("Error:");
 		expect(sessionRejected).toEqual(activeRejected);
+	});
+
+	/**
+	 * Proves compact reference and content labels use semantic title styling.
+	 * Input and expected output: creation and transition calls style labels separately from values.
+	 * Edge case: YAML remains tool output below the styled Content label.
+	 * Dependencies: marked theme rendering and width-aware labeled text.
+	 */
+	test("styles compact workflow labels separately from values", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const creation = await executeTool(
+			fixture,
+			"workflow_create",
+			createArguments("styled-delivery", "Styled delivery process"),
+		);
+		const transition = await executeTool(fixture, "workflow_transition", {
+			stageId: "review",
+		});
+		const renderedCreation = renderCompletedTool(
+			creation.definition,
+			creation,
+			MARKED_THEME,
+		);
+		const renderedTransition = renderCompletedTool(
+			transition.definition,
+			transition,
+			MARKED_THEME,
+		);
+		const expandedCreation = renderCompletedTool(
+			creation.definition,
+			creation,
+			MARKED_THEME,
+			100,
+			true,
+		);
+
+		expect(renderedCreation.call.slice(0, 5)).toEqual([
+			"<toolTitle><bold>workflow_create</bold></toolTitle>",
+			"<toolTitle><bold>Workflow:</bold></toolTitle><toolOutput> styled-delivery · Styled delivery process</toolOutput>",
+			"<toolTitle><bold>Stage:</bold></toolTitle><toolOutput> implementation · Implementation stage</toolOutput>",
+			"<toolTitle><bold>Content:</bold></toolTitle>",
+			"<toolOutput>description: Styled delivery process</toolOutput>",
+		]);
+		expect(renderedTransition.call).toEqual([
+			"<toolTitle><bold>workflow_transition</bold></toolTitle>",
+			"<toolTitle><bold>From:</bold></toolTitle><toolOutput> implementation · Implementation stage</toolOutput>",
+			"<toolTitle><bold>To:</bold></toolTitle><toolOutput> review · Review stage</toolOutput>",
+		]);
+		expect(expandedCreation.call.slice(0, 6)).toEqual([
+			"<toolTitle><bold>workflow_create</bold></toolTitle>",
+			"<muted>--- Workflow ---</muted>",
+			"<toolOutput>styled-delivery · Styled delivery process</toolOutput>",
+			"<muted>--- Stage ---</muted>",
+			"<toolOutput>implementation · Implementation stage</toolOutput>",
+			"<muted>--- Content ---</muted>",
+		]);
 	});
 
 	/**
@@ -940,8 +1081,8 @@ describe("workflow semantic tool rendering", () => {
 
 		expect(rendered.call).toEqual([
 			"<toolTitle><bold>workflow_transition</bold></toolTitle>",
-			"<toolOutput>From: implementation · Implementation stage</toolOutput>",
-			"<toolOutput>To: implementation · Implementation stage</toolOutput>",
+			"<toolTitle><bold>From:</bold></toolTitle><toolOutput> implementation · Implementation stage</toolOutput>",
+			"<toolTitle><bold>To:</bold></toolTitle><toolOutput> implementation · Implementation stage</toolOutput>",
 		]);
 		expect(rendered.result).toEqual([
 			"<toolTitle><bold>Error:</bold></toolTitle><muted> transition to implementation is not allowed; available transitions: review</muted>",
@@ -1014,13 +1155,12 @@ describe("workflow semantic tool rendering", () => {
 		);
 		const contentIndex = expandedCreation.call.indexOf("--- Content ---");
 		const yamlLines = expandedCreation.call.slice(contentIndex + 1);
-		const { description, prompt, stages, transitions } = creationArgs;
-		expect(parse(yamlLines.join("\n"))).toEqual({
-			description,
-			prompt,
-			stages,
-			transitions,
-		});
+		const { description, stages, transitions } = creationArgs;
+		const parsedContent = parse(yamlLines.join("\n"));
+		expect(parsedContent["description"]).toEqual(description);
+		expect(typeof parsedContent["prompt"]).toBe("string");
+		expect(parsedContent["stages"]).toEqual(stages);
+		expect(parsedContent["transitions"]).toEqual(transitions);
 		for (const line of yamlLines) {
 			expect(visibleWidth(stripVTControlCharacters(line))).toBeLessThanOrEqual(
 				20,

@@ -565,7 +565,7 @@ export default async function workflowExtension(
 			trigger,
 		);
 		publishWorkflowStatus(statusHolder.indicator, runtime);
-		if (runtime.journalReady) {
+		if (runtime.journalReady && trigger !== "policy-reset") {
 			publishWorkflowActivationOptions(pi, runtime, availability);
 		}
 	};
@@ -656,6 +656,17 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 	const synchronize = createWorkflowSynchronizer(options);
 	registerWorkflowRunLifecycle(pi, runtime, refreshTools);
 	registerWorkflowCompaction(pi, runtime, getPolicy);
+	pi.on("before_agent_start", (_event, ctx) => {
+		const availability = resolveRuntimeAvailability(runtime, getPolicy());
+		const workflows = pi.getActiveTools().includes(WORKFLOW_ACTIVATE_TOOL)
+			? availability.activationOptions
+			: [];
+		const message = runtime.journal.activationOptionsForRun(
+			workflows,
+			ctx.sessionManager.getBranch(),
+		);
+		return message === undefined ? undefined : { message };
+	});
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
 	).on(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
@@ -734,11 +745,6 @@ function createWorkflowSynchronizer(
 				runtime.journal.checkpoint(runtime.state);
 			}
 			runtime.journalReady = true;
-			publishWorkflowActivationOptions(
-				pi,
-				runtime,
-				resolveRuntimeAvailability(runtime, getPolicy()),
-			);
 		} finally {
 			publishWorkflowStatus(statusHolder.indicator, runtime);
 		}
@@ -769,17 +775,21 @@ function registerWorkflowCompaction(
 	runtime: WorkflowRuntime,
 	getPolicy: () => WorkflowPolicyResolution,
 ): void {
-	pi.on("session_compact", () => {
+	pi.on("session_compact", (_event, ctx) => {
 		runtime.journal.startContextSegment();
 		if (runtime.state !== undefined) {
 			runtime.journal.checkpoint(runtime.state, false);
 		}
-		publishWorkflowActivationOptions(
-			pi,
-			runtime,
-			resolveRuntimeAvailability(runtime, getPolicy()),
-			false,
-		);
+		// Automatic compaction must establish availability for the continuing run.
+		// Manual compaction while idle leaves publication to before_agent_start.
+		if (!ctx.isIdle()) {
+			publishWorkflowActivationOptions(
+				pi,
+				runtime,
+				resolveRuntimeAvailability(runtime, getPolicy()),
+				false,
+			);
+		}
 	});
 }
 

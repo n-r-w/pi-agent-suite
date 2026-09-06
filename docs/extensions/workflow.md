@@ -215,13 +215,17 @@ Creation, activation, stage editing, transition, session start, and branch chang
 
 ## Tool presentation
 
-The default Pi tool shell renders workflow references instead of displaying internal success JSON. Collapsed `workflow_create` output also identifies the configured `app.tools.expand` binding:
+The default Pi tool shell renders workflow references instead of displaying internal success JSON. While `workflow_create` arguments stream, each received type-compatible `description`, `prompt`, `stages`, or `transitions` field appears as YAML. The initial stage row appears as soon as its stage data arrives. Collapsed mode shows up to three visual YAML lines after the separate `Content:` label. When more YAML lines exist, the standard hint reports the hidden line count and the configured `app.tools.expand` binding:
 
 ```text
 workflow_create
 Workflow: task-delivery · Task-specific delivery workflow
 Stage: implementation · Implement the approved change
-Content: ctrl+o to show
+Content:
+description: Task-specific delivery workflow
+prompt: Follow the approved scope.
+stages:
+... (16 more lines, 19 total, ctrl+o to expand)
 
 workflow_activate
 Workflow: delivery · Software delivery
@@ -243,7 +247,7 @@ From: implementation · Implement the approved change
 To: review · Review the implementation
 ```
 
-Expanded `workflow_create` output shows catalog-shaped YAML. The workflow ID remains in the `Workflow` section because catalog files derive it from the file name:
+When the YAML has three or fewer visual lines, collapsed mode shows every line and omits the hidden-content hint. Expanded `workflow_create` output shows all received workflow content as catalog-shaped YAML. The workflow ID remains in the `Workflow` section because catalog files derive it from the file name:
 
 ```text
 workflow_create
@@ -253,6 +257,7 @@ task-delivery · Task-specific delivery workflow
 implementation · Implement the approved change
 --- Content ---
 description: Task-specific delivery workflow
+prompt: Follow the approved scope.
 stages:
   - id: implementation
     description: Implement the approved change
@@ -272,7 +277,7 @@ transitions:
     type: advance
 ```
 
-Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and shows at most four content rows before Pi's expansion hint. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels use Pi's bold `toolTitle` color, values use `toolOutput`, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
+Compact `Workflow:`, `Stage:`, `From:`, `To:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and shows at most four content rows before Pi's expansion hint. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 
@@ -284,7 +289,7 @@ The extension computes tool availability independently:
 
 The agent's `tools` policy remains a second gate. The extension never restores a tool removed by that policy.
 
-Workflow state entries remain authoritative for runtime reconstruction. Model-facing workflow data uses hidden, persistent messages with `customType: "workflow"`, `display: false`, and `deliverAs: "steer"`. During a tool loop, steering inserts the record into the next provider request. When Pi is idle, the same call persists the record without starting a turn. The extension does not register a `context` handler and does not append a transient workflow snapshot before provider calls.
+Workflow state entries remain authoritative for runtime reconstruction. Model-facing workflow data uses hidden, persistent messages with `customType: "workflow"` and `display: false`. Lifecycle records use `deliverAs: "steer"` to enter the next provider request during a tool loop. Initial activation options use the message returned by `before_agent_start`; Pi appends that message with the new user input without a steering queue. The extension does not register a `context` handler or rewrite messages already sent to a provider.
 
 The journal is append-only:
 - Activation appends `<workflow_activated>` with root guidance, stage descriptions, and the complete transition graph. The same message then appends `<workflow_stage_activated guidelines="inline">` for the initial stage.
@@ -298,13 +303,15 @@ The journal is append-only:
 
 While a workflow is active, the extension counts activity from each completed `turn_end` event. A turn contributes the greater of its completed tool-call count and one reasoning unit. A final assistant message has one reasoning unit when any `thinking` block contains text, a `thinkingSignature`, or `redacted: true`. Multiple reasoning blocks in one turn still contribute one unit. When the count reaches `reminderToolCallInterval`, the extension appends one reminder and resets the count to zero. A tool turn uses `deliverAs: "steer"` so the reminder reaches the next request in the tool loop. A reasoning-only turn uses `deliverAs: "nextTurn"` so the reminder reaches the next user-triggered request without starting an extra request. One parallel tool batch produces at most one reminder, and activity beyond the threshold is discarded. If every finalized result in a non-empty batch has `terminate: true`, that activity remains counted but the extension suppresses the reminder decision for that turn. A later zero-activity turn does not release the deferred reminder. A reasoning-only turn can release it through `nextTurn`, and the next ordinary non-empty tool batch can release it through `steer`. A mixed batch with at least one non-terminating result follows ordinary reminder counting. Workflow activation, stage entry, current-stage editing, checkpoint publication, and reminder publication reset the count. If one of these records is published during a turn, the extension does not count that turn's activity. Session start and branch changes also reset the runtime count. Completed workflows and an interval of `0` produce no reminders.
 
-Activation availability uses separate `<workflow_activation_options>` records. The extension publishes one at session initialization and after policy, catalog, or workflow changes only when the rendered options change. `<workflow_activation_options />` explicitly replaces an older non-empty list.
+Activation availability uses separate `<workflow_activation_options>` records. Session start, branch navigation, and `/agent` policy changes do not publish these records. Before each new run, the extension reads the selected branch after its latest compaction or branch summary and publishes only availability that differs from the last persisted value. Several idle selections therefore produce at most one record for the final selection. An initial empty result publishes no record. `<workflow_activation_options />` publishes only to replace an earlier non-empty value in that context segment. Preparing a message that Pi does not persist cannot suppress publication at the next run start. Workflow tool execution still publishes availability changes required by its lifecycle.
 
-After `session_compact`, the extension resets journal deduplication for the new provider-visible segment. It appends one `<workflow_checkpoint>` when workflow state exists, then publishes `<workflow_activation_options>` or `<workflow_activation_options />`. Without workflow state, it publishes activation options without a checkpoint. A repair checkpoint outside compaction preserves activation-options deduplication. Other stage definitions become unknown. The first later entry into another stage therefore uses `guidelines="inline"`.
+Already published records remain unchanged and retain their order. Replacement means appending another record, not modifying an earlier record. Main-agent selection during a run is deferred as described in [main-agent-selection](main-agent-selection.md).
+
+After `session_compact`, the extension resets journal deduplication for the new provider-visible segment. It appends one `<workflow_checkpoint>` when workflow state exists, independently of activation options. During a running session, it also publishes non-empty activation options for the continuing run with `triggerTurn: false`. Manual compaction while Pi is idle leaves activation-options publication to the next `before_agent_start`. Without workflow state, the extension applies the same activation-options rule without a checkpoint. A repair checkpoint outside compaction preserves activation-options deduplication. Other stage definitions become unknown. The first later entry into another stage therefore uses `guidelines="inline"`.
 
 New `activated` and `created` workflow-state snapshots require `journalVersion: 1`. State without this field belongs to the old format, is ignored with a warning, and produces no repair checkpoint. On session start and branch navigation, the extension scans `custom_message` workflow entries after the latest `compaction` or `branch_summary` entry. Every lifecycle record carries a SHA-256 revision of the normalized workflow definition. Current-format compatibility requires matching workflow ID, status, route-tail stage, and definition revision. A current-format state without a compatible lifecycle record receives one checkpoint.
 
-Catalog activation options are filtered through `workflows`. A resolved policy can change new activation options without deleting or blocking the saved workflow state.
+Catalog activation options are filtered through `workflows`. A resolved agent policy can hide every workflow tool without deleting the saved workflow state. When a later compatible policy restores `workflow_transition`, the saved route remains available for continuation.
 
 ## Session snapshots
 

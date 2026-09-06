@@ -24,4 +24,5 @@ Answer question inside `<question>` using provided conversation context and ques
 2. State uncertainty directly when current request lacks required facts.
 3. Do not invent facts.
 4. Preserve exact identifiers, file paths, command names, option names, and quoted text from question.
+5. If required query context is absent, state this and do not infer it.
 </answer_rules>

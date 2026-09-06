@@ -77,6 +77,7 @@ interface KeybindingsFake {
 }
 
 interface CommandContextFake {
+	isIdle(): boolean;
 	readonly cwd: string;
 	readonly hasUI?: boolean;
 	readonly model: Model<Api> | undefined;
@@ -406,6 +407,7 @@ function createCommandContext(
 
 	return {
 		cwd,
+		isIdle: () => true,
 		model: models[0],
 		sessionManager: {
 			getSessionFile: () => sessionFile,
@@ -682,6 +684,134 @@ async function importFreshMainAgentSelection(): Promise<MainAgentSelectionFactor
 }
 
 describe("main-agent-selection", () => {
+	test("applies only the last busy selection before the next idle input", async () => {
+		// Purpose: selection must keep the current run's model, thinking, tools, and agent unchanged.
+		// Input/output: select A, queue B then C while busy, and apply C at the next idle input.
+		// Edge cases: queued user input retains A; repeated idle input applies the pending selection only once.
+		// Dependencies: isolated agent files, fake input events, and runtime composition.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const models = [
+				createModel("openai", "a"),
+				createModel("openai", "b"),
+				createModel("openai", "c"),
+			];
+			for (const id of ["a", "b", "c"]) {
+				await writeAgent(agentDir, {
+					id,
+					description: id,
+					body: "fixture",
+					tools: id === "a" ? ["read"] : ["bash"],
+					model: { id: `openai/${id}`, thinking: "high" },
+				});
+			}
+			const pi = createExtensionApiFake();
+			mainAgentSelection(pi);
+			const ctx = createCommandContext(agentDir, undefined, models);
+			const command = getCommand(pi, "agent");
+			await command.handler("a", ctx);
+			const initialCalls = {
+				model: pi.setModelCalls.length,
+				thinking: pi.thinkingCalls.length,
+				tools: pi.activeToolCalls.length,
+			};
+			ctx.isIdle = () => false;
+			await command.handler("b", ctx);
+			await command.handler("c", ctx);
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("a");
+			expect({
+				model: pi.setModelCalls.length,
+				thinking: pi.thinkingCalls.length,
+				tools: pi.activeToolCalls.length,
+			}).toEqual(initialCalls);
+			await getHandler(pi, "input")({ type: "input" }, ctx);
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("a");
+			ctx.isIdle = () => true;
+			await getHandler(pi, "input")({ type: "input" }, ctx);
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("c");
+			expect(pi.setModelCalls.map(({ id }) => id)).toEqual(["a", "c"]);
+			expect(pi.getActiveTools()).toEqual(["bash"]);
+			await getHandler(pi, "input")({ type: "input" }, ctx);
+			expect(pi.setModelCalls.map(({ id }) => id)).toEqual(["a", "c"]);
+		});
+	});
+
+	test("keeps queued no-agent selection after shortcut cancellation", async () => {
+		// Purpose: cancelling a shortcut must retain the pending no-agent request.
+		// Input/output: active A then busy no-agent selection clears the contribution only at idle input.
+		// Edge cases: cancelling another selector and an unknown ID retain the pending selection.
+		// Dependencies: fake selector, isolated registry, and input lifecycle.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "a",
+				description: "a",
+				body: "fixture",
+				tools: ["read"],
+			});
+			const pi = createExtensionApiFake();
+			mainAgentSelection(pi);
+			const ctx = createCommandContext(agentDir);
+			await getCommand(pi, "agent").handler("a", ctx);
+			ctx.isIdle = () => false;
+			await getCommand(pi, "agent").handler("none", ctx);
+			await getShortcut(pi, "ctrl+alt+a").handler(ctx);
+			await getCommand(pi, "agent").handler("missing", ctx);
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("a");
+			ctx.isIdle = () => true;
+			await getHandler(pi, "input")({ type: "input" }, ctx);
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+			).toBeUndefined();
+		});
+	});
+
+	test.each([
+		"apply",
+		"replace",
+		"shutdown",
+	])("handles deferred shortcut selection on %s", async (outcome) => {
+		// Purpose: shortcuts and commands share one session-local pending selection.
+		// Input/output: shortcut selects B while A works; idle input applies B, an idle command replaces it, or shutdown discards it.
+		// Edge cases: the explicit current agent cancels a pending different choice; a closed session cannot leak that choice.
+		// Dependencies: isolated definitions, selector fake, input and shutdown handlers.
+		await withIsolatedAgentDir(async (agentDir) => {
+			for (const id of ["a", "b"]) {
+				await writeAgent(agentDir, { id, description: id, body: "fixture" });
+			}
+			const pi = createExtensionApiFake();
+			mainAgentSelection(pi);
+			const ctx = createCommandContext(agentDir, "b");
+			await getCommand(pi, "agent").handler("a", ctx);
+			ctx.isIdle = () => false;
+			await getShortcut(pi, "ctrl+alt+a").handler(ctx);
+			expect(
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("a");
+			ctx.isIdle = () => true;
+			if (outcome === "replace") {
+				await getCommand(pi, "agent").handler("a", ctx);
+			}
+			if (outcome === "shutdown") {
+				await getHandler(pi, "session_shutdown")({ reason: "quit" }, ctx);
+			}
+			await getHandler(pi, "input")({ type: "input" }, ctx);
+			const selected =
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id;
+			if (outcome === "shutdown") {
+				expect(selected).toBeUndefined();
+			} else {
+				expect(selected).toBe(outcome === "apply" ? "b" : "a");
+			}
+		});
+	});
+
 	test("does not register agent command or shortcut when explicitly disabled", async () => {
 		// Purpose: disabled main-agent-selection config must remove the selection command surface.
 		// Input and expected output: enabled false leaves command and shortcut registries empty.

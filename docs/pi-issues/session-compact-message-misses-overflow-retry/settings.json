@@ -1,0 +1,10 @@
+{
+	"compaction": {
+		"enabled": true,
+		"reserveTokens": 1000,
+		"keepRecentTokens": 1
+	},
+	"retry": {
+		"enabled": false
+	}
+}

@@ -193,7 +193,7 @@ The management pane removes `OSC 133;A/B/C` shell-history markers from nested co
 
 Tool presentation follows three paths:
 
-- Pi built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls`) use Pi's built-in tool definition.
+- Pi built-ins `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls` use renderers from Pi's public `create*ToolDefinition` factories. The registry passes their call, result, and shell presentation explicitly to `ToolExecutionComponent`, including native edit diffs. These display-only definitions cannot execute tools.
 - Package tools publish their exact call, result, and shell presentation through Pi's shared extension event bus. The management pane resolves these presentations by tool name, independent of extension load order and Jiti module isolation. This covers the four Subagents tools, MCP wrapper tools, `consult_advisor`, and `convene_council`.
 - Other tool names use the universal presentation: the JSON call preview starts on the tool-name row and occupies at most two visual lines; collapsed results occupy at most five visual lines and include a hidden-line count with the configured expansion key; expanded results use full Markdown; failures use error styling; and Pi supplies the normal tool shell.
 - Collapsed arbitrary text uses the same whitespace, JSON-string, and terminal-control normalization as MCP tool previews. Expanded result text remains unchanged.

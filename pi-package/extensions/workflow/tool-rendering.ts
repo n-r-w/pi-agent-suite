@@ -1,9 +1,8 @@
-import {
-	type AgentToolResult,
-	keyText,
-	type Theme,
-	type ToolDefinition,
-	type ToolRenderResultOptions,
+import type {
+	AgentToolResult,
+	Theme,
+	ToolDefinition,
+	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
@@ -25,6 +24,8 @@ const PRESENTATION_KIND = "workflow-tool";
 const STAGE_CHANGE_ARROW = "->";
 /** Matches the standard four-row collapsed content budget used by package tools. */
 const COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT = 4;
+/** Limits workflow creation YAML without counting its label or expansion hint. */
+const COLLAPSED_WORKFLOW_CONTENT_LINE_LIMIT = 3;
 /** Reserves indentation, quotes, and continuation markers around wrapped YAML scalars. */
 const YAML_SYNTAX_WIDTH_RESERVE = 8;
 
@@ -40,10 +41,10 @@ interface WorkflowPresentationReference {
 
 /** Contains the fields represented by one catalog workflow YAML file. */
 interface WorkflowContent {
-	readonly description: string;
+	readonly description?: string;
 	readonly prompt?: string;
-	readonly stages: readonly unknown[];
-	readonly transitions: readonly unknown[];
+	readonly stages?: readonly unknown[];
+	readonly transitions?: readonly unknown[];
 }
 
 /** Contains the stage fields exposed by get and accepted by edit. */
@@ -295,10 +296,8 @@ export function renderWorkflowCreateCall(
 	return renderWorkflowReferenceCall({
 		toolName: "workflow_create",
 		workflow: presentation?.workflow ?? fallback?.workflow,
-		stage:
-			presentation?.stage ??
-			(context.argsComplete ? fallback?.stage : undefined),
-		content: context.argsComplete ? createWorkflowContent(args) : undefined,
+		stage: presentation?.stage ?? fallback?.stage,
+		content: createWorkflowContent(args),
 		theme,
 		context,
 	});
@@ -737,31 +736,42 @@ function renderStageAttributes(
 	}).render(width);
 }
 
-/** Renders catalog-shaped workflow YAML or its configurable expansion hint. */
+/** Renders complete expanded YAML or a three-line collapsed YAML preview. */
 function renderWorkflowContent(options: {
 	readonly content: WorkflowContent | WorkflowStageContent;
 	readonly expanded: boolean;
 	readonly width: number;
 	readonly theme: Theme;
 }): readonly string[] {
+	const serialize = (width: number) =>
+		serializeWorkflowContent(options.content, width).map((line) =>
+			options.theme.fg("toolOutput", line),
+		);
 	if (options.expanded) {
 		return [
 			...new Text(options.theme.fg("muted", "--- Content ---"), 0, 0).render(
 				options.width,
 			),
-			...serializeWorkflowContent(options.content, options.width).map((line) =>
-				options.theme.fg("toolOutput", line),
-			),
+			...serialize(options.width),
 		];
 	}
-	return new Text(
-		options.theme.fg(
-			"muted",
-			`Content: ${keyText("app.tools.expand")} to show`,
-		),
-		0,
-		0,
-	).render(options.width);
+	return [
+		...new Text(
+			options.theme.fg("toolTitle", options.theme.bold("Content:")),
+			0,
+			0,
+		).render(options.width),
+		...new BoundedToolResult({
+			text: "",
+			theme: options.theme,
+			isError: false,
+			expanded: false,
+			collapsedContentLineLimit: COLLAPSED_WORKFLOW_CONTENT_LINE_LIMIT,
+			showHiddenLineHint: true,
+			showExpandedErrorLabel: false,
+			renderCollapsedLines: serialize,
+		}).render(options.width),
+	];
 }
 
 /** Selects the complete section or Pi's standard bounded collapsed preview. */
@@ -787,13 +797,22 @@ function renderReference(options: {
 		];
 	}
 	return new BoundedToolResult({
-		text: `${options.label}: ${formatReference(options.reference)}`,
+		text: "",
 		theme: options.theme,
 		isError: false,
 		expanded: false,
 		collapsedContentLineLimit: COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT,
 		showHiddenLineHint: true,
 		showExpandedErrorLabel: false,
+		renderCollapsedLines: (width) =>
+			renderLabeledWrappedText({
+				label: `${options.label}:`,
+				text: normalizeCollapsedToolText(formatReference(options.reference)),
+				width,
+				labelStyle: (value) =>
+					options.theme.fg("toolTitle", options.theme.bold(value)),
+				textStyle: (value) => options.theme.fg("toolOutput", value),
+			}),
 	}).render(options.width);
 }
 
@@ -900,24 +919,18 @@ function createWorkflowContent(args: unknown): WorkflowContent | undefined {
 	if (!isRecord(args)) {
 		return undefined;
 	}
-	const description = args["description"];
-	const prompt = args["prompt"];
-	const stages = args["stages"];
-	const transitions = args["transitions"];
-	if (
-		typeof description !== "string" ||
-		(prompt !== undefined && typeof prompt !== "string") ||
-		!Array.isArray(stages) ||
-		!Array.isArray(transitions)
-	) {
-		return undefined;
-	}
-	return {
-		description,
-		...(prompt === undefined ? {} : { prompt }),
-		stages,
-		transitions,
+	// Streaming parsers expose fields independently, so select each compatible value.
+	const content: WorkflowContent = {
+		...(typeof args["description"] === "string"
+			? { description: args["description"] }
+			: {}),
+		...(typeof args["prompt"] === "string" ? { prompt: args["prompt"] } : {}),
+		...(Array.isArray(args["stages"]) ? { stages: args["stages"] } : {}),
+		...(Array.isArray(args["transitions"])
+			? { transitions: args["transitions"] }
+			: {}),
 	};
+	return Object.keys(content).length === 0 ? undefined : content;
 }
 
 /** Reads one exact string field without normalizing tool arguments. */
