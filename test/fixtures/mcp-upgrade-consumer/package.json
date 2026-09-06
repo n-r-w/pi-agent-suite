@@ -1,0 +1,8 @@
+{
+	"name": "mcp-upgrade-consumer",
+	"version": "1.0.0",
+	"private": true,
+	"dependencies": {
+		"pi-agent-suite": "2.8.0"
+	}
+}

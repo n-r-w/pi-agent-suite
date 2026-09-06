@@ -6,13 +6,14 @@
 	"scripts": {
 		"test": "bun test",
 		"typecheck": "tsc --noEmit",
-		"check": "biome check package.json pi-package/package.json tsconfig.json pi-package test",
-		"verify": "bun test && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test",
-		"verify:ci": "bun test ./pi-package ./test/extensions ./test/shared && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test",
-		"release:check": "sh -c 'trap \"rm -f pi-package/README.md\" EXIT; cp README.md pi-package/README.md; bun run verify && (cd pi-package && npm pack --dry-run)'",
-		"release:prepare:patch": "cd pi-package && npm version patch --no-git-tag-version && cd .. && bun run release:check",
-		"release:prepare:minor": "cd pi-package && npm version minor --no-git-tag-version && cd .. && bun run release:check",
-		"release:prepare:major": "cd pi-package && npm version major --no-git-tag-version && cd .. && bun run release:check"
+		"check": "biome check package.json pi-package/package.json tsconfig.json pi-package test scripts",
+		"verify": "bun test && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test scripts",
+		"verify:ci": "bun test ./pi-package ./test/extensions ./test/shared ./scripts && tsc --noEmit && biome check package.json pi-package/package.json tsconfig.json pi-package test scripts",
+		"release:consumers": "bun scripts/release-consumers.ts",
+		"release:check": "bun scripts/release.ts",
+		"release:prepare:patch": "bun scripts/release.ts patch",
+		"release:prepare:minor": "bun scripts/release.ts minor",
+		"release:prepare:major": "bun scripts/release.ts major"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.0",
@@ -25,7 +26,7 @@
 		"typescript": "^5.9.3"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.30.0",
+		"@modelcontextprotocol/client": "^2.0.0",
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.1",

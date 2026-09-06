@@ -68,7 +68,7 @@ make release-minor
 make release-major
 ```
 
-The command updates `pi-package/package.json`, runs validation, temporarily copies `README.md` into `pi-package/`, checks the npm tarball, and removes the temporary copy.
+The command runs validation, repository audit, and both consumer installation checks before changing the version. Only after all checks pass does it run `npm version` in `pi-package/`. A failed check leaves the version unchanged. Package staging and archives stay in system temporary directories; release checks do not write `pi-package/README.md`.
 
 Print the remaining manual steps:
 
@@ -109,9 +109,31 @@ make release-check
 This runs:
 
 - `bun run verify`
-- `npm pack --dry-run` inside `pi-package/`
+- `make audit`, using the package's tracked npm lockfile
+- Both consumer installation checks, each using an actual npm archive and an isolated Pi package-loading check
 
 The publish workflow runs `bun run verify:ci` because the runtime integration test depends on local pi CLI behavior and is covered by `make release-check` before the release commit. Before checking and publishing the npm package, the workflow copies the root `README.md` into `pi-package/`.
+
+## Consumer installation checks
+
+Run registry-dependent checks without the deterministic test suite:
+
+```bash
+bun run release:consumers
+```
+
+Run one scenario with `bun scripts/release-consumers.ts SCN-02` or `bun scripts/release-consumers.ts SCN-03`.
+
+- SCN-02 installs the candidate archive in a clean npm consumer.
+- SCN-03 uses `test/fixtures/mcp-upgrade-consumer/package.json` and its lockfile to install `pi-agent-suite@2.8.0`. It checks that installed and locked `qs` is `6.15.3` and that the baseline audit identifies a reported `qs` advisory. It then installs the candidate without deleting the lockfile or running a repair command.
+
+Both scenarios use `npm install <archive> --prefix <consumer> --legacy-peer-deps`, matching Pi's npm package manager policy. Pi supplies host APIs, so these consumers do not install host peer dependencies. Each scenario runs `npm audit --omit=dev --audit-level=low` at the consumer root and requires exit code 0. The installed dependency tree must exclude SDK v1, Express, body-parser, and qs. The repository-local Pi CLI must load the installed package with `--no-session --no-extensions --offline -p -e <installed-package>` in temporary project and agent directories. No prompt or provider request is used.
+
+The checks report scenario IDs and audit summaries. Temporary state is removed on success and failure. Registry or audit-service errors block release preparation; do not weaken the audit threshold. A dependency's `package-lock.json` does not constrain consumer installs, so a passing repository audit cannot replace these checks.
+
+The upgrade fixture has no override or direct `qs` dependency. Its lockfile retains the historical vulnerable version. When rebuilding this baseline, preserve the published `2.8.0` manifest and verify the installed version and advisory before accepting a replacement fixture.
+
+The development tree can still contain SDK v1 through the optional `@google/genai` peer used by Pi. Root overrides remain applicable to that locked host tree; this is separate from the published package's mandatory production dependencies.
 
 ## Version and tag rule
 
