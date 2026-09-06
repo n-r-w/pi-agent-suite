@@ -51,6 +51,34 @@ function createJournal(): {
 }
 
 describe("workflow journal", () => {
+	test("retries an unpersisted run message and deduplicates only against branch evidence", () => {
+		// Purpose: preparing an initial message must not make a cancelled run look persisted.
+		// Input/output: two preparations on empty history return records; recorded history suppresses the third.
+		// Edge cases: returning to an empty branch and crossing branch_summary require a new record.
+		// Dependencies: production journal, isolated history records, and a fake publisher.
+		const { journal, records } = createJournal();
+		const candidate = journal.activationOptionsForRun([workflow()], []);
+		expect(candidate?.details).toEqual({
+			version: 1,
+			kind: "activation_options",
+		});
+		expect(journal.activationOptionsForRun([workflow()], [])?.details).toEqual(
+			candidate?.details,
+		);
+		expect(records).toHaveLength(0);
+		const branch = [{ type: "custom_message", ...candidate }];
+		expect(
+			journal.activationOptionsForRun([workflow()], branch),
+		).toBeUndefined();
+		expect(
+			journal.activationOptionsForRun(
+				[workflow()],
+				[...branch, { type: "branch_summary" }],
+			)?.details,
+		).toEqual(candidate?.details);
+		expect(journal.activationOptionsForRun([], [])).toBeUndefined();
+	});
+
 	/**
 	 * Proves a reminder publishes only escaped current identifiers and reminder metadata.
 	 * Input and expected output: active state with XML-sensitive IDs emits one self-closing marker.

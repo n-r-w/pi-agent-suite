@@ -1435,12 +1435,9 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 					Reflect.get(details, "kind") === "activation_options"
 				);
 			});
-			let expectedActivationOptionRecords = Number(
+			const expectedActivationOptionRecords = Number(
 				expectedWorkflowTools.includes("workflow_activate"),
 			);
-			if (runtimeCase.mode === "main-reset") {
-				expectedActivationOptionRecords = 2;
-			}
 			expect(activationOptionMessages).toHaveLength(
 				expectedActivationOptionRecords,
 			);

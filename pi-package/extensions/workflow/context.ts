@@ -138,6 +138,34 @@ export class WorkflowJournal {
 		workflows: readonly WorkflowDefinition[],
 		triggerTurn?: boolean,
 	): void {
+		const record = this.prepareActivationOptions(workflows);
+		if (record !== undefined) {
+			this.publish(record, "steer", triggerTurn);
+		}
+	}
+
+	/** Restores publication evidence before Pi appends the next run's initial message. */
+	public activationOptionsForRun(
+		workflows: readonly WorkflowDefinition[],
+		branch: readonly unknown[],
+	): WorkflowJournalRecord | undefined {
+		this.activationOptionsContent = undefined;
+		for (const entry of branch.slice(findCurrentContextSegmentStart(branch))) {
+			const message = readWorkflowMessage(entry);
+			if (
+				message?.details["version"] === 1 &&
+				message.details["kind"] === "activation_options"
+			) {
+				this.activationOptionsContent = message.content;
+			}
+		}
+		return this.prepareActivationOptions(workflows);
+	}
+
+	/** Deduplicates one candidate against the current context segment. */
+	private prepareActivationOptions(
+		workflows: readonly WorkflowDefinition[],
+	): WorkflowJournalRecord | undefined {
 		const content = renderActivationOptions(workflows);
 		if (content === this.activationOptionsContent) {
 			return;
@@ -147,16 +175,12 @@ export class WorkflowJournal {
 			return;
 		}
 		this.activationOptionsContent = content;
-		this.publish(
-			{
-				customType: "workflow",
-				content,
-				display: false,
-				details: { version: 1, kind: "activation_options" },
-			},
-			"steer",
-			triggerTurn,
-		);
+		return {
+			customType: "workflow",
+			content,
+			display: false,
+			details: { version: 1, kind: "activation_options" },
+		};
 	}
 
 	/** Clears journal-local state when Pi starts a new provider-visible context segment. */

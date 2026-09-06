@@ -83,6 +83,14 @@ Only `main` and `both` agent definitions appear in the main-agent selector. `sub
 - Press `Ctrl+Alt+A` to open the selector.
 - Agent ID matching is exact and case-sensitive after NFC normalization. Selector text search remains case-insensitive.
 
+### Selection during a run
+
+While Pi is running, `/agent`, `/agent none`, and `Ctrl+Alt+A` retain only the last selection in memory. The running agent keeps its prompt, model, thinking level, tools, and workflow policy. Automatic retries, compaction retries, and queued continuations still belong to that run.
+
+The next input received while Pi is idle applies and persists the pending selection before model validation and prompt assembly. Cancelling the selector or entering an unknown agent ID leaves the pending selection unchanged. An idle `/agent` selection replaces it immediately. Session shutdown discards an unapplied selection.
+
+Selecting an agent does not append workflow availability to session history. See [workflow publication](workflow.md) for append-only publication at run start.
+
 ## CLI flags
 
 | Flag | Type | Description |

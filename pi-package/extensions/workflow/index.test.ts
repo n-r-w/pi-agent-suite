@@ -403,6 +403,36 @@ function setMainWorkflowPolicy(
 	});
 }
 
+/** Models Pi storing a returned before_agent_start message before the provider request. */
+async function runBeforeAgentStart(
+	fake: FakePi,
+	branch: readonly unknown[] = fake.messages.map((message) => ({
+		type: "custom_message",
+		...message,
+	})),
+): Promise<void> {
+	const handler = fake.handlers.get("before_agent_start");
+	if (handler === undefined) {
+		throw new Error("missing before_agent_start handler");
+	}
+	const result = (await handler(
+		{ type: "before_agent_start" },
+		{ sessionManager: { getBranch: () => branch } },
+	)) as
+		| {
+				message?: {
+					customType: string;
+					content: string;
+					display: boolean;
+					details: unknown;
+				};
+		  }
+		| undefined;
+	if (result?.message !== undefined) {
+		fake.messages.push({ ...result.message, options: undefined });
+	}
+}
+
 /** Invokes one captured lifecycle handler with an isolated branch. */
 async function runLifecycle(
 	fake: FakePi,
@@ -467,12 +497,12 @@ async function runTurn(
 }
 
 /** Invokes the post-compaction lifecycle handler. */
-async function runSessionCompact(fake: FakePi): Promise<void> {
+async function runSessionCompact(fake: FakePi, idle = true): Promise<void> {
 	const handler = fake.handlers.get("session_compact");
 	if (handler === undefined) {
 		throw new Error("missing session_compact handler");
 	}
-	await handler({ type: "session_compact" });
+	await handler({ type: "session_compact" }, { isIdle: () => idle });
 }
 
 /** Invokes the session-level settlement handler without providing a UI context. */
@@ -542,6 +572,57 @@ afterEach(async () => {
 });
 
 describe("workflow extension lifecycle", () => {
+	test("publishes only the final idle policy when work starts", async () => {
+		// Purpose: agent selection changes tools immediately but journals only the options used by work.
+		// Input/output: start and policy toggles publish nothing; before_agent_start publishes one options record.
+		// Edge cases: unchanged starts and A -> B -> A keep the original record and history prefix.
+		// Dependencies: isolated catalog, real journal, fake lifecycle and persisted branch messages.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		setMainWorkflowPolicy(fake, []);
+		setMainWorkflowPolicy(fake, ["delivery"]);
+		expect(fake.messages).toHaveLength(0);
+		await runBeforeAgentStart(fake);
+		expect(fake.messages.map(({ details }) => details)).toEqual([
+			{ version: 1, kind: "activation_options" },
+		]);
+		const prefix = structuredClone(fake.messages);
+		setMainWorkflowPolicy(fake, []);
+		setMainWorkflowPolicy(fake, ["delivery"]);
+		await runBeforeAgentStart(fake);
+		expect(fake.messages).toEqual(prefix);
+		setMainWorkflowPolicy(fake, []);
+		expect(fake.messages).toEqual(prefix);
+		await runBeforeAgentStart(fake);
+		expect(fake.messages).toHaveLength(2);
+		expect(fake.messages.slice(0, 1)).toEqual(prefix);
+		await runBeforeAgentStart(fake);
+		expect(fake.messages).toHaveLength(2);
+	});
+
+	test("rebuilds activation availability from the selected context segment at work start", async () => {
+		// Purpose: navigation and manual compaction must not create premature availability records.
+		// Input/output: navigating empty history and compacting defer publication until work starts.
+		// Edge cases: a compacted segment needs fresh options; initial empty options need no replacement.
+		// Dependencies: fake session history, compaction, and production journal deduplication.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await runLifecycle(fake, "session_tree");
+		expect(fake.messages).toHaveLength(0);
+		await runBeforeAgentStart(fake);
+		expect(fake.messages).toHaveLength(1);
+		await runSessionCompact(fake);
+		expect(fake.messages).toHaveLength(1);
+		await runBeforeAgentStart(fake, [{ type: "compaction" }]);
+		expect(fake.messages).toHaveLength(2);
+		setMainWorkflowPolicy(fake, []);
+		await runLifecycle(fake, "session_tree");
+		await runBeforeAgentStart(fake, []);
+		expect(fake.messages).toHaveLength(2);
+	});
+
 	/** Proves configured definitions exist before lifecycle policy resolution. */
 	test("registers the five sequential workflow tools during initialization", async () => {
 		await createSuite(validYaml());
@@ -2111,21 +2192,24 @@ describe("workflow extension lifecycle", () => {
 		expect(activation?.options).toEqual({ deliverAs: "steer" });
 	});
 
-	/** Proves compaction starts a new activation-options segment without an active workflow. */
-	test("re-publishes activation options after inactive compaction", async () => {
-		// Purpose: every compaction must establish workflow availability in the new provider-visible segment.
-		// Input and expected output: delivery availability is published once at startup and once after inactive compaction.
-		// Edge case: no active or completed workflow exists to produce a checkpoint.
-		// Dependencies: session_compact wiring and activation-options deduplication reset.
+	/** Proves automatic compaction restores availability for the continuing run. */
+	test("re-publishes activation options during automatic compaction", async () => {
+		// Purpose: a continuing run needs options after compaction without another before_agent_start.
+		// Input/output: run startup and automatic compaction each publish one options record.
+		// Edge case: no workflow state exists to produce a checkpoint.
+		// Dependencies: session_compact wiring and journal publication.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
-		const initialOptions = fake.messages.at(-1)?.content;
+		await runBeforeAgentStart(fake);
 
-		await runSessionCompact(fake);
+		await runSessionCompact(fake, false);
 
 		expect(fake.messages).toHaveLength(2);
-		expect(fake.messages.at(-1)?.content).toBe(initialOptions);
+		expect(fake.messages.at(-1)?.details).toEqual({
+			version: 1,
+			kind: "activation_options",
+		});
 		expect(fake.messages.at(-1)?.options).toEqual({
 			deliverAs: "steer",
 			triggerTurn: false,
@@ -2246,14 +2330,16 @@ describe("workflow extension lifecycle", () => {
 		await transition.execute("finish-delivery", { stageId: "done" });
 
 		setMainWorkflowPolicy(fake, ["review"]);
-		const switchedContent = latestWorkflowContent(fake);
-		expect(switchedContent).toContain(
-			'<workflow_stage_activated workflow_id="delivery" stage_id="done"',
-		);
-		expect(fake.messages.at(-1)?.content).toContain(
-			"<workflow_activation_options>",
-		);
-		expect(fake.messages.at(-1)?.content).toContain('id="review"');
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "stage_activation",
+			workflowId: "delivery",
+			stageId: "done",
+		});
+		await runBeforeAgentStart(fake);
+		expect(fake.messages.at(-1)?.details).toEqual({
+			version: 1,
+			kind: "activation_options",
+		});
 
 		await transition.execute("reopen-delivery", { stageId: "start" });
 		await activate.execute("activate-review", { workflowId: "review" });
@@ -2282,11 +2368,16 @@ describe("workflow extension lifecycle", () => {
 		const transition = requireTool(fake, "workflow_transition");
 		const activate = requireTool(fake, "workflow_activate");
 
-		const initialContent = latestWorkflowContent(fake);
-		expect(initialContent).toContain(
-			'<workflow_checkpoint id="delivery" status="active" active_stage_id="start"',
-		);
-		expect(fake.messages.at(-1)?.content).toContain('id="review"');
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "checkpoint",
+			workflowId: "delivery",
+			stageId: "start",
+		});
+		await runBeforeAgentStart(fake);
+		expect(fake.messages.at(-1)?.details).toEqual({
+			version: 1,
+			kind: "activation_options",
+		});
 
 		await transition.execute("finish-delivery", { stageId: "done" });
 		await activate.execute("activate-review", { workflowId: "review" });

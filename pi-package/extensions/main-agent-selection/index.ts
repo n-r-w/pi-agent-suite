@@ -86,6 +86,7 @@ interface MainAgentSelectorKeybindings {
 }
 
 interface MainAgentContext {
+	isIdle(): boolean;
 	readonly cwd: string;
 	readonly hasUI?: boolean;
 	readonly model: Model<Api> | undefined;
@@ -327,6 +328,27 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 
 	writeRuntimeDiagnostic("main-agent-selection.loaded");
 	getAgentRuntimeComposition(pi);
+	let pendingAgent: AgentDefinition | null | undefined;
+	const select = async (
+		agent: AgentDefinition | null,
+		ctx: MainAgentContext,
+	): Promise<void> => {
+		if (!ctx.isIdle()) {
+			pendingAgent = agent;
+			ctx.ui.notify("Agent selection will apply before the next run.", "info");
+			return;
+		}
+		pendingAgent = undefined;
+		await applySelectedMainAgent(pi, ctx, agent);
+	};
+	// Input precedes model validation and every before_agent_start prompt contribution.
+	// Queued input during the current run must keep the current agent's settings.
+	pi.on("input", async (_event, ctx) => {
+		if (ctx.isIdle() && pendingAgent !== undefined) {
+			await select(pendingAgent, ctx as MainAgentContext);
+		}
+		return { action: "continue" };
+	});
 
 	pi.registerFlag("agent", {
 		description:
@@ -339,7 +361,7 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const trimmedArgs = args.trim();
 			if (trimmedArgs.toLowerCase() === NO_AGENT_ARGUMENT) {
-				await selectNoMainAgent(pi, ctx as MainAgentContext);
+				await select(null, ctx as MainAgentContext);
 				return;
 			}
 
@@ -347,6 +369,7 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 				pi,
 				ctx as MainAgentContext,
 				trimmedArgs || undefined,
+				select,
 			);
 		},
 	});
@@ -354,15 +377,17 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	pi.registerShortcut(SHORTCUT, {
 		description: "Select the main agent",
 		handler: async (ctx) => {
-			await selectMainAgent(pi, ctx as MainAgentContext, undefined);
+			await selectMainAgent(pi, ctx as MainAgentContext, undefined, select);
 		},
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		pendingAgent = undefined;
 		await handleSessionStart(pi, event, ctx as MainAgentContext);
 	});
 
 	pi.on("session_shutdown", (event, ctx) => {
+		pendingAgent = undefined;
 		handleSessionShutdown(pi, event, ctx as MainAgentContext);
 	});
 }
@@ -673,6 +698,10 @@ async function selectMainAgent(
 	pi: ExtensionAPI,
 	ctx: MainAgentContext,
 	explicitAgentId: string | undefined,
+	select: (
+		agent: AgentDefinition | null,
+		ctx: MainAgentContext,
+	) => Promise<void>,
 ): Promise<void> {
 	const agents = await loadSelectableAgents(ctx.cwd);
 	const selectedAgentId =
@@ -681,7 +710,7 @@ async function selectMainAgent(
 		return;
 	}
 	if (selectedAgentId === null) {
-		await selectNoMainAgent(pi, ctx);
+		await select(null, ctx);
 		return;
 	}
 
@@ -693,6 +722,19 @@ async function selectMainAgent(
 		return;
 	}
 
+	await select(agent, ctx);
+}
+
+/** Applies and persists a resolved selection only when no previous run is using it. */
+async function applySelectedMainAgent(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+	agent: AgentDefinition | null,
+): Promise<void> {
+	if (agent === null) {
+		await selectNoMainAgent(pi, ctx);
+		return;
+	}
 	const normalizedCwd = normalizeCwd(ctx.cwd);
 	const application = await applyAgentSelection(pi, ctx, agent);
 	if (application === "workflow-policy-error") {
