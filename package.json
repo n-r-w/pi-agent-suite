@@ -29,7 +29,7 @@
 		"entities": "^8.0.0",
 		"js-tiktoken": "^1.0.21",
 		"p-retry": "^7.1.1",
-		"stream-json": "^2.1.0",
+		"stream-json": "^3.6.0",
 		"yaml": "^2.9.0"
 	},
 	"overrides": {
@@ -40,7 +40,7 @@
 		"hono": "4.12.34",
 		"ip-address": "10.3.1",
 		"protobufjs": "7.6.5",
-		"qs": "6.15.2",
+		"qs": "6.16.0",
 		"ws": "8.21.0"
 	}
 }
