@@ -226,6 +226,8 @@ Current working directory: {{cwd}}
             Codebase is word list. Write real symbol, file, flag, or command name, not a synonym or a description of it.
 
             Don't invent jargon. Use words a developer would say out loud: "move", "delete", "a budget that only decreases", not "evacuate", "ratchet", or "endgame". A named pattern is fine when doc says what it means first time. Add new offenders to `unslop`'s abstract-metaphor rule with their replacement.
+
+            MUST NOT mention local user directories in public documentation.
         </rules>
     </technical_writing>
 
