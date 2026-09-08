@@ -1,0 +1,67 @@
+name: Publish remote image helper
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }} ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.1"
+          cache-dependency-path: remote-image-helper/go.sum
+      - name: Test
+        working-directory: remote-image-helper
+        run: go test ./...
+      - name: Build
+        working-directory: remote-image-helper
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          suffix=""
+          if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
+          go build -trimpath -ldflags="-s -w" -o "../pi-agent-suite-remote-image-${GOOS}-${GOARCH}${suffix}" .
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-image-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: pi-agent-suite-remote-image-*
+          if-no-files-found: error
+
+  upload:
+    name: Upload release assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Download builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: remote-image-*
+          merge-multiple: true
+          path: release-assets
+      - name: Add setup scripts
+        run: |
+          cp remote-image-helper/setup.sh release-assets/setup-remote-image.sh
+          cp remote-image-helper/setup.ps1 release-assets/setup-remote-image.ps1
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber
