@@ -8,7 +8,7 @@ PI_PACKAGES := \
 	@earendil-works/pi-coding-agent \
 	@earendil-works/pi-tui
 
-.PHONY: audit pi-versions pi-update release-check release-patch release-minor release-major release-tag release-github release-next-steps verify
+.PHONY: audit pi-versions pi-update release-check release-patch release-minor release-major release-tag release-github release-next-steps verify remote-image-build remote-image-build-all
 
 # Reports the pinned and latest published version of every Pi development package.
 pi-versions:
@@ -76,3 +76,23 @@ release-next-steps:
 
 verify: audit
 	bun run verify
+
+# Builds the helper for the host or the supplied GOOS and GOARCH.
+remote-image-build:
+	@set -eu; \
+	os=$$(go env GOOS); arch=$$(go env GOARCH); \
+	suffix=""; if [ "$$os" = "windows" ]; then suffix=".exe"; fi; \
+	mkdir -p dist; \
+	output="pi-agent-suite-remote-image-$$os-$$arch$$suffix"; \
+	cd remote-image-helper; \
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "../dist/$$output" .; \
+	printf 'Built dist/%s\n' "$$output"
+
+# Builds all supported desktop operating systems and architectures.
+remote-image-build-all:
+	@set -eu; \
+	for os in darwin linux windows; do \
+		for arch in amd64 arm64; do \
+			GOOS=$$os GOARCH=$$arch $(MAKE) remote-image-build; \
+		done; \
+	done
