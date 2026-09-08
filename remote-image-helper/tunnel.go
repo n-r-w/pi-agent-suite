@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 )
 
@@ -49,7 +50,9 @@ func runTunnel(
 	waitForRetry func(context.Context) bool,
 ) {
 	for ctx.Err() == nil {
-		_ = runner.Run(ctx, command)
+		if err := runner.Run(ctx, command); err != nil && ctx.Err() == nil {
+			log.Printf("SSH tunnel failed: %v; reconnecting", err)
+		}
 		if ctx.Err() != nil || !waitForRetry(ctx) {
 			return
 		}

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 )
 
 func installHelper(sourceExecutable string, configuration config) (installationPlan, error) {
@@ -22,18 +22,8 @@ func installHelper(sourceExecutable string, configuration config) (installationP
 	if err != nil {
 		return installationPlan{}, err
 	}
-	if err := copyExecutable(sourceExecutable, plan.BinaryPath); err != nil {
-		return installationPlan{}, err
-	}
-	if err := writeConfig(plan.ConfigPath, configuration); err != nil {
-		return installationPlan{}, err
-	}
-	if plan.StartupPath != "" {
-		if err := writePrivateFile(plan.StartupPath, []byte(plan.StartupFile)); err != nil {
-			return installationPlan{}, fmt.Errorf("write startup file: %w", err)
-		}
-	}
-	if err := activateStartup(plan); err != nil {
+	commands := setupCommands{run: runSetupCommand, capture: captureSetupCommand}
+	if err := plan.install(sourceExecutable, configuration, runtime.GOOS, commands); err != nil {
 		return installationPlan{}, err
 	}
 	return plan, nil
@@ -63,6 +53,9 @@ func configFromEnvironment(getenv func(string) string) (config, error) {
 }
 
 func copyExecutable(source, destination string) error {
+	if err := checkExecutableSource(source, destination); err != nil {
+		return err
+	}
 	input, err := os.Open(source)
 	if err != nil {
 		return fmt.Errorf("open helper executable: %w", err)
@@ -82,6 +75,25 @@ func copyExecutable(source, destination string) error {
 	}
 	if closeErr != nil {
 		return fmt.Errorf("close installed helper: %w", closeErr)
+	}
+	return nil
+}
+
+// checkExecutableSource prevents an installer from stopping or overwriting itself.
+func checkExecutableSource(source, destination string) error {
+	input, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("stat helper source: %w", err)
+	}
+	output, err := os.Stat(destination)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat installed helper: %w", err)
+	}
+	if os.SameFile(input, output) {
+		return fmt.Errorf("run install from the downloaded or built helper, not the installed executable")
 	}
 	return nil
 }
@@ -108,27 +120,8 @@ func writePrivateFile(path string, contents []byte) error {
 	return os.Chmod(path, 0o600)
 }
 
-func activateStartup(plan installationPlan) error {
-	if plan.StartupCommand != nil {
-		if err := runSetupCommand(*plan.StartupCommand); err != nil {
-			return fmt.Errorf("register Windows logon task: %w", err)
-		}
-		return runSetupCommand(commandSpec{Name: "schtasks", Args: []string{"/Run", "/TN", "PiAgentSuiteRemoteImage"}})
-	}
-	if runtime.GOOS == "darwin" {
-		domain := "gui/" + strconv.Itoa(os.Getuid())
-		return activateLaunchAgent(domain, plan.StartupPath, runSetupCommand, listLaunchAgents)
-	}
-	command := exec.Command(plan.BinaryPath, "--config", plan.ConfigPath)
-	command.Stdin = nil
-	command.Stdout = nil
-	command.Stderr = nil
-	if err := command.Start(); err != nil {
-		return fmt.Errorf("start helper: %w", err)
-	}
-	return command.Process.Release()
-}
-
 func runSetupCommand(specification commandSpec) error {
-	return systemCommandRunner{}.Run(context.Background(), specification)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return systemCommandRunner{}.Run(ctx, specification)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -74,28 +75,24 @@ func run(ctx context.Context, configPath, executablePath string) error {
 		Handler:           newImageHandler(nativeClipboard{}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	serverErrors := make(chan error, 1)
-	go func() {
-		serverErrors <- server.ListenAndServe()
-	}()
-	go runTunnel(
-		ctx,
-		systemCommandRunner{},
-		buildSSHCommand(configuration, executablePath, configPath),
-		waitForReconnect,
-	)
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return server.Shutdown(shutdownCtx)
-	case err := <-serverErrors:
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return fmt.Errorf("listen for clipboard images: %w", err)
+	}
+	return runServices(ctx, func() error {
+		err := server.Serve(listener)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		return fmt.Errorf("serve clipboard image: %w", err)
-	}
+		return err
+	}, func(ctx context.Context) error {
+		if err := server.Shutdown(ctx); err != nil {
+			return errors.Join(err, server.Close())
+		}
+		return nil
+	}, func(ctx context.Context) {
+		runTunnel(ctx, systemCommandRunner{}, buildSSHCommand(configuration, executablePath, configPath), waitForReconnect)
+	})
 }
 
 func waitForReconnect(ctx context.Context) bool {

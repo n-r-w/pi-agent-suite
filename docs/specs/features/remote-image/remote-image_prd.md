@@ -41,7 +41,7 @@ Prefer the fewest installed components and the least initial configuration. A lo
 
 ### Non-functional requirements
 
-- NRQ-01: Support macOS, Linux, and Windows on the local computer, and Linux on the remote server.
+- NRQ-01: Support macOS, Linux with a systemd-managed graphical user session, and Windows on the local computer, and Linux on the remote server.
   - Goal: Cover the user's target platforms.
   - Goal achievement: Full for the approved platform set.
 - NRQ-02: Use an implementation owned by this project, with no dependency on `pasky/pi-ssh-image-clipboard`.

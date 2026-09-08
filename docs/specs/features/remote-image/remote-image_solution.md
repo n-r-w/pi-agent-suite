@@ -16,7 +16,9 @@ See the [problem statement](remote-image_problem.md), [domain glossary](domain-g
 ### Persistent setup and startup
 
 - The setup script saves connection settings, including the optional SSH password, in a local configuration file. There is no separate encrypted credential store.
-- Use a user LaunchAgent on macOS, XDG Autostart on Linux, and an interactive-user logon task on Windows. The helper runs in the graphical session that owns the clipboard, not Windows Session 0.
+- Use a user LaunchAgent on macOS, a systemd user service bound to `graphical-session.target` on Linux, and an interactive-user logon task on Windows. The helper runs in the graphical session that owns the clipboard, not Windows Session 0.
+- Reinstallation stops the old helper before replacing its executable or configuration. On macOS, wait for LaunchAgent removal after `bootout`. On Linux, synchronous `systemctl --user stop` stops the service control group, including SSH. On Windows, disable the old task, terminate the helper process tree, and wait for the task and tracked processes to exit. A stop failure aborts replacement.
+- Runtime and SSH diagnostics go to the systemd user journal on Linux and a file next to the configuration on macOS and Windows. Setup prints the diagnostic location. Successful service registration does not confirm SSH connectivity.
 - Initial SSH host-key confirmation remains part of normal setup. The helper uses OpenSSH authentication and host-key handling rather than adding a separate trust or authentication mechanism.
 - The remote image extension is enabled through `PI_AGENT_SUITE_MODE=remote`. The local helper and remote image extension use the same image transfer port.
 
@@ -62,7 +64,7 @@ Ctrl+V in remote pi
 - Installed pi 0.85.1 checks extension shortcuts before native image paste. It permits the Ctrl+V override and reports its standard shortcut-conflict warning. No pi patch or custom editor is needed.
 - The selected clipboard library documents native desktop image reads without `pngpaste`, `xclip`, `wl-paste`, or a Node.js runtime. Its Linux initialization selects Wayland with data-control support, otherwise X11. Linux desktop compatibility must be checked with real image paste during implementation.
 - The Windows OpenSSH source contains `SSH_ASKPASS` process invocation and `SSH_ASKPASS_REQUIRE=force` handling. This is source evidence, not an end-to-end check of the helper on Windows.
-- XDG Autostart starts desktop applications after graphical login. The selected Windows logon-task pattern runs as the interactive user. These choices avoid requiring access to the user's clipboard from a machine-level service.
+- Linux requires a desktop session that activates `graphical-session.target` in the systemd user manager. Setup imports the available graphical-session environment variables. The service starts with the graphical session and stops with it. The Windows logon task runs as the interactive user. Neither uses a machine-level service for clipboard access.
 - Implementation verification must cover request-to-file-to-editor behavior with isolated fakes, SSH process lifecycle and password-response behavior with fake processes, and extension loading through the real pi CLI. Live platform checks must cover native clipboard access, SSH authentication, graphical-session startup, and reconnection. No live platform check has been performed for this feature.
 
 ## Overengineering and overspecification considerations
@@ -82,5 +84,5 @@ None. The dry-run found no material unresolved implementation choice. Native bui
 - [Clipboard library v0.9.0](https://github.com/golang-design/clipboard/tree/v0.9.0) documents the selected native clipboard implementation and platform constraints.
 - [Windows OpenSSH password handling](https://github.com/PowerShell/openssh-portable/blob/latestw_all/readpass.c) implements askpass invocation on Windows.
 - [OpenSSH remote forwarding](https://man.openbsd.org/ssh_config#RemoteForward) describes the tunnel mechanism.
-- [XDG Autostart](https://specifications.freedesktop.org/autostart/latest/) defines Linux desktop-session startup.
+- [systemd graphical-session.target](https://www.freedesktop.org/software/systemd/man/latest/systemd.special.html#graphical-session.target) defines the Linux graphical user session lifecycle.
 - [Yandex MCP workstation setup](https://github.com/n-r-w/yandex-mcp#workstation-setup) provides the reference idea of one-time setup and persistent local operation.

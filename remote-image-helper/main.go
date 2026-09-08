@@ -24,7 +24,13 @@ func execute() error {
 	}
 
 	configPath := flag.String("config", "", "path to the remote image helper configuration")
+	logPath := flag.String("log", "", "append runtime and SSH diagnostics to this file")
 	flag.Parse()
+	if *logPath != "" {
+		if err := configureRuntimeLog(*logPath); err != nil {
+			return err
+		}
+	}
 	if flag.NArg() > 0 && flag.Arg(0) == "install" {
 		configuration, err := configFromEnvironment(os.Getenv)
 		if err != nil {
@@ -40,6 +46,11 @@ func execute() error {
 		}
 		fmt.Printf("Installed remote image helper. Configure remote pi with PI_AGENT_SUITE_MODE=remote and PI_AGENT_SUITE_IMAGE_PORT=%d.\n", configuration.ImagePort)
 		fmt.Printf("Saved local configuration to %s.\n", plan.ConfigPath)
+		if plan.LogPath != "" {
+			fmt.Printf("Runtime and SSH diagnostics: %s\n", plan.LogPath)
+		} else {
+			fmt.Printf("Runtime and SSH diagnostics: journalctl --user -u %s\n", linuxServiceName)
+		}
 		return nil
 	}
 

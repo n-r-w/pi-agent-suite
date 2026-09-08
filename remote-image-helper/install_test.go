@@ -18,7 +18,7 @@ func TestInstallationPlanUsesGraphicalUserStartup(t *testing.T) {
 		startupMarker string
 	}{
 		{goos: "darwin", home: "/Users/Test User", startupMarker: "Library/LaunchAgents/dev.pi.agent-suite.remote-image.plist"},
-		{goos: "linux", home: "/home/test user", startupMarker: ".config/autostart/pi-agent-suite-remote-image.desktop"},
+		{goos: "linux", home: "/home/test user", startupMarker: ".config/systemd/user/pi-agent-suite-remote-image.service"},
 		{goos: "windows", home: `C:\Users\Test User`, localAppData: `C:\Users\Test User\AppData\Local`, startupMarker: "schtasks"},
 	}
 	for _, test := range tests {

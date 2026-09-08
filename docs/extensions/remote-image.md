@@ -12,7 +12,7 @@ The local computer runs the standalone helper. A local pi process and a local No
 - Remote server: Linux with pi-agent-suite installed.
 - Local and remote systems: OpenSSH.
 - SSH server: loopback reverse forwarding must be permitted.
-- Linux local computer: an X11 session, or a Wayland compositor with data-control support or XWayland.
+- Linux local computer: an X11 session, or a Wayland compositor with data-control support or XWayland. The desktop must activate `graphical-session.target` in the systemd user manager. Run setup from a terminal inside that graphical session.
 
 ## Local setup
 
@@ -45,7 +45,7 @@ For SSH password authentication:
 .\setup-remote-image.ps1 -SshTarget user@server.example -SshPassword 'your-password'
 ```
 
-The setup installs the helper for the current user, saves the connection settings, starts the helper, and configures startup after graphical login. The saved password is stored as plain text in the current user's configuration file. Without a saved password, OpenSSH uses its configured key, agent, and host settings.
+The setup installs the helper for the current user, saves the connection settings, starts the helper, and configures startup after graphical login. Linux uses `pi-agent-suite-remote-image.service` in the systemd user manager. Reinstallation stops the old helper and waits for shutdown before replacing files. A stop or startup-command error aborts installation. The saved password is stored as plain text in the current user's configuration file. Without a saved password, OpenSSH uses its configured key, agent, and host settings.
 
 The first connection can require normal OpenSSH host-key confirmation. Run `ssh user@server.example` once before setup when the host key has not been accepted.
 
@@ -87,9 +87,23 @@ An empty image clipboard produces a warning and inserts no text. A tunnel, HTTP,
 
 The helper binds `127.0.0.1` only. OpenSSH forwards the same loopback port to the remote server. The feature does not open an externally reachable listener and adds no protocol above SSH.
 
+## Runtime diagnostics
+
+Setup prints the location of runtime and SSH diagnostics. Service registration does not confirm a working SSH connection.
+
+On Linux:
+
+```bash
+systemctl --user status pi-agent-suite-remote-image.service
+journalctl --user -u pi-agent-suite-remote-image.service -f
+```
+
+On macOS and Windows, diagnostics are appended to `remote-image.json.log` next to the saved configuration. On macOS, LaunchAgent captures stdout and stderr. On Windows, the task supplies the helper's `--log` option.
+
 ## Troubleshooting
 
-- `connection refused`: check that the helper is running and that the local and remote port values match.
+- `connection refused`: check that the helper is running and that the local and remote port values match. Inspect the runtime diagnostics for startup or SSH errors.
+- `Linux setup requires an active systemd graphical user session`: run setup in a desktop session that activates `graphical-session.target`. A machine-level service or a plain SSH login does not satisfy this requirement.
 - `remote port forwarding failed`: check that the remote port is unused and the SSH server permits loopback reverse forwarding.
 - Repeated SSH authentication failures: run the same SSH target with the system `ssh` command. Check the host key and authentication settings.
 - Empty clipboard warning with an image copied on Linux: check the desktop session. Wayland requires data-control support or XWayland.

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -90,14 +93,21 @@ func TestMergeEnvironmentOverridesExistingValues(t *testing.T) {
 
 func TestRunTunnelReconnectsAfterSSHExit(t *testing.T) {
 	// Purpose: helper operation must recover from network or SSH process loss.
-	// Input and expected output: two failed SSH runs occur before context cancellation stops the loop.
+	// Input and expected output: SSH failure is logged and retried before cancellation stops the loop.
 	// Edge case: cancellation prevents another reconnect.
 	// Dependencies: process execution and retry delay use deterministic fakes.
+	var output bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previousOutput)
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &fakeCommandRunner{cancel: cancel}
 	runTunnel(ctx, runner, commandSpec{Name: "ssh"}, func(context.Context) bool { return true })
 	if runner.calls != 2 {
 		t.Fatalf("runs = %d, want 2", runner.calls)
+	}
+	if !strings.Contains(output.String(), "ssh exited") {
+		t.Fatalf("SSH failure missing from log: %q", output.String())
 	}
 }
 
