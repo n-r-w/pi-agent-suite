@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { McpRequestOptions } from "./client-manager.ts";
 import type { McpServerConfig } from "./config.ts";
 import { createSdkMcpClient } from "./sdk-client-factory.ts";
 
@@ -9,22 +10,42 @@ class FakeSdkClient {
 	readonly clientInfo: unknown;
 	readonly options: unknown;
 	readonly connectedTransports: unknown[] = [];
+	connectOptions: McpRequestOptions | undefined;
+	listRequest:
+		| { params: unknown; options: McpRequestOptions | undefined }
+		| undefined;
 	closeCalls = 0;
+	readonly calls: {
+		params: unknown;
+		options: McpRequestOptions | undefined;
+	}[] = [];
 
 	constructor(clientInfo: unknown, options?: unknown) {
 		this.clientInfo = clientInfo;
 		this.options = options;
 	}
 
-	async connect(transport: unknown): Promise<void> {
+	async connect(
+		transport: unknown,
+		options?: McpRequestOptions,
+	): Promise<void> {
 		this.connectedTransports.push(transport);
+		this.connectOptions = options;
 	}
 
-	async listTools(): Promise<{ readonly tools: [] }> {
+	async listTools(
+		params?: { readonly cursor?: string },
+		options?: McpRequestOptions,
+	): Promise<{ readonly tools: [] }> {
+		this.listRequest = { params, options };
 		return { tools: [] };
 	}
 
-	async callTool(): Promise<unknown> {
+	async callTool(
+		params: unknown,
+		options?: McpRequestOptions,
+	): Promise<unknown> {
+		this.calls.push({ params, options });
 		return { content: [] };
 	}
 
@@ -45,6 +66,9 @@ class FakeStdioTransport {
 		this.params = params;
 	}
 
+	async start(): Promise<void> {}
+	async send(): Promise<void> {}
+
 	async close(): Promise<void> {
 		this.closeCalls += 1;
 	}
@@ -60,12 +84,52 @@ class FakeHttpTransport {
 		this.options = options;
 	}
 
+	async start(): Promise<void> {}
+	async send(): Promise<void> {}
+
 	async close(): Promise<void> {
 		this.closeCalls += 1;
 	}
 }
 
 describe("mcp-wrapper SDK client factory", () => {
+	// Purpose: preserve request parameters at the SDK boundary for both transports.
+	// Inputs: cursor, tool arguments, signal, timeout, and total timeout; expect exact forwarding.
+	// Edge: v2 receives call options in the second argument. Dependencies: constructor fakes only.
+	test.each<McpServerConfig>([
+		{ type: "stdio", command: "fixture", args: [], env: {} },
+		{ type: "streamableHttp", url: "https://example.com/mcp", headers: {} },
+	])("forwards call arguments and request options with $type", async (config) => {
+		const client = createSdkMcpClient("echo", config, {
+			client: FakeSdkClient,
+			stdioClientTransport: FakeStdioTransport,
+			streamableHttpClientTransport: FakeHttpTransport,
+		});
+		const params = { name: "echo", arguments: { text: "hello" } };
+		const options = {
+			signal: new AbortController().signal,
+			timeout: 1234,
+			maxTotalTimeout: 5678,
+		};
+		await client.connect(options);
+		try {
+			const sdkClient = client.sdkClient as FakeSdkClient;
+			expect(sdkClient.connectOptions).toBe(options);
+			expect(await client.listTools({ cursor: "next" }, options)).toEqual({
+				tools: [],
+			});
+			expect(sdkClient.listRequest).toEqual({
+				params: { cursor: "next" },
+				options,
+			});
+			expect(await client.callTool(params, options)).toEqual({ content: [] });
+			expect((client.sdkClient as FakeSdkClient).calls).toEqual([
+				{ params, options },
+			]);
+		} finally {
+			await client.close();
+		}
+	});
 	test("creates stdio transport without command rewriting and with merged literal env", async () => {
 		const previousEnv = process.env["MCP_WRAPPER_TEST_TOKEN"];
 		process.env["MCP_WRAPPER_TEST_TOKEN"] = "inherited";

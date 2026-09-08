@@ -1,14 +1,17 @@
 import { env } from "node:process";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+	Client,
+	StreamableHTTPClientTransport,
+	type Transport,
+} from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { McpClientLike, McpRequestOptions } from "./client-manager.ts";
 import type { McpServerConfig } from "./config.ts";
 
 const CLIENT_VERSION = "1.0.0";
 
 interface SdkClientInstance {
-	connect(transport: unknown, options?: McpRequestOptions): Promise<void>;
+	connect(transport: Transport, options?: McpRequestOptions): Promise<void>;
 	listTools(
 		params?: { readonly cursor?: string },
 		options?: McpRequestOptions,
@@ -25,7 +28,6 @@ interface SdkClientInstance {
 			readonly name: string;
 			readonly arguments: Record<string, unknown>;
 		},
-		resultSchema?: unknown,
 		options?: McpRequestOptions,
 	): Promise<unknown>;
 	getInstructions(): string | undefined;
@@ -34,7 +36,7 @@ interface SdkClientInstance {
 
 type SdkClientConstructor = new (
 	clientInfo: { readonly name: string; readonly version: string },
-	options?: unknown,
+	options?: ConstructorParameters<typeof Client>[1],
 ) => SdkClientInstance;
 
 type StdioTransportConstructor = new (params: {
@@ -43,7 +45,7 @@ type StdioTransportConstructor = new (params: {
 	readonly env?: Readonly<Record<string, string>>;
 	readonly cwd?: string;
 	readonly stderr?: "ignore";
-}) => { close(): Promise<void> };
+}) => Transport;
 
 type HttpTransportConstructor = new (
 	url: URL,
@@ -52,7 +54,7 @@ type HttpTransportConstructor = new (
 			readonly headers?: Readonly<Record<string, string>>;
 		};
 	},
-) => { close(): Promise<void> };
+) => Transport;
 
 export interface SdkMcpClientConstructors {
 	readonly client?: SdkClientConstructor;
@@ -70,8 +72,7 @@ export function createSdkMcpClient(
 	config: McpServerConfig,
 	constructors: SdkMcpClientConstructors = {},
 ): SdkMcpClient {
-	const ClientCtor =
-		constructors.client ?? (Client as unknown as SdkClientConstructor);
+	const ClientCtor = constructors.client ?? Client;
 	const client = new ClientCtor({
 		name: `pi-mcp-wrapper-${serverKey}`,
 		version: CLIENT_VERSION,
@@ -85,7 +86,7 @@ class SdkMcpClientAdapter implements SdkMcpClient {
 	private readonly client: SdkClientInstance;
 	private readonly config: McpServerConfig;
 	private readonly constructors: SdkMcpClientConstructors;
-	private transport: { close(): Promise<void> } | undefined;
+	private transport: Transport | undefined;
 
 	constructor(
 		client: SdkClientInstance,
@@ -117,7 +118,7 @@ class SdkMcpClientAdapter implements SdkMcpClient {
 		},
 		options?: McpRequestOptions,
 	): Promise<unknown> {
-		return this.client.callTool(params, undefined, options);
+		return this.client.callTool(params, options);
 	}
 
 	getInstructions(): string | undefined {
@@ -129,7 +130,7 @@ class SdkMcpClientAdapter implements SdkMcpClient {
 		await this.transport?.close().catch(() => {});
 	}
 
-	private createTransport(): { close(): Promise<void> } {
+	private createTransport(): Transport {
 		if (this.config.type === "stdio") {
 			const TransportCtor =
 				this.constructors.stdioClientTransport ?? StdioClientTransport;

@@ -7,7 +7,8 @@
 			"tsconfig.json",
 			"pi-package/**/*.ts",
 			"pi-package/**/*.js",
-			"test/**/*.ts"
+			"test/**/*.ts",
+			"scripts/**/*.ts"
 		]
 	},
 	"formatter": {

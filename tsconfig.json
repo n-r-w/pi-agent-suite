@@ -17,5 +17,5 @@
 		"types": ["bun-types"],
 		"verbatimModuleSyntax": true
 	},
-	"include": ["pi-package/**/*.ts", "test/**/*.ts"]
+	"include": ["pi-package/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
 }

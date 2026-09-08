@@ -4,6 +4,14 @@
 
 The MCP wrapper extension registers configured MCP server tools as Pi tools. Pi sends each active generated tool's description and parameter schema through the provider tool payload.
 
+## MCP client dependency
+
+The wrapper uses `@modelcontextprotocol/client@^2.0.0` for stdio and Streamable HTTP. It does not require the monolithic v1 SDK or its Express server dependencies. Node.js 20 or newer is required by the client package.
+
+The adapter passes cancellation and timeout options as the second `callTool` argument. SDK v2 aggregates tool pages when `listTools` has no cursor; an explicit cursor requests one page. The wrapper's discovery loop accepts the aggregate without adding duplicate tools. SDK v2 limits an aggregate to 64 pages and rejects a listing that exceeds that limit.
+
+The protocol tests use the real client with a local stdio fixture and fake HTTP fetch responses. Consumer installation and upgrade audits are separate release checks described in [Publishing](../PUBLISHING.md#consumer-installation-checks).
+
 ## Configuration file
 
 By default, place the configuration at `agent-suite/mcp-wrapper/config.json`. If the file is missing, no MCP tools are registered.

@@ -41,16 +41,16 @@ pi-update:
 audit:
 	cd $(PACKAGE_DIR) && npm audit --omit=dev --audit-level=low
 
-release-check: audit
+release-check:
 	bun run release:check
 
-release-patch: audit
+release-patch:
 	bun run release:prepare:patch
 
-release-minor: audit
+release-minor:
 	bun run release:prepare:minor
 
-release-major: audit
+release-major:
 	bun run release:prepare:major
 
 release-tag:
