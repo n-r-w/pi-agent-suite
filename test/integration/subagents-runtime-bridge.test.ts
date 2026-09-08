@@ -32,9 +32,9 @@ const INVOCATION_METADATA = {
 
 test("establishes production worker IPC and settles one response", async () => {
 	// Purpose: production fail-stop must survive failed nested persistence and reconcile after writer release.
-	// Input and expected output: two package-loaded workers, one nested catalog session, one pending wait, and one failed remote append still produce complete teardown and durable forced abort.
+	// Input and expected output: two run-subagent workers, one nested catalog session, one pending wait, and one failed remote append still produce complete teardown and durable forced abort.
 	// Edge case: writer release occurs only after both processes stop, repeated offline reconciliation remains idempotent, and later sends reject.
-	// Dependencies: local pi CLI, production coordinator, supervisor, bridge, SessionStore, public SessionManager, system temporary state, and no provider or network.
+	// Dependencies: local pi CLI, production run-subagent extension, coordinator, supervisor, bridge, SessionStore, public SessionManager, system temporary state, and no provider or network.
 	// Arrange.
 	const directory = mkdtempSync(join(tmpdir(), "subagents-runtime-"));
 	const bridge = new RootRuntimeBridge();
@@ -118,6 +118,10 @@ test("establishes production worker IPC and settles one response", async () => {
 		const catalog = new SessionCatalog();
 		const supervisor = new InvocationSupervisor({
 			bridge,
+			packagePath: join(
+				process.cwd(),
+				"pi-package/extensions/run-subagent/index.ts",
+			),
 			childStartupConfig: {
 				authRetry: { maxRetries: 10, delayMs: 1 },
 			},
@@ -273,8 +277,16 @@ test("establishes production worker IPC and settles one response", async () => {
 			throw new Error("production supervisor did not spawn a parent worker");
 		}
 		parentProcess.disconnect();
+		parentProcess.kill("SIGKILL");
 		while (failures.length === 0) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		// Keep this IPC and persistence check independent of production signal grace periods.
+		// Process escalation behavior is covered by invocation-process.test.ts.
+		for (const worker of workers.slice(1)) {
+			if (worker.exitCode === null && worker.signalCode === null) {
+				worker.kill("SIGKILL");
+			}
 		}
 		try {
 			await failureHandling;
