@@ -8,15 +8,15 @@ See the [problem statement](remote-image_problem.md), [domain glossary](domain-g
 
 ### Components and distribution
 
-- D5: Add a standalone Go local helper in this repository. Use `golang.design/x/clipboard` v0.9.0 for image acquisition and the system OpenSSH client for the tunnel. Go is a build dependency, not a workstation prerequisite.
-- D6: Configure automatic helper startup in the user's graphical session. A machine-level service cannot be assumed to have access to that user's clipboard.
-- D7: Add a TypeScript remote image extension to the pi package. The remote server runs pi; the local computer does not.
-- D8: Distribute prebuilt helper binaries and setup scripts for macOS, Linux, and Windows. The user runs the setup script once with connection settings. Ordinary SSH terminal connections remain independent of the helper.
+- Add a standalone Go local helper in this repository. Use `golang.design/x/clipboard` v0.9.0 for image acquisition and the system OpenSSH client for the tunnel. Go is a build dependency, not a workstation prerequisite.
+- Configure automatic helper startup in the user's graphical session. A machine-level service cannot be assumed to have access to that user's clipboard.
+- Add a TypeScript remote image extension to the pi package. The remote server runs pi; the local computer does not.
+- Distribute prebuilt helper binaries and setup scripts for macOS, Linux, and Windows. The user runs the setup script once with connection settings. Ordinary SSH terminal connections remain independent of the helper.
 
 ### Persistent setup and startup
 
-- D9: The setup script saves connection settings, including the optional SSH password, in a local configuration file. There is no separate encrypted credential store.
-- D10: Use a user LaunchAgent on macOS, XDG Autostart on Linux, and an interactive-user logon task on Windows. The helper runs in the graphical session that owns the clipboard, not Windows Session 0.
+- The setup script saves connection settings, including the optional SSH password, in a local configuration file. There is no separate encrypted credential store.
+- Use a user LaunchAgent on macOS, XDG Autostart on Linux, and an interactive-user logon task on Windows. The helper runs in the graphical session that owns the clipboard, not Windows Session 0.
 - Initial SSH host-key confirmation remains part of normal setup. The helper uses OpenSSH authentication and host-key handling rather than adding a separate trust or authentication mechanism.
 - The remote image extension is enabled through `PI_AGENT_SUITE_MODE=remote`. The local helper and remote image extension use the same image transfer port.
 
@@ -26,15 +26,14 @@ See the [problem statement](remote-image_problem.md), [domain glossary](domain-g
 | --- | --- | --- |
 | `PI_AGENT_SUITE_SSH_TARGET` | Local setup | Required SSH target. |
 | `PI_AGENT_SUITE_SSH_PASSWORD` | Local setup | Optional SSH password. Without it, use the user's configured SSH authentication. |
-| `PI_AGENT_SUITE_SSH_PORT` | Local setup | Optional override for the SSH server port. Otherwise retain OpenSSH configuration and defaults. |
 | `PI_AGENT_SUITE_IMAGE_PORT` | Local setup and remote pi | Image transfer port. Default `18775`. |
 | `PI_AGENT_SUITE_MODE` | Remote pi | Set to `remote` to enable the remote image extension. |
 
-The SSH server port and image transfer port are different settings. The installer persists local setup values so the user does not need to export them again for each login.
+The SSH server port comes from OpenSSH configuration and defaults. The helper has no separate SSH port setting. The installer persists local setup values so the user does not need to export them again for each login.
 
 ### SSH and password handling
 
-- D12: The local helper starts the system OpenSSH client with a loopback-to-loopback reverse TCP forward. The helper maintains this connection independently of interactive terminal connections and reconnects after network loss.
+- The local helper starts the system OpenSSH client with a loopback-to-loopback reverse TCP forward. The helper maintains this connection independently of interactive terminal connections and reconnects after network loss.
 - The local HTTP listener binds to `127.0.0.1` at the image transfer port. The reverse forward requests the same loopback address and port on the remote server.
 - The server must permit loopback-only reverse forwarding. The setup scripts do not change `sshd` configuration automatically. This topology adds no ports for external connections.
 - With a configured password, OpenSSH uses `SSH_ASKPASS` to invoke the same helper executable in a password-response mode. This mode returns the configured password rather than starting another listener or tunnel. No separate askpass application is installed. Select SSH password-capable authentication methods in this mode so the saved account password does not answer a private-key passphrase prompt.
@@ -42,8 +41,8 @@ The SSH server port and image transfer port are different settings. The installe
 
 ### Image request and editor behavior
 
-- D11: Read the local clipboard only in response to an image request. Do not monitor or synchronize clipboard changes continuously.
-- D13: Use one HTTP image request through the SSH tunnel. A successful response contains PNG bytes from `golang.design/x/clipboard`. Do not add TLS, tokens, or authentication above SSH.
+- Read the local clipboard only in response to an image request. Do not monitor or synchronize clipboard changes continuously.
+- Use one HTTP image request through the SSH tunnel. A successful response contains PNG bytes from `golang.design/x/clipboard`. Do not add TLS, tokens, or authentication above SSH.
 
 ```text
 Ctrl+V in remote pi
@@ -54,7 +53,7 @@ Ctrl+V in remote pi
     -> ctx.ui.pasteToEditor(serverPath) inserts the server path
 ```
 
-- D14: An empty clipboard or a transfer failure produces a notification in pi and no inserted path. The extension inserts a server path only after the image has been saved. Pasting does not submit a message to the model.
+- An empty clipboard or a transfer failure produces a notification in pi and no inserted path. The extension inserts a server path only after the image has been saved. Pasting does not submit a message to the model.
 - The extension uses pi's editor API. It does not simulate keyboard input or replace the terminal UI.
 - Existing image tools can read the server file through their file-path interface. The feature does not require changing `describe_image`.
 
