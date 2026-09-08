@@ -9,6 +9,7 @@ export function checkRelease(
 	run: ReleaseCommand,
 	kind?: ReleaseKind,
 ): void {
+	run(["bun", "install", "--frozen-lockfile"], root);
 	run(["bun", "run", "verify"], root);
 	run(["make", "audit"], root);
 	for (const scenario of ["SCN-02", "SCN-03"]) {

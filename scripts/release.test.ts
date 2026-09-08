@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { checkRelease } from "./release.ts";
 
 // Purpose: release failures must stop preparation before npm changes the version.
-// Inputs: a fake command runner fails validation, audit, or either consumer scenario.
-// Expected: the error propagates and no version command runs; success bumps last.
+// Inputs: a fake command runner fails installation, validation, audit, or either consumer scenario.
+// Expected: frozen installation runs first; errors propagate; success bumps last.
 // Edges: all release kinds use the same checks. No real npm, git, or registry.
 // Dependencies: checkRelease only; no dependency on other tests.
 describe("release preparation", () => {
-	for (const failure of ["verify", "audit", "SCN-02", "SCN-03"]) {
+	for (const failure of ["install", "verify", "audit", "SCN-02", "SCN-03"]) {
 		test(`stops before changing the version on ${failure} failure`, () => {
 			const commands: string[][] = [];
 			expect(() =>
@@ -22,6 +22,9 @@ describe("release preparation", () => {
 					"patch",
 				),
 			).toThrow(`${failure} failed`);
+			if (failure === "install") {
+				expect(commands).toEqual([["bun", "install", "--frozen-lockfile"]]);
+			}
 			expect(commands.some((command) => command.includes("version"))).toBe(
 				false,
 			);
@@ -32,7 +35,8 @@ describe("release preparation", () => {
 		"patch",
 		"minor",
 		"major",
-	] as const)("bumps %s only after checks pass", (kind) => {
+		undefined,
+	] as const)("installs dependencies before checks for release kind %s", (kind) => {
 		const calls: { command: readonly string[]; cwd: string }[] = [];
 		checkRelease(
 			"/fixture",
@@ -40,6 +44,7 @@ describe("release preparation", () => {
 			kind,
 		);
 		expect(calls).toEqual([
+			{ command: ["bun", "install", "--frozen-lockfile"], cwd: "/fixture" },
 			{ command: ["bun", "run", "verify"], cwd: "/fixture" },
 			{ command: ["make", "audit"], cwd: "/fixture" },
 			{
@@ -50,10 +55,14 @@ describe("release preparation", () => {
 				command: ["bun", "scripts/release-consumers.ts", "SCN-03"],
 				cwd: "/fixture",
 			},
-			{
-				command: ["npm", "version", kind, "--no-git-tag-version"],
-				cwd: "/fixture/pi-package",
-			},
+			...(kind === undefined
+				? []
+				: [
+						{
+							command: ["npm", "version", kind, "--no-git-tag-version"],
+							cwd: "/fixture/pi-package",
+						},
+					]),
 		]);
 	});
 });
