@@ -4,10 +4,6 @@ import {
 	convertToLlm,
 	serializeConversation,
 } from "@earendil-works/pi-coding-agent";
-import {
-	estimateSerializedInputTokens,
-	estimateTextTokens,
-} from "../../shared/context-size";
 import type {
 	AdaptiveCompactionOptions,
 	AdaptiveCompactionPreparation,
@@ -207,12 +203,15 @@ export function estimateSummaryInput(
 	if (cached !== undefined) {
 		return cached;
 	}
-	const estimatedTokens = estimateSerializedInputTokens(context);
+	const estimatedTokens = options.tokenOperations.estimateInputTokens(context);
 	cache.set(key, estimatedTokens);
 	return estimatedTokens;
 }
 
 /** Counts summary text without adding synthetic chat request framing. */
-export function countSummaryTextTokens(text: string): number {
-	return estimateTextTokens(text);
+export function countSummaryTextTokens(
+	text: string,
+	options: AdaptiveCompactionOptions,
+): number {
+	return options.tokenOperations.estimateTextTokens(text);
 }

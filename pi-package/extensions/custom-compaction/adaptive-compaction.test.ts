@@ -1,22 +1,77 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
-import { Tiktoken } from "js-tiktoken/lite";
 import { Type } from "typebox";
-import {
-	estimateTextTokens,
-	takeTextTokenPrefix,
-} from "../../shared/context-size";
 import {
 	type AdaptiveCompactionInput,
 	type AdaptiveCompactionProgressEvent,
 	type AdaptiveCompactionRequest,
+	type AdaptiveCompactionTokenOperations,
 	adaptiveCompactHistory,
 	createThrottledPlanningStep,
 } from "./adaptive-compaction";
 
 /** Detects useful whitespace inside serialized fragment text. */
 const WHITESPACE_PATTERN = /\s/;
+
+/** Splits fixture text into ASCII words and individual remaining code points. */
+const FIXTURE_TOKEN_PART_PATTERN = /[A-Za-z0-9_]+|[^A-Za-z0-9_]/gu;
+
+/** Identifies one ASCII fixture word. */
+const ASCII_WORD_PATTERN = /^[A-Za-z0-9_]+$/;
+
+/** Estimates fixture text without loading the production tokenizer. */
+function estimateFixtureTextTokens(text: string): number {
+	let tokens = 0;
+	let otherAsciiCharacters = 0;
+	for (const part of text.matchAll(FIXTURE_TOKEN_PART_PATTERN)) {
+		const value = part[0];
+		if (ASCII_WORD_PATTERN.test(value)) {
+			tokens += Math.max(1, Math.ceil(value.length / 8));
+		} else if ((value.codePointAt(0) ?? 0) > 0x7f) {
+			tokens += 1;
+		} else if (!WHITESPACE_PATTERN.test(value)) {
+			otherAsciiCharacters += value.length;
+		}
+	}
+	return tokens + Math.ceil(otherAsciiCharacters / 4);
+}
+
+/** Takes the longest fixture-codec prefix within the requested token count. */
+function takeFixtureTokenPrefix(text: string, maxTokens: number): string {
+	if (!Number.isInteger(maxTokens) || maxTokens <= 0) {
+		return "";
+	}
+	const boundaries = Array.from(text).reduce<number[]>(
+		(offsets, character) => {
+			offsets.push((offsets.at(-1) ?? 0) + character.length);
+			return offsets;
+		},
+		[0],
+	);
+	let low = 1;
+	let high = boundaries.length - 1;
+	let best = 0;
+	while (low <= high) {
+		const middle = Math.floor((low + high) / 2);
+		const boundary = boundaries[middle] as number;
+		if (estimateFixtureTextTokens(text.slice(0, boundary)) <= maxTokens) {
+			best = boundary;
+			low = middle + 1;
+		} else {
+			high = middle - 1;
+		}
+	}
+	return text.slice(0, best);
+}
+
+/** Fast deterministic token operations for adaptive-planning unit tests. */
+const TEST_TOKEN_OPERATIONS: AdaptiveCompactionTokenOperations = {
+	estimateInputTokens: (context) =>
+		estimateFixtureTextTokens(JSON.stringify(context)) + 256,
+	estimateTextTokens: estimateFixtureTextTokens,
+	takeTextTokenPrefix: takeFixtureTokenPrefix,
+};
 
 /** Creates one context-visible user message for deterministic summary_source fixtures. */
 function userMessage(text: string, timestamp = 0): AgentMessage {
@@ -123,6 +178,7 @@ function createOptions(overrides: Partial<AdaptiveCompactionInput> = {}): {
 			requestId += 1;
 			return `request-${requestId}`;
 		},
+		tokenOperations: TEST_TOKEN_OPERATIONS,
 		onProgress: (event) => {
 			progressEvents.push(event);
 		},
@@ -297,7 +353,7 @@ describe("adaptiveCompactHistory", () => {
 					preliminarySources.push(requestText(request));
 					preliminaryCount += 1;
 					return response(
-						`INTERMEDIATE_${preliminaryCount}_${"compressed ".repeat(70)}`,
+						`INTERMEDIATE_${preliminaryCount}_${"compressed ".repeat(30)}`,
 					);
 				}
 				return response("adaptive-final");
@@ -493,8 +549,10 @@ describe("adaptiveCompactHistory", () => {
 		let remaining = `[User]: ${denseText}`;
 		for (const fragment of fragmentTexts) {
 			if (!WHITESPACE_PATTERN.test(fragment.trim())) {
-				const tokenCount = estimateTextTokens(fragment);
-				expect(takeTextTokenPrefix(remaining, tokenCount)).toBe(fragment);
+				const tokenCount = TEST_TOKEN_OPERATIONS.estimateTextTokens(fragment);
+				expect(
+					TEST_TOKEN_OPERATIONS.takeTextTokenPrefix(remaining, tokenCount),
+				).toBe(fragment);
 			}
 			remaining = remaining.slice(fragment.length);
 		}
@@ -875,18 +933,24 @@ describe("adaptiveCompactHistory", () => {
 		// Purpose: repeated complete contexts reuse one exact estimate during one compaction.
 		// Input and expected output: two adaptive runs each encode their repeated simulated final context once.
 		// Edge case: the second run must not reuse the first run's cached estimate.
-		// Dependencies: the engine fixture and deterministic tokenizer instrumentation.
-		const originalEncode = Tiktoken.prototype.encode;
-		const contextEncodeCounts = new Map<string, number>();
+		// Dependencies: the engine fixture and deterministic token-operation instrumentation.
+		const contextEstimateCounts = new Map<string, number>();
 		let firstCompactionCounts: number[] = [];
-		Tiktoken.prototype.encode = (...args) => {
-			const [text] = args;
-			if (text.includes("<summary_source>")) {
-				contextEncodeCounts.set(text, (contextEncodeCounts.get(text) ?? 0) + 1);
-			}
-			return Array.from({ length: Math.ceil(text.length / 4) }, () => 0);
+		const countingTokenOperations: AdaptiveCompactionTokenOperations = {
+			...TEST_TOKEN_OPERATIONS,
+			estimateInputTokens: (context) => {
+				const key = JSON.stringify(context);
+				if (key.includes("<summary_source>")) {
+					contextEstimateCounts.set(
+						key,
+						(contextEstimateCounts.get(key) ?? 0) + 1,
+					);
+				}
+				return TEST_TOKEN_OPERATIONS.estimateInputTokens(context);
+			},
 		};
 		const overrides: Partial<AdaptiveCompactionInput> = {
+			tokenOperations: countingTokenOperations,
 			preparation: {
 				messagesToSummarize: Array.from({ length: 12 }, (_, index) =>
 					userMessage(`BLOCK_${index}_${"old ".repeat(100)}`, index),
@@ -908,20 +972,16 @@ describe("adaptiveCompactHistory", () => {
 				),
 		};
 
-		try {
-			// ACT: Run equivalent adaptive compactions with independent input objects.
-			await adaptiveCompactHistory(createOptions(overrides).options);
-			firstCompactionCounts = [...contextEncodeCounts.values()];
-			await adaptiveCompactHistory(createOptions(overrides).options);
-		} finally {
-			Tiktoken.prototype.encode = originalEncode;
-		}
+		// ACT: Run equivalent adaptive compactions with independent input objects.
+		await adaptiveCompactHistory(createOptions(overrides).options);
+		firstCompactionCounts = [...contextEstimateCounts.values()];
+		await adaptiveCompactHistory(createOptions(overrides).options);
 
 		// ASSERT: Identical contexts are cached per compaction, not shared across runs.
 		expect(firstCompactionCounts.length).toBeGreaterThan(0);
 		expect(firstCompactionCounts.every((count) => count === 1)).toBeTrue();
 		expect(
-			[...contextEncodeCounts.values()].every((count) => count === 2),
+			[...contextEstimateCounts.values()].every((count) => count === 2),
 		).toBeTrue();
 	});
 
@@ -952,7 +1012,7 @@ describe("adaptiveCompactHistory", () => {
 			complete: async (request) => {
 				requests.push(request);
 				if (request.operation === "preliminary") {
-					return response(`INTERMEDIATE_${"compressed ".repeat(70)}`);
+					return response(`INTERMEDIATE_${"compressed ".repeat(30)}`);
 				}
 				return response("adaptive-final");
 			},

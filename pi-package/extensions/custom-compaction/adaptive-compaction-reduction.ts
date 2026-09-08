@@ -1,9 +1,5 @@
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import {
-	estimateTextTokens,
-	takeTextTokenPrefix,
-} from "../../shared/context-size";
-import {
 	createRetryableExternalError,
 	isAbortError,
 	isRetryableExternalError,
@@ -171,7 +167,7 @@ export async function summarizeReducingSource(
 	options: AdaptiveCompactionOptions,
 ): Promise<string> {
 	const sourceTokens = source.reduce(
-		(total, item) => total + countSummaryTextTokens(item.text),
+		(total, item) => total + countSummaryTextTokens(item.text, options),
 		0,
 	);
 	return executeSingleRequest({
@@ -192,7 +188,7 @@ export async function summarizeReducingSource(
 		maxTokens: summaryNodeTokens,
 		options,
 		validate: (summary) => {
-			const summaryTextTokens = countSummaryTextTokens(summary);
+			const summaryTextTokens = countSummaryTextTokens(summary, options);
 			if (summaryTextTokens > summaryNodeTokens) {
 				return `${operation} summary exceeds the common summary_node budget`;
 			}
@@ -204,6 +200,7 @@ export async function summarizeReducingSource(
 								id: source[0]?.id ?? "normalized",
 								text: summary,
 							}),
+							options,
 						)
 					: summaryTextTokens;
 			return resultTokens < sourceTokens
@@ -258,8 +255,8 @@ export async function summarizeOversizedBlock(
 				(result) => (result as PromiseFulfilledResult<SummaryNode>).value,
 			);
 			if (
-				countSummaryTextTokens(renderSourceItems(summaries)) >=
-				countSummaryTextTokens(block.text)
+				countSummaryTextTokens(renderSourceItems(summaries), options) >=
+				countSummaryTextTokens(block.text, options)
 			) {
 				throw new AdaptiveCompactionResponseError(
 					"combined fragment summaries are not smaller than their source block",
@@ -306,7 +303,7 @@ async function summarizeFragment({
 		signal: options.signal,
 	});
 	const text = extractValidResponse(response, "fragment");
-	if (countSummaryTextTokens(text) > summaryNodeTokens) {
+	if (countSummaryTextTokens(text, options) > summaryNodeTokens) {
 		throw new AdaptiveCompactionResponseError(
 			"fragment summary exceeds the common summary_node budget",
 		);
@@ -339,13 +336,16 @@ function splitOversizedText(
 		const tokenPrefix =
 			usefulPrefixLength > 0
 				? undefined
-				: findLargestFittingTokenPrefix(remaining, (blockText) =>
-						doesFragmentRequestFit(
-							block.id,
-							blockText,
-							summaryNodeTokens,
-							options,
-						),
+				: findLargestFittingTokenPrefix(
+						remaining,
+						(blockText) =>
+							doesFragmentRequestFit(
+								block.id,
+								blockText,
+								summaryNodeTokens,
+								options,
+							),
+						options,
 					);
 		const fragment =
 			usefulPrefixLength > 0
@@ -394,13 +394,14 @@ function findLargestFittingTextPrefix(
 function findLargestFittingTokenPrefix(
 	text: string,
 	fits: (candidate: string) => boolean,
+	options: AdaptiveCompactionOptions,
 ): string | undefined {
 	let low = 1;
-	let high = estimateTextTokens(text);
+	let high = options.tokenOperations.estimateTextTokens(text);
 	let best: string | undefined;
 	while (low <= high) {
 		const middle = Math.floor((low + high) / 2);
-		const candidate = takeTextTokenPrefix(text, middle);
+		const candidate = options.tokenOperations.takeTextTokenPrefix(text, middle);
 		if (candidate.length === 0) {
 			low = middle + 1;
 		} else if (text.startsWith(candidate) && fits(candidate)) {

@@ -6,6 +6,11 @@ import type {
 	Model,
 } from "@earendil-works/pi-ai";
 import type { SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
+import {
+	estimateSerializedInputTokens,
+	estimateTextTokens,
+	takeTextTokenPrefix,
+} from "../../shared/context-size";
 import type { RetryConfig } from "../../shared/retry";
 import {
 	type CompactionBudgets,
@@ -85,6 +90,20 @@ export type AdaptiveCompactionPreparation = Pick<
 	| "turnPrefixMessages"
 >;
 
+/** Token operations used for request budgeting and text splitting. */
+export interface AdaptiveCompactionTokenOperations {
+	readonly estimateInputTokens: (context: Context) => number;
+	readonly estimateTextTokens: (text: string) => number;
+	readonly takeTextTokenPrefix: (text: string, maxTokens: number) => string;
+}
+
+/** Production token operations backed by the fixed o200k tokenizer. */
+const DEFAULT_TOKEN_OPERATIONS: AdaptiveCompactionTokenOperations = {
+	estimateInputTokens: estimateSerializedInputTokens,
+	estimateTextTokens,
+	takeTextTokenPrefix,
+};
+
 /** Caller-supplied configuration for one adaptive compaction. */
 export interface AdaptiveCompactionInput {
 	readonly preparation: AdaptiveCompactionPreparation;
@@ -106,6 +125,8 @@ export interface AdaptiveCompactionInput {
 	readonly retry: RetryConfig;
 	readonly signal: AbortSignal;
 	readonly createRequestId: () => string;
+	/** Optional boundary for deterministic unit tests. */
+	readonly tokenOperations?: AdaptiveCompactionTokenOperations;
 	readonly onProgress?: (
 		event: AdaptiveCompactionProgressEvent,
 	) => void | Promise<void>;
@@ -118,6 +139,7 @@ export interface AdaptiveCompactionInput {
 
 /** Internal state shared by helpers during one adaptive compaction. */
 export interface AdaptiveCompactionOptions extends AdaptiveCompactionInput {
+	readonly tokenOperations: AdaptiveCompactionTokenOperations;
 	/** Exact summary-context estimates owned by this invocation. */
 	readonly summaryContextTokenCache: Map<string, number>;
 }
@@ -138,6 +160,7 @@ export async function adaptiveCompactHistory(
 	const runtimeOptions: AdaptiveCompactionOptions = {
 		...options,
 		onProgress: emitProgress,
+		tokenOperations: options.tokenOperations ?? DEFAULT_TOKEN_OPERATIONS,
 		onStep: options.onStep ?? createThrottledPlanningStep(options.signal),
 		summaryContextTokenCache: new Map(),
 	};
@@ -216,7 +239,8 @@ async function normalizeOldestPreviousSummary(
 	if (
 		previousSummary?.kind !== "summary" ||
 		previousSummary.id !== "previousSummary" ||
-		countSummaryTextTokens(previousSummary.text) <= budgets.summaryNodeTokens
+		countSummaryTextTokens(previousSummary.text, options) <=
+			budgets.summaryNodeTokens
 	) {
 		return;
 	}
@@ -358,7 +382,9 @@ async function executeFinalSummary(
 		maxTokens: budgets.finalSummaryTokens,
 		options,
 		validate: (summary) => {
-			if (countSummaryTextTokens(summary) > budgets.finalSummaryTokens) {
+			if (
+				countSummaryTextTokens(summary, options) > budgets.finalSummaryTokens
+			) {
 				return "final summary exceeds its output budget";
 			}
 			const prospectiveInputTokens = estimateProspectiveMainInput(

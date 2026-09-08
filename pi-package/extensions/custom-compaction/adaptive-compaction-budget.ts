@@ -1,6 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
-import { estimateSerializedInputTokens } from "../../shared/context-size";
 import type {
 	AdaptiveCompactionModel,
 	AdaptiveCompactionOptions,
@@ -140,7 +139,7 @@ async function isNodeBudgetFeasible(
 	);
 	if (
 		previousSummary !== undefined &&
-		countSummaryTextTokens(previousSummary.text) > summaryNodeTokens &&
+		countSummaryTextTokens(previousSummary.text, options) > summaryNodeTokens &&
 		!doesReductionRequestFit([previousSummary], summaryNodeTokens, options) &&
 		!canFitMinimumFragment(
 			previousSummary.id,
@@ -261,7 +260,7 @@ function estimateMainInput(
 	messages: readonly AgentMessage[],
 	options: AdaptiveCompactionOptions,
 ): number {
-	return estimateSerializedInputTokens({
+	return options.tokenOperations.estimateInputTokens({
 		systemPrompt: options.mainSystemPrompt,
 		messages: convertToLlm([...messages]),
 		tools: [...options.activeTools],
