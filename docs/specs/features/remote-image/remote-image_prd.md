@@ -14,7 +14,7 @@ Make local images available to remote pi without manual file copying or path cor
 
 ## Scenarios
 
-The user connects to the remote server through SSH, starts pi there, and pastes an image from the local computer.
+The user connects to one or more remote servers through SSH, starts pi on those servers, and pastes an image from the local computer.
 
 ## Scope and non-scope
 
@@ -38,6 +38,12 @@ Prefer the fewest installed components and the least initial configuration. A lo
 - FRQ-04: Support an optional SSH password. Without a configured password, use the user's configured SSH authentication.
   - Goal: Allow automatic connections without requiring SSH keys.
   - Goal achievement: Full for authentication choice. Password authentication and key-based authentication use SSH, not a separate authentication system.
+- FRQ-05: The local helper maintains simultaneous tunnels to every configured SSH target. Adding or updating one SSH target preserves all other target settings.
+  - Goal: Use image paste on multiple remote servers from one local computer.
+  - Goal achievement: Full for concurrent server use. Each remote pi can request the local clipboard image through its tunnel.
+- FRQ-06: Setup provides a command that removes one exact SSH target. When other targets remain, the helper restarts their tunnels. Removing the last target deletes the helper configuration, runtime diagnostics file, installed executable, and autostart registration.
+  - Goal: Remove obsolete servers without damaging active server configurations.
+  - Goal achievement: Full for configuration removal and final uninstall.
 
 ### Non-functional requirements
 
@@ -63,7 +69,7 @@ None that block approval of the requirements. The implementation of clipboard ac
 
 ## Technical supplement
 
-The approved password setting for FRQ-04 is the optional `PI_AGENT_SUITE_SSH_PASSWORD` environment variable. The SSH destination is configured separately through `PI_AGENT_SUITE_SSH_TARGET`, for example `user@server.example`. The password is not embedded in the destination.
+The approved password setting for FRQ-04 is the optional `PI_AGENT_SUITE_SSH_PASSWORD` environment variable. Each SSH destination is configured separately through `PI_AGENT_SUITE_SSH_TARGET`, for example `user@server.example`. The exact SSH target string identifies its saved configuration. The password is not embedded in the destination.
 
 ## References
 

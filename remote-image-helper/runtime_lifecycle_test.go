@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+func TestLocalImagePortUsesOneSharedListener(t *testing.T) {
+	// Purpose: adding a server with a different remote port must not require another local listener that can break existing servers.
+	// Input and expected output: the first configured target selects the helper's one local listener port.
+	// Edge case: later targets use different remote ports.
+	// Dependencies: none.
+	configurations := []config{{SSHTarget: "first", ImagePort: 18775}, {SSHTarget: "second", ImagePort: 19000}}
+	if got := localImagePort(configurations); got != 18775 {
+		t.Fatalf("local port = %d, want 18775", got)
+	}
+}
+
 func TestRuntimeWaitsForTunnelShutdown(t *testing.T) {
 	// Purpose: helper exit must not leave SSH running during reinstallation.
 	// Input and expected output: cancellation shuts down HTTP and waits until the tunnel acknowledges exit.

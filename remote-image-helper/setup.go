@@ -23,10 +23,27 @@ func installHelper(sourceExecutable string, configuration config) (installationP
 		return installationPlan{}, err
 	}
 	commands := setupCommands{run: runSetupCommand, capture: captureSetupCommand}
-	if err := plan.install(sourceExecutable, configuration, runtime.GOOS, commands); err != nil {
+	if err := plan.installTarget(sourceExecutable, configuration, runtime.GOOS, commands); err != nil {
 		return installationPlan{}, err
 	}
 	return plan, nil
+}
+
+func removeHelper(sourceExecutable, target string) (installationPlan, int, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return installationPlan{}, 0, fmt.Errorf("find user home: %w", err)
+	}
+	plan, err := buildInstallationPlan(runtime.GOOS, home, os.Getenv("LOCALAPPDATA"))
+	if err != nil {
+		return installationPlan{}, 0, err
+	}
+	commands := setupCommands{run: runSetupCommand, capture: captureSetupCommand}
+	remaining, err := plan.removeTarget(sourceExecutable, target, runtime.GOOS, commands)
+	if err != nil {
+		return installationPlan{}, 0, err
+	}
+	return plan, remaining, nil
 }
 
 func configFromEnvironment(getenv func(string) string) (config, error) {
@@ -98,8 +115,8 @@ func checkExecutableSource(source, destination string) error {
 	return nil
 }
 
-func writeConfig(path string, configuration config) error {
-	contents, err := json.Marshal(&configuration, jsontext.WithIndent("  "))
+func writeConfigs(path string, configurations []config) error {
+	contents, err := json.Marshal(&storedConfig{Targets: configurations}, jsontext.WithIndent("  "))
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}

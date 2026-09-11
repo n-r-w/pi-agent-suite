@@ -33,6 +33,24 @@ func TestBuildSSHCommandUsesLoopbackReverseForward(t *testing.T) {
 	}
 }
 
+func TestBuildSSHCommandsCreatesTunnelForEveryServer(t *testing.T) {
+	// Purpose: one helper process must connect every configured remote server to the local clipboard endpoint.
+	// Input and expected output: two server settings produce two SSH commands with their own targets and remote ports.
+	// Edge case: both tunnels forward to the first target's shared local listener port.
+	// Dependencies: command construction does not start SSH.
+	configurations := []config{{SSHTarget: "first", ImagePort: 18775}, {SSHTarget: "second", ImagePort: 19000}}
+	commands := buildSSHCommands(configurations, "/opt/helper", "/tmp/config.json")
+	if len(commands) != 2 {
+		t.Fatalf("commands = %#v", commands)
+	}
+	if commands[0].Args[len(commands[0].Args)-1] != "first" || commands[1].Args[len(commands[1].Args)-1] != "second" {
+		t.Fatalf("commands = %#v", commands)
+	}
+	if !containsSequence(commands[1].Args, []string{"-R", "127.0.0.1:19000:127.0.0.1:18775"}) {
+		t.Fatalf("second args = %v", commands[1].Args)
+	}
+}
+
 func TestBuildSSHCommandConfiguresPasswordAskpass(t *testing.T) {
 	// Purpose: saved SSH passwords must be supplied only to password-capable authentication.
 	// Input and expected output: a configured password adds askpass environment and disables public-key prompts.
@@ -44,6 +62,7 @@ func TestBuildSSHCommandConfiguresPasswordAskpass(t *testing.T) {
 		"SSH_ASKPASS=/opt/helper",
 		"SSH_ASKPASS_REQUIRE=force",
 		"PI_AGENT_SUITE_ASKPASS=1",
+		"PI_AGENT_SUITE_ASKPASS_TARGET=server",
 		"PI_AGENT_SUITE_IMAGE_CONFIG=/tmp/config.json",
 	}
 	if !reflect.DeepEqual(got.Environment, wantEnvironment) {

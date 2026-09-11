@@ -11,22 +11,23 @@ See the [problem statement](remote-image_problem.md), [domain glossary](domain-g
 - Add a standalone Go local helper in this repository. Use `golang.design/x/clipboard` v0.9.0 for image acquisition and the system OpenSSH client for the tunnel. Go is a build dependency, not a workstation prerequisite.
 - Configure automatic helper startup in the user's graphical session. A machine-level service cannot be assumed to have access to that user's clipboard.
 - Add a TypeScript remote image extension to the pi package. The remote server runs pi; the local computer does not.
-- Distribute prebuilt helper binaries and setup scripts for macOS, Linux, and Windows. The user runs the setup script once with connection settings. Ordinary SSH terminal connections remain independent of the helper.
+- Distribute prebuilt helper binaries and setup scripts for macOS, Linux, and Windows. The user runs the setup script for each SSH target. Ordinary SSH terminal connections remain independent of the helper.
 
 ### Persistent setup and startup
 
-- The setup script saves connection settings, including the optional SSH password, in a local configuration file. There is no separate encrypted credential store.
+- The setup script stores a list of SSH target settings, including each optional SSH password, in one local configuration file. Adding an SSH target appends it to the list. Adding an exact existing target replaces that target's settings and preserves other targets. The old single-target configuration format is migrated when setup next writes the file. There is no separate encrypted credential store.
 - Use a user LaunchAgent on macOS, a systemd user service bound to `graphical-session.target` on Linux, and an interactive-user logon task on Windows. The helper runs in the graphical session that owns the clipboard, not Windows Session 0.
 - Reinstallation stops the old helper before replacing its executable or configuration. On macOS, wait for LaunchAgent removal after `bootout`. On Linux, synchronous `systemctl --user stop` stops the service control group, including SSH. On Windows, disable the old task, terminate the helper process tree, and wait for the task and tracked processes to exit. A stop failure aborts replacement.
 - Runtime and SSH diagnostics go to the systemd user journal on Linux and a file next to the configuration on macOS and Windows. Setup prints the diagnostic location. Successful service registration does not confirm SSH connectivity.
 - Initial SSH host-key confirmation remains part of normal setup. The helper uses OpenSSH authentication and host-key handling rather than adding a separate trust or authentication mechanism.
-- The remote image extension is enabled through `PI_AGENT_SUITE_MODE=remote`. The local helper and remote image extension use the same image transfer port.
+- The setup removal command matches the exact SSH target string. When targets remain, setup restarts the helper with those targets. Removing the final target stops the helper and deletes its configuration, runtime diagnostics file, executable, and platform autostart registration.
+- The remote image extension is enabled through `PI_AGENT_SUITE_MODE=remote`. Each SSH target setting and its remote image extension use the same image transfer port.
 
 ### Configuration
 
 | Setting | Location | Meaning |
 | --- | --- | --- |
-| `PI_AGENT_SUITE_SSH_TARGET` | Local setup | Required SSH target. |
+| `PI_AGENT_SUITE_SSH_TARGET` | Local setup | Required SSH target and identity for one saved target setting. |
 | `PI_AGENT_SUITE_SSH_PASSWORD` | Local setup | Optional SSH password. Without it, use the user's configured SSH authentication. |
 | `PI_AGENT_SUITE_IMAGE_PORT` | Local setup and remote pi | Image transfer port. Default `18775`. |
 | `PI_AGENT_SUITE_MODE` | Remote pi | Set to `remote` to enable the remote image extension. |
@@ -35,10 +36,10 @@ The SSH server port comes from OpenSSH configuration and defaults. The helper ha
 
 ### SSH and password handling
 
-- The local helper starts the system OpenSSH client with a loopback-to-loopback reverse TCP forward. The helper maintains this connection independently of interactive terminal connections and reconnects after network loss.
-- The local HTTP listener binds to `127.0.0.1` at the image transfer port. The reverse forward requests the same loopback address and port on the remote server.
+- The local helper starts one system OpenSSH client per configured SSH target with a loopback-to-loopback reverse TCP forward. The helper maintains these connections independently of interactive terminal connections and reconnects each tunnel after network loss.
+- The local helper binds one HTTP listener to `127.0.0.1` using the first configured target's image transfer port. Each reverse forward binds its target's configured loopback port on the remote server and forwards requests to the one local listener.
 - The server must permit loopback-only reverse forwarding. The setup scripts do not change `sshd` configuration automatically. This topology adds no ports for external connections.
-- With a configured password, OpenSSH uses `SSH_ASKPASS` to invoke the same helper executable in a password-response mode. This mode returns the configured password rather than starting another listener or tunnel. No separate askpass application is installed. Select SSH password-capable authentication methods in this mode so the saved account password does not answer a private-key passphrase prompt.
+- With a configured password, OpenSSH uses `SSH_ASKPASS` to invoke the same helper executable in a password-response mode. The SSH tunnel identifies its exact target, and this mode returns only that target's configured password rather than starting another listener or tunnel. No separate askpass application is installed. Select SSH password-capable authentication methods in this mode so the saved account password does not answer a private-key passphrase prompt.
 - Without a configured password, OpenSSH uses the user's configured authentication. The helper does not implement a second SSH client or a custom authentication protocol.
 
 ### Image request and editor behavior
@@ -69,7 +70,7 @@ Ctrl+V in remote pi
 
 ## Overengineering and overspecification considerations
 
-The runtime consists of one local helper, system OpenSSH, and one pi extension. Setup scripts provide persistent configuration without requiring a replacement SSH command or local pi process. Clipboard and SSH implementations come from existing libraries and tools, not new protocol implementations.
+The runtime consists of one local helper, one system OpenSSH process per SSH target, and one pi extension on each remote server. Setup scripts provide persistent configuration without requiring a replacement SSH command or local pi process. Clipboard and SSH implementations come from existing libraries and tools, not new protocol implementations.
 
 There is no added security layer, token service, encrypted credential store, continuous clipboard synchronization, or custom terminal UI. The image transfer uses one request through SSH. Reverse image transfer is outside scope.
 

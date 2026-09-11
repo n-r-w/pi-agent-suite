@@ -45,7 +45,7 @@ For SSH password authentication:
 .\setup-remote-image.ps1 -SshTarget user@server.example -SshPassword 'your-password'
 ```
 
-The setup installs the helper for the current user, saves the connection settings, starts the helper, and configures startup after graphical login. Linux uses `pi-agent-suite-remote-image.service` in the systemd user manager. Reinstallation stops the old helper and waits for shutdown before replacing files. A stop or startup-command error aborts installation. The saved password is stored as plain text in the current user's configuration file. Without a saved password, OpenSSH uses its configured key, agent, and host settings.
+The setup installs the helper for the current user, adds or updates the specified SSH target, starts the helper, and configures startup after graphical login. Run setup once for each remote server. Existing server settings remain in the configuration, and the helper maintains an SSH reverse tunnel to every configured server. Linux uses `pi-agent-suite-remote-image.service` in the systemd user manager. Setup stops the old helper and waits for shutdown before replacing files and restarting all configured tunnels. A stop or startup-command error aborts installation. Each saved password is stored as plain text in the current user's configuration file. Without a saved password, OpenSSH uses its configured key, agent, and host settings.
 
 The first connection can require normal OpenSSH host-key confirmation. Run `ssh user@server.example` once before setup when the host key has not been accepted.
 
@@ -64,7 +64,25 @@ export PI_AGENT_SUITE_IMAGE_PORT=18775
 PI_AGENT_SUITE_IMAGE_PORT=19000 ./setup-remote-image.sh user@server.example
 ```
 
-Restart pi after changing the environment. The extension registers `Ctrl+V` only when `PI_AGENT_SUITE_MODE` is `remote`. Pi can report its normal shortcut-conflict warning because this extension replaces native clipboard image paste in remote mode.
+Configure these variables on every remote server. Different servers can use different `PI_AGENT_SUITE_IMAGE_PORT` values. Restart pi after changing the environment. The extension registers `Ctrl+V` only when `PI_AGENT_SUITE_MODE` is `remote`. Pi can report its normal shortcut-conflict warning because this extension replaces native clipboard image paste in remote mode.
+
+## Remove a remote server
+
+Run the downloaded setup script. The SSH target must exactly match the target used when adding the server.
+
+### macOS or Linux
+
+```bash
+./setup-remote-image.sh remove user@server.example
+```
+
+### Windows PowerShell
+
+```powershell
+.\setup-remote-image.ps1 -Action Remove -SshTarget user@server.example
+```
+
+When other servers remain, removal restarts the helper with their tunnels. Removing the last server stops the helper and deletes its autostart registration, configuration, runtime diagnostics file, and installed executable.
 
 ## Operation
 
@@ -79,13 +97,13 @@ An empty image clipboard produces a warning and inserts no text. A tunnel, HTTP,
 
 | Variable | Location | Default | Meaning |
 | --- | --- | --- | --- |
-| `PI_AGENT_SUITE_SSH_TARGET` | Local setup | None | OpenSSH destination or SSH config alias. Required. |
+| `PI_AGENT_SUITE_SSH_TARGET` | Local setup | None | OpenSSH destination or SSH config alias. Required when adding a server and used as its configuration identity. |
 | `PI_AGENT_SUITE_SSH_PASSWORD` | Local setup | None | Optional SSH account password. |
 | `PI_AGENT_SUITE_IMAGE_PORT` | Local setup and remote pi | `18775` | Loopback image transfer port. |
 | `PI_AGENT_SUITE_MODE` | Remote pi | None | `remote` enables the extension. |
 | `PI_AGENT_SUITE_VERSION` | macOS or Linux setup | `latest` | Helper release version. Accepts `2.9.1` or `v2.9.1`. |
 
-The helper binds `127.0.0.1` only. OpenSSH forwards the same loopback port to the remote server. The feature does not open an externally reachable listener and adds no protocol above SSH.
+The helper binds one local listener to `127.0.0.1` using the first configured server's image port. Each SSH tunnel forwards its remote server's configured image port to that local listener. The feature does not open an externally reachable listener and adds no protocol above SSH.
 
 ## Runtime diagnostics
 

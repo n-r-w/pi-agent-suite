@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.design/x/clipboard"
@@ -22,6 +23,10 @@ type nativeClipboard struct{}
 func (nativeClipboard) ReadImage(ctx context.Context) ([]byte, error) {
 	image, err := clipboard.Read(ctx, clipboard.FmtImage)
 	return normalizeClipboardImage(image, err)
+}
+
+func localImagePort(configurations []config) int {
+	return configurations[0].ImagePort
 }
 
 func normalizeClipboardImage(image []byte, err error) ([]byte, error) {
@@ -62,7 +67,7 @@ func (systemCommandRunner) Run(ctx context.Context, specification commandSpec) e
 }
 
 func run(ctx context.Context, configPath, executablePath string) error {
-	configuration, err := loadConfig(configPath, os.Getenv)
+	configurations, err := loadConfigs(configPath, os.Getenv)
 	if err != nil {
 		return err
 	}
@@ -71,7 +76,7 @@ func run(ctx context.Context, configPath, executablePath string) error {
 	}
 
 	server := &http.Server{
-		Addr:              "127.0.0.1:" + strconv.Itoa(configuration.ImagePort),
+		Addr:              "127.0.0.1:" + strconv.Itoa(localImagePort(configurations)),
 		Handler:           newImageHandler(nativeClipboard{}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -91,7 +96,14 @@ func run(ctx context.Context, configPath, executablePath string) error {
 		}
 		return nil
 	}, func(ctx context.Context) {
-		runTunnel(ctx, systemCommandRunner{}, buildSSHCommand(configuration, executablePath, configPath), waitForReconnect)
+		commands := buildSSHCommands(configurations, executablePath, configPath)
+		var tunnels sync.WaitGroup
+		for _, command := range commands {
+			tunnels.Go(func() {
+				runTunnel(ctx, systemCommandRunner{}, command, waitForReconnect)
+			})
+		}
+		tunnels.Wait()
 	})
 }
 
