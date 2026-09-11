@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -23,59 +22,107 @@ type config struct {
 }
 
 type storedConfig struct {
-	SSHTarget   string `json:"sshTarget"`
-	SSHPassword string `json:"sshPassword,omitempty"`
-	ImagePort   *int   `json:"imagePort"`
+	Targets     []config `json:"targets,omitempty"`
+	SSHTarget   string   `json:"sshTarget,omitempty"`
+	SSHPassword string   `json:"sshPassword,omitempty"`
+	ImagePort   *int     `json:"imagePort,omitempty"`
 }
 
-func loadConfig(path string, getenv func(string) string) (config, error) {
+func loadConfigs(path string, getenv func(string) string) ([]config, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return config{}, fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var stored storedConfig
 	if err := json.Unmarshal(contents, &stored); err != nil {
-		return config{}, fmt.Errorf("parse config: %w", err)
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	configuration := config{
-		SSHTarget:   stored.SSHTarget,
-		SSHPassword: stored.SSHPassword,
-		ImagePort:   defaultImagePort,
-	}
-	if stored.ImagePort != nil {
-		configuration.ImagePort = *stored.ImagePort
-	}
-	if value := getenv("PI_AGENT_SUITE_SSH_TARGET"); value != "" {
-		configuration.SSHTarget = value
-	}
-	if value := getenv("PI_AGENT_SUITE_SSH_PASSWORD"); value != "" {
-		configuration.SSHPassword = value
-	}
-	if value := getenv("PI_AGENT_SUITE_IMAGE_PORT"); value != "" {
-		port, parseErr := strconv.Atoi(value)
-		if parseErr != nil {
-			return config{}, errors.New("PI_AGENT_SUITE_IMAGE_PORT must be an integer from 1 to 65535")
+	legacyFormat := len(stored.Targets) == 0
+	configurations := stored.Targets
+	if legacyFormat && stored.SSHTarget != "" {
+		port := defaultImagePort
+		if stored.ImagePort != nil {
+			port = *stored.ImagePort
 		}
-		configuration.ImagePort = port
+		configurations = []config{{SSHTarget: stored.SSHTarget, SSHPassword: stored.SSHPassword, ImagePort: port}}
 	}
+	if legacyFormat && getenv("PI_AGENT_SUITE_SSH_TARGET") != "" {
+		configuration, configErr := configFromEnvironment(getenv)
+		if configErr != nil {
+			return nil, configErr
+		}
+		configurations = []config{configuration}
+	}
+	if len(configurations) == 0 {
+		return nil, errors.New("remote image configuration has no SSH targets")
+	}
+	for index := range configurations {
+		if configurations[index].ImagePort == 0 {
+			configurations[index].ImagePort = defaultImagePort
+		}
+		if err := validateConfig(configurations[index]); err != nil {
+			return nil, err
+		}
+	}
+	return configurations, nil
+}
+
+func mergeConfig(configurations []config, added config) []config {
+	merged := append([]config(nil), configurations...)
+	for index := range merged {
+		if merged[index].SSHTarget == added.SSHTarget {
+			merged[index] = added
+			return merged
+		}
+	}
+	return append(merged, added)
+}
+
+func removeConfig(configurations []config, target string) ([]config, bool) {
+	remaining := make([]config, 0, len(configurations))
+	removed := false
+	for _, configuration := range configurations {
+		if configuration.SSHTarget == target {
+			removed = true
+			continue
+		}
+		remaining = append(remaining, configuration)
+	}
+	if !removed {
+		return configurations, false
+	}
+	return remaining, true
+}
+
+func validateConfig(configuration config) error {
 	if strings.TrimSpace(configuration.SSHTarget) == "" {
-		return config{}, errors.New("PI_AGENT_SUITE_SSH_TARGET is required")
+		return errors.New("PI_AGENT_SUITE_SSH_TARGET is required")
 	}
 	if configuration.ImagePort < minimumPort || configuration.ImagePort > maximumPort {
-		return config{}, errors.New("PI_AGENT_SUITE_IMAGE_PORT must be an integer from 1 to 65535")
+		return errors.New("PI_AGENT_SUITE_IMAGE_PORT must be an integer from 1 to 65535")
 	}
-	return configuration, nil
+	return nil
 }
 
 func runAskpass(configPath string, output io.Writer) error {
-	configuration, err := loadConfig(configPath, os.Getenv)
+	configurations, err := loadConfigs(configPath, func(string) string { return "" })
 	if err != nil {
 		return err
 	}
-	if configuration.SSHPassword == "" {
-		return errors.New("PI_AGENT_SUITE_SSH_PASSWORD is not configured")
+	target := os.Getenv("PI_AGENT_SUITE_ASKPASS_TARGET")
+	if target == "" && len(configurations) == 1 {
+		target = configurations[0].SSHTarget
 	}
-	_, err = fmt.Fprintln(output, configuration.SSHPassword)
-	return err
+	for _, configuration := range configurations {
+		if configuration.SSHTarget != target {
+			continue
+		}
+		if configuration.SSHPassword == "" {
+			return errors.New("PI_AGENT_SUITE_SSH_PASSWORD is not configured")
+		}
+		_, err = fmt.Fprintln(output, configuration.SSHPassword)
+		return err
+	}
+	return fmt.Errorf("SSH target %q is not configured", target)
 }

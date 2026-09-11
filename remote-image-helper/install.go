@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"html"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -19,15 +20,80 @@ type installationPlan struct {
 	LogPath        string
 }
 
-// install applies one plan only after the old platform-managed process has stopped.
-func (plan installationPlan) install(source string, configuration config, goos string, commands setupCommands) error {
+func (plan installationPlan) installTarget(source string, added config, goos string, commands setupCommands) error {
+	configurations := []config{}
+	if _, err := os.Stat(plan.ConfigPath); err == nil {
+		loaded, loadErr := loadConfigs(plan.ConfigPath, func(string) string { return "" })
+		if loadErr != nil {
+			return loadErr
+		}
+		configurations = loaded
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect config: %w", err)
+	}
+	return plan.installConfigs(source, mergeConfig(configurations, added), goos, commands)
+}
+
+func (plan installationPlan) removeTarget(source, target, goos string, commands setupCommands) (int, error) {
+	configurations, err := loadConfigs(plan.ConfigPath, func(string) string { return "" })
+	if err != nil {
+		return 0, err
+	}
+	remaining, removed := removeConfig(configurations, target)
+	if !removed {
+		return len(configurations), fmt.Errorf("SSH target %q is not configured", target)
+	}
+	if len(remaining) == 0 {
+		if err := plan.uninstall(goos, commands); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+	if err := plan.installConfigs(source, remaining, goos, commands); err != nil {
+		return len(configurations), err
+	}
+	return len(remaining), nil
+}
+
+func (plan installationPlan) uninstall(goos string, commands setupCommands) error {
+	if err := stopStartup(goos, plan, commands); err != nil {
+		return err
+	}
+	switch goos {
+	case "linux":
+		if err := commands.run(commandSpec{Name: "systemctl", Args: []string{"--user", "disable", linuxServiceName}}); err != nil {
+			return fmt.Errorf("disable systemd user service: %w", err)
+		}
+	case "windows":
+		if err := commands.run(commandSpec{Name: "schtasks", Args: []string{"/Delete", "/F", "/TN", windowsTaskName}}); err != nil {
+			return fmt.Errorf("delete Windows logon task: %w", err)
+		}
+	}
+	for _, file := range []string{plan.StartupPath, plan.ConfigPath, plan.LogPath, plan.BinaryPath} {
+		if file == "" {
+			continue
+		}
+		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", file, err)
+		}
+	}
+	if goos == "linux" {
+		if err := commands.run(commandSpec{Name: "systemctl", Args: []string{"--user", "daemon-reload"}}); err != nil {
+			return fmt.Errorf("reload systemd user units: %w", err)
+		}
+	}
+	return nil
+}
+
+// installConfigs applies one plan only after the old platform-managed process has stopped.
+func (plan installationPlan) installConfigs(source string, configurations []config, goos string, commands setupCommands) error {
 	if err := checkExecutableSource(source, plan.BinaryPath); err != nil {
 		return err
 	}
 	return (installationSteps{
 		stop:   func() error { return stopStartup(goos, plan, commands) },
 		binary: func() error { return copyExecutable(source, plan.BinaryPath) },
-		config: func() error { return writeConfig(plan.ConfigPath, configuration) },
+		config: func() error { return writeConfigs(plan.ConfigPath, configurations) },
 		startup: func() error {
 			if plan.StartupPath == "" {
 				return nil
