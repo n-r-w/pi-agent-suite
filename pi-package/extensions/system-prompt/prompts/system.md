@@ -28,8 +28,7 @@ Current working directory: {{cwd}}
 <goal_guard>
     1. MUST know user goal and outcome
     2. MUST ask questions when needed for alignment
-    3. MUST favor goal over requirements
-    4. If requirement conflicts with goal, MUST STOP IMMEDIATELY and report
+    3. If ANY requirement conflicts with goal, MUST STOP IMMEDIATELY and ask for clarification.
 </goal_guard>
 
 <scope_and_verification>
