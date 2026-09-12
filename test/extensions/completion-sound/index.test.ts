@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import completionSound from "../../../pi-package/extensions/completion-sound/index";
@@ -347,6 +347,38 @@ describe("completion-sound", () => {
 				{
 					command: "custom-player",
 					args: ["--volume", "25", "/tmp/done.wav"],
+				},
+			]);
+		});
+	});
+
+	test.each([
+		"~/bin/player",
+		"$HOME/bin/player",
+		`\${HOME}/bin/player`,
+	])("expands home-prefixed playback command %s", async (command) => {
+		// Purpose: custom executable paths must support every home alias without a shell.
+		// Input and expected output: a home-prefixed command reaches playback as an absolute path.
+		// Edge case: custom arguments remain unchanged while only the command is expanded.
+		// Dependencies: in-memory extension fake, playback sink, and isolated config directory.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				enabled: true,
+				command,
+				args: ["$HOME/literal-argument"],
+			});
+			const playbackCalls: PlaybackCall[] = [];
+			const pi = registerExtension({ env: {}, playbackCalls });
+
+			await getRegisteredHandler(pi, "agent_end")(
+				createAgentEndEvent(),
+				createSessionContextFake(),
+			);
+
+			expect(playbackCalls).toEqual([
+				{
+					command: join(homedir(), "bin", "player"),
+					args: ["$HOME/literal-argument"],
 				},
 			]);
 		});

@@ -4,6 +4,7 @@ import {
 	type StorageFileReadResult,
 } from "./agent-suite-storage";
 import { type ModelSettings, parseModelSettings } from "./model-settings";
+import { expandHomePath } from "./path-expansion";
 import {
 	buildRetryConfig,
 	type RetryConfig,
@@ -150,16 +151,26 @@ function buildCustomCompactionConfig(
 	const reductionPromptFile = value["reductionPromptFile"];
 
 	return {
-		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
-		...(typeof historyPromptFile === "string" ? { historyPromptFile } : {}),
-		...(typeof updatePromptFile === "string" ? { updatePromptFile } : {}),
+		...(typeof systemPromptFile === "string"
+			? { systemPromptFile: expandHomePath(systemPromptFile) }
+			: {}),
+		...(typeof historyPromptFile === "string"
+			? { historyPromptFile: expandHomePath(historyPromptFile) }
+			: {}),
+		...(typeof updatePromptFile === "string"
+			? { updatePromptFile: expandHomePath(updatePromptFile) }
+			: {}),
 		...(typeof fileCandidatesPromptFile === "string"
-			? { fileCandidatesPromptFile }
+			? { fileCandidatesPromptFile: expandHomePath(fileCandidatesPromptFile) }
 			: {}),
 		...(typeof reductionSystemPromptFile === "string"
-			? { reductionSystemPromptFile }
+			? {
+					reductionSystemPromptFile: expandHomePath(reductionSystemPromptFile),
+				}
 			: {}),
-		...(typeof reductionPromptFile === "string" ? { reductionPromptFile } : {}),
+		...(typeof reductionPromptFile === "string"
+			? { reductionPromptFile: expandHomePath(reductionPromptFile) }
+			: {}),
 		...(model === undefined ? {} : { model }),
 		retry: buildRetryConfig(value["retry"]),
 	};
@@ -177,7 +188,7 @@ function validatePromptFiles(
 		) {
 			return `${key} must be a non-empty string`;
 		}
-		if (typeof path === "string" && !isAbsolute(path)) {
+		if (typeof path === "string" && !isAbsolute(expandHomePath(path))) {
 			return `${key} must be an absolute path`;
 		}
 	}

@@ -48,12 +48,14 @@ Breaking change: `summary` and `turnPrefixPromptFile` are removed. Adaptive comp
 | Parameter | Required | Type or shape | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables adaptive custom compaction. `false` lets Pi use standard compaction. |
-| `systemPromptFile` | No | Non-empty absolute path | Bundled final system prompt | System prompt used for final summary requests. |
-| `historyPromptFile` | No | Non-empty absolute path | Bundled history prompt | Final prompt used when no previous compaction summary exists. |
-| `updatePromptFile` | No | Non-empty absolute path | Bundled update prompt | Final prompt used when a previous compaction summary exists. |
-| `fileCandidatesPromptFile` | No | Non-empty absolute path | Bundled file-candidate prompt | Optional final-prompt fragment that asks the model to select relevant file-operation paths for `must_read_after_compaction`. |
-| `reductionSystemPromptFile` | No | Non-empty absolute path | Bundled reduction system prompt | System prompt used for preliminary, fragment, normalization, and merge requests. |
-| `reductionPromptFile` | No | Non-empty absolute path | Bundled reduction prompt | User prompt used for preliminary, fragment, normalization, and merge requests. |
+| `systemPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled final system prompt | System prompt used for final summary requests. |
+| `historyPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled history prompt | Final prompt used when no previous compaction summary exists. |
+| `updatePromptFile` | No | Non-empty absolute or home-prefixed path | Bundled update prompt | Final prompt used when a previous compaction summary exists. |
+| `fileCandidatesPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled file-candidate prompt | Optional final-prompt fragment that asks the model to select relevant file-operation paths for `must_read_after_compaction`. |
+| `reductionSystemPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled reduction system prompt | System prompt used for preliminary, fragment, normalization, and merge requests. |
+| `reductionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled reduction prompt | User prompt used for preliminary, fragment, normalization, and merge requests. |
+
+Home-prefixed paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded.
 | `model` | No | Object | Current main model and thinking level | Configures the model used for direct, preliminary, fragment, normalization, merge, and final requests. |
 | `model.id` | No | Non-empty string | Current main model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. Model IDs may contain additional slashes after the provider. |
 | `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current thinking level | Thinking level used for adaptive compaction requests. |

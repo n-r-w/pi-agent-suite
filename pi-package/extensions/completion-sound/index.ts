@@ -9,6 +9,7 @@ import {
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
 import { isChildAgentProcess } from "../../shared/child-agent-environment";
+import { expandHomePath } from "../../shared/path-expansion";
 
 /** Suite directory owned only by this extension. */
 const COMPLETION_SOUND_EXTENSION_DIR = "completion-sound";
@@ -219,7 +220,7 @@ function parseCompletionSoundFields(config: Record<string, unknown>):
 		kind: "valid",
 		config: {
 			...(enabled !== undefined ? { enabled } : {}),
-			...(command !== undefined ? { command } : {}),
+			...(command !== undefined ? { command: expandHomePath(command) } : {}),
 			...(args !== undefined ? { args } : {}),
 			...(volume !== undefined ? { volume } : {}),
 		},

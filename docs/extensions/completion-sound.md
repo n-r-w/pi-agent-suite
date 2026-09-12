@@ -33,6 +33,8 @@ All parameters are optional unless noted in the table. Unknown parameters make t
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables or disables completion sound playback. Set `false` to disable the extension. |
 | `command` | Required when `args` is set | Non-empty string | Platform default command when available | Executable used to play the sound. Configure this when the platform has no default command or when you want a custom sound command. |
+
+A path-valued `command` accepts `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. The extension does not expand home aliases in `args`.
 | `args` | No | Array of strings | `[]` when `command` is set; platform default arguments when `command` is omitted and a platform default exists | Arguments passed to `command`. An empty array is valid. Can be set only with `command`. |
 | `volume` | No | Number from `0` to `150` | Omitted | Volume percentage for the built-in macOS and Linux default commands. It does not affect custom commands or the Windows default command. |
 

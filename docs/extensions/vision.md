@@ -6,7 +6,7 @@
 
 The tool is visible only when all of the following hold: `enabled` is `true`, `model.id` is configured, and the active model is text-only (its `input` does not include `image`). When the extension is enabled but unconfigured, or when the config file is malformed, a warning is shown at session start and the tool stays hidden.
 
-The tool accepts required `image_path` and `prompt` strings. The image is a file path. `prompt` is limited to 2048 characters. Global errors (`not_configured`, `model_not_found`, `auth_error`) abort the call. Image loading and vision-model errors return `[error: code — message]` as the text result.
+The tool accepts required `image_path` and `prompt` strings. Relative image paths resolve from the working directory. Home-prefixed image paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded. `prompt` is limited to 2048 characters. Global errors (`not_configured`, `model_not_found`, `auth_error`) abort the call. Image loading and vision-model errors return `[error: code — message]` as the text result.
 
 ## Configuration file
 

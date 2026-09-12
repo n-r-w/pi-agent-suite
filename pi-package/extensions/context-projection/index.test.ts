@@ -699,62 +699,61 @@ describe("context-projection", () => {
 	});
 
 	test("fails startup when a summary prompt file path is not absolute", async () => {
-		// Purpose: configured context-projection summary prompt files must use absolute paths so startup cannot depend on config-relative or home expansion.
-		// Input and expected output: each non-absolute summary prompt path rejects session_start and context handling while clearing stale pending savings.
+		// Purpose: configured context-projection summary prompt files must not resolve from the process working directory.
+		// Input and expected output: each plain relative summary prompt path rejects session_start and context handling while clearing stale pending savings.
 		// Edge case: summary is enabled and all numeric fields are valid, so the prompt path is the only invalid field.
 		// Dependencies: isolated config file, session_start handler, context handler, and shared projection-aware usage state.
 		const fields = ["systemPromptFile", "userPromptFile"] as const;
 		for (const field of fields) {
-			for (const invalidPath of [`${field}.md`, `~/${field}.md`]) {
-				await withIsolatedAgentDir(async (agentDir) => {
-					await writeCustomConfig(
-						agentDir,
-						createValidConfig({
-							summary: {
-								enabled: true,
-								maxConcurrency: 1,
-								[field]: invalidPath,
-							},
-						}),
-					);
-					const sessionId = "context-projection-test-session";
-					resetPendingProjectionSavings(sessionId);
-					addPendingProjectionSavings(sessionId, 48_000, {
-						branchLeafId: "leaf-1",
-						entryIds: ["entry-1"],
-					});
-					const { sessionStartHandler, contextHandler } =
-						installContextProjectionTestHarness();
-					const context = createContextFake([]);
-
-					await expect(
-						sessionStartHandler(
-							{ type: "session_start", reason: "startup" },
-							context.ctx,
-						),
-					).rejects.toThrow(`summary.${field} must be an absolute path`);
-					expect(
-						getProjectionAwareContextUsage(
-							sessionId,
-							contextUsage(130_000, 272_000),
-						),
-					).toEqual(contextUsage(130_000, 272_000));
-
-					addPendingProjectionSavings(sessionId, 48_000, {
-						branchLeafId: "leaf-1",
-						entryIds: ["entry-1"],
-					});
-					await expect(
-						contextHandler({ type: "context", messages: [] }, context.ctx),
-					).rejects.toThrow(`summary.${field} must be an absolute path`);
-					expect(
-						getProjectionAwareContextUsage(
-							sessionId,
-							contextUsage(130_000, 272_000),
-						),
-					).toEqual(contextUsage(130_000, 272_000));
+			const invalidPath = `${field}.md`;
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeCustomConfig(
+					agentDir,
+					createValidConfig({
+						summary: {
+							enabled: true,
+							maxConcurrency: 1,
+							[field]: invalidPath,
+						},
+					}),
+				);
+				const sessionId = "context-projection-test-session";
+				resetPendingProjectionSavings(sessionId);
+				addPendingProjectionSavings(sessionId, 48_000, {
+					branchLeafId: "leaf-1",
+					entryIds: ["entry-1"],
 				});
-			}
+				const { sessionStartHandler, contextHandler } =
+					installContextProjectionTestHarness();
+				const context = createContextFake([]);
+
+				await expect(
+					sessionStartHandler(
+						{ type: "session_start", reason: "startup" },
+						context.ctx,
+					),
+				).rejects.toThrow(`summary.${field} must be an absolute path`);
+				expect(
+					getProjectionAwareContextUsage(
+						sessionId,
+						contextUsage(130_000, 272_000),
+					),
+				).toEqual(contextUsage(130_000, 272_000));
+
+				addPendingProjectionSavings(sessionId, 48_000, {
+					branchLeafId: "leaf-1",
+					entryIds: ["entry-1"],
+				});
+				await expect(
+					contextHandler({ type: "context", messages: [] }, context.ctx),
+				).rejects.toThrow(`summary.${field} must be an absolute path`);
+				expect(
+					getProjectionAwareContextUsage(
+						sessionId,
+						contextUsage(130_000, 272_000),
+					),
+				).toEqual(contextUsage(130_000, 272_000));
+			});
 		}
 	});
 

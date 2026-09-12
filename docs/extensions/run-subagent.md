@@ -28,10 +28,10 @@ If the file is missing, the extension uses:
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables runtime behavior. When `false`, all four tool definitions remain registered, the runtime and management screen do not start, and every execution fails closed. |
 | `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum delegation depth. At or beyond this depth, all four subagent tools and both model-visible subagent sections are removed. Unrelated agent tools remain active. |
-| `extensionDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/extension-description.md` | Replaces the shared model-visible Subagents rules with the file's trimmed content. |
-| `startDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/start-description.md` | Replaces the model-visible `subagent_start` description with the file's trimmed content. |
-| `steerDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/steer-description.md` | Replaces the model-visible `subagent_steer` description with the file's trimmed content. |
-| `waitDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/wait-description.md` | Replaces the model-visible `subagent_wait` description with the file's trimmed content. |
+| `extensionDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/extension-description.md` | Replaces the shared model-visible Subagents rules with the file's trimmed content. |
+| `startDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/start-description.md` | Replaces the model-visible `subagent_start` description with the file's trimmed content. |
+| `steerDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/steer-description.md` | Replaces the model-visible `subagent_steer` description with the file's trimmed content. |
+| `waitDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/wait-description.md` | Replaces the model-visible `subagent_wait` description with the file's trimmed content. |
 | `query` | No | Object | `{}` | Configures the auxiliary model and system prompt used by `subagent_query`. |
 
 Each description file must be readable and contain non-whitespace text after trimming. The keys are independent: an omitted key keeps its matching bundled description even when another description uses a custom file.
@@ -42,7 +42,9 @@ Each description file must be readable and contain non-whitespace text after tri
 | --- | --- | --- | --- | --- |
 | `model.id` | No | Non-empty string | Calling agent's current model | Selects a model from the calling Pi process's registry. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Alias default thinking, or calling agent's current thinking level | Selects reasoning for the auxiliary request. An alias `model.id` without explicit `thinking` uses the alias default. `off` omits the provider reasoning option. |
-| `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Supplies trimmed non-empty text as the auxiliary system prompt. |
+| `systemPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/query-system.md` | Supplies trimmed non-empty text as the auxiliary system prompt. |
+
+Home-prefixed paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded.
 
 Before each model turn, the extension evaluates the active tools after main-agent selection, child tool policy, and depth filtering. If any subagent tool is active, the resolved extension description is appended to the system prompt inside `<subagent_tools_guidelines>...</subagent_tools_guidelines>`. When `subagent_start` is active, each callable agent is appended with its escaped ID and description:
 

@@ -36,6 +36,7 @@ import {
 	readKnowledgeBlock,
 } from "../../shared/knowledge-runtime";
 import { isModelSelectorId } from "../../shared/model-settings";
+import { expandHomePath } from "../../shared/path-expansion";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -326,7 +327,10 @@ function assertAdvisorPromptFileIsAbsolute(): void {
 			return;
 		}
 		const promptFile = config["promptFile"];
-		if (typeof promptFile === "string" && !isAbsolute(promptFile)) {
+		if (
+			typeof promptFile === "string" &&
+			!isAbsolute(expandHomePath(promptFile))
+		) {
 			throw new Error(`${ISSUE_PREFIX} promptFile must be an absolute path`);
 		}
 	} catch (error) {
@@ -466,7 +470,10 @@ function validateOptionalPathConfig(
 	) {
 		return "promptFile must be a non-empty string";
 	}
-	if (typeof promptFile === "string" && !isAbsolute(promptFile)) {
+	if (
+		typeof promptFile === "string" &&
+		!isAbsolute(expandHomePath(promptFile))
+	) {
 		return "promptFile must be an absolute path";
 	}
 	if (
@@ -497,7 +504,9 @@ function buildAdvisorConfig(
 	return {
 		...(model !== undefined ? { model } : {}),
 		promptFile:
-			typeof promptFile === "string" ? promptFile : DEFAULT_ADVISOR_PROMPT_FILE,
+			typeof promptFile === "string"
+				? expandHomePath(promptFile)
+				: DEFAULT_ADVISOR_PROMPT_FILE,
 		...(typeof debugPayloadFile === "string"
 			? { debugPayloadFile: resolveConfigPath(configDir, debugPayloadFile) }
 			: {}),
@@ -512,7 +521,10 @@ function buildAdvisorRetryConfig(retry: unknown): RetryConfig {
 
 /** Resolves debug payload paths using the active config directory as the relative base. */
 function resolveConfigPath(configDir: string, path: string): string {
-	return isAbsolute(path) ? path : join(configDir, path);
+	const expandedPath = expandHomePath(path);
+	return isAbsolute(expandedPath)
+		? expandedPath
+		: join(configDir, expandedPath);
 }
 
 /** Reads the advisor system prompt and rejects empty files. */

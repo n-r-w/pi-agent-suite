@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, parse as parsePath } from "node:path";
 import { parse } from "yaml";
+import { expandHomePath } from "../../shared/path-expansion";
 import {
 	validateWorkflowDefinition,
 	type WorkflowDefinition,
@@ -230,12 +231,15 @@ function parsePromptFilePath(key: string, candidate: unknown): string {
 	if (
 		typeof candidate !== "string" ||
 		candidate.length === 0 ||
-		candidate.trim() !== candidate ||
-		!isAbsolute(candidate)
+		candidate.trim() !== candidate
 	) {
 		throw new Error(`${key} must be a non-empty absolute path`);
 	}
-	return candidate;
+	const expandedPath = expandHomePath(candidate);
+	if (!isAbsolute(expandedPath)) {
+		throw new Error(`${key} must be a non-empty absolute path`);
+	}
+	return expandedPath;
 }
 
 /** Reads and trims one required prompt while reporting the owning config field. */

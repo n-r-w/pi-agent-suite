@@ -881,24 +881,41 @@ describe("consult-advisor", () => {
 	});
 
 	test("fails startup when advisor promptFile is not absolute", async () => {
-		// Purpose: configured advisor prompt files must use absolute paths so startup cannot depend on config-relative or home expansion.
-		// Input and expected output: non-absolute promptFile values cause extension loading to throw.
+		// Purpose: configured advisor prompt files must not resolve from the process working directory.
+		// Input and expected output: a plain relative promptFile causes extension loading to throw.
 		// Edge case: model settings are valid, so the prompt path is the only invalid field.
 		// Dependencies: isolated config file and in-memory ExtensionAPI fake.
-		for (const promptFile of ["advisor.md", "~/advisor.md"]) {
-			await withIsolatedAgentDir(async (agentDir) => {
-				await writeConfig(agentDir, {
-					enabled: true,
-					model: { id: "openai/advisor", thinking: "high" },
-					promptFile,
-				});
-				const pi = createExtensionApiFake();
-
-				expect(() => consultAdvisor(pi)).toThrow(
-					"[consult-advisor] promptFile must be an absolute path",
-				);
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				enabled: true,
+				model: { id: "openai/advisor", thinking: "high" },
+				promptFile: "advisor.md",
 			});
-		}
+			const pi = createExtensionApiFake();
+
+			expect(() => consultAdvisor(pi)).toThrow(
+				"[consult-advisor] promptFile must be an absolute path",
+			);
+		});
+	});
+
+	test.each([
+		"~/advisor.md",
+		"$HOME/advisor.md",
+		`\${HOME}/advisor.md`,
+	])("accepts home-prefixed advisor promptFile %s during startup", async (promptFile) => {
+		// Purpose: supported home aliases must pass the synchronous advisor startup boundary.
+		// Input and expected output: a home-prefixed prompt path registers without throwing.
+		// Edge case: all supported home alias spellings are covered before prompt loading.
+		// Dependencies: isolated config file and in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, {
+				enabled: true,
+				model: { id: "openai/advisor", thinking: "high" },
+				promptFile,
+			});
+			expect(() => consultAdvisor(createExtensionApiFake())).not.toThrow();
+		});
 	});
 
 	test("uses bundled default advisor prompt when config omits promptFile", async () => {

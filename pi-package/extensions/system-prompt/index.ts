@@ -12,6 +12,7 @@ import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
+import { expandHomePath } from "../../shared/path-expansion";
 import type { VisibleToolset } from "../../shared/toolsets/contracts";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../run-subagent/contracts";
@@ -201,14 +202,16 @@ function parseSystemPromptConfig(config: unknown): ConfigReadResult {
 	if (templateFile !== undefined && typeof templateFile !== "string") {
 		return invalidConfig("templateFile must be a string");
 	}
-	if (templateFile !== undefined && !isAbsolute(templateFile)) {
+	const expandedTemplateFile =
+		typeof templateFile === "string" ? expandHomePath(templateFile) : undefined;
+	if (expandedTemplateFile !== undefined && !isAbsolute(expandedTemplateFile)) {
 		return invalidConfig("templateFile must be an absolute path");
 	}
 
 	return {
 		kind: "valid",
 		config: {
-			templateFile: templateFile ?? DEFAULT_TEMPLATE_FILE,
+			templateFile: expandedTemplateFile ?? DEFAULT_TEMPLATE_FILE,
 		},
 	};
 }

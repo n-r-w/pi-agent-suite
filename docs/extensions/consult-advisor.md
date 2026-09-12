@@ -45,9 +45,11 @@ If the config file is missing, the extension is enabled and uses the current ses
 | `model` | No | Object with optional `id` and `thinking` fields | Current session model and current thinking level | Selects the advisor model settings. An alias `model.id` without explicit `model.thinking` uses the alias default thinking level. |
 | `model.id` | No | Non-empty string | Current session model | Selects the model used by the advisor. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | No | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | Alias default thinking, or current thinking level | Selects the advisor thinking level. |
-| `promptFile` | No | Non-empty absolute file path | Bundled advisor prompt | Uses a custom advisor prompt file. The file must be readable and non-empty. |
+| `promptFile` | No | Non-empty absolute or home-prefixed file path | Bundled advisor prompt | Uses a custom advisor prompt file. The file must be readable and non-empty. |
 | `retry` | No | Object with optional `enabled`, `maxRetries`, and `baseDelayMs` fields | Retry defaults | Controls retry behavior for retryable advisor provider failures. |
 | `retry.enabled` | No | Boolean | `true` | Enables or disables retries. |
 | `retry.maxRetries` | No | Non-negative integer | `3` | Sets the maximum number of retry attempts. |
 | `retry.baseDelayMs` | No | Non-negative integer | `2000` | Sets the base retry delay in milliseconds. |
-| `debugPayloadFile` | No | Non-empty absolute or relative file path | Not set | Writes the advisor request payload to this file for troubleshooting. Relative paths are resolved from the directory that contains `config.json`. |
+| `debugPayloadFile` | No | Non-empty absolute, home-prefixed, or relative file path | Not set | Writes the advisor request payload to this file for troubleshooting. Plain relative paths are resolved from the directory that contains `config.json`. |
+
+Home-prefixed paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded.

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseMcpWrapperConfig } from "./config.ts";
 
 const UNIX_ENV_PLACEHOLDER = "$" + "{TOKEN}";
@@ -24,6 +26,34 @@ describe("mcp-wrapper config", () => {
 			widgetLineBudget: 5,
 			mcpServers: {},
 		});
+	});
+
+	test.each([
+		"~/bin",
+		"$HOME/bin",
+		`\${HOME}/bin`,
+	])("expands home-prefixed stdio paths in %s", (prefix) => {
+		// Purpose: stdio executable and working-directory paths must support every home alias.
+		// Input and expected output: home-prefixed command and cwd become absolute home paths.
+		// Edge case: both path-bearing stdio fields use the same expansion contract.
+		// Dependencies: config parsing and the process home lookup only; no process is started.
+		const result = parseMcpWrapperConfig({
+			mcpServers: {
+				files: { command: `${prefix}/server`, cwd: `${prefix}/workspace` },
+			},
+		});
+
+		expect(result.kind).toBe("valid");
+		if (result.kind !== "valid") {
+			throw new Error(result.issue);
+		}
+		const server = result.config.mcpServers["files"];
+		expect(server?.type).toBe("stdio");
+		if (server?.type !== "stdio") {
+			throw new Error("expected stdio server");
+		}
+		expect(server.command).toBe(join(homedir(), "bin", "server"));
+		expect(server.cwd).toBe(join(homedir(), "bin", "workspace"));
 	});
 
 	test("preserves nonblank additional instructions for both transports", () => {

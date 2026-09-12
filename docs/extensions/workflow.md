@@ -107,7 +107,7 @@ Workflow settings and optional prompt overrides belong in `~/.pi/agent/agent-sui
 }
 ```
 
-`reminderToolCallInterval` defaults to `50` and measures the activity units defined below. It accepts safe integers greater than or equal to `0`. A value of `0` disables periodic reminders. Each configured prompt path must be absolute and reference a readable file with non-empty content after trimming. Unknown fields, invalid intervals, and invalid files reject the complete workflow configuration atomically.
+`reminderToolCallInterval` defaults to `50` and measures the activity units defined below. It accepts safe integers greater than or equal to `0`. A value of `0` disables periodic reminders. Each configured prompt path must be absolute or home-prefixed and reference a readable file with non-empty content after trimming. Home-prefixed paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded. Unknown fields, invalid intervals, and invalid files reject the complete workflow configuration atomically.
 
 `extensionDescriptionPromptFile` supplies one `promptGuidelines` contribution on each workflow tool. The system prompt formatter normalizes duplicate contributions, so the guidance appears once while any workflow tool is active. The other files replace the Pi tool description for the corresponding tool.
 

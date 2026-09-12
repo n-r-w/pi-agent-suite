@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, open, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { loadImage } from "./image";
 
 const PNG = "iVBORw0KGgo=";
@@ -16,6 +16,36 @@ describe("loadImage", () => {
 				compression: { enabled: false, jpegQuality: 85, maxBytes: 4_718_592 },
 			}),
 		).toEqual({ data: PNG, mimeType: "image/png" });
+	});
+
+	test.each([
+		"~",
+		"$HOME",
+		`\${HOME}`,
+	])("loads an image through home prefix %s", async (homePrefix) => {
+		// Purpose: vision image paths must support every home alias before cwd resolution.
+		// Input and expected output: a home-prefixed path to a temporary PNG loads successfully.
+		// Edge case: the relative suffix can leave the home directory while the file remains under the system temp directory.
+		// Dependencies: an isolated temporary image and the real home path used only for lexical resolution.
+		const directory = await mkdtemp(join(tmpdir(), "vision-image-home-"));
+		const imagePath = join(directory, "test.png");
+		await writeFile(imagePath, Buffer.from(PNG, "base64"));
+		const inputPath = `${homePrefix}/${relative(homedir(), imagePath)}`;
+
+		try {
+			expect(
+				await loadImage(inputPath, {
+					cwd: directory,
+					compression: {
+						enabled: false,
+						jpegQuality: 85,
+						maxBytes: 4_718_592,
+					},
+				}),
+			).toEqual({ data: PNG, mimeType: "image/png" });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	test("uses the injected resizer when compression is enabled", async () => {

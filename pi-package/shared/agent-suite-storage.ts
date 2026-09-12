@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readAgentSuiteDirEnv } from "./environment.ts";
+import { expandHomePath } from "./path-expansion.ts";
 
 /** Environment variable that overrides the pi-agent-suite storage root. */
 export const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -37,7 +37,7 @@ export interface ExtensionConfigLocation {
 export function getAgentSuiteDir(): string {
 	const configuredDir = readAgentSuiteDirEnv();
 	if (configuredDir !== undefined && configuredDir.length > 0) {
-		return expandHomeDirectory(configuredDir);
+		return expandHomePath(configuredDir);
 	}
 
 	return join(getAgentDir(), DEFAULT_AGENT_SUITE_DIR);
@@ -153,17 +153,6 @@ export function isFileNotFoundError(error: unknown): boolean {
 }
 
 /** Expands home-relative env values consistently with pi's agent-dir handling. */
-function expandHomeDirectory(path: string): string {
-	if (path === "~") {
-		return homedir();
-	}
-	if (path.startsWith("~/")) {
-		return join(homedir(), path.slice(2));
-	}
-
-	return path;
-}
-
 /** Reads one optional file while preserving non-missing read errors. */
 async function readFileIfPresent(location: ExtensionConfigLocation): Promise<
 	| { readonly kind: "found"; readonly file: StorageFileReadResult }

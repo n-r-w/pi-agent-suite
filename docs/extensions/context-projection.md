@@ -97,8 +97,10 @@ This limits old provider-context changes to at most three batches between succes
 | `summary.maxConcurrency` | No | Positive integer | `1` | Maximum number of summary requests that can run at the same time. |
 | `summary.retryCount` | No | Non-negative integer | `1` | Number of retry attempts after the first summary request fails. |
 | `summary.retryDelayMs` | No | Non-negative integer | `5000` | Delay between summary retry attempts, in milliseconds. |
-| `summary.systemPromptFile` | No | `null` or absolute file path | Bundled system prompt | Custom system prompt file for summary generation. `null` has the same effect as omitting the parameter. |
-| `summary.userPromptFile` | No | `null` or absolute file path | Bundled user prompt | Custom user prompt file appended after the tool result text. `null` has the same effect as omitting the parameter. |
+| `summary.systemPromptFile` | No | `null`, absolute path, or home-prefixed path | Bundled system prompt | Custom system prompt file for summary generation. `null` has the same effect as omitting the parameter. |
+| `summary.userPromptFile` | No | `null`, absolute path, or home-prefixed path | Bundled user prompt | Custom user prompt file appended after the tool result text. `null` has the same effect as omitting the parameter. |
+
+Home-prefixed paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded.
 
 When `summary.enabled` is omitted or set to `false`, other summary values are ignored except unsupported summary keys.
 

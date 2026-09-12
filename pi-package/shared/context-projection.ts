@@ -1,5 +1,4 @@
-import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
@@ -10,6 +9,7 @@ import {
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
 import { readCustomCompactionConfig } from "./custom-compaction-config";
+import { expandHomePath } from "./path-expansion";
 import {
 	parseToolResultSummaryConfig,
 	type ToolResultSummaryConfig,
@@ -1274,17 +1274,6 @@ function resolveReadInputPath(inputPath: string, cwd: string): string {
 }
 
 /** Expands the home directory shorthand accepted by pi path tools. */
-function expandHomePath(inputPath: string): string {
-	if (inputPath === "~") {
-		return homedir();
-	}
-	if (inputPath.startsWith("~/")) {
-		return join(homedir(), inputPath.slice(2));
-	}
-
-	return inputPath;
-}
-
 /** Returns true when a read result belongs to a loaded skill root and must stay visible. */
 function isLoadedSkillReadResult(
 	message: Extract<AgentMessage, { role: "toolResult" }>,

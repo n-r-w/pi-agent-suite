@@ -103,6 +103,8 @@ Each `mcpServers` entry must be either a `stdio` server or a `streamableHttp` se
 | `args` | No | Array of strings | `[]` | Arguments passed to `command` unchanged. |
 | `env` | No | Object with string values | `{}` | Environment variables for the server process. Values are literal strings. Configured values override inherited environment variables with the same name. |
 | `cwd` | No | String | Not set by the extension | Working directory for the server process. |
+
+Path-valued `command` and `cwd` accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. The extension does not expand home aliases in `args` or `env` values.
 | `onDemand` | No | Object with `name` and `description` | Not set | Defers this server as one named toolset. See [On-demand toolsets](#on-demand-toolsets). |
 | `additionalInstructions` | No | String | Not set | Local instructions persisted for the model when an eager server starts active or its deferred toolset is activated. JSON `\n` escapes represent newlines. |
 

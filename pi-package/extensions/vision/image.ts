@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
+import { expandHomePath } from "../../shared/path-expansion";
 
 const MAX_SOURCE_BYTES = 67_108_864;
 const PNG_SIGNATURE = new Uint8Array(Buffer.from("89504e47", "hex"));
@@ -82,7 +83,10 @@ async function compress(
 }
 
 async function readInput(input: string, cwd: string): Promise<Uint8Array> {
-	const path = isAbsolute(input) ? input : resolve(cwd, input);
+	const expandedInput = expandHomePath(input);
+	const path = isAbsolute(expandedInput)
+		? expandedInput
+		: resolve(cwd, expandedInput);
 	try {
 		const metadata = await stat(path);
 		if (!metadata.isFile()) {

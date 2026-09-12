@@ -3,6 +3,7 @@ import {
 	getSuiteConfigLocation,
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage.ts";
+import { expandHomePath } from "../../shared/path-expansion.ts";
 
 const MCP_WRAPPER_EXTENSION_DIR = "mcp-wrapper";
 const DEFAULT_WIDGET_LINE_BUDGET = 5;
@@ -409,10 +410,10 @@ function parseStdioServerFields(
 	}
 	return {
 		kind: "valid",
-		command,
+		command: expandHomePath(command),
 		args: args ?? [],
 		env: env ?? {},
-		cwd,
+		cwd: typeof cwd === "string" ? expandHomePath(cwd) : undefined,
 	};
 }
 

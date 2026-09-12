@@ -42,7 +42,9 @@ All configuration parameters are optional. If the configuration file is missing,
 | `model` | object | No | Current session model and thinking level | Groups model selection options. |
 | `model.id` | non-empty string | No | Current session model | Selects the model used by `/ask`. Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `model.thinking` | string enum | No | Alias default thinking, or current thinking level | Selects the thinking level used by `/ask`. An alias model without explicit `thinking` uses the alias default. |
-| `systemPromptFile` | non-empty absolute path string | No | Bundled system prompt | Uses a custom system prompt file. The file must be readable and non-empty. |
+| `systemPromptFile` | non-empty absolute or home-prefixed path string | No | Bundled system prompt | Uses a custom system prompt file. The file must be readable and non-empty. |
+
+Home-prefixed paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded.
 | `retry` | object | No | Default retry settings | Groups retry options for retryable provider failures. |
 | `retry.enabled` | boolean | No | `true` | Enables or disables retries. |
 | `retry.maxRetries` | non-negative integer | No | `3` | Sets the maximum number of retry attempts. |

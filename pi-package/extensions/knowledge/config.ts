@@ -7,6 +7,7 @@ import {
 	type ModelSettings,
 	parseModelSettings,
 } from "../../shared/model-settings";
+import { expandHomePath } from "../../shared/path-expansion";
 import { parseSimpleFraction } from "./size-target";
 
 /** Defines the complete strict top-level configuration contract. */
@@ -220,9 +221,11 @@ function parseScalarFields(
 		return "enabled must be a boolean";
 	}
 	const dataDir = value["dataDir"];
+	const expandedDataDir =
+		typeof dataDir === "string" ? expandHomePath(dataDir) : undefined;
 	if (
 		dataDir !== undefined &&
-		(typeof dataDir !== "string" || !isAbsolute(dataDir))
+		(expandedDataDir === undefined || !isAbsolute(expandedDataDir))
 	) {
 		return "dataDir must be an absolute path";
 	}
@@ -243,7 +246,7 @@ function parseScalarFields(
 	return {
 		enabled: enabled ?? true,
 		dataDir:
-			dataDir ??
+			expandedDataDir ??
 			join(agentSuiteDir, KNOWLEDGE_DIRECTORY, DEFAULT_DATA_DIRECTORY),
 		globalTokenLimit: globalTokenLimit ?? DEFAULT_TOKEN_LIMIT,
 		localTokenLimit: localTokenLimit ?? DEFAULT_TOKEN_LIMIT,
@@ -434,13 +437,17 @@ function resolveOperationPrompt(
 			readonly issue: string;
 	  } {
 	const configuredPath = config[configKey] ?? defaultPath;
-	if (typeof configuredPath !== "string" || !isAbsolute(configuredPath)) {
+	const expandedPath =
+		typeof configuredPath === "string"
+			? expandHomePath(configuredPath)
+			: undefined;
+	if (expandedPath === undefined || !isAbsolute(expandedPath)) {
 		return {
 			kind: "invalid",
 			issue: `${fieldName}.${configKey} must be an absolute path`,
 		};
 	}
-	const prompt = readPromptFile(configuredPath);
+	const prompt = readPromptFile(expandedPath);
 	if ("issue" in prompt) {
 		return {
 			kind: "invalid",

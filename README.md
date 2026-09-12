@@ -135,10 +135,10 @@ File: `~/.pi/agent/agent-suite/run-subagent/config.json`
 | --- | --- | --- | --- | --- |
 | `enabled` | No | Boolean | `true` | Enables or disables the agent system |
 | `maxDepth` | No | Non-negative safe integer | `1` | Sets the maximum delegation depth |
-| `extensionDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/extension-description.md` | Replaces the shared Subagents rules |
-| `startDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/start-description.md` | Replaces `subagent_start` description |
-| `steerDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/steer-description.md` | Replaces `subagent_steer` description |
-| `waitDescriptionPromptFile` | No | Non-empty absolute path | Bundled `prompts/wait-description.md` | Replaces `subagent_wait` description |
+| `extensionDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/extension-description.md` | Replaces the shared Subagents rules |
+| `startDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/start-description.md` | Replaces `subagent_start` description |
+| `steerDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/steer-description.md` | Replaces `subagent_steer` description |
+| `waitDescriptionPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/wait-description.md` | Replaces `subagent_wait` description |
 | `query` | No | Object | `{}` | `subagent_query` tool configuration |
 
 `query` fields:
@@ -147,7 +147,9 @@ File: `~/.pi/agent/agent-suite/run-subagent/config.json`
 | --- | --- | --- | --- | --- |
 | `model.id` | No | Non-empty string | Agent's current model | Custom model identifier (`provider/model`) or alias from `model-aliases/config.json` |
 | `model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, or `xhigh` | Agent's current thinking level | Custom thinking level |
-| `systemPromptFile` | No | Non-empty absolute path | Bundled `prompts/query-system.md` | Custom system prompt for `subagent_query` tool. |
+| `systemPromptFile` | No | Non-empty absolute or home-prefixed path | Bundled `prompts/query-system.md` | Custom system prompt for `subagent_query` tool. |
+
+Home-prefixed paths use `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`.
 
 #### General configuration examples
 

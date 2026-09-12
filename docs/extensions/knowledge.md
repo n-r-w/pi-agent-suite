@@ -62,7 +62,7 @@ All fields are optional.
 | Parameter | Type or shape | Default | Meaning |
 | --- | --- | --- | --- |
 | `enabled` | Boolean | `true` | Enables knowledge delivery and accumulation. |
-| `dataDir` | Absolute directory path | `<agent-suite>/knowledge/data` | Stores project knowledge catalogs. |
+| `dataDir` | Absolute or home-prefixed directory path | `<agent-suite>/knowledge/data` | Stores project knowledge catalogs. |
 | `globalTokenLimit` | Positive safe integer | `5000` | Maximum tokenizer count for one global knowledge file. |
 | `localTokenLimit` | Positive safe integer | `5000` | Maximum tokenizer count for each local branch knowledge file. |
 | `primaryBranches` | Non-empty array of unique Git-valid branch names | `["main", "master"]` | Disables accumulation on every listed branch. |
@@ -71,8 +71,8 @@ All fields are optional.
 | `extraction.model` | Object | Current initiating model and thinking level | Configures the extraction model. |
 | `extraction.model.id` | Non-empty string | Current initiating model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `extraction.model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current initiating thinking level | Selects extraction thinking level. |
-| `extraction.systemPromptFile` | Readable non-empty absolute file path | Bundled extraction system prompt | Replaces the extraction system prompt. |
-| `extraction.taskPromptFile` | Readable non-empty absolute file path | Bundled extraction task prompt | Replaces the extraction task prompt attached after `<summary_source>`. |
+| `extraction.systemPromptFile` | Readable non-empty absolute or home-prefixed file path | Bundled extraction system prompt | Replaces the extraction system prompt. |
+| `extraction.taskPromptFile` | Readable non-empty absolute or home-prefixed file path | Bundled extraction task prompt | Replaces the extraction task prompt attached after `<summary_source>`. |
 | `extraction.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
 | `extraction.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the extraction output as a fraction of an A4 page. |
 | `extraction.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each size-correction retry. |
@@ -80,8 +80,8 @@ All fields are optional.
 | `mergeLocal.model` | Object | Current initiating model and thinking level | Configures the local merge model. |
 | `mergeLocal.model.id` | Non-empty string | Current initiating model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `mergeLocal.model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current initiating thinking level | Selects local merge thinking level. |
-| `mergeLocal.systemPromptFile` | Readable non-empty absolute file path | Bundled local merge system prompt | Replaces the local merge system prompt. |
-| `mergeLocal.taskPromptFile` | Readable non-empty absolute file path | Bundled local merge task prompt | Replaces the local merge task prompt attached after `</incoming_knowledge>`. |
+| `mergeLocal.systemPromptFile` | Readable non-empty absolute or home-prefixed file path | Bundled local merge system prompt | Replaces the local merge system prompt. |
+| `mergeLocal.taskPromptFile` | Readable non-empty absolute or home-prefixed file path | Bundled local merge task prompt | Replaces the local merge task prompt attached after `</incoming_knowledge>`. |
 | `mergeLocal.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
 | `mergeLocal.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the local merge output as a fraction of an A4 page. |
 | `mergeLocal.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each shortening retry. |
@@ -89,8 +89,10 @@ All fields are optional.
 | `mergeGlobal.model` | Object | Current initiating model and thinking level | Configures the global merge model. |
 | `mergeGlobal.model.id` | Non-empty string | Current initiating model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `mergeGlobal.model.thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current initiating thinking level | Selects global merge thinking level. |
-| `mergeGlobal.systemPromptFile` | Readable non-empty absolute file path | Bundled global merge system prompt | Replaces the global merge system prompt. |
-| `mergeGlobal.taskPromptFile` | Readable non-empty absolute file path | Bundled global merge task prompt | Replaces the global merge task prompt attached after `</incoming_knowledge>`. |
+| `mergeGlobal.systemPromptFile` | Readable non-empty absolute or home-prefixed file path | Bundled global merge system prompt | Replaces the global merge system prompt. |
+| `mergeGlobal.taskPromptFile` | Readable non-empty absolute or home-prefixed file path | Bundled global merge task prompt | Replaces the global merge task prompt attached after `</incoming_knowledge>`. |
+
+All `systemPromptFile` and `taskPromptFile` fields also accept home-prefixed paths. Home-prefixed paths use `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded.
 | `mergeGlobal.maxFractionDenominator` | Integer from `4` to `32` | `8` | Largest fraction denominator accepted for this operation. Drives fraction validation, formatting, and the minimum fraction floor `1/N`. |
 | `mergeGlobal.initialFraction` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"2/3"` | Initial target size of the global merge output as a fraction of an A4 page. |
 | `mergeGlobal.reductionCoefficient` | Simple fraction string `n/d` with denominator at most `maxFractionDenominator` | `"3/4"` | Multiplier applied to the target fraction on each shortening retry. |

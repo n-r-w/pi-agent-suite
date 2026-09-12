@@ -32,6 +32,7 @@ import {
 	resolveThinkingLevel,
 	splitModelId,
 } from "../../shared/model-settings";
+import { expandHomePath } from "../../shared/path-expansion";
 import {
 	isReasoningLevel,
 	type ReasoningLevel,
@@ -591,7 +592,7 @@ function assertConfiguredPromptPathsAreAbsolute(): void {
 		}
 		for (const key of CONFIGURABLE_PROMPT_KEYS) {
 			const path = config[key];
-			if (typeof path === "string" && !isAbsolute(path)) {
+			if (typeof path === "string" && !isAbsolute(expandHomePath(path))) {
 				throw new Error(`${ISSUE_PREFIX} ${key} must be an absolute path`);
 			}
 		}

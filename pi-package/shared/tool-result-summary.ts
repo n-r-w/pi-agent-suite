@@ -23,6 +23,7 @@ import {
 	resolveThinkingLevel,
 	splitModelId,
 } from "./model-settings";
+import { expandHomePath } from "./path-expansion";
 import { isReasoningLevel, type ReasoningLevel } from "./reasoning-levels";
 import {
 	buildRetryConfig,
@@ -532,10 +533,16 @@ function parseEnabledSummaryConfigValues({
 	) {
 		return undefined;
 	}
-	if (typeof systemPromptFile === "string" && !isAbsolute(systemPromptFile)) {
+	if (
+		typeof systemPromptFile === "string" &&
+		!isAbsolute(expandHomePath(systemPromptFile))
+	) {
 		throw new Error("summary.systemPromptFile must be an absolute path");
 	}
-	if (typeof userPromptFile === "string" && !isAbsolute(userPromptFile)) {
+	if (
+		typeof userPromptFile === "string" &&
+		!isAbsolute(expandHomePath(userPromptFile))
+	) {
 		throw new Error("summary.userPromptFile must be an absolute path");
 	}
 
@@ -544,8 +551,12 @@ function parseEnabledSummaryConfigValues({
 		retryCount,
 		retryDelayMs,
 		...(model === undefined ? {} : { model }),
-		...(typeof systemPromptFile === "string" ? { systemPromptFile } : {}),
-		...(typeof userPromptFile === "string" ? { userPromptFile } : {}),
+		...(typeof systemPromptFile === "string"
+			? { systemPromptFile: expandHomePath(systemPromptFile) }
+			: {}),
+		...(typeof userPromptFile === "string"
+			? { userPromptFile: expandHomePath(userPromptFile) }
+			: {}),
 	};
 }
 

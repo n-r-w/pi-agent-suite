@@ -22,7 +22,9 @@ Parameters:
 | Name | Type or shape | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | Boolean | No | `true` | Enables this extension. Set to `false` to keep pi's original system prompt. |
-| `templateFile` | Absolute file path string | No | Bundled system prompt template | Markdown template file used as the system prompt. Relative paths are rejected. |
+| `templateFile` | Absolute or home-prefixed file path string | No | Bundled system prompt template | Markdown template file used as the system prompt. Plain relative paths are rejected. |
+
+Home-prefixed paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded.
 
 Only these parameters are accepted.
 

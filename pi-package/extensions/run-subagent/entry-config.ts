@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSuiteConfigFile } from "../../shared/agent-suite-storage";
 import { isModelSelectorId } from "../../shared/model-settings";
+import { expandHomePath } from "../../shared/path-expansion";
 import {
 	isReasoningLevel,
 	type ReasoningLevel,
@@ -209,16 +210,16 @@ function readConfiguredTextFile(
 	if (filePath === undefined) {
 		return undefined;
 	}
-	if (
-		typeof filePath !== "string" ||
-		filePath.trim().length === 0 ||
-		!isAbsolute(filePath)
-	) {
+	if (typeof filePath !== "string" || filePath.trim().length === 0) {
+		throw new Error(`${field} must be a non-empty absolute path`);
+	}
+	const expandedFilePath = expandHomePath(filePath);
+	if (!isAbsolute(expandedFilePath)) {
 		throw new Error(`${field} must be a non-empty absolute path`);
 	}
 	let content: string;
 	try {
-		content = readFileSync(filePath, "utf8").trim();
+		content = readFileSync(expandedFilePath, "utf8").trim();
 	} catch (error) {
 		throw new Error(`${field} could not be read: ${errorMessage(error)}`);
 	}

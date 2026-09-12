@@ -45,6 +45,7 @@ import {
 	readKnowledgeBlock,
 } from "../../shared/knowledge-runtime";
 import { isModelSelectorId } from "../../shared/model-settings";
+import { expandHomePath } from "../../shared/path-expansion";
 import {
 	appendProjectContext,
 	type ProjectContextFile,
@@ -514,7 +515,10 @@ function assertSystemPromptFileIsAbsolute(): void {
 			return;
 		}
 		const systemPromptFile = config[SYSTEM_PROMPT_FILE_CONFIG_KEY];
-		if (typeof systemPromptFile === "string" && !isAbsolute(systemPromptFile)) {
+		if (
+			typeof systemPromptFile === "string" &&
+			!isAbsolute(expandHomePath(systemPromptFile))
+		) {
 			throw new Error(
 				`${ISSUE_PREFIX} ${SYSTEM_PROMPT_FILE_CONFIG_KEY} must be an absolute path`,
 			);
@@ -577,7 +581,10 @@ function validateConfig(
 			issue: `${SYSTEM_PROMPT_FILE_CONFIG_KEY} must be a non-empty string`,
 		};
 	}
-	if (typeof systemPromptFile === "string" && !isAbsolute(systemPromptFile)) {
+	if (
+		typeof systemPromptFile === "string" &&
+		!isAbsolute(expandHomePath(systemPromptFile))
+	) {
 		return {
 			issue: `${SYSTEM_PROMPT_FILE_CONFIG_KEY} must be an absolute path`,
 		};
@@ -631,7 +638,7 @@ function buildConfig(
 		...(model !== undefined ? { model } : {}),
 		systemPromptFile:
 			typeof systemPromptFile === "string"
-				? systemPromptFile
+				? expandHomePath(systemPromptFile)
 				: DEFAULT_SYSTEM_PROMPT_FILE,
 		retry: buildRetryConfig(config[RETRY_CONFIG_KEY]),
 	};

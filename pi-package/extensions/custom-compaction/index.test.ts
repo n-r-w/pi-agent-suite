@@ -1025,8 +1025,8 @@ describe("custom-compaction", () => {
 	});
 
 	test("rejects relative configurable prompt paths during startup", async () => {
-		// Purpose: configured prompt loading must not depend on process working directory or home expansion.
-		// Input and expected output: every configurable prompt field rejects relative and tilde-prefixed paths.
+		// Purpose: configured prompt loading must not depend on the process working directory.
+		// Input and expected output: every configurable prompt field rejects a plain relative path.
 		// Edge case: fields are checked independently while the extension is enabled.
 		// Dependencies: isolated config and in-memory ExtensionAPI fake.
 		for (const key of [
@@ -1037,15 +1037,28 @@ describe("custom-compaction", () => {
 			"reductionSystemPromptFile",
 			"reductionPromptFile",
 		] as const) {
-			for (const path of [`${key}.md`, `~/${key}.md`]) {
-				await withIsolatedAgentDir(async (agentDir) => {
-					await writeConfig(agentDir, { enabled: true, [key]: path });
-					expect(() => customCompaction(createExtensionApiFake())).toThrow(
-						`[custom-compaction] ${key} must be an absolute path`,
-					);
-				});
-			}
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeConfig(agentDir, { enabled: true, [key]: `${key}.md` });
+				expect(() => customCompaction(createExtensionApiFake())).toThrow(
+					`[custom-compaction] ${key} must be an absolute path`,
+				);
+			});
 		}
+	});
+
+	test.each([
+		"~/prompt.md",
+		"$HOME/prompt.md",
+		`\${HOME}/prompt.md`,
+	])("accepts home-prefixed configurable prompt path %s during startup", async (path) => {
+		// Purpose: supported home aliases must pass the synchronous startup path boundary.
+		// Input and expected output: an enabled config with one home-prefixed prompt path registers without throwing.
+		// Edge case: all supported home alias spellings are covered before asynchronous file loading.
+		// Dependencies: isolated config and in-memory ExtensionAPI fake.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeConfig(agentDir, { enabled: true, systemPromptFile: path });
+			expect(() => customCompaction(createExtensionApiFake())).not.toThrow();
+		});
 	});
 
 	test("reports invalid config only when Pi UI is available", async () => {
