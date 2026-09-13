@@ -318,7 +318,11 @@ Wide mode shows:
 
 Narrow mode shows the agent list first. `Enter` opens the model table, `Escape` returns to the list, and the next `Escape` closes the screen.
 
-The screen provides focus zones for range, agents, and the table. It uses the approved keyboard behavior, compact numeric formatting, horizontal table scrolling when required, and width-safe shared rendering helpers.
+The screen provides focus zones for range, agents, and the table. `Tab` and `Shift+Tab` move one active focus among these zones. Inactive `Range` and `Agents` titles use the theme `accent` color. The active title uses `borderAccent` instead. All seven table headers use `accent` while the table is inactive and change together to `borderAccent` while the table is active. Data-row labels and numeric values keep the normal text color.
+
+The selected agent has no dot marker. The renderer clips and pads its plain row before applying a background across the complete pane width. It uses `selectedBg` while Agents has focus and `toolPendingBg` while Range or the table has focus. Other agent rows have no selected background.
+
+Every Agents vertical, table vertical, and table horizontal scroll track cell uses `theme.fg("muted", "░")`. A thumb in the focused pane uses `theme.fg("border", "█")`; a thumb in an inactive pane uses `theme.fg("borderMuted", "█")`. Range focus leaves both pane thumbs inactive.
 
 The table uses:
 
@@ -326,7 +330,30 @@ The table uses:
 Model | Tokens | Read | Write | Hit% | Cost | Saved
 ```
 
-`Total` is the first row. `All agents` is the initial selection. An empty range shows `No usage in selected range`.
+The table computes one Model-column width with Pi `visibleWidth`. The width is at least 24 terminal columns and expands to the longest complete provider/model label. The header and all rows use this width, so every numeric column has one terminal start column. Existing horizontal scrolling provides access to labels and columns wider than the viewport.
+
+`Tokens`, `Read`, and `Write` share one `/usage`-local formatter:
+
+- values below 1,000 render as integers without a suffix;
+- values from 1,000 render with `K`, no fractional digit, and upward rounding;
+- values from 1,000,000 render with `M`, exactly one fractional digit, and upward rounding to one tenth;
+- a thousands value that rounds to `1000K` is promoted to millions.
+
+The conversion contract is:
+
+```text
+123       -> 123
+1,000     -> 1K
+1,001     -> 2K
+200,001   -> 201K
+999,999   -> 1.0M
+1,000,000 -> 1.0M
+2,000,001 -> 2.1M
+```
+
+`Hit%`, `Cost`, and `Saved` data values contain no `%` or `$` symbol. `Hit%` retains one decimal place, and `Cost` and `Saved` retain four decimal places.
+
+`Total` is the first row. `All agents` is the initial selection. An empty range shows `No usage in selected range`. The pane-heading divider, footer divider, in-frame keyboard hints, complete bottom border, wide and narrow layouts, scrolling, and navigation remain part of the screen.
 
 ### 13. Code Structure
 

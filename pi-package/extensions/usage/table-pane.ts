@@ -1,3 +1,4 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	calculateScrollThumb,
@@ -14,6 +15,10 @@ const HIT_PERCENT_WIDTH = 8;
 const MONEY_WIDTH = 10;
 const HIT_PERCENT_PRECISION = 1;
 const MONEY_PRECISION = 4;
+const TOKENS_PER_THOUSAND = 1_000;
+const THOUSANDS_PER_MILLION = 1_000;
+const MILLION_DECIMAL_FACTOR = 10;
+const TOKENS_PER_MILLION_TENTH = 100_000;
 
 export interface TablePaneOptions {
 	readonly width: number;
@@ -21,6 +26,7 @@ export interface TablePaneOptions {
 	readonly verticalOffset: number;
 	readonly horizontalOffset: number;
 	readonly focused: boolean;
+	readonly theme: Theme;
 }
 
 export interface TablePaneRender {
@@ -37,13 +43,17 @@ export function renderTablePane(
 	rows: readonly UsageRow[],
 	options: TablePaneOptions,
 ): TablePaneRender {
-	const { focused, height, horizontalOffset, verticalOffset } = options;
+	const { focused, height, horizontalOffset, theme, verticalOffset } = options;
 	const contentWidth = Math.max(0, options.width);
 	if (rows.length === 0) {
-		return renderEmptyTable(contentWidth, height, focused);
+		return renderEmptyTable(contentWidth, height, focused, theme);
 	}
 
-	const fullLines = [tableHeader(focused), ...rows.map(formatRow)];
+	const modelWidth = modelColumnWidth(rows);
+	const fullLines = [
+		tableHeader(focused, theme, modelWidth),
+		...rows.map((row) => formatRow(row, modelWidth)),
+	];
 	const fullWidth = Math.max(...fullLines.map(visibleWidth));
 	const maximumHorizontalOffset = Math.max(0, fullWidth - contentWidth);
 	const boundedHorizontalOffset = Math.max(
@@ -57,14 +67,14 @@ export function renderTablePane(
 		0,
 		Math.min(Math.floor(verticalOffset), maximumVerticalOffset),
 	);
-	const visibleRows = rows.slice(
-		boundedVerticalOffset,
-		boundedVerticalOffset + dataViewport,
+	const visibleLines = fullLines.slice(
+		boundedVerticalOffset + 1,
+		boundedVerticalOffset + dataViewport + 1,
 	);
 	const lines = [
 		sliceLine(fullLines[0] ?? "", boundedHorizontalOffset, contentWidth),
-		...visibleRows.map((row) =>
-			sliceLine(formatRow(row), boundedHorizontalOffset, contentWidth),
+		...visibleLines.map((line) =>
+			sliceLine(line, boundedHorizontalOffset, contentWidth),
 		),
 	];
 	if (horizontalOverflow) {
@@ -76,25 +86,23 @@ export function renderTablePane(
 					viewport: contentWidth,
 				},
 				contentWidth,
+				theme,
+				focused,
 			),
 		);
 	}
-	const verticalThumb = calculateScrollThumb(
-		{
-			offset: boundedVerticalOffset,
-			total: rows.length,
-			viewport: dataViewport,
-		},
-		dataViewport,
-	);
 	return {
 		lines,
-		scroll: Array.from({ length: height }, (_, row) => {
-			if (row === 0 || row > dataViewport || verticalThumb === undefined) {
-				return " ";
-			}
-			return isScrollThumbRow(verticalThumb, row - 1) ? "█" : "░";
-		}),
+		scroll: renderVerticalTrack(
+			{
+				offset: boundedVerticalOffset,
+				total: rows.length,
+				viewport: dataViewport,
+			},
+			height,
+			theme,
+			focused,
+		),
 		verticalOffset: boundedVerticalOffset,
 		horizontalOffset: boundedHorizontalOffset,
 		verticalViewport: dataViewport,
@@ -102,15 +110,38 @@ export function renderTablePane(
 	};
 }
 
+function renderVerticalTrack(
+	metrics: ScrollMetrics,
+	height: number,
+	theme: Theme,
+	focused: boolean,
+): string[] {
+	const thumb = calculateScrollThumb(metrics, metrics.viewport);
+	return Array.from({ length: height }, (_, row) => {
+		if (row === 0 || row > metrics.viewport || thumb === undefined) {
+			return " ";
+		}
+		if (!isScrollThumbRow(thumb, row - 1)) {
+			return theme.fg("muted", "░");
+		}
+		return theme.fg(focused ? "border" : "borderMuted", "█");
+	});
+}
+
+function modelColumnWidth(rows: readonly UsageRow[]): number {
+	return Math.max(MODEL_WIDTH, ...rows.map((row) => visibleWidth(row.label)));
+}
+
 function renderEmptyTable(
 	width: number,
 	height: number,
 	focused: boolean,
+	theme: Theme,
 ): TablePaneRender {
+	const label = theme.bold("No usage in selected range");
+	const title = theme.fg(focused ? "borderAccent" : "accent", label);
 	return {
-		lines: [
-			padToWidth(`${focused ? "›" : " "} No usage in selected range`, width),
-		],
+		lines: [padToWidth(title, width)],
 		scroll: Array.from({ length: height }, () => " "),
 		verticalOffset: 0,
 		horizontalOffset: 0,
@@ -119,11 +150,19 @@ function renderEmptyTable(
 	};
 }
 
-function renderHorizontalTrack(metrics: ScrollMetrics, width: number): string {
+function renderHorizontalTrack(
+	metrics: ScrollMetrics,
+	width: number,
+	theme: Theme,
+	focused: boolean,
+): string {
 	const thumb = calculateScrollThumb(metrics, width);
-	return Array.from({ length: width }, (_, column) =>
-		isScrollThumbRow(thumb, column) ? "█" : "░",
-	).join("");
+	return Array.from({ length: width }, (_, column) => {
+		if (!isScrollThumbRow(thumb, column)) {
+			return theme.fg("muted", "░");
+		}
+		return theme.fg(focused ? "border" : "borderMuted", "█");
+	}).join("");
 }
 
 function sliceLine(line: string, offset: number, width: number): string {
@@ -131,36 +170,56 @@ function sliceLine(line: string, offset: number, width: number): string {
 	return `${sliced}${" ".repeat(Math.max(0, width - visibleWidth(sliced)))}`;
 }
 
-function tableHeader(focused: boolean): string {
+function tableHeader(
+	focused: boolean,
+	theme: Theme,
+	modelWidth: number,
+): string {
+	const color = focused ? "borderAccent" : "accent";
+	const header = (label: string) => theme.fg(color, theme.bold(label));
 	return [
-		`${focused ? "›" : " "} Model`.padEnd(MODEL_WIDTH),
-		"Tokens".padStart(TOKENS_WIDTH),
-		"Read".padStart(TOKEN_DETAIL_WIDTH),
-		"Write".padStart(TOKEN_DETAIL_WIDTH),
-		"Hit%".padStart(HIT_PERCENT_WIDTH),
-		"Cost".padStart(MONEY_WIDTH),
-		"Saved".padStart(MONEY_WIDTH),
+		padColumn(header("Model"), modelWidth),
+		padColumnStart(header("Tokens"), TOKENS_WIDTH),
+		padColumnStart(header("Read"), TOKEN_DETAIL_WIDTH),
+		padColumnStart(header("Write"), TOKEN_DETAIL_WIDTH),
+		padColumnStart(header("Hit%"), HIT_PERCENT_WIDTH),
+		padColumnStart(header("Cost"), MONEY_WIDTH),
+		padColumnStart(header("Saved"), MONEY_WIDTH),
 	].join(" ");
 }
 
-function formatRow(row: UsageRow): string {
+function formatRow(row: UsageRow, modelWidth: number): string {
 	return [
-		row.label.padEnd(MODEL_WIDTH),
-		formatInteger(row.tokens).padStart(TOKENS_WIDTH),
-		formatInteger(row.cacheRead).padStart(TOKEN_DETAIL_WIDTH),
-		formatInteger(row.cacheWrite).padStart(TOKEN_DETAIL_WIDTH),
-		`${row.hitPercent.toFixed(HIT_PERCENT_PRECISION)}%`.padStart(
-			HIT_PERCENT_WIDTH,
-		),
+		padColumn(row.label, modelWidth),
+		formatTokenCount(row.tokens).padStart(TOKENS_WIDTH),
+		formatTokenCount(row.cacheRead).padStart(TOKEN_DETAIL_WIDTH),
+		formatTokenCount(row.cacheWrite).padStart(TOKEN_DETAIL_WIDTH),
+		row.hitPercent.toFixed(HIT_PERCENT_PRECISION).padStart(HIT_PERCENT_WIDTH),
 		formatMoney(row.cost).padStart(MONEY_WIDTH),
 		formatMoney(row.saved).padStart(MONEY_WIDTH),
 	].join(" ");
 }
 
-function formatInteger(value: number): string {
-	return Math.round(value).toLocaleString("en-US");
+function padColumn(value: string, width: number): string {
+	return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
+}
+
+function padColumnStart(value: string, width: number): string {
+	return `${" ".repeat(Math.max(0, width - visibleWidth(value)))}${value}`;
+}
+
+function formatTokenCount(value: number): string {
+	if (value < TOKENS_PER_THOUSAND) {
+		return Math.round(value).toString();
+	}
+	const thousands = Math.ceil(value / TOKENS_PER_THOUSAND);
+	if (thousands < THOUSANDS_PER_MILLION) {
+		return `${thousands}K`;
+	}
+	const millionTenths = Math.ceil(value / TOKENS_PER_MILLION_TENTH);
+	return `${(millionTenths / MILLION_DECIMAL_FACTOR).toFixed(1)}M`;
 }
 
 function formatMoney(value: number): string {
-	return `$${value.toFixed(MONEY_PRECISION)}`;
+	return value.toFixed(MONEY_PRECISION);
 }

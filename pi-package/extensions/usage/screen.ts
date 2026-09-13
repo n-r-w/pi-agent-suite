@@ -1,6 +1,8 @@
+import { rawKeyHint, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Key,
+	type Keybinding,
 	type KeybindingsManager,
 	matchesKey,
 	type TUI,
@@ -18,7 +20,7 @@ import { renderTablePane } from "./table-pane";
 
 const WIDE_MINIMUM_WIDTH = 80;
 const AGENT_MINIMUM_WIDTH = 24;
-const FRAME_ROWS = 4;
+const FRAME_ROWS = 7;
 const HORIZONTAL_SCROLL_STEP = 8;
 const WIDE_FRAME_AND_SEPARATOR_WIDTH = 3;
 const AGENT_WIDTH_DIVISOR = 3;
@@ -29,6 +31,7 @@ type UsageNarrowPane = "agents" | "table";
 export interface UsageScreenRuntime {
 	readonly tui: TUI;
 	readonly keybindings: KeybindingsManager;
+	readonly theme: Theme;
 }
 
 /** Renders and navigates one immutable full-terminal usage snapshot. */
@@ -48,7 +51,7 @@ export class UsageScreen implements Component {
 		events: readonly UsageEvent[],
 		openedAt: number,
 		private readonly close: () => void,
-		private readonly runtime?: UsageScreenRuntime,
+		private readonly runtime: UsageScreenRuntime,
 	) {
 		this.snapshot = prepareUsageSnapshot(events, openedAt);
 	}
@@ -135,6 +138,7 @@ export class UsageScreen implements Component {
 			width: Math.max(0, agentWidth - 1),
 			height,
 			focused: this.focus === "agents",
+			theme: this.runtime.theme,
 		});
 		const table = renderTablePane(view.rows, {
 			width: Math.max(0, tableWidth - 1),
@@ -142,18 +146,26 @@ export class UsageScreen implements Component {
 			verticalOffset: this.tableVerticalOffset,
 			horizontalOffset: this.tableHorizontalOffset,
 			focused: this.focus === "table",
+			theme: this.runtime.theme,
 		});
 		this.syncTableViewport(table);
 		return [
 			border("┌", "┐", width, "─ USAGE "),
 			`│${rangeLine}│`,
 			`├${"─".repeat(agentWidth)}┬${"─".repeat(tableWidth)}┤`,
-			...Array.from(
-				{ length: height },
-				(_, row) =>
-					`│${agents.lines[row] ?? padToWidth("", agentWidth - 1)}${agents.scroll[row] ?? " "}│${table.lines[row] ?? padToWidth("", tableWidth - 1)}${table.scroll[row] ?? " "}│`,
-			),
-			`└${"─".repeat(agentWidth)}┴${"─".repeat(tableWidth)}┘`,
+			...(height > 0
+				? [
+						`│${agents.lines[0] ?? padToWidth("", agentWidth - 1)}${agents.scroll[0] ?? " "}│${table.lines[0] ?? padToWidth("", tableWidth - 1)}${table.scroll[0] ?? " "}│`,
+					]
+				: []),
+			`├${"─".repeat(agentWidth)}┼${"─".repeat(tableWidth)}┤`,
+			...Array.from({ length: Math.max(0, height - 1) }, (_, index) => {
+				const row = index + 1;
+				return `│${agents.lines[row] ?? padToWidth("", agentWidth - 1)}${agents.scroll[row] ?? " "}│${table.lines[row] ?? padToWidth("", tableWidth - 1)}${table.scroll[row] ?? " "}│`;
+			}),
+			`├${"─".repeat(agentWidth)}┴${"─".repeat(tableWidth)}┤`,
+			`│${padToWidth(this.renderHints(width - 2), width - 2)}│`,
+			border("└", "┘", width),
 		];
 	}
 
@@ -171,6 +183,7 @@ export class UsageScreen implements Component {
 						width: contentWidth,
 						height,
 						focused: this.focus === "agents",
+						theme: this.runtime.theme,
 					})
 				: renderTablePane(view.rows, {
 						width: contentWidth,
@@ -178,6 +191,7 @@ export class UsageScreen implements Component {
 						verticalOffset: this.tableVerticalOffset,
 						horizontalOffset: this.tableHorizontalOffset,
 						focused: this.focus === "table",
+						theme: this.runtime.theme,
 					});
 		if (this.narrowPane === "table") {
 			this.syncTableViewport(pane as ReturnType<typeof renderTablePane>);
@@ -186,11 +200,18 @@ export class UsageScreen implements Component {
 			border("┌", "┐", width, "─ USAGE "),
 			`│${rangeLine}│`,
 			border("├", "┤", width),
-			...Array.from(
-				{ length: height },
-				(_, row) =>
-					`│${pane.lines[row] ?? padToWidth("", contentWidth)}${pane.scroll[row] ?? " "}│`,
-			),
+			...(height > 0
+				? [
+						`│${pane.lines[0] ?? padToWidth("", contentWidth)}${pane.scroll[0] ?? " "}│`,
+					]
+				: []),
+			border("├", "┤", width),
+			...Array.from({ length: Math.max(0, height - 1) }, (_, index) => {
+				const row = index + 1;
+				return `│${pane.lines[row] ?? padToWidth("", contentWidth)}${pane.scroll[row] ?? " "}│`;
+			}),
+			border("├", "┤", width),
+			`│${padToWidth(this.renderHints(width - 2), width - 2)}│`,
 			border("└", "┘", width),
 		];
 	}
@@ -199,10 +220,59 @@ export class UsageScreen implements Component {
 		const values = USAGE_RANGES.map((label, index) =>
 			index === this.rangeIndex ? `[${label}]` : label,
 		).join(" ");
-		return padToWidth(
-			`${this.focus === "range" ? "›" : " "} Range: ${values}`,
-			width,
+		const label = this.runtime.theme.bold("Range");
+		const title = this.runtime.theme.fg(
+			this.focus === "range" ? "borderAccent" : "accent",
+			label,
 		);
+		return padToWidth(`${title}: ${values}`, width);
+	}
+
+	private renderHints(width: number): string {
+		const hints: string[] = [];
+		const narrow = this.layoutForWidth(this.lastWidth) === "narrow";
+		if (this.focus === "range") {
+			hints.push(rawKeyHint("left/right", "range"));
+		} else if (this.focus === "agents") {
+			hints.push(
+				bindingPairHint(
+					this.runtime.keybindings,
+					"tui.select.up",
+					"tui.select.down",
+					"select",
+				),
+			);
+			if (narrow) {
+				hints.push(
+					bindingHint(this.runtime.keybindings, "tui.select.confirm", "open"),
+				);
+			}
+		} else {
+			hints.push(
+				bindingPairHint(
+					this.runtime.keybindings,
+					"tui.select.up",
+					"tui.select.down",
+					"scroll",
+				),
+				bindingPairHint(
+					this.runtime.keybindings,
+					"tui.select.pageUp",
+					"tui.select.pageDown",
+					"",
+				),
+				rawKeyHint("left/right", "move"),
+			);
+		}
+		if (this.availableFocusZones().length > 1) {
+			hints.push(rawKeyHint("Tab", "focus"));
+		}
+		hints.push(
+			narrow && this.narrowPane === "table"
+				? rawKeyHint("Esc", "back")
+				: rawKeyHint("Esc", "close"),
+		);
+		return truncateToWidth(hints.filter(Boolean).join(" · "), width, "…");
 	}
 
 	private handleFocusedInput(data: string): boolean {
@@ -366,6 +436,28 @@ export class UsageScreen implements Component {
 	private requestRender(): void {
 		this.runtime?.tui.requestRender();
 	}
+}
+
+function bindingHint(
+	keybindings: KeybindingsManager,
+	keybinding: Keybinding,
+	description: string,
+): string {
+	const key = keybindings.getKeys(keybinding)[0];
+	return key === undefined ? "" : rawKeyHint(key, description);
+}
+
+function bindingPairHint(
+	keybindings: KeybindingsManager,
+	first: Keybinding,
+	second: Keybinding,
+	description: string,
+): string {
+	const keys = [
+		keybindings.getKeys(first)[0],
+		keybindings.getKeys(second)[0],
+	].filter((key) => key !== undefined);
+	return keys.length === 0 ? "" : rawKeyHint(keys.join("/"), description);
 }
 
 function border(

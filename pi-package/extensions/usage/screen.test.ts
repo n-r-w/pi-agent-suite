@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { UsageScreen, type UsageScreenRuntime } from "./screen";
 import type { UsageEvent } from "./store";
@@ -6,6 +7,13 @@ import type { UsageEvent } from "./store";
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const OPENED_AT = 100 * DAY_MS;
 const SCROLL_INDICATOR_PATTERN = /[░█]/;
+
+function plainText(value: string): string {
+	return value
+		.replaceAll("\u001b[31m", "")
+		.replaceAll("\u001b[36m", "")
+		.replaceAll("\u001b[39m", "");
+}
 
 function event(overrides: Partial<UsageEvent>): UsageEvent {
 	return {
@@ -32,8 +40,30 @@ interface ScreenRuntime {
 		requestRender(): void;
 	};
 	readonly keybindings: {
+		getKeys(action: string): string[];
 		matches(data: string, action: string): boolean;
 	};
+	readonly theme: Theme;
+}
+
+function createFocusTheme(): Theme {
+	return {
+		fg: (color: string, text: string) => {
+			const codes: Record<string, number> = {
+				accent: 31,
+				borderAccent: 36,
+				border: 32,
+				borderMuted: 33,
+				muted: 90,
+			};
+			return `\u001b[${codes[color]}m${text}\u001b[39m`;
+		},
+		bg: (color: string, text: string) =>
+			color === "selectedBg"
+				? `\u001b[44m${text}\u001b[49m`
+				: `\u001b[45m${text}\u001b[49m`,
+		bold: (text: string) => text,
+	} as Theme;
 }
 
 function createScreen(
@@ -41,10 +71,11 @@ function createScreen(
 	close: () => void,
 	rows = 12,
 ): UsageScreen {
+	initTheme(undefined, false);
 	const runtime: ScreenRuntime = {
 		tui: { terminal: { rows }, requestRender: () => {} },
 		keybindings: {
-			matches: (data, action) => {
+			getKeys: (action) => {
 				const keys: Record<string, string> = {
 					"tui.select.up": Key.up,
 					"tui.select.down": Key.down,
@@ -53,9 +84,14 @@ function createScreen(
 					"tui.select.confirm": Key.enter,
 				};
 				const key = keys[action];
+				return key === undefined ? [] : [key];
+			},
+			matches: (data, action) => {
+				const key = runtime.keybindings.getKeys(action)[0];
 				return key !== undefined && matchesKey(data, key as never);
 			},
 		},
+		theme: createFocusTheme(),
 	};
 	return new UsageScreen(
 		events,
@@ -107,38 +143,117 @@ describe("usage snapshot screen", () => {
 		screen.handleInput("\u001b[B");
 		screen.handleInput("\t");
 		screen.handleInput("\u001b[6~");
-		screen.handleInput("\u001b[C");
-		screen.handleInput("\u001b[C");
-		screen.handleInput("\u001b[C");
+		for (let index = 0; index < 8; index += 1) {
+			screen.handleInput("\u001b[C");
+		}
 		const lines = screen.render(100);
 		const rendered = lines.join("\n");
 
 		expect(lines).toHaveLength(12);
 		expect(lines[0]?.startsWith("┌─ USAGE ")).toBe(true);
 		expect(lines.every((line) => visibleWidth(line) <= 100)).toBe(true);
-		expect(rendered).toContain("Range: 24h [7d] 30d 90d");
-		expect(rendered).toContain("● agent-a");
+		expect(plainText(rendered)).toContain("Range: 24h [7d] 30d 90d");
+		expect(rendered).toContain("\u001b[45m agent-a");
 		expect(rendered).toContain("Agents");
 		expect(rendered).toContain("Saved");
 		expect(rendered).toMatch(SCROLL_INDICATOR_PATTERN);
 	});
 
-	test("shows the current focus owner while Tab cycles every wide zone", () => {
-		// Purpose: users must see which zone will receive arrow and paging input.
-		// Inputs and expected output: the initial agents marker moves to range, agents, and table through Shift+Tab and Tab.
-		// Edge case: focus presentation changes without changing the selected range or agent.
-		// Dependencies: wide focus ordering and width-safe pane headings.
+	test("replaces every active zone title accent while Tab cycles focus", () => {
+		// Purpose: focus ownership must use the approved accent and border-accent color contract.
+		// Inputs and expected output: Tab cycles agents, table, range, and agents while only the active zone uses borderAccent.
+		// Edge case: all seven table headers change together and data values keep their normal color.
+		// Dependencies: wide focus ordering, the Pi theme, and width-safe pane headings.
 		const screen = createScreen(manyEvents(), () => {});
-		const agents = screen.render(100).join("\n");
-		screen.handleInput("\u001b[Z");
-		const range = screen.render(100).join("\n");
+		const agents = screen.render(200);
 		screen.handleInput("\t");
+		const table = screen.render(200);
 		screen.handleInput("\t");
-		const table = screen.render(100).join("\n");
+		const range = screen.render(200);
+		screen.handleInput("\t");
+		const agentsAgain = screen.render(200);
+		const inactive = (label: string) => `\u001b[31m${label}\u001b[39m`;
+		const active = (label: string) => `\u001b[36m${label}\u001b[39m`;
+		const headers = [
+			"Model",
+			"Tokens",
+			"Read",
+			"Write",
+			"Hit%",
+			"Cost",
+			"Saved",
+		];
 
-		expect(agents).toContain("› Agents");
-		expect(range).toContain("› Range:");
-		expect(table).toContain("› Model");
+		expect(agents[1]).toContain(inactive("Range"));
+		expect(agents[3]).toContain(active("Agents"));
+		expect(table[1]).toContain(inactive("Range"));
+		expect(table[3]).toContain(inactive("Agents"));
+		expect(range[1]).toContain(active("Range"));
+		expect(range[3]).toContain(inactive("Agents"));
+		expect(agentsAgain[3]).toContain(active("Agents"));
+		expect(agents[5]).toContain("\u001b[44m All agents");
+		expect(table[5]).toContain("\u001b[45m All agents");
+		expect(range[5]).toContain("\u001b[45m All agents");
+		expect(agentsAgain[5]).toContain("\u001b[44m All agents");
+		for (const header of headers) {
+			expect(agents[3]).toContain(inactive(header));
+			expect(table[3]).toContain(active(header));
+			expect(range[3]).toContain(inactive(header));
+		}
+	});
+
+	test("renders active-zone keyboard hints as the final in-frame content row", () => {
+		// Purpose: users must see the available keyboard actions for the currently focused usage zone.
+		// Inputs and expected output: wide and narrow screens show zone-specific configured and raw-key hints immediately above the bottom border.
+		// Edge case: narrow agents show open and close, while the narrow table shows horizontal movement and back.
+		// Dependencies: Pi keybindings, raw key hints, responsive focus state, and the terminal row budget.
+		const wide = createScreen(manyEvents(), () => {});
+		const wideAgents = wide.render(100).at(-2) ?? "";
+		wide.handleInput("\u001b[Z");
+		const wideRange = wide.render(100).at(-2) ?? "";
+		wide.handleInput("\t");
+		wide.handleInput("\t");
+		const wideTable = wide.render(100).at(-2) ?? "";
+
+		const narrow = createScreen(manyEvents(), () => {});
+		const narrowAgents = narrow.render(79).at(-2) ?? "";
+		narrow.handleInput("\r");
+		const narrowTable = narrow.render(79).at(-2) ?? "";
+
+		for (const [line, actions] of [
+			[wideAgents, ["select", "focus", "close"]],
+			[wideRange, ["range", "focus", "close"]],
+			[wideTable, ["scroll", "page", "left/right", "move", "focus", "close"]],
+			[narrowAgents, ["select", "open", "focus", "close"]],
+			[narrowTable, ["scroll", "page", "left/right", "move", "focus", "back"]],
+		] as const) {
+			expect(line.startsWith("│")).toBe(true);
+			for (const action of actions) {
+				expect(line).toContain(action);
+			}
+		}
+		expect(wideTable).not.toContain("←/→");
+		expect(narrowTable).not.toContain("←/→");
+	});
+
+	test("separates pane headings, footer content, and the bottom border", () => {
+		// Purpose: pane headings and the footer must each have the frame boundaries shown by the reference screen.
+		// Inputs and expected output: wide and narrow layouts render exact heading and footer separators plus uninterrupted bottom borders.
+		// Edge case: wide junctions change from a cross below headings to a bottom junction above the full-width footer.
+		// Dependencies: responsive layout dimensions and the fixed terminal row budget.
+		const wide = createScreen(manyEvents(), () => {}).render(100);
+		const narrow = createScreen(manyEvents(), () => {}).render(36);
+
+		expect(wide).toHaveLength(12);
+		expect(wide[4]).toBe(`├${"─".repeat(32)}┼${"─".repeat(65)}┤`);
+		expect(wide.at(-3)).toBe(`├${"─".repeat(32)}┴${"─".repeat(65)}┤`);
+		expect(wide.at(-2)?.startsWith("│")).toBe(true);
+		expect(wide.at(-1)).toBe(`└${"─".repeat(98)}┘`);
+		expect(narrow).toHaveLength(12);
+		expect(narrow[4]).toBe(`├${"─".repeat(34)}┤`);
+		expect(narrow.at(-3)).toBe(`├${"─".repeat(34)}┤`);
+		expect(narrow.at(-2)?.startsWith("│")).toBe(true);
+		expect(narrow.at(-1)).toBe(`└${"─".repeat(34)}┘`);
 	});
 
 	test("uses one-pane narrow navigation and two-step Escape behavior", () => {
@@ -183,10 +298,15 @@ describe("usage snapshot screen", () => {
 			() => {},
 		);
 
-		const rendered = screen.render(100).join("\n");
+		screen.render(100);
+		screen.handleInput("\t");
+		const lines = screen.render(100);
+		const rendered = lines.join("\n");
 
-		expect(rendered).toContain("Range: [24h] 7d 30d 90d");
-		expect(rendered).toContain("No usage in selected range");
+		expect(plainText(rendered)).toContain("Range: [24h] 7d 30d 90d");
+		expect(lines[3]).toContain(
+			"│\u001b[36mNo usage in selected range\u001b[39m",
+		);
 	});
 
 	test("prepares immutable range and agent views before interaction", () => {

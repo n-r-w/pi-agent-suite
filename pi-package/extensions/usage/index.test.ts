@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type {
-	ExtensionAPI,
-	ExtensionContext,
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	initTheme,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import {
@@ -682,10 +684,20 @@ describe("usage extension lifecycle", () => {
 		if (factory === undefined) {
 			throw new Error("usage screen factory was not opened");
 		}
+		initTheme(undefined, false);
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as Theme;
+		const keybindings = {
+			getKeys: () => [],
+			matches: () => false,
+		};
 		const component = await factory(
 			{} as never,
-			{} as never,
-			{} as never,
+			theme,
+			keybindings as never,
 			() => {},
 		);
 		const first = component.render(100).join("\n");

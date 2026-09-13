@@ -75,6 +75,17 @@ The model table contains:
 
 `Total` is the first row. Other rows are sorted by provider/model. `Cost` and `Saved` are estimates, not billing records.
 
+`Tokens`, `Read`, and `Write` use one `/usage` display format:
+
+- below 1,000: integer without a suffix;
+- from 1,000: `K`, no fractional digit, rounded upward;
+- from 1,000,000: `M`, exactly one fractional digit, rounded upward to one tenth;
+- a result that would render as `1000K` is promoted to millions.
+
+The exact boundary examples are `123` → `123`, `1,000` → `1K`, `1,001` → `2K`, `200,001` → `201K`, `999,999` → `1.0M`, `1,000,000` → `1.0M`, and `2,000,001` → `2.1M`.
+
+Data values under `Hit%`, `Cost`, and `Saved` do not include `%` or `$`. `Hit%` uses one decimal place. `Cost` and `Saved` use four decimal places.
+
 ## Historical usage screen
 
 Run `/usage` without arguments to open a snapshot. The extension reads the database once when the screen opens. The snapshot does not update while the screen remains open.
@@ -84,6 +95,16 @@ The available rolling ranges are `24h`, `7d`, `30d`, and `90d`. `24h` is selecte
 The agent list begins with `All agents`. Other entries are stable agent IDs that have consumption in the selected range. Selecting an agent limits the table to that agent.
 
 Wide terminals show the agent list and model table together. Narrow terminals show the agent list first. Press `Enter` to open the table and `Escape` to return to the list.
+
+The Model column is at least 24 terminal columns wide and expands to the longest complete provider/model label. The header, `Total`, short-model rows, and long-model rows use the same visible Model-column width. Each numeric column therefore starts at one terminal column, and horizontal scrolling preserves access to complete labels.
+
+Inactive `Range` and `Agents` titles use the theme `accent` color. The active title uses `borderAccent` instead. All seven table headers change together from `accent` to `borderAccent` when the table becomes active. Data-row labels and numeric values keep the normal text color. Exactly one focus zone is active.
+
+The selected agent has no dot marker. Its full clipped and padded row uses `selectedBg` while Agents has focus and `toolPendingBg` while another zone has focus. Unselected rows have no selected background.
+
+Agents vertical scrolling and table vertical and horizontal scrolling use `muted` track cells. A thumb uses `border` when its pane has focus and `borderMuted` when its pane is inactive. Range focus makes both pane thumbs inactive.
+
+The screen keeps pane-heading and footer dividers, in-frame keyboard hints, a complete bottom border, and the same presentation in wide and narrow layouts.
 
 Keyboard controls:
 

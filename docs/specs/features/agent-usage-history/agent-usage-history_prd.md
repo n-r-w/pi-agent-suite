@@ -121,6 +121,17 @@ Not in scope:
   - Goal: Show the monetary benefit of cache hits without historical price reconstruction.
   - Goal achievement: Partial. The metric explains cache benefit but does not represent provider billing.
 
+- **FRQ-16:** The model table applies this display contract:
+  - `Tokens`, `Read`, and `Write` values below 1,000 are integers without a suffix. Values from 1,000 use `K`, have no fractional digit, and round upward. Values from 1,000,000 use `M`, have exactly one fractional digit, and round upward to one tenth. A thousands result that rounds to `1000K` is promoted to millions. The required conversions are `123` → `123`, `1,000` → `1K`, `1,001` → `2K`, `200,001` → `201K`, `999,999` → `1.0M`, `1,000,000` → `1.0M`, and `2,000,001` → `2.1M`.
+  - `Hit%`, `Cost`, and `Saved` data values do not contain `%` or `$`; the `Hit%` header carries the percentage unit.
+  - The Model column is at least 24 terminal columns wide and expands to the longest complete provider/model label. The header, `Total`, and every model row use this one visible width, so all numeric columns start at the same terminal columns. Horizontal scrolling preserves access to complete labels.
+  - Inactive `Range` and `Agents` titles and all seven inactive table headers use `accent`. The title or complete header group for the one zone activated through `Tab` uses `borderAccent` instead of `accent`. Data-row labels and numeric values keep the normal text color.
+  - The selected agent row has no dot marker. Its complete clipped and padded row uses `selectedBg` while Agents has focus and `toolPendingBg` while Range or the table has focus. Unselected agent rows have no selected background.
+  - Agents vertical scrolling and table vertical and horizontal scrolling use `muted` for track cells. A thumb uses `border` while its pane has focus and `borderMuted` while another zone has focus. When Range has focus, both pane thumbs use `borderMuted`.
+  - Origin: `source` — direct user approval of the final number, alignment, and color presentation.
+  - Goal: Present historical usage with predictable compact numbers, aligned columns, and visible focus.
+  - Goal achievement: Full. The table and focus zones use the complete approved display contract.
+
 - **FRQ-17:** When the selected range has no consumption, the screen shows `No usage in selected range` and does not select another range automatically.
   - Origin: `formulated` — approved after Q21.
   - Goal: Present an unambiguous empty result.

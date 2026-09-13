@@ -278,9 +278,10 @@ async function openUsageOverlay(
 	openedAt: number,
 ): Promise<void> {
 	await ctx.ui.custom<void>(
-		(tui, _theme, keybindings, done) =>
+		(tui, theme, keybindings, done) =>
 			new UsageScreen(events, openedAt, () => done(undefined), {
 				tui,
+				theme,
 				keybindings,
 			}),
 		{
