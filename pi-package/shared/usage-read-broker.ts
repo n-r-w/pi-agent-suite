@@ -6,6 +6,17 @@ export const USAGE_ROOT_COST_REQUEST_CHANNEL =
 
 export const USAGE_ROOT_COST_REQUEST_VERSION = 1 as const;
 
+export const USAGE_SESSION_TOTALS_REQUEST_CHANNEL =
+	"pi-agent-suite.usage.session-totals.request.v1";
+
+export const USAGE_SESSION_TOTALS_REQUEST_VERSION = 1 as const;
+
+/** Complete stored consumption for one Pi session. */
+export interface UsageSessionTotals {
+	readonly cost: number;
+	readonly tokens: number;
+}
+
 /** Mutable request slot filled synchronously by the process-local usage broker. */
 export interface UsageRootCostRequest {
 	readonly version: typeof USAGE_ROOT_COST_REQUEST_VERSION;
@@ -15,6 +26,40 @@ export interface UsageRootCostRequest {
 
 interface UsageReadRequester {
 	readonly events?: Pick<ExtensionAPI["events"], "emit">;
+}
+
+/** Mutable request slot filled synchronously by the process-local usage broker. */
+export interface UsageSessionTotalsRequest {
+	readonly version: typeof USAGE_SESSION_TOTALS_REQUEST_VERSION;
+	readonly sessionId: string;
+	totals?: UsageSessionTotals;
+}
+
+/** Requests complete stored consumption for one Pi session. */
+export function requestUsageSessionTotals(
+	pi: UsageReadRequester,
+	sessionId: string,
+): UsageSessionTotals | undefined {
+	if (sessionId.trim().length === 0) {
+		return undefined;
+	}
+	const request: UsageSessionTotalsRequest = {
+		version: USAGE_SESSION_TOTALS_REQUEST_VERSION,
+		sessionId,
+	};
+	try {
+		pi.events?.emit(USAGE_SESSION_TOTALS_REQUEST_CHANNEL, request);
+	} catch {
+		return undefined;
+	}
+	const totals = request.totals;
+	return totals !== undefined &&
+		Number.isFinite(totals.cost) &&
+		totals.cost >= 0 &&
+		Number.isSafeInteger(totals.tokens) &&
+		totals.tokens >= 0
+		? totals
+		: undefined;
 }
 
 /** Requests the complete stored cost for one root session family. */
@@ -39,6 +84,21 @@ export function requestUsageRootCost(
 		request.cost >= 0
 		? request.cost
 		: undefined;
+}
+
+/** Rejects malformed cross-extension session usage requests. */
+export function isUsageSessionTotalsRequest(
+	value: unknown,
+): value is UsageSessionTotalsRequest {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const request = value as Record<string, unknown>;
+	return (
+		request["version"] === USAGE_SESSION_TOTALS_REQUEST_VERSION &&
+		typeof request["sessionId"] === "string" &&
+		request["sessionId"].trim().length > 0
+	);
 }
 
 /** Rejects malformed cross-extension usage read requests. */

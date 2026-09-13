@@ -112,6 +112,7 @@ describe("usage SQLite store", () => {
 			.all();
 		expect(indexes).toEqual([
 			{ name: "usage_events_root_session" },
+			{ name: "usage_events_session" },
 			{ name: "usage_events_timestamp" },
 		]);
 		database.close();
@@ -158,6 +159,66 @@ describe("usage SQLite store", () => {
 
 		expect(store.queryRootCost("root-session-1")).toBeCloseTo(1.4);
 		expect(store.queryRootCost("missing-root")).toBe(0);
+		store.close();
+	});
+
+	test("sums cumulative cost and processed tokens for one Pi session", () => {
+		// Purpose: one logical subagent session must include its initial run, continuations, and auxiliary requests.
+		// Inputs and expected output: three rows for one session total cost 2.12 and tokens 1,200,000 while another session is excluded.
+		// Edge case: an unknown session returns explicit zero totals.
+		// Dependencies: isolated system temporary storage and the production session aggregate.
+		const store = new UsageStore(temporaryDatabasePath());
+		store.insert(
+			event({
+				eventId: "initial",
+				sessionId: "child-session",
+				input: 100_000,
+				output: 100_000,
+				cacheRead: 100_000,
+				cacheWrite: 100_000,
+				cost: 0.5,
+			}),
+		);
+		store.insert(
+			event({
+				eventId: "continuation",
+				sessionId: "child-session",
+				input: 200_000,
+				output: 100_000,
+				cacheRead: 100_000,
+				cacheWrite: 0,
+				cost: 0.62,
+			}),
+		);
+		store.insert(
+			event({
+				eventId: "auxiliary",
+				sessionId: "child-session",
+				source: "knowledge",
+				input: 100_000,
+				output: 100_000,
+				cacheRead: 100_000,
+				cacheWrite: 100_000,
+				cost: 1,
+			}),
+		);
+		store.insert(
+			event({
+				eventId: "other-session",
+				sessionId: "other-child",
+				input: 1_000_000,
+				cost: 5,
+			}),
+		);
+
+		expect(store.querySessionTotals("child-session")).toEqual({
+			cost: 2.12,
+			tokens: 1_200_000,
+		});
+		expect(store.querySessionTotals("missing-session")).toEqual({
+			cost: 0,
+			tokens: 0,
+		});
 		store.close();
 	});
 

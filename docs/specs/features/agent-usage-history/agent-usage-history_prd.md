@@ -226,6 +226,11 @@ Not in scope:
   - Goal: Give footer and `/usage` one complete cost source without retaining duplicate cost-only persistence.
   - Goal achievement: Full. Both views use the same regular, subagent, and auxiliary costs for the current root session family, and unavailable complete cost is never presented as a partial value.
 
+- **FRQ-35:** The `/subagents` selected-session metadata row shows cumulative retained consumption for the selected child Pi `sessionId`. `Cost` is the sum of persisted `usage.cost.total`, and `Tokens` is the sum of `input + output + cacheRead + cacheWrite` across regular responses, continuations, and included auxiliary requests. The fields appear after `CH` when present and before context usage as `$2.12 · T1.2M`. Cost uses a dollar sign and two fractional digits. Tokens use the FRQ-16 compact token format prefixed with `T`. When the usage store is unavailable, both fields are omitted.
+  - Origin: `source` — direct user request and approval of cumulative logical-session totals.
+  - Goal: Show complete stored consumption for the selected subagent session without leaving `/subagents`.
+  - Goal achievement: Full. The selected-session header exposes cumulative cost and processed tokens from the same store as `/usage`.
+
 ### Non-Functional Requirements
 
 - **NRQ-01:** `/usage` follows the visual and navigation principles of `/subagents`.

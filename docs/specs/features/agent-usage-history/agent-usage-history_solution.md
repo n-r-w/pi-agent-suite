@@ -238,6 +238,9 @@ CREATE INDEX usage_events_timestamp
 
 CREATE INDEX usage_events_root_session
     ON usage_events(root_session_id);
+
+CREATE INDEX usage_events_session
+    ON usage_events(session_id);
 ```
 
 Each event uses `INSERT OR IGNORE`. The stable publisher-created UUID primary key makes repeated handling of the same event idempotent. Different logical requests always receive different UUIDs even when their usage fields are equal.
@@ -343,6 +346,20 @@ While the footer is active, one root-only timer repeats this query every 10 seco
 The footer does not scan assistant entries or use cost-only session entries. It uses the same regular, subagent, and auxiliary event set as the Current `/usage` scope.
 
 If the initial broker read is unavailable because usage is disabled, invalid, failed during database initialization, or missing, the footer hides the API-cost segment and an interactive root emits one warning. If a later refresh is unavailable, the footer hides the cached cost, emits the warning unless that root session already received it, and keeps the timer active. A later valid result restores the segment. The footer warning remains independent from any usage extension startup error. The footer does not request the broker or warn when the footer or `showApiCost` is disabled.
+
+### 11.2 Subagent Session Consumption
+
+The `/subagents` screen sends the selected node's child Pi `sessionId` to the process-local usage broker. The broker returns one indexed aggregate:
+
+```sql
+SELECT
+    COALESCE(SUM(cost), 0),
+    COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0)
+FROM usage_events
+WHERE session_id = :sessionId;
+```
+
+Rows from the initial invocation, later continuations, and auxiliary requests share the child Pi `sessionId` and contribute to the aggregate. The selected-session render reads the aggregate when Pi renders the overlay. When the broker is unavailable, the render omits both session-consumption fields.
 
 ### 12. TUI
 

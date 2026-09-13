@@ -23,6 +23,7 @@ import {
 	type PackagePresentationEventBus,
 	registerPackageTool,
 } from "../../shared/tool-presentation/registry";
+import { requestUsageSessionTotals } from "../../shared/usage-read-broker";
 import type { AgentOperationResponse } from "./agent-operation-wire";
 import {
 	applyChildToolPolicy,
@@ -981,6 +982,8 @@ function createRootManagementRuntime(options: {
 		submission,
 		retained,
 		showCacheHitRate: options.showCacheHitRate,
+		readSessionTotals: (sessionId) =>
+			requestUsageSessionTotals(options.pi, sessionId),
 	});
 	return {
 		projection,

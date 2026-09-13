@@ -20,7 +20,10 @@ import {
 	USAGE_EVENT_RECORD_CHANNEL,
 	USAGE_EVENT_RECORD_VERSION,
 } from "../../shared/usage-events";
-import { requestUsageRootCost } from "../../shared/usage-read-broker";
+import {
+	requestUsageRootCost,
+	requestUsageSessionTotals,
+} from "../../shared/usage-read-broker";
 import { readUsageConfig } from "./config";
 import {
 	createUsageExtension,
@@ -138,6 +141,7 @@ function dependencies(
 ): UsageExtensionDependencies {
 	const completeStore: UsageStorePort = {
 		queryRootCost: () => 0,
+		querySessionTotals: () => ({ cost: 0, tokens: 0 }),
 		cleanupBefore: () => {},
 		reset: () => {},
 		...store,
@@ -179,6 +183,7 @@ describe("usage extension lifecycle", () => {
 			insert: () => {},
 			queryRange: () => [],
 			queryRootCost: () => 0,
+			querySessionTotals: () => ({ cost: 0, tokens: 0 }),
 			cleanupBefore: () => {},
 			reset: () => {},
 		};
@@ -225,6 +230,31 @@ describe("usage extension lifecycle", () => {
 		expect(queriedRoots).toEqual(["root-session-a"]);
 	});
 
+	test("serves cumulative session cost and tokens through the process-local usage broker", () => {
+		// Purpose: the subagent screen must read complete stored totals without owning SQLite.
+		// Inputs and expected output: one session request returns cost 2.12 and 1,200,000 processed tokens for the exact child Pi session ID.
+		// Edge case: the broker returns both zero-capable metrics as one atomic aggregate.
+		// Dependencies: the shared Pi event bus and an injected usage store.
+		const queriedSessions: string[] = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: () => {},
+				queryRange: () => [],
+				querySessionTotals: (sessionId) => {
+					queriedSessions.push(sessionId);
+					return { cost: 2.12, tokens: 1_200_000 };
+				},
+			}),
+		)(harness.pi);
+
+		expect(requestUsageSessionTotals(harness.pi, "child-session-a")).toEqual({
+			cost: 2.12,
+			tokens: 1_200_000,
+		});
+		expect(queriedSessions).toEqual(["child-session-a"]);
+	});
+
 	test("propagates the original storage initialization failure", () => {
 		// Purpose: Pi's extension loader must receive the actionable database initialization error.
 		// Inputs and expected output: a throwing store factory makes extension setup throw the same Error object.
@@ -269,6 +299,7 @@ describe("usage extension lifecycle", () => {
 								insert: () => {},
 								queryRange: () => [],
 								queryRootCost: () => 0,
+								querySessionTotals: () => ({ cost: 0, tokens: 0 }),
 								cleanupBefore: () => {},
 								reset: () => {},
 							};

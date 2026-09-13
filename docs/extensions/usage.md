@@ -45,6 +45,8 @@ A request is stored only when these values are complete and valid:
 
 An incomplete request is ignored as one unit. Missing values are not inferred, and previous Pi sessions are not scanned.
 
+The extension exposes read-only process-local aggregates to package UI extensions. The footer reads total cost by root session ID. The `/subagents` screen reads cumulative cost and processed tokens by child Pi session ID. The session aggregate includes every retained event with that session ID.
+
 ## Included requests
 
 Agent consumption includes regular assistant responses and these auxiliary request sources:

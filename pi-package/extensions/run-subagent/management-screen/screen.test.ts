@@ -372,6 +372,9 @@ function createScreen(
 		readonly toolsExpanded?: boolean;
 		readonly theme?: Theme;
 		readonly showCacheHitRate?: boolean;
+		readonly readSessionTotals?: (
+			sessionId: string,
+		) => { cost: number; tokens: number } | undefined;
 	} = {},
 ) {
 	initTheme(undefined, false);
@@ -402,6 +405,7 @@ function createScreen(
 		retained,
 		toolsExpanded: options.toolsExpanded ?? false,
 		showCacheHitRate: options.showCacheHitRate ?? false,
+		readSessionTotals: options.readSessionTotals ?? (() => undefined),
 		notify: (message) => notifications.push(message),
 		close: () => {
 			closeCalls += 1;
@@ -892,6 +896,26 @@ describe("management screen", () => {
 				line.includes("openai-codex/gpt-5.6-sol/medium · CH87 · 1.0k/190k"),
 			),
 		).toBe(true);
+		fixture.screen.dispose();
+	});
+
+	test("reads cumulative usage for the selected child Pi session", () => {
+		// Purpose: the management screen must connect the selected logical session to its stored cumulative usage.
+		// Inputs and expected output: selecting child-session reads that ID and renders $2.12 and T1.2M.
+		// Edge case: totals come from the child Pi session identity rather than the owner-local numeric ID.
+		// Dependencies: injected synchronous usage reader and selected-header rendering.
+		const queriedSessions: string[] = [];
+		const fixture = createScreen({
+			readSessionTotals: (sessionId) => {
+				queriedSessions.push(sessionId);
+				return { cost: 2.12, tokens: 1_200_000 };
+			},
+		});
+
+		const rows = fixture.screen.render(120);
+
+		expect(queriedSessions).toEqual(["child-session"]);
+		expect(rows.some((line) => line.includes("$2.12 · T1.2M"))).toBe(true);
 		fixture.screen.dispose();
 	});
 
@@ -1646,6 +1670,7 @@ describe("management screen", () => {
 			submission,
 			retained,
 			showCacheHitRate: true,
+			readSessionTotals: () => undefined,
 		});
 
 		// ACT: open through ctx.ui.custom, construct the component, and close it through Escape.
@@ -1881,6 +1906,7 @@ describe("management screen", () => {
 			retained,
 			toolsExpanded: false,
 			showCacheHitRate: true,
+			readSessionTotals: () => undefined,
 			notify: () => undefined,
 			close: () => undefined,
 		});

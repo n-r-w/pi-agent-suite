@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AuxiliaryUsageSource } from "../../shared/usage-events";
+import type { UsageSessionTotals } from "../../shared/usage-read-broker";
 
 const BUSY_TIMEOUT_MS = 5_000;
 
@@ -47,6 +48,7 @@ export class UsageStore {
 	private readonly insertStatement;
 	private readonly queryRangeStatement;
 	private readonly queryRootCostStatement;
+	private readonly querySessionTotalsStatement;
 	private readonly cleanupStatement;
 	private readonly resetStatement;
 
@@ -76,6 +78,8 @@ export class UsageStore {
 				ON usage_events(timestamp_ms);
 			CREATE INDEX IF NOT EXISTS usage_events_root_session
 				ON usage_events(root_session_id);
+			CREATE INDEX IF NOT EXISTS usage_events_session
+				ON usage_events(session_id);
 		`);
 		this.insertStatement = this.database.prepare(`
 			INSERT OR IGNORE INTO usage_events (
@@ -96,6 +100,15 @@ export class UsageStore {
 			SELECT COALESCE(SUM(cost), 0) AS total_cost
 			FROM usage_events
 			WHERE root_session_id = ?
+		`);
+		this.querySessionTotalsStatement = this.database.prepare(`
+			SELECT
+				COALESCE(SUM(cost), 0) AS total_cost,
+				COALESCE(SUM(
+					input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+				), 0) AS total_tokens
+			FROM usage_events
+			WHERE session_id = ?
 		`);
 		this.cleanupStatement = this.database.prepare(`
 			DELETE FROM usage_events WHERE timestamp_ms < ?
@@ -151,6 +164,15 @@ export class UsageStore {
 			readonly total_cost: number;
 		};
 		return row.total_cost;
+	}
+
+	/** Reads cumulative cost and processed tokens for one Pi session. */
+	public querySessionTotals(sessionId: string): UsageSessionTotals {
+		const row = this.querySessionTotalsStatement.get(sessionId) as {
+			readonly total_cost: number;
+			readonly total_tokens: number;
+		};
+		return { cost: row.total_cost, tokens: row.total_tokens };
 	}
 
 	/** Deletes events before the exclusive retention boundary through the timestamp index. */

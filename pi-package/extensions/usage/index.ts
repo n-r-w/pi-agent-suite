@@ -19,7 +19,10 @@ import {
 } from "../../shared/usage-events";
 import {
 	isUsageRootCostRequest,
+	isUsageSessionTotalsRequest,
 	USAGE_ROOT_COST_REQUEST_CHANNEL,
+	USAGE_SESSION_TOTALS_REQUEST_CHANNEL,
+	type UsageSessionTotals,
 } from "../../shared/usage-read-broker";
 import { readUsageConfig, type UsageConfigResult } from "./config";
 import { readUsageProcessEnvironment } from "./environment";
@@ -46,6 +49,7 @@ export interface UsageStorePort {
 	insert(event: UsageEvent): void;
 	queryRange(startMs: number, endMs: number): UsageEvent[];
 	queryRootCost(rootSessionId: string): number;
+	querySessionTotals(sessionId: string): UsageSessionTotals;
 	cleanupBefore(cutoffMs: number): void;
 	reset(): void;
 }
@@ -185,6 +189,16 @@ function registerUsageReadBroker(
 			value.cost = store.queryRootCost(value.rootSessionId);
 		} catch {
 			// An unavailable aggregate must remain distinguishable from a zero total.
+		}
+	});
+	pi.events.on(USAGE_SESSION_TOTALS_REQUEST_CHANNEL, (value: unknown) => {
+		if (!isUsageSessionTotalsRequest(value)) {
+			return;
+		}
+		try {
+			value.totals = store.querySessionTotals(value.sessionId);
+		} catch {
+			// An unavailable aggregate must remain distinguishable from zero totals.
 		}
 	});
 }

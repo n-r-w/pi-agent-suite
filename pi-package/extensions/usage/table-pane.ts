@@ -5,6 +5,7 @@ import {
 	isScrollThumbRow,
 	type ScrollMetrics,
 } from "../../shared/tui/scroll-indicator";
+import { formatUsageTokenCount } from "../../shared/usage-format";
 import { padToWidth } from "./agent-pane";
 import type { UsageRow } from "./aggregation";
 
@@ -16,12 +17,6 @@ const HIT_PERCENT_WIDTH = 8;
 const MONEY_WIDTH = 7;
 const PERCENT_PRECISION = 1;
 const MAX_MONEY_PRECISION = 4;
-const TOKENS_PER_THOUSAND = 1_000;
-const THOUSANDS_PER_MILLION = 1_000;
-const DECIMAL_FACTOR = 10;
-const TOKENS_PER_MILLION_TENTH = 100_000;
-const TOKENS_PER_BILLION_TENTH = 100_000_000;
-const MILLION_TENTHS_PER_BILLION = 10_000;
 const MONEY_PER_THOUSAND = 1_000;
 const MONEY_PER_MILLION = 1_000_000;
 const MONEY_PER_BILLION = 1_000_000_000;
@@ -199,9 +194,9 @@ function formatRow(row: UsageRow, modelWidth: number): string {
 	return [
 		padColumn(row.label, modelWidth),
 		row.costPercent.toFixed(PERCENT_PRECISION).padStart(PERCENT_WIDTH),
-		formatTokenCount(row.tokens).padStart(TOKENS_WIDTH),
-		formatTokenCount(row.cacheRead).padStart(TOKEN_DETAIL_WIDTH),
-		formatTokenCount(row.cacheWrite).padStart(TOKEN_DETAIL_WIDTH),
+		formatUsageTokenCount(row.tokens).padStart(TOKENS_WIDTH),
+		formatUsageTokenCount(row.cacheRead).padStart(TOKEN_DETAIL_WIDTH),
+		formatUsageTokenCount(row.cacheWrite).padStart(TOKEN_DETAIL_WIDTH),
 		row.hitPercent.toFixed(PERCENT_PRECISION).padStart(HIT_PERCENT_WIDTH),
 		formatMoney(row.cost).padStart(MONEY_WIDTH),
 		formatMoney(row.saved).padStart(MONEY_WIDTH),
@@ -214,22 +209,6 @@ function padColumn(value: string, width: number): string {
 
 function padColumnStart(value: string, width: number): string {
 	return `${" ".repeat(Math.max(0, width - visibleWidth(value)))}${value}`;
-}
-
-function formatTokenCount(value: number): string {
-	if (value < TOKENS_PER_THOUSAND) {
-		return Math.round(value).toString();
-	}
-	const thousands = Math.ceil(value / TOKENS_PER_THOUSAND);
-	if (thousands < THOUSANDS_PER_MILLION) {
-		return `${thousands}K`;
-	}
-	const millionTenths = Math.ceil(value / TOKENS_PER_MILLION_TENTH);
-	if (millionTenths < MILLION_TENTHS_PER_BILLION) {
-		return `${(millionTenths / DECIMAL_FACTOR).toFixed(1)}M`;
-	}
-	const billionTenths = Math.ceil(value / TOKENS_PER_BILLION_TENTH);
-	return `${(billionTenths / DECIMAL_FACTOR).toFixed(1)}B`;
 }
 
 function formatMoney(value: number): string {
