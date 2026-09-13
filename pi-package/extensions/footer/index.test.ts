@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT } from "../../shared/agent-runtime-composition";
 import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
@@ -93,10 +94,10 @@ afterEach(async () => {
 });
 
 describe("footer", () => {
-	test("caches and refreshes stored root-family usage every ten seconds", async () => {
-		// Purpose: the active root footer must render only cached usage-store cost and tokens and refresh them on one fixed interval.
-		// Inputs and expected output: the broker returns 1.25 and 10,000 tokens initially, then 2.5 and 20,000 tokens on the first fake tick.
-		// Edge case: rendering does not request again, and a queued callback after disposal does not refresh.
+	test("renders only when the ten-second usage refresh changes stored totals", async () => {
+		// Purpose: the active root footer must not request a global render when refreshed usage is unchanged.
+		// Inputs and expected output: the broker repeats the initial totals, then returns changed totals on the next fake tick.
+		// Edge case: rendering does not request usage again, and a queued callback after disposal does not refresh.
 		// Dependencies: an in-memory Pi event bus, fake interval functions, and an isolated footer config.
 		await withIsolatedSuiteDir(async (suiteDir) => {
 			await writeFooterConfig(suiteDir, {
@@ -108,6 +109,7 @@ describe("footer", () => {
 			const pi = createExtensionApiFake();
 			const requestedRoots: string[] = [];
 			const totals = [
+				{ cost: 1.25, tokens: 10_000 },
 				{ cost: 1.25, tokens: 10_000 },
 				{ cost: 2.5, tokens: 20_000 },
 			];
@@ -186,16 +188,69 @@ describe("footer", () => {
 				expect(requestedRoots).toEqual(["session"]);
 				intervalCallback?.();
 				expect(requestedRoots).toEqual(["session", "session"]);
+				expect(renderRequests).toBe(0);
+				intervalCallback?.();
+				expect(requestedRoots).toEqual(["session", "session", "session"]);
 				expect(component.render(200)[0]).toContain("$2.500 · T20K");
 				expect(renderRequests).toBe(1);
 				component.dispose?.();
 				expect(clearIntervalSpy).toHaveBeenCalledWith(intervalHandle);
 				intervalCallback?.();
-				expect(requestedRoots).toHaveLength(2);
+				expect(requestedRoots).toHaveLength(3);
 			} finally {
 				clearIntervalSpy.mockRestore();
 				setIntervalSpy.mockRestore();
 			}
+		});
+	});
+
+	test("ignores main-agent events that keep the visible agent label unchanged", async () => {
+		// Purpose: an unrelated main-agent contribution change must not trigger a global render for an unchanged footer label.
+		// Inputs and expected output: the footer receives one contribution event while its resolved agent remains unavailable and requests no render.
+		// Edge case: the event is emitted after the footer component subscribes.
+		// Dependencies: an in-memory Pi event bus and an isolated footer config.
+		await withIsolatedSuiteDir(async (suiteDir) => {
+			await writeFooterConfig(suiteDir, {
+				enabled: true,
+				showApiCost: false,
+				showApiTokens: false,
+				showCacheHitRate: false,
+			});
+			delete process.env[CHILD_AGENT_PROCESS_ENV];
+			const pi = createExtensionApiFake();
+			let footerFactory:
+				| ((
+						tui: FooterTuiFake,
+						theme: FooterThemeFake,
+						footerData: FooterDataFake,
+				  ) => FooterComponentFake)
+				| undefined;
+			const ctx = createSessionContextFake((factory) => {
+				footerFactory = factory;
+			});
+			footer(pi as unknown as ExtensionAPI);
+			await getSessionStartHandler(pi)({}, ctx);
+			if (footerFactory === undefined) {
+				throw new Error("footer factory is not set");
+			}
+			let renderRequests = 0;
+			const component = footerFactory(
+				{
+					requestRender() {
+						renderRequests += 1;
+					},
+				},
+				{ fg: (_color, value) => value },
+				{
+					getExtensionStatuses: () => new Map(),
+					getGitBranch: () => null,
+				},
+			);
+
+			pi.events.emit(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, undefined);
+
+			expect(renderRequests).toBe(0);
+			component.dispose?.();
 		});
 	});
 

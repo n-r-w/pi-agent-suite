@@ -157,12 +157,41 @@ type NumericConfigResult =
 	| { readonly kind: "valid"; readonly value: number }
 	| { readonly kind: "invalid"; readonly issue: string };
 
+interface QuotaRefreshOptions {
+	readonly session: QuotaSession;
+	readonly isCurrent: () => boolean;
+	readonly signal: AbortSignal;
+	readonly config: QuotaConfig;
+	readonly publishStatus: (status: string) => void;
+}
+
+/** Publishes only status values that differ from the last visible value. */
+class QuotaStatusPublisher {
+	private value: string | undefined;
+	private published = false;
+
+	public publish(session: QuotaSession, value: string | undefined): void {
+		if (this.published && this.value === value) {
+			return;
+		}
+		this.value = value;
+		this.published = true;
+		session.ui.setStatus(STATUS_KEY, value);
+	}
+
+	public reset(): void {
+		this.value = undefined;
+		this.published = false;
+	}
+}
+
 /** Extension entry point for Codex quota status handling. */
 export default function codexQuota(pi: ExtensionAPI): void {
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let activeGeneration = 0;
 	let activeRefresh: Promise<void> | undefined;
 	let activeAbortController: AbortController | undefined;
+	const statusPublisher = new QuotaStatusPublisher();
 
 	const startRefresh = (
 		session: QuotaSession,
@@ -175,12 +204,13 @@ export default function codexQuota(pi: ExtensionAPI): void {
 
 		const abortController = new AbortController();
 		activeAbortController = abortController;
-		const refresh = refreshQuotaStatus(
+		const refresh = refreshQuotaStatus({
 			session,
-			() => generation === activeGeneration,
-			abortController.signal,
+			isCurrent: () => generation === activeGeneration,
+			signal: abortController.signal,
 			config,
-		).finally(() => {
+			publishStatus: (status) => statusPublisher.publish(session, status),
+		}).finally(() => {
 			if (activeRefresh === refresh) {
 				activeRefresh = undefined;
 			}
@@ -224,7 +254,7 @@ export default function codexQuota(pi: ExtensionAPI): void {
 			clearInterval(refreshTimer);
 		}
 
-		session.ui.setStatus(STATUS_KEY, renderLoadingStatus());
+		statusPublisher.publish(session, renderLoadingStatus());
 		startRefresh(session, generation, quotaConfig).catch(() => {});
 
 		refreshTimer = setInterval(() => {
@@ -242,8 +272,9 @@ export default function codexQuota(pi: ExtensionAPI): void {
 
 		const session = ctx as QuotaSession;
 		if (session.hasUI !== false) {
-			session.ui.setStatus(STATUS_KEY, undefined);
+			statusPublisher.publish(session, undefined);
 		}
+		statusPublisher.reset();
 	});
 }
 
@@ -411,19 +442,20 @@ function createDefaultQuotaConfig(): QuotaConfig {
 }
 
 /** Refreshes the footer status once without throwing into the pi event loop. */
-async function refreshQuotaStatus(
-	session: QuotaSession,
-	isCurrent: () => boolean,
-	signal: AbortSignal,
-	config: QuotaConfig,
-): Promise<void> {
+async function refreshQuotaStatus({
+	session,
+	isCurrent,
+	signal,
+	config,
+	publishStatus,
+}: QuotaRefreshOptions): Promise<void> {
 	const auth = await readCodexAuth(session.modelRegistry);
 	if (!isCurrent()) {
 		return;
 	}
 
 	if (auth.kind === "unavailable") {
-		session.ui.setStatus(STATUS_KEY, renderAuthStatus(session.ui.theme));
+		publishStatus(renderAuthStatus(session.ui.theme));
 		return;
 	}
 
@@ -434,12 +466,12 @@ async function refreshQuotaStatus(
 		}
 
 		if (response.status === UNAUTHORIZED_STATUS) {
-			session.ui.setStatus(STATUS_KEY, renderAuthStatus(session.ui.theme));
+			publishStatus(renderAuthStatus(session.ui.theme));
 			return;
 		}
 
 		if (!response.ok) {
-			session.ui.setStatus(STATUS_KEY, renderErrorStatus(session.ui.theme));
+			publishStatus(renderErrorStatus(session.ui.theme));
 			return;
 		}
 
@@ -448,16 +480,13 @@ async function refreshQuotaStatus(
 			return;
 		}
 
-		session.ui.setStatus(
-			STATUS_KEY,
-			formatQuotaStatus(payload, session.ui.theme),
-		);
+		publishStatus(formatQuotaStatus(payload, session.ui.theme));
 	} catch (error) {
 		if (signal.aborted || isAbortError(error)) {
 			return;
 		}
 		if (isCurrent()) {
-			session.ui.setStatus(STATUS_KEY, renderErrorStatus(session.ui.theme));
+			publishStatus(renderErrorStatus(session.ui.theme));
 		}
 	}
 }

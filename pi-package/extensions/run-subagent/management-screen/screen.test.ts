@@ -964,9 +964,9 @@ describe("management screen", () => {
 		fixture.screen.dispose();
 	});
 
-	test("updates selected active elapsed time until the invocation terminates", () => {
-		// Purpose: the selected header must advance elapsed time while work remains active without mutating invocation snapshots.
-		// Inputs and expected output: a one-second accepted snapshot renders as three seconds after the presentation clock advances and as the fixed terminal duration after completion.
+	test("updates selected active elapsed time every ten seconds until the invocation terminates", () => {
+		// Purpose: the selected header must advance elapsed time at a bounded cadence while work remains active without mutating invocation snapshots.
+		// Inputs and expected output: a one-second accepted snapshot renders as eleven seconds after one ten-second refresh and as the fixed terminal duration after completion.
 		// Edge case: terminal projection and screen disposal clear the refresh timer without changing the finalized elapsed value.
 		// Dependencies: controlled wall clock and interval callbacks, projection publication, and selected-header rendering.
 		const startedAtMs = 1_700_000_000_000;
@@ -976,7 +976,9 @@ describe("management screen", () => {
 		const nowSpy = spyOn(Date, "now").mockImplementation(() => nowMs);
 		const intervalSpy = spyOn(globalThis, "setInterval").mockImplementation(((
 			handler: () => void,
+			delay?: number,
 		) => {
+			expect(delay).toBe(10_000);
 			refresh = handler;
 			return intervalHandle;
 		}) as typeof setInterval);
@@ -997,7 +999,7 @@ describe("management screen", () => {
 			const renderRequestsBeforeTick = fixture.tui.renderRequests;
 
 			// ACT: advance the presentation clock, fire one refresh, then publish the finalized terminal snapshot.
-			nowMs += 2_000;
+			nowMs += 10_000;
 			expect(refresh).toBeDefined();
 			if (refresh === undefined) {
 				throw new Error("elapsed refresh timer was not scheduled");
@@ -1023,7 +1025,7 @@ describe("management screen", () => {
 			// ASSERT: active rendering follows time, terminal rendering stays fixed, and the owned timer is released once.
 			expect({
 				initialElapsed: initialRows.some((line) => line.includes("1s")),
-				activeElapsed: activeRows.some((line) => line.includes("3s")),
+				activeElapsed: activeRows.some((line) => line.includes("11s")),
 				renderRequests: fixture.tui.renderRequests - renderRequestsBeforeTick,
 				terminalElapsed: terminalRows.some((line) => line.includes("4s")),
 				clearCalls: clearIntervalSpy.mock.calls.length,

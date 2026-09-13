@@ -637,6 +637,16 @@ function renderFooterLines({
 }
 
 /** Warns once when complete usage becomes unavailable for one root session. */
+function usageTotalsEqual(
+	left: UsageSessionTotals | undefined,
+	right: UsageSessionTotals | undefined,
+): boolean {
+	if (left === undefined || right === undefined) {
+		return left === right;
+	}
+	return left.cost === right.cost && left.tokens === right.tokens;
+}
+
 function notifyUsageUnavailable(
 	ctx: FooterSessionContext,
 	state: FooterSessionState,
@@ -676,9 +686,17 @@ function createFooterComponent({
 	tui,
 }: CreateFooterComponentOptions): FooterComponent {
 	const requestRender = () => tui.requestRender();
+	let agentLabel = readFooterRenderState(pi, ctx).agentLabel;
 	const unsubscribeFromAgentChanges = (pi.events as FooterEventBus).on(
 		MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
-		requestRender,
+		() => {
+			const nextAgentLabel = readFooterRenderState(pi, ctx).agentLabel;
+			if (nextAgentLabel === agentLabel) {
+				return;
+			}
+			agentLabel = nextAgentLabel;
+			requestRender();
+		},
 	);
 	state.requestRender = requestRender;
 	let usageTotals = initialUsageTotals;
@@ -690,7 +708,14 @@ function createFooterComponent({
 					if (disposed) {
 						return;
 					}
-					usageTotals = requestUsageRootTotals(pi, rootSessionId);
+					const refreshedUsageTotals = requestUsageRootTotals(
+						pi,
+						rootSessionId,
+					);
+					if (usageTotalsEqual(usageTotals, refreshedUsageTotals)) {
+						return;
+					}
+					usageTotals = refreshedUsageTotals;
 					if (usageTotals === undefined) {
 						notifyUsageUnavailable(ctx, state, rootSessionId);
 					}

@@ -51,8 +51,8 @@ const SCREEN_CHROME_ROWS = 3;
 const PANE_DIVIDER_ROWS = 1;
 const MIN_CONVERSATION_ROWS = 1;
 const MIN_FRAMED_EDITOR_ROWS = 3;
-/** Keeps whole-second elapsed presentation current without revising session data. */
-const ELAPSED_REFRESH_INTERVAL_MS = 1_000;
+/** Refreshes elapsed presentation at a bounded cadence without revising session data. */
+const ELAPSED_REFRESH_INTERVAL_MS = 10_000;
 /** Converts retry deadlines to whole-second countdown labels. */
 const MILLISECONDS_PER_SECOND = 1_000;
 /** Ends child SGR and OSC 8 state before screen-owned chrome. */
