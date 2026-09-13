@@ -54,6 +54,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 	readonly commands: RegisteredCommandFake[];
 	readonly sessionWriteCalls: string[];
 	readonly beforeAgentStartHandlers: BeforeAgentStartHandler[];
+	readonly usageEvents: unknown[];
 }
 
 interface CompletionCall {
@@ -160,11 +161,13 @@ function createExtensionApiFake(): ExtensionApiFake {
 	const commands: RegisteredCommandFake[] = [];
 	const sessionWriteCalls: string[] = [];
 	const beforeAgentStartHandlers: BeforeAgentStartHandler[] = [];
+	const usageEvents: unknown[] = [];
 
 	return {
 		commands,
 		sessionWriteCalls,
 		beforeAgentStartHandlers,
+		usageEvents,
 		on(eventName: string, handler: BeforeAgentStartHandler): void {
 			if (eventName === "before_agent_start") {
 				beforeAgentStartHandlers.push(handler);
@@ -217,7 +220,11 @@ function createExtensionApiFake(): ExtensionApiFake {
 		registerProvider(): void {},
 		unregisterProvider(): void {},
 		events: {
-			emit(): void {},
+			emit(name: string, value: unknown): void {
+				if (name === "pi-agent-suite.usage.record.v1") {
+					usageEvents.push(value);
+				}
+			},
 			on(): () => void {
 				return () => {};
 			},
@@ -739,6 +746,33 @@ describe("ask-llm", () => {
 			});
 			expect(ctx.renderedCustomOutputs.join("\n")).toContain("Visible answer");
 			expect(pi.sessionWriteCalls).toEqual([]);
+		});
+	});
+
+	test("publishes one complete successful ask-llm response", async () => {
+		// Purpose: completed ask-llm consumption must enter the shared usage stream once.
+		// Input and expected output: one successful response publishes its full assistant message with source ask-llm.
+		// Edge case: publication occurs only after the accepted response boundary.
+		// Dependencies: isolated config, fake model completion, and fake extension event bus.
+		await withIsolatedAgentDir(async () => {
+			const model = createModel("openai", "gpt-test");
+			const completion = createCompletionFake("Visible answer");
+			const pi = createExtensionApiFake();
+			const ctx = createContextFake([model]);
+			askLlm(pi, { completeSimple: completion.completeSimple });
+
+			await getAskCommand(pi).handler("What should I check?", ctx);
+
+			expect(pi.usageEvents).toHaveLength(1);
+			expect(pi.usageEvents[0]).toMatchObject({
+				source: "ask-llm",
+				message: {
+					role: "assistant",
+					provider: "openai",
+					model: "gpt-test",
+					usage: expect.any(Object),
+				},
+			});
 		});
 	});
 
@@ -1630,9 +1664,9 @@ describe("ask-llm", () => {
 
 	test("reports empty text responses", async () => {
 		// Purpose: ask-llm must not show a blank answer when the provider response has no visible text.
-		// Input and expected output: whitespace-only answer text produces one scoped warning after one completion request.
+		// Input and expected output: whitespace-only answer text publishes its complete response and produces one scoped warning.
 		// Edge case: response text is trimmed before the empty-response decision.
-		// Dependencies: this test uses fake model completion and fake UI notifications.
+		// Dependencies: this test uses fake model completion, fake UI notifications, and the fake usage event bus.
 		await withIsolatedAgentDir(async () => {
 			const model = createModel("openai", "gpt-test");
 			const completion = createCompletionFake("   ");
@@ -1643,6 +1677,14 @@ describe("ask-llm", () => {
 			await getAskCommand(pi).handler("Call provider", ctx);
 
 			expect(completion.calls).toHaveLength(1);
+			expect(pi.usageEvents).toHaveLength(1);
+			expect(pi.usageEvents[0]).toMatchObject({
+				source: "ask-llm",
+				message: {
+					content: [{ type: "text", text: "   " }],
+					usage: expect.any(Object),
+				},
+			});
 			expect(ctx.notifications).toEqual([
 				{
 					message: "[ask-llm] model response did not contain text",

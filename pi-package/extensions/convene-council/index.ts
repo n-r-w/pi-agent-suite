@@ -6,9 +6,9 @@ import { Type } from "typebox";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { createChildAuthStartupDiagnosticRecorder } from "../../shared/child-auth-startup-diagnostic";
 import { readChildStartupConfig } from "../../shared/child-startup-config";
-import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import { readKnowledgeBlock } from "../../shared/knowledge-runtime";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
+import { publishUsageEvent } from "../../shared/usage-events";
 import { readConveneCouncilRegistrationState } from "./config";
 import { TOOL_NAME } from "./constants";
 import { executeConveneCouncil } from "./loop";
@@ -95,7 +95,7 @@ export default function conveneCouncil(
 				...(knowledgeBlock === null ? {} : { knowledgeBlock }),
 				availableTools: pi.getAllTools(),
 				recordCost: (message) => {
-					recordHelperApiCost(pi, "convene-council", message);
+					publishUsageEvent(pi, "convene-council", message);
 				},
 				...(onUpdate !== undefined ? { onUpdate } : {}),
 			});

@@ -9,7 +9,6 @@ import type {
 	Model,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { HELPER_API_COST_CUSTOM_TYPE } from "../../shared/helper-api-cost";
 import customCompaction from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -693,19 +692,13 @@ describe("custom-compaction", () => {
 				reasoning: "high",
 				sessionId: expect.stringMatching(AUXILIARY_SESSION_ID_PATTERN),
 			});
-			expect(pi.appendEntryCalls).toEqual([
-				{
-					customType: HELPER_API_COST_CUSTOM_TYPE,
-					data: { source: "custom-compaction", cost: 0.6 },
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: "custom-compaction-outcome",
+				data: {
+					kind: "success",
+					message: "compaction completed: direct summary, 1 model request",
 				},
-				{
-					customType: "custom-compaction-outcome",
-					data: {
-						kind: "success",
-						message: "compaction completed: direct summary, 1 model request",
-					},
-				},
-			]);
+			});
 			expect(pi.entryRenderers).toHaveLength(1);
 			expect(pi.entryRenderers[0]?.customType).toBe(
 				"custom-compaction-outcome",

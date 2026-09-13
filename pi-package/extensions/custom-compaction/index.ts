@@ -27,7 +27,6 @@ import {
 	type CustomCompactionConfig,
 	readCustomCompactionConfig,
 } from "../../shared/custom-compaction-config";
-import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	resolveThinkingLevel,
 	splitModelId,
@@ -37,6 +36,7 @@ import {
 	isReasoningLevel,
 	type ReasoningLevel,
 } from "../../shared/reasoning-levels";
+import { publishUsageEvent } from "../../shared/usage-events";
 import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import {
 	type AdaptiveCompactionProgressEvent,
@@ -488,7 +488,7 @@ async function executeCompletion(
 		sessionId: request.requestId,
 		maxTokens: request.maxTokens,
 	});
-	recordHelperApiCost(pi, "custom-compaction", response);
+	publishUsageEvent(pi, "custom-compaction", response);
 	return response;
 }
 

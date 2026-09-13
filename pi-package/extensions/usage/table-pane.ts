@@ -11,14 +11,20 @@ import type { UsageRow } from "./aggregation";
 const MODEL_WIDTH = 24;
 const TOKENS_WIDTH = 8;
 const TOKEN_DETAIL_WIDTH = 9;
+const PERCENT_WIDTH = 8;
 const HIT_PERCENT_WIDTH = 8;
-const MONEY_WIDTH = 10;
-const HIT_PERCENT_PRECISION = 1;
-const MONEY_PRECISION = 4;
+const MONEY_WIDTH = 7;
+const PERCENT_PRECISION = 1;
+const MAX_MONEY_PRECISION = 4;
 const TOKENS_PER_THOUSAND = 1_000;
 const THOUSANDS_PER_MILLION = 1_000;
-const MILLION_DECIMAL_FACTOR = 10;
+const DECIMAL_FACTOR = 10;
 const TOKENS_PER_MILLION_TENTH = 100_000;
+const TOKENS_PER_BILLION_TENTH = 100_000_000;
+const MILLION_TENTHS_PER_BILLION = 10_000;
+const MONEY_PER_THOUSAND = 1_000;
+const MONEY_PER_MILLION = 1_000_000;
+const MONEY_PER_BILLION = 1_000_000_000;
 
 export interface TablePaneOptions {
 	readonly width: number;
@@ -179,9 +185,10 @@ function tableHeader(
 	const header = (label: string) => theme.fg(color, theme.bold(label));
 	return [
 		padColumn(header("Model"), modelWidth),
+		padColumnStart(header("Cost%"), PERCENT_WIDTH),
 		padColumnStart(header("Tokens"), TOKENS_WIDTH),
-		padColumnStart(header("Read"), TOKEN_DETAIL_WIDTH),
-		padColumnStart(header("Write"), TOKEN_DETAIL_WIDTH),
+		padColumnStart(header("CacheR"), TOKEN_DETAIL_WIDTH),
+		padColumnStart(header("CacheW"), TOKEN_DETAIL_WIDTH),
 		padColumnStart(header("Hit%"), HIT_PERCENT_WIDTH),
 		padColumnStart(header("Cost"), MONEY_WIDTH),
 		padColumnStart(header("Saved"), MONEY_WIDTH),
@@ -191,10 +198,11 @@ function tableHeader(
 function formatRow(row: UsageRow, modelWidth: number): string {
 	return [
 		padColumn(row.label, modelWidth),
+		row.costPercent.toFixed(PERCENT_PRECISION).padStart(PERCENT_WIDTH),
 		formatTokenCount(row.tokens).padStart(TOKENS_WIDTH),
 		formatTokenCount(row.cacheRead).padStart(TOKEN_DETAIL_WIDTH),
 		formatTokenCount(row.cacheWrite).padStart(TOKEN_DETAIL_WIDTH),
-		row.hitPercent.toFixed(HIT_PERCENT_PRECISION).padStart(HIT_PERCENT_WIDTH),
+		row.hitPercent.toFixed(PERCENT_PRECISION).padStart(HIT_PERCENT_WIDTH),
 		formatMoney(row.cost).padStart(MONEY_WIDTH),
 		formatMoney(row.saved).padStart(MONEY_WIDTH),
 	].join(" ");
@@ -217,9 +225,43 @@ function formatTokenCount(value: number): string {
 		return `${thousands}K`;
 	}
 	const millionTenths = Math.ceil(value / TOKENS_PER_MILLION_TENTH);
-	return `${(millionTenths / MILLION_DECIMAL_FACTOR).toFixed(1)}M`;
+	if (millionTenths < MILLION_TENTHS_PER_BILLION) {
+		return `${(millionTenths / DECIMAL_FACTOR).toFixed(1)}M`;
+	}
+	const billionTenths = Math.ceil(value / TOKENS_PER_BILLION_TENTH);
+	return `${(billionTenths / DECIMAL_FACTOR).toFixed(1)}B`;
 }
 
 function formatMoney(value: number): string {
-	return value.toFixed(MONEY_PRECISION);
+	const unscaled = formatMoneyWithSuffix(value, "", MONEY_WIDTH);
+	if (unscaled !== undefined) {
+		return unscaled;
+	}
+	let divisor = MONEY_PER_THOUSAND;
+	let suffix = "K";
+	if (value >= MONEY_PER_BILLION) {
+		divisor = MONEY_PER_BILLION;
+		suffix = "B";
+	} else if (value >= MONEY_PER_MILLION) {
+		divisor = MONEY_PER_MILLION;
+		suffix = "M";
+	}
+	return (
+		formatMoneyWithSuffix(value / divisor, suffix, MONEY_WIDTH) ??
+		`${Math.round(value / divisor)}${suffix}`
+	);
+}
+
+function formatMoneyWithSuffix(
+	value: number,
+	suffix: string,
+	maximumWidth: number,
+): string | undefined {
+	for (let precision = MAX_MONEY_PRECISION; precision >= 0; precision -= 1) {
+		const formatted = `${value.toFixed(precision)}${suffix}`;
+		if (formatted.length <= maximumWidth) {
+			return formatted;
+		}
+	}
+	return undefined;
 }

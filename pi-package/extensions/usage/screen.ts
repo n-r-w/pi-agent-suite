@@ -25,7 +25,9 @@ const HORIZONTAL_SCROLL_STEP = 8;
 const WIDE_FRAME_AND_SEPARATOR_WIDTH = 3;
 const AGENT_WIDTH_DIVISOR = 3;
 
-type UsageFocusZone = "range" | "agents" | "table";
+type UsageFocusZone = "range" | "sessions" | "agents" | "table";
+type UsageSessionScope = "current" | "all";
+const USAGE_SESSION_SCOPES: readonly UsageSessionScope[] = ["current", "all"];
 type UsageNarrowPane = "agents" | "table";
 
 export interface UsageScreenRuntime {
@@ -36,7 +38,8 @@ export interface UsageScreenRuntime {
 
 /** Renders and navigates one immutable full-terminal usage snapshot. */
 export class UsageScreen implements Component {
-	private rangeIndex = 0;
+	private rangeIndex = 2;
+	private sessionScopeIndex = 0;
 	private selectedAgentId: string | undefined;
 	private focus: UsageFocusZone = "agents";
 	private narrowPane: UsageNarrowPane = "agents";
@@ -49,27 +52,42 @@ export class UsageScreen implements Component {
 
 	public constructor(
 		events: readonly UsageEvent[],
-		openedAt: number,
+		opening: {
+			readonly openedAt: number;
+			readonly currentRootSessionId: string;
+		},
 		private readonly close: () => void,
 		private readonly runtime: UsageScreenRuntime,
 	) {
-		this.snapshot = prepareUsageSnapshot(events, openedAt);
+		this.snapshot = prepareUsageSnapshot(
+			events,
+			opening.openedAt,
+			opening.currentRootSessionId,
+		);
 	}
 
 	public render(width: number): string[] {
 		this.lastWidth = width;
 		this.normalizeFocus();
 		const rowBudget = Math.max(1, this.runtime?.tui?.terminal?.rows ?? 24);
-		if (width <= 2 || rowBudget <= FRAME_ROWS) {
+		const layout = this.layoutForWidth(width);
+		const selectorLines =
+			layout === "wide"
+				? [this.renderSelectors(Math.max(0, width - 2))]
+				: [
+						this.renderRange(Math.max(0, width - 2)),
+						this.renderSessions(Math.max(0, width - 2)),
+					];
+		const frameRows = FRAME_ROWS + selectorLines.length - 1;
+		if (width <= 2 || rowBudget <= frameRows) {
 			return Array.from({ length: rowBudget }, () =>
 				"".padEnd(Math.max(0, width)),
 			);
 		}
-		const contentHeight = rowBudget - FRAME_ROWS;
-		const rangeLine = this.renderRange(Math.max(0, width - 2));
-		return this.layoutForWidth(width) === "wide"
-			? this.renderWide(width, contentHeight, rangeLine)
-			: this.renderNarrow(width, contentHeight, rangeLine);
+		const contentHeight = rowBudget - frameRows;
+		return layout === "wide"
+			? this.renderWide(width, contentHeight, selectorLines[0] ?? "")
+			: this.renderNarrow(width, contentHeight, selectorLines);
 	}
 
 	public handleInput(data: string): void {
@@ -172,7 +190,7 @@ export class UsageScreen implements Component {
 	private renderNarrow(
 		width: number,
 		height: number,
-		rangeLine: string,
+		selectorLines: readonly string[],
 	): string[] {
 		const paneWidth = width - 2;
 		const contentWidth = Math.max(0, paneWidth - 1);
@@ -198,7 +216,7 @@ export class UsageScreen implements Component {
 		}
 		return [
 			border("┌", "┐", width, "─ USAGE "),
-			`│${rangeLine}│`,
+			...selectorLines.map((line) => `│${line}│`),
 			border("├", "┤", width),
 			...(height > 0
 				? [
@@ -216,16 +234,42 @@ export class UsageScreen implements Component {
 		];
 	}
 
+	private renderSelectors(width: number): string {
+		return padToWidth(
+			`${this.rangeSelector()}   ${this.sessionsSelector()}`,
+			width,
+		);
+	}
+
 	private renderRange(width: number): string {
+		return padToWidth(this.rangeSelector(), width);
+	}
+
+	private renderSessions(width: number): string {
+		return padToWidth(this.sessionsSelector(), width);
+	}
+
+	private rangeSelector(): string {
 		const values = USAGE_RANGES.map((label, index) =>
 			index === this.rangeIndex ? `[${label}]` : label,
 		).join(" ");
-		const label = this.runtime.theme.bold("Range");
 		const title = this.runtime.theme.fg(
 			this.focus === "range" ? "borderAccent" : "accent",
-			label,
+			this.runtime.theme.bold("Range"),
 		);
-		return padToWidth(`${title}: ${values}`, width);
+		return `${title}: ${values}`;
+	}
+
+	private sessionsSelector(): string {
+		const values = USAGE_SESSION_SCOPES.map((scope, index) => {
+			const label = scope === "current" ? "Current" : "All";
+			return index === this.sessionScopeIndex ? `[${label}]` : label;
+		}).join(" ");
+		const title = this.runtime.theme.fg(
+			this.focus === "sessions" ? "borderAccent" : "accent",
+			this.runtime.theme.bold("Sessions"),
+		);
+		return `${title}: ${values}`;
 	}
 
 	private renderHints(width: number): string {
@@ -233,6 +277,8 @@ export class UsageScreen implements Component {
 		const narrow = this.layoutForWidth(this.lastWidth) === "narrow";
 		if (this.focus === "range") {
 			hints.push(rawKeyHint("left/right", "range"));
+		} else if (this.focus === "sessions") {
+			hints.push(rawKeyHint("left/right", "sessions"));
 		} else if (this.focus === "agents") {
 			hints.push(
 				bindingPairHint(
@@ -279,6 +325,8 @@ export class UsageScreen implements Component {
 		switch (this.focus) {
 			case "range":
 				return this.handleRangeInput(data);
+			case "sessions":
+				return this.handleSessionInput(data);
 			case "agents":
 				return this.handleAgentInput(data);
 			case "table":
@@ -292,6 +340,16 @@ export class UsageScreen implements Component {
 		}
 		if (matchesKey(data, Key.right)) {
 			return this.selectRange(this.rangeIndex + 1);
+		}
+		return false;
+	}
+
+	private handleSessionInput(data: string): boolean {
+		if (matchesKey(data, Key.left)) {
+			return this.selectSessionScope(this.sessionScopeIndex - 1);
+		}
+		if (matchesKey(data, Key.right)) {
+			return this.selectSessionScope(this.sessionScopeIndex + 1);
 		}
 		return false;
 	}
@@ -347,7 +405,23 @@ export class UsageScreen implements Component {
 		}
 		this.rangeIndex = next;
 		if (this.selectedAgentId !== undefined) {
-			const allAgents = this.snapshot[this.currentRange()].agentIds;
+			const allAgents = this.currentScope()[this.currentRange()].agentIds;
+			if (!allAgents.includes(this.selectedAgentId)) {
+				this.selectedAgentId = undefined;
+			}
+		}
+		this.resetTableScroll();
+		return true;
+	}
+
+	private selectSessionScope(index: number): boolean {
+		const next = Math.max(0, Math.min(USAGE_SESSION_SCOPES.length - 1, index));
+		if (next === this.sessionScopeIndex) {
+			return false;
+		}
+		this.sessionScopeIndex = next;
+		if (this.selectedAgentId !== undefined) {
+			const allAgents = this.currentScope()[this.currentRange()].agentIds;
 			if (!allAgents.includes(this.selectedAgentId)) {
 				this.selectedAgentId = undefined;
 			}
@@ -357,7 +431,7 @@ export class UsageScreen implements Component {
 	}
 
 	private selectAgent(offset: number): boolean {
-		const range = this.snapshot[this.currentRange()];
+		const range = this.currentScope()[this.currentRange()];
 		const choices: Array<string | undefined> = [undefined, ...range.agentIds];
 		const current = Math.max(0, choices.indexOf(this.selectedAgentId));
 		const next = Math.max(0, Math.min(choices.length - 1, current + offset));
@@ -370,11 +444,17 @@ export class UsageScreen implements Component {
 	}
 
 	private currentRange(): (typeof USAGE_RANGES)[number] {
-		return USAGE_RANGES[this.rangeIndex] ?? "24h";
+		return USAGE_RANGES[this.rangeIndex] ?? "7d";
+	}
+
+	private currentScope() {
+		return this.sessionScopeIndex === 0
+			? this.snapshot.current
+			: this.snapshot.all;
 	}
 
 	private currentView() {
-		const range = this.snapshot[this.currentRange()];
+		const range = this.currentScope()[this.currentRange()];
 		return {
 			agentIds: range.agentIds,
 			rows:
@@ -390,11 +470,11 @@ export class UsageScreen implements Component {
 
 	private availableFocusZones(): readonly UsageFocusZone[] {
 		if (this.layoutForWidth(this.lastWidth) === "wide") {
-			return ["range", "agents", "table"];
+			return ["range", "sessions", "agents", "table"];
 		}
 		return this.narrowPane === "agents"
-			? ["range", "agents"]
-			: ["range", "table"];
+			? ["range", "sessions", "agents"]
+			: ["range", "sessions", "table"];
 	}
 
 	private cycleFocus(delta: -1 | 1): void {

@@ -3,7 +3,6 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { AuxiliaryUsageSource } from "../../shared/usage-events";
 
-const SCHEMA_VERSION = 1;
 const BUSY_TIMEOUT_MS = 5_000;
 
 export type UsageEventSource = "agent-turn" | AuxiliaryUsageSource;
@@ -12,6 +11,7 @@ export interface UsageEvent {
 	readonly eventId: string;
 	readonly timestampMs: number;
 	readonly sessionId: string;
+	readonly rootSessionId: string;
 	readonly agentId: string;
 	readonly source: UsageEventSource;
 	readonly provider: string;
@@ -28,6 +28,7 @@ interface UsageEventRow {
 	readonly event_id: string;
 	readonly timestamp_ms: number;
 	readonly session_id: string;
+	readonly root_session_id: string;
 	readonly agent_id: string;
 	readonly source: UsageEventSource;
 	readonly provider: string;
@@ -45,6 +46,7 @@ export class UsageStore {
 	private readonly database: DatabaseSync;
 	private readonly insertStatement;
 	private readonly queryRangeStatement;
+	private readonly queryRootCostStatement;
 	private readonly cleanupStatement;
 	private readonly resetStatement;
 
@@ -58,6 +60,7 @@ export class UsageStore {
 				event_id TEXT PRIMARY KEY,
 				timestamp_ms INTEGER NOT NULL,
 				session_id TEXT NOT NULL,
+				root_session_id TEXT NOT NULL,
 				agent_id TEXT NOT NULL,
 				source TEXT NOT NULL,
 				provider TEXT NOT NULL,
@@ -71,22 +74,28 @@ export class UsageStore {
 			);
 			CREATE INDEX IF NOT EXISTS usage_events_timestamp
 				ON usage_events(timestamp_ms);
-			PRAGMA user_version = ${SCHEMA_VERSION};
+			CREATE INDEX IF NOT EXISTS usage_events_root_session
+				ON usage_events(root_session_id);
 		`);
 		this.insertStatement = this.database.prepare(`
 			INSERT OR IGNORE INTO usage_events (
-				event_id, timestamp_ms, session_id, agent_id, source, provider, model,
-				input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-				cost, cache_savings
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				event_id, timestamp_ms, session_id, root_session_id, agent_id, source,
+				provider, model, input_tokens, output_tokens, cache_read_tokens,
+				cache_write_tokens, cost, cache_savings
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`);
 		this.queryRangeStatement = this.database.prepare(`
-			SELECT event_id, timestamp_ms, session_id, agent_id, source, provider,
-				model, input_tokens, output_tokens, cache_read_tokens,
+			SELECT event_id, timestamp_ms, session_id, root_session_id, agent_id,
+				source, provider, model, input_tokens, output_tokens, cache_read_tokens,
 				cache_write_tokens, cost, cache_savings
 			FROM usage_events
 			WHERE timestamp_ms >= ? AND timestamp_ms <= ?
 			ORDER BY timestamp_ms, event_id
+		`);
+		this.queryRootCostStatement = this.database.prepare(`
+			SELECT COALESCE(SUM(cost), 0) AS total_cost
+			FROM usage_events
+			WHERE root_session_id = ?
 		`);
 		this.cleanupStatement = this.database.prepare(`
 			DELETE FROM usage_events WHERE timestamp_ms < ?
@@ -100,6 +109,7 @@ export class UsageStore {
 			event.eventId,
 			event.timestampMs,
 			event.sessionId,
+			event.rootSessionId,
 			event.agentId,
 			event.source,
 			event.provider,
@@ -121,6 +131,7 @@ export class UsageStore {
 			eventId: row.event_id,
 			timestampMs: row.timestamp_ms,
 			sessionId: row.session_id,
+			rootSessionId: row.root_session_id,
 			agentId: row.agent_id,
 			source: row.source,
 			provider: row.provider,
@@ -132,6 +143,14 @@ export class UsageStore {
 			cost: row.cost,
 			saved: row.cache_savings,
 		}));
+	}
+
+	/** Reads total cost for one root session family. */
+	public queryRootCost(rootSessionId: string): number {
+		const row = this.queryRootCostStatement.get(rootSessionId) as {
+			readonly total_cost: number;
+		};
+		return row.total_cost;
 	}
 
 	/** Deletes events before the exclusive retention boundary through the timestamp index. */

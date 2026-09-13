@@ -12,6 +12,11 @@ export const AUXILIARY_USAGE_SOURCES = [
 	"convene-council",
 	"custom-compaction",
 	"subagent-query",
+	"ask-llm",
+	"vision",
+	"knowledge",
+	"native-compaction",
+	"branch-summary",
 ] as const;
 
 export type AuxiliaryUsageSource = (typeof AUXILIARY_USAGE_SOURCES)[number];

@@ -9,6 +9,7 @@ import {
 	isScrollThumbRow,
 	type ScrollMetrics,
 } from "../../shared/tui/scroll-indicator";
+import { NO_AGENT_ID } from "./recorder";
 
 export interface AgentPaneOptions {
 	readonly width: number;
@@ -47,7 +48,7 @@ export function renderAgentPane(
 		lines: [
 			padToWidth(title, width),
 			...visibleChoices.map((agentId) => {
-				const row = padPlainToWidth(` ${agentId ?? "All agents"}`, width);
+				const row = padPlainToWidth(` ${displayAgentId(agentId)}`, width);
 				if (selectedAgentId !== agentId) {
 					return row;
 				}
@@ -65,6 +66,13 @@ export function renderAgentPane(
 		}),
 		offset,
 	};
+}
+
+function displayAgentId(agentId: string | undefined): string {
+	if (agentId === undefined) {
+		return "All agents";
+	}
+	return agentId === NO_AGENT_ID ? "No agent" : agentId;
 }
 
 /** Fits pane content to an exact terminal width. */

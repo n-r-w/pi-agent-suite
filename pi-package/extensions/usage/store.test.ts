@@ -18,6 +18,7 @@ function event(overrides: Partial<UsageEvent> = {}): UsageEvent {
 		eventId: "event-1",
 		timestampMs: 1_000,
 		sessionId: "session-1",
+		rootSessionId: "root-session-1",
 		agentId: "agent-a",
 		source: "agent-turn",
 		provider: "provider-b",
@@ -53,9 +54,19 @@ describe("usage SQLite store", () => {
 		store.close();
 
 		const database = new DatabaseSync(path);
-		expect(database.prepare("PRAGMA user_version").get()).toEqual({
-			user_version: 1,
-		});
+		const columns = database
+			.prepare("PRAGMA table_info(usage_events)")
+			.all() as Array<{
+			name: string;
+		}>;
+		expect(columns.map((column) => column.name)).toContain("root_session_id");
+		expect(
+			database
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'usage_events_root_session'",
+				)
+				.get(),
+		).toEqual({ name: "usage_events_root_session" });
 		database.close();
 	});
 
@@ -80,7 +91,7 @@ describe("usage SQLite store", () => {
 
 	test("transactionally resets committed events while preserving schema", () => {
 		// Purpose: the reset operation must clear committed usage without deleting the database structure.
-		// Inputs and expected output: two committed events followed by reset produce an empty query and retain schema version and indexes.
+		// Inputs and expected output: two committed events followed by reset produce an empty query and retain the query indexes.
 		// Edge case: the same open store accepts a new event after reset.
 		// Dependencies: isolated system temporary storage and the production SQLite transaction.
 		const path = temporaryDatabasePath();
@@ -94,17 +105,60 @@ describe("usage SQLite store", () => {
 		store.close();
 
 		const database = new DatabaseSync(path);
-		expect(database.prepare("PRAGMA user_version").get()).toEqual({
-			user_version: 1,
-		});
-		expect(
-			database
-				.prepare(
-					"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'usage_events_timestamp'",
-				)
-				.get(),
-		).toEqual({ name: "usage_events_timestamp" });
+		const indexes = database
+			.prepare(
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'usage_events_%' ORDER BY name",
+			)
+			.all();
+		expect(indexes).toEqual([
+			{ name: "usage_events_root_session" },
+			{ name: "usage_events_timestamp" },
+		]);
 		database.close();
+	});
+
+	test("sums all cost for one root session family across time", () => {
+		// Purpose: footer cost must come from one indexed aggregate over the complete root family.
+		// Inputs and expected output: root, direct-child, nested-child, and auxiliary rows total 1.4 while another root is excluded.
+		// Edge case: timestamps do not limit the aggregate.
+		// Dependencies: isolated system temporary storage and the production root-session index.
+		const store = new UsageStore(temporaryDatabasePath());
+		store.insert(event({ eventId: "root", timestampMs: 1, cost: 0.1 }));
+		store.insert(
+			event({
+				eventId: "direct-child",
+				timestampMs: 2,
+				sessionId: "child-1",
+				cost: 0.2,
+			}),
+		);
+		store.insert(
+			event({
+				eventId: "nested-child",
+				timestampMs: 3,
+				sessionId: "child-2",
+				cost: 0.4,
+			}),
+		);
+		store.insert(
+			event({
+				eventId: "auxiliary",
+				timestampMs: 4,
+				source: "knowledge",
+				cost: 0.7,
+			}),
+		);
+		store.insert(
+			event({
+				eventId: "other-root",
+				rootSessionId: "root-session-2",
+				cost: 5,
+			}),
+		);
+
+		expect(store.queryRootCost("root-session-1")).toBeCloseTo(1.4);
+		expect(store.queryRootCost("missing-root")).toBe(0);
+		store.close();
 	});
 
 	test("deletes only events older than the retention cutoff", () => {

@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import {
 	type AuxiliaryLlmCompletion,
 	type AuxiliaryLlmContext,
@@ -63,6 +63,7 @@ export async function describeImage(options: {
 	readonly retry: RetryConfig;
 	readonly signal: AbortSignal | undefined;
 	readonly completeSimple: AuxiliaryLlmCompletion;
+	readonly onComplete?: (message: AssistantMessage) => void;
 }): Promise<string> {
 	const context: Context = {
 		messages: [
@@ -80,9 +81,9 @@ export async function describeImage(options: {
 			},
 		],
 	};
-	return withRetry(
+	const response = await withRetry(
 		async () => {
-			const response = await completeAuxiliaryLlm(
+			const candidate = await completeAuxiliaryLlm(
 				options.completeSimple,
 				options.runtime,
 				context,
@@ -92,11 +93,13 @@ export async function describeImage(options: {
 					options.runtime,
 				),
 			);
-			if (response.stopReason === "error") {
+			if (candidate.stopReason === "error") {
 				throw createRetryableExternalError("vision model returned an error");
 			}
-			return getAuxiliaryLlmResponseText(response);
+			return candidate;
 		},
 		{ retry: options.retry, signal: options.signal },
 	);
+	options.onComplete?.(response);
+	return getAuxiliaryLlmResponseText(response);
 }

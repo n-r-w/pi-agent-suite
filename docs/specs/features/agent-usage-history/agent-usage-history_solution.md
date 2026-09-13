@@ -235,11 +235,14 @@ CREATE TABLE usage_events (
 
 CREATE INDEX usage_events_timestamp
     ON usage_events(timestamp_ms);
+
+CREATE INDEX usage_events_root_session
+    ON usage_events(root_session_id);
 ```
 
 Each event uses `INSERT OR IGNORE`. The stable publisher-created UUID primary key makes repeated handling of the same event idempotent. Different logical requests always receive different UUIDs even when their usage fields are equal.
 
-The schema is changed directly. No migration, compatibility branch, schema-version constant, or `PRAGMA user_version` is implemented. The old database must be removed before this schema is used.
+The schema is changed directly without migration or compatibility branches. The old database must be removed before this schema is used.
 
 SQLite WAL coordinates concurrent root and subagent connections. A write failure or lock timeout does not fail the completed model request. The event is omitted, and the original database error remains available through runtime diagnostics.
 
@@ -337,9 +340,9 @@ WHERE root_session_id = :rootSessionId;
 
 While the footer is active, one root-only timer repeats this query every 10 seconds. The footer render path reads only the cached total. The timer stops when the footer component is disposed. A maximum 10-second delay is accepted because the footer is informational rather than a billing surface.
 
-The previous assistant-entry scan, `helper-api-cost` custom entries, and `sumHelperApiCost` path are removed. The footer therefore uses the same regular, subagent, and auxiliary event set as the Current `/usage` scope.
+The footer does not scan assistant entries or use cost-only session entries. It uses the same regular, subagent, and auxiliary event set as the Current `/usage` scope.
 
-If the broker is unavailable because usage is disabled, invalid, failed during database initialization, or missing, the footer hides the API-cost segment. An interactive root emits one footer warning even when usage also emits its own error. The footer does not request the broker or warn when the footer or `showApiCost` is disabled.
+If the initial broker read is unavailable because usage is disabled, invalid, failed during database initialization, or missing, the footer hides the API-cost segment and an interactive root emits one warning. If a later refresh is unavailable, the footer hides the cached cost, emits the warning unless that root session already received it, and keeps the timer active. A later valid result restores the segment. The footer warning remains independent from any usage extension startup error. The footer does not request the broker or warn when the footer or `showApiCost` is disabled.
 
 ### 12. TUI
 
@@ -401,7 +404,7 @@ The conversion contract is:
 1,000,000,001 -> 1.1B
 ```
 
-`Cost%`, `Hit%`, `Cost`, and `Saved` data values contain no `%` or `$` symbol. `Cost%` and `Hit%` retain one decimal place. `Cost` and `Saved` use at most seven visible characters, retain up to four fractional digits, and reduce fractional precision as the integer part grows. The formatter selects the highest precision from four through zero that fits after standard rounding. For example, `1551.75686` becomes `1551.76`. If the rounded integer part cannot fit, the formatter selects `K`, `M`, or `B` by magnitude and uses the greatest fractional precision that keeps the complete value within seven characters. For example, `12345678` becomes `12.35M`.
+`Cost%`, `Hit%`, `Cost`, and `Saved` data values contain no `%` or `$` symbol. `Cost%` and `Hit%` retain one decimal place. `Cost` and `Saved` use at most seven visible characters, retain up to four fractional digits, and reduce fractional precision as the integer part grows. The formatter selects the highest precision from four through zero that fits after standard rounding. For example, `1551.75686` becomes `1551.76`. If the rounded integer part cannot fit, the formatter selects `K`, `M`, or `B` by magnitude and uses the greatest fractional precision that keeps the complete value within seven characters. For example, `12345678` becomes `12.346M`.
 
 For the visible range, session scope, and agent selection:
 
@@ -427,8 +430,8 @@ pi-package/extensions/usage/
 └── table-pane.ts
 
 pi-package/shared/
-├── helper-api-cost.ts
 ├── usage-events.ts
+├── usage-read-broker.ts
 └── tui/scroll-indicator.ts
 ```
 
@@ -465,7 +468,7 @@ Unit tests cover:
 - cost-share aggregation, descending model sorting, tie-breaking, and totals;
 - `/usage`, autocomplete, confirmed reset, and cancelled reset;
 - wide and narrow TUI rendering, focus, scrolling, empty state, and disposal;
-- footer current-session-family cost, removal of session-local cost summation, and one warning for every unavailable-usage state.
+- footer current-session-family cost without session scanning and one warning for every unavailable-usage state.
 
 Integration checks verify one `/usage` registration, standalone usage-extension loading, and whole-package loading.
 
@@ -491,7 +494,7 @@ None.
 - `docs/specs/features/agent-usage-history/agent-usage-history_prd.md` - approved requirements.
 - `pi-package/shared/agent-runtime-composition.ts` - main-agent identity and cross-extension event-bus pattern.
 - `pi-package/shared/child-agent-environment.ts` - root and child process distinction.
-- `pi-package/shared/helper-api-cost.ts` - existing auxiliary cost hook.
+- `pi-package/shared/usage-read-broker.ts` - process-local root-family cost query contract.
 - `pi-package/extensions/run-subagent/management-screen/screen.ts` - full-screen TUI behavior.
 - `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` - command, UI, lifecycle, and assistant-event contracts.
 - `node_modules/@earendil-works/pi-ai/dist/types.d.ts` - usage and model pricing contracts.

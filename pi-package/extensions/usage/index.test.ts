@@ -12,17 +12,22 @@ import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
 } from "../../shared/child-agent-environment";
-import { SUBAGENT_AGENT_ID_ENV } from "../../shared/subagent-environment";
+import {
+	SUBAGENT_AGENT_ID_ENV,
+	SUBAGENT_ROOT_SESSION_ID_ENV,
+} from "../../shared/subagent-environment";
 import {
 	USAGE_EVENT_RECORD_CHANNEL,
 	USAGE_EVENT_RECORD_VERSION,
 } from "../../shared/usage-events";
+import { requestUsageRootCost } from "../../shared/usage-read-broker";
 import { readUsageConfig } from "./config";
 import {
 	createUsageExtension,
 	type UsageExtensionDependencies,
 	type UsageStorePort,
 } from "./index";
+import { NO_AGENT_ID } from "./recorder";
 import type { UsageEvent } from "./store";
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -132,6 +137,7 @@ function dependencies(
 	overrides: Partial<UsageExtensionDependencies> = {},
 ): UsageExtensionDependencies {
 	const completeStore: UsageStorePort = {
+		queryRootCost: () => 0,
 		cleanupBefore: () => {},
 		reset: () => {},
 		...store,
@@ -172,6 +178,7 @@ describe("usage extension lifecycle", () => {
 		const store: UsageStorePort = {
 			insert: () => {},
 			queryRange: () => [],
+			queryRootCost: () => 0,
 			cleanupBefore: () => {},
 			reset: () => {},
 		};
@@ -196,6 +203,49 @@ describe("usage extension lifecycle", () => {
 		expect(storeOpens).toBe(1);
 	});
 
+	test("serves root-family cost through the process-local usage broker", () => {
+		// Purpose: the footer must read one complete stored root-family total without owning SQLite.
+		// Inputs and expected output: a root cost request returns 3.25 and forwards the exact root session ID once.
+		// Edge case: the broker is available before session_start because the requester supplies the root identity.
+		// Dependencies: the shared Pi event bus and an injected usage store.
+		const queriedRoots: string[] = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: () => {},
+				queryRange: () => [],
+				queryRootCost: (rootSessionId) => {
+					queriedRoots.push(rootSessionId);
+					return 3.25;
+				},
+			}),
+		)(harness.pi);
+
+		expect(requestUsageRootCost(harness.pi, "root-session-a")).toBe(3.25);
+		expect(queriedRoots).toEqual(["root-session-a"]);
+	});
+
+	test("propagates the original storage initialization failure", () => {
+		// Purpose: Pi's extension loader must receive the actionable database initialization error.
+		// Inputs and expected output: a throwing store factory makes extension setup throw the same Error object.
+		// Edge case: no replacement or generic error hides the original cause.
+		// Dependencies: an injected store factory failure.
+		const harness = createHarness();
+		const originalError = new Error("cannot open usage database");
+		const extension = createUsageExtension(
+			dependencies(
+				{ insert: () => {}, queryRange: () => [] },
+				{
+					openStore: () => {
+						throw originalError;
+					},
+				},
+			),
+		);
+
+		expect(() => extension(harness.pi)).toThrow(originalError);
+	});
+
 	test("does not open storage or register runtime behavior when disabled or invalid", async () => {
 		// Purpose: prove fail-closed startup and one interactive invalid-config error.
 		// Inputs and expected output: explicit disablement and a found empty object make no store calls or commands; the empty object reports once.
@@ -218,6 +268,7 @@ describe("usage extension lifecycle", () => {
 							return {
 								insert: () => {},
 								queryRange: () => [],
+								queryRootCost: () => 0,
 								cleanupBefore: () => {},
 								reset: () => {},
 							};
@@ -243,6 +294,9 @@ describe("usage extension lifecycle", () => {
 
 			expect(opens).toBe(0);
 			expect(harness.commands.size).toBe(0);
+			expect(
+				requestUsageRootCost(harness.pi, "root-session-a"),
+			).toBeUndefined();
 			expect(notifications.length).toBe(config.kind === "invalid" ? 1 : 0);
 		}
 	});
@@ -298,14 +352,15 @@ describe("usage extension lifecycle", () => {
 		expect(inserted[0]).toMatchObject({
 			eventId: "event-a",
 			sessionId: "session-a",
+			rootSessionId: "session-a",
 			agentId: "agent-a",
 			source: "agent-turn",
 		});
 	});
 
-	test("attributes marked child regular responses only with a stable child agent ID", async () => {
-		// Purpose: child regular responses must use the explicit stable subagent identity and ignore unattributable marked children.
-		// Inputs and expected output: marked children with and without PI_SUBAGENT_AGENT_ID produce one event attributed to child-agent.
+	test("attributes marked child responses to their own and inherited root sessions", async () => {
+		// Purpose: child responses must keep their own session and the inherited root family while retaining complete unattributed usage.
+		// Inputs and expected output: marked children with and without PI_SUBAGENT_AGENT_ID produce events under the same inherited root, with the missing agent reserved.
 		// Edge case: root runtime composition is not used as a fallback for a marked child without the ID.
 		// Dependencies: shared child environment markers, lifecycle fakes, model pricing, and an injected store.
 		const inserted: UsageEvent[] = [];
@@ -321,6 +376,7 @@ describe("usage extension lifecycle", () => {
 						environment: {
 							[CHILD_AGENT_PROCESS_ENV]: CHILD_AGENT_PROCESS_ENV_VALUE,
 							[SUBAGENT_AGENT_ID_ENV]: agentId,
+							[SUBAGENT_ROOT_SESSION_ID_ENV]: "root-session",
 						},
 						createEventId: () => `event-${agentId ?? "missing"}`,
 					},
@@ -346,12 +402,19 @@ describe("usage extension lifecycle", () => {
 			);
 		}
 
-		expect(inserted).toHaveLength(1);
+		expect(inserted).toHaveLength(2);
 		expect(inserted[0]).toMatchObject({
 			eventId: "event-child-agent",
 			agentId: "child-agent",
 			sessionId: "session-a",
+			rootSessionId: "root-session",
 			source: "agent-turn",
+		});
+		expect(inserted[1]).toMatchObject({
+			eventId: "event-missing",
+			agentId: NO_AGENT_ID,
+			sessionId: "session-a",
+			rootSessionId: "root-session",
 		});
 	});
 
@@ -396,11 +459,176 @@ describe("usage extension lifecycle", () => {
 		expect(inserted[0]).toMatchObject({
 			eventId: "publisher-event",
 			sessionId: "session-a",
+			rootSessionId: "session-a",
 			agentId: "agent-a",
 			source: "consult-advisor",
 			cost: 0,
 		});
 		expect(inserted[1]?.eventId).toBe("publisher-event");
+	});
+
+	test("records native compaction aggregate and skips extension compaction", async () => {
+		// Purpose: native compaction cost must be recorded once without duplicating custom compaction publication.
+		// Inputs and expected output: a native aggregate inserts one event, while an extension-provided aggregate inserts none.
+		// Edge case: both completed events expose otherwise identical aggregate usage.
+		// Dependencies: Pi session_compact completion contract, active root attribution, and priced current model.
+		const inserted: UsageEvent[] = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: (value) => inserted.push(value),
+				queryRange: () => [],
+			}),
+		)(harness.pi);
+		getAgentRuntimeComposition(harness.pi).setMainAgentContribution({
+			prompt: "main",
+			tools: [],
+			agent: { id: "agent-a" },
+		});
+		const ctx = context({ model: pricedModel() });
+		await emit(harness, "session_start", { type: "session_start" }, ctx);
+		const compactionEntry = {
+			type: "compaction",
+			id: "compact-a",
+			parentId: null,
+			timestamp: "1970-01-01T00:00:10.000Z",
+			summary: "summary",
+			firstKeptEntryId: "entry-a",
+			tokensBefore: 100,
+			usage: assistantMessage().usage,
+		};
+
+		await emit(
+			harness,
+			"session_compact",
+			{ type: "session_compact", compactionEntry, fromExtension: false },
+			ctx,
+		);
+		await emit(
+			harness,
+			"session_compact",
+			{ type: "session_compact", compactionEntry, fromExtension: true },
+			ctx,
+		);
+
+		expect(inserted).toHaveLength(1);
+		expect(inserted[0]).toMatchObject({
+			source: "native-compaction",
+			sessionId: "session-a",
+			rootSessionId: "session-a",
+			agentId: "agent-a",
+			provider: "provider-a",
+			model: "model-a",
+			input: 10,
+			output: 20,
+		});
+	});
+
+	test("records the completed branch summary aggregate", async () => {
+		// Purpose: branch navigation summary consumption must enter usage history at its completed event.
+		// Inputs and expected output: one session_tree summary aggregate inserts one branch-summary event.
+		// Edge case: the summary timestamp is the event timestamp used for persistence.
+		// Dependencies: Pi session_tree completion contract, active root attribution, and priced current model.
+		const inserted: UsageEvent[] = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: (value) => inserted.push(value),
+				queryRange: () => [],
+			}),
+		)(harness.pi);
+		const ctx = context({ model: pricedModel() });
+		await emit(harness, "session_start", { type: "session_start" }, ctx);
+
+		await emit(
+			harness,
+			"session_tree",
+			{
+				type: "session_tree",
+				newLeafId: "leaf-b",
+				oldLeafId: "leaf-a",
+				summaryEntry: {
+					type: "branch_summary",
+					id: "summary-a",
+					parentId: null,
+					timestamp: "1970-01-01T00:00:10.000Z",
+					fromId: "leaf-a",
+					summary: "summary",
+					usage: assistantMessage().usage,
+				},
+			},
+			ctx,
+		);
+
+		expect(inserted).toHaveLength(1);
+		expect(inserted[0]).toMatchObject({
+			source: "branch-summary",
+			sessionId: "session-a",
+			rootSessionId: "session-a",
+			agentId: NO_AGENT_ID,
+			provider: "provider-a",
+			model: "model-a",
+		});
+	});
+
+	test("records only complete native aggregates", async () => {
+		// Purpose: native aggregate paths must retain the existing all-or-nothing validation contract.
+		// Inputs and expected output: one complete event persists while missing usage and missing current model do not.
+		// Edge case: session and root identities are otherwise complete.
+		// Dependencies: Pi completion events and active usage runtime only.
+		const inserted: UsageEvent[] = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: (value) => inserted.push(value),
+				queryRange: () => [],
+			}),
+		)(harness.pi);
+		const modelContext = context({ model: pricedModel() });
+		await emit(
+			harness,
+			"session_start",
+			{ type: "session_start" },
+			modelContext,
+		);
+		await emit(
+			harness,
+			"session_compact",
+			{
+				type: "session_compact",
+				fromExtension: false,
+				compactionEntry: {
+					timestamp: "1970-01-01T00:00:10.000Z",
+					usage: assistantMessage().usage,
+				},
+			},
+			modelContext,
+		);
+		await emit(
+			harness,
+			"session_compact",
+			{
+				type: "session_compact",
+				fromExtension: false,
+				compactionEntry: { timestamp: "1970-01-01T00:00:10.000Z" },
+			},
+			modelContext,
+		);
+		await emit(
+			harness,
+			"session_tree",
+			{
+				type: "session_tree",
+				summaryEntry: {
+					timestamp: "1970-01-01T00:00:10.000Z",
+					usage: assistantMessage().usage,
+				},
+			},
+			context({ model: undefined }),
+		);
+
+		expect(inserted).toHaveLength(1);
+		expect(inserted[0]?.source).toBe("native-compaction");
 	});
 
 	test("reports insertion failures through runtime diagnostics without failing responses", async () => {
@@ -625,6 +853,7 @@ describe("usage extension lifecycle", () => {
 				eventId: "b",
 				timestampMs: 199_999_000,
 				sessionId: "s",
+				rootSessionId: "session-a",
 				agentId: "a",
 				source: "agent-turn",
 				provider: "zeta",
@@ -640,6 +869,7 @@ describe("usage extension lifecycle", () => {
 				eventId: "a",
 				timestampMs: 199_999_000,
 				sessionId: "s",
+				rootSessionId: "session-a",
 				agentId: "b",
 				source: "agent-turn",
 				provider: "alpha",
@@ -709,6 +939,7 @@ describe("usage extension lifecycle", () => {
 			200_000_000,
 		]);
 		expect(first).toContain("24h");
+		expect(first).toContain("Sessions: [Current] All");
 		expect(first).toContain("All agents");
 		expect(first.indexOf("Total")).toBeLessThan(first.indexOf("alpha/m"));
 		expect(first.indexOf("alpha/m")).toBeLessThan(first.indexOf("zeta/m"));

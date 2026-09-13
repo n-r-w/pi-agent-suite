@@ -4,6 +4,7 @@ const PERCENT_SCALE = 100;
 
 export interface UsageRow {
 	readonly label: string;
+	readonly costPercent: number;
 	readonly tokens: number;
 	readonly cacheRead: number;
 	readonly cacheWrite: number;
@@ -21,7 +22,7 @@ interface Totals {
 	saved: number;
 }
 
-/** Builds the All agents total and lexical provider/model breakdown. */
+/** Builds the All agents total and cost-ranked provider/model breakdown. */
 export function aggregateAllAgents(events: readonly UsageEvent[]): UsageRow[] {
 	if (events.length === 0) {
 		return [];
@@ -37,11 +38,16 @@ export function aggregateAllAgents(events: readonly UsageEvent[]): UsageRow[] {
 		byModel.set(label, modelTotals);
 	}
 
+	const costPercent = (cost: number): number =>
+		total.cost === 0 ? 0 : (cost / total.cost) * PERCENT_SCALE;
 	return [
-		toRow("Total", total),
+		toRow("Total", total, total.cost === 0 ? 0 : PERCENT_SCALE),
 		...[...byModel.entries()]
-			.sort(([left], [right]) => left.localeCompare(right))
-			.map(([label, totals]) => toRow(label, totals)),
+			.sort(
+				([leftLabel, left], [rightLabel, right]) =>
+					right.cost - left.cost || leftLabel.localeCompare(rightLabel),
+			)
+			.map(([label, totals]) => toRow(label, totals, costPercent(totals.cost))),
 	];
 }
 
@@ -65,10 +71,11 @@ function addEvent(totals: Totals, event: UsageEvent): void {
 	totals.saved += event.saved;
 }
 
-function toRow(label: string, totals: Totals): UsageRow {
+function toRow(label: string, totals: Totals, costPercent: number): UsageRow {
 	const cacheDenominator = totals.input + totals.cacheRead + totals.cacheWrite;
 	return {
 		label,
+		costPercent,
 		tokens: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
 		cacheRead: totals.cacheRead,
 		cacheWrite: totals.cacheWrite,

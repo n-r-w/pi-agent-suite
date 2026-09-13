@@ -7,6 +7,7 @@ import type { UsageEvent } from "./store";
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const OPENED_AT = 100 * DAY_MS;
 const SCROLL_INDICATOR_PATTERN = /[░█]/;
+const ALL_SCOPE_TOTAL_PATTERN = /Total\s+100\.0\s+180/;
 
 function plainText(value: string): string {
 	return value
@@ -20,6 +21,7 @@ function event(overrides: Partial<UsageEvent>): UsageEvent {
 		eventId: "event",
 		timestampMs: OPENED_AT,
 		sessionId: "session",
+		rootSessionId: "root-session",
 		agentId: "agent-b",
 		source: "agent-turn",
 		provider: "provider",
@@ -95,7 +97,7 @@ function createScreen(
 	};
 	return new UsageScreen(
 		events,
-		OPENED_AT,
+		{ openedAt: OPENED_AT, currentRootSessionId: "root-session" },
 		close,
 		runtime as UsageScreenRuntime,
 	);
@@ -138,7 +140,8 @@ describe("usage snapshot screen", () => {
 		const screen = createScreen(manyEvents(), () => {}, 12);
 
 		screen.handleInput("\u001b[Z");
-		screen.handleInput("\u001b[C");
+		screen.handleInput("\u001b[Z");
+		screen.handleInput("\t");
 		screen.handleInput("\t");
 		screen.handleInput("\u001b[B");
 		screen.handleInput("\t");
@@ -152,7 +155,7 @@ describe("usage snapshot screen", () => {
 		expect(lines).toHaveLength(12);
 		expect(lines[0]?.startsWith("┌─ USAGE ")).toBe(true);
 		expect(lines.every((line) => visibleWidth(line) <= 100)).toBe(true);
-		expect(plainText(rendered)).toContain("Range: 24h [7d] 30d 90d");
+		expect(plainText(rendered)).toContain("Range: 1h 24h [7d] 30d 90d");
 		expect(rendered).toContain("\u001b[45m agent-a");
 		expect(rendered).toContain("Agents");
 		expect(rendered).toContain("Saved");
@@ -171,14 +174,17 @@ describe("usage snapshot screen", () => {
 		screen.handleInput("\t");
 		const range = screen.render(200);
 		screen.handleInput("\t");
+		const sessions = screen.render(200);
+		screen.handleInput("\t");
 		const agentsAgain = screen.render(200);
 		const inactive = (label: string) => `\u001b[31m${label}\u001b[39m`;
 		const active = (label: string) => `\u001b[36m${label}\u001b[39m`;
 		const headers = [
 			"Model",
+			"Cost%",
 			"Tokens",
-			"Read",
-			"Write",
+			"CacheR",
+			"CacheW",
 			"Hit%",
 			"Cost",
 			"Saved",
@@ -190,6 +196,7 @@ describe("usage snapshot screen", () => {
 		expect(table[3]).toContain(inactive("Agents"));
 		expect(range[1]).toContain(active("Range"));
 		expect(range[3]).toContain(inactive("Agents"));
+		expect(sessions[1]).toContain(active("Sessions"));
 		expect(agentsAgain[3]).toContain(active("Agents"));
 		expect(agents[5]).toContain("\u001b[44m All agents");
 		expect(table[5]).toContain("\u001b[45m All agents");
@@ -202,6 +209,38 @@ describe("usage snapshot screen", () => {
 		}
 	});
 
+	test("defaults to Current and operates the Sessions scope with inactive pane thumbs", () => {
+		// Purpose: the session selector must expose one immutable current-family view and the complete opening snapshot.
+		// Inputs and expected output: Current hides another root, Sessions focus uses borderAccent, and Right reveals All.
+		// Edge case: both overflowing pane thumbs remain inactive while Sessions owns focus.
+		// Dependencies: root-family snapshot preparation, four-zone keyboard navigation, and pane scroll colors.
+		const events = Array.from({ length: 18 }, (_, index) =>
+			event({
+				eventId: `scope-${index}`,
+				rootSessionId: index < 9 ? "root-session" : "other-root",
+				sessionId: `session-${index}`,
+				agentId: `agent-${String(index).padStart(2, "0")}`,
+				provider: `provider-${String(index).padStart(2, "0")}`,
+				model: `model-${String(index).padStart(2, "0")}`,
+			}),
+		);
+		const screen = createScreen(events, () => {}, 12);
+		const current = screen.render(160).join("\n");
+		screen.handleInput("\u001b[Z");
+		const focused = screen.render(160).join("\n");
+		screen.handleInput("\u001b[C");
+		const all = screen.render(160).join("\n");
+
+		expect(plainText(current)).toContain("Sessions: [Current] All");
+		expect(current).toContain("agent-00");
+		expect(current).not.toContain("agent-09");
+		expect(focused).toContain("\u001b[36mSessions\u001b[39m");
+		expect(focused).toContain("\u001b[33m█\u001b[39m");
+		expect(focused).not.toContain("\u001b[32m█\u001b[39m");
+		expect(plainText(all)).toContain("Sessions: Current [All]");
+		expect(plainText(all)).toMatch(ALL_SCOPE_TOTAL_PATTERN);
+	});
+
 	test("renders active-zone keyboard hints as the final in-frame content row", () => {
 		// Purpose: users must see the available keyboard actions for the currently focused usage zone.
 		// Inputs and expected output: wide and narrow screens show zone-specific configured and raw-key hints immediately above the bottom border.
@@ -210,7 +249,9 @@ describe("usage snapshot screen", () => {
 		const wide = createScreen(manyEvents(), () => {});
 		const wideAgents = wide.render(100).at(-2) ?? "";
 		wide.handleInput("\u001b[Z");
+		wide.handleInput("\u001b[Z");
 		const wideRange = wide.render(100).at(-2) ?? "";
+		wide.handleInput("\t");
 		wide.handleInput("\t");
 		wide.handleInput("\t");
 		const wideTable = wide.render(100).at(-2) ?? "";
@@ -250,7 +291,7 @@ describe("usage snapshot screen", () => {
 		expect(wide.at(-2)?.startsWith("│")).toBe(true);
 		expect(wide.at(-1)).toBe(`└${"─".repeat(98)}┘`);
 		expect(narrow).toHaveLength(12);
-		expect(narrow[4]).toBe(`├${"─".repeat(34)}┤`);
+		expect(narrow[5]).toBe(`├${"─".repeat(34)}┤`);
 		expect(narrow.at(-3)).toBe(`├${"─".repeat(34)}┤`);
 		expect(narrow.at(-2)?.startsWith("│")).toBe(true);
 		expect(narrow.at(-1)).toBe(`└${"─".repeat(34)}┘`);
@@ -269,7 +310,7 @@ describe("usage snapshot screen", () => {
 		const agents = screen.render(36).join("\n");
 		screen.handleInput("\r");
 		const initialTable = screen.render(36).join("\n");
-		for (let index = 0; index < 8; index += 1) {
+		for (let index = 0; index < 12; index += 1) {
 			screen.handleInput("\u001b[C");
 		}
 		const tableLines = screen.render(36);
@@ -278,6 +319,7 @@ describe("usage snapshot screen", () => {
 		const returned = screen.render(36).join("\n");
 		screen.handleInput("\u001b");
 
+		expect(plainText(agents)).toContain("Sessions: [Current] All");
 		expect(agents).toContain("Agents");
 		expect(agents).not.toContain("Model");
 		expect(initialTable).toContain("Model");
@@ -290,7 +332,7 @@ describe("usage snapshot screen", () => {
 
 	test("shows the approved empty state without changing the selected range", () => {
 		// Purpose: the screen must explain an empty range without silently changing the selected range.
-		// Inputs and expected output: a 20-day-old event leaves the opening 24h range selected and shows the approved empty text.
+		// Inputs and expected output: a 20-day-old event leaves the opening 7d range selected and shows the approved empty text.
 		// Edge case: broader-range data exists in the same immutable snapshot.
 		// Dependencies: immutable range filtering and responsive screen rendering only.
 		const screen = createScreen(
@@ -303,7 +345,7 @@ describe("usage snapshot screen", () => {
 		const lines = screen.render(100);
 		const rendered = lines.join("\n");
 
-		expect(plainText(rendered)).toContain("Range: [24h] 7d 30d 90d");
+		expect(plainText(rendered)).toContain("Range: 1h 24h [7d] 30d 90d");
 		expect(lines[3]).toContain(
 			"│\u001b[36mNo usage in selected range\u001b[39m",
 		);

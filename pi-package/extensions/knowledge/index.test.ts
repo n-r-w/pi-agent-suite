@@ -517,6 +517,40 @@ describe("knowledge extension lifecycle", () => {
 		});
 	});
 
+	test("publishes complete knowledge responses from the trigger boundary", async () => {
+		// Purpose: each accepted knowledge completion must publish its complete usage once.
+		// Input and expected output: one NOT_FOUND extraction emits one knowledge usage request with the original response.
+		// Edge case: a no-op domain result still consumed one completed model request.
+		// Dependencies: workflow trigger runtime, fake completion, and shared extension event bus.
+		const dataDir = await mkdtemp(join(tmpdir(), "pi-knowledge-usage-"));
+		temporaryDirectories.push(dataDir);
+		const fake = createPi();
+		const usageEvents: unknown[] = [];
+		fake.pi.events.on("pi-agent-suite.usage.record.v1", (value) =>
+			usageEvents.push(value),
+		);
+		const message = response("NOT_FOUND");
+		knowledgeExtension(fake.pi, {
+			readConfig: () => ({ kind: "valid", config: config(dataDir) }),
+			resolveProject: () => readWriteResolution(),
+			completeSimple: async () => message,
+			runtimeEnv: {},
+		});
+		const runner = getWorkflowTriggerRunner(fake.pi);
+		if (runner === undefined) {
+			throw new Error("workflow trigger runner missing");
+		}
+
+		await runner.run(
+			{ type: "local_knowledge_accumulation" },
+			createContext(fake.notifications),
+			undefined,
+		);
+
+		expect(usageEvents).toHaveLength(1);
+		expect(usageEvents[0]).toMatchObject({ source: "knowledge", message });
+	});
+
 	/**
 	 * Proves loaded skill roots are retained for the next workflow-trigger projection replay.
 	 * Inputs and expected outputs: one skill base directory is forwarded to the injected replay boundary.

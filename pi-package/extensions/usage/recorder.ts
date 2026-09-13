@@ -3,8 +3,12 @@ import type { UsageEvent, UsageEventSource } from "./store";
 
 const TOKENS_PER_MILLION = 1_000_000;
 
+/** Cannot collide with agent IDs sourced from file names because paths cannot contain NUL. */
+export const NO_AGENT_ID = "\u0000";
+
 export interface UsageAttribution {
 	readonly sessionId: string | undefined;
+	readonly rootSessionId: string | undefined;
 	readonly agentId: string | undefined;
 	readonly source?: UsageEventSource;
 }
@@ -18,7 +22,7 @@ export function createAssistantUsageEvent(
 ): UsageEvent | undefined {
 	if (
 		!isNonEmptyString(attribution.sessionId) ||
-		!isNonEmptyString(attribution.agentId) ||
+		!isNonEmptyString(attribution.rootSessionId) ||
 		!isNonEmptyString(message.provider) ||
 		!isNonEmptyString(message.model) ||
 		!isFiniteNonNegative(message.timestamp)
@@ -58,7 +62,10 @@ export function createAssistantUsageEvent(
 		eventId: createEventId(),
 		timestampMs: message.timestamp,
 		sessionId: attribution.sessionId,
-		agentId: attribution.agentId,
+		rootSessionId: attribution.rootSessionId,
+		agentId: isNonEmptyString(attribution.agentId)
+			? attribution.agentId
+			: NO_AGENT_ID,
 		source: attribution.source ?? "agent-turn",
 		provider: message.provider,
 		model: message.model,

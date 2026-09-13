@@ -30,7 +30,6 @@ import {
 	replayContextProjection,
 } from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
-import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	appendKnowledgeBlock,
 	readKnowledgeBlock,
@@ -55,6 +54,7 @@ import {
 } from "../../shared/retry";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
+import { publishUsageEvent } from "../../shared/usage-events";
 import {
 	renderConsultAdvisorCall,
 	renderConsultAdvisorResult,
@@ -192,7 +192,7 @@ export default function consultAdvisor(
 				loadedSkillRoots,
 				contextFiles,
 				recordCost: (message) => {
-					recordHelperApiCost(pi, "consult-advisor", message);
+					publishUsageEvent(pi, "consult-advisor", message);
 				},
 			});
 		},

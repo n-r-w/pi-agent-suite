@@ -14,10 +14,11 @@ const DAY_MS =
 	SECONDS_PER_MINUTE *
 	MILLISECONDS_PER_SECOND;
 
-export const USAGE_RANGES = ["24h", "7d", "30d", "90d"] as const;
+export const USAGE_RANGES = ["1h", "24h", "7d", "30d", "90d"] as const;
 export type UsageRange = (typeof USAGE_RANGES)[number];
 
 const RANGE_DURATION_MS: Readonly<Record<UsageRange, number>> = {
+	"1h": MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND,
 	"24h": DAY_MS,
 	"7d": DAYS_PER_WEEK * DAY_MS,
 	"30d": DAYS_30 * DAY_MS,
@@ -30,33 +31,52 @@ export interface PreparedUsageRange {
 	readonly agentRows: ReadonlyMap<string, readonly UsageRow[]>;
 }
 
-export type PreparedUsageSnapshot = Readonly<
+export type PreparedUsageScope = Readonly<
 	Record<UsageRange, PreparedUsageRange>
 >;
 
-/** Prepares every selectable range and agent view from one opening event scan. */
+export interface PreparedUsageSnapshot {
+	readonly current: PreparedUsageScope;
+	readonly all: PreparedUsageScope;
+}
+
+/** Prepares every selectable range, session scope, and agent view from one opening event scan. */
 export function prepareUsageSnapshot(
 	events: readonly UsageEvent[],
 	openedAt: number,
+	currentRootSessionId: string,
 ): PreparedUsageSnapshot {
-	const rangeEvents: Record<UsageRange, UsageEvent[]> = {
-		"24h": [],
-		"7d": [],
-		"30d": [],
-		"90d": [],
-	};
+	const allRangeEvents = createRangeEvents();
+	const currentRangeEvents = createRangeEvents();
 	for (const event of events) {
 		if (event.timestampMs > openedAt) {
 			continue;
 		}
 		for (const range of USAGE_RANGES) {
 			if (event.timestampMs >= openedAt - RANGE_DURATION_MS[range]) {
-				rangeEvents[range].push(event);
+				allRangeEvents[range].push(event);
+				if (event.rootSessionId === currentRootSessionId) {
+					currentRangeEvents[range].push(event);
+				}
 			}
 		}
 	}
 
 	return {
+		current: prepareScope(currentRangeEvents),
+		all: prepareScope(allRangeEvents),
+	};
+}
+
+function createRangeEvents(): Record<UsageRange, UsageEvent[]> {
+	return { "1h": [], "24h": [], "7d": [], "30d": [], "90d": [] };
+}
+
+function prepareScope(
+	rangeEvents: Readonly<Record<UsageRange, readonly UsageEvent[]>>,
+): PreparedUsageScope {
+	return {
+		"1h": prepareRange(rangeEvents["1h"]),
 		"24h": prepareRange(rangeEvents["24h"]),
 		"7d": prepareRange(rangeEvents["7d"]),
 		"30d": prepareRange(rangeEvents["30d"]),

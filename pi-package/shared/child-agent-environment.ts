@@ -14,7 +14,7 @@ export function withChildAgentProcessMarker(
 	};
 }
 
-/** Returns true when the current process is a marked child agent process. */
+/** Returns true when the supplied environment marks a child agent process. */
 export function isChildAgentProcess(env: NodeJS.ProcessEnv): boolean {
 	return env[CHILD_AGENT_PROCESS_ENV] === CHILD_AGENT_PROCESS_ENV_VALUE;
 }

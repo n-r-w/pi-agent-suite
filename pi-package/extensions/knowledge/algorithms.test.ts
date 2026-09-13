@@ -172,6 +172,7 @@ function createOptions(options: {
 	readonly reportProgress?: Parameters<
 		typeof runLocalKnowledgeAccumulation
 	>[0]["reportProgress"];
+	readonly completed?: AssistantMessage[];
 }): Parameters<typeof runLocalKnowledgeAccumulation>[0] {
 	const projectPaths = createProjectPaths("/catalog", "project-a-digest");
 	const branchPaths = createBranchPaths(projectPaths, "feature/a");
@@ -235,10 +236,63 @@ function createOptions(options: {
 		...(options.reportProgress === undefined
 			? {}
 			: { reportProgress: options.reportProgress }),
+		...(options.completed === undefined
+			? {}
+			: {
+					onComplete: (message: AssistantMessage) =>
+						options.completed?.push(message),
+				}),
 	};
 }
 
 describe("knowledge accumulation algorithms", () => {
+	test("publishes each accepted knowledge model response", async () => {
+		// Purpose: each completed knowledge request must expose its full assistant usage once.
+		// Input and expected output: one accepted extraction response reports that same assistant message.
+		// Edge case: a NOT_FOUND domain result is still a completed consumed model response.
+		// Dependencies: deterministic completion and injected completion observer.
+		const completed: AssistantMessage[] = [];
+		const options = createOptions({
+			owner: new RecordingOwner(),
+			snapshots: { global: null, local: null },
+			outputs: ["NOT_FOUND"],
+			contexts: [],
+			completed,
+		});
+
+		await runLocalKnowledgeAccumulation(options);
+
+		expect(completed).toHaveLength(1);
+		expect(completed[0]).toMatchObject({
+			provider: MODEL.provider,
+			model: MODEL.id,
+			usage: expect.any(Object),
+		});
+	});
+
+	test("publishes a complete failed knowledge response before rejecting it", async () => {
+		// Purpose: a returned provider-error response with complete usage must remain observable.
+		// Input and expected output: one failed response is reported once and the algorithm still rejects with its domain error.
+		// Edge case: the returned error is final and is not a hidden retry attempt.
+		// Dependencies: deterministic failed completion and injected completion observer.
+		const completed: AssistantMessage[] = [];
+		const options = createOptions({
+			owner: new RecordingOwner(),
+			snapshots: { global: null, local: null },
+			outputs: ["provider failure"],
+			stopReasons: ["error"],
+			contexts: [],
+			completed,
+		});
+
+		await expect(runLocalKnowledgeAccumulation(options)).rejects.toThrow(
+			"knowledge model request failed",
+		);
+		expect(completed).toHaveLength(1);
+		expect(completed[0]?.stopReason).toBe("error");
+		expect(completed[0]?.usage).toEqual(response("x").usage);
+	});
+
 	/**
 	 * Proves exact NOT_FOUND ends local extraction without merge or storage changes.
 	 * Inputs and expected outputs: projected branch context is wrapped as explicit summary source in one extraction user message.

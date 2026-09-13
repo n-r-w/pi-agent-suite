@@ -31,7 +31,7 @@ function visibleColumnStart(
 	value: string,
 	columnWidth: number,
 ): number {
-	const index = line.indexOf(value);
+	const index = line.lastIndexOf(value);
 	if (index < 0) {
 		throw new Error(`Missing table value: ${value}`);
 	}
@@ -50,6 +50,7 @@ describe("usage table pane", () => {
 		const rows: UsageRow[] = [
 			{
 				label: "Total",
+				costPercent: 100,
 				tokens: 101,
 				cacheRead: 1001,
 				cacheWrite: 2001,
@@ -59,6 +60,7 @@ describe("usage table pane", () => {
 			},
 			{
 				label: "short/model",
+				costPercent: 10.2,
 				tokens: 102,
 				cacheRead: 1002,
 				cacheWrite: 2002,
@@ -68,6 +70,7 @@ describe("usage table pane", () => {
 			},
 			{
 				label: "provider/模型模型模型模型模型模型模型模型模型",
+				costPercent: 10.3,
 				tokens: 103,
 				cacheRead: 1003,
 				cacheWrite: 2003,
@@ -85,12 +88,13 @@ describe("usage table pane", () => {
 			theme,
 		}).lines;
 		const columns: readonly ColumnExpectation[] = [
+			{ width: 8, values: ["Cost%", "100.0", "10.2", "10.3"] },
 			{ width: 8, values: ["Tokens", "101", "102", "103"] },
-			{ width: 9, values: ["Read", "2K", "2K", "2K"] },
-			{ width: 9, values: ["Write", "3K", "3K", "3K"] },
+			{ width: 9, values: ["CacheR", "2K", "2K", "2K"] },
+			{ width: 9, values: ["CacheW", "3K", "3K", "3K"] },
 			{ width: 8, values: ["Hit%", "11.1", "11.2", "11.3"] },
-			{ width: 10, values: ["Cost", "1.1111", "1.1112", "1.1113"] },
-			{ width: 10, values: ["Saved", "2.1111", "2.1112", "2.1113"] },
+			{ width: 7, values: ["Cost", "1.1111", "1.1112", "1.1113"] },
+			{ width: 7, values: ["Saved", "2.1111", "2.1112", "2.1113"] },
 		];
 
 		for (const column of columns) {
@@ -104,7 +108,7 @@ describe("usage table pane", () => {
 	test("renders token counts with upward rounding and unit promotion", () => {
 		// Purpose: token columns must use the approved compact display contract.
 		// Inputs and expected output: each boundary example renders identically in Tokens, Read, and Write.
-		// Edge case: 999,999 promotes from rounded thousands to 1.0M, and millions round upward to one decimal place.
+		// Edge case: 999,999 and 999,999,999 promote to the next suffix after upward rounding.
 		// Dependencies: production table rendering only.
 		const examples = [
 			[123, "123"],
@@ -114,10 +118,14 @@ describe("usage table pane", () => {
 			[999_999, "1.0M"],
 			[1_000_000, "1.0M"],
 			[2_000_001, "2.1M"],
+			[999_999_999, "1.0B"],
+			[1_000_000_000, "1.0B"],
+			[1_000_000_001, "1.1B"],
 		] as const;
 		const rows = examples.map(
 			([value], index): UsageRow => ({
 				label: `example-${index}`,
+				costPercent: 12.3,
 				tokens: value,
 				cacheRead: value,
 				cacheWrite: value,
@@ -139,7 +147,7 @@ describe("usage table pane", () => {
 			const cells = (lines[index + 1] ?? "")
 				.trim()
 				.split(CELL_SEPARATOR_PATTERN);
-			expect(cells.slice(1, 4)).toEqual([expected, expected, expected]);
+			expect(cells.slice(2, 5)).toEqual([expected, expected, expected]);
 		}
 	});
 
@@ -152,6 +160,7 @@ describe("usage table pane", () => {
 			[
 				{
 					label: "provider/model",
+					costPercent: 45.6,
 					tokens: 123,
 					cacheRead: 456,
 					cacheWrite: 789,
@@ -171,17 +180,69 @@ describe("usage table pane", () => {
 		).lines;
 		const cells = (lines[1] ?? "").trim().split(CELL_SEPARATOR_PATTERN);
 
-		expect(cells.slice(4)).toEqual(["12.3", "1.2345", "2.3456"]);
+		expect(cells.slice(1)).toEqual([
+			"45.6",
+			"123",
+			"456",
+			"789",
+			"12.3",
+			"1.2345",
+			"2.3456",
+		]);
+	});
+
+	test("keeps monetary values within seven visible characters", () => {
+		// Purpose: Cost and Saved must preserve useful precision without widening their cells.
+		// Inputs and expected output: ordinary and large values use the greatest fitting precision and compact suffixes only when needed.
+		// Edge case: rounding grows the integer part, and large values select M notation without a dollar sign.
+		// Dependencies: production row formatting and terminal visible-width measurement.
+		const values = [
+			[0, "0.0000"],
+			[1.23456, "1.2346"],
+			[1551.75686, "1551.76"],
+			[9_999_999.6, "10.000M"],
+			[12_345_678, "12.346M"],
+		] as const;
+		const rows = values.map(
+			([value], index): UsageRow => ({
+				label: `money-${index}`,
+				costPercent: 100,
+				tokens: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				hitPercent: 0,
+				cost: value,
+				saved: value,
+			}),
+		);
+		const lines = renderTablePane(rows, {
+			width: 200,
+			height: 10,
+			verticalOffset: 0,
+			horizontalOffset: 0,
+			focused: false,
+			theme,
+		}).lines;
+
+		for (const [index, [, expected]] of values.entries()) {
+			const cells = (lines[index + 1] ?? "")
+				.trim()
+				.split(CELL_SEPARATOR_PATTERN);
+			expect(cells.slice(-2)).toEqual([expected, expected]);
+			expect(visibleWidth(expected)).toBeLessThanOrEqual(7);
+			expect(expected).not.toContain("$");
+		}
 	});
 
 	test("colors every header as one focus group and leaves data unstyled", () => {
-		// Purpose: table focus must apply to the complete seven-column header instead of only Model.
+		// Purpose: table focus must apply to the complete eight-column header instead of only Model.
 		// Inputs and expected output: inactive headers use accent, active headers use borderAccent, and the data row has normal text color.
 		// Edge case: all headers change together without styling any numeric data cell.
 		// Dependencies: Pi theme foreground colors and production table rendering.
 		const rows: UsageRow[] = [
 			{
 				label: "provider/model",
+				costPercent: 100,
 				tokens: 123,
 				cacheRead: 456,
 				cacheWrite: 789,
@@ -204,9 +265,10 @@ describe("usage table pane", () => {
 
 		for (const header of [
 			"Model",
+			"Cost%",
 			"Tokens",
-			"Read",
-			"Write",
+			"CacheR",
+			"CacheW",
 			"Hit%",
 			"Cost",
 			"Saved",
@@ -227,6 +289,7 @@ describe("usage table pane", () => {
 			{ length: 10 },
 			(_, index): UsageRow => ({
 				label: `provider/model-with-a-long-name-${index}`,
+				costPercent: 10,
 				tokens: index + 1,
 				cacheRead: index + 2,
 				cacheWrite: index + 3,

@@ -857,6 +857,7 @@ function createRootSupervisor(options: {
 		bridge: options.bridge,
 		childStartupConfig: options.childStartupConfig,
 		recordChildStartupAttempt: options.recordChildStartupAttempt,
+		rootSessionId: options.ctx.sessionManager.getSessionId(),
 		sessionsDir: projectSessionDirectory(
 			join(getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR), "sessions"),
 			options.ctx.cwd,

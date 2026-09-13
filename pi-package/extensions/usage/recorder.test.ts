@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { createAssistantUsageEvent, type UsageAttribution } from "./recorder";
+import {
+	createAssistantUsageEvent,
+	NO_AGENT_ID,
+	type UsageAttribution,
+} from "./recorder";
 
 function model(overrides: Partial<Model<Api>> = {}): Model<Api> {
 	return {
@@ -72,7 +76,11 @@ describe("regular assistant usage recording", () => {
 		expect(
 			createAssistantUsageEvent(
 				message(),
-				{ sessionId: "session-a", agentId: "agent-a" },
+				{
+					sessionId: "session-a",
+					rootSessionId: "root-session-a",
+					agentId: "agent-a",
+				},
 				() => pricedModel,
 				() => "event-a",
 			),
@@ -80,6 +88,7 @@ describe("regular assistant usage recording", () => {
 			eventId: "event-a",
 			timestampMs: 5_000,
 			sessionId: "session-a",
+			rootSessionId: "root-session-a",
 			agentId: "agent-a",
 			source: "agent-turn",
 			provider: "provider-a",
@@ -95,7 +104,7 @@ describe("regular assistant usage recording", () => {
 
 	test("ignores the complete request when required data is missing or invalid", () => {
 		// Purpose: prevent partial or synthetic history rows.
-		// Inputs and expected output: missing session, agent, pricing, identity, timestamp, usage, or cost each produce no event.
+		// Inputs and expected output: missing session-family, pricing, model identity, timestamp, usage, or cost produces no event; a missing agent uses the reserved identity.
 		// Edge case: unsafe, negative, and non-finite numeric values are rejected as complete units.
 		// Dependencies: only deterministic attribution and model lookup fakes.
 		const validModel = model();
@@ -103,6 +112,7 @@ describe("regular assistant usage recording", () => {
 			candidate: AssistantMessage,
 			attribution: UsageAttribution = {
 				sessionId: "session-a",
+				rootSessionId: "root-session-a",
 				agentId: "agent-a",
 			},
 			lookup: () => Model<Api> | undefined = () => validModel,
@@ -115,11 +125,26 @@ describe("regular assistant usage recording", () => {
 			);
 
 		expect(
-			create(message(), { sessionId: undefined, agentId: "agent-a" }),
+			create(message(), {
+				sessionId: undefined,
+				rootSessionId: "root-session-a",
+				agentId: "agent-a",
+			}),
 		).toBeUndefined();
 		expect(
-			create(message(), { sessionId: "session-a", agentId: "" }),
+			create(message(), {
+				sessionId: "session-a",
+				rootSessionId: undefined,
+				agentId: "agent-a",
+			}),
 		).toBeUndefined();
+		expect(
+			create(message(), {
+				sessionId: "session-a",
+				rootSessionId: "root-session-a",
+				agentId: undefined,
+			}),
+		).toMatchObject({ agentId: NO_AGENT_ID });
 		expect(create(message(), undefined, () => undefined)).toBeUndefined();
 		expect(
 			create(message(), undefined, () => model({ cost: undefined as never })),

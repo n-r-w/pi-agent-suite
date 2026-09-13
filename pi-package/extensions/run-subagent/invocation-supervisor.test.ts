@@ -20,6 +20,7 @@ import type { ChildStartupConfig } from "../../shared/child-startup-config";
 import { COMPACTION_TRIGGER_INTERRUPTION_TYPE } from "../../shared/compaction-trigger-protocol";
 import {
 	SUBAGENT_OWNER_SESSION_ENV,
+	SUBAGENT_ROOT_SESSION_ID_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
 	SUBAGENT_WORKFLOW_IDS_ENV,
 } from "../../shared/subagent-environment";
@@ -267,6 +268,7 @@ interface SupervisorHarnessOptions {
 	readonly onSpawnEnvironment?: (environment: NodeJS.ProcessEnv) => void;
 	readonly onSpawn?: (args: readonly string[], cwd: string) => void;
 	readonly sessionsDir?: string;
+	readonly rootSessionId?: string;
 	readonly childStartupConfig?: ChildStartupConfig;
 	readonly recordChildStartupAttempt?: (
 		record: ChildAuthStartupAttemptRecord,
@@ -310,6 +312,9 @@ function createSupervisorHarness(
 				},
 			})),
 		sessionsDir: options.sessionsDir ?? supervisorSessionsRoot,
+		...(options.rootSessionId === undefined
+			? {}
+			: { rootSessionId: options.rootSessionId }),
 		spawnProcess: (_command, args, spawnOptions) => {
 			options.onSpawnEnvironment?.(spawnOptions.env);
 			options.onSpawn?.(args, spawnOptions.cwd);
@@ -630,6 +635,51 @@ describe("InvocationSupervisor", () => {
 				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = previous;
 			}
 		}
+	});
+
+	test("propagates one root session identity through direct and descendant launches", async () => {
+		// Purpose: every launched Pi process must inherit one root family without replacing its own child session identity.
+		// Inputs and expected output: launches for root and descendant owners receive the same root environment value and distinct owner-session values.
+		// Edge case: the descendant launch uses a different owner Pi session while retaining the original root.
+		// Dependencies: production supervisor spawning, child environment construction, and controlled Pi processes.
+		const direct = createChildProcess();
+		const descendant = createChildProcess();
+		const environments: NodeJS.ProcessEnv[] = [];
+		const harness = createSupervisorHarness(
+			[direct, descendant],
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				rootSessionId: "root-session",
+				onSpawnEnvironment: (environment) => environments.push(environment),
+			},
+		);
+
+		await acceptStart(harness.supervisor, direct, {
+			ownerPiSessionId: "root-session",
+			ownerLocalSessionId: 1,
+		});
+		await acceptStart(harness.supervisor, descendant, {
+			ownerPiSessionId: "direct-child-session",
+			ownerLocalSessionId: 2,
+		});
+
+		expect(
+			environments.map((environment) => ({
+				root: environment[SUBAGENT_ROOT_SESSION_ID_ENV],
+				own: environment[SUBAGENT_OWNER_SESSION_ENV],
+			})),
+		).toEqual([
+			{ root: "root-session", own: expect.any(String) },
+			{ root: "root-session", own: expect.any(String) },
+		]);
+		expect(environments[0]?.[SUBAGENT_OWNER_SESSION_ENV]).not.toBe(
+			environments[1]?.[SUBAGENT_OWNER_SESSION_ENV],
+		);
+		direct.emitClose();
+		descendant.emitClose();
 	});
 
 	test("rechecks parent authentication before every startup attempt", async () => {

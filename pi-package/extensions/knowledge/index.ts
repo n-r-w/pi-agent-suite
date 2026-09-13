@@ -1,3 +1,4 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import type {
 	ExtensionAPI,
@@ -29,6 +30,7 @@ import {
 	registerKnowledgeRootRuntime,
 } from "../../shared/knowledge-runtime";
 import { isReasoningLevel } from "../../shared/reasoning-levels";
+import { publishUsageEvent } from "../../shared/usage-events";
 import {
 	registerWorkflowTriggerRunner,
 	type WorkflowTrigger,
@@ -422,6 +424,8 @@ async function runKnowledgeTrigger(
 				? currentThinking
 				: undefined,
 			completeSimple: runtime.completeSimple,
+			onComplete: (message: AssistantMessage) =>
+				publishUsageEvent(runtime.pi, "knowledge", message),
 			signal,
 			...(reportProgress === undefined ? {} : { reportProgress }),
 		};

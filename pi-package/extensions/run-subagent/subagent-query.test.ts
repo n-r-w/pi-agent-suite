@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import { registerKnowledgeContextRuntime } from "../../shared/knowledge-runtime";
+import { USAGE_EVENT_RECORD_CHANNEL } from "../../shared/usage-events";
 import type { SubagentQueryModelConfig } from "./entry-config";
 import { executeSubagentQuery } from "./subagent-query";
 
@@ -98,14 +99,13 @@ function createContext(authenticated = true): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-/** Creates the extension API context source and cost recorder used by query tests. */
-function createPi(
-	appendEntry: (type: string, data: unknown) => unknown,
-): ExtensionAPI {
-	return {
-		events: new EventEmitter(),
-		appendEntry,
-	} as unknown as ExtensionAPI;
+/** Creates the extension API context source and usage publisher used by query tests. */
+function createPi(usageRequests: unknown[] = []): ExtensionAPI {
+	const events = new EventEmitter();
+	events.on(USAGE_EVENT_RECORD_CHANNEL, (request) => {
+		usageRequests.push(request);
+	});
+	return { events } as unknown as ExtensionAPI;
 }
 
 /** Creates a branch whose saved projection replacement differs from live text. */
@@ -174,15 +174,12 @@ function savedBranch(): readonly SessionEntry[] {
 describe("executeSubagentQuery", () => {
 	test("answers from persisted branch context with caller-local defaults", async () => {
 		// Purpose: one query must invoke a tool-less auxiliary model from the calling process using saved context only.
-		// Input and expected output: current model/thinking, persisted replacement, and plain question produce the text answer and one cost entry.
+		// Input and expected output: current model/thinking, persisted replacement, and plain question produce the text answer and one usage event.
 		// Edge case: tag-like question text is escaped so the model receives exactly one question block.
-		// Dependencies: in-memory branch, model registry fake, completion fake, and append-entry fake.
+		// Dependencies: in-memory branch, model registry fake, completion fake, and usage event bus.
 		const calls: CompletionCall[] = [];
-		const costs: unknown[] = [];
-		const pi = {
-			events: new EventEmitter(),
-			appendEntry: (_type: string, data: unknown) => costs.push(data),
-		} as unknown as ExtensionAPI;
+		const usageRequests: unknown[] = [];
+		const pi = createPi(usageRequests);
 		registerKnowledgeContextRuntime(pi, {
 			readBlock: async () => "<knowledge>query knowledge</knowledge>",
 		});
@@ -222,16 +219,20 @@ describe("executeSubagentQuery", () => {
 			apiKey: "secret",
 			headers: { x: "header" },
 		});
-		expect(costs).toEqual([{ source: "subagent-query", cost: 0.25 }]);
+		expect(usageRequests).toHaveLength(1);
+		expect(usageRequests[0]).toMatchObject({
+			source: "subagent-query",
+			message: { usage: { cost: { total: 0.25 } } },
+		});
 	});
 
 	test("uses configured model and preserves billed provider errors", async () => {
 		// Purpose: query overrides must select the caller registry model while preserving its provider diagnostic and accounting for billed responses.
 		// Input and expected output: configured model/off thinking and a billed provider error return the provider message without reasoning or retry.
-		// Edge case: the failed response still creates one helper cost entry.
-		// Dependencies: deterministic model registry, completion, and append-entry fakes.
+		// Edge case: the failed response still publishes its complete usage.
+		// Dependencies: deterministic model registry, completion, and usage event fakes.
 		const calls: CompletionCall[] = [];
-		const costs: unknown[] = [];
+		const usageRequests: unknown[] = [];
 		const modelConfig: SubagentQueryModelConfig = {
 			id: "provider/configured",
 			thinking: "off",
@@ -246,7 +247,7 @@ describe("executeSubagentQuery", () => {
 				});
 			},
 			ctx: createContext(),
-			pi: createPi((_type, data) => costs.push(data)),
+			pi: createPi(usageRequests),
 			branchEntries: savedBranch(),
 			question: "Question",
 			systemPrompt: "System",
@@ -258,21 +259,25 @@ describe("executeSubagentQuery", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.model).toBe(CONFIGURED_MODEL);
 		expect(calls[0]?.options).not.toHaveProperty("reasoning");
-		expect(costs).toEqual([{ source: "subagent-query", cost: 0.5 }]);
+		expect(usageRequests).toHaveLength(1);
+		expect(usageRequests[0]).toMatchObject({
+			source: "subagent-query",
+			message: { usage: { cost: { total: 0.5 } } },
+		});
 	});
 
 	test("preserves thrown completion diagnostics", async () => {
 		// Purpose: completion exceptions must expose their actionable diagnostic instead of replacing it with a generic retry message.
 		// Input and expected output: one thrown timeout error returns its message as the query issue.
-		// Edge case: a thrown completion has no assistant response and therefore records no helper cost.
-		// Dependencies: deterministic completion and append-entry fakes.
-		const costs: unknown[] = [];
+		// Edge case: a thrown completion has no assistant response to publish.
+		// Dependencies: deterministic completion and usage event fakes.
+		const usageRequests: unknown[] = [];
 		const result = await executeSubagentQuery({
 			completeSimple: async () => {
 				throw new Error("request timed out");
 			},
 			ctx: createContext(),
-			pi: createPi((_type, data) => costs.push(data)),
+			pi: createPi(usageRequests),
 			branchEntries: savedBranch(),
 			question: "Question",
 			systemPrompt: "System",
@@ -280,7 +285,7 @@ describe("executeSubagentQuery", () => {
 		});
 
 		expect(result).toEqual({ kind: "issue", issue: "request timed out" });
-		expect(costs).toEqual([]);
+		expect(usageRequests).toEqual([]);
 	});
 
 	test("applies alias default thinking when query model has no explicit thinking", async () => {
@@ -310,7 +315,7 @@ describe("executeSubagentQuery", () => {
 					return assistantResponse({ text: "alias answer" });
 				},
 				ctx: createContext(),
-				pi: createPi(() => undefined),
+				pi: createPi(),
 				branchEntries: savedBranch(),
 				question: "Question",
 				systemPrompt: "System",
@@ -335,9 +340,9 @@ describe("executeSubagentQuery", () => {
 	test("rejects unavailable runtime, oversized input, empty output, and cancellation", async () => {
 		// Purpose: query failures must remain finite and cancellation must preserve the Pi abort reason.
 		// Input and expected output: auth failure, small context, empty response, and aborted completion stop with the required outcomes.
-		// Edge case: only the calls that receive an assistant response may create cost entries.
+		// Edge case: only calls that receive an assistant response can publish usage.
 		// Dependencies: isolated model, authentication, completion, and abort fakes.
-		const noCostPi = createPi(() => undefined);
+		const noCostPi = createPi();
 		const authFailure = await executeSubagentQuery({
 			completeSimple: async () => assistantResponse({ text: "unused" }),
 			ctx: createContext(false),

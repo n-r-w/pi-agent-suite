@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderAgentPane } from "./agent-pane";
+import { NO_AGENT_ID } from "./recorder";
 
 const theme = {
 	fg: (color: string, text: string) => {
@@ -48,6 +49,23 @@ describe("usage agent pane", () => {
 		expect(visibleWidth(focused[2] ?? "")).toBe(12);
 		expect(focused[2]).toContain(" agent-with");
 		expect(focused[1]).not.toContain("\u001b[4");
+	});
+
+	test("renders the reserved missing-agent identity as No agent", () => {
+		// Purpose: complete unattributed events must have a readable label without exposing the collision-safe storage identity.
+		// Inputs and expected output: the reserved agent identity renders as No agent and remains selectable.
+		// Edge case: the selected background covers the complete rendered row.
+		// Dependencies: the recorder identity contract and agent pane rendering.
+		const lines = renderAgentPane([NO_AGENT_ID], NO_AGENT_ID, {
+			width: 20,
+			height: 3,
+			focused: true,
+			theme,
+		}).lines;
+
+		expect(lines[2]).toContain(" No agent");
+		expect(lines.join("\n")).not.toContain(NO_AGENT_ID);
+		expect(lines[2]).toStartWith("\u001b[44m");
 	});
 
 	test("colors the vertical track and focus-dependent thumb", () => {

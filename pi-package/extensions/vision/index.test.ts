@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ToolDefinition,
@@ -18,6 +19,7 @@ function createPi(activeTools: string[] = ["read"]): ExtensionAPI & {
 		readonly message: string;
 		readonly type: string;
 	}>;
+	readonly usageEvents: unknown[];
 } {
 	const tools: ToolDefinition[] = [];
 	const handlers = new Map<string, Handler[]>();
@@ -25,10 +27,12 @@ function createPi(activeTools: string[] = ["read"]): ExtensionAPI & {
 		readonly message: string;
 		readonly type: string;
 	}> = [];
+	const usageEvents: unknown[] = [];
 	return {
 		tools,
 		handlers,
 		notifications,
+		usageEvents,
 		on(event: string, handler: Handler) {
 			const registered = handlers.get(event) ?? [];
 			registered.push(handler);
@@ -42,7 +46,14 @@ function createPi(activeTools: string[] = ["read"]): ExtensionAPI & {
 			activeTools.splice(0, activeTools.length, ...names);
 		},
 		getThinkingLevel: () => "off",
-		events: { emit() {}, on: () => () => {} },
+		events: {
+			emit(name: string, value: unknown) {
+				if (name === "pi-agent-suite.usage.record.v1") {
+					usageEvents.push(value);
+				}
+			},
+			on: () => () => {},
+		},
 	} as unknown as ExtensionAPI & {
 		readonly tools: ToolDefinition[];
 		readonly handlers: Map<string, Handler[]>;
@@ -50,6 +61,7 @@ function createPi(activeTools: string[] = ["read"]): ExtensionAPI & {
 			readonly message: string;
 			readonly type: string;
 		}>;
+		readonly usageEvents: unknown[];
 	};
 }
 
@@ -294,6 +306,63 @@ describe("vision extension", () => {
 			{ type: "text", text: "[error: not_found — missing.png was not found]" },
 		]);
 		expect(calls).toBe(1);
+	});
+
+	test("publishes one complete vision response", async () => {
+		// Purpose: a successful vision tool call must publish its complete accepted response once.
+		// Input and expected output: one image completion emits source vision with the original AssistantMessage usage.
+		// Edge case: publication occurs after the delegate accepts the final response.
+		// Dependencies: isolated image fixture, fake model completion, and fake extension event bus.
+		const directory = await mkdtemp(join(tmpdir(), "vision-usage-"));
+		await writeFile(
+			join(directory, "test.png"),
+			Buffer.from("iVBORw0KGgo=", "base64"),
+		);
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "a tiny PNG" }],
+			api: "test-api",
+			provider: "p",
+			model: "m",
+			usage: {
+				input: 1,
+				output: 2,
+				cacheRead: 3,
+				cacheWrite: 4,
+				totalTokens: 10,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 },
+			},
+			stopReason: "stop",
+			timestamp: 10,
+		};
+		try {
+			const pi = createPi();
+			vision(pi, {
+				readConfigFile: async () => configuredFile(),
+				completeSimple: async () => message,
+			});
+			await pi.handlers.get("session_start")?.[0]?.(
+				{} as never,
+				context({ input: ["text"] }) as never,
+			);
+			const tool = pi.tools[0];
+			if (tool === undefined) {
+				throw new Error("tool was not registered");
+			}
+
+			await tool.execute(
+				"id",
+				{ image_path: "test.png", prompt: "Describe it" },
+				undefined,
+				() => {},
+				{ ...context({ input: ["text"] }), cwd: directory } as never,
+			);
+
+			expect(pi.usageEvents).toHaveLength(1);
+			expect(pi.usageEvents[0]).toMatchObject({ source: "vision", message });
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	test("throws global parameter errors and redirects multimodal calls", async () => {

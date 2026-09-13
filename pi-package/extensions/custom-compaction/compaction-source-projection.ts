@@ -9,7 +9,6 @@ import {
 	type ContextProjectionConfig,
 	readContextProjectionConfig,
 } from "../../shared/context-projection";
-import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import {
 	createToolResultProjectionSummaries,
 	isToolResultProjectionSummary,
@@ -22,6 +21,7 @@ import {
 	type ToolResultSummaryRuntimeConfig,
 } from "../../shared/tool-result-summary";
 import { createToolResultSummaryDiagnosticRecorder } from "../../shared/tool-result-summary-diagnostic";
+import { publishUsageEvent } from "../../shared/usage-events";
 
 /** Progress emitted while missing projection summaries are prepared for compaction. */
 export type CompactionSourceProjectionProgressEvent =
@@ -170,7 +170,7 @@ async function generateMissingProjectionSummaries({
 				});
 			},
 			recordCost: (message) => {
-				recordHelperApiCost(pi, "custom-compaction", message);
+				publishUsageEvent(pi, "custom-compaction", message);
 			},
 		},
 	});

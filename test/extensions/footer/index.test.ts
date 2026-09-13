@@ -8,11 +8,12 @@ import footer, {
 	SEGMENT_SEPARATOR,
 } from "../../../pi-package/extensions/footer/index";
 import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
+import { CHILD_AGENT_PROCESS_ENV } from "../../../pi-package/shared/child-agent-environment";
 import {
 	addPendingProjectionSavings,
 	resetPendingProjectionSavings,
 } from "../../../pi-package/shared/context-projection";
-import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
+import { USAGE_ROOT_COST_REQUEST_CHANNEL } from "../../../pi-package/shared/usage-read-broker";
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -25,12 +26,13 @@ interface SessionContextFake {
 	readonly hasUI?: boolean;
 	readonly sessionManager: {
 		getSessionId(): string;
-		getEntries(): readonly SessionEntryFake[];
+		getEntries(): readonly never[];
 	};
 	readonly modelRegistry: {
 		isUsingOAuth(model: SessionContextFake["model"]): boolean;
 	};
 	readonly ui: {
+		notify(message: string, type: "warning"): void;
 		setFooter(footerRenderer: unknown): void;
 	};
 	model: {
@@ -52,22 +54,8 @@ interface SessionContextOptions {
 		readonly contextWindow: number;
 		readonly percent?: number;
 	};
-	readonly sessionEntries?: readonly SessionEntryFake[];
 	readonly usingSubscription?: boolean;
-}
-
-interface SessionEntryFake {
-	readonly type: string;
-	readonly message?: {
-		readonly role: string;
-		readonly usage: {
-			readonly cost: {
-				readonly total: number;
-			};
-		};
-	};
-	readonly customType?: string;
-	readonly data?: unknown;
+	readonly usageCost?: number;
 }
 
 interface ExtensionApiFake extends ExtensionAPI {
@@ -106,9 +94,11 @@ async function withIsolatedAgentDir<T>(
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
 	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
+	const previousChildProcess = process.env[CHILD_AGENT_PROCESS_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-"));
 	process.env[AGENT_DIR_ENV] = agentDir;
 	delete process.env[AGENT_SUITE_DIR_ENV];
+	delete process.env[CHILD_AGENT_PROCESS_ENV];
 	try {
 		return await action(agentDir);
 	} finally {
@@ -121,6 +111,11 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_SUITE_DIR_ENV];
 		} else {
 			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
+		}
+		if (previousChildProcess === undefined) {
+			delete process.env[CHILD_AGENT_PROCESS_ENV];
+		} else {
+			process.env[CHILD_AGENT_PROCESS_ENV] = previousChildProcess;
 		}
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -173,52 +168,25 @@ function stripAnsi(text: string): string {
 	return text.replaceAll(SGR_RESET, "");
 }
 
-/** Creates a session message entry with only the usage cost fields needed by footer rendering. */
-function createMessageEntryFake(role: string, cost: number): SessionEntryFake {
-	return {
-		type: "message",
-		message: {
-			role,
-			usage: {
-				cost: {
-					total: cost,
-				},
-			},
-		},
-	};
-}
-
-/** Creates an extension-owned helper API cost entry that stays outside LLM context. */
-function createHelperApiCostEntryFake(
-	source: string,
-	cost: number,
-): SessionEntryFake {
-	return {
-		type: "custom",
-		customType: HELPER_API_COST_CUSTOM_TYPE,
-		data: { source, cost },
-	};
-}
-
 /** Creates the ExtensionAPI fake needed to observe events, resolve git roots, and read thinking level. */
 function createExtensionApiFake(
 	options: Pick<SessionContextOptions, "thinkingLevel"> = {},
 ): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
-	const eventListeners = new Map<string, Set<() => void>>();
+	const eventListeners = new Map<string, Set<(value: unknown) => void>>();
 	let currentActiveTools: string[] = [];
 
 	return {
 		handlers,
 		events: {
-			emit(eventName: string): void {
+			emit(eventName: string, value: unknown): void {
 				for (const listener of eventListeners.get(eventName) ?? []) {
-					listener();
+					listener(value);
 				}
 			},
-			on(eventName: string, listener: () => void): () => void {
+			on(eventName: string, listener: (value: unknown) => void): () => void {
 				const listeners =
-					eventListeners.get(eventName) ?? new Set<() => void>();
+					eventListeners.get(eventName) ?? new Set<(value: unknown) => void>();
 				listeners.add(listener);
 				eventListeners.set(eventName, listeners);
 				return () => {
@@ -274,8 +242,8 @@ function createSessionContextFake(
 			getSessionId(): string {
 				return options.sessionId ?? "footer-test-session";
 			},
-			getEntries(): readonly SessionEntryFake[] {
-				return options.sessionEntries ?? [];
+			getEntries(): readonly never[] {
+				return [];
 			},
 		},
 		modelRegistry: {
@@ -286,6 +254,7 @@ function createSessionContextFake(
 			},
 		},
 		ui: {
+			notify(): void {},
 			setFooter(footerRenderer: unknown): void {
 				installedFooters.push(footerRenderer);
 			},
@@ -362,6 +331,12 @@ async function installFooterTestHarnessInCurrentAgentDir(
 		typeof cwdOrOptions === "string" ? { cwd: cwdOrOptions } : cwdOrOptions;
 	const pi = createExtensionApiFake(options);
 	const ctx = createSessionContextFake(options);
+	const usageCost = options?.usageCost;
+	if (usageCost !== undefined) {
+		pi.events.on(USAGE_ROOT_COST_REQUEST_CHANNEL, (value) => {
+			(value as { cost?: number }).cost = usageCost;
+		});
+	}
 
 	footer(pi);
 	const sessionStartHandler = pi.handlers.find(
@@ -878,17 +853,12 @@ describe("footer", () => {
 	});
 
 	test("renders API cost by default after Codex quota", async () => {
-		// Purpose: the custom footer must show the active-session API cost plus extension helper costs.
-		// Input and expected output: assistant message costs 0.12 and 0.0034 plus helper cost 0.45 render `$0.573` after the Codex quota segment.
-		// Edge case: non-assistant message entries do not affect the displayed API cost.
-		// Dependencies: this test uses in-memory session entries instead of real session files.
+		// Purpose: the custom footer must show the stored current root-family cost.
+		// Input and expected output: a broker total of 0.5734 renders `$0.573` after the Codex quota segment.
+		// Edge case: the existing three-decimal presentation remains unchanged.
+		// Dependencies: this test uses an in-memory usage broker instead of SQLite.
 		const { footerRenderer } = await installFooterTestHarness({
-			sessionEntries: [
-				createMessageEntryFake("assistant", 0.12),
-				createMessageEntryFake("user", 100),
-				createHelperApiCostEntryFake("consult-advisor", 0.45),
-				createMessageEntryFake("assistant", 0.0034),
-			],
+			usageCost: 0.5734,
 		});
 		const footerComponent = createFooterComponent(
 			footerRenderer,
@@ -900,18 +870,17 @@ describe("footer", () => {
 		expect(renderedText).toContain(
 			["90%/2h", "$0.573", "No agent"].join(SEGMENT_SEPARATOR),
 		);
+		footerComponent.dispose?.();
 	});
 
 	test("omits API cost when explicitly disabled", async () => {
 		// Purpose: showApiCost false must let users keep the footer layout free of API cost.
-		// Input and expected output: a session with assistant cost renders no `$` cost segment.
+		// Input and expected output: an explicitly disabled cost display renders no `$` cost segment.
 		// Edge case: other model-display defaults remain enabled.
-		// Dependencies: this test uses an isolated footer config and in-memory session entries.
+		// Dependencies: this test uses an isolated footer config.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeFooterConfig(agentDir, { showApiCost: false });
-			const { footerRenderer } = await installFooterTestHarness({
-				sessionEntries: [createMessageEntryFake("assistant", 0.12)],
-			});
+			const { footerRenderer } = await installFooterTestHarness();
 			const footerComponent = createFooterComponent(
 				footerRenderer,
 				createFooterDataFake(new Map([["codex-quota", "90%/2h"]])),
@@ -961,6 +930,7 @@ describe("footer", () => {
 		// Dependencies: this test uses a model registry fake instead of real OAuth state.
 		const { footerRenderer } = await installFooterTestHarness({
 			usingSubscription: true,
+			usageCost: 0,
 		});
 		const footerComponent = createFooterComponent(
 			footerRenderer,
@@ -972,16 +942,17 @@ describe("footer", () => {
 		expect(renderedText).toContain(
 			["90%/2h", "$0.000 (sub)", "No agent"].join(SEGMENT_SEPARATOR),
 		);
+		footerComponent.dispose?.();
 	});
 
 	test("keeps API cost visible when the project name is long", async () => {
 		// Purpose: API cost is financial status and must not be hidden by project or model text.
 		// Input and expected output: a narrow footer with a long project keeps quota, API cost, agent, model, projection, and context segments.
 		// Edge case: the project segment gets clipped before priority segments are removed.
-		// Dependencies: this test uses in-memory session entries and extension statuses.
+		// Dependencies: this test uses an in-memory usage broker and extension statuses.
 		const { pi, footerRenderer } = await installFooterTestHarness({
 			cwd: "/workspace/customer-platform-with-a-very-long-service-name/src/extensions/footer",
-			sessionEntries: [createMessageEntryFake("assistant", 12.345)],
+			usageCost: 12.345,
 		});
 		getAgentRuntimeComposition(pi).setMainAgentContribution({
 			prompt: "Coder prompt",
@@ -1005,6 +976,7 @@ describe("footer", () => {
 		expect(renderedText).toContain("openai-codex/gpt-5.4/high");
 		expect(renderedText).toContain("~0");
 		expect(renderedText).toContain("42k/184k/200k");
+		footerComponent.dispose?.();
 	});
 
 	test("customizes provider, model, and thinking level visibility independently", async () => {

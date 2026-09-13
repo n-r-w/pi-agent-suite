@@ -8,6 +8,7 @@ import { getAgentRuntimeComposition } from "../../shared/agent-runtime-compositi
 import { readSuiteConfigFile } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
 import { registerPackageTool } from "../../shared/tool-presentation/registry";
+import { publishUsageEvent } from "../../shared/usage-events";
 import { parseVisionConfig, type VisionConfig } from "./config";
 import { describeImage, resolveVisionRuntime } from "./delegate";
 import { ImageLoadError, loadImage } from "./image";
@@ -87,7 +88,7 @@ function createToolSynchronizer(
 }
 
 function createToolDefinition(
-	_pi: ExtensionAPI,
+	pi: ExtensionAPI,
 	getConfig: () => VisionConfig,
 	completeSimple: AuxiliaryLlmCompletion,
 ): ToolDefinition<typeof TOOL_PARAMETERS> {
@@ -112,6 +113,7 @@ function createToolDefinition(
 				ctx,
 				config: getConfig(),
 				completeSimple,
+				pi,
 			});
 		},
 	};
@@ -123,6 +125,7 @@ async function executeVisionCall(options: {
 	readonly ctx: VisionExecutionContext;
 	readonly config: VisionConfig;
 	readonly completeSimple: AuxiliaryLlmCompletion;
+	readonly pi: ExtensionAPI;
 }) {
 	if (isMultimodal(options.ctx.model)) {
 		return toolResult("Use read tool for image analysis.");
@@ -149,6 +152,8 @@ async function executeVisionCall(options: {
 				retry: options.config.retry,
 				signal: options.signal,
 				completeSimple: options.completeSimple,
+				onComplete: (message) =>
+					publishUsageEvent(options.pi, "vision", message),
 			}),
 		);
 	} catch (error) {
