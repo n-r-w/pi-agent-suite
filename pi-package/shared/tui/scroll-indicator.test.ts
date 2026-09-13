@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { calculateScrollThumb } from "./scroll-indicator";
 
-describe("management scroll indicator", () => {
+describe("scroll indicator", () => {
 	test("maps scroll offsets to top, middle, and bottom thumb rows", () => {
 		// Purpose: pane borders must expose the current viewport position without changing content width.
 		// Inputs and expected output: equal metrics at top, middle, and bottom map across the complete track.

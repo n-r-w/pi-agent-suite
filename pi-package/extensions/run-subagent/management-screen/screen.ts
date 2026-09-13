@@ -17,6 +17,12 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import {
+	calculateScrollThumb,
+	isScrollThumbRow,
+	type ScrollMetrics,
+	type ScrollThumb,
+} from "../../../shared/tui/scroll-indicator";
 import type { InvocationMetadata, LogicalSession } from "../domain";
 import { errorMessage } from "../error-message";
 import type { LiveAgentStatus } from "../live-status";
@@ -33,12 +39,6 @@ import {
 	renderHierarchyTitle,
 	renderSelectedSessionHeader,
 } from "./hierarchy";
-import {
-	calculateScrollThumb,
-	isScrollThumbRow,
-	type ScrollMetrics,
-	type ScrollThumb,
-} from "./scroll-indicator";
 
 const HIERARCHY_MIN_WIDTH = 24;
 const CONVERSATION_MIN_WIDTH = 40;

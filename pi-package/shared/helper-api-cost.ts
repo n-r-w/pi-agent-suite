@@ -1,21 +1,21 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import {
+	AUXILIARY_USAGE_SOURCES,
+	type AuxiliaryUsageSource,
+	publishUsageEvent,
+} from "./usage-events";
 
 /** Session custom entry type used to persist extension helper API cost. */
 export const HELPER_API_COST_CUSTOM_TYPE = "helper-api-cost";
 
 /** Extension helper sources whose model calls are included in custom footer API cost. */
-export const HELPER_API_COST_SOURCES = [
-	"consult-advisor",
-	"context-projection",
-	"convene-council",
-	"custom-compaction",
-	"subagent-query",
-] as const;
+export const HELPER_API_COST_SOURCES = AUXILIARY_USAGE_SOURCES;
 
-export type HelperApiCostSource = (typeof HELPER_API_COST_SOURCES)[number];
+export type HelperApiCostSource = AuxiliaryUsageSource;
 
 interface HelperApiCostEntryData {
 	readonly source: HelperApiCostSource;
@@ -26,10 +26,13 @@ const HELPER_API_COST_SOURCE_SET = new Set<string>(HELPER_API_COST_SOURCES);
 
 /** Records one helper model response cost as a session custom entry. */
 export function recordHelperApiCost(
-	pi: Pick<ExtensionAPI, "appendEntry">,
+	pi: Pick<ExtensionAPI, "appendEntry"> & {
+		readonly events?: { emit(name: string, data: unknown): unknown };
+	},
 	source: HelperApiCostSource,
-	message: { readonly usage?: unknown },
+	message: AssistantMessage,
 ): void {
+	publishUsageEvent(pi, source, message);
 	const cost = readUsageCostTotal(message);
 	if (!isPositiveFiniteCost(cost)) {
 		return;

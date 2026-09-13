@@ -5,10 +5,10 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { normalizeTerminalDisplayText } from "../../../shared/terminal-display-text";
+import type { ScrollMetrics } from "../../../shared/tui/scroll-indicator";
 import type { ProjectionNode } from "../projection";
 import { formatDuration, renderContext } from "../semantic-layout";
 import type { WorkflowStatus } from "../workflow-status";
-import type { ScrollMetrics } from "./scroll-indicator";
 import { AGENT_STATUS_ICONS, countAgentStatuses } from "./status-summary";
 
 const NODE_ROW_COUNT = 2;

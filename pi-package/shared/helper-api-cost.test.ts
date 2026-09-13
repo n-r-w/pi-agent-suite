@@ -3,9 +3,15 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	HELPER_API_COST_CUSTOM_TYPE,
+	HELPER_API_COST_SOURCES,
 	recordHelperApiCost,
 	sumHelperApiCost,
 } from "./helper-api-cost";
+import {
+	USAGE_EVENT_RECORD_CHANNEL,
+	USAGE_EVENT_RECORD_VERSION,
+	type UsageEventRecordRequest,
+} from "./usage-events";
 
 /** Creates the minimal assistant message shape needed for helper cost accounting. */
 function createAssistantMessage(cost: number): AssistantMessage {
@@ -73,6 +79,46 @@ describe("helper API cost accounting", () => {
 				data: { source: "consult-advisor", cost: 0.125 },
 			},
 		]);
+	});
+
+	test("publishes every approved complete response with stable distinct event IDs", () => {
+		// Purpose: usage history must receive the complete response for each approved auxiliary source independently of footer cost filtering.
+		// Input and expected output: one zero-cost response for every approved source emits one versioned request with the original message and a unique stable ID.
+		// Edge case: valid zero cost creates no footer entry but still publishes usage.
+		// Dependencies: an in-memory event-bus fake and the approved helper source list.
+		const requests: UsageEventRecordRequest[] = [];
+		const appendCalls: unknown[] = [];
+		const pi = {
+			appendEntry(customType: string, data?: unknown): void {
+				appendCalls.push({ customType, data });
+			},
+			events: {
+				emit(name: string, value: unknown): void {
+					if (name === USAGE_EVENT_RECORD_CHANNEL) {
+						requests.push(value as UsageEventRecordRequest);
+					}
+				},
+			},
+		};
+		const message = createAssistantMessage(0);
+
+		for (const source of HELPER_API_COST_SOURCES) {
+			recordHelperApiCost(pi, source, message);
+		}
+
+		expect(appendCalls).toEqual([]);
+		expect(requests).toHaveLength(HELPER_API_COST_SOURCES.length);
+		expect(requests.map(({ source }) => source)).toEqual([
+			...HELPER_API_COST_SOURCES,
+		]);
+		expect(
+			requests.every(({ version }) => version === USAGE_EVENT_RECORD_VERSION),
+		).toBe(true);
+		expect(requests.every((request) => request.message === message)).toBe(true);
+		expect(new Set(requests.map(({ eventId }) => eventId)).size).toBe(
+			HELPER_API_COST_SOURCES.length,
+		);
+		expect(requests.every(({ eventId }) => eventId.length > 0)).toBe(true);
 	});
 
 	test("does not record missing, zero, negative, or non-finite costs", () => {

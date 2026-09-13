@@ -48,6 +48,7 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
 - Quota, context projection, the selected agent, and MCP errors remain on the primary line and are not duplicated.
 - Codex fast mode remains in the primary model segment when that segment is visible.
 - Cache hit rate is calculated as `cacheRead / (input + cacheRead + cacheWrite) * 100` for the latest assistant response and remains hidden until the session reports cache activity.
+- The API cost includes persisted costs from the current session and supported auxiliary requests. The independent historical usage store is documented in [usage](usage.md).
 - Primary-line segments never wrap or move to the additional line.
 - Each rendered line is truncated independently to the terminal width.
 - Context usage is shown as `used/threshold/window` when native pi compaction is enabled.

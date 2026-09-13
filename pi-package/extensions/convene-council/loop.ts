@@ -3,7 +3,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Tool } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Tool } from "@earendil-works/pi-ai";
 import { readConveneCouncilConfig } from "./config";
 import { ISSUE_PREFIX } from "./constants";
 import {
@@ -794,7 +794,7 @@ type ParticipantSessions = Awaited<
 
 function recordParticipantCost(
 	event: unknown,
-	recordCost: (message: { readonly usage?: unknown }) => void,
+	recordCost: (message: AssistantMessage) => void,
 ): void {
 	if (!isAssistantMessageEnd(event)) {
 		return;
@@ -805,7 +805,7 @@ function recordParticipantCost(
 
 function isAssistantMessageEnd(event: unknown): event is {
 	readonly type: "message_end";
-	readonly message: { readonly role: "assistant"; readonly usage?: unknown };
+	readonly message: AssistantMessage;
 } {
 	if (!isRecord(event) || event["type"] !== "message_end") {
 		return false;
