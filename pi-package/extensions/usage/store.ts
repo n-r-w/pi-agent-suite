@@ -97,7 +97,11 @@ export class UsageStore {
 			ORDER BY timestamp_ms, event_id
 		`);
 		this.queryRootCostStatement = this.database.prepare(`
-			SELECT COALESCE(SUM(cost), 0) AS total_cost
+			SELECT
+				COALESCE(SUM(cost), 0) AS total_cost,
+				COALESCE(SUM(
+					input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+				), 0) AS total_tokens
 			FROM usage_events
 			WHERE root_session_id = ?
 		`);
@@ -158,12 +162,18 @@ export class UsageStore {
 		}));
 	}
 
-	/** Reads total cost for one root session family. */
-	public queryRootCost(rootSessionId: string): number {
+	/** Reads cumulative cost and processed tokens for one root session family. */
+	public queryRootTotals(rootSessionId: string): UsageSessionTotals {
 		const row = this.queryRootCostStatement.get(rootSessionId) as {
 			readonly total_cost: number;
+			readonly total_tokens: number;
 		};
-		return row.total_cost;
+		return { cost: row.total_cost, tokens: row.total_tokens };
+	}
+
+	/** Reads total cost for one root session family. */
+	public queryRootCost(rootSessionId: string): number {
+		return this.queryRootTotals(rootSessionId).cost;
 	}
 
 	/** Reads cumulative cost and processed tokens for one Pi session. */

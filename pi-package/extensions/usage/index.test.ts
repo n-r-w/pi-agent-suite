@@ -22,6 +22,7 @@ import {
 } from "../../shared/usage-events";
 import {
 	requestUsageRootCost,
+	requestUsageRootTotals,
 	requestUsageSessionTotals,
 } from "../../shared/usage-read-broker";
 import { readUsageConfig } from "./config";
@@ -141,6 +142,7 @@ function dependencies(
 ): UsageExtensionDependencies {
 	const completeStore: UsageStorePort = {
 		queryRootCost: () => 0,
+		queryRootTotals: () => ({ cost: 0, tokens: 0 }),
 		querySessionTotals: () => ({ cost: 0, tokens: 0 }),
 		cleanupBefore: () => {},
 		reset: () => {},
@@ -183,6 +185,7 @@ describe("usage extension lifecycle", () => {
 			insert: () => {},
 			queryRange: () => [],
 			queryRootCost: () => 0,
+			queryRootTotals: () => ({ cost: 0, tokens: 0 }),
 			querySessionTotals: () => ({ cost: 0, tokens: 0 }),
 			cleanupBefore: () => {},
 			reset: () => {},
@@ -208,9 +211,9 @@ describe("usage extension lifecycle", () => {
 		expect(storeOpens).toBe(1);
 	});
 
-	test("serves root-family cost through the process-local usage broker", () => {
-		// Purpose: the footer must read one complete stored root-family total without owning SQLite.
-		// Inputs and expected output: a root cost request returns 3.25 and forwards the exact root session ID once.
+	test("serves root-family cost and tokens through the process-local usage broker", () => {
+		// Purpose: the footer must read one complete stored root-family aggregate without owning SQLite.
+		// Inputs and expected output: a root request returns cost 3.25 and 10,000 tokens and forwards the exact root session ID once.
 		// Edge case: the broker is available before session_start because the requester supplies the root identity.
 		// Dependencies: the shared Pi event bus and an injected usage store.
 		const queriedRoots: string[] = [];
@@ -219,14 +222,17 @@ describe("usage extension lifecycle", () => {
 			dependencies({
 				insert: () => {},
 				queryRange: () => [],
-				queryRootCost: (rootSessionId) => {
+				queryRootTotals: (rootSessionId) => {
 					queriedRoots.push(rootSessionId);
-					return 3.25;
+					return { cost: 3.25, tokens: 10_000 };
 				},
 			}),
 		)(harness.pi);
 
-		expect(requestUsageRootCost(harness.pi, "root-session-a")).toBe(3.25);
+		expect(requestUsageRootTotals(harness.pi, "root-session-a")).toEqual({
+			cost: 3.25,
+			tokens: 10_000,
+		});
 		expect(queriedRoots).toEqual(["root-session-a"]);
 	});
 
@@ -299,6 +305,7 @@ describe("usage extension lifecycle", () => {
 								insert: () => {},
 								queryRange: () => [],
 								queryRootCost: () => 0,
+								queryRootTotals: () => ({ cost: 0, tokens: 0 }),
 								querySessionTotals: () => ({ cost: 0, tokens: 0 }),
 								cleanupBefore: () => {},
 								reset: () => {},

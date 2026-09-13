@@ -93,9 +93,9 @@ afterEach(async () => {
 });
 
 describe("footer", () => {
-	test("caches and refreshes the stored root-family cost every ten seconds", async () => {
-		// Purpose: the active root footer must render only cached usage-store cost and refresh it on one fixed interval.
-		// Inputs and expected output: the broker returns 1.25 initially and 2.5 on the first fake tick for one root session.
+	test("caches and refreshes stored root-family usage every ten seconds", async () => {
+		// Purpose: the active root footer must render only cached usage-store cost and tokens and refresh them on one fixed interval.
+		// Inputs and expected output: the broker returns 1.25 and 10,000 tokens initially, then 2.5 and 20,000 tokens on the first fake tick.
 		// Edge case: rendering does not request again, and a queued callback after disposal does not refresh.
 		// Dependencies: an in-memory Pi event bus, fake interval functions, and an isolated footer config.
 		await withIsolatedSuiteDir(async (suiteDir) => {
@@ -107,15 +107,23 @@ describe("footer", () => {
 			delete process.env[CHILD_AGENT_PROCESS_ENV];
 			const pi = createExtensionApiFake();
 			const requestedRoots: string[] = [];
-			const costs = [1.25, 2.5];
+			const totals = [
+				{ cost: 1.25, tokens: 10_000 },
+				{ cost: 2.5, tokens: 20_000 },
+			];
 			pi.events.on(USAGE_ROOT_COST_REQUEST_CHANNEL, (value) => {
-				const request = value as { rootSessionId: string; cost?: number };
+				const request = value as {
+					rootSessionId: string;
+					cost?: number;
+					tokens?: number;
+				};
 				requestedRoots.push(request.rootSessionId);
-				const cost = costs[requestedRoots.length - 1];
-				if (cost === undefined) {
-					throw new Error("missing fake usage cost");
+				const current = totals[requestedRoots.length - 1];
+				if (current === undefined) {
+					throw new Error("missing fake usage totals");
 				}
-				request.cost = cost;
+				request.cost = current.cost;
+				request.tokens = current.tokens;
 			});
 			let intervalCallback: (() => void) | undefined;
 			const intervalHandle = 7 as unknown as ReturnType<typeof setInterval>;
@@ -173,12 +181,12 @@ describe("footer", () => {
 					},
 				);
 
-				expect(component.render(200)[0]).toContain("$1.250");
-				expect(component.render(200)[0]).toContain("$1.250");
+				expect(component.render(200)[0]).toContain("$1.250 · T10K");
+				expect(component.render(200)[0]).toContain("$1.250 · T10K");
 				expect(requestedRoots).toEqual(["session"]);
 				intervalCallback?.();
 				expect(requestedRoots).toEqual(["session", "session"]);
-				expect(component.render(200)[0]).toContain("$2.500");
+				expect(component.render(200)[0]).toContain("$2.500 · T20K");
 				expect(renderRequests).toBe(1);
 				component.dispose?.();
 				expect(clearIntervalSpy).toHaveBeenCalledWith(intervalHandle);
@@ -208,7 +216,9 @@ describe("footer", () => {
 			pi.events.on(USAGE_ROOT_COST_REQUEST_CHANNEL, (value) => {
 				requestCount += 1;
 				if (requestCount === 1) {
-					(value as { cost?: number }).cost = 1.25;
+					const request = value as { cost?: number; tokens?: number };
+					request.cost = 1.25;
+					request.tokens = 10_000;
 				}
 			});
 			let intervalCallback: (() => void) | undefined;
@@ -255,10 +265,11 @@ describe("footer", () => {
 						getGitBranch: () => null,
 					},
 				);
-				expect(component.render(200)[0]).toContain("$1.250");
+				expect(component.render(200)[0]).toContain("$1.250 · T10K");
 
 				intervalCallback?.();
 				expect(component.render(200)[0]).not.toContain("$");
+				expect(component.render(200)[0]).not.toContain("T10K");
 				expect(notifications).toHaveLength(1);
 				intervalCallback?.();
 				expect(notifications).toHaveLength(1);
@@ -357,9 +368,9 @@ describe("footer", () => {
 		});
 	});
 
-	test("does not request usage for disabled cost display or child sessions", async () => {
-		// Purpose: usage reads, timers, and warnings must be limited to an enabled root cost display.
-		// Inputs and expected output: disabled showApiCost and an enabled child footer make zero broker requests and zero warnings.
+	test("does not request usage when both totals are hidden or in child sessions", async () => {
+		// Purpose: usage reads, timers, and warnings must be limited to a root footer with cost or tokens enabled.
+		// Inputs and expected output: both totals hidden in a root footer and both enabled in a child footer make zero broker requests and warnings.
 		// Edge case: the unrelated footer still installs and renders for the child process.
 		// Dependencies: isolated footer configs, the child-process marker, and an in-memory Pi event bus.
 		for (const childProcess of [false, true]) {
@@ -367,6 +378,7 @@ describe("footer", () => {
 				await writeFooterConfig(suiteDir, {
 					enabled: true,
 					showApiCost: childProcess,
+					showApiTokens: childProcess,
 					showCacheHitRate: false,
 				});
 				if (childProcess) {
@@ -404,7 +416,7 @@ describe("footer", () => {
 	});
 
 	test("does not request usage when the footer is disabled", async () => {
-		// Purpose: a disabled footer must not activate any usage-cost lifecycle work.
+		// Purpose: a disabled footer must not activate any usage lifecycle work.
 		// Inputs and expected output: disabled footer config produces no broker request, timer, warning, or footer factory.
 		// Edge case: a usage broker listener is present and would answer a request.
 		// Dependencies: an isolated footer config and in-memory Pi event bus.

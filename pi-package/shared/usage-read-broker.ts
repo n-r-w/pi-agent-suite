@@ -22,6 +22,7 @@ export interface UsageRootCostRequest {
 	readonly version: typeof USAGE_ROOT_COST_REQUEST_VERSION;
 	readonly rootSessionId: string;
 	cost?: number;
+	tokens?: number;
 }
 
 interface UsageReadRequester {
@@ -53,13 +54,29 @@ export function requestUsageSessionTotals(
 		return undefined;
 	}
 	const totals = request.totals;
-	return totals !== undefined &&
-		Number.isFinite(totals.cost) &&
-		totals.cost >= 0 &&
-		Number.isSafeInteger(totals.tokens) &&
-		totals.tokens >= 0
-		? totals
-		: undefined;
+	return totals === undefined
+		? undefined
+		: validUsageTotals(totals.cost, totals.tokens);
+}
+
+/** Requests complete stored consumption for one root session family. */
+export function requestUsageRootTotals(
+	pi: UsageReadRequester,
+	rootSessionId: string,
+): UsageSessionTotals | undefined {
+	if (rootSessionId.trim().length === 0) {
+		return undefined;
+	}
+	const request: UsageRootCostRequest = {
+		version: USAGE_ROOT_COST_REQUEST_VERSION,
+		rootSessionId,
+	};
+	try {
+		pi.events?.emit(USAGE_ROOT_COST_REQUEST_CHANNEL, request);
+	} catch {
+		return undefined;
+	}
+	return validUsageTotals(request.cost, request.tokens);
 }
 
 /** Requests the complete stored cost for one root session family. */
@@ -83,6 +100,20 @@ export function requestUsageRootCost(
 		Number.isFinite(request.cost) &&
 		request.cost >= 0
 		? request.cost
+		: undefined;
+}
+
+function validUsageTotals(
+	cost: number | undefined,
+	tokens: number | undefined,
+): UsageSessionTotals | undefined {
+	return typeof cost === "number" &&
+		Number.isFinite(cost) &&
+		cost >= 0 &&
+		typeof tokens === "number" &&
+		Number.isSafeInteger(tokens) &&
+		tokens >= 0
+		? { cost, tokens }
 		: undefined;
 }
 

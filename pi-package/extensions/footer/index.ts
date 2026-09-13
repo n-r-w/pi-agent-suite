@@ -29,7 +29,11 @@ import {
 	type NativeCompactionSettings,
 	readNativeCompactionSettings,
 } from "../../shared/native-compaction-settings";
-import { requestUsageRootCost } from "../../shared/usage-read-broker";
+import { formatUsageTokenCount } from "../../shared/usage-format";
+import {
+	requestUsageRootTotals,
+	type UsageSessionTotals,
+} from "../../shared/usage-read-broker";
 import { readFooterProcessEnvironment } from "./environment";
 
 /** Footer label shown when no main-agent runtime contribution is active. */
@@ -71,11 +75,11 @@ const TOKEN_COMPACT_THRESHOLD = 1000;
 const API_COST_DECIMAL_PLACES = 3;
 
 /** Informational usage-store refresh cadence for the active root footer. */
-const API_COST_REFRESH_INTERVAL_MS = 10_000;
+const USAGE_REFRESH_INTERVAL_MS = 10_000;
 
-/** Warning shown when complete root-family cost is unavailable. */
+/** Warning shown when complete root-family usage is unavailable. */
 const USAGE_UNAVAILABLE_WARNING =
-	"[footer] Usage is unavailable; API cost is hidden.";
+	"[footer] Usage is unavailable; API cost and tokens are hidden.";
 
 const FOOTER_PROCESS_STATE_KEY = Symbol.for(
 	"pi-agent-suite.footer.process-state.v1",
@@ -141,7 +145,7 @@ interface FooterRenderOptions {
 	readonly config: FooterConfig;
 	readonly compactionSettings: FooterCompactionSettings | undefined;
 	readonly footerData: FooterData;
-	readonly apiCost: number | undefined;
+	readonly usageTotals: UsageSessionTotals | undefined;
 	readonly ctx: FooterSessionContext;
 	readonly renderState: FooterRenderState;
 	readonly sessionState: FooterSessionState;
@@ -435,7 +439,30 @@ function buildApiCostSegment(
 		return undefined;
 	}
 
-	return `$${apiCost.toFixed(API_COST_DECIMAL_PLACES)}${usingSubscription ? " (sub)" : ""}`;
+	return `$${apiCost.toFixed(API_COST_DECIMAL_PLACES)}`;
+}
+
+/** Builds the processed-token segment from the cached root-family total. */
+function buildApiTokensSegment(
+	config: FooterConfig,
+	usageTotals: UsageSessionTotals | undefined,
+): string | undefined {
+	return config.showApiTokens && usageTotals !== undefined
+		? `T${formatUsageTokenCount(usageTotals.tokens)}`
+		: undefined;
+}
+
+/** Builds enabled root-family usage segments in display order. */
+function buildUsageSegments(
+	config: FooterConfig,
+	ctx: FooterSessionContext,
+	sessionState: FooterSessionState,
+	usageTotals: UsageSessionTotals | undefined,
+): string[] {
+	return [
+		buildApiCostSegment(config, ctx, sessionState, usageTotals?.cost),
+		buildApiTokensSegment(config, usageTotals),
+	].filter((segment): segment is string => segment !== undefined);
 }
 
 /** Builds the latest prompt cache hit rate using pi's normalized assistant usage. */
@@ -522,12 +549,33 @@ function calculateProjectSegmentWidth(
 	);
 }
 
+/** Fits the model segment after all fixed-priority footer segments. */
+function buildBoundedModelDisplaySegment(
+	rawSegment: string | undefined,
+	fastSuffix: string,
+	width: number,
+	fixedPrioritySegments: readonly string[],
+): string | undefined {
+	if (rawSegment === undefined) {
+		return undefined;
+	}
+	const fixedWidth = visibleWidth(
+		fixedPrioritySegments.join(SEGMENT_SEPARATOR),
+	);
+	return truncateTextByWidth(
+		`${rawSegment}${fastSuffix}`,
+		width -
+			fixedWidth -
+			(fixedPrioritySegments.length > 0 ? visibleWidth(SEGMENT_SEPARATOR) : 0),
+	);
+}
+
 /** Builds footer lines from extension-owned status values and session-owned display state. */
 function renderFooterLines({
 	config,
 	compactionSettings,
 	footerData,
-	apiCost,
+	usageTotals,
 	ctx,
 	renderState,
 	sessionState,
@@ -535,37 +583,30 @@ function renderFooterLines({
 	width,
 }: FooterRenderOptions): string[] {
 	const cacheHitRateSegment = buildCacheHitRateSegment(config, ctx);
+	const usageSegments = buildUsageSegments(
+		config,
+		ctx,
+		sessionState,
+		usageTotals,
+	);
 	const fixedPrioritySegments = [
 		buildStatusSegmentByKey(footerData, CODEX_QUOTA_STATUS_KEY),
-		buildApiCostSegment(config, ctx, sessionState, apiCost),
+		...usageSegments,
 		buildAgentSegment(renderState),
 		cacheHitRateSegment,
 		buildStatusSegmentByKey(footerData, CONTEXT_PROJECTION_STATUS_KEY),
 		...buildMcpStatusSegments(footerData),
 		buildContextSegment(renderState, theme, compactionSettings),
 	].filter((part): part is string => Boolean(part));
-	const rawModelDisplaySegment = buildModelDisplaySegment(
-		config,
-		renderState,
-		sessionState,
-		theme,
+	const modelDisplaySegment = buildBoundedModelDisplaySegment(
+		buildModelDisplaySegment(config, renderState, sessionState, theme),
+		buildCodexFastSuffix(footerData, theme),
+		width,
+		fixedPrioritySegments,
 	);
-	const fixedPriorityWidth = visibleWidth(
-		fixedPrioritySegments.join(SEGMENT_SEPARATOR),
-	);
-	const modelDisplaySegment = rawModelDisplaySegment
-		? truncateTextByWidth(
-				`${rawModelDisplaySegment}${buildCodexFastSuffix(footerData, theme)}`,
-				width -
-					fixedPriorityWidth -
-					(fixedPrioritySegments.length > 0
-						? visibleWidth(SEGMENT_SEPARATOR)
-						: 0),
-			)
-		: undefined;
 	const prioritySegments = [
 		buildStatusSegmentByKey(footerData, CODEX_QUOTA_STATUS_KEY),
-		buildApiCostSegment(config, ctx, sessionState, apiCost),
+		...usageSegments,
 		buildAgentSegment(renderState),
 		modelDisplaySegment,
 		cacheHitRateSegment,
@@ -611,7 +652,7 @@ function notifyUsageUnavailable(
 interface CreateFooterComponentOptions {
 	readonly config: FooterConfig;
 	readonly compactionSettings: FooterCompactionSettings | undefined;
-	readonly initialApiCost: number | undefined;
+	readonly initialUsageTotals: UsageSessionTotals | undefined;
 	readonly rootSessionId: string | undefined;
 	readonly pi: ExtensionAPI;
 	readonly ctx: FooterSessionContext;
@@ -625,7 +666,7 @@ interface CreateFooterComponentOptions {
 function createFooterComponent({
 	config,
 	compactionSettings,
-	initialApiCost,
+	initialUsageTotals,
 	rootSessionId,
 	pi,
 	ctx,
@@ -640,21 +681,21 @@ function createFooterComponent({
 		requestRender,
 	);
 	state.requestRender = requestRender;
-	let apiCost = initialApiCost;
+	let usageTotals = initialUsageTotals;
 	let disposed = false;
 	const refreshTimer =
-		rootSessionId === undefined || initialApiCost === undefined
+		rootSessionId === undefined || initialUsageTotals === undefined
 			? undefined
 			: setInterval(() => {
 					if (disposed) {
 						return;
 					}
-					apiCost = requestUsageRootCost(pi, rootSessionId);
-					if (apiCost === undefined) {
+					usageTotals = requestUsageRootTotals(pi, rootSessionId);
+					if (usageTotals === undefined) {
 						notifyUsageUnavailable(ctx, state, rootSessionId);
 					}
 					requestRender();
-				}, API_COST_REFRESH_INTERVAL_MS);
+				}, USAGE_REFRESH_INTERVAL_MS);
 
 	return {
 		dispose() {
@@ -672,7 +713,7 @@ function createFooterComponent({
 				config,
 				compactionSettings,
 				footerData,
-				apiCost,
+				usageTotals,
 				ctx,
 				renderState: readFooterRenderState(pi, ctx),
 				sessionState: state,
@@ -707,21 +748,21 @@ async function installSessionFooter(
 	state.projectName = await resolveProjectName(pi, ctx.cwd);
 	state.model = ctx.model;
 	const rootSessionId =
-		config.config.showApiCost &&
+		(config.config.showApiCost || config.config.showApiTokens) &&
 		!isChildAgentProcess(readFooterProcessEnvironment())
 			? ctx.sessionManager.getSessionId().trim()
 			: undefined;
-	const initialApiCost = rootSessionId
-		? requestUsageRootCost(pi, rootSessionId)
+	const initialUsageTotals = rootSessionId
+		? requestUsageRootTotals(pi, rootSessionId)
 		: undefined;
-	if (rootSessionId && initialApiCost === undefined) {
+	if (rootSessionId && initialUsageTotals === undefined) {
 		notifyUsageUnavailable(ctx, state, rootSessionId);
 	}
 	ctx.ui.setFooter((tui, theme, footerData) =>
 		createFooterComponent({
 			config: config.config,
 			compactionSettings,
-			initialApiCost,
+			initialUsageTotals,
 			rootSessionId,
 			pi,
 			ctx,

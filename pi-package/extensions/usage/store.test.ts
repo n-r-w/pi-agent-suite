@@ -118,9 +118,9 @@ describe("usage SQLite store", () => {
 		database.close();
 	});
 
-	test("sums all cost for one root session family across time", () => {
-		// Purpose: footer cost must come from one indexed aggregate over the complete root family.
-		// Inputs and expected output: root, direct-child, nested-child, and auxiliary rows total 1.4 while another root is excluded.
+	test("sums all cost and processed tokens for one root session family across time", () => {
+		// Purpose: footer usage must come from one indexed aggregate over the complete root family.
+		// Inputs and expected output: root, direct-child, nested-child, and auxiliary rows total cost 1.4 and 400 tokens while another root is excluded.
 		// Edge case: timestamps do not limit the aggregate.
 		// Dependencies: isolated system temporary storage and the production root-session index.
 		const store = new UsageStore(temporaryDatabasePath());
@@ -157,8 +157,14 @@ describe("usage SQLite store", () => {
 			}),
 		);
 
-		expect(store.queryRootCost("root-session-1")).toBeCloseTo(1.4);
-		expect(store.queryRootCost("missing-root")).toBe(0);
+		expect(store.queryRootTotals("root-session-1")).toEqual({
+			cost: 1.4,
+			tokens: 400,
+		});
+		expect(store.queryRootTotals("missing-root")).toEqual({
+			cost: 0,
+			tokens: 0,
+		});
 		store.close();
 	});
 

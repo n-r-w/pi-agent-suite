@@ -329,23 +329,25 @@ COMMIT;
 
 Cancellation makes no database change. Reset preserves `config.json`, the SQLite files, schema, and indexes. It deletes events committed before the reset transaction; events committed later by concurrent processes remain.
 
-### 11.1 Footer Cost
+### 11.1 Footer Usage
 
-The usage extension exposes a process-local read-only broker through the shared Pi event bus. The footer obtains cost only through this broker and does not open SQLite or scan session entries.
+The usage extension exposes a process-local read-only broker through the shared Pi event bus. The footer obtains cost and processed tokens only through this broker and does not open SQLite or scan session entries.
 
-When `showApiCost` is enabled, root `session_start` supplies the active root Pi session ID to the broker. The broker performs an initial indexed query:
+When `showApiCost` or `showApiTokens` is enabled, root `session_start` supplies the active root Pi session ID to the broker. The broker performs one indexed query:
 
 ```sql
-SELECT COALESCE(SUM(cost), 0)
+SELECT
+    COALESCE(SUM(cost), 0),
+    COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0)
 FROM usage_events
 WHERE root_session_id = :rootSessionId;
 ```
 
-While the footer is active, one root-only timer repeats this query every 10 seconds. The footer render path reads only the cached total. The timer stops when the footer component is disposed. A maximum 10-second delay is accepted because the footer is informational rather than a billing surface.
+One root-only timer repeats this query every 10 seconds while the footer is active. The footer render path reads only the cached aggregate. The timer stops when the footer component is disposed. A maximum 10-second delay is accepted because the footer is informational rather than a billing surface.
 
-The footer does not scan assistant entries or use cost-only session entries. It uses the same regular, subagent, and auxiliary event set as the Current `/usage` scope.
+The footer does not scan assistant entries or use cost-only session entries. It uses the same regular, subagent, and auxiliary event set as the Current `/usage` scope. Cost renders with three fractional digits and no subscription marker. Processed tokens use the shared usage token format with a `T` prefix.
 
-If the initial broker read is unavailable because usage is disabled, invalid, failed during database initialization, or missing, the footer hides the API-cost segment and an interactive root emits one warning. If a later refresh is unavailable, the footer hides the cached cost, emits the warning unless that root session already received it, and keeps the timer active. A later valid result restores the segment. The footer warning remains independent from any usage extension startup error. The footer does not request the broker or warn when the footer or `showApiCost` is disabled.
+If the initial broker read is unavailable because usage is disabled, invalid, failed during database initialization, or missing, the footer hides the enabled usage segments and an interactive root emits one warning. If a later refresh is unavailable, the footer hides the cached aggregate, emits the warning unless that root session already received it, and keeps the timer active. A later valid result restores the enabled segments. The footer warning remains independent from any usage extension startup error. The footer does not request the broker or warn when the footer is disabled or both usage segments are disabled.
 
 ### 11.2 Subagent Session Consumption
 

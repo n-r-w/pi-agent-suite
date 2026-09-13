@@ -49,6 +49,7 @@ export interface UsageStorePort {
 	insert(event: UsageEvent): void;
 	queryRange(startMs: number, endMs: number): UsageEvent[];
 	queryRootCost(rootSessionId: string): number;
+	queryRootTotals(rootSessionId: string): UsageSessionTotals;
 	querySessionTotals(sessionId: string): UsageSessionTotals;
 	cleanupBefore(cutoffMs: number): void;
 	reset(): void;
@@ -186,7 +187,9 @@ function registerUsageReadBroker(
 			return;
 		}
 		try {
-			value.cost = store.queryRootCost(value.rootSessionId);
+			const totals = store.queryRootTotals(value.rootSessionId);
+			value.cost = totals.cost;
+			value.tokens = totals.tokens;
 		} catch {
 			// An unavailable aggregate must remain distinguishable from a zero total.
 		}
