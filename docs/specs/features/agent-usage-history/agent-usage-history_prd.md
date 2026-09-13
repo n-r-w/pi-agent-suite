@@ -14,10 +14,11 @@ Give users a local historical view of independently recorded consumption by agen
 
 ## Scenarios
 
-- A user opens `/usage` and sees consumption for all agents during the past 24 hours.
-- A user changes the time range.
-- A user selects a main agent or subagent.
-- A user views a total and a model breakdown.
+- A user opens `/usage` and sees consumption for the current root session family during the past 7 days.
+- A user changes the time range, including a 1-hour view.
+- A user switches between the current root session family and all recorded sessions.
+- A user selects a main agent, subagent, or the `No agent` group.
+- A user views a total, cost share, and model breakdown ordered by descending cost share.
 - A user operates the screen in a wide or narrow terminal.
 - A user sees a clear empty state when the selected range has no usage.
 - A user resets all recorded usage after explicit confirmation.
@@ -28,14 +29,17 @@ In scope:
 
 - an independent local usage store;
 - main agents and subagents;
-- regular and auxiliary model requests recorded with complete attribution and usage data;
-- `24h`, `7d`, `30d`, and `90d` ranges;
-- aggregation by `agentId` and `provider/model`.
+- regular model requests and all identified auxiliary model-request sources recorded with complete usage data;
+- current-root-session-family and all-session filtering;
+- a reserved `No agent` group for complete requests without an `agentId`;
+- `1h`, `24h`, `7d`, `30d`, and `90d` ranges;
+- aggregation by agent identity and `provider/model`.
 
 Not in scope:
 
 - importing model requests made before the usage store recorded them;
-- requests with missing attribution or usage data, including requests made without a selected agent;
+- requests with missing usage or model data;
+- migrating an existing usage database to the changed schema;
 - provider usage API requests;
 - provider invoices and subscription limits;
 - custom date ranges;
@@ -61,14 +65,14 @@ Not in scope:
   - Goal: Provide a stable historical snapshot.
   - Goal achievement: Full. Values do not change while the user views them.
 
-- **FRQ-04:** The screen supports rolling `24h`, `7d`, `30d`, and `90d` ranges and selects `24h` when it opens.
-  - Origin: `formulated` — approved after Q11 and Q11.1.
+- **FRQ-04:** The screen supports rolling `1h`, `24h`, `7d`, `30d`, and `90d` ranges in that order and selects `7d` when it opens.
+  - Origin: `source` — direct user correction of the range set and default.
   - Goal: Limit historical statistics to a clear period.
-  - Goal achievement: Full. Users can switch between the four agreed ranges.
+  - Goal achievement: Full. Users can switch between five agreed ranges and start with the approved 7-day view.
 
-- **FRQ-05:** In wide mode, the range selector is at the top, the agent list is on the left, and the selected agent table is on the right.
-  - Origin: `source` — user description and mockup.
-  - Goal: Support agent selection and inspection on one screen.
+- **FRQ-05:** In wide mode, the range and session selectors are at the top, the agent list is on the left, and the selected agent table is on the right.
+  - Origin: `source` — user description and mockups.
+  - Goal: Support session scope, agent selection, and inspection on one screen.
   - Goal achievement: Full. The main historical usage scenario is available in one view.
 
 - **FRQ-06:** In narrow mode, the screen shows the agent list first; `Enter` opens the selected agent table, and `Escape` returns to the list.
@@ -76,40 +80,40 @@ Not in scope:
   - Goal: Keep all data accessible at limited width.
   - Goal achievement: Full. Both areas remain readable without simultaneous placement.
 
-- **FRQ-07:** The agent list starts with `All agents`, selected by default. Other items are stable main-agent and subagent `agentId` values with consumption in the selected range.
-  - Origin: `formulated` — approved after Q3, Q4, Q12, and Q15.
-  - Goal: Support system-wide and per-agent analysis.
-  - Goal achievement: Full. Users can move from the aggregate to one agent.
+- **FRQ-07:** The agent list starts with `All agents`, selected by default. Other items are stable main-agent and subagent `agentId` values with consumption in the selected range and session scope. Complete requests without an `agentId` appear as `No agent`.
+  - Origin: `source` — direct user approval of the aggregate, agent groups, and no-agent label.
+  - Goal: Support system-wide, per-agent, and unattributed-cost analysis.
+  - Goal achievement: Full. Users can move from the aggregate to one agent or the explicit no-agent group.
 
 - **FRQ-08:** Agent items after `All agents` are sorted by `agentId`.
   - Origin: `formulated` — approved after Q14.
   - Goal: Provide stable agent ordering.
   - Goal achievement: Partial. Stable ordering improves discovery but does not create usage metrics.
 
-- **FRQ-09:** Agent consumption includes regular responses and auxiliary model requests initiated by that agent.
-  - Origin: `formulated` — approved after Q5.
-  - Goal: Include consumption caused by auxiliary operations.
-  - Goal achievement: Full. The result includes all agreed model requests attributable to an agent.
+- **FRQ-09:** Consumption includes regular responses and every auxiliary model-request source listed in FRQ-30. An auxiliary request belongs to the initiating agent when an `agentId` is available and to `No agent` otherwise.
+  - Origin: `source` — direct user requirement to include all incidental model costs.
+  - Goal: Include consumption caused by regular and auxiliary operations.
+  - Goal achievement: Full. The result includes every identified local model-request path with complete usage data.
 
-- **FRQ-10:** The table starts with a `Total` row, followed by rows grouped and sorted by the actual `provider/model` pair.
-  - Origin: `formulated` — approved after Q9, Q13, and Q14.
-  - Goal: Show the aggregate and each model's contribution.
-  - Goal achievement: Full. Users can inspect a total and its model breakdown.
+- **FRQ-10:** The table starts with a `Total` row, followed by rows grouped by the actual `provider/model` pair and sorted by exact unrounded `Cost%` descending. Equal values use `provider/model` ascending as the tie-breaker.
+  - Origin: `source` — direct user requirement and approved tie-breaker.
+  - Goal: Show the aggregate and put the most expensive models first.
+  - Goal achievement: Full. Users can inspect a total and its model breakdown in descending cost-share order.
 
-- **FRQ-11:** The table uses the columns `Model | Tokens | Read | Write | Hit% | Cost | Saved`.
-  - Origin: `source` — initial mockup; compact labels approved after Q20 and Q20.1.
-  - Goal: Show the agreed metrics within limited TUI width.
-  - Goal achievement: Full. All primary metrics are available in one table.
+- **FRQ-11:** The table uses the columns `Model | Cost% | Tokens | CacheR | CacheW | Hit% | Cost | Saved`.
+  - Origin: `source` — direct user corrections for cost share and explicit cache labels.
+  - Goal: Show the agreed metrics within limited TUI width without ambiguous cache columns.
+  - Goal achievement: Full. All primary metrics and model cost share are available in one table.
 
 - **FRQ-12:** `Tokens` equals the sum of `input + output + cacheRead + cacheWrite` across all included requests.
   - Origin: `formulated` — approved after Q7.
   - Goal: Show the complete processed token volume.
   - Goal achievement: Full. Cached and uncached categories are counted once.
 
-- **FRQ-13:** `Hit%` equals `cacheRead / (input + cacheRead + cacheWrite) × 100%`.
-  - Origin: `formulated` — approved after Q20.
-  - Goal: Show the share of input obtained from cache.
-  - Goal achievement: Partial. The ratio complements the absolute `Read` and `Write` metrics.
+- **FRQ-13:** `CacheR` equals `cacheRead`, `CacheW` equals `cacheWrite`, and `Hit%` equals `cacheRead / (input + cacheRead + cacheWrite) × 100%`.
+  - Origin: `source` — the cache-hit formula was approved earlier, and the user directly renamed the absolute cache columns.
+  - Goal: Show the absolute cache activity and the share of input obtained from cache.
+  - Goal achievement: Full. Explicit labels distinguish cache reads from cache writes.
 
 - **FRQ-14:** `Cost` shows the persisted `usage.cost.total` without visually distinguishing subscription and API sessions.
   - Origin: `formulated` — approved after Q8 and Q27.
@@ -122,12 +126,12 @@ Not in scope:
   - Goal achievement: Partial. The metric explains cache benefit but does not represent provider billing.
 
 - **FRQ-16:** The model table applies this display contract:
-  - `Tokens`, `Read`, and `Write` values below 1,000 are integers without a suffix. Values from 1,000 use `K`, have no fractional digit, and round upward. Values from 1,000,000 use `M`, have exactly one fractional digit, and round upward to one tenth. A thousands result that rounds to `1000K` is promoted to millions. The required conversions are `123` → `123`, `1,000` → `1K`, `1,001` → `2K`, `200,001` → `201K`, `999,999` → `1.0M`, `1,000,000` → `1.0M`, and `2,000,001` → `2.1M`.
-  - `Hit%`, `Cost`, and `Saved` data values do not contain `%` or `$`; the `Hit%` header carries the percentage unit.
+  - `Tokens`, `CacheR`, and `CacheW` values below 1,000 are integers without a suffix. Values from 1,000 use `K`, have no fractional digit, and round upward. Values from 1,000,000 use `M`, have exactly one fractional digit, and round upward to one tenth. Values from 1,000,000,000 use `B`, have exactly one fractional digit, and round upward to one tenth. A rounded `1000K` result is promoted to `M`, and a rounded `1000.0M` result is promoted to `B`. The required conversions are `123` → `123`, `1,000` → `1K`, `1,001` → `2K`, `200,001` → `201K`, `999,999` → `1.0M`, `1,000,000` → `1.0M`, `2,000,001` → `2.1M`, `999,999,999` → `1.0B`, `1,000,000,000` → `1.0B`, and `1,000,000,001` → `1.1B`.
+  - `Cost%` and `Hit%` retain one decimal place. `Cost%`, `Hit%`, `Cost`, and `Saved` data values do not contain `%` or `$`; the percentage headers carry the units. `Cost` and `Saved` each use at most seven visible characters. They retain up to four fractional digits and reduce fractional precision as the integer part grows. For example, `1551.75686` displays as `1551.76`. When the rounded integer part alone would exceed seven characters, the value uses a `K`, `M`, or `B` suffix and the greatest fractional precision that fits; for example, `12345678` displays as `12.35M`.
   - The Model column is at least 24 terminal columns wide and expands to the longest complete provider/model label. The header, `Total`, and every model row use this one visible width, so all numeric columns start at the same terminal columns. Horizontal scrolling preserves access to complete labels.
-  - Inactive `Range` and `Agents` titles and all seven inactive table headers use `accent`. The title or complete header group for the one zone activated through `Tab` uses `borderAccent` instead of `accent`. Data-row labels and numeric values keep the normal text color.
-  - The selected agent row has no dot marker. Its complete clipped and padded row uses `selectedBg` while Agents has focus and `toolPendingBg` while Range or the table has focus. Unselected agent rows have no selected background.
-  - Agents vertical scrolling and table vertical and horizontal scrolling use `muted` for track cells. A thumb uses `border` while its pane has focus and `borderMuted` while another zone has focus. When Range has focus, both pane thumbs use `borderMuted`.
+  - Inactive `Range`, `Sessions`, and `Agents` titles and all eight inactive table headers use `accent`. The title or complete header group for the one zone activated through `Tab` uses `borderAccent` instead of `accent`. Data-row labels and numeric values keep the normal text color.
+  - The selected agent row has no dot marker. Its complete clipped and padded row uses `selectedBg` while Agents has focus and `toolPendingBg` while another zone has focus. Unselected agent rows have no selected background.
+  - Agents vertical scrolling and table vertical and horizontal scrolling use `muted` for track cells. A thumb uses `border` while its pane has focus and `borderMuted` while another zone has focus. When Range or Sessions has focus, both pane thumbs use `borderMuted`.
   - Origin: `source` — direct user approval of the final number, alignment, and color presentation.
   - Goal: Present historical usage with predictable compact numbers, aligned columns, and visible focus.
   - Goal achievement: Full. The table and focus zones use the complete approved display contract.
@@ -137,20 +141,20 @@ Not in scope:
   - Goal: Present an unambiguous empty result.
   - Goal achievement: Full. Users understand the state and can select another range.
 
-- **FRQ-18:** The screen has focus zones for the range selector, agent list, and model table. `Tab` and `Shift+Tab` change zones, arrow keys operate the focused zone, `PageUp` and `PageDown` scroll the table, and `Escape` performs the agreed navigation or closes the screen.
-  - Origin: `formulated` — approved after Q18 and Q19.
+- **FRQ-18:** The screen has focus zones for the range selector, session selector, agent list, and model table. `Tab` and `Shift+Tab` change zones, arrow keys operate the focused zone, `PageUp` and `PageDown` scroll the table, and `Escape` performs the agreed navigation or closes the screen.
+  - Origin: `source` — direct user requirements for session filtering and `/subagents` consistency.
   - Goal: Preserve interaction consistency with `/subagents`.
   - Goal achievement: Full. Every area is keyboard-accessible through a familiar interaction model.
 
-- **FRQ-19:** A model request is persisted and included only when `agentId`, timestamp, `provider`, `model`, `input`, `output`, `cacheRead`, `cacheWrite`, and `usage.cost.total` are available, and when model pricing needed for `Saved` is available. Otherwise, the complete request is ignored. This rule excludes requests made without a selected agent.
-  - Origin: `formulated` — approved after Q24, Q25, and Q27, then clarified by the user for all missing data.
-  - Goal: Include only complete events without presenting synthetic values.
-  - Goal achievement: Full. Every included event supports all agreed dimensions and metrics.
+- **FRQ-19:** A model request is persisted and included only when root-session identity, timestamp, `provider`, `model`, `input`, `output`, `cacheRead`, `cacheWrite`, and `usage.cost.total` are available, and when model pricing needed for `Saved` is available. A missing `agentId` uses the reserved no-agent identity. Other missing required data causes the complete request to be ignored.
+  - Origin: `source` — direct user requirement for complete costs and the approved `No agent` group.
+  - Goal: Include complete events without losing costs solely because no agent is selected.
+  - Goal achievement: Full. Every included event supports the agreed session, model, token, and cost dimensions.
 
-- **FRQ-20:** The feature does not import prior Pi session history, infer missing data from current configuration, or create unknown-agent or unknown-model rows.
-  - Origin: `source` — the user required missing prior data to be ignored and approved independent storage.
-  - Goal: Prevent incorrect historical attribution and session rescanning.
-  - Goal achievement: Full. Only complete events recorded by the usage extension enter statistics.
+- **FRQ-20:** The feature does not import prior Pi session history, infer missing model or root-session data, or create unknown-model rows. Missing agent identity is represented only by the explicit `No agent` group.
+  - Origin: `source` — direct user requirements for no history import and explicit no-agent costs.
+  - Goal: Prevent incorrect historical attribution while retaining complete unattributed costs.
+  - Goal achievement: Full. Only newly recorded complete events enter statistics.
 
 - **FRQ-21:** Usage storage resides under `{Pi agent dir}/agent-suite/usage/data/`, with `usage.sqlite` as the main database file and SQLite-owned auxiliary files in the same directory.
   - Origin: `source` — direct user requirement after Q31.
@@ -191,6 +195,36 @@ Not in scope:
   - Origin: `source` — direct user requirement.
   - Goal: Make root-owned startup cleanup and its failure source visible without requiring a maintenance screen.
   - Goal achievement: Full. Interactive users see both the start and outcome of root cleanup, including actionable failure details.
+
+- **FRQ-29:** The top selector displays `Sessions: [Current] All` when the screen opens. `Current` includes the active root Pi session, every direct or nested subagent session launched under that root session, and all included auxiliary requests initiated by that session family. `All` includes every recorded event.
+  - Origin: `source` — direct user definition and approved default.
+  - Goal: Separate current-work consumption from historical consumption.
+  - Goal achievement: Full. Users can inspect one complete root session family or all sessions.
+
+- **FRQ-30:** The complete source set is regular agent turns plus `consult-advisor`, `context-projection`, `convene-council`, `custom-compaction`, `subagent-query`, `ask-llm`, `vision`, `knowledge`, `native-compaction`, and `branch-summary`. Source boundaries record complete observable usage without adding attempt-tracking infrastructure. Native compaction and branch summary use the final aggregate usage exposed by Pi.
+  - Origin: `source` — direct user requirement to include all identified incidental model costs without billing-system complexity.
+  - Goal: Cover every available local model-consumption source.
+  - Goal achievement: Full within the runtime data Pi exposes. Unobservable intermediate attempts are outside the feature boundary.
+
+- **FRQ-31:** Each event stores the active root Pi session identity separately from its own Pi `sessionId`. Root events use the current main-session ID. Direct and nested subagent processes receive and preserve the same root-session identity.
+  - Origin: `formulated` — required by the user's definition of `Current` across process-local sessions.
+  - Goal: Group a main session, descendants, and auxiliary requests without scanning conversation sessions.
+  - Goal achievement: Full. Session-family filtering uses persisted event attribution.
+
+- **FRQ-32:** `Cost%` equals model-row `Cost / Total Cost × 100` for the visible range, session scope, and agent selection. A non-zero `Total` row displays `100.0`; a zero-cost total and its model rows display `0.0`.
+  - Origin: `source` — direct user requirement and approved current-table denominator.
+  - Goal: Show each model's share of visible cost.
+  - Goal achievement: Full. The model breakdown explains the complete visible total.
+
+- **FRQ-33:** The database schema is changed directly without migrations, schema-version branches, or `PRAGMA user_version`. The user removes the old database before using the changed implementation.
+  - Origin: `source` — direct user instruction to remove unused version metadata and compatibility machinery.
+  - Goal: Apply the new event contract without migration code or dead schema metadata.
+  - Goal achievement: Full. New databases use the required schema directly.
+
+- **FRQ-34:** The main footer obtains API cost only from the usage store for the active root session family. The previous session-local assistant summation and `helper-api-cost` custom entries are removed. One root-only timer refreshes the cached total with an indexed `SUM(cost)` every 10 seconds while the footer is active; footer rendering reads only the cached value. When footer configuration enables `showApiCost` but usage is unavailable because of `enabled: false`, invalid configuration, database initialization failure, or missing usage runtime, the footer disables its API-cost segment and emits one startup warning in an interactive root session. This footer warning is emitted even when the usage extension also reports its own error. No footer warning is emitted when the footer or `showApiCost` is disabled.
+  - Origin: `source` — direct user decision after identifying incomplete footer accounting and approval of warning for every unavailable-usage state.
+  - Goal: Give footer and `/usage` one complete cost source without retaining duplicate cost-only persistence.
+  - Goal achievement: Full. Both views use the same regular, subagent, and auxiliary costs for the current root session family, and unavailable complete cost is never presented as a partial value.
 
 ### Non-Functional Requirements
 

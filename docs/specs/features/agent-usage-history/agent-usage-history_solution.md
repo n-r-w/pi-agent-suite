@@ -13,10 +13,10 @@ Add a dedicated `pi-package/extensions/usage` extension backed by an independent
 
 ```text
 Regular assistant response ─────┐
-Approved auxiliary response ────┼─> validate and attribute ─> usage.sqlite
+Every auxiliary model path ─────┼─> validate and attribute ─> usage.sqlite
                                 │                              │
-Current main-agent identity ────┤                              └─> /usage TUI
-Subagent process identity ──────┘
+Current agent identity ─────────┤                              └─> /usage TUI
+Root-session-family identity ───┘
 ```
 
 The extension records complete usage events when model requests finish. `/usage` queries only this database and never scans Pi conversation sessions or imports prior history.
@@ -74,12 +74,12 @@ A user-launched root Pi process:
 
 A marked child process:
 
-- records attributable subagent usage;
+- records subagent usage with its inherited root-session-family identity;
 - does not register `/usage`;
 - does not run retention cleanup;
 - does not show cleanup notifications.
 
-Council participants are marked child processes. Their model responses are attributed through the approved root-side `convene-council` auxiliary usage hook rather than through child cleanup or UI behavior.
+The root `run-subagent` runtime passes the active root Pi session ID to every launched child through one Subagents-owned environment field. Nested launches preserve the same value. Council participants are marked child processes, but their model responses are attributed through the root-side `convene-council` auxiliary usage hook rather than through child cleanup or UI behavior.
 
 ### 4. Cross-Extension Recording
 
@@ -89,19 +89,25 @@ Add `pi-package/shared/usage-events.ts` with a versioned event-bus request contr
 
 - The usage extension subscribes to the record channel after successful configuration and database initialization.
 - Its `message_end` handler creates one `eventId` and records the regular finalized assistant response with source `agent-turn`.
-- `recordHelperApiCost` creates one `eventId`, keeps the existing session cost entry for footer compatibility, and publishes the ID with the complete assistant response and approved auxiliary source.
-- The usage event-bus listener preserves the publisher-created `eventId`, adds session and agent identity, validates the result, calculates cache savings, and inserts one database row.
+- The shared auxiliary recording boundary creates one `eventId` and publishes the ID with the complete assistant response and source. It does not append a cost-only session entry.
+- `ask-llm`, `vision`, and `knowledge` publish the complete usage results available at their existing completion boundaries without adding attempt-tracking infrastructure.
+- Native compaction records the final aggregate usage exposed by `session_compact` when `fromExtension` is false, which avoids duplicating custom compaction.
+- Native branch summary records the final aggregate usage exposed by the completed `session_tree` event.
+- The usage event-bus listener preserves the publisher-created `eventId`, adds session, root-session-family, and agent identity, validates the result, calculates cache savings, and inserts one database row.
 - Repeated delivery of the same published request preserves its `eventId`. An emitted event without an active usage listener has no effect.
 
-Approved auxiliary sources are:
+The complete auxiliary source set is:
 
 - `consult-advisor`;
 - `context-projection`;
 - `convene-council`;
 - `custom-compaction`;
-- `subagent-query`.
-
-`ask-llm`, `vision`, and internal `knowledge` requests are not recorded by this feature.
+- `subagent-query`;
+- `ask-llm`;
+- `vision`;
+- `knowledge`;
+- `native-compaction`;
+- `branch-summary`.
 
 ### 5. Agent and Session Attribution
 
@@ -109,10 +115,13 @@ The recorder resolves identity when the model request finishes.
 
 - A subagent uses `PI_SUBAGENT_AGENT_ID`.
 - A root process uses `getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent.id`.
+- A missing `agentId` maps to one reserved internal identity rendered as `No agent`.
 - The active Pi session ID comes from the latest `session_start` context.
-- A request without a non-empty `agentId` or session ID is ignored.
+- A root event uses that session ID as both `sessionId` and `rootSessionId`.
+- A child event uses its own Pi session ID as `sessionId` and the inherited root Pi session ID as `rootSessionId`.
+- A request without a non-empty `sessionId` or `rootSessionId` is ignored.
 
-Main-agent selection changes remain queued while a model request is active, so completion-time runtime composition identifies the agent that owns the request. No identity marker is written to the Pi session.
+Main-agent selection changes remain queued while a model request is active, so completion-time runtime composition identifies the agent that owns the request when one is selected. No identity marker is written to the Pi conversation session.
 
 ### 6. Usage Event
 
@@ -123,6 +132,7 @@ interface UsageEvent {
   readonly eventId: string;
   readonly timestampMs: number;
   readonly sessionId: string;
+  readonly rootSessionId: string;
   readonly agentId: string;
   readonly source:
     | "agent-turn"
@@ -130,7 +140,12 @@ interface UsageEvent {
     | "context-projection"
     | "convene-council"
     | "custom-compaction"
-    | "subagent-query";
+    | "subagent-query"
+    | "ask-llm"
+    | "vision"
+    | "knowledge"
+    | "native-compaction"
+    | "branch-summary";
   readonly provider: string;
   readonly model: string;
   readonly input: number;
@@ -146,13 +161,14 @@ The regular `message_end` handler or auxiliary publisher creates `eventId` once 
 
 A record is inserted only when:
 
-- `sessionId`, `agentId`, `provider`, and `model` are non-empty;
+- `sessionId`, `rootSessionId`, `provider`, and `model` are non-empty;
+- `agentId` is non-empty or is replaced by the reserved no-agent identity;
 - timestamp is finite and non-negative;
 - all token values are finite non-negative safe integers;
 - `usage.cost.total` is finite and non-negative;
 - `modelRegistry.find(provider, model)` provides the pricing needed for `saved`.
 
-An incomplete request is ignored as one unit. No value is inferred, synthesized, or imported from old sessions.
+An incomplete request is ignored as one unit. The no-agent identity is the only synthesized classification. No model, usage, root-session, or historical value is inferred or imported.
 
 ### 7. Metric Calculation
 
@@ -193,8 +209,9 @@ Database initialization applies:
 ```text
 journal_mode = WAL
 busy_timeout = bounded
-user_version = 1
 ```
+
+The database contains no application schema-version metadata.
 
 Schema:
 
@@ -203,6 +220,7 @@ CREATE TABLE usage_events (
     event_id           TEXT PRIMARY KEY,
     timestamp_ms       INTEGER NOT NULL,
     session_id         TEXT NOT NULL,
+    root_session_id    TEXT NOT NULL,
     agent_id           TEXT NOT NULL,
     source             TEXT NOT NULL,
     provider           TEXT NOT NULL,
@@ -220,6 +238,8 @@ CREATE INDEX usage_events_timestamp
 ```
 
 Each event uses `INSERT OR IGNORE`. The stable publisher-created UUID primary key makes repeated handling of the same event idempotent. Different logical requests always receive different UUIDs even when their usage fields are equal.
+
+The schema is changed directly. No migration, compatibility branch, schema-version constant, or `PRAGMA user_version` is implemented. The old database must be removed before this schema is used.
 
 SQLite WAL coordinates concurrent root and subagent connections. A write failure or lock timeout does not fail the completed model request. The event is omitted, and the original database error remains available through runtime diagnostics.
 
@@ -263,21 +283,25 @@ AND timestamp_ms <= openedAt
 
 The query uses `usage_events_timestamp`. The extension aggregates the returned rows once into these rolling views:
 
+- `1h`;
 - `24h`;
 - `7d`;
 - `30d`;
 - `90d`.
 
-Changing the range filters the immutable in-memory snapshot and does not query SQLite again.
+`7d` is the default. Changing the range filters the immutable in-memory snapshot and does not query SQLite again.
+
+The opening context also captures the current root Pi session ID. The session selector displays `Sessions: [Current] All`. `Current` filters by that root session ID and `All` removes the root-session filter. Session scope changes reuse the same immutable query result.
 
 Aggregation groups rows by:
 
 ```text
-agentId
-└── provider/model
+session scope
+└── agentId or reserved no-agent identity
+    └── provider/model
 ```
 
-`All agents` contains every selected event once. Agent IDs and `provider/model` keys are sorted by their normalized string values.
+`All agents` contains every selected event once. The reserved identity is rendered as `No agent`. Agent IDs are sorted by normalized string value. Model rows are sorted by exact unrounded cost share descending, with normalized `provider/model` ascending as the tie-breaker.
 
 ### 11. Commands
 
@@ -299,6 +323,24 @@ COMMIT;
 
 Cancellation makes no database change. Reset preserves `config.json`, the SQLite files, schema, and indexes. It deletes events committed before the reset transaction; events committed later by concurrent processes remain.
 
+### 11.1 Footer Cost
+
+The usage extension exposes a process-local read-only broker through the shared Pi event bus. The footer obtains cost only through this broker and does not open SQLite or scan session entries.
+
+When `showApiCost` is enabled, root `session_start` supplies the active root Pi session ID to the broker. The broker performs an initial indexed query:
+
+```sql
+SELECT COALESCE(SUM(cost), 0)
+FROM usage_events
+WHERE root_session_id = :rootSessionId;
+```
+
+While the footer is active, one root-only timer repeats this query every 10 seconds. The footer render path reads only the cached total. The timer stops when the footer component is disposed. A maximum 10-second delay is accepted because the footer is informational rather than a billing surface.
+
+The previous assistant-entry scan, `helper-api-cost` custom entries, and `sumHelperApiCost` path are removed. The footer therefore uses the same regular, subagent, and auxiliary event set as the Current `/usage` scope.
+
+If the broker is unavailable because usage is disabled, invalid, failed during database initialization, or missing, the footer hides the API-cost segment. An interactive root emits one footer warning even when usage also emits its own error. The footer does not request the broker or warn when the footer or `showApiCost` is disabled.
+
 ### 12. TUI
 
 The TUI continues to follow the approved `/subagents` interaction pattern.
@@ -307,37 +349,42 @@ Wide mode shows:
 
 ```text
 ┌─ USAGE ──────────────────────────────────────────────────────────────┐
-│ Range: [24h]  7d  30d  90d                                        │
+│ Range: 1h  24h  [7d]  30d  90d   Sessions: [Current]  All        │
 ├──────────────────┬──────────────────────────────────────────────────┤
-│ Agents           │ Model       Tokens Read Write Hit% Cost Saved   │
-│ ● All agents     │ Total       ...                                 │
-│   MainAgent      │ provider/a  ...                                 │
-│   CoderRegular   │ provider/b  ...                                 │
-└──────────────────┴──────────────────────────────────────────────────┘
+│ Agents           │ Model  Cost%  Tokens CacheR CacheW Hit% Cost Saved│
+├──────────────────┼──────────────────────────────────────────────────┤
+│ All agents       │ Total  100.0  ...                               │
+│ MainAgent        │ provider/a ...                                  │
+│ No agent         │ provider/b ...                                  │
+├──────────────────┴──────────────────────────────────────────────────┤
+│ context-sensitive key hints                                        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 Narrow mode shows the agent list first. `Enter` opens the model table, `Escape` returns to the list, and the next `Escape` closes the screen.
 
-The screen provides focus zones for range, agents, and the table. `Tab` and `Shift+Tab` move one active focus among these zones. Inactive `Range` and `Agents` titles use the theme `accent` color. The active title uses `borderAccent` instead. All seven table headers use `accent` while the table is inactive and change together to `borderAccent` while the table is active. Data-row labels and numeric values keep the normal text color.
+The screen provides focus zones for range, sessions, agents, and the table. `Tab` and `Shift+Tab` move one active focus among these zones. Inactive `Range`, `Sessions`, and `Agents` titles use the theme `accent` color. The active title uses `borderAccent` instead. All eight table headers use `accent` while the table is inactive and change together to `borderAccent` while the table is active. Data-row labels and numeric values keep the normal text color.
 
-The selected agent has no dot marker. The renderer clips and pads its plain row before applying a background across the complete pane width. It uses `selectedBg` while Agents has focus and `toolPendingBg` while Range or the table has focus. Other agent rows have no selected background.
+The selected agent has no dot marker. The renderer clips and pads its plain row before applying a background across the complete pane width. It uses `selectedBg` while Agents has focus and `toolPendingBg` while Range, Sessions, or the table has focus. Other agent rows have no selected background.
 
-Every Agents vertical, table vertical, and table horizontal scroll track cell uses `theme.fg("muted", "░")`. A thumb in the focused pane uses `theme.fg("border", "█")`; a thumb in an inactive pane uses `theme.fg("borderMuted", "█")`. Range focus leaves both pane thumbs inactive.
+Every Agents vertical, table vertical, and table horizontal scroll track cell uses `theme.fg("muted", "░")`. A thumb in the focused pane uses `theme.fg("border", "█")`; a thumb in an inactive pane uses `theme.fg("borderMuted", "█")`. Range or Sessions focus leaves both pane thumbs inactive.
 
 The table uses:
 
 ```text
-Model | Tokens | Read | Write | Hit% | Cost | Saved
+Model | Cost% | Tokens | CacheR | CacheW | Hit% | Cost | Saved
 ```
 
 The table computes one Model-column width with Pi `visibleWidth`. The width is at least 24 terminal columns and expands to the longest complete provider/model label. The header and all rows use this width, so every numeric column has one terminal start column. Existing horizontal scrolling provides access to labels and columns wider than the viewport.
 
-`Tokens`, `Read`, and `Write` share one `/usage`-local formatter:
+`Tokens`, `CacheR`, and `CacheW` share one `/usage`-local formatter:
 
 - values below 1,000 render as integers without a suffix;
 - values from 1,000 render with `K`, no fractional digit, and upward rounding;
 - values from 1,000,000 render with `M`, exactly one fractional digit, and upward rounding to one tenth;
-- a thousands value that rounds to `1000K` is promoted to millions.
+- values from 1,000,000,000 render with `B`, exactly one fractional digit, and upward rounding to one tenth;
+- a thousands value that rounds to `1000K` is promoted to millions;
+- a millions value that rounds to `1000.0M` is promoted to billions.
 
 The conversion contract is:
 
@@ -346,14 +393,25 @@ The conversion contract is:
 1,000     -> 1K
 1,001     -> 2K
 200,001   -> 201K
-999,999   -> 1.0M
-1,000,000 -> 1.0M
-2,000,001 -> 2.1M
+999,999       -> 1.0M
+1,000,000     -> 1.0M
+2,000,001     -> 2.1M
+999,999,999   -> 1.0B
+1,000,000,000 -> 1.0B
+1,000,000,001 -> 1.1B
 ```
 
-`Hit%`, `Cost`, and `Saved` data values contain no `%` or `$` symbol. `Hit%` retains one decimal place, and `Cost` and `Saved` retain four decimal places.
+`Cost%`, `Hit%`, `Cost`, and `Saved` data values contain no `%` or `$` symbol. `Cost%` and `Hit%` retain one decimal place. `Cost` and `Saved` use at most seven visible characters, retain up to four fractional digits, and reduce fractional precision as the integer part grows. The formatter selects the highest precision from four through zero that fits after standard rounding. For example, `1551.75686` becomes `1551.76`. If the rounded integer part cannot fit, the formatter selects `K`, `M`, or `B` by magnitude and uses the greatest fractional precision that keeps the complete value within seven characters. For example, `12345678` becomes `12.35M`.
 
-`Total` is the first row. `All agents` is the initial selection. An empty range shows `No usage in selected range`. The pane-heading divider, footer divider, in-frame keyboard hints, complete bottom border, wide and narrow layouts, scrolling, and navigation remain part of the screen.
+For the visible range, session scope, and agent selection:
+
+```text
+Cost% = model row Cost / Total Cost × 100
+```
+
+A non-zero `Total` row displays `100.0`. A zero-cost total and its model rows display `0.0`. Exact unrounded shares determine descending model order before one-decimal rendering.
+
+`Total` is the first row. `All agents` is the initial agent selection. `Current` is the initial session scope. An empty range or scope shows `No usage in selected range`. The pane-heading divider, footer divider, in-frame keyboard hints, complete bottom border, wide and narrow layouts, scrolling, and navigation remain part of the screen.
 
 ### 13. Code Structure
 
@@ -378,8 +436,8 @@ Register `./extensions/usage/index.ts` after `main-agent-selection` and `run-sub
 
 Documentation changes:
 
-- add `docs/extensions/usage.md`;
-- keep `docs/extensions/footer.md` accurate for helper costs;
+- update `docs/extensions/usage.md` with the complete source and session-family contract;
+- update `docs/extensions/footer.md` to describe usage-store cost and disabled-usage behavior;
 - document the approved auxiliary attribution boundary where relevant.
 
 ### 14. Verification
@@ -393,16 +451,21 @@ Unit tests cover:
 - schema creation and repeated opening;
 - two concurrent SQLite connections;
 - root and child process ownership;
-- regular and each approved auxiliary source;
+- regular turns and each of the ten auxiliary sources;
+- all complete usage exposed by each auxiliary source's existing completion boundary;
+- final native compaction aggregates without custom-compaction duplication and final native branch-summary aggregates;
 - repeated handling with one stable `eventId` and distinct IDs for distinct requests;
-- no-agent and incomplete-event omission;
+- root-session-family propagation through direct and nested subagents;
+- reserved no-agent attribution and incomplete-event omission;
 - metric and tiered-pricing calculations;
 - retention deletion and root-only cleanup;
 - cleanup start, success, and unsanitized failure notifications;
-- range filtering, aggregation, sorting, and totals;
+- five-range filtering with default `7d`;
+- default Current and alternate All session scopes;
+- cost-share aggregation, descending model sorting, tie-breaking, and totals;
 - `/usage`, autocomplete, confirmed reset, and cancelled reset;
 - wide and narrow TUI rendering, focus, scrolling, empty state, and disposal;
-- unchanged footer behavior.
+- footer current-session-family cost, removal of session-local cost summation, and one warning for every unavailable-usage state.
 
 Integration checks verify one `/usage` registration, standalone usage-extension loading, and whole-package loading.
 
@@ -411,11 +474,11 @@ Tests use isolated temporary directories and databases. They do not read real us
 ## Overengineering and Overspecification Considerations
 
 - SQLite is both the append store and query index; no second cache or indexer is added.
-- No conversation-session scanning or legacy import is performed.
-- No timer, watcher, scheduler, maintenance table, or child cleanup is added.
+- No conversation-session scanning, legacy import, or database migration is performed.
+- No timer, watcher, scheduler, maintenance table, or child cleanup is added for retention. The only timer refreshes the informational footer total every 10 seconds.
 - Retention matches the longest supported range.
 - No provider API, billing integration, or pricing history is added.
-- One existing helper-cost hook is extended instead of adding source-specific storage paths.
+- One shared auxiliary publication boundary replaces source-specific and footer-specific cost persistence.
 - The configuration contains only `enabled`.
 
 ## Open Questions

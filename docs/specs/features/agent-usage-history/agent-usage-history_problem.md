@@ -4,11 +4,11 @@
 
 Pi stores model responses and token usage inside individual local sessions. Pi Agent Suite also maintains separate subagent sessions and records costs of selected auxiliary model requests. It has no independent historical usage store.
 
-The current footer summarizes cost within the open Pi session and shows the cache hit rate of the latest response. The `/subagents` screen shows the current or selected subagent session. Neither interface provides historical usage across multiple main-agent and subagent processes.
+The current footer summarizes regular assistant cost in the open root Pi session and costs from five currently supported helper sources. It omits subagent-session cost and other auxiliary model paths. The `/subagents` screen shows the current or selected subagent session. Neither interface provides complete current-session-family or historical usage across multiple main-agent and subagent processes.
 
 ## Observed Problem
 
-A Pi Agent Suite user cannot inspect historical model consumption across main agents and subagents in one place. Usage is not recorded in one independent, queryable history and cannot be compared by agent, model, provider, or time period through the existing interface.
+A Pi Agent Suite user cannot inspect complete model consumption across a current root session family or historical main-agent and subagent sessions in one place. Usage is not recorded in one independent, queryable history and cannot be compared by session scope, agent, model, provider, or time period through the existing interface.
 
 ## Affected Audience
 
@@ -40,7 +40,7 @@ Pi Agent Suite has no independent usage history or historical usage view.
 
 ## Desired State
 
-A Pi Agent Suite user can understand historical model consumption by agent and model from complete usage events recorded in an independent local store, including processed tokens, cache use, cache savings, and estimated cost.
+A Pi Agent Suite user can understand current-session-family and historical model consumption by agent and model from complete usage events recorded in an independent local store, including all identified auxiliary model paths, processed tokens, cache use, cache savings, estimated cost, and each model's cost share. The main footer uses the same current-session-family cost instead of a separate partial calculation.
 
 ## Problem Boundary
 
@@ -48,10 +48,12 @@ The problem covers:
 
 - independent local usage events recorded by Pi Agent Suite;
 - main agents and subagents identified by stable `agentId`;
-- standard and auxiliary model requests caused by an agent;
-- requests with complete attribution, token, model, and cost data;
-- historical consumption over a selected period;
-- provider- and model-level consumption.
+- an explicit no-agent group for complete requests without a selected agent;
+- regular requests and all identified auxiliary model-request paths;
+- persisted root-session-family identity for main and nested subagent processes;
+- requests with complete session, token, model, and cost data;
+- current-session-family and all-session consumption over a selected period;
+- provider- and model-level consumption and model cost share.
 
 Provider billing records, subscription utilization, importing prior session history, and requests not recorded as complete usage events are outside the problem boundary.
 
@@ -72,12 +74,16 @@ None at the problem-definition level. Decisions about model grouping, time range
 - **Agent invocation:** One execution of an agent prompt under an agent identity.
 - **Agent session:** Persisted Pi conversation history associated with an agent.
 - **Model request:** One request sent to a model provider that produces usage data.
-- **Auxiliary model request:** A model request initiated by an agent through `consult-advisor`, `convene-council`, `subagent-query`, `context-projection`, or `custom-compaction`, rather than through a regular agent response.
-- **Agent consumption:** Consumption from regular model responses and auxiliary model requests initiated by the agent.
+- **Auxiliary model request:** A non-regular model request from `consult-advisor`, `context-projection`, `convene-council`, `custom-compaction`, `subagent-query`, `ask-llm`, `vision`, `knowledge`, native compaction, or native branch summarization.
+- **Agent consumption:** Consumption from regular model responses and auxiliary model requests attributed to the agent.
+- **No agent:** The explicit TUI group for complete model requests made without a selected `agentId`.
+- **Root session family:** One root Pi session, every direct or nested subagent session launched under it, and their included auxiliary model requests.
 - **Provider:** The service that executes a model request.
 - **Model:** The provider model that executes a model request.
 - **Local usage store:** The Pi Agent Suite storage that persists complete usage events independently of conversation sessions.
-- **Historical usage:** Aggregated agent consumption derived from the local usage store for a past time range.
+- **Historical usage:** Aggregated consumption derived from the local usage store for a selected time range and session scope.
+- **Current session:** The root session family active when `/usage` opens.
+- **Cost share:** One model row's cost divided by the visible total cost for the selected range, session scope, and agent.
 - **Input tokens:** Non-cached tokens supplied to a model in Pi-normalized usage data.
 - **Output tokens:** Tokens generated by a model.
 - **Cache read:** Input tokens reused from a provider cache.
