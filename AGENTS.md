@@ -21,6 +21,11 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 1. Put documentation for new features in `docs/specs/features/{feature-name}/*`
 2. Put documentation for bugs in `docs/specs/issues/{issue-name}/*`
 3. Each new feature/bug must have a separate directory
+4. Feature/issue structure:
+    1) `problem.md` - problem to solve
+    2) `terms.md` - feature specific terms
+    3) `prd.md` - critical requirements
+    4) `solution.md` - technical solution
 4. Keep extension documentation in `docs/extensions/*` up to date.
 5. `README.md` files should be concise. All details in `docs/extensions/*`.
 
