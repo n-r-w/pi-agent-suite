@@ -7,6 +7,7 @@ const SHOW_PROVIDER_CONFIG_KEY = "showProvider";
 const SHOW_MODEL_CONFIG_KEY = "showModel";
 const SHOW_THINKING_LEVEL_CONFIG_KEY = "showThinkingLevel";
 const SHOW_API_COST_CONFIG_KEY = "showApiCost";
+const SHOW_API_TOKENS_CONFIG_KEY = "showApiTokens";
 const SHOW_CACHE_HIT_RATE_CONFIG_KEY = "showCacheHitRate";
 const SHOW_GIT_BRANCH_CONFIG_KEY = "showGitBranch";
 const SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY = "showAdditionalStatusLine";
@@ -16,6 +17,7 @@ const FOOTER_DISPLAY_CONFIG_KEYS = [
 	SHOW_MODEL_CONFIG_KEY,
 	SHOW_THINKING_LEVEL_CONFIG_KEY,
 	SHOW_API_COST_CONFIG_KEY,
+	SHOW_API_TOKENS_CONFIG_KEY,
 	SHOW_CACHE_HIT_RATE_CONFIG_KEY,
 	SHOW_GIT_BRANCH_CONFIG_KEY,
 	SHOW_ADDITIONAL_STATUS_LINE_CONFIG_KEY,
@@ -31,6 +33,7 @@ export interface FooterConfig {
 	readonly showModel: boolean;
 	readonly showThinkingLevel: boolean;
 	readonly showApiCost: boolean;
+	readonly showApiTokens: boolean;
 	readonly showCacheHitRate: boolean;
 	readonly showGitBranch: boolean;
 	readonly showAdditionalStatusLine: boolean;
@@ -98,6 +101,7 @@ function buildFooterConfig(config: Record<string, unknown>): FooterConfig {
 		showModel: config[SHOW_MODEL_CONFIG_KEY] !== false,
 		showThinkingLevel: config[SHOW_THINKING_LEVEL_CONFIG_KEY] !== false,
 		showApiCost: config[SHOW_API_COST_CONFIG_KEY] !== false,
+		showApiTokens: config[SHOW_API_TOKENS_CONFIG_KEY] !== false,
 		showCacheHitRate: config[SHOW_CACHE_HIT_RATE_CONFIG_KEY] !== false,
 		showGitBranch: config[SHOW_GIT_BRANCH_CONFIG_KEY] === true,
 		showAdditionalStatusLine:

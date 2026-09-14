@@ -19,7 +19,7 @@ import {
 	isCouncilRunDetails,
 } from "../../../pi-package/extensions/convene-council/progress";
 import type { ParticipantRunnerFactory } from "../../../pi-package/extensions/convene-council/types";
-import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
+import { USAGE_EVENT_RECORD_CHANNEL } from "../../../pi-package/shared/usage-events";
 import {
 	withIsolatedAgentDir,
 	writeEnabledConfig,
@@ -1077,10 +1077,13 @@ describe("convene-council loop", () => {
 				async dispose() {},
 			});
 			const pi = createExtensionApiFake();
-			const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
-			pi.appendEntry = (customType: string, data: unknown): void => {
-				appendEntryCalls.push({ customType, data });
-			};
+			const usageCosts: number[] = [];
+			pi.events.on(USAGE_EVENT_RECORD_CHANNEL, (request) => {
+				const message = (request as { message?: AssistantMessage }).message;
+				if (message !== undefined) {
+					usageCosts.push(message.usage.cost.total);
+				}
+			});
 			conveneCouncil(pi, { createParticipantRunner });
 			const updates: AgentToolResult<unknown>[] = [];
 
@@ -1126,14 +1129,7 @@ describe("convene-council loop", () => {
 			expect(finalParticipantsJson).toContain('"tokens":12345');
 			expect(finalParticipantsJson).toContain('"tokens":67890');
 			expect(finalParticipantsJson).toContain('"contextWindow":100000');
-			expect(appendEntryCalls).toContainEqual({
-				customType: HELPER_API_COST_CUSTOM_TYPE,
-				data: { source: "convene-council", cost: 0.31 },
-			});
-			expect(appendEntryCalls).toContainEqual({
-				customType: HELPER_API_COST_CUSTOM_TYPE,
-				data: { source: "convene-council", cost: 0.41 },
-			});
+			expect(usageCosts).toEqual([0.31, 0.41, 0.31, 0.41, 0.41]);
 		});
 	});
 

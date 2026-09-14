@@ -5,10 +5,11 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { normalizeTerminalDisplayText } from "../../../shared/terminal-display-text";
+import type { ScrollMetrics } from "../../../shared/tui/scroll-indicator";
+import { formatUsageTokenCount } from "../../../shared/usage-format";
 import type { ProjectionNode } from "../projection";
 import { formatDuration, renderContext } from "../semantic-layout";
 import type { WorkflowStatus } from "../workflow-status";
-import type { ScrollMetrics } from "./scroll-indicator";
 import { AGENT_STATUS_ICONS, countAgentStatuses } from "./status-summary";
 
 const NODE_ROW_COUNT = 2;
@@ -38,6 +39,8 @@ interface SelectedSessionMetadata {
 	readonly modelId?: string;
 	readonly thinking?: string;
 	readonly cacheHitRate?: number;
+	readonly sessionCost?: number;
+	readonly sessionTokens?: number;
 	readonly contextTokens?: number;
 	readonly contextWindow?: number;
 	readonly projectionSavedTokens?: number;
@@ -527,9 +530,17 @@ function renderSelectedMetadata(
 		metadata.cacheHitRate === undefined
 			? undefined
 			: theme.fg("muted", `CH${metadata.cacheHitRate}`);
+	const sessionCost =
+		metadata.sessionCost === undefined
+			? undefined
+			: theme.fg("muted", `$${metadata.sessionCost.toFixed(2)}`);
+	const sessionTokens =
+		metadata.sessionTokens === undefined
+			? undefined
+			: theme.fg("muted", `T${formatUsageTokenCount(metadata.sessionTokens)}`);
 	const context = renderContext(metadata, theme, { normalColor: "muted" });
 	return truncateToWidth(
-		[elapsed, model, cacheHitRate, context]
+		[elapsed, model, cacheHitRate, sessionCost, sessionTokens, context]
 			.filter((field): field is string => field !== undefined)
 			.join(theme.fg("muted", SELECTED_DETAIL_SEPARATOR)),
 		width,

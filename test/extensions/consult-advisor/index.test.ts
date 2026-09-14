@@ -24,7 +24,6 @@ import contextProjection from "../../../pi-package/extensions/context-projection
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../../../pi-package/extensions/run-subagent/contracts";
 import subagents from "../../../pi-package/extensions/run-subagent/index";
-import { HELPER_API_COST_CUSTOM_TYPE } from "../../../pi-package/shared/helper-api-cost";
 import { registerKnowledgeContextRuntime } from "../../../pi-package/shared/knowledge-runtime";
 import {
 	SUBAGENT_AGENT_ID_ENV,
@@ -32,6 +31,7 @@ import {
 	SUBAGENT_TOOL_PATTERNS_ENV,
 } from "../../../pi-package/shared/subagent-environment";
 import { getPackageToolPresentation } from "../../../pi-package/shared/tool-presentation/registry";
+import { USAGE_EVENT_RECORD_CHANNEL } from "../../../pi-package/shared/usage-events";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -1257,6 +1257,10 @@ describe("consult-advisor", () => {
 				},
 			]);
 			const pi = createExtensionApiFake();
+			const usageRequests: Array<{ source?: string }> = [];
+			pi.events.on(USAGE_EVENT_RECORD_CHANNEL, (request) => {
+				usageRequests.push(request as { source?: string });
+			});
 			const ctx = createContext([createModel("openai", "advisor")]);
 			consultAdvisor(pi, { completeSimple: completion.completeSimple });
 
@@ -1266,15 +1270,9 @@ describe("consult-advisor", () => {
 				content: [{ type: "text", text: "advisor recovered" }],
 			});
 			expect(completion.calls).toHaveLength(2);
-			expect(pi.appendEntryCalls).toEqual([
-				{
-					customType: HELPER_API_COST_CUSTOM_TYPE,
-					data: { source: "consult-advisor", cost: 0.2 },
-				},
-				{
-					customType: HELPER_API_COST_CUSTOM_TYPE,
-					data: { source: "consult-advisor", cost: 0.3 },
-				},
+			expect(usageRequests.map(({ source }) => source)).toEqual([
+				"consult-advisor",
+				"consult-advisor",
 			]);
 		});
 	});

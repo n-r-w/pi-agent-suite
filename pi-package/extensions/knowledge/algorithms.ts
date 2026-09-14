@@ -81,6 +81,7 @@ interface KnowledgeAlgorithmOptions {
 		operation: KnowledgeAccumulationOperation,
 		sizeTarget?: string,
 	) => void;
+	readonly onComplete?: (message: AssistantMessage) => void;
 }
 
 /** Reports whether an accumulation performed a complete knowledge replacement. */
@@ -454,6 +455,7 @@ async function completeText(
 			operation.runtime,
 		),
 	);
+	options.onComplete?.(response);
 	throwIfCancelled(options.signal);
 	if (response.stopReason === "aborted") {
 		throw new Error("knowledge model request was cancelled");

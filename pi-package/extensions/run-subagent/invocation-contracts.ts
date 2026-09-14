@@ -138,6 +138,7 @@ export interface InvocationSupervisorOptions {
 	readonly packagePath?: string;
 	readonly command?: string;
 	readonly childEnvironment?: Readonly<Record<string, string>>;
+	readonly rootSessionId?: string;
 	readonly childStartupConfig: ChildStartupConfig;
 	readonly recordChildStartupAttempt: (
 		record: ChildAuthStartupAttemptRecord,

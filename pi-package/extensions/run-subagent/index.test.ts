@@ -34,6 +34,7 @@ import {
 	SUBAGENT_OWNER_SESSION_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
 } from "../../shared/subagent-environment";
+import { USAGE_EVENT_RECORD_CHANNEL } from "../../shared/usage-events";
 import {
 	isAgentAvailableForCaller,
 	resolveCallerSelectedAgentId,
@@ -1142,6 +1143,10 @@ describe("subagents entry", () => {
 			}),
 			sessionManager: parent,
 		} as ExtensionContext;
+		const usageRequests: unknown[] = [];
+		pi.events.on(USAGE_EVENT_RECORD_CHANNEL, (request) => {
+			usageRequests.push(request);
+		});
 		const startSpy = spyOn(InvocationSupervisor.prototype, "start");
 		const continueSpy = spyOn(InvocationSupervisor.prototype, "continue");
 		try {
@@ -1169,10 +1174,11 @@ describe("subagents entry", () => {
 				"saved child context",
 			);
 			expect(calls[0]?.context.tools).toEqual([]);
-			expect(pi.appendedEntries).toContainEqual([
-				"helper-api-cost",
-				{ source: "subagent-query", cost: 0.2 },
-			]);
+			expect(usageRequests).toHaveLength(1);
+			expect(usageRequests[0]).toMatchObject({
+				source: "subagent-query",
+				message: response,
+			});
 			expect(startSpy).not.toHaveBeenCalled();
 			expect(continueSpy).not.toHaveBeenCalled();
 		} finally {

@@ -23,6 +23,7 @@ import {
 	type PackagePresentationEventBus,
 	registerPackageTool,
 } from "../../shared/tool-presentation/registry";
+import { requestUsageSessionTotals } from "../../shared/usage-read-broker";
 import type { AgentOperationResponse } from "./agent-operation-wire";
 import {
 	applyChildToolPolicy,
@@ -857,6 +858,7 @@ function createRootSupervisor(options: {
 		bridge: options.bridge,
 		childStartupConfig: options.childStartupConfig,
 		recordChildStartupAttempt: options.recordChildStartupAttempt,
+		rootSessionId: options.ctx.sessionManager.getSessionId(),
 		sessionsDir: projectSessionDirectory(
 			join(getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR), "sessions"),
 			options.ctx.cwd,
@@ -980,6 +982,8 @@ function createRootManagementRuntime(options: {
 		submission,
 		retained,
 		showCacheHitRate: options.showCacheHitRate,
+		readSessionTotals: (sessionId) =>
+			requestUsageSessionTotals(options.pi, sessionId),
 	});
 	return {
 		projection,

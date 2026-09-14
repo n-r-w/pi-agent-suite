@@ -25,6 +25,7 @@ import {
 	SUBAGENT_AGENT_ID_ENV,
 	SUBAGENT_DEPTH_ENV,
 	SUBAGENT_OWNER_SESSION_ENV,
+	SUBAGENT_ROOT_SESSION_ID_ENV,
 	SUBAGENT_RUNTIME_LEASE_ENV,
 	SUBAGENT_TOOL_PATTERNS_ENV,
 	SUBAGENT_WORKFLOW_IDS_ENV,
@@ -427,6 +428,9 @@ export class InvocationSupervisor implements InvocationControl {
 			...this.options.childEnvironment,
 			[SUBAGENT_RUNTIME_LEASE_ENV]: runtimeLeaseId,
 			[SUBAGENT_OWNER_SESSION_ENV]: childPiSessionId,
+			...(this.options.rootSessionId === undefined
+				? {}
+				: { [SUBAGENT_ROOT_SESSION_ID_ENV]: this.options.rootSessionId }),
 			[SUBAGENT_AGENT_ID_ENV]: request.agentId,
 			[SUBAGENT_DEPTH_ENV]: String(launch?.depth ?? 0),
 			...(launch?.toolPatterns === undefined

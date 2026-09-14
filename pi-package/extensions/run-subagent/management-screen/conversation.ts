@@ -23,11 +23,11 @@ import {
 	KNOWLEDGE_OUTCOME_CUSTOM_TYPE,
 	renderKnowledgeOutcome,
 } from "../../../shared/knowledge-outcome-renderer";
+import type { ScrollMetrics } from "../../../shared/tui/scroll-indicator";
 import { SUBAGENT_HISTORY_CUSTOM_TYPE } from "../persistence.ts";
 import type { ConversationProjectionEntry } from "../projection";
 import { renderPrompt } from "../semantic-layout.ts";
 import { renderSubagentFeedback } from "../semantic-rendering.ts";
-import type { ScrollMetrics } from "./scroll-indicator";
 
 /** Resolves one tool to its public Pi presentation definition. */
 interface ConversationToolPresentation {

@@ -33,7 +33,6 @@ import {
 	setPendingProjectionSavings,
 } from "../../shared/context-projection";
 import { CONTEXT_PROJECTION_STATUS_KEY } from "../../shared/context-projection-status";
-import { recordHelperApiCost } from "../../shared/helper-api-cost";
 import { createToolResultProjectionSummaries } from "../../shared/tool-result-projection";
 import {
 	collectToolResultSummaryCandidates,
@@ -42,6 +41,7 @@ import {
 	type ToolResultSummaryCompleteSimple,
 } from "../../shared/tool-result-summary";
 import { createToolResultSummaryDiagnosticRecorder } from "../../shared/tool-result-summary-diagnostic";
+import { publishUsageEvent } from "../../shared/usage-events";
 
 /** Footer status text for an invalid projection config. */
 const INVALID_STATUS_TEXT = "CP!";
@@ -53,7 +53,10 @@ const READY_STATUS_TEXT = "~0";
 const TOKEN_COMPACT_THRESHOLD = 1_000;
 
 interface HandleContextProjectionOptions {
-	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
+	readonly pi: Pick<
+		ExtensionAPI,
+		"appendEntry" | "events" | "getThinkingLevel"
+	>;
 	readonly event: ContextEvent;
 	readonly ctx: ExtensionContext;
 	readonly projectedReplacementsByEntryId: Map<string, string>;
@@ -87,7 +90,10 @@ interface ContextProjectionNoChangeResultOptions {
 }
 
 interface ContextEventProjectionDecisionOptions {
-	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
+	readonly pi: Pick<
+		ExtensionAPI,
+		"appendEntry" | "events" | "getThinkingLevel"
+	>;
 	readonly event: ContextEvent;
 	readonly ctx: ExtensionContext;
 	readonly config: ContextProjectionConfig;
@@ -104,7 +110,10 @@ interface ContextProjectionDependencies {
 }
 
 interface ProjectionDecisionOptions {
-	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
+	readonly pi: Pick<
+		ExtensionAPI,
+		"appendEntry" | "events" | "getThinkingLevel"
+	>;
 	readonly ctx: ExtensionContext;
 	readonly config: ContextProjectionConfig;
 	readonly mappedContext: readonly MappedContextEntry[];
@@ -126,7 +135,10 @@ interface ProjectionProgressReporter {
 }
 
 interface SummaryReplacementOptions {
-	readonly pi: Pick<ExtensionAPI, "appendEntry" | "getThinkingLevel">;
+	readonly pi: Pick<
+		ExtensionAPI,
+		"appendEntry" | "events" | "getThinkingLevel"
+	>;
 	readonly ctx: ExtensionContext;
 	readonly config: ContextProjectionConfig;
 	readonly mappedContext: readonly MappedContextEntry[];
@@ -612,7 +624,7 @@ async function createSummaryReplacementsByEntryId({
 				progress.notifyCurrent();
 			},
 			recordCost: (message) => {
-				recordHelperApiCost(pi, "context-projection", message);
+				publishUsageEvent(pi, "context-projection", message);
 			},
 		},
 	});

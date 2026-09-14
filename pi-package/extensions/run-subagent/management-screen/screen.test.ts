@@ -372,6 +372,9 @@ function createScreen(
 		readonly toolsExpanded?: boolean;
 		readonly theme?: Theme;
 		readonly showCacheHitRate?: boolean;
+		readonly readSessionTotals?: (
+			sessionId: string,
+		) => { cost: number; tokens: number } | undefined;
 	} = {},
 ) {
 	initTheme(undefined, false);
@@ -402,6 +405,7 @@ function createScreen(
 		retained,
 		toolsExpanded: options.toolsExpanded ?? false,
 		showCacheHitRate: options.showCacheHitRate ?? false,
+		readSessionTotals: options.readSessionTotals ?? (() => undefined),
 		notify: (message) => notifications.push(message),
 		close: () => {
 			closeCalls += 1;
@@ -895,6 +899,26 @@ describe("management screen", () => {
 		fixture.screen.dispose();
 	});
 
+	test("reads cumulative usage for the selected child Pi session", () => {
+		// Purpose: the management screen must connect the selected logical session to its stored cumulative usage.
+		// Inputs and expected output: selecting child-session reads that ID and renders $2.12 and T1.2M.
+		// Edge case: totals come from the child Pi session identity rather than the owner-local numeric ID.
+		// Dependencies: injected synchronous usage reader and selected-header rendering.
+		const queriedSessions: string[] = [];
+		const fixture = createScreen({
+			readSessionTotals: (sessionId) => {
+				queriedSessions.push(sessionId);
+				return { cost: 2.12, tokens: 1_200_000 };
+			},
+		});
+
+		const rows = fixture.screen.render(120);
+
+		expect(queriedSessions).toEqual(["child-session"]);
+		expect(rows.some((line) => line.includes("$2.12 · T1.2M"))).toBe(true);
+		fixture.screen.dispose();
+	});
+
 	test("shows and clears live projection savings in the active header", () => {
 		// Purpose: the selected active header must react to projection savings without waiting for another message.
 		// Inputs and expected output: 139k savings prefix 344k/372k usage, then an explicit clear removes only the prefix.
@@ -940,9 +964,9 @@ describe("management screen", () => {
 		fixture.screen.dispose();
 	});
 
-	test("updates selected active elapsed time until the invocation terminates", () => {
-		// Purpose: the selected header must advance elapsed time while work remains active without mutating invocation snapshots.
-		// Inputs and expected output: a one-second accepted snapshot renders as three seconds after the presentation clock advances and as the fixed terminal duration after completion.
+	test("updates selected active elapsed time every ten seconds until the invocation terminates", () => {
+		// Purpose: the selected header must advance elapsed time at a bounded cadence while work remains active without mutating invocation snapshots.
+		// Inputs and expected output: a one-second accepted snapshot renders as eleven seconds after one ten-second refresh and as the fixed terminal duration after completion.
 		// Edge case: terminal projection and screen disposal clear the refresh timer without changing the finalized elapsed value.
 		// Dependencies: controlled wall clock and interval callbacks, projection publication, and selected-header rendering.
 		const startedAtMs = 1_700_000_000_000;
@@ -952,7 +976,9 @@ describe("management screen", () => {
 		const nowSpy = spyOn(Date, "now").mockImplementation(() => nowMs);
 		const intervalSpy = spyOn(globalThis, "setInterval").mockImplementation(((
 			handler: () => void,
+			delay?: number,
 		) => {
+			expect(delay).toBe(10_000);
 			refresh = handler;
 			return intervalHandle;
 		}) as typeof setInterval);
@@ -973,7 +999,7 @@ describe("management screen", () => {
 			const renderRequestsBeforeTick = fixture.tui.renderRequests;
 
 			// ACT: advance the presentation clock, fire one refresh, then publish the finalized terminal snapshot.
-			nowMs += 2_000;
+			nowMs += 10_000;
 			expect(refresh).toBeDefined();
 			if (refresh === undefined) {
 				throw new Error("elapsed refresh timer was not scheduled");
@@ -999,7 +1025,7 @@ describe("management screen", () => {
 			// ASSERT: active rendering follows time, terminal rendering stays fixed, and the owned timer is released once.
 			expect({
 				initialElapsed: initialRows.some((line) => line.includes("1s")),
-				activeElapsed: activeRows.some((line) => line.includes("3s")),
+				activeElapsed: activeRows.some((line) => line.includes("11s")),
 				renderRequests: fixture.tui.renderRequests - renderRequestsBeforeTick,
 				terminalElapsed: terminalRows.some((line) => line.includes("4s")),
 				clearCalls: clearIntervalSpy.mock.calls.length,
@@ -1646,6 +1672,7 @@ describe("management screen", () => {
 			submission,
 			retained,
 			showCacheHitRate: true,
+			readSessionTotals: () => undefined,
 		});
 
 		// ACT: open through ctx.ui.custom, construct the component, and close it through Escape.
@@ -1881,6 +1908,7 @@ describe("management screen", () => {
 			retained,
 			toolsExpanded: false,
 			showCacheHitRate: true,
+			readSessionTotals: () => undefined,
 			notify: () => undefined,
 			close: () => undefined,
 		});

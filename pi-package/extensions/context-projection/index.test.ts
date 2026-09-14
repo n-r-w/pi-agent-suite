@@ -21,7 +21,6 @@ import {
 	replayContextProjection,
 	resetPendingProjectionSavings,
 } from "../../shared/context-projection";
-import { HELPER_API_COST_CUSTOM_TYPE } from "../../shared/helper-api-cost";
 import contextProjection from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -1947,25 +1946,19 @@ describe("context-projection", () => {
 					},
 				],
 			});
-			expect(pi.appendEntryCalls).toEqual([
-				{
-					customType: HELPER_API_COST_CUSTOM_TYPE,
-					data: { source: "context-projection", cost: 0.4 },
+			expect(pi.appendEntryCalls).toContainEqual({
+				customType: CUSTOM_TYPE,
+				data: {
+					appliedLevel: "L1",
+					projectedEntries: [
+						{
+							entryId: "03",
+							replacementText:
+								'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSummary: command output proves the projection summary path.\n</summary>\n</tool_result>',
+						},
+					],
 				},
-				{
-					customType: CUSTOM_TYPE,
-					data: {
-						appliedLevel: "L1",
-						projectedEntries: [
-							{
-								entryId: "03",
-								replacementText:
-									'<tool_result full_result="omitted" content="summary">\n<notice>Full result omitted. Summary below. Run tool again for full result.</notice>\n<summary>\nSummary: command output proves the projection summary path.\n</summary>\n</tool_result>',
-							},
-						],
-					},
-				},
-			]);
+			});
 			expect(completion.calls).toHaveLength(1);
 			expect(completion.calls[0]?.model.id).toBe("current-model");
 			expect(completion.calls[0]?.context.systemPrompt).toBe(

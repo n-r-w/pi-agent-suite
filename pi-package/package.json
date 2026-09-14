@@ -41,6 +41,7 @@
 			"./extensions/cmux/index.ts",
 			"./extensions/main-agent-selection/index.ts",
 			"./extensions/run-subagent/index.ts",
+			"./extensions/usage/index.ts",
 			"./extensions/knowledge/index.ts",
 			"./extensions/algorithms/index.ts",
 			"./extensions/workflow/index.ts",

@@ -626,6 +626,45 @@ describe("management hierarchy", () => {
 		]);
 	});
 
+	test("shows cumulative session cost and processed tokens before context usage", () => {
+		// Purpose: the selected subagent header must expose complete stored consumption for the logical session.
+		// Inputs and expected output: cost 2.12 and 1,200,000 tokens render as $2.12 and T1.2M before current context usage.
+		// Edge case: session tokens use the usage table's upward compact rounding contract rather than the lowercase context format.
+		// Dependencies: selected-session metadata rendering and the historical usage display contract.
+		const selected = {
+			...node(
+				"selected-usage",
+				"root-owner",
+				2,
+				null,
+				"SubAgentCoderRegular",
+				1,
+			),
+			state: "active" as const,
+		};
+
+		const header = renderSelectedSessionHeader({
+			nodes: [selected],
+			selectedStableKey: selected.stableKey,
+			metadata: {
+				elapsedMs: 759_000,
+				modelId: "openai-codex/gpt-5.6-sol",
+				thinking: "medium",
+				cacheHitRate: 84,
+				sessionCost: 2.12,
+				sessionTokens: 1_200_000,
+				contextTokens: 106_300,
+				contextWindow: 372_000,
+			},
+			width: 140,
+			theme: THEME,
+		});
+
+		expect(header[2]).toBe(
+			"12m39s · openai-codex/gpt-5.6-sol/medium · CH84 · $2.12 · T1.2M · 106.3k/372k",
+		);
+	});
+
 	test("mutes hierarchy task and selected-session data text", () => {
 		// Purpose: descriptive agent data must remain secondary to identities and lifecycle state.
 		// Inputs and expected output: task, prompt, elapsed time, model, and normal context use the muted foreground.

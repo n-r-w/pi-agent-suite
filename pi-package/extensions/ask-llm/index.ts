@@ -62,6 +62,7 @@ import {
 	validateRetryConfig,
 	withRetry,
 } from "../../shared/retry";
+import { publishUsageEvent } from "../../shared/usage-events";
 import {
 	AskAnswerDialog,
 	AskLoadingDialog,
@@ -366,6 +367,7 @@ async function executeAskLlm({
 	if ("issue" in response) {
 		return { kind: "issue", issue: response.issue };
 	}
+	publishUsageEvent(pi, "ask-llm", response);
 	if (signal?.aborted === true || response.stopReason === "aborted") {
 		return { kind: "cancelled" };
 	}

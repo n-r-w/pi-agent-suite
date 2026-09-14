@@ -2,6 +2,8 @@
 export const SUBAGENT_AGENT_ID_ENV = "PI_SUBAGENT_AGENT_ID";
 /** Carries the child process's root-relative delegation depth. */
 export const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
+/** Carries the root Pi session identity without replacing the child's own session. */
+export const SUBAGENT_ROOT_SESSION_ID_ENV = "PI_SUBAGENT_ROOT_SESSION_ID";
 /** Carries the selected agent definition's raw tool patterns as JSON. */
 export const SUBAGENT_TOOL_PATTERNS_ENV = "PI_SUBAGENT_TOOL_PATTERNS";
 /** Carries resolved canonical workflow IDs for the selected child agent. */

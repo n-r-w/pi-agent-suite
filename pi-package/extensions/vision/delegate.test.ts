@@ -211,6 +211,36 @@ describe("vision delegation", () => {
 		expect(calls).toBeGreaterThan(1);
 	});
 
+	test("publishes only the final successful vision response after retries", async () => {
+		// Purpose: vision usage must contain one accepted response rather than hidden failed attempts.
+		// Input and expected output: one error response followed by success reports only the successful assistant message.
+		// Edge case: provider error responses are retry inputs, not completed source events.
+		// Dependencies: deterministic completion sequence and injected completion observer.
+		let calls = 0;
+		const completed: AssistantMessage[] = [];
+		const resolved = await resolveVisionRuntime(createContext(), "p/m");
+		await describeImage({
+			runtime: resolved.runtime,
+			thinking: resolved.thinking,
+			image: IMAGE,
+			prompt: "Describe",
+			retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 },
+			signal: undefined,
+			completeSimple: async () => {
+				calls += 1;
+				return calls === 1
+					? assistantMessage("failed", "error")
+					: assistantMessage("recovered", "done");
+			},
+			onComplete: (message) => completed.push(message),
+		});
+
+		expect(completed).toHaveLength(1);
+		expect(completed[0]?.content).toEqual([
+			{ type: "text", text: "recovered" },
+		]);
+	});
+
 	test("does not retry an abort error", async () => {
 		let calls = 0;
 		const complete = async (): Promise<AssistantMessage> => {

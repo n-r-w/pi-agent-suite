@@ -17,6 +17,13 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import {
+	calculateScrollThumb,
+	isScrollThumbRow,
+	type ScrollMetrics,
+	type ScrollThumb,
+} from "../../../shared/tui/scroll-indicator";
+import type { UsageSessionTotals } from "../../../shared/usage-read-broker";
 import type { InvocationMetadata, LogicalSession } from "../domain";
 import { errorMessage } from "../error-message";
 import type { LiveAgentStatus } from "../live-status";
@@ -33,12 +40,6 @@ import {
 	renderHierarchyTitle,
 	renderSelectedSessionHeader,
 } from "./hierarchy";
-import {
-	calculateScrollThumb,
-	isScrollThumbRow,
-	type ScrollMetrics,
-	type ScrollThumb,
-} from "./scroll-indicator";
 
 const HIERARCHY_MIN_WIDTH = 24;
 const CONVERSATION_MIN_WIDTH = 40;
@@ -50,8 +51,8 @@ const SCREEN_CHROME_ROWS = 3;
 const PANE_DIVIDER_ROWS = 1;
 const MIN_CONVERSATION_ROWS = 1;
 const MIN_FRAMED_EDITOR_ROWS = 3;
-/** Keeps whole-second elapsed presentation current without revising session data. */
-const ELAPSED_REFRESH_INTERVAL_MS = 1_000;
+/** Refreshes elapsed presentation at a bounded cadence without revising session data. */
+const ELAPSED_REFRESH_INTERVAL_MS = 10_000;
 /** Converts retry deadlines to whole-second countdown labels. */
 const MILLISECONDS_PER_SECOND = 1_000;
 /** Ends child SGR and OSC 8 state before screen-owned chrome. */
@@ -126,6 +127,9 @@ interface ManagementScreenOptions {
 	readonly retained: ManagementRetainedState;
 	readonly toolsExpanded: boolean;
 	readonly showCacheHitRate: boolean;
+	readonly readSessionTotals: (
+		sessionId: string,
+	) => UsageSessionTotals | undefined;
 	readonly notify: (message: string) => void;
 	readonly close: () => void;
 }
@@ -954,18 +958,24 @@ export class ManagementScreen implements Component, Focusable {
 			headerMetadata?.modelId === conversationMetadata.modelId
 				? conversationMetadata.cacheHitRate
 				: undefined;
-		const selectedMetadata =
-			headerMetadata === undefined
-				? undefined
+		const sessionTotals = this.options.readSessionTotals(
+			selectedNode.childPiSessionId,
+		);
+		const selectedMetadata = {
+			...headerMetadata,
+			...(cacheHitRate === undefined ? {} : { cacheHitRate }),
+			...(sessionTotals === undefined
+				? {}
 				: {
-						...headerMetadata,
-						...(cacheHitRate === undefined ? {} : { cacheHitRate }),
-					};
+						sessionCost: sessionTotals.cost,
+						sessionTokens: sessionTotals.tokens,
+					}),
+		};
 		return renderSelectedSessionHeader({
 			nodes: this.view.nodes,
 			selectedStableKey,
 			...(initialPrompt === undefined ? {} : { initialPrompt }),
-			...(selectedMetadata === undefined ? {} : { metadata: selectedMetadata }),
+			metadata: selectedMetadata,
 			...(this.view.selectedWorkflowStatus === undefined
 				? {}
 				: { workflowStatus: this.view.selectedWorkflowStatus }),
@@ -1080,6 +1090,9 @@ interface ManagementScreenFactoryOptions {
 	readonly submission: ManagementMessageSubmission;
 	readonly retained: ManagementRetainedState;
 	readonly showCacheHitRate: boolean;
+	readonly readSessionTotals: (
+		sessionId: string,
+	) => UsageSessionTotals | undefined;
 }
 
 /** Creates one stable public custom-component factory for both TUI entries. */
@@ -1099,6 +1112,7 @@ export function createManagementScreenFactory(
 			// Pi invokes the factory for every open, so each overlay samples the main conversation independently.
 			toolsExpanded: options.ctx.ui.getToolsExpanded(),
 			showCacheHitRate: options.showCacheHitRate,
+			readSessionTotals: options.readSessionTotals,
 			notify: (message) => options.ctx.ui.notify(message, "error"),
 			close: () => done(undefined),
 		});
