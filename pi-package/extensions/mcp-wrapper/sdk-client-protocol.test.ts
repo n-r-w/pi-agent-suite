@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { env } from "node:process";
+import { promisify } from "node:util";
 import {
 	Client,
 	StreamableHTTPClientTransport,
@@ -15,6 +19,37 @@ import { mapMcpToolResult } from "./result-mapper.ts";
 import { createSdkMcpClient } from "./sdk-client-factory.ts";
 
 const TIMEOUT_ERROR = /timed out/i;
+const execFileAsync = promisify(execFile);
+
+describe("SDK v2 stdio diagnostics", () => {
+	test("writes server stderr to the shared rotating log", async () => {
+		// Purpose: stdio server diagnostics must remain available without writing through the parent terminal.
+		// Inputs and expected outputs: a local MCP server writes before and after initialization; each record has the available identities.
+		// Edge case: the early diagnostic uses the initialization state before the server reports its name.
+		// Dependencies: real SDK transport, an isolated child process, temporary suite storage, and local static fixtures only.
+		const temp = createTempDir("pi-mcp-sdk-stderr-");
+		try {
+			await execFileAsync(
+				process.execPath,
+				[resolve("test/fixtures/mcp-wrapper-stderr-driver.ts")],
+				{ env: { ...env, PI_AGENT_SUITE_DIR: temp.path } },
+			);
+			const content = await readFile(
+				join(temp.path, "mcp-wrapper", "stdio.log"),
+				"utf8",
+			).catch(() => "");
+
+			expect(content).toContain(
+				"[fixture] [initializing] stdio startup diagnostic\n",
+			);
+			expect(content).toContain(
+				"[fixture] [isolated-fixture] stdio connected diagnostic\n",
+			);
+		} finally {
+			temp.remove();
+		}
+	});
+});
 
 // Purpose: exercise published SDK signatures and transport behavior, not fake client methods.
 // Inputs: two list pages, echo, tool error, protocol error, and a pending call.
