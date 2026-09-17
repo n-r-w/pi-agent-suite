@@ -7,6 +7,7 @@ import {
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { McpClientLike, McpRequestOptions } from "./client-manager.ts";
 import type { McpServerConfig } from "./config.ts";
+import { McpStdioLogWriter } from "./stdio-log.ts";
 
 const CLIENT_VERSION = "1.0.0";
 
@@ -31,6 +32,7 @@ interface SdkClientInstance {
 		options?: McpRequestOptions,
 	): Promise<unknown>;
 	getInstructions(): string | undefined;
+	getServerVersion(): { readonly name: string } | undefined;
 	close(): Promise<void>;
 }
 
@@ -39,13 +41,17 @@ type SdkClientConstructor = new (
 	options?: ConstructorParameters<typeof Client>[1],
 ) => SdkClientInstance;
 
+interface StdioDiagnosticStream {
+	on(event: "data", listener: (chunk: unknown) => void): unknown;
+}
+
 type StdioTransportConstructor = new (params: {
 	readonly command: string;
 	readonly args?: string[];
 	readonly env?: Readonly<Record<string, string>>;
 	readonly cwd?: string;
-	readonly stderr?: "ignore";
-}) => Transport;
+	readonly stderr?: "pipe";
+}) => Transport & { readonly stderr?: StdioDiagnosticStream | null };
 
 type HttpTransportConstructor = new (
 	url: URL,
@@ -78,21 +84,25 @@ export function createSdkMcpClient(
 		version: CLIENT_VERSION,
 	});
 
-	return new SdkMcpClientAdapter(client, config, constructors);
+	return new SdkMcpClientAdapter(serverKey, client, config, constructors);
 }
 
 class SdkMcpClientAdapter implements SdkMcpClient {
 	readonly sdkClient: unknown;
+	private readonly serverKey: string;
 	private readonly client: SdkClientInstance;
 	private readonly config: McpServerConfig;
 	private readonly constructors: SdkMcpClientConstructors;
 	private transport: Transport | undefined;
+	private stdioLogWriter: McpStdioLogWriter | undefined;
 
 	constructor(
+		serverKey: string,
 		client: SdkClientInstance,
 		config: McpServerConfig,
 		constructors: SdkMcpClientConstructors,
 	) {
+		this.serverKey = serverKey;
 		this.client = client;
 		this.sdkClient = client;
 		this.config = config;
@@ -102,6 +112,9 @@ class SdkMcpClientAdapter implements SdkMcpClient {
 	async connect(options?: McpRequestOptions): Promise<void> {
 		this.transport = this.createTransport();
 		await this.client.connect(this.transport, options);
+		this.stdioLogWriter?.setServerName(
+			this.client.getServerVersion()?.name ?? "unnamed",
+		);
 	}
 
 	async listTools(
@@ -128,19 +141,27 @@ class SdkMcpClientAdapter implements SdkMcpClient {
 	async close(): Promise<void> {
 		await this.client.close().catch(() => {});
 		await this.transport?.close().catch(() => {});
+		await this.stdioLogWriter?.flush();
 	}
 
 	private createTransport(): Transport {
 		if (this.config.type === "stdio") {
 			const TransportCtor =
 				this.constructors.stdioClientTransport ?? StdioClientTransport;
-			return new TransportCtor({
+			const transport = new TransportCtor({
 				command: this.config.command,
 				args: [...this.config.args],
 				env: mergeProcessEnv(this.config.env),
 				...(this.config.cwd !== undefined ? { cwd: this.config.cwd } : {}),
-				stderr: "ignore",
+				stderr: "pipe",
 			});
+			const stderr = transport.stderr;
+			if (stderr !== undefined && stderr !== null) {
+				const writer = new McpStdioLogWriter(this.serverKey);
+				this.stdioLogWriter = writer;
+				stderr.on("data", (chunk) => writer.write(chunk));
+			}
+			return transport;
 		}
 
 		const TransportCtor =

@@ -53,6 +53,10 @@ class FakeSdkClient {
 		return "Use this server for documentation lookup.";
 	}
 
+	getServerVersion(): { readonly name: string } {
+		return { name: "fake-server" };
+	}
+
 	async close(): Promise<void> {
 		this.closeCalls += 1;
 	}
