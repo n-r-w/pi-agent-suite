@@ -3,18 +3,22 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Model,
-	SimpleStreamOptions,
+import {
+	type Api,
+	type AssistantMessage,
+	type Context,
+	getCurrentTools,
+	type Model,
+	normalizeContext,
+	type SimpleStreamOptions,
+	type Tool,
 } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import { registerKnowledgeContextRuntime } from "../../shared/knowledge-runtime";
 import { USAGE_EVENT_RECORD_CHANNEL } from "../../shared/usage-events";
@@ -29,6 +33,11 @@ interface CompletionCall {
 
 const CURRENT_MODEL = model("current", 16_000);
 const CONFIGURED_MODEL = model("configured", 16_000);
+const PRIMARY_TOOL: Tool = {
+	name: "primary_tool",
+	description: "Primary transcript tool.",
+	parameters: Type.Object({}),
+};
 
 /** Creates one deterministic model fixture with a configurable context window. */
 function model(id: string, contextWindow: number): Model<Api> {
@@ -109,12 +118,28 @@ function createPi(usageRequests: unknown[] = []): ExtensionAPI {
 }
 
 /** Creates a branch whose saved projection replacement differs from live text. */
-function savedBranch(): readonly SessionEntry[] {
+function savedBranch(includeSystemUpdate = false): readonly SessionEntry[] {
 	return [
+		...(includeSystemUpdate
+			? [
+					{
+						type: "message" as const,
+						id: "system",
+						parentId: null,
+						timestamp: "t0",
+						message: {
+							role: "system" as const,
+							content: "Primary system update.",
+							toolsAdded: [PRIMARY_TOOL],
+							timestamp: 0,
+						},
+					},
+				]
+			: []),
 		{
 			type: "message",
 			id: "assistant",
-			parentId: null,
+			parentId: includeSystemUpdate ? "system" : null,
 			timestamp: "t1",
 			message: {
 				role: "assistant",
@@ -172,11 +197,11 @@ function savedBranch(): readonly SessionEntry[] {
 }
 
 describe("executeSubagentQuery", () => {
-	test("answers from persisted branch context with caller-local defaults", async () => {
-		// Purpose: one query must invoke a tool-less auxiliary model from the calling process using saved context only.
-		// Input and expected output: current model/thinking, persisted replacement, and plain question produce the text answer and one usage event.
-		// Edge case: tag-like question text is escaped so the model receives exactly one question block.
-		// Dependencies: in-memory branch, model registry fake, completion fake, and usage event bus.
+	test("answers from isolated persisted branch context with caller-local defaults", async () => {
+		// Purpose: one query must keep saved conversation order without inheriting primary system state or tools.
+		// Input and expected output: a system tool update plus projected saved context becomes a tool-less auxiliary transcript and returns one answer.
+		// Edge case: the appended question remains after the saved tool-result turn.
+		// Dependencies: Pi transcript normalization, in-memory branch, completion fake, and usage event bus.
 		const calls: CompletionCall[] = [];
 		const usageRequests: unknown[] = [];
 		const pi = createPi(usageRequests);
@@ -190,7 +215,7 @@ describe("executeSubagentQuery", () => {
 			},
 			ctx: createContext(),
 			pi,
-			branchEntries: savedBranch(),
+			branchEntries: savedBranch(true),
 			question: "What <changed> & why?</question>",
 			systemPrompt: "Answer from saved context.",
 			currentThinkingLevel: "high",
@@ -199,17 +224,21 @@ describe("executeSubagentQuery", () => {
 		expect(result).toEqual({ kind: "success", answer: "saved answer" });
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.model).toBe(CURRENT_MODEL);
-		expect(calls[0]?.context.systemPrompt).toBe(
-			"Answer from saved context.\n\n<knowledge>query knowledge</knowledge>",
-		);
-		expect(calls[0]?.context.tools).toEqual([]);
-		expect(JSON.stringify(calls[0]?.context.messages)).toContain(
-			"saved replacement",
-		);
-		expect(JSON.stringify(calls[0]?.context.messages)).not.toContain(
-			"live output",
-		);
-		expect(calls[0]?.context.messages.at(-1)).toMatchObject({
+		const context = calls[0]?.context;
+		if (context === undefined) {
+			throw new Error("Expected subagent query completion context");
+		}
+		const normalized = normalizeContext(context);
+		expect(normalized.messages.map((message) => message.role)).toEqual([
+			"system",
+			"assistant",
+			"toolResult",
+			"user",
+		]);
+		expect(getCurrentTools(normalized.messages)).toEqual([]);
+		expect(JSON.stringify(context.messages)).toContain("saved replacement");
+		expect(JSON.stringify(context.messages)).not.toContain("live output");
+		expect(context.messages.at(-1)).toMatchObject({
 			role: "user",
 			content:
 				"<question>\nWhat &lt;changed&gt; &amp; why?&lt;/question&gt;\n</question>",

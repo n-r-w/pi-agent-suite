@@ -17,6 +17,7 @@ import {
 	SUBAGENT_ROOT_SESSION_ID_ENV,
 } from "../../shared/subagent-environment";
 import {
+	type PiUsageEntry,
 	USAGE_EVENT_RECORD_CHANNEL,
 	USAGE_EVENT_RECORD_VERSION,
 } from "../../shared/usage-events";
@@ -120,6 +121,22 @@ function assistantMessage(): AssistantMessage {
 	};
 }
 
+function usageEntry(id: string, cost = 0.75): PiUsageEntry {
+	return {
+		type: "usage",
+		id,
+		parentId: null,
+		timestamp: "2026-09-20T10:00:00.000Z",
+		kind: "future-usage-kind",
+		provider: "provider-a",
+		model: "model-a",
+		usage: {
+			...assistantMessage().usage,
+			cost: { ...assistantMessage().usage.cost, total: cost },
+		},
+	};
+}
+
 function context(overrides: Record<string, unknown> = {}): ExtensionContext {
 	return {
 		mode: "tui",
@@ -129,7 +146,10 @@ function context(overrides: Record<string, unknown> = {}): ExtensionContext {
 			notify: () => {},
 			custom: async () => undefined,
 		},
-		sessionManager: { getSessionId: () => "session-a" },
+		sessionManager: {
+			getSessionId: () => "session-a",
+			getBranch: () => [],
+		},
 		modelRegistry: { find: () => pricedModel() },
 		...overrides,
 	} as unknown as ExtensionContext;
@@ -259,6 +279,172 @@ describe("usage extension lifecycle", () => {
 			tokens: 1_200_000,
 		});
 		expect(queriedSessions).toEqual(["child-session-a"]);
+	});
+
+	test("reconciles post-start usage before root and session aggregate reads", async () => {
+		// Purpose: footer and session totals must include Pi usage created by the active process.
+		// Inputs and expected output: one startup entry is baseline-only, while one later arbitrary-kind entry is inserted before both aggregate reads.
+		// Edge case: repeated reconciliation keeps one logical event through the session-qualified ID and idempotent insert behavior.
+		// Dependencies: a mutable isolated branch and an in-memory INSERT OR IGNORE fake.
+		const branch: PiUsageEntry[] = [usageEntry("baseline", 9)];
+		const events = new Map<string, UsageEvent>();
+		const store = {
+			insert: (event: UsageEvent) => {
+				if (!events.has(event.eventId)) {
+					events.set(event.eventId, event);
+				}
+			},
+			queryRange: () => [...events.values()],
+			queryRootTotals: () => ({
+				cost: [...events.values()].reduce((sum, event) => sum + event.cost, 0),
+				tokens: [...events.values()].reduce(
+					(sum, event) =>
+						sum +
+						event.input +
+						event.output +
+						event.cacheRead +
+						event.cacheWrite,
+					0,
+				),
+			}),
+			querySessionTotals: () => ({
+				cost: [...events.values()].reduce((sum, event) => sum + event.cost, 0),
+				tokens: [...events.values()].reduce(
+					(sum, event) =>
+						sum +
+						event.input +
+						event.output +
+						event.cacheRead +
+						event.cacheWrite,
+					0,
+				),
+			}),
+		};
+		const harness = createHarness();
+		createUsageExtension(dependencies(store))(harness.pi);
+		const ctx = context({
+			sessionManager: {
+				getSessionId: () => "session-a",
+				getBranch: () => branch,
+			},
+		});
+		await emit(harness, "session_start", { type: "session_start" }, ctx);
+		branch.push(usageEntry("later"));
+
+		expect(requestUsageRootTotals(harness.pi, "session-a")).toEqual({
+			cost: 0.75,
+			tokens: 100,
+		});
+		expect(requestUsageSessionTotals(harness.pi, "session-a")).toEqual({
+			cost: 0.75,
+			tokens: 100,
+		});
+		expect([...events.keys()]).toEqual(["pi-usage:session-a:later"]);
+	});
+
+	test("reconciles post-start usage before the command range read", async () => {
+		// Purpose: /usage must snapshot Pi usage that appeared after process attachment.
+		// Inputs and expected output: a later branch entry is inserted before queryRange executes.
+		// Edge case: the startup branch is empty.
+		// Dependencies: the command handler, a mutable isolated branch, and an in-memory store fake.
+		const branch: PiUsageEntry[] = [];
+		const events: UsageEvent[] = [];
+		let eventIdsAtRead: string[] = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: (event) => events.push(event),
+				queryRange: () => {
+					eventIdsAtRead = events.map((event) => event.eventId);
+					return [...events];
+				},
+			}),
+		)(harness.pi);
+		const ctx = context({
+			sessionManager: {
+				getSessionId: () => "session-a",
+				getBranch: () => branch,
+			},
+		});
+		await emit(harness, "session_start", { type: "session_start" }, ctx);
+		branch.push(usageEntry("later"));
+		await harness.commands.get("usage")?.handler("", ctx);
+
+		expect(eventIdsAtRead).toEqual(["pi-usage:session-a:later"]);
+	});
+
+	test("reconciles remaining usage during shutdown before clearing session state", async () => {
+		// Purpose: usage that is not followed by a read must still reach storage.
+		// Inputs and expected output: one post-start entry is inserted by session_shutdown with active attribution.
+		// Edge case: no aggregate or command read occurs first.
+		// Dependencies: lifecycle handlers and a mutable isolated branch.
+		const branch: PiUsageEntry[] = [];
+		const events: UsageEvent[] = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: (event) => events.push(event),
+				queryRange: () => [],
+			}),
+		)(harness.pi);
+		const ctx = context({
+			sessionManager: {
+				getSessionId: () => "session-a",
+				getBranch: () => branch,
+			},
+		});
+		await emit(harness, "session_start", { type: "session_start" }, ctx);
+		branch.push(usageEntry("shutdown-entry"));
+		await emit(harness, "session_shutdown", { type: "session_shutdown" }, ctx);
+
+		expect(events.map((event) => event.eventId)).toEqual([
+			"pi-usage:session-a:shutdown-entry",
+		]);
+	});
+
+	test("isolates usage-entry insertion failures from aggregate reads", async () => {
+		// Purpose: a persistence failure must retain diagnostics without breaking an existing usage view.
+		// Inputs and expected output: a later entry makes insert throw, the root read returns stored totals, and one diagnostic keeps the original error.
+		// Edge case: failed insertion remains eligible for a later retry because it is not added to baseline state.
+		// Dependencies: an injected failing store and runtime diagnostic sink.
+		const branch: PiUsageEntry[] = [];
+		const original = new Error("database is locked: usage entry");
+		original.stack = "USAGE ENTRY STACK";
+		const diagnostics: Array<{ event: string; fields: unknown }> = [];
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies(
+				{
+					insert: () => {
+						throw original;
+					},
+					queryRange: () => [],
+					queryRootTotals: () => ({ cost: 1, tokens: 2 }),
+				},
+				{
+					recordDiagnostic: (event: string, fields: unknown) =>
+						diagnostics.push({ event, fields }),
+				},
+			),
+		)(harness.pi);
+		const ctx = context({
+			sessionManager: {
+				getSessionId: () => "session-a",
+				getBranch: () => branch,
+			},
+		});
+		await emit(harness, "session_start", { type: "session_start" }, ctx);
+		branch.push(usageEntry("later"));
+
+		expect(requestUsageRootTotals(harness.pi, "session-a")).toEqual({
+			cost: 1,
+			tokens: 2,
+		});
+		expect(diagnostics).toHaveLength(1);
+		expect(diagnostics[0]?.event).toBe("usage.persistence.failed");
+		expect(diagnostics[0]?.fields).toMatchObject({
+			error: "USAGE ENTRY STACK",
+		});
 	});
 
 	test("propagates the original storage initialization failure", () => {
@@ -503,6 +689,47 @@ describe("usage extension lifecycle", () => {
 			cost: 0,
 		});
 		expect(inserted[1]?.eventId).toBe("publisher-event");
+	});
+
+	test("records attributed child usage through the existing event channel", async () => {
+		// Purpose: the process-owned recorder must ingest supervised child usage without a second conversion or store path.
+		// Inputs and expected output: duplicate delivery of one arbitrary-kind entry produces one session-qualified logical event with exact child attribution.
+		// Edge case: the process-local request carries child identities instead of using the active root session identities.
+		// Dependencies: shared versioned event bus, active root context for model lookup, and an in-memory idempotent store fake.
+		const inserted = new Map<string, UsageEvent>();
+		const harness = createHarness();
+		createUsageExtension(
+			dependencies({
+				insert: (value) => inserted.set(value.eventId, value),
+				queryRange: () => [],
+			}),
+		)(harness.pi);
+		const ctx = context();
+		await emit(harness, "session_start", { type: "session_start" }, ctx);
+		const entry = usageEntry("child-entry");
+		const request = {
+			version: USAGE_EVENT_RECORD_VERSION,
+			entry,
+			sessionId: "child-session",
+			rootSessionId: "root-session",
+			agentId: "SubAgentCoder",
+		};
+
+		harness.pi.events.emit(USAGE_EVENT_RECORD_CHANNEL, request);
+		harness.pi.events.emit(USAGE_EVENT_RECORD_CHANNEL, request);
+
+		expect([...inserted.values()]).toEqual([
+			expect.objectContaining({
+				eventId: "pi-usage:child-session:child-entry",
+				sessionId: "child-session",
+				rootSessionId: "root-session",
+				agentId: "SubAgentCoder",
+				source: "pi-usage",
+				provider: entry.provider,
+				model: entry.model,
+				cost: entry.usage.cost.total,
+			}),
+		]);
 	});
 
 	test("records native compaction aggregate and skips extension compaction", async () => {

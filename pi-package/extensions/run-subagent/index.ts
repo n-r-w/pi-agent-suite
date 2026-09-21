@@ -23,6 +23,7 @@ import {
 	type PackagePresentationEventBus,
 	registerPackageTool,
 } from "../../shared/tool-presentation/registry";
+import { publishUsageEntry } from "../../shared/usage-events";
 import { requestUsageSessionTotals } from "../../shared/usage-read-broker";
 import type { AgentOperationResponse } from "./agent-operation-wire";
 import {
@@ -872,6 +873,7 @@ function createRootSupervisor(options: {
 				request,
 			}),
 		onEvent: (event) => options.getCoordinator().observeInvocation(event),
+		onUsageEntry: (usage) => publishUsageEntry(options.pi, usage),
 		onRuntimeFailure: (failure) => {
 			cancelKnowledgeRuntimeOwner(options.pi, failure.runtimeLeaseId);
 			return startRuntimeFailureRecovery({

@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
@@ -11,6 +12,13 @@ import { createAuxiliaryLlmSessionId } from "./auxiliary-llm-session";
 import { estimateSerializedInputTokens } from "./context-size";
 import { resolveThinkingLevel, splitModelId } from "./model-settings";
 import type { ReasoningLevel } from "./reasoning-levels";
+
+/** Removes primary transcript system state before auxiliary context assembly. */
+export function withoutSystemMessages(
+	messages: readonly AgentMessage[],
+): AgentMessage[] {
+	return messages.filter((message) => message.role !== "system");
+}
 
 /** Provides the caller-local model registry and current model. */
 export interface AuxiliaryLlmContext {

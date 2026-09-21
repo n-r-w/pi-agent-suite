@@ -121,6 +121,92 @@ function councilContext(entries: readonly SessionEntry[]): CouncilContext {
 }
 
 describe("convene-council external context package", () => {
+	test("ignores a system message mixed with visible conversation entries", async () => {
+		// Purpose: Pi system state must not enter participant-visible council context or make rendering fail.
+		// Input and expected output: inserting one system message between visible user and assistant messages keeps the rendered package equal to the visible-only branch.
+		// Edge case: the ignored record occurs between adjacent visible conversation records.
+		// Dependencies: pure renderer with a fake session manager branch.
+		const visibleEntries: readonly [SessionEntry, SessionEntry] = [
+			messageEntry("u1", userMessage("question context"), null),
+			messageEntry(
+				"a1",
+				assistantMessage([{ type: "text", text: "answer context" }]),
+				"u1",
+			),
+		];
+		const expected = await buildExternalCouncilContextPackage({
+			ctx: councilContext(visibleEntries),
+			toolCallId: "call-current",
+		});
+
+		const actual = await buildExternalCouncilContextPackage({
+			ctx: councilContext([
+				visibleEntries[0],
+				messageEntry(
+					"system1",
+					{ role: "system", content: "control state", timestamp: 2 },
+					"u1",
+				),
+				visibleEntries[1],
+			]),
+			toolCallId: "call-current",
+		});
+
+		expect(actual).toBe(expected);
+	});
+
+	test("ignores a usage entry mixed with visible conversation entries", async () => {
+		// Purpose: Pi accounting state must not enter participant-visible council context or make rendering fail.
+		// Input and expected output: inserting one usage entry between visible user and assistant messages keeps the rendered package equal to the visible-only branch.
+		// Edge case: the ignored record occurs between adjacent visible conversation records.
+		// Dependencies: pure renderer with a fake session manager branch.
+		const visibleEntries: readonly [SessionEntry, SessionEntry] = [
+			messageEntry("u1", userMessage("question context"), null),
+			messageEntry(
+				"a1",
+				assistantMessage([{ type: "text", text: "answer context" }]),
+				"u1",
+			),
+		];
+		const expected = await buildExternalCouncilContextPackage({
+			ctx: councilContext(visibleEntries),
+			toolCallId: "call-current",
+		});
+
+		const actual = await buildExternalCouncilContextPackage({
+			ctx: councilContext([
+				visibleEntries[0],
+				{
+					type: "usage",
+					id: "usage1",
+					parentId: "u1",
+					timestamp: "t",
+					kind: "cache_warm",
+					provider: "openai",
+					model: "model",
+					usage: {
+						input: 1,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 1,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+				},
+				visibleEntries[1],
+			]),
+			toolCallId: "call-current",
+		});
+
+		expect(actual).toBe(expected);
+	});
+
 	test("includes applicable knowledge in the shared participant package", async () => {
 		// Purpose: every participant must receive the same applicable knowledge through the external context file.
 		// Input and expected output: one knowledge block is inserted inside the shared context package.

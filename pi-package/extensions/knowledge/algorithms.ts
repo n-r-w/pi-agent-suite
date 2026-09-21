@@ -15,6 +15,7 @@ import {
 	doesAuxiliaryLlmInputFitContextWindow,
 	getAuxiliaryLlmResponseText,
 	resolveAuxiliaryLlmRuntime,
+	withoutSystemMessages,
 } from "../../shared/auxiliary-llm";
 import { replayContextProjection } from "../../shared/context-projection";
 import { countKnowledgeTextTokens } from "../../shared/context-size";
@@ -129,7 +130,7 @@ export async function runLocalKnowledgeAccumulation(
 	});
 	const extractionRequest: ExtractionRequest = {
 		knowledgeBlock: renderKnowledgeBlock(options.snapshots),
-		source: formatSummarySource(convertToLlm(projected)),
+		source: formatSummarySource(convertToLlm(withoutSystemMessages(projected))),
 		taskPrompt: extraction.operation.taskPrompt,
 	};
 	const extracted = await extractKnowledge(

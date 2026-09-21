@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { PiUsageEntry } from "../../shared/usage-events";
 import {
 	createAssistantUsageEvent,
+	createUsageEntryEvent,
 	NO_AGENT_ID,
 	type UsageAttribution,
 } from "./recorder";
@@ -48,6 +50,104 @@ function message(overrides: Record<string, unknown> = {}): AssistantMessage {
 		...overrides,
 	} as AssistantMessage;
 }
+
+function usageEntry(overrides: Partial<PiUsageEntry> = {}): PiUsageEntry {
+	return {
+		type: "usage",
+		id: "entry-a",
+		parentId: null,
+		timestamp: "2026-09-20T10:00:00.000Z",
+		kind: "future-usage-kind",
+		provider: "provider-a",
+		model: "model-a",
+		usage: message().usage,
+		...overrides,
+	};
+}
+
+describe("Pi usage entry recording", () => {
+	test("copies complete usage with a session-qualified identity", () => {
+		// Purpose: Pi-owned usage must enter the existing store without recalculating its cost.
+		// Inputs and expected output: an arbitrary-kind entry and complete attribution produce copied tokens, Pi total cost, pi-usage source, and a session-qualified event ID.
+		// Edge case: the unknown kind is accepted and tier-aware cache savings use the current pricing path.
+		// Dependencies: an injected model lookup only.
+		expect(
+			createUsageEntryEvent(
+				usageEntry(),
+				{
+					sessionId: "session-a",
+					rootSessionId: "root-session-a",
+					agentId: "agent-a",
+				},
+				() =>
+					model({
+						cost: {
+							input: 10,
+							output: 20,
+							cacheRead: 2,
+							cacheWrite: 12,
+						},
+					}),
+			),
+		).toEqual({
+			eventId: "pi-usage:session-a:entry-a",
+			timestampMs: Date.parse("2026-09-20T10:00:00.000Z"),
+			sessionId: "session-a",
+			rootSessionId: "root-session-a",
+			agentId: "agent-a",
+			source: "pi-usage",
+			provider: "provider-a",
+			model: "model-a",
+			input: 10,
+			output: 20,
+			cacheRead: 100_000,
+			cacheWrite: 30,
+			cost: 0.20086,
+			saved: 0.8,
+		});
+	});
+
+	test("keeps validation for usage entries and qualifies equal IDs by session", () => {
+		// Purpose: the new recorder must retain all-or-nothing validation and cross-session identity isolation.
+		// Inputs and expected output: equal entry IDs in two valid sessions produce different IDs, while an invalid timestamp or unavailable pricing produces no event.
+		// Edge case: Pi entry IDs are not globally unique across sessions.
+		// Dependencies: deterministic entries and an injected model lookup.
+		const findModel = () => model();
+		const attribution = {
+			rootSessionId: "root-session-a",
+			agentId: undefined,
+		};
+		const first = createUsageEntryEvent(
+			usageEntry(),
+			{ ...attribution, sessionId: "session-a" },
+			findModel,
+		);
+		const second = createUsageEntryEvent(
+			usageEntry(),
+			{ ...attribution, sessionId: "session-b" },
+			findModel,
+		);
+
+		expect(first?.eventId).toBe("pi-usage:session-a:entry-a");
+		expect(second?.eventId).toBe("pi-usage:session-b:entry-a");
+		expect(first?.eventId).not.toBe(second?.eventId);
+		expect(first?.agentId).toBe(NO_AGENT_ID);
+		expect(
+			createUsageEntryEvent(
+				usageEntry({ timestamp: "not-a-timestamp" }),
+				{ ...attribution, sessionId: "session-a" },
+				findModel,
+			),
+		).toBeUndefined();
+		expect(
+			createUsageEntryEvent(
+				usageEntry(),
+				{ ...attribution, sessionId: "session-a" },
+				() => undefined,
+			),
+		).toBeUndefined();
+	});
+});
 
 describe("regular assistant usage recording", () => {
 	test("normalizes one complete response and calculates tier-aware cache savings", () => {

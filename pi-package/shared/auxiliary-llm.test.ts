@@ -1,7 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveAuxiliaryLlmRuntime } from "./auxiliary-llm";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	type Api,
+	getCurrentTools,
+	type Model,
+	normalizeContext,
+	type Tool,
+} from "@earendil-works/pi-ai";
+import {
+	convertToLlm,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import {
+	resolveAuxiliaryLlmRuntime,
+	withoutSystemMessages,
+} from "./auxiliary-llm";
 
 /** Creates one deterministic model fixture. */
 function createModel(provider: string, id: string): Model<Api> {
@@ -29,6 +43,50 @@ function createContext(model: Model<Api>): ExtensionContext {
 		},
 	} as unknown as ExtensionContext;
 }
+
+describe("withoutSystemMessages", () => {
+	test("keeps ordinary replay order and resolves no primary tools", () => {
+		// Purpose: one shared policy must isolate primary system state before auxiliary normalization.
+		// Input and expected output: an ordered user-system-tool-result replay becomes a dedicated-system, user, tool-result transcript with no tools.
+		// Edge case: the removed system record declares a tool that would otherwise remain active.
+		// Dependencies: Pi context normalization and transcript tool resolution.
+		const primaryTool: Tool = {
+			name: "primary_tool",
+			description: "Primary transcript tool.",
+			parameters: Type.Object({}),
+		};
+		const replayed: AgentMessage[] = [
+			{ role: "user", content: "First ordinary message.", timestamp: 1 },
+			{
+				role: "system",
+				content: "Primary system state.",
+				toolsAdded: [primaryTool],
+				timestamp: 2,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "primary_tool",
+				content: [{ type: "text", text: "Ordinary result." }],
+				isError: false,
+				timestamp: 3,
+			},
+		];
+
+		const normalized = normalizeContext({
+			systemPrompt: "Auxiliary system state.",
+			messages: convertToLlm(withoutSystemMessages(replayed)),
+			tools: [],
+		});
+
+		expect(normalized.messages.map((message) => message.role)).toEqual([
+			"system",
+			"user",
+			"toolResult",
+		]);
+		expect(getCurrentTools(normalized.messages)).toEqual([]);
+	});
+});
 
 describe("resolveAuxiliaryLlmRuntime", () => {
 	test("keeps explicit thinking when no model id is configured", async () => {

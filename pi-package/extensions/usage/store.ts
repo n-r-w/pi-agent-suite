@@ -6,7 +6,7 @@ import type { UsageSessionTotals } from "../../shared/usage-read-broker";
 
 const BUSY_TIMEOUT_MS = 5_000;
 
-export type UsageEventSource = "agent-turn" | AuxiliaryUsageSource;
+export type UsageEventSource = "agent-turn" | "pi-usage" | AuxiliaryUsageSource;
 
 export interface UsageEvent {
 	readonly eventId: string;

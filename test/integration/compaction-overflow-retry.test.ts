@@ -231,12 +231,10 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 							details: {},
 						}),
 					});
-					pi.on("context", (event, ctx) => {
+					pi.on("context", (event) => {
 						contextTokens.push(
 							estimateSerializedInputTokens({
-								systemPrompt: ctx.getSystemPrompt(),
 								messages: convertToLlm(event.messages),
-								tools: [],
 							}),
 						);
 					});

@@ -14,7 +14,9 @@ import {
 	SUBAGENT_ROOT_SESSION_ID_ENV,
 } from "../../shared/subagent-environment";
 import {
+	isUsageEntryRecordRequest,
 	isUsageEventRecordRequest,
+	type PiUsageEntry,
 	USAGE_EVENT_RECORD_CHANNEL,
 } from "../../shared/usage-events";
 import {
@@ -26,7 +28,7 @@ import {
 } from "../../shared/usage-read-broker";
 import { readUsageConfig, type UsageConfigResult } from "./config";
 import { readUsageProcessEnvironment } from "./environment";
-import { createAssistantUsageEvent } from "./recorder";
+import { createAssistantUsageEvent, createUsageEntryEvent } from "./recorder";
 import { UsageScreen } from "./screen";
 import { type UsageEvent, UsageStore } from "./store";
 
@@ -85,6 +87,28 @@ interface RecordResponseOptions {
 	readonly recordDiagnostic: typeof writeRuntimeDiagnostic;
 }
 
+interface RecordUsageEntryOptions {
+	readonly entry: PiUsageEntry;
+	readonly ctx: ExtensionContext;
+	readonly sessionId: string | undefined;
+	readonly rootSessionId: string | undefined;
+	readonly agentId: string | undefined;
+	readonly store: UsageStorePort;
+	readonly recordDiagnostic: typeof writeRuntimeDiagnostic;
+}
+
+interface ActiveUsageSession {
+	readonly sessionId: string | undefined;
+	readonly rootSessionId: string | undefined;
+	readonly context: ExtensionContext;
+	readonly baselineEntryIds: ReadonlySet<string>;
+}
+
+interface UsageRuntimeState {
+	activeSession: ActiveUsageSession | undefined;
+	commandRegistered: boolean;
+}
+
 /** Creates the usage extension with injectable process-lifetime boundaries. */
 export function createUsageExtension(
 	providedDependencies?: UsageExtensionDependencies,
@@ -104,7 +128,6 @@ export function createUsageExtension(
 		if (store === undefined) {
 			return;
 		}
-		registerUsageReadBroker(pi, store);
 		registerEnabledRuntime(pi, processState, dependencies);
 	};
 }
@@ -181,12 +204,14 @@ function registerInvalidConfigNotification(
 function registerUsageReadBroker(
 	pi: ExtensionAPI,
 	store: UsageStorePort,
+	reconcileUsageEntries: () => void,
 ): void {
 	pi.events.on(USAGE_ROOT_COST_REQUEST_CHANNEL, (value: unknown) => {
 		if (!isUsageRootCostRequest(value)) {
 			return;
 		}
 		try {
+			reconcileUsageEntries();
 			const totals = store.queryRootTotals(value.rootSessionId);
 			value.cost = totals.cost;
 			value.tokens = totals.tokens;
@@ -199,6 +224,7 @@ function registerUsageReadBroker(
 			return;
 		}
 		try {
+			reconcileUsageEntries();
 			value.totals = store.querySessionTotals(value.sessionId);
 		} catch {
 			// An unavailable aggregate must remain distinguishable from zero totals.
@@ -215,64 +241,178 @@ function registerEnabledRuntime(
 	if (store === undefined) {
 		return;
 	}
-	let activeSessionId: string | undefined;
-	let activeRootSessionId: string | undefined;
-	let activeContext: ExtensionContext | undefined;
-	let commandRegistered = false;
+	const runtime: UsageRuntimeState = {
+		activeSession: undefined,
+		commandRegistered: false,
+	};
 	const childProcess = isChildAgentProcess(dependencies.environment);
 	const resolveAgentId = () =>
 		childProcess
 			? readNonEmptyString(dependencies.environment[SUBAGENT_AGENT_ID_ENV])
 			: resolveMainAgentId(pi);
-	const recordResponse = (
-		message: AssistantMessage,
-		source: UsageEvent["source"],
-		eventId: string,
-		ctx: ExtensionContext,
-	) =>
+	const recordResponse: ResponseRecorder = (message, source, eventId, ctx) =>
 		persistResponse({
 			message,
 			source,
 			eventId,
 			ctx,
-			sessionId: activeSessionId,
-			rootSessionId: activeRootSessionId,
+			sessionId: runtime.activeSession?.sessionId,
+			rootSessionId: runtime.activeSession?.rootSessionId,
 			agentId: resolveAgentId(),
 			store,
 			recordDiagnostic: dependencies.recordDiagnostic,
 		});
-	const recordAggregate = createAggregateRecorder(dependencies, recordResponse);
+	const reconcileUsageEntries = () =>
+		reconcileActiveUsageEntries(
+			runtime.activeSession,
+			resolveAgentId,
+			store,
+			dependencies.recordDiagnostic,
+		);
+
+	registerUsageReadBroker(pi, store, reconcileUsageEntries);
+	registerUsageEventListener(pi, {
+		runtime,
+		recordResponse,
+		store,
+		recordDiagnostic: dependencies.recordDiagnostic,
+	});
+	registerUsageSessionLifecycle(pi, {
+		runtime,
+		state,
+		dependencies,
+		store,
+		childProcess,
+		reconcileUsageEntries,
+	});
+	registerRegularUsageHandler(pi, dependencies, recordResponse);
+	registerAggregateUsageHandlers(
+		pi,
+		createAggregateRecorder(dependencies, recordResponse),
+	);
+}
+
+function registerUsageEventListener(
+	pi: ExtensionAPI,
+	options: {
+		readonly runtime: UsageRuntimeState;
+		readonly recordResponse: ResponseRecorder;
+		readonly store: UsageStorePort;
+		readonly recordDiagnostic: typeof writeRuntimeDiagnostic;
+	},
+): void {
 	pi.events.on(USAGE_EVENT_RECORD_CHANNEL, (value: unknown) => {
-		if (!isUsageEventRecordRequest(value) || activeContext === undefined) {
+		const activeSession = options.runtime.activeSession;
+		if (activeSession === undefined) {
+			return;
+		}
+		if (isUsageEntryRecordRequest(value)) {
+			persistUsageEntry({
+				entry: value.entry,
+				ctx: activeSession.context,
+				sessionId: value.sessionId,
+				rootSessionId: value.rootSessionId,
+				agentId: value.agentId,
+				store: options.store,
+				recordDiagnostic: options.recordDiagnostic,
+			});
+			return;
+		}
+		if (!isUsageEventRecordRequest(value)) {
 			return;
 		}
 		// The listener preserves the publisher ID so SQLite can deduplicate delivery.
-		recordResponse(value.message, value.source, value.eventId, activeContext);
-	});
-	pi.on("session_start", (_event, ctx) => {
-		activeSessionId = readNonEmptyString(ctx.sessionManager.getSessionId());
-		activeRootSessionId = resolveRootSessionId(
-			activeSessionId,
-			childProcess,
-			dependencies.environment,
+		options.recordResponse(
+			value.message,
+			value.source,
+			value.eventId,
+			activeSession.context,
 		);
-		activeContext = ctx;
-		if (!childProcess && !state.cleanupAttempted) {
+	});
+}
+
+function registerUsageSessionLifecycle(
+	pi: ExtensionAPI,
+	options: {
+		readonly runtime: UsageRuntimeState;
+		readonly state: UsageProcessState;
+		readonly dependencies: UsageExtensionDependencies;
+		readonly store: UsageStorePort;
+		readonly childProcess: boolean;
+		readonly reconcileUsageEntries: () => void;
+	},
+): void {
+	const { runtime, state, dependencies } = options;
+	pi.on("session_start", (_event, ctx) => {
+		const sessionId = readNonEmptyString(ctx.sessionManager.getSessionId());
+		runtime.activeSession = {
+			sessionId,
+			rootSessionId: resolveRootSessionId(
+				sessionId,
+				options.childProcess,
+				dependencies.environment,
+			),
+			context: ctx,
+			baselineEntryIds: new Set(
+				ctx.sessionManager
+					.getBranch()
+					.filter((entry): entry is PiUsageEntry => entry.type === "usage")
+					.map((entry) => entry.id),
+			),
+		};
+		if (!options.childProcess && !state.cleanupAttempted) {
 			state.cleanupAttempted = true;
-			runRetentionCleanup(store, dependencies, ctx);
+			runRetentionCleanup(options.store, dependencies, ctx);
 		}
-		if (!childProcess && ctx.mode === "tui" && !commandRegistered) {
-			commandRegistered = true;
-			registerUsageCommand(pi, store, dependencies, () => activeRootSessionId);
+		if (
+			!options.childProcess &&
+			ctx.mode === "tui" &&
+			!runtime.commandRegistered
+		) {
+			runtime.commandRegistered = true;
+			registerUsageCommand(pi, {
+				store: options.store,
+				dependencies,
+				getActiveRootSessionId: () => runtime.activeSession?.rootSessionId,
+				reconcileUsageEntries: options.reconcileUsageEntries,
+			});
 		}
 	});
 	pi.on("session_shutdown", () => {
-		activeSessionId = undefined;
-		activeRootSessionId = undefined;
-		activeContext = undefined;
+		options.reconcileUsageEntries();
+		runtime.activeSession = undefined;
 	});
-	registerRegularUsageHandler(pi, dependencies, recordResponse);
-	registerAggregateUsageHandlers(pi, recordAggregate);
+}
+
+function reconcileActiveUsageEntries(
+	activeSession: ActiveUsageSession | undefined,
+	resolveAgentId: () => string | undefined,
+	store: UsageStorePort,
+	recordDiagnostic: typeof writeRuntimeDiagnostic,
+): void {
+	if (
+		activeSession?.sessionId === undefined ||
+		activeSession.rootSessionId === undefined
+	) {
+		return;
+	}
+	for (const entry of activeSession.context.sessionManager.getBranch()) {
+		if (
+			entry.type !== "usage" ||
+			activeSession.baselineEntryIds.has(entry.id)
+		) {
+			continue;
+		}
+		persistUsageEntry({
+			entry,
+			ctx: activeSession.context,
+			sessionId: activeSession.sessionId,
+			rootSessionId: activeSession.rootSessionId,
+			agentId: resolveAgentId(),
+			store,
+			recordDiagnostic,
+		});
+	}
 }
 
 /** Pi-completed summary source that exposes aggregate usage instead of a message. */
@@ -375,14 +515,35 @@ function persistResponse(options: RecordResponseOptions): void {
 		(provider, model) => options.ctx.modelRegistry.find(provider, model),
 		() => options.eventId,
 	);
+	persistUsageEvent(usageEvent, options.store, options.recordDiagnostic);
+}
+
+function persistUsageEntry(options: RecordUsageEntryOptions): void {
+	const usageEvent = createUsageEntryEvent(
+		options.entry,
+		{
+			sessionId: options.sessionId,
+			rootSessionId: options.rootSessionId,
+			agentId: options.agentId,
+		},
+		(provider, model) => options.ctx.modelRegistry.find(provider, model),
+	);
+	persistUsageEvent(usageEvent, options.store, options.recordDiagnostic);
+}
+
+function persistUsageEvent(
+	usageEvent: UsageEvent | undefined,
+	store: UsageStorePort,
+	recordDiagnostic: typeof writeRuntimeDiagnostic,
+): void {
 	if (usageEvent === undefined) {
 		return;
 	}
 	try {
-		options.store.insert(usageEvent);
+		store.insert(usageEvent);
 	} catch (error) {
 		// Usage persistence must not turn a completed model response into a failed run.
-		options.recordDiagnostic("usage.persistence.failed", {
+		recordDiagnostic("usage.persistence.failed", {
 			operation: "insert usage event",
 			error: unsanitizedError(error),
 		});
@@ -407,9 +568,12 @@ function resolveMainAgentId(pi: ExtensionAPI): string | undefined {
 
 function registerUsageCommand(
 	pi: ExtensionAPI,
-	store: UsageStorePort,
-	dependencies: UsageExtensionDependencies,
-	getActiveRootSessionId: () => string | undefined,
+	options: {
+		readonly store: UsageStorePort;
+		readonly dependencies: UsageExtensionDependencies;
+		readonly getActiveRootSessionId: () => string | undefined;
+		readonly reconcileUsageEntries: () => void;
+	},
 ): void {
 	pi.registerCommand("usage", {
 		description: "Open usage history or reset recorded usage",
@@ -423,7 +587,7 @@ function registerUsageCommand(
 					"This deletes all committed usage events.",
 				);
 				if (confirmed) {
-					store.reset();
+					options.store.reset();
 				}
 				return;
 			}
@@ -434,12 +598,13 @@ function registerUsageCommand(
 			if (ctx.mode !== "tui") {
 				return;
 			}
-			const currentRootSessionId = getActiveRootSessionId();
+			const currentRootSessionId = options.getActiveRootSessionId();
 			if (currentRootSessionId === undefined) {
 				return;
 			}
-			const openedAt = dependencies.now();
-			const events = store.queryRange(openedAt - DAYS_90_MS, openedAt);
+			options.reconcileUsageEntries();
+			const openedAt = options.dependencies.now();
+			const events = options.store.queryRange(openedAt - DAYS_90_MS, openedAt);
 			await openUsageOverlay(ctx, events, openedAt, currentRootSessionId);
 		},
 	});

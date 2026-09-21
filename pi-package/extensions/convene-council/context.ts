@@ -75,6 +75,7 @@ function renderContextEntry(
 			const content = renderTextualContent(entry.content);
 			return content.length === 0 ? [] : [{ kind: "custom", content }];
 		}
+		case "usage":
 		case "compaction":
 		case "branch_summary":
 		case "custom":
@@ -127,6 +128,7 @@ function renderContextMessage(
 							),
 						},
 					];
+		case "system":
 		case "custom":
 			return [];
 		case "branchSummary":

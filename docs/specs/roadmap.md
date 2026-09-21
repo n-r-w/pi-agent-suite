@@ -2,5 +2,6 @@
 
 This roadmap lists specifications and issues whose implementation is not complete.
 
-- [ ] [Pi 0.86.1 migration](issues/pi-0.86.1-migration/)
+- [x] [Pi 0.86.1 migration](issues/pi-0.86.1-migration/)
 - [ ] [Subagent feedback is not reconciled](issues/subagent-feedback-not-reconciled/)
+

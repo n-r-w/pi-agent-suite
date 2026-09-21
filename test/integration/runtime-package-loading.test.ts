@@ -204,16 +204,17 @@ function writeProviderToolPayloadDumpExtension(directory: string): string {
 	return extensionPath;
 }
 
-/** Writes a deterministic provider that activates a workflow, runs a parallel tool batch, and dumps the next context. */
+/** Writes a deterministic provider that records each request around a workflow tool loop. */
 function writeWorkflowLoopDumpExtension(directory: string): string {
 	const extensionPath = join(directory, "dump-workflow-loop.ts");
 	writeFileSync(
 		extensionPath,
 		[
 			'import { writeFileSync } from "node:fs";',
-			'import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";',
+			'import { createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";',
 			'import { Type } from "typebox";',
 			"let calls = 0;",
+			"const requests = [];",
 			"const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };",
 			"export default function dumpWorkflowLoop(pi) {",
 			'\tpi.registerTool({ name: "reminder_tick", label: "Reminder tick", description: "Complete one deterministic reminder test call", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) });',
@@ -228,14 +229,15 @@ function writeWorkflowLoopDumpExtension(directory: string): string {
 			"\t\t\tconst stream = createAssistantMessageEventStream();",
 			"\t\t\tqueueMicrotask(() => {",
 			"\t\t\t\tcalls += 1;",
+			"\t\t\t\trequests.push({ order: calls, roles: context.messages.map(({ role }) => role), tools: getCurrentTools(context.messages).map(({ name }) => name) });",
 			"\t\t\t\tif (calls === 3) {",
-			"\t\t\t\t\twriteFileSync(process.env.PI_WORKFLOW_LOOP_DUMP_FILE, JSON.stringify(context.messages, null, 2));",
-			"\t\t\t\t\tprocess.exit(23);",
+			"\t\t\t\t\twriteFileSync(process.env.PI_WORKFLOW_LOOP_DUMP_FILE, JSON.stringify(requests, null, 2));",
 			"\t\t\t\t}",
-			'\t\t\t\tconst content = calls === 1 ? [{ type: "toolCall", id: "activate-1", name: "workflow_activate", arguments: { workflowId: "delivery" } }] : [{ type: "toolCall", id: "tick-1", name: "reminder_tick", arguments: {} }, { type: "toolCall", id: "tick-2", name: "reminder_tick", arguments: {} }];',
-			'\t\t\t\tconst output = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id, usage, stopReason: "toolUse", timestamp: Date.now() };',
+			'\t\t\t\tconst content = calls === 1 ? [{ type: "toolCall", id: "activate-1", name: "workflow_activate", arguments: { workflowId: "delivery" } }] : calls === 2 ? [{ type: "toolCall", id: "tick-1", name: "reminder_tick", arguments: {} }, { type: "toolCall", id: "tick-2", name: "reminder_tick", arguments: {} }] : [];',
+			'\t\t\t\tconst stopReason = calls === 3 ? "stop" : "toolUse";',
+			'\t\t\t\tconst output = { role: "assistant", content, api: model.api, provider: model.provider, model: model.id, usage, stopReason, timestamp: Date.now() };',
 			'\t\t\t\tstream.push({ type: "start", partial: output });',
-			'\t\t\t\tstream.push({ type: "done", reason: "toolUse", message: output });',
+			'\t\t\t\tstream.push({ type: "done", reason: stopReason, message: output });',
 			"\t\t\t\tstream.end();",
 			"\t\t\t});",
 			"\t\t\treturn stream;",
@@ -973,33 +975,38 @@ test("workflow reminder reaches the next provider request in the active tool loo
 				timeout: 30_000,
 			},
 		);
-		if (result.status !== 23) {
+		if (result.status !== 0) {
 			throw new Error(`${result.stdout}\n${result.stderr}`);
 		}
-		const dumpedMessages = JSON.parse(readFileSync(dumpFile, "utf8")) as {
-			readonly content: readonly {
-				readonly type: string;
-				readonly text?: string;
-			}[];
-		}[];
-		const context = dumpedMessages
-			.flatMap(({ content }) => content.map(({ text }) => text ?? ""))
-			.join("\n");
-		const activationIndex = context.indexOf(
-			'<workflow_activated id="delivery"',
-		);
-		const stageIndex = context.indexOf(
-			'<workflow_stage_activated workflow_id="delivery" stage_id="start"',
-		);
-		expect(activationIndex).toBeGreaterThanOrEqual(0);
-		expect(stageIndex).toBeGreaterThan(activationIndex);
-		expect(context).toContain("<available_transitions>");
-		expect(context).toContain("<workflow_activation_options />");
-		expect(
-			context.match(
-				/<workflow_reminder id="delivery" active_stage_id="start" \/>/g,
-			),
-		).toHaveLength(1);
+		expect(result.status).toBe(0);
+		const requests: {
+			readonly order: number;
+			readonly roles: readonly string[];
+			readonly tools: readonly string[];
+		}[] = JSON.parse(readFileSync(dumpFile, "utf8"));
+		expect(requests.map(({ order }) => order)).toEqual([1, 2, 3]);
+		expect(requests.map(({ roles }) => roles)).toEqual([
+			["system", "user", "user"],
+			["system", "user", "user", "assistant", "toolResult", "user", "user"],
+			[
+				"system",
+				"user",
+				"user",
+				"assistant",
+				"toolResult",
+				"user",
+				"user",
+				"assistant",
+				"toolResult",
+				"toolResult",
+				"user",
+			],
+		]);
+		expect(requests[0]?.tools).toContain("workflow_activate");
+		expect(requests[1]?.tools).not.toContain("workflow_activate");
+		expect(requests[1]?.tools).toContain("workflow_transition");
+		expect(requests[1]?.tools).toContain("reminder_tick");
+		expect(requests[2]?.tools).toEqual(requests[1]?.tools);
 	} finally {
 		rmSync(projectDir, { recursive: true, force: true });
 		rmSync(scratchDir, { recursive: true, force: true });
