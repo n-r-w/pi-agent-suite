@@ -10,8 +10,6 @@ A set of [PI Coding Agent](https://pi.dev/) extensions that adds agent support, 
 - [Full list of extensions with detailed documentation](#full-list-of-extensions-with-detailed-documentation)
 - [MCP support and recommended MCP servers](#mcp-support-and-recommended-mcp-servers)
 
-⚠️ Pi 0.84.4 and later has bug https://github.com/earendil-works/pi/issues/9051, which affects workflow functionality and is not recommended for use. It is unknown whether this will be fixed in future versions. 
-
 ## Quick start
 
 ### 1. Install extensions package using pi

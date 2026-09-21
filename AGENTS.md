@@ -26,8 +26,9 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
     2) `terms.md` - feature specific terms
     3) `prd.md` - critical requirements
     4) `solution.md` - technical solution
-4. Keep extension documentation in `docs/extensions/*` up to date.
-5. `README.md` files should be concise. All details in `docs/extensions/*`.
+5. Roadmap: `docs/specs/roadmap.md`
+6. Keep extension documentation in `docs/extensions/*` up to date.
+7. `README.md` files should be concise. All details in `docs/extensions/*`.
 
 ## Testing rules
 1. Use RED-GREEN-REFACTOR for behavior changes:
