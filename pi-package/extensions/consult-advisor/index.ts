@@ -23,7 +23,10 @@ import {
 	readExtensionConfigFile,
 	readExtensionConfigFileSync,
 } from "../../shared/agent-suite-storage";
-import { resolveAuxiliaryLlmRuntime } from "../../shared/auxiliary-llm";
+import {
+	resolveAuxiliaryLlmRuntime,
+	withoutSystemMessages,
+} from "../../shared/auxiliary-llm";
 import { createAuxiliaryLlmSessionId } from "../../shared/auxiliary-llm-session";
 import {
 	collectLoadedSkillRoots,
@@ -560,7 +563,7 @@ async function buildAdvisorContext({
 		loadedSkillRoots,
 	});
 	const messages = removePendingAdvisorCall(
-		convertToLlm(projectedMessages),
+		convertToLlm(withoutSystemMessages(projectedMessages)),
 		toolCallId,
 	);
 	messages.push({ role: "user", content: question, timestamp: Date.now() });

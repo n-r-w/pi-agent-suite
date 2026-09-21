@@ -3,9 +3,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	buildContextEntries,
+	type SessionEntry,
+	sessionEntryToContextMessages,
+} from "@earendil-works/pi-coding-agent";
 import {
 	addPendingProjectionSavings,
+	buildContextEntryMapping,
 	type ContextProjectionConfig,
 	estimatePendingProjectionSavings,
 	getProjectionAwareContextUsage,
@@ -128,6 +133,11 @@ function projectionStateEntry(
 		customType: CUSTOM_TYPE,
 		data: { projectedEntries: [{ entryId, replacementText }] },
 	} as SessionEntry;
+}
+
+/** Creates a system message. */
+function systemMessage(): AgentMessage {
+	return { role: "system", content: "Primary system state.", timestamp: 0 };
 }
 
 /** Creates a user message. */
@@ -628,7 +638,8 @@ describe("context projection replay", () => {
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
 			const branchEntries = [
-				messageEntry("01", userMessage(), null),
+				messageEntry("00", systemMessage(), null),
+				messageEntry("01", userMessage(), "00"),
 				messageEntry("02", assistantMessage("call-old"), "01"),
 				messageEntry("03", toolResultMessage("call-old", "old output"), "02"),
 				projectionStateEntry("04", "03", OMITTED_NOTICE, "03"),
@@ -639,6 +650,12 @@ describe("context projection replay", () => {
 				cwd: "/tmp/project",
 			});
 
+			expect(messages.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"toolResult",
+			]);
 			expect(JSON.stringify(messages)).not.toContain("old output");
 			expect(JSON.stringify(messages)).toContain(OMITTED_NOTICE);
 		});
@@ -851,6 +868,91 @@ describe("context projection replay", () => {
 });
 
 describe("context entry mapping", () => {
+	test("maps Pi compaction checkpoints and later updates to their source entries", () => {
+		// Purpose: projection mapping must preserve Pi's canonical compaction sequence and source ownership.
+		// Input and expected output: replaced system history, retained conversation, a checkpointed compaction, and later updates map to canonical roles and source IDs.
+		// Edge case: one compaction entry owns both its system checkpoint and summary, while event mapping consumes every canonical message.
+		// Dependencies: Pi 0.86.1 context entry selection and session-entry conversion helpers.
+		const branchEntries: SessionEntry[] = [
+			messageEntry(
+				"old-system",
+				{ role: "system", content: "old instructions", timestamp: 1 },
+				null,
+			),
+			messageEntry(
+				"kept-system",
+				{ role: "system", content: "replaced instructions", timestamp: 2 },
+				"old-system",
+			),
+			messageEntry("kept-user", userMessage("retained request"), "kept-system"),
+			{
+				type: "compaction",
+				id: "compaction",
+				parentId: "kept-user",
+				timestamp: "2026-08-26T16:00:00.000Z",
+				summary: "history summary",
+				firstKeptEntryId: "kept-system",
+				tokensBefore: 1_000,
+				systemMessage: {
+					role: "system",
+					content: "checkpoint instructions",
+					timestamp: 3,
+				},
+			},
+			messageEntry(
+				"post-system",
+				{ role: "system", content: "later instructions", timestamp: 4 },
+				"compaction",
+			),
+			messageEntry("post-user", userMessage("later request"), "post-system"),
+		];
+		const canonicalMessages = buildContextEntries(branchEntries).flatMap(
+			sessionEntryToContextMessages,
+		);
+
+		const mappedEntries = buildContextEntryMapping(branchEntries);
+
+		expect(mappedEntries.map(({ message }) => message.role)).toEqual([
+			"system",
+			"compactionSummary",
+			"user",
+			"system",
+			"user",
+		]);
+		expect(mappedEntries.map(({ entry }) => entry.id)).toEqual([
+			"compaction",
+			"compaction",
+			"kept-user",
+			"post-system",
+			"post-user",
+		]);
+		expect(
+			mappedEntries.map(({ message }) =>
+				message.role === "system" ? message.content : undefined,
+			),
+		).toEqual([
+			"checkpoint instructions",
+			undefined,
+			undefined,
+			"later instructions",
+			undefined,
+		]);
+		const eventMappedEntries = mapEventMessagesToBranchEntries(
+			canonicalMessages,
+			branchEntries,
+		);
+		expect(eventMappedEntries?.map(({ message }) => message)).toEqual(
+			canonicalMessages,
+		);
+		expect(eventMappedEntries?.map(({ entry }) => entry.id)).toEqual([
+			"compaction",
+			"compaction",
+			"kept-user",
+			"post-system",
+			"post-user",
+		]);
+	});
+
 	test("matches a live custom message when persistence assigned a different timestamp", () => {
 		// Purpose: Pi assigns separate timestamps to the live custom message and its persisted session entry.
 		// Input and expected output: otherwise identical workflow messages map to the same session entry despite different timestamps.

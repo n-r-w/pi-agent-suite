@@ -1,4 +1,9 @@
-import type { Context, Message } from "@earendil-works/pi-ai";
+import {
+	type Context,
+	type Message,
+	normalizeContext,
+	type Tool,
+} from "@earendil-works/pi-ai";
 import { Tiktoken } from "js-tiktoken/lite";
 import o200kBase from "js-tiktoken/ranks/o200k_base";
 
@@ -60,14 +65,8 @@ export function countKnowledgeTextTokens(text: string): number {
 /** Counts only fields that become model-visible provider input. */
 function estimateModelVisibleContextTokens(context: Context): number {
 	let tokens = 0;
-	if (context.systemPrompt !== undefined) {
-		tokens += countTokens(context.systemPrompt);
-	}
-	for (const message of context.messages) {
+	for (const message of normalizeContext(context).messages) {
 		tokens += estimateMessageTokens(message);
-	}
-	for (const tool of context.tools ?? []) {
-		tokens += countTokens(JSON.stringify(tool)) + TOOL_TOKEN_RESERVE;
 	}
 	return tokens;
 }
@@ -76,6 +75,9 @@ function estimateModelVisibleContextTokens(context: Context): number {
 function estimateMessageTokens(message: Message): number {
 	let tokens = MESSAGE_TOKEN_RESERVE;
 	switch (message.role) {
+		case "system": {
+			return estimateSystemMessageTokens(message);
+		}
 		case "user": {
 			return tokens + estimateContentTokens(message.content);
 		}
@@ -97,6 +99,28 @@ function estimateMessageTokens(message: Message): number {
 			return tokens + estimateContentTokens(message.content);
 		}
 	}
+}
+
+/** Estimates one ordered system-state record and every model-visible state change it carries. */
+function estimateSystemMessageTokens(
+	message: Extract<Message, { role: "system" }>,
+): number {
+	let tokens = MESSAGE_TOKEN_RESERVE + estimateContentTokens(message.content);
+	for (const section of Object.entries(message.sections ?? {})) {
+		tokens += countTokens(JSON.stringify(section));
+	}
+	for (const tool of message.toolsAdded ?? []) {
+		tokens += estimateToolTokens(tool);
+	}
+	for (const tool of message.toolsRemoved ?? []) {
+		tokens += countTokens(JSON.stringify(tool));
+	}
+	return tokens;
+}
+
+/** Estimates one model-visible tool declaration with its provider framing reserve. */
+function estimateToolTokens(tool: Tool): number {
+	return countTokens(JSON.stringify(tool)) + TOOL_TOKEN_RESERVE;
 }
 
 /** Estimates text and image content blocks that are visible to the model. */

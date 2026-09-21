@@ -4,12 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Model,
-	SimpleStreamOptions,
+import {
+	type Api,
+	type AssistantMessage,
+	type Context,
+	getCurrentTools,
+	type Model,
+	normalizeContext,
+	type SimpleStreamOptions,
+	type Tool,
 } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
@@ -18,6 +21,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { registerKnowledgeContextRuntime } from "../../shared/knowledge-runtime";
 import askLlm from "./index.ts";
 
@@ -26,6 +30,11 @@ const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const USER_QUESTION_OPEN_TAG = "<user_question>";
 const USER_QUESTION_CLOSE_TAG = "</user_question>";
 const CONTEXT_PROJECTION_CUSTOM_TYPE = "context-projection";
+const PRIMARY_TOOL: Tool = {
+	name: "primary_tool",
+	description: "Primary transcript tool.",
+	parameters: Type.Object({}),
+};
 /** Matches Pi-compatible UUIDv7 provider session identifiers. */
 const AUXILIARY_SESSION_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -519,6 +528,19 @@ function createSessionMessageEntry(
 	return createMessageEntry(id, parentId, {
 		role: "user",
 		content,
+		timestamp: 1,
+	});
+}
+
+/** Creates one primary-session system update with a tool declaration. */
+function createSystemMessageEntry(
+	id: string,
+	parentId: string | null,
+): SessionEntry {
+	return createMessageEntry(id, parentId, {
+		role: "system",
+		content: "Primary system update.",
+		toolsAdded: [PRIMARY_TOOL],
 		timestamp: 1,
 	});
 }
@@ -1079,11 +1101,11 @@ describe("ask-llm", () => {
 		});
 	});
 
-	test("replays persisted context projection state before calling ask-llm", async () => {
-		// Purpose: ask-llm input must match the projected task state when context-projection has recorded omitted tool results.
-		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded replacement text.
-		// Edge case: the one-off ask question is appended after projection replay.
-		// Dependencies: temp context-projection config, fake model registry, fake completion function, and fake session entries.
+	test("isolates replayed projection state before calling ask-llm", async () => {
+		// Purpose: ask-llm must keep projected conversation order without inheriting primary system state or tools.
+		// Input and expected output: a system tool update plus projected conversation becomes one tool-less auxiliary transcript in ordinary-message order.
+		// Edge case: the one-off ask question remains after the projected tool-result turn.
+		// Dependencies: Pi transcript normalization, temp projection config, fake completion, and session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
 			const replacementText = "[projected old output]";
@@ -1091,18 +1113,19 @@ describe("ask-llm", () => {
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
 			const entries = [
-				createSessionMessageEntry("1", null, "hello"),
-				createMessageEntry(
-					"2",
-					"1",
-					createAssistantToolCallMessage("old-tool"),
-				),
+				createSystemMessageEntry("1", null),
+				createSessionMessageEntry("2", "1", "hello"),
 				createMessageEntry(
 					"3",
 					"2",
+					createAssistantToolCallMessage("old-tool"),
+				),
+				createMessageEntry(
+					"4",
+					"3",
 					createToolResultMessage("old-tool", "old full tool output"),
 				),
-				createProjectionStateEntry("4", "3", replacementText, "3"),
+				createProjectionStateEntry("5", "4", replacementText, "4"),
 			];
 			const ctx = createContextFake([model], "Question from editor", entries);
 			askLlm(pi, { completeSimple: completion.completeSimple });
@@ -1110,16 +1133,22 @@ describe("ask-llm", () => {
 			await getAskCommand(pi).handler("Should we proceed?", ctx);
 
 			expect(completion.calls).toHaveLength(1);
-			const askMessages = JSON.stringify(completion.calls[0]?.context.messages);
+			const context = completion.calls[0]?.context;
+			if (context === undefined) {
+				throw new Error("Expected ask-llm completion context");
+			}
+			const normalized = normalizeContext(context);
+			expect(normalized.messages.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"toolResult",
+				"user",
+			]);
+			expect(getCurrentTools(normalized.messages)).toEqual([]);
+			const askMessages = JSON.stringify(context.messages);
 			expect(askMessages).toContain(replacementText);
 			expect(askMessages).not.toContain("old full tool output");
-			expect(completion.calls[0]?.context.messages.at(-1)?.content).toBe(
-				[
-					USER_QUESTION_OPEN_TAG,
-					"Should we proceed?",
-					USER_QUESTION_CLOSE_TAG,
-				].join("\n"),
-			);
 		});
 	});
 

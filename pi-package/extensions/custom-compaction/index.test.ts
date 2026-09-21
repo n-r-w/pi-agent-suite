@@ -2,11 +2,13 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Model,
+import {
+	type Api,
+	type AssistantMessage,
+	type Context,
+	getCurrentTools,
+	type Model,
+	normalizeContext,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import customCompaction from "./index";
@@ -297,6 +299,7 @@ function createCompactionEvent(
 		written: new Set(["b.ts"]),
 		edited: new Set<string>(),
 	},
+	includeSystemUpdates = false,
 ): Record<string, unknown> {
 	const oldUser = {
 		role: "user",
@@ -310,6 +313,11 @@ function createCompactionEvent(
 	};
 	const turnPrefix = { role: "user", content: "split turn", timestamp: 3 };
 	const retained = { role: "user", content: "retained task", timestamp: 4 };
+	const systemMessage = (timestamp: number) => ({
+		role: "system",
+		content: "Primary system state.",
+		timestamp,
+	});
 	return {
 		type: "session_before_compact",
 		preparation: {
@@ -326,12 +334,25 @@ function createCompactionEvent(
 				keepRecentTokens: 2_000,
 			},
 		},
-		branchEntries: [
-			messageEntry("entry-old-user", null, oldUser),
-			messageEntry("entry-old-assistant", "entry-old-user", oldAssistant),
-			messageEntry("entry-prefix", "entry-old-assistant", turnPrefix),
-			messageEntry("entry-keep", "entry-prefix", retained),
-		],
+		branchEntries: !includeSystemUpdates
+			? [
+					messageEntry("entry-old-user", null, oldUser),
+					messageEntry("entry-old-assistant", "entry-old-user", oldAssistant),
+					messageEntry("entry-prefix", "entry-old-assistant", turnPrefix),
+					messageEntry("entry-keep", "entry-prefix", retained),
+				]
+			: [
+					messageEntry("entry-old-user", null, oldUser),
+					messageEntry("entry-main-system", "entry-old-user", systemMessage(2)),
+					messageEntry(
+						"entry-old-assistant",
+						"entry-main-system",
+						oldAssistant,
+					),
+					messageEntry("entry-prefix", "entry-old-assistant", turnPrefix),
+					messageEntry("entry-keep", "entry-prefix", systemMessage(4)),
+					messageEntry("entry-retained", "entry-keep", retained),
+				],
 		reason: "threshold",
 		willRetry: false,
 		signal,
@@ -650,11 +671,11 @@ describe("custom-compaction", () => {
 		});
 	});
 
-	test("returns one adaptive result with Pi's fixed boundary and file details", async () => {
-		// Purpose: the entry shell must use one direct final request and preserve Pi lifecycle state.
-		// Input and expected output: default config plus one small response returns the original boundary, file details, and chronological source.
-		// Edge case: previous summary and split-turn prefix are both present.
-		// Dependencies: isolated config, fake Pi context, and mocked completion.
+	test("returns one adaptive result with isolated replay streams and Pi's fixed boundary", async () => {
+		// Purpose: both compaction replay streams must remove system state before auxiliary planning and completion.
+		// Input and expected output: system updates in main and retained replay produce one tool-less request while the result keeps Pi's boundary and file details.
+		// Edge case: the retained replay begins with a system record before the retained task.
+		// Dependencies: Pi transcript normalization, isolated config, fake context, and mocked completion.
 		await withIsolatedAgentDir(async () => {
 			completeSimpleMock.mockResolvedValue(
 				createAssistantResponse("adaptive summary", { cost: 0.6 }),
@@ -664,7 +685,7 @@ describe("custom-compaction", () => {
 			customCompaction(pi);
 
 			const result = await getCompactionHandler(pi)(
-				createCompactionEvent(),
+				createCompactionEvent(undefined, undefined, true),
 				session.ctx,
 			);
 
@@ -681,13 +702,12 @@ describe("custom-compaction", () => {
 			});
 			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 			const [, context, options] = completeSimpleMock.mock.calls[0] ?? [];
-			const text = requestText(context);
-			expect(text.indexOf("previous summary")).toBeLessThan(
-				text.indexOf("old question"),
-			);
-			expect(text.indexOf("old question")).toBeLessThan(
-				text.indexOf("split turn"),
-			);
+			const normalized = normalizeContext(context);
+			expect(normalized.messages.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+			]);
+			expect(getCurrentTools(normalized.messages)).toEqual([]);
 			expect(options).toMatchObject({
 				reasoning: "high",
 				sessionId: expect.stringMatching(AUXILIARY_SESSION_ID_PATTERN),

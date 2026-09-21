@@ -13,6 +13,7 @@ import {
 	doesAuxiliaryLlmInputFitContextWindow,
 	getAuxiliaryLlmResponseText,
 	resolveAuxiliaryLlmRuntime,
+	withoutSystemMessages,
 } from "../../shared/auxiliary-llm";
 import { replayPersistedContextProjection } from "../../shared/context-projection";
 import { readKnowledgeBlock } from "../../shared/knowledge-runtime";
@@ -140,7 +141,7 @@ async function buildQueryContext({
 	readonly question: string;
 }): Promise<Context> {
 	const messages = convertToLlm(
-		replayPersistedContextProjection(branchEntries),
+		withoutSystemMessages(replayPersistedContextProjection(branchEntries)),
 	);
 	messages.push({
 		role: "user",

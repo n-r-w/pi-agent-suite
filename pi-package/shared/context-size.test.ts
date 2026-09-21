@@ -1,11 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import type { SystemMessage, Tool } from "@earendil-works/pi-ai";
 import { Tiktoken } from "js-tiktoken/lite";
 import o200kBase from "js-tiktoken/ranks/o200k_base";
+import { Type } from "typebox";
 import {
 	countKnowledgeTextTokens,
+	estimateSerializedInputTokens,
 	estimateTextTokens,
 	takeTextTokenPrefix,
 } from "./context-size";
+
+const TEST_TOOL: Tool = {
+	name: "lookup",
+	description: "Looks up a value.",
+	parameters: Type.Object({ query: Type.String() }),
+};
 
 describe("estimateTextTokens", () => {
 	/** Proves standalone text uses the fixed o200k tokenizer without request framing. */
@@ -56,6 +65,75 @@ describe("estimateTextTokens", () => {
 			expect(prefix.length === 0 || text.startsWith(prefix)).toBeTrue();
 			expect(estimateTextTokens(prefix)).toBeLessThanOrEqual(index + 1);
 		}
+	});
+});
+
+describe("estimateSerializedInputTokens", () => {
+	/** Proves public Context shorthand is estimated through the same normalized system record. */
+	test("normalizes top-level system prompt and tools before estimation", () => {
+		const shorthandEstimate = estimateSerializedInputTokens({
+			systemPrompt: "Initial instructions.",
+			messages: [],
+			tools: [TEST_TOOL],
+		});
+		const transcriptEstimate = estimateSerializedInputTokens({
+			messages: [
+				{
+					role: "system",
+					content: "Initial instructions.",
+					toolsAdded: [TEST_TOOL],
+					timestamp: 1,
+				},
+			],
+		});
+
+		expect(shorthandEstimate).toBe(transcriptEstimate);
+		expect(Number.isFinite(shorthandEstimate)).toBeTrue();
+		expect(shorthandEstimate).toBeGreaterThanOrEqual(0);
+	});
+
+	/** Proves every Pi system-state field contributes to a complete finite estimate. */
+	test("counts system content, sections, tool additions, and tool removals", () => {
+		const estimateSystem = (
+			system: Omit<SystemMessage, "role" | "timestamp">,
+		) =>
+			estimateSerializedInputTokens({
+				messages: [{ role: "system", timestamp: 1, ...system }],
+			});
+		const baseline = estimateSystem({ content: "" });
+		const estimates = [
+			estimateSystem({ content: "Additional instructions." }),
+			estimateSystem({ content: "", sections: { rules: "Named rules." } }),
+			estimateSystem({ content: "", toolsAdded: [TEST_TOOL] }),
+			estimateSystem({ content: "", toolsRemoved: [{ name: TEST_TOOL.name }] }),
+		];
+
+		expect(Number.isFinite(baseline)).toBeTrue();
+		for (const estimate of estimates) {
+			expect(Number.isFinite(estimate)).toBeTrue();
+			expect(estimate).toBeGreaterThan(baseline);
+		}
+	});
+
+	/** Proves equal system updates remain separate records instead of being deduplicated. */
+	test("counts repeated system records in transcript order", () => {
+		const systemMessage = {
+			role: "system" as const,
+			content: "Repeat this update.",
+			sections: { rules: "Repeat these rules." },
+			toolsRemoved: [{ name: TEST_TOOL.name }],
+			timestamp: 1,
+		};
+		const emptyTranscript = estimateSerializedInputTokens({ messages: [] });
+		const oneRecord = estimateSerializedInputTokens({
+			messages: [systemMessage],
+		});
+		const twoRecords = estimateSerializedInputTokens({
+			messages: [systemMessage, { ...systemMessage, timestamp: 2 }],
+		});
+
+		expect(Number.isFinite(twoRecords)).toBeTrue();
+		expect(twoRecords - oneRecord).toBe(oneRecord - emptyTranscript);
 	});
 });
 

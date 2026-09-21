@@ -70,7 +70,6 @@ export function toolResultMessage(
 		toolCallId,
 		toolName,
 		content: [{ type: "text", text }],
-		details: undefined,
 		isError: false,
 		timestamp: 3,
 	};

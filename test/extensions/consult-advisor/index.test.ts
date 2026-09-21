@@ -3,12 +3,16 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Model,
-	SimpleStreamOptions,
+import {
+	type Api,
+	type AssistantMessage,
+	type Context,
+	getCurrentTools,
+	type JsonObject,
+	type Model,
+	normalizeContext,
+	type SimpleStreamOptions,
+	type Tool,
 } from "@earendil-works/pi-ai";
 import {
 	createEventBus,
@@ -18,6 +22,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Box, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import consultAdvisor from "../../../pi-package/extensions/consult-advisor/index";
 import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/consult-advisor/rendering";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
@@ -35,6 +40,11 @@ import { USAGE_EVENT_RECORD_CHANNEL } from "../../../pi-package/shared/usage-eve
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+const PRIMARY_TOOL: Tool = {
+	name: "primary_tool",
+	description: "Primary transcript tool.",
+	parameters: Type.Object({}),
+};
 /** Matches Pi-compatible UUIDv7 provider session identifiers. */
 const AUXILIARY_SESSION_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -479,7 +489,7 @@ function createAdvisorToolCallMessage(
 function createToolCallMessage(
 	toolCallId: string,
 	toolName: string,
-	args: Record<string, unknown>,
+	args: JsonObject,
 	timestamp: number,
 ): AssistantMessage {
 	return {
@@ -1086,11 +1096,11 @@ describe("consult-advisor", () => {
 		});
 	});
 
-	test("calls advisor model with prompt, sanitized transcript, tools disabled, and debug payload", async () => {
-		// Purpose: valid config must call completeSimple with an isolated session, advisor prompt, transcript, and no tools.
-		// Input and expected output: the request has a Pi-compatible UUIDv7 and excludes the pending advisor call.
+	test("calls advisor model with isolated transcript, tools disabled, and debug payload", async () => {
+		// Purpose: advisor input must keep ordinary replay order without inheriting primary system state or tools.
+		// Input and expected output: a primary system tool update plus conversation becomes a tool-less auxiliary transcript and excludes the pending call.
 		// Edge case: debug payload path is resolved relative to consult-advisor.json directory.
-		// Dependencies: temp config, temp prompt, fake model registry, fake completion function, fake session entries.
+		// Dependencies: Pi transcript normalization, temp config, fake completion, and session entries.
 		await withIsolatedAgentDir(async (agentDir) => {
 			const promptFile = join(agentDir, "config", "advisor.md");
 			await mkdir(join(agentDir, "config"), { recursive: true });
@@ -1107,8 +1117,20 @@ describe("consult-advisor", () => {
 			const entries = [
 				{
 					type: "message",
-					id: "1",
+					id: "system",
 					parentId: null,
+					timestamp: "t",
+					message: {
+						role: "system",
+						content: "Primary system update.",
+						toolsAdded: [PRIMARY_TOOL],
+						timestamp: 0,
+					},
+				},
+				{
+					type: "message",
+					id: "1",
+					parentId: "system",
 					timestamp: "t",
 					message: { role: "user", content: "hello", timestamp: 1 },
 				},
@@ -1180,11 +1202,20 @@ describe("consult-advisor", () => {
 			expect(completion.calls[0]?.options?.sessionId).not.toBe(
 				"consult-advisor-test-session",
 			);
-			expect(completion.calls[0]?.context.systemPrompt).toBe("Advisor prompt");
-			expect(completion.calls[0]?.context.tools).toEqual([]);
-			const advisorMessages = JSON.stringify(
-				completion.calls[0]?.context.messages,
-			);
+			const context = completion.calls[0]?.context;
+			if (context === undefined) {
+				throw new Error("Expected advisor completion context");
+			}
+			const normalized = normalizeContext(context);
+			expect(normalized.messages.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"toolResult",
+				"user",
+			]);
+			expect(getCurrentTools(normalized.messages)).toEqual([]);
+			const advisorMessages = JSON.stringify(context.messages);
 			expect(advisorMessages).toContain("old advisor result");
 			expect(advisorMessages).toContain("old-call");
 			expect(advisorMessages).not.toContain("current pending result");

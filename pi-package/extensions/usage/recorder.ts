@@ -1,4 +1,10 @@
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	Model,
+	Usage,
+} from "@earendil-works/pi-ai";
+import type { PiUsageEntry } from "../../shared/usage-events";
 import type { UsageEvent, UsageEventSource } from "./store";
 
 const TOKENS_PER_MILLION = 1_000_000;
@@ -13,6 +19,13 @@ export interface UsageAttribution {
 	readonly source?: UsageEventSource;
 }
 
+interface UsageEventInput {
+	readonly provider: string;
+	readonly model: string;
+	readonly timestampMs: number;
+	readonly usage: Usage;
+}
+
 /** Validates and normalizes one finalized regular assistant response. */
 export function createAssistantUsageEvent(
 	message: AssistantMessage,
@@ -20,17 +33,55 @@ export function createAssistantUsageEvent(
 	findModel: (provider: string, model: string) => Model<Api> | undefined,
 	createEventId: () => string,
 ): UsageEvent | undefined {
+	return createUsageEvent(
+		{
+			provider: message.provider,
+			model: message.model,
+			timestampMs: message.timestamp,
+			usage: message.usage,
+		},
+		attribution,
+		findModel,
+		createEventId,
+	);
+}
+
+/** Converts one Pi usage entry into the existing persisted event contract. */
+export function createUsageEntryEvent(
+	entry: PiUsageEntry,
+	attribution: Omit<UsageAttribution, "source">,
+	findModel: (provider: string, model: string) => Model<Api> | undefined,
+): UsageEvent | undefined {
+	return createUsageEvent(
+		{
+			provider: entry.provider,
+			model: entry.model,
+			timestampMs: Date.parse(entry.timestamp),
+			usage: entry.usage,
+		},
+		{ ...attribution, source: "pi-usage" },
+		findModel,
+		() => `pi-usage:${attribution.sessionId}:${entry.id}`,
+	);
+}
+
+function createUsageEvent(
+	input: UsageEventInput,
+	attribution: UsageAttribution,
+	findModel: (provider: string, model: string) => Model<Api> | undefined,
+	createEventId: () => string,
+): UsageEvent | undefined {
 	if (
 		!isNonEmptyString(attribution.sessionId) ||
 		!isNonEmptyString(attribution.rootSessionId) ||
-		!isNonEmptyString(message.provider) ||
-		!isNonEmptyString(message.model) ||
-		!isFiniteNonNegative(message.timestamp)
+		!isNonEmptyString(input.provider) ||
+		!isNonEmptyString(input.model) ||
+		!isFiniteNonNegative(input.timestampMs)
 	) {
 		return undefined;
 	}
 
-	const usage = message.usage;
+	const usage = input.usage;
 	if (
 		!isTokenCount(usage?.input) ||
 		!isTokenCount(usage.output) ||
@@ -41,7 +92,7 @@ export function createAssistantUsageEvent(
 		return undefined;
 	}
 
-	const pricedModel = findModel(message.provider, message.model);
+	const pricedModel = findModel(input.provider, input.model);
 	if (pricedModel === undefined) {
 		return undefined;
 	}
@@ -60,15 +111,15 @@ export function createAssistantUsageEvent(
 
 	return {
 		eventId: createEventId(),
-		timestampMs: message.timestamp,
+		timestampMs: input.timestampMs,
 		sessionId: attribution.sessionId,
 		rootSessionId: attribution.rootSessionId,
 		agentId: isNonEmptyString(attribution.agentId)
 			? attribution.agentId
 			: NO_AGENT_ID,
 		source: attribution.source ?? "agent-turn",
-		provider: message.provider,
-		model: message.model,
+		provider: input.provider,
+		model: input.model,
 		input: usage.input,
 		output: usage.output,
 		cacheRead: usage.cacheRead,

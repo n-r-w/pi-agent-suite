@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type {
 	AssistantMessage,
+	JsonValue,
 	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
@@ -117,7 +118,7 @@ function toolResult(
 	toolName: string,
 	text: string,
 	isError = false,
-	details?: unknown,
+	details?: JsonValue,
 ): ToolResultMessage {
 	return {
 		role: "toolResult",

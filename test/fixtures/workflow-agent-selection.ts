@@ -1,5 +1,8 @@
 import { writeFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	getCurrentTools,
+} from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentRuntimeComposition } from "../../pi-package/shared/agent-runtime-composition";
 
@@ -69,7 +72,7 @@ function registerProvider(
 			const stream = createAssistantMessageEventStream();
 			requests.push({
 				model: model.id,
-				tools: context.tools?.map(({ name }) => name) ?? [],
+				tools: getCurrentTools(context.messages).map(({ name }) => name),
 			});
 			const finish = () => {
 				const output = {

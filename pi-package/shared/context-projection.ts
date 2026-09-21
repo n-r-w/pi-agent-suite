@@ -3,8 +3,10 @@ import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type BeforeAgentStartEvent,
+	buildContextEntries,
 	getAgentDir,
 	type SessionEntry,
+	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
@@ -981,65 +983,13 @@ function isPersistedProviderError(entry: MappedContextEntry): boolean {
 	);
 }
 
-/** Builds the same branch message sequence that pi uses, but keeps the source entry beside each message. */
+/** Builds Pi's canonical branch message sequence while keeping each source entry beside its messages. */
 export function buildContextEntryMapping(
 	branchEntries: readonly SessionEntry[],
 ): MappedContextEntry[] {
-	const mappedEntries: MappedContextEntry[] = [];
-	const appendContextEntry = (entry: SessionEntry): void => {
-		const message = createContextMessageForEntry(entry);
-		if (message !== undefined) {
-			mappedEntries.push({ entry, message });
-		}
-	};
-
-	const compactionIndex = findLastEntryIndex(
-		branchEntries,
-		(entry) => entry.type === "compaction",
+	return buildContextEntries([...branchEntries]).flatMap((entry) =>
+		sessionEntryToContextMessages(entry).map((message) => ({ entry, message })),
 	);
-	if (compactionIndex === -1) {
-		for (const entry of branchEntries) {
-			appendContextEntry(entry);
-		}
-		return mappedEntries;
-	}
-
-	const compactionEntry = branchEntries[compactionIndex];
-	if (compactionEntry?.type !== "compaction") {
-		return mappedEntries;
-	}
-
-	mappedEntries.push({
-		entry: compactionEntry,
-		message: createCompactionSummaryMessage(compactionEntry),
-	});
-
-	let foundFirstKeptEntry = false;
-	for (let index = 0; index < compactionIndex; index += 1) {
-		const entry = branchEntries[index];
-		if (entry === undefined) {
-			continue;
-		}
-		if (entry.id === compactionEntry.firstKeptEntryId) {
-			foundFirstKeptEntry = true;
-		}
-		if (foundFirstKeptEntry) {
-			appendContextEntry(entry);
-		}
-	}
-
-	for (
-		let index = compactionIndex + 1;
-		index < branchEntries.length;
-		index += 1
-	) {
-		const entry = branchEntries[index];
-		if (entry !== undefined) {
-			appendContextEntry(entry);
-		}
-	}
-
-	return mappedEntries;
 }
 
 /** Returns projected provider-context messages and newly persisted projection state. */
@@ -1175,47 +1125,6 @@ export function collectLoadedSkillRoots(
 /** Returns the approximate token count removed from provider context. */
 export function estimateSavedTokens(savedTokens: number): number {
 	return savedTokens;
-}
-
-/** Creates the model-visible message that corresponds to a session entry. */
-function createContextMessageForEntry(
-	entry: SessionEntry,
-): AgentMessage | undefined {
-	if (entry.type === "message") {
-		return entry.message;
-	}
-	if (entry.type === "custom_message") {
-		return {
-			role: "custom",
-			customType: entry.customType,
-			content: entry.content,
-			display: entry.display,
-			details: entry.details,
-			timestamp: new Date(entry.timestamp).getTime(),
-		} as AgentMessage;
-	}
-	if (entry.type === "branch_summary" && entry.summary) {
-		return {
-			role: "branchSummary",
-			summary: entry.summary,
-			fromId: entry.fromId,
-			timestamp: new Date(entry.timestamp).getTime(),
-		} as AgentMessage;
-	}
-
-	return undefined;
-}
-
-/** Creates the model-visible compaction summary message that pi emits for the latest compaction. */
-function createCompactionSummaryMessage(
-	entry: Extract<SessionEntry, { type: "compaction" }>,
-): AgentMessage {
-	return {
-		role: "compactionSummary",
-		summary: entry.summary,
-		tokensBefore: entry.tokensBefore,
-		timestamp: new Date(entry.timestamp).getTime(),
-	} as AgentMessage;
 }
 
 /** Collects resolved read paths by tool call ID so matching tool results can be classified. */

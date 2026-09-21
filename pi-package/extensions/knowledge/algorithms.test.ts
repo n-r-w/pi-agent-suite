@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Model,
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import {
+	type Api,
+	type AssistantMessage,
+	type Context,
+	getCurrentTools,
+	type Model,
+	normalizeContext,
 } from "@earendil-works/pi-ai";
 import type {
 	ExtensionContext,
@@ -172,6 +175,9 @@ function createOptions(options: {
 	readonly reportProgress?: Parameters<
 		typeof runLocalKnowledgeAccumulation
 	>[0]["reportProgress"];
+	readonly replay?: Parameters<
+		typeof runLocalKnowledgeAccumulation
+	>[0]["replay"];
 	readonly completed?: AssistantMessage[];
 }): Parameters<typeof runLocalKnowledgeAccumulation>[0] {
 	const projectPaths = createProjectPaths("/catalog", "project-a-digest");
@@ -214,25 +220,27 @@ function createOptions(options: {
 			return response(text, stopReason);
 		},
 		signal: undefined,
-		replay: async ({ branchEntries }) => {
-			expect(branchEntries).toEqual([
-				{
-					type: "custom",
-					id: "source-entry",
-					parentId: null,
-					timestamp: "t",
-					customType: "source",
-					data: {},
-				},
-			]);
-			return [
-				{
-					role: "user",
-					content: "projected current branch",
-					timestamp: 1,
-				},
-			];
-		},
+		replay:
+			options.replay ??
+			(async ({ branchEntries }) => {
+				expect(branchEntries).toEqual([
+					{
+						type: "custom",
+						id: "source-entry",
+						parentId: null,
+						timestamp: "t",
+						customType: "source",
+						data: {},
+					},
+				]);
+				return [
+					{
+						role: "user",
+						content: "projected current branch",
+						timestamp: 1,
+					},
+				];
+			}),
 		...(options.reportProgress === undefined
 			? {}
 			: { reportProgress: options.reportProgress }),
@@ -328,6 +336,47 @@ describe("knowledge accumulation algorithms", () => {
 			"</summary_source>",
 		);
 		expect(owner.events).toEqual([]);
+	});
+
+	test("isolates replayed system state before local extraction", async () => {
+		// Purpose: local accumulation must remove replayed system state before summary serialization.
+		// Input and expected output: one system record and one user record produce a tool-less auxiliary request with dedicated-system and user roles.
+		// Edge case: reading removed system content would show that it entered auxiliary assembly.
+		// Dependencies: injected replay, Pi transcript normalization, and the extraction completion seam.
+		const contexts: Context[] = [];
+		let systemContentReads = 0;
+		const primarySystem: AgentMessage = {
+			role: "system",
+			get content() {
+				systemContentReads += 1;
+				return "Primary system state.";
+			},
+			timestamp: 0,
+		};
+		const options = createOptions({
+			owner: new RecordingOwner(),
+			snapshots: { global: null, local: null },
+			outputs: ["NOT_FOUND"],
+			contexts,
+			replay: async () => [
+				primarySystem,
+				{ role: "user", content: "Ordinary source.", timestamp: 1 },
+			],
+		});
+
+		await runLocalKnowledgeAccumulation(options);
+
+		expect(systemContentReads).toBe(0);
+		const context = contexts[0];
+		if (context === undefined) {
+			throw new Error("Expected knowledge completion context");
+		}
+		const normalized = normalizeContext(context);
+		expect(normalized.messages.map((message) => message.role)).toEqual([
+			"system",
+			"user",
+		]);
+		expect(getCurrentTools(normalized.messages)).toEqual([]);
 	});
 
 	/**

@@ -43,13 +43,13 @@ A request is stored only when these values are complete and valid:
 - non-negative finite estimated total cost;
 - current pricing metadata for the recorded provider/model.
 
-An incomplete request is ignored as one unit. Missing values are not inferred, and previous Pi sessions are not scanned.
+An incomplete request is ignored as one unit. Missing values are not inferred. At `session_start`, usage entries already present in the active branch become a process-local baseline and are not stored. Usage entries appended after that baseline are stored before root totals, child-session totals, and `/usage` range reads, and once more at `session_shutdown`. Valid `entry_appended` usage events from supervised child RPC sessions are forwarded immediately to the same process-owned recorder with the child session ID, root session ID, and child agent ID.
 
 The extension exposes read-only process-local aggregates to package UI extensions. The footer reads cumulative cost and processed tokens by root session ID. The `/subagents` screen reads cumulative cost and processed tokens by child Pi session ID. Each aggregate includes every retained event with the requested identity.
 
 ## Included requests
 
-Agent consumption includes regular assistant responses and these auxiliary request sources:
+Agent consumption includes regular assistant responses, Pi usage entries such as cache warming, and these auxiliary request sources:
 
 - `consult-advisor`;
 - `context-projection`;
@@ -64,7 +64,9 @@ Agent consumption includes regular assistant responses and these auxiliary reque
 
 The initiating agent owns an auxiliary request. A root request without an agent ID appears as `No agent`. Native compaction and branch summary use the final aggregate usage exposed by Pi.
 
-Repeated delivery of one event ID is idempotent. Distinct requests receive distinct IDs.
+Every Pi usage-entry kind uses the `pi-usage` source. Its stored event ID is `pi-usage:<sessionId>:<entryId>`, so repeated reconciliation is idempotent and equal Pi entry IDs in different sessions remain distinct. The stored token counts and cost come from the Pi entry; cache savings use the model-pricing calculation used for assistant responses.
+
+Repeated delivery of any other event ID is idempotent. Distinct requests receive distinct IDs.
 
 ## Metrics
 

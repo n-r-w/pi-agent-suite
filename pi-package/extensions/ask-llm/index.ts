@@ -29,6 +29,7 @@ import {
 	doesAuxiliaryLlmInputFitContextWindow,
 	getAuxiliaryLlmResponseText,
 	resolveAuxiliaryLlmRuntime,
+	withoutSystemMessages,
 } from "../../shared/auxiliary-llm";
 import {
 	collectLoadedSkillRoots,
@@ -407,7 +408,7 @@ async function buildContext({
 		cwd: ctx.cwd,
 		loadedSkillRoots,
 	});
-	const messages = convertToLlm(projectedMessages);
+	const messages = convertToLlm(withoutSystemMessages(projectedMessages));
 	messages.push({
 		role: "user",
 		content: formatUserQuestion(question),
