@@ -139,6 +139,19 @@ type SessionReplacementRestoreResult =
 	| { readonly handled: false }
 	| { readonly handled: true; readonly applied: boolean };
 
+interface InitializationGate {
+	readonly promise: Promise<void>;
+	readonly resolve: () => void;
+}
+
+type InitializationStatus = "pending" | "ready" | "failed";
+
+interface SessionRestorationState {
+	readonly initializationGate: InitializationGate;
+	current: Promise<void> | undefined;
+	status: InitializationStatus;
+}
+
 interface SearchableAgentSelectorOptions {
 	readonly options: readonly SelectItem[];
 	readonly currentAgentId: string | null;
@@ -319,6 +332,45 @@ class SearchableAgentSelector implements Component, Focusable {
 	}
 }
 
+/** Creates the pending gate that covers input before session-start dispatch reaches this extension. */
+function createInitializationGate(): InitializationGate {
+	let resolve: (() => void) | undefined;
+	const promise = new Promise<void>((resolvePromise) => {
+		resolve = resolvePromise;
+	});
+	if (resolve === undefined) {
+		throw new Error("failed to create main-agent initialization gate");
+	}
+	return { promise, resolve };
+}
+
+/** Publishes one sequential restoration and records its terminal startup status. */
+async function runSessionRestoration(
+	pi: ExtensionAPI,
+	event: unknown,
+	ctx: MainAgentContext,
+	state: SessionRestorationState,
+): Promise<void> {
+	state.status = "pending";
+	const restoration = handleSessionStart(pi, event, ctx);
+	const settled = restoration.then(
+		() => {
+			state.status = "ready";
+		},
+		() => {
+			state.status = "failed";
+		},
+	);
+	state.current = settled;
+	try {
+		await restoration;
+	} finally {
+		await settled;
+		state.initializationGate.resolve();
+		state.current = undefined;
+	}
+}
+
 /** Extension entry point for main-agent selection behavior. */
 export default function mainAgentSelection(pi: ExtensionAPI): void {
 	if (isMainAgentSelectionDisabled()) {
@@ -328,11 +380,17 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 
 	writeRuntimeDiagnostic("main-agent-selection.loaded");
 	getAgentRuntimeComposition(pi);
+	const initializationGate = createInitializationGate();
+	const restorationState: SessionRestorationState = {
+		initializationGate,
+		current: initializationGate.promise,
+		status: "pending",
+	};
 	let pendingAgent: AgentDefinition | null | undefined;
 	const select = async (
 		agent: AgentDefinition | null,
 		ctx: MainAgentContext,
-	): Promise<void> => {
+	) => {
 		if (!ctx.isIdle()) {
 			pendingAgent = agent;
 			ctx.ui.notify("Agent selection will apply before the next run.", "info");
@@ -341,9 +399,12 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 		pendingAgent = undefined;
 		await applySelectedMainAgent(pi, ctx, agent);
 	};
-	// Input precedes model validation and every before_agent_start prompt contribution.
-	// Queued input during the current run must keep the current agent's settings.
+	// Pi can accept editor input before asynchronous session_start handlers settle.
 	pi.on("input", async (_event, ctx) => {
+		await restorationState.current;
+		if (restorationState.status === "failed") {
+			return { action: "handled" };
+		}
 		if (ctx.isIdle() && pendingAgent !== undefined) {
 			await select(pendingAgent, ctx as MainAgentContext);
 		}
@@ -383,7 +444,12 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		pendingAgent = undefined;
-		await handleSessionStart(pi, event, ctx as MainAgentContext);
+		await runSessionRestoration(
+			pi,
+			event,
+			ctx as MainAgentContext,
+			restorationState,
+		);
 	});
 
 	pi.on("session_shutdown", (event, ctx) => {
