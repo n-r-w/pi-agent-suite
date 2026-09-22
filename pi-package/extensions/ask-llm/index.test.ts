@@ -29,7 +29,6 @@ const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const USER_QUESTION_OPEN_TAG = "<user_question>";
 const USER_QUESTION_CLOSE_TAG = "</user_question>";
-const CONTEXT_PROJECTION_CUSTOM_TYPE = "context-projection";
 const PRIMARY_TOOL: Tool = {
 	name: "primary_tool",
 	description: "Primary transcript tool.",
@@ -560,25 +559,6 @@ function createMessageEntry(
 	} as SessionEntry;
 }
 
-/** Creates an extension-owned projection state entry. */
-function createProjectionStateEntry(
-	id: string,
-	projectedEntryId: string,
-	replacementText: string,
-	parentId: string | null,
-): SessionEntry {
-	return {
-		type: "custom",
-		id,
-		parentId,
-		timestamp: "t",
-		customType: CONTEXT_PROJECTION_CUSTOM_TYPE,
-		data: {
-			projectedEntries: [{ entryId: projectedEntryId, replacementText }],
-		},
-	} as SessionEntry;
-}
-
 /** Creates an assistant tool-call message for projection replay fixtures. */
 function createAssistantToolCallMessage(
 	toolCallId: string,
@@ -1101,14 +1081,10 @@ describe("ask-llm", () => {
 		});
 	});
 
-	test("isolates replayed projection state before calling ask-llm", async () => {
-		// Purpose: ask-llm must keep projected conversation order without inheriting primary system state or tools.
-		// Input and expected output: a system tool update plus projected conversation becomes one tool-less auxiliary transcript in ordinary-message order.
-		// Edge case: the one-off ask question remains after the projected tool-result turn.
-		// Dependencies: Pi transcript normalization, temp projection config, fake completion, and session entries.
+	test("isolates Pi-edited history before calling ask-llm", async () => {
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const replacementText = "[projected old output]";
+			const replacementText = "edited old output";
 			const model = createModel("openai", "gpt-test");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1125,7 +1101,14 @@ describe("ask-llm", () => {
 					"3",
 					createToolResultMessage("old-tool", "old full tool output"),
 				),
-				createProjectionStateEntry("5", "4", replacementText, "4"),
+				{
+					type: "context_edit",
+					id: "5",
+					parentId: "4",
+					timestamp: "t",
+					targetId: "4",
+					replacement: { content: replacementText },
+				} as SessionEntry,
 			];
 			const ctx = createContextFake([model], "Question from editor", entries);
 			askLlm(pi, { completeSimple: completion.completeSimple });
@@ -1146,9 +1129,11 @@ describe("ask-llm", () => {
 				"user",
 			]);
 			expect(getCurrentTools(normalized.messages)).toEqual([]);
-			const askMessages = JSON.stringify(context.messages);
-			expect(askMessages).toContain(replacementText);
-			expect(askMessages).not.toContain("old full tool output");
+			expect(normalized.messages[3]).toMatchObject({
+				role: "toolResult",
+				toolCallId: "old-tool",
+				content: [{ type: "text", text: replacementText }],
+			});
 		});
 	});
 

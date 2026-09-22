@@ -188,7 +188,7 @@ async function generateMissingProjectionSummaries({
 }
 
 /** Selects every missing L3 candidate inside Pi's exact discarded range. */
-function collectMissingProjectionCandidates(
+export function collectMissingProjectionCandidates(
 	event: SessionBeforeCompactEvent,
 	existingSummaries: ReadonlyMap<string, string>,
 	minimumTokens: number,

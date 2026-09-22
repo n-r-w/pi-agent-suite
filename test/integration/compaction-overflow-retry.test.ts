@@ -20,11 +20,14 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import compactionTrigger from "../../pi-package/extensions/compaction-trigger";
+import contextProjection from "../../pi-package/extensions/context-projection";
 import {
 	type ChildRpcPromptDecision,
 	createChildRpcPromptCompletion,
 } from "../../pi-package/shared/child-rpc-completion";
+import { getProjectionAwareContextUsage } from "../../pi-package/shared/context-projection";
 import { estimateSerializedInputTokens } from "../../pi-package/shared/context-size";
+import { createTempDir } from "../support/temp-dir";
 
 const MODEL: Model<"openai-completions"> = {
 	api: "openai-completions",
@@ -127,6 +130,7 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 	const toolResult = `retained-tool-state:${"result-data ".repeat(1_900)}`;
 	const providerEntries: boolean[] = [];
 	const contextTokens: number[] = [];
+	const contextEventRoles: string[][] = [];
 	const outboundMessages: unknown[][] = [];
 	let providerDispatches = 0;
 	let dispatchNumber = 0;
@@ -237,6 +241,9 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 								messages: convertToLlm(event.messages),
 							}),
 						);
+						contextEventRoles.push(
+							event.messages.map((message) => message.role),
+						);
 					});
 					pi.registerProvider(model.provider, {
 						name: "Compaction integration",
@@ -311,9 +318,13 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 			await Bun.sleep(10);
 		}
 
-		expect(contextTokens[0]).toBeLessThan(9_000);
-		expect(contextTokens[1]).toBeGreaterThanOrEqual(9_000);
-		expect(contextTokens[2]).toBeLessThan(9_000);
+		expect(contextTokens).toHaveLength(3);
+		expect(contextTokens[1]).toBeGreaterThan(contextTokens[0] ?? 0);
+		expect(contextTokens[2]).toBeLessThan(contextTokens[1] ?? 0);
+		expect(contextEventRoles).toHaveLength(3);
+		for (const roles of contextEventRoles) {
+			expect(roles.every((role) => role !== "system")).toBeTrue();
+		}
 		expect(providerEntries).toEqual([false, true, false]);
 		expect(providerDispatches).toBe(2);
 		expect(compactionCalls).toBe(1);
@@ -331,10 +342,13 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 					entry.message.stopReason === "error",
 			),
 		).toHaveLength(1);
-		const continuationEntry = entries
+		const continuationEntries = entries
 			.filter((entry) => entry.type === "custom_message")
-			.find((entry) => entry.customType === "compaction-trigger-continuation");
-		expect(continuationEntry).toBeDefined();
+			.filter(
+				(entry) => entry.customType === "compaction-trigger-continuation",
+			);
+		expect(continuationEntries).toHaveLength(1);
+		const continuationEntry = continuationEntries[0];
 		if (continuationEntry === undefined) {
 			throw new Error("compaction continuation was not persisted");
 		}
@@ -358,6 +372,219 @@ test("threshold interruption compacts and resumes through real AgentSession boun
 		}
 		rmSync(cwd, { recursive: true, force: true });
 		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("recovery edits keep projected usage below the real trigger boundary", async () => {
+	const cwd = createTempDir("pi-projection-usage-session-");
+	const agentDir = createTempDir("pi-projection-usage-agent-");
+	const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
+	const previousSuiteDir = process.env["PI_AGENT_SUITE_DIR"];
+	const suiteDir = join(agentDir.path, "agent-suite");
+	process.env["PI_CODING_AGENT_DIR"] = agentDir.path;
+	process.env["PI_AGENT_SUITE_DIR"] = suiteDir;
+
+	const model: Model<"openai-completions"> = {
+		...MODEL,
+		provider: "projection-usage-integration",
+		id: "fake",
+		contextWindow: 8_000,
+		maxTokens: 500,
+	};
+	const sessionManager = SessionManager.inMemory(cwd.path);
+	const settingsManager = SettingsManager.inMemory({
+		compaction: {
+			enabled: false,
+			reserveTokens: 1_000,
+			keepRecentTokens: 3_000,
+		},
+		retry: { enabled: false },
+	});
+	let providerDispatches = 0;
+	let compactionCalls = 0;
+	let session: AgentSession | undefined;
+	const fakeStream = ((streamModel) => {
+		providerDispatches += 1;
+		const message = fakeAssistantMessage(
+			streamModel,
+			[{ type: "text", text: "completed" }],
+			"stop",
+		);
+		message.usage = {
+			input: 1_000,
+			output: 10,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_010,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		return completedStream(message, "stop");
+	}) satisfies StreamFn;
+
+	try {
+		mkdirSync(join(cwd.path, ".pi"), { recursive: true });
+		mkdirSync(join(agentDir.path, "config"), { recursive: true });
+		mkdirSync(join(suiteDir, "compaction-trigger"), { recursive: true });
+		writeFileSync(
+			join(cwd.path, ".pi", "settings.json"),
+			JSON.stringify({
+				compaction: {
+					enabled: false,
+					reserveTokens: 1_000,
+					keepRecentTokens: 3_000,
+				},
+			}),
+		);
+		writeFileSync(
+			join(agentDir.path, "config", "context-projection.json"),
+			JSON.stringify({
+				enabled: true,
+				projectionRemainingTokensL1: 8_000,
+				minToolResultTokensL1: 5,
+				projectionRemainingTokensL2: 7_000,
+				minToolResultTokensL2: 5,
+				projectionRemainingTokensL3: 6_000,
+				minToolResultTokensL3: 5,
+				keepRecentTurns: 0,
+				keepRecentTurnsPercent: 0,
+				projectionIgnoredTools: [],
+			}),
+		);
+		writeFileSync(
+			join(suiteDir, "compaction-trigger", "config.json"),
+			JSON.stringify({ enabled: true, tolerancePercent: 0 }),
+		);
+
+		const recoveryTargetId = sessionManager.appendMessage(
+			userMessage("retained recovery target", 1),
+		);
+		sessionManager.appendMessage({
+			...assistantMessage("toolUse", 2),
+			content: [
+				{
+					type: "toolCall",
+					id: "large-result-call",
+					name: "large_result",
+					arguments: {},
+				},
+			],
+		});
+		sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: "large-result-call",
+			toolName: "large_result",
+			content: [
+				{ type: "text", text: `large-result:${"result-data ".repeat(3_000)}` },
+			],
+			isError: false,
+			timestamp: 3,
+		});
+
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: cwd.path,
+			agentDir: agentDir.path,
+			settingsManager,
+			extensionFactories: [
+				contextProjection,
+				(pi) => {
+					pi.registerProvider(model.provider, {
+						name: "Projection usage integration",
+						baseUrl: "http://127.0.0.1:1/v1",
+						apiKey: "test",
+						api: model.api,
+						models: [model],
+						streamSimple: fakeStream,
+					});
+					pi.on("session_before_compact", (event) => {
+						compactionCalls += 1;
+						return {
+							compaction: {
+								summary: "Unexpected recovery compaction.",
+								firstKeptEntryId:
+									event.branchEntries.at(-1)?.id ?? recoveryTargetId,
+								tokensBefore: event.preparation.tokensBefore,
+							},
+						};
+					});
+				},
+				compactionTrigger,
+			],
+		});
+		await resourceLoader.reload();
+		({ session } = await createAgentSession({
+			cwd: cwd.path,
+			agentDir: agentDir.path,
+			model,
+			thinkingLevel: "off",
+			resourceLoader,
+			sessionManager,
+			settingsManager,
+			tools: [],
+		}));
+		(
+			session as unknown as {
+				readonly agent: { streamFunction: StreamFn };
+			}
+		).agent.streamFunction = fakeStream;
+
+		await session.prompt("first request");
+		await session.waitForIdle();
+		const responseUsage = session.getContextUsage();
+		expect(responseUsage?.tokens).not.toBeNull();
+		expect(
+			sessionManager
+				.getBranch()
+				.some(
+					(entry) =>
+						entry.type === "custom" &&
+						entry.customType === "context-projection",
+				),
+		).toBeTrue();
+
+		sessionManager.appendContextEdit(recoveryTargetId, {
+			content: "edited recovery target",
+		});
+		const invalidatedUsage = session.getContextUsage();
+		expect(invalidatedUsage?.tokens).not.toBeNull();
+		expect(invalidatedUsage?.tokens ?? 0).toBeGreaterThanOrEqual(7_000);
+		expect(invalidatedUsage?.tokens ?? 0).toBeGreaterThan(
+			responseUsage?.tokens ?? 0,
+		);
+		const correctedBeforeContextHandlers = getProjectionAwareContextUsage(
+			sessionManager.getSessionId(),
+			sessionManager.getBranch(),
+			invalidatedUsage,
+		);
+		expect(correctedBeforeContextHandlers?.tokens ?? 0).toBeLessThan(7_000);
+
+		await session.prompt("second request");
+		await session.waitForIdle();
+
+		expect(providerDispatches).toBe(2);
+		expect(compactionCalls).toBe(0);
+		expect(
+			sessionManager
+				.getEntries()
+				.filter(
+					(entry) =>
+						entry.type === "custom_message" &&
+						entry.customType === "compaction-trigger-interruption",
+				),
+		).toHaveLength(0);
+	} finally {
+		session?.dispose();
+		if (previousAgentDir === undefined) {
+			delete process.env["PI_CODING_AGENT_DIR"];
+		} else {
+			process.env["PI_CODING_AGENT_DIR"] = previousAgentDir;
+		}
+		if (previousSuiteDir === undefined) {
+			delete process.env["PI_AGENT_SUITE_DIR"];
+		} else {
+			process.env["PI_AGENT_SUITE_DIR"] = previousSuiteDir;
+		}
+		cwd.remove();
+		agentDir.remove();
 	}
 });
 

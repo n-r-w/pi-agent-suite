@@ -110,6 +110,7 @@ function handleContext(
 	// The trigger and footer share this projection-aware source so visible usage matches threshold behavior.
 	const usage = getProjectionAwareContextUsage(
 		ctx.sessionManager.getSessionId(),
+		ctx.sessionManager.getBranch(),
 		ctx.getContextUsage(),
 	);
 	// The user owns real provider capacity, so tolerance is not capped at the declared window.

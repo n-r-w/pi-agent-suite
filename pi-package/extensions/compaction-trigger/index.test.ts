@@ -8,8 +8,12 @@ import {
 	type CompactOptions,
 	convertToLlm,
 	type ExtensionAPI,
+	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { addPendingProjectionSavings } from "../../shared/context-projection";
+import {
+	addPendingProjectionSavings,
+	resetPendingProjectionSavings,
+} from "../../shared/context-projection";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import compactionTrigger from "./index";
 
@@ -76,7 +80,7 @@ interface TestContext {
 	readonly abortCalls: { count: number };
 	readonly compactCalls: CompactOptions[];
 	readonly sessionManager: {
-		getBranch(): Array<{ readonly type: string; readonly timestamp: string }>;
+		getBranch(): SessionEntry[];
 		getSessionId(): string;
 	};
 	abort(): void;
@@ -154,6 +158,7 @@ function createContext(
 		? undefined
 		: contextWindow - RESERVE_TOKENS,
 	sessionId = "compaction-trigger-test-session",
+	branchEntries: SessionEntry[] = [],
 ): TestContext {
 	const controller = new AbortController();
 	const abortCalls = { count: 0 };
@@ -168,7 +173,7 @@ function createContext(
 		abortCalls,
 		compactCalls,
 		sessionManager: {
-			getBranch: () => [],
+			getBranch: () => branchEntries,
 			getSessionId: () => sessionId,
 		},
 		abort(): void {
@@ -294,11 +299,7 @@ describe("compaction trigger", () => {
 		expect(ctx.abortCalls.count).toBe(0);
 	});
 
-	test("subtracts pending projection savings from the trigger usage", async () => {
-		// Purpose: a projection completed in the current context event must affect the trigger before provider dispatch.
-		// Input and expected output: raw usage equals the threshold and one pending saved token makes the request safe.
-		// Edge case: pending savings cross the inclusive threshold by exactly one token.
-		// Dependencies: shared pending projection state, ExtensionContext context usage, isolated settings, and the direct context handler.
+	test("selects trigger usage from the current active branch", async () => {
 		const { cwd } = await createSettingsFixture({
 			compaction: { enabled: true, reserveTokens: RESERVE_TOKENS },
 		});
@@ -306,23 +307,107 @@ describe("compaction trigger", () => {
 		const serializedEstimate = estimatedTokens(messages);
 		const contextWindow = serializedEstimate + RESERVE_TOKENS;
 		const sessionId = "pending-projection-trigger-session";
-		addPendingProjectionSavings(sessionId, 1, {
+		const branchEntries = [
+			{
+				type: "message",
+				id: "projected-entry",
+				parentId: null,
+				timestamp: "t",
+				message: userMessage("projected", 0),
+			},
+			{
+				type: "message",
+				id: "active-leaf",
+				parentId: "projected-entry",
+				timestamp: "t",
+				message: userMessage("start"),
+			},
+			{
+				type: "message",
+				id: "response",
+				parentId: "active-leaf",
+				timestamp: "t",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					api: "openai-responses",
+					provider: "openai",
+					model: "main",
+					usage: {
+						input: 100,
+						output: 10,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 110,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: 2,
+				},
+			},
+		] as SessionEntry[];
+		resetPendingProjectionSavings(sessionId);
+		addPendingProjectionSavings(sessionId, {
 			branchLeafId: "active-leaf",
-			entryIds: ["projected-entry"],
+			entries: [
+				{
+					entryId: "projected-entry",
+					replacementText: "projected",
+					savedTokens: 1,
+				},
+			],
 		});
-		const ctx = createContext(
-			cwd,
-			contextWindow,
-			true,
-			serializedEstimate,
-			sessionId,
-		);
-		const harness = install();
+		try {
+			const responseContext = createContext(
+				cwd,
+				contextWindow,
+				true,
+				serializedEstimate,
+				sessionId,
+				branchEntries,
+			);
+			const responseHarness = install();
 
-		const result = await harness.context({ type: "context", messages }, ctx);
+			const responseResult = await responseHarness.context(
+				{ type: "context", messages },
+				responseContext,
+			);
+			expect(responseResult).toEqual({ messages: [] });
+			expect(responseContext.abortCalls.count).toBe(1);
 
-		expect(result).toBeUndefined();
-		expect(ctx.abortCalls.count).toBe(0);
+			branchEntries.push({
+				type: "context_edit",
+				id: "recovery-edit",
+				parentId: "response",
+				timestamp: "t",
+				targetId: "active-leaf",
+				replacement: { content: "edited start" },
+			});
+			const recoveryContext = createContext(
+				cwd,
+				contextWindow,
+				true,
+				serializedEstimate,
+				sessionId,
+				branchEntries,
+			);
+			const recoveryHarness = install();
+
+			const recoveryResult = await recoveryHarness.context(
+				{ type: "context", messages },
+				recoveryContext,
+			);
+			expect(recoveryResult).toBeUndefined();
+			expect(recoveryContext.abortCalls.count).toBe(0);
+		} finally {
+			resetPendingProjectionSavings(sessionId);
+		}
 	});
 
 	test("enforces its threshold when Pi automatic compaction is disabled", async () => {

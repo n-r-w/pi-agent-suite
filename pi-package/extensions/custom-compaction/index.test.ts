@@ -322,7 +322,9 @@ function createCompactionEvent(
 		type: "session_before_compact",
 		preparation: {
 			firstKeptEntryId: "entry-keep",
-			messagesToSummarize: [oldUser, oldAssistant],
+			messagesToSummarize: includeSystemUpdates
+				? [oldUser]
+				: [oldUser, oldAssistant],
 			turnPrefixMessages: [turnPrefix],
 			isSplitTurn: true,
 			tokensBefore: 1_234,
@@ -352,6 +354,22 @@ function createCompactionEvent(
 					messageEntry("entry-prefix", "entry-old-assistant", turnPrefix),
 					messageEntry("entry-keep", "entry-prefix", systemMessage(4)),
 					messageEntry("entry-retained", "entry-keep", retained),
+					{
+						type: "context_edit",
+						id: "edit-omit-old-assistant",
+						parentId: "entry-retained",
+						timestamp: "t",
+						targetId: "entry-old-assistant",
+						replacement: null,
+					},
+					{
+						type: "context_edit",
+						id: "edit-retained",
+						parentId: "edit-omit-old-assistant",
+						timestamp: "t",
+						targetId: "entry-retained",
+						replacement: { content: "edited retained task" },
+					},
 				],
 		reason: "threshold",
 		willRetry: false,
@@ -672,10 +690,6 @@ describe("custom-compaction", () => {
 	});
 
 	test("returns one adaptive result with isolated replay streams and Pi's fixed boundary", async () => {
-		// Purpose: both compaction replay streams must remove system state before auxiliary planning and completion.
-		// Input and expected output: system updates in main and retained replay produce one tool-less request while the result keeps Pi's boundary and file details.
-		// Edge case: the retained replay begins with a system record before the retained task.
-		// Dependencies: Pi transcript normalization, isolated config, fake context, and mocked completion.
 		await withIsolatedAgentDir(async () => {
 			completeSimpleMock.mockResolvedValue(
 				createAssistantResponse("adaptive summary", { cost: 0.6 }),

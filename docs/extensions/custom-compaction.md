@@ -74,7 +74,9 @@ messagesToSummarize
 turnPrefixMessages
 ```
 
-The extension uses Pi's `serializeConversation` output for messages without projection summaries. Pi limits each such serialized `toolResult` to 2,000 characters. Existing and forced `context-projection` summaries replace eligible tool results in the discarded range and remain complete instead of passing through this character limit. Omission-only replacements never enter the durable summary source.
+The extension builds both the main summary range and retained suffix from Pi's effective context, after Pi applies compaction and `context_edit` omission or replacement records. The effective messages keep their raw source-entry identity so projection summaries can still match the correct tool result. Repository projection replacements follow active-branch append order: a later Pi edit invalidates an older replacement, and a later projection state record can replace the edited content again.
+
+The extension uses Pi's `serializeConversation` output for messages without effective projection summaries. Pi limits each such serialized `toolResult` to 2,000 characters. Existing and forced `context-projection` summaries replace eligible tool results in the discarded range and remain complete instead of passing through this character limit. Pi-omitted targets produce no summary candidate, edited targets use Pi's normalized replacement content, and omission-only repository replacements never enter the durable summary source.
 
 The extension does not summarize `turnPrefixMessages` separately. They remain at the end of the same chronological summary source.
 
@@ -155,7 +157,7 @@ After retries are exhausted, the extension shows the completed-work counts, exac
 
 ## Relationship to context projection
 
-`context-projection` reduces ordinary provider requests but does not rewrite persisted history. Adaptive compaction reuses generated projection summaries for tool results in Pi's discarded range. When `projectCompactionSource` is enabled, it first generates missing summaries for results that reach `minToolResultTokensL3`. Results without a usable summary retain Pi's standard serialization.
+`context-projection` reduces ordinary provider requests but does not rewrite persisted history. Adaptive compaction replays the effective main and retained contexts, then reuses generated projection summaries for tool results in Pi's prepared discarded range. When `projectCompactionSource` is enabled, it first generates missing summaries for results that reach `minToolResultTokensL3`. Results without a usable summary retain Pi's standard serialization.
 
 Forced source projection is best effort and ephemeral. A failed candidate falls back independently, and successful compaction removes the summarized source entries. The fixed retained suffix continues to use replayed provider-visible projection only for request budgeting.
 

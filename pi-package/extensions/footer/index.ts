@@ -160,6 +160,7 @@ interface FooterSessionContext {
 	readonly model: FooterModelState | undefined;
 	readonly sessionManager: {
 		getSessionId(): string;
+		getBranch(): SessionEntry[];
 		getEntries(): SessionEntry[];
 	};
 	readonly modelRegistry: {
@@ -402,6 +403,7 @@ function readFooterRenderState(
 		thinkingLevel: pi.getThinkingLevel(),
 		contextUsage: getProjectionAwareContextUsage(
 			ctx.sessionManager.getSessionId(),
+			ctx.sessionManager.getBranch(),
 			ctx.getContextUsage(),
 		),
 	};

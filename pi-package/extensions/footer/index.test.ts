@@ -54,6 +54,7 @@ interface SessionContextFake {
 	readonly model: { readonly provider: string; readonly id: string };
 	readonly sessionManager: {
 		getSessionId(): string;
+		getBranch(): unknown[];
 		getEntries(): unknown[];
 	};
 	readonly modelRegistry: {
@@ -687,6 +688,9 @@ function createSessionContextFake(
 		sessionManager: {
 			getSessionId(): string {
 				return sessionId;
+			},
+			getBranch(): unknown[] {
+				return entries;
 			},
 			getEntries(): unknown[] {
 				return entries;

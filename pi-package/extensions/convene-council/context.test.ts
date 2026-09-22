@@ -13,6 +13,23 @@ function messageEntry(
 	return { type: "message", id, parentId, timestamp: "t", message };
 }
 
+/** Creates an append-only context edit for one earlier message entry. */
+function contextEditEntry(
+	id: string,
+	parentId: string,
+	targetId: string,
+	replacement: Extract<SessionEntry, { type: "context_edit" }>["replacement"],
+): SessionEntry {
+	return {
+		type: "context_edit",
+		id,
+		parentId,
+		timestamp: "t",
+		targetId,
+		replacement,
+	};
+}
+
 /** Creates a user message for external context rendering tests. */
 function userMessage(
 	content: Extract<AgentMessage, { role: "user" }>["content"],
@@ -225,6 +242,33 @@ describe("convene-council external context package", () => {
 		expect(context.startsWith("<context>\n")).toBe(true);
 		expect(context.endsWith("\n</context>")).toBe(true);
 	});
+	test("renders raw targets without separate context edit blocks", async () => {
+		const omittedMessage = userMessage("raw omitted evidence");
+		const replacedMessage = assistantMessage([
+			{ type: "text", text: "raw replaced evidence" },
+		]);
+		const baseline = await buildExternalCouncilContextPackage({
+			ctx: councilContext([
+				messageEntry("omit-target", omittedMessage, null),
+				messageEntry("replace-target", replacedMessage, "omit-target"),
+			]),
+			toolCallId: "call-current",
+		});
+		const withContextEdits = await buildExternalCouncilContextPackage({
+			ctx: councilContext([
+				messageEntry("omit-target", omittedMessage, null),
+				contextEditEntry("omit-edit", "omit-target", "omit-target", null),
+				messageEntry("replace-target", replacedMessage, "omit-edit"),
+				contextEditEntry("replace-edit", "replace-target", "replace-target", {
+					content: [{ type: "text", text: "effective replacement" }],
+				}),
+			]),
+			toolCallId: "call-current",
+		});
+
+		expect(withContextEdits).toBe(baseline);
+	});
+
 	test("renders raw active-branch decision evidence without projection summaries or metadata", async () => {
 		// Purpose: participant evidence must come from raw active-branch entries, not projection or summary substitution.
 		// Input and expected output: adjacent user/custom text is merged, assistant thinking is included, and metadata-only entries are omitted.
