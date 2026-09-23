@@ -1,12 +1,13 @@
 import { readSuiteConfigFileSync } from "../../shared/agent-suite-storage";
 
 const EXTENSION_DIRECTORY = "model-response-timeout";
-const CONFIG_KEYS = new Set(["enabled", "timeoutSeconds"]);
+const CONFIG_KEYS = new Set(["enabled", "timeoutSeconds", "maxRetries"]);
 const MAX_TIMER_MILLISECONDS = 2_147_483_647;
 export const MILLISECONDS_PER_SECOND = 1_000;
 
 export interface ModelResponseTimeoutConfig {
 	readonly timeoutSeconds: number;
+	readonly maxRetries: number;
 }
 
 export type ModelResponseTimeoutConfigResult =
@@ -15,7 +16,8 @@ export type ModelResponseTimeoutConfigResult =
 	| { readonly kind: "invalid"; readonly issue: string };
 
 const DEFAULT_CONFIG: ModelResponseTimeoutConfig = {
-	timeoutSeconds: 300,
+	timeoutSeconds: 1_200,
+	maxRetries: 3,
 };
 
 /** Reads and strictly validates the suite-owned timeout configuration once. */
@@ -63,12 +65,24 @@ export function readModelResponseTimeoutConfig(): ModelResponseTimeoutConfigResu
 		);
 	}
 
+	const maxRetries =
+		rawConfig["maxRetries"] === undefined
+			? DEFAULT_CONFIG.maxRetries
+			: rawConfig["maxRetries"];
+	if (
+		typeof maxRetries !== "number" ||
+		!Number.isSafeInteger(maxRetries) ||
+		maxRetries < 1
+	) {
+		return invalid("maxRetries must be a positive safe integer");
+	}
+
 	if (rawConfig["enabled"] === false) {
 		return { kind: "disabled" };
 	}
 	return {
 		kind: "enabled",
-		config: { timeoutSeconds },
+		config: { timeoutSeconds, maxRetries },
 	};
 }
 

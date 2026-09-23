@@ -1,6 +1,10 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+	MODEL_RESPONSE_TIMEOUT_RETRY_ENTRY,
+	MODEL_RESPONSE_TIMEOUT_RETRY_TRIGGER,
+} from "../../shared/model-response-timeout-protocol";
+import {
 	MILLISECONDS_PER_SECOND,
 	type ModelResponseTimeoutConfig,
 	readModelResponseTimeoutConfig,
@@ -25,6 +29,8 @@ interface ActiveResponse {
 interface ResponseTimeoutState {
 	generation: number;
 	activeResponse: ActiveResponse | undefined;
+	retryCount: number;
+	status: "idle" | "timedOut" | "retryScheduled";
 }
 
 /** Creates the extension entry point with replaceable timer functions for deterministic tests. */
@@ -64,6 +70,8 @@ function registerTimeoutLifecycle(
 	const state: ResponseTimeoutState = {
 		generation: 0,
 		activeResponse: undefined,
+		retryCount: 0,
+		status: "idle",
 	};
 
 	pi.on("before_provider_request", (_event, ctx) => {
@@ -74,6 +82,55 @@ function registerTimeoutLifecycle(
 			return undefined;
 		}
 		return finishAssistantResponse(state, config, dependencies, event.message);
+	});
+	pi.on("turn_end", (event) => {
+		if (state.status !== "timedOut") {
+			return undefined;
+		}
+		if (state.retryCount >= config.maxRetries) {
+			state.retryCount = 0;
+			state.status = "idle";
+			return undefined;
+		}
+		state.retryCount += 1;
+		state.status = "retryScheduled";
+		return {
+			entries: [
+				...event.entries,
+				{
+					type: "context_edit" as const,
+					targetId: event.messageEntryId,
+					replacement: null,
+				},
+				{
+					type: "custom" as const,
+					customType: MODEL_RESPONSE_TIMEOUT_RETRY_ENTRY,
+					data: {},
+				},
+			],
+		};
+	});
+	pi.on("context", (event) => {
+		const messages = event.messages.filter(
+			(message) =>
+				message.role !== "custom" ||
+				message.customType !== MODEL_RESPONSE_TIMEOUT_RETRY_TRIGGER,
+		);
+		return messages.length === event.messages.length ? undefined : { messages };
+	});
+	pi.on("agent_settled", () => {
+		if (state.status !== "retryScheduled") {
+			return;
+		}
+		state.status = "idle";
+		pi.sendMessage(
+			{
+				customType: MODEL_RESPONSE_TIMEOUT_RETRY_TRIGGER,
+				content: [],
+				display: false,
+			},
+			{ triggerTurn: true },
+		);
 	});
 
 	const reset = () => resetResponseState(state, dependencies);
@@ -121,10 +178,12 @@ function finishAssistantResponse(
 	dependencies.clearTimeout(activeResponse.timer);
 	state.activeResponse = undefined;
 	if (!activeResponse.timedOut) {
+		state.retryCount = 0;
+		state.status = "idle";
 		return undefined;
 	}
 
-	// Pi recognizes this package-owned error as transient and applies its configured retry policy.
+	state.status = "timedOut";
 	return {
 		message: {
 			...message,
@@ -152,6 +211,8 @@ function resetResponseState(
 	clearActiveTimer(state, dependencies);
 	// The generation invalidates callbacks retained by the runtime after cancellation.
 	state.generation += 1;
+	state.retryCount = 0;
+	state.status = "idle";
 }
 
 const defaultDependencies: ResponseTimerDependencies = {

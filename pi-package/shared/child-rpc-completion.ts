@@ -3,6 +3,7 @@ import {
 	isContextOverflow,
 } from "@earendil-works/pi-ai";
 import { isCompactionTriggerInterruptionMessage } from "./compaction-trigger-protocol";
+import { isModelResponseTimeoutRetryEntry } from "./model-response-timeout-protocol";
 
 export interface ChildRpcRuntimeFacts {
 	readonly modelProvider: string;
@@ -43,6 +44,7 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 	private terminal: ChildRpcPromptDecision | undefined;
 	private lastAssistantMessage: AssistantMessage | undefined;
 	private pendingFailureReason: string | undefined;
+	private timeoutRetryScheduled = false;
 	private thresholdContinuation: ThresholdContinuationState = "none";
 
 	constructor(private readonly runtimeFacts: ChildRpcRuntimeFacts) {}
@@ -53,6 +55,10 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 			return this.wait();
 		}
 
+		if (isModelResponseTimeoutRetryEntry(event)) {
+			this.timeoutRetryScheduled = true;
+			return this.wait();
+		}
 		const type = event["type"];
 		if (type === "message_end") {
 			return this.handleMessageEnd(event["message"]);
@@ -164,6 +170,10 @@ class ChildRpcPromptCompletionState implements ChildRpcPromptCompletion {
 
 	/** Finalizes the latest provisional result after Pi exhausts automatic continuation. */
 	private handleAgentSettled(): ChildRpcPromptDecision {
+		if (this.timeoutRetryScheduled) {
+			this.timeoutRetryScheduled = false;
+			return this.wait();
+		}
 		if (this.thresholdContinuation === "interrupting") {
 			// compaction-trigger starts compaction from this settlement callback.
 			this.thresholdContinuation = "resuming";
