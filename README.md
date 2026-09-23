@@ -10,6 +10,8 @@ A set of [PI Coding Agent](https://pi.dev/) extensions that adds agent support, 
 - [Full list of extensions with detailed documentation](#full-list-of-extensions-with-detailed-documentation)
 - [MCP support and recommended MCP servers](#mcp-support-and-recommended-mcp-servers)
 
+**Supported Pi version: Pi 0.87.x**
+
 ## Quick start
 
 ### 1. Install extensions package using pi
