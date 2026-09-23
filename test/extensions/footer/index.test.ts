@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import footer, {
 	SEGMENT_SEPARATOR,
@@ -26,7 +29,8 @@ interface SessionContextFake {
 	readonly hasUI?: boolean;
 	readonly sessionManager: {
 		getSessionId(): string;
-		getEntries(): readonly never[];
+		getBranch(): readonly SessionEntry[];
+		getEntries(): readonly SessionEntry[];
 	};
 	readonly modelRegistry: {
 		isUsingOAuth(model: SessionContextFake["model"]): boolean;
@@ -54,6 +58,7 @@ interface SessionContextOptions {
 		readonly contextWindow: number;
 		readonly percent?: number;
 	};
+	readonly branchEntries?: readonly SessionEntry[];
 	readonly usingSubscription?: boolean;
 	readonly usageCost?: number;
 	readonly usageTokens?: number;
@@ -243,8 +248,11 @@ function createSessionContextFake(
 			getSessionId(): string {
 				return options.sessionId ?? "footer-test-session";
 			},
-			getEntries(): readonly never[] {
-				return [];
+			getBranch(): readonly SessionEntry[] {
+				return options.branchEntries ?? [];
+			},
+			getEntries(): readonly SessionEntry[] {
+				return options.branchEntries ?? [];
 			},
 		},
 		modelRegistry: {
@@ -729,24 +737,72 @@ describe("footer", () => {
 		);
 	});
 
-	test("renders projection-aware context usage while provider usage is stale", async () => {
-		// Purpose: footer context usage must match the projected provider payload after projection succeeds but provider usage is still stale.
-		// Input and expected output: 48k pending projection savings turns raw `130k/262k/272k` into `82k/262k/272k`.
-		// Edge case: the native compaction limit remains based on the full context window and is not reduced by projection.
-		// Dependencies: shared in-memory projection state, pi settings, and footer renderer fake.
+	test("reads projection-aware usage from the current active branch", async () => {
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writePiSettings(agentDir, {
 				compaction: { enabled: true, reserveTokens: 10_000 },
 			});
 			const sessionId = "footer-projection-aware-usage";
+			const branchEntries = [
+				{
+					type: "message",
+					id: "entry-1",
+					parentId: null,
+					timestamp: "t",
+					message: { role: "user", content: "projected", timestamp: 0 },
+				},
+				{
+					type: "message",
+					id: "leaf-1",
+					parentId: "entry-1",
+					timestamp: "t",
+					message: { role: "user", content: "start", timestamp: 1 },
+				},
+				{
+					type: "message",
+					id: "response",
+					parentId: "leaf-1",
+					timestamp: "t",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+						api: "openai-responses",
+						provider: "openai",
+						model: "main",
+						usage: {
+							input: 100,
+							output: 10,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 110,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "stop",
+						timestamp: 2,
+					},
+				},
+			] as SessionEntry[];
 			resetPendingProjectionSavings(sessionId);
-			addPendingProjectionSavings(sessionId, 48_000, {
+			addPendingProjectionSavings(sessionId, {
 				branchLeafId: "leaf-1",
-				entryIds: ["entry-1"],
+				entries: [
+					{
+						entryId: "entry-1",
+						replacementText: "projected",
+						savedTokens: 48_000,
+					},
+				],
 			});
 			try {
 				const { footerRenderer } = await installFooterTestHarness({
 					sessionId,
+					branchEntries,
 					contextUsage: { tokens: 130_000, contextWindow: 272_000 },
 				});
 				const footerComponent = createFooterComponent(
@@ -754,11 +810,22 @@ describe("footer", () => {
 					createFooterDataFake(new Map([["context-projection", "~48k"]])),
 				);
 
-				const renderedText = footerComponent.render(120).join("\n");
+				const responseBasedText = footerComponent.render(120).join("\n");
+				expect(responseBasedText).toContain("130k/262k/272k");
 
-				expect(renderedText).toContain("~48k");
-				expect(renderedText).toContain("82k/262k/272k");
-				expect(renderedText).not.toContain("130k/262k/272k");
+				branchEntries.push({
+					type: "context_edit",
+					id: "recovery-edit",
+					parentId: "response",
+					timestamp: "t",
+					targetId: "leaf-1",
+					replacement: { content: "edited start" },
+				});
+				const canonicalEstimateText = footerComponent.render(120).join("\n");
+
+				expect(canonicalEstimateText).toContain("~48k");
+				expect(canonicalEstimateText).toContain("82k/262k/272k");
+				expect(canonicalEstimateText).not.toContain("130k/262k/272k");
 			} finally {
 				resetPendingProjectionSavings(sessionId);
 			}

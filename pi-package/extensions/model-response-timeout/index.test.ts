@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { isRetryableAssistantError } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	createModelResponseTimeoutExtension,
@@ -19,6 +18,7 @@ interface RegisteredHandler {
 
 interface ExtensionApiFake extends ExtensionAPI {
 	readonly handlers: RegisteredHandler[];
+	readonly sentMessages: Array<{ message: unknown; options: unknown }>;
 }
 
 class TimerFake implements ResponseTimerDependencies {
@@ -44,11 +44,16 @@ class TimerFake implements ResponseTimerDependencies {
 
 function createExtensionApiFake(): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
+	const sentMessages: Array<{ message: unknown; options: unknown }> = [];
 	return {
 		handlers,
+		sentMessages,
 		on: ((eventName: string, handler: Handler) => {
 			handlers.push({ eventName, handler });
 		}) as ExtensionAPI["on"],
+		sendMessage: (message: unknown, options: unknown) => {
+			sentMessages.push({ message, options });
+		},
 	} as ExtensionApiFake;
 }
 
@@ -134,11 +139,11 @@ function createContext() {
 }
 
 describe("model response timeout", () => {
-	test("uses the 300 second default and hands timeout retry to Pi", async () => {
-		// Purpose: prove the default timer produces an error classified by Pi as retryable.
-		// Input and expected output: one provider request schedules 300000 ms and returns a retryable timeout result.
-		// Edge case: the timed-out partial assistant content must not reach Pi's next attempt.
-		// Dependencies: suite config location, Pi's public retry classifier, and deterministic timer fake.
+	test("uses the 1200 second default and clears a timed-out response", async () => {
+		// Purpose: prove the default timer produces a timeout error without leaking partial output.
+		// Input and expected output: one provider request schedules 1200000 ms and returns an empty error response.
+		// Edge case: the timed-out partial assistant content must not reach the next attempt.
+		// Dependencies: suite config location and deterministic timer fake.
 		await withSuiteConfig(undefined, () => {
 			const pi = createExtensionApiFake();
 			const timers = new TimerFake();
@@ -148,7 +153,7 @@ describe("model response timeout", () => {
 				{ type: "before_provider_request", payload: {} },
 				context.ctx,
 			);
-			expect(timers.delays).toEqual([300_000]);
+			expect(timers.delays).toEqual([1_200_000]);
 			timers.fire(0);
 			const result = getHandler(pi, "message_end")(
 				{ type: "message_end", message: assistantMessage() },
@@ -157,7 +162,7 @@ describe("model response timeout", () => {
 
 			expect(context.abortCount).toBe(1);
 			expect(result.message.content).toEqual([]);
-			expect(isRetryableAssistantError(result.message)).toBeTrue();
+			expect(result.message.stopReason).toBe("error");
 		});
 	});
 
@@ -222,6 +227,11 @@ describe("model response timeout", () => {
 		["removed continuation budget", '{"maxAutomaticContinuations":3}'],
 		["non-boolean enabled", '{"enabled":"yes"}'],
 		["zero timeout", '{"timeoutSeconds":0}'],
+		["zero retries", '{"maxRetries":0}'],
+		["fractional retries", '{"maxRetries":1.5}'],
+		["non-numeric retries", '{"maxRetries":"3"}'],
+		["null retries", '{"maxRetries":null}'],
+		["unsafe retries", '{"maxRetries":9007199254740992}'],
 	])("rejects %s", async (_name, content) => {
 		// Purpose: prove strict validation for every configured field shape.
 		// Input and expected output: malformed or out-of-range input disables timer registration.
@@ -305,6 +315,161 @@ describe("model response timeout", () => {
 			);
 			timers.fire(1);
 			expect(context.abortCount).toBe(1);
+		});
+	});
+
+	test("retries at most three times by default without replaying failed responses", async () => {
+		// Purpose: prove the extension owns a bounded retry loop independent of Pi's retry policy.
+		// Inputs and expected outputs: four consecutive timeouts schedule exactly three hidden retries and three recovery edits.
+		// Edge cases: the fourth timeout remains final; retry triggers do not appear in provider context.
+		// Dependencies: timer, turn boundary, context transform, and settlement handlers.
+		await withSuiteConfig(undefined, () => {
+			const pi = createExtensionApiFake();
+			const timers = new TimerFake();
+			const context = createContext();
+			createModelResponseTimeoutExtension(timers)(pi);
+			const start = getHandler(pi, "before_provider_request");
+			const finish = getHandler(pi, "message_end");
+			const turnEnd = getHandler(pi, "turn_end");
+			const settled = getHandler(pi, "agent_settled");
+			const transform = getHandler(pi, "context");
+			const retryMarker = {
+				role: "custom",
+				customType: "model-response-timeout.retry-trigger",
+				content: [],
+			};
+
+			for (let attempt = 0; attempt < 4; attempt++) {
+				start({ type: "before_provider_request", payload: {} }, context.ctx);
+				timers.fire(attempt);
+				const result = finish(
+					{ type: "message_end", message: assistantMessage() },
+					context.ctx,
+				) as { message: AssistantMessage };
+				const boundary = turnEnd(
+					{
+						type: "turn_end",
+						message: result.message,
+						messageEntryId: `failed-${attempt}`,
+						entries: [],
+					},
+					context.ctx,
+				) as { entries: Record<string, unknown>[] } | undefined;
+				if (attempt < 3) {
+					expect(boundary?.entries).toEqual([
+						{
+							type: "context_edit",
+							targetId: `failed-${attempt}`,
+							replacement: null,
+						},
+						{
+							type: "custom",
+							customType: "model-response-timeout.retry-scheduled",
+							data: {},
+						},
+					]);
+				} else {
+					expect(boundary).toBeUndefined();
+				}
+				settled({ type: "agent_settled" }, context.ctx);
+				if (attempt < 3) {
+					expect(pi.sentMessages).toHaveLength(attempt + 1);
+					expect(pi.sentMessages[attempt]).toMatchObject({
+						message: {
+							customType: retryMarker.customType,
+							display: false,
+						},
+						options: { triggerTurn: true },
+					});
+				} else {
+					expect(pi.sentMessages).toHaveLength(3);
+				}
+			}
+			const transformed = transform(
+				{ type: "context", messages: [{ role: "user" }, retryMarker] },
+				context.ctx,
+			) as { messages: Array<{ role: string }> };
+			expect(transformed.messages.map((entry) => entry.role)).toEqual(["user"]);
+			expect(context.abortCount).toBe(4);
+		});
+	});
+
+	test("resets the retry budget after a successful assistant response", async () => {
+		// Purpose: a later independent timeout receives its own retry budget.
+		// Inputs and expected outputs: timeout, successful response, and timeout each produce a retry with maxRetries one.
+		// Edge case: success clears the earlier failed response's attempt count.
+		// Dependencies: provider, message-end, turn, and settlement handlers.
+		await withSuiteConfig('{"maxRetries":1}', () => {
+			const pi = createExtensionApiFake();
+			const timers = new TimerFake();
+			const context = createContext();
+			createModelResponseTimeoutExtension(timers)(pi);
+			const start = getHandler(pi, "before_provider_request");
+			const finish = getHandler(pi, "message_end");
+			const turnEnd = getHandler(pi, "turn_end");
+			const settled = getHandler(pi, "agent_settled");
+			for (let attempt = 0; attempt < 3; attempt++) {
+				start({ type: "before_provider_request", payload: {} }, context.ctx);
+				if (attempt !== 1) {
+					timers.fire(attempt);
+				}
+				const finalizedMessage = {
+					...assistantMessage(),
+					stopReason: attempt === 1 ? ("stop" as const) : ("aborted" as const),
+				};
+				const response = finish(
+					{ type: "message_end", message: finalizedMessage },
+					context.ctx,
+				) as { message: AssistantMessage } | undefined;
+				turnEnd(
+					{
+						type: "turn_end",
+						message: response?.message ?? finalizedMessage,
+						messageEntryId: `attempt-${attempt}`,
+						entries: [],
+					},
+					context.ctx,
+				);
+				settled({ type: "agent_settled" }, context.ctx);
+			}
+			expect(pi.sentMessages).toHaveLength(2);
+		});
+	});
+
+	test("does not retry an ordinary user abort", async () => {
+		// Purpose: user cancellation must not be confused with a timer-triggered abort.
+		// Inputs and expected outputs: an aborted assistant response without an expired timer produces no marker or retry.
+		// Edge case: the unused timer is cleared after the abort message.
+		// Dependencies: provider, message-end, turn, and settlement handlers.
+		await withSuiteConfig(undefined, () => {
+			const pi = createExtensionApiFake();
+			const timers = new TimerFake();
+			const context = createContext();
+			createModelResponseTimeoutExtension(timers)(pi);
+			getHandler(pi, "before_provider_request")(
+				{ type: "before_provider_request", payload: {} },
+				context.ctx,
+			);
+			expect(
+				getHandler(pi, "message_end")(
+					{ type: "message_end", message: assistantMessage() },
+					context.ctx,
+				),
+			).toBeUndefined();
+			expect(
+				getHandler(pi, "turn_end")(
+					{
+						type: "turn_end",
+						message: assistantMessage(),
+						messageEntryId: "aborted",
+						entries: [],
+					},
+					context.ctx,
+				),
+			).toBeUndefined();
+			getHandler(pi, "agent_settled")({ type: "agent_settled" }, context.ctx);
+			expect(pi.sentMessages).toHaveLength(0);
+			expect(context.abortCount).toBe(0);
 		});
 	});
 

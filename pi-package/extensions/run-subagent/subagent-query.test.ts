@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,6 +20,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
+import { publishRuntimeProjectedReplacements } from "../../shared/context-projection";
 import { registerKnowledgeContextRuntime } from "../../shared/knowledge-runtime";
 import { USAGE_EVENT_RECORD_CHANNEL } from "../../shared/usage-events";
 import type { SubagentQueryModelConfig } from "./entry-config";
@@ -38,6 +39,10 @@ const PRIMARY_TOOL: Tool = {
 	description: "Primary transcript tool.",
 	parameters: Type.Object({}),
 };
+
+afterEach(() => {
+	publishRuntimeProjectedReplacements(process.cwd(), new Map(), null);
+});
 
 /** Creates one deterministic model fixture with a configurable context window. */
 function model(id: string, contextWindow: number): Model<Api> {
@@ -117,7 +122,7 @@ function createPi(usageRequests: unknown[] = []): ExtensionAPI {
 	return { events } as unknown as ExtensionAPI;
 }
 
-/** Creates a branch whose saved projection replacement differs from live text. */
+/** Creates a saved branch whose effective tool result differs from its raw entry. */
 function savedBranch(includeSystemUpdate = false): readonly SessionEntry[] {
 	return [
 		...(includeSystemUpdate
@@ -182,29 +187,26 @@ function savedBranch(includeSystemUpdate = false): readonly SessionEntry[] {
 			},
 		},
 		{
-			type: "custom",
-			id: "projection",
+			type: "context_edit",
+			id: "edit",
 			parentId: "tool",
 			timestamp: "t3",
-			customType: "context-projection",
-			data: {
-				projectedEntries: [
-					{ entryId: "tool", replacementText: "saved replacement" },
-				],
-			},
+			targetId: "tool",
+			replacement: { content: "saved edited output" },
 		},
 	];
 }
 
 describe("executeSubagentQuery", () => {
 	test("answers from isolated persisted branch context with caller-local defaults", async () => {
-		// Purpose: one query must keep saved conversation order without inheriting primary system state or tools.
-		// Input and expected output: a system tool update plus projected saved context becomes a tool-less auxiliary transcript and returns one answer.
-		// Edge case: the appended question remains after the saved tool-result turn.
-		// Dependencies: Pi transcript normalization, in-memory branch, completion fake, and usage event bus.
 		const calls: CompletionCall[] = [];
 		const usageRequests: unknown[] = [];
 		const pi = createPi(usageRequests);
+		publishRuntimeProjectedReplacements(
+			process.cwd(),
+			new Map([["tool", "live-only replacement"]]),
+			"edit",
+		);
 		registerKnowledgeContextRuntime(pi, {
 			readBlock: async () => "<knowledge>query knowledge</knowledge>",
 		});
@@ -236,8 +238,11 @@ describe("executeSubagentQuery", () => {
 			"user",
 		]);
 		expect(getCurrentTools(normalized.messages)).toEqual([]);
-		expect(JSON.stringify(context.messages)).toContain("saved replacement");
-		expect(JSON.stringify(context.messages)).not.toContain("live output");
+		expect(normalized.messages[2]).toMatchObject({
+			role: "toolResult",
+			toolCallId: "call",
+			content: [{ type: "text", text: "saved edited output" }],
+		});
 		expect(context.messages.at(-1)).toMatchObject({
 			role: "user",
 			content:

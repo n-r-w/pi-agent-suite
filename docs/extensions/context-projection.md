@@ -86,6 +86,27 @@ Before every provider request, the extension computes the active level from proj
 
 This limits old provider-context changes to at most three batches between successful compactions. The checkpoint entry itself is extension state and is not sent in provider context.
 
+## Effective context and replacement ordering
+
+Provider requests use Pi's effective context: compaction-aware messages after Pi applies `context_edit` omission or replacement records. The extension maps each effective message to its raw source entry through Pi's public session projection, then applies repository projection replacements without rewriting stored history.
+
+Replacement validity follows active-branch append order for each source entry:
+
+1. A `context-projection` state record makes its replacement effective.
+2. A later Pi `context_edit` for that source entry invalidates the repository replacement and restores Pi's effective omission or replacement.
+3. A later `context-projection` state record can project that source entry again.
+
+Runtime replacements that are not branch-visible yet follow the same ordering. A later branch edit or projection record controls the target, and switching to a branch without the runtime replacement's anchor discards that runtime state.
+
+## Projection-aware usage
+
+The footer, projection thresholds, and compaction trigger use one branch-aware usage calculation. It has two modes:
+
+- **Response-based mode:** When the latest canonically visible usable assistant response is after the latest raw `context_edit` or compaction entry, native usage already reflects earlier effective projection. The calculation subtracts only effective projection savings recorded after that response.
+- **Canonical-estimate mode:** When no canonically visible usable response follows the latest raw `context_edit` or compaction entry, Pi's native estimate can include content that effective projection removes. The calculation subtracts all effective active projection savings.
+
+A usable response is a visible assistant response with positive usage that is neither an error nor aborted. Omitted assistant responses, zero usage, errors, and aborted responses do not select response-based mode. Unknown native token usage remains unknown, and numeric adjusted usage is clamped at zero.
+
 ## Summary parameters
 
 | Parameter | Required | Type or shape | Default | Meaning |

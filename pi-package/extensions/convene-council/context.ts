@@ -76,6 +76,7 @@ function renderContextEntry(
 			return content.length === 0 ? [] : [{ kind: "custom", content }];
 		}
 		case "usage":
+		case "context_edit":
 		case "compaction":
 		case "branch_summary":
 		case "custom":

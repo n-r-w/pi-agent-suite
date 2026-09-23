@@ -19,6 +19,7 @@ import mainAgentSelection from "./index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
+const FRONTMATTER_AGENTS_KEY = "agents";
 const FRONTMATTER_MODEL_KEY = "model";
 const FRONTMATTER_TOOLS_KEY = "tools";
 const FRONTMATTER_WORKFLOWS_KEY = "workflows";
@@ -59,11 +60,16 @@ interface ExtensionApiFake extends ExtensionAPI {
 }
 
 interface ExtensionApiFakeOptions {
-	readonly setModelResult?: boolean;
+	readonly setModelResult?: boolean | Promise<boolean>;
 	readonly setModelResults?: readonly boolean[];
 	readonly activeTools?: readonly string[];
 	readonly allTools?: readonly string[];
 	readonly flagValues?: ReadonlyMap<string, boolean | string>;
+}
+
+interface Deferred<T> {
+	readonly promise: Promise<T>;
+	readonly resolve: (value: T) => void;
 }
 
 interface CustomComponentFake {
@@ -109,6 +115,19 @@ interface AgentFixture {
 	readonly model?: { readonly id?: string; readonly thinking?: string };
 	readonly tools?: readonly string[];
 	readonly workflows?: readonly string[];
+	readonly agents?: readonly string[];
+}
+
+/** Creates a strict manually controlled promise for lifecycle ordering tests. */
+function createDeferred<T>(): Deferred<T> {
+	let resolve: ((value: T) => void) | undefined;
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise;
+	});
+	if (resolve === undefined) {
+		throw new Error("failed to create deferred promise");
+	}
+	return { promise, resolve };
 }
 
 /** Creates the ExtensionAPI fake needed to observe command, shortcut, event, model, and tool calls. */
@@ -326,15 +345,17 @@ async function writeAgentToDirectory(
 	if (agent.workflows !== undefined) {
 		frontmatter[FRONTMATTER_WORKFLOWS_KEY] = agent.workflows;
 	}
+	if (agent.agents !== undefined) {
+		frontmatter[FRONTMATTER_AGENTS_KEY] = agent.agents;
+	}
 
 	const lines = [
 		"---",
 		...Object.entries(frontmatter).flatMap(([key, value]) => {
 			if (Array.isArray(value)) {
-				return [
-					`${key}:`,
-					...value.map((item) => `  - ${JSON.stringify(item)}`),
-				];
+				return value.length === 0
+					? `${key}: []`
+					: [`${key}:`, ...value.map((item) => `  - ${JSON.stringify(item)}`)];
 			}
 			if (typeof value === "object" && value !== null) {
 				return [
@@ -684,6 +705,76 @@ async function importFreshMainAgentSelection(): Promise<MainAgentSelectionFactor
 }
 
 describe("main-agent-selection", () => {
+	test("waits for selected-agent restoration before continuing the first input", async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			const cwd = "/tmp/project";
+			const model = createModel("selection-test", "selected");
+			await writeSuiteAgent(agentDir, {
+				id: "selected",
+				description: "Selected agent",
+				body: "Selected agent prompt",
+				model: { id: "selection-test/selected", thinking: "xhigh" },
+				tools: ["read"],
+				workflows: [],
+				agents: ["reviewer"],
+			});
+			await writeSuiteSelectedAgentState(agentDir, cwd, {
+				cwd,
+				activeAgentId: "selected",
+			});
+
+			const modelApplication = createDeferred<boolean>();
+			const pi = createExtensionApiFake({
+				setModelResult: modelApplication.promise,
+				activeTools: ["read", "bash", "workflow_activate"],
+				allTools: ["read", "bash", "workflow_activate"],
+			});
+			const ctx = createCommandContext(cwd, undefined, [model]);
+			mainAgentSelection(pi);
+
+			let inputContinued = false;
+			const input = Promise.resolve(
+				getHandler(pi, "input")({ type: "input" }, ctx),
+			).then((result) => {
+				inputContinued = true;
+				return result;
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(inputContinued).toBe(false);
+
+			const restoration = getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+			expect(inputContinued).toBe(false);
+
+			modelApplication.resolve(true);
+			await restoration;
+			expect(await input).toEqual({ action: "continue" });
+
+			const beforeAgentStart = await getBeforeAgentStartHandler(pi)(
+				{ type: "before_agent_start", systemPrompt: "Base prompt" },
+				ctx,
+			);
+			const contribution =
+				getAgentRuntimeComposition(pi).getMainAgentContribution();
+			expect(beforeAgentStart).toBeDefined();
+			expect(pi.getThinkingLevel()).toBe("xhigh");
+			expect(pi.getActiveTools()).toEqual(["read"]);
+			expect(contribution).toMatchObject({
+				model: { id: "selection-test/selected", thinking: "xhigh" },
+				tools: ["read"],
+				agent: {
+					id: "selected",
+					tools: ["read"],
+					workflows: [],
+					agents: ["reviewer"],
+				},
+			});
+		});
+	});
+
 	test("applies only the last busy selection before the next idle input", async () => {
 		// Purpose: selection must keep the current run's model, thinking, tools, and agent unchanged.
 		// Input/output: select A, queue B then C while busy, and apply C at the next idle input.
@@ -707,6 +798,10 @@ describe("main-agent-selection", () => {
 			const pi = createExtensionApiFake();
 			mainAgentSelection(pi);
 			const ctx = createCommandContext(agentDir, undefined, models);
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
 			const command = getCommand(pi, "agent");
 			await command.handler("a", ctx);
 			const initialCalls = {
@@ -756,6 +851,10 @@ describe("main-agent-selection", () => {
 			const pi = createExtensionApiFake();
 			mainAgentSelection(pi);
 			const ctx = createCommandContext(agentDir);
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
 			await getCommand(pi, "agent").handler("a", ctx);
 			ctx.isIdle = () => false;
 			await getCommand(pi, "agent").handler("none", ctx);
@@ -788,6 +887,10 @@ describe("main-agent-selection", () => {
 			const pi = createExtensionApiFake();
 			mainAgentSelection(pi);
 			const ctx = createCommandContext(agentDir, "b");
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
 			await getCommand(pi, "agent").handler("a", ctx);
 			ctx.isIdle = () => false;
 			await getShortcut(pi, "ctrl+alt+a").handler(ctx);

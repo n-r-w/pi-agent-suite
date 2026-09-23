@@ -1,5 +1,7 @@
 # Technical Solution: Model Response Timeout with Pi Retry
 
+This document records the original proposal. Pi 0.87 does not retry responses cancelled by `ctx.abort()`. The current timeout retry design is in [model-response-timeout-retry/solution.md](../model-response-timeout-retry/solution.md).
+
 ## Problem Statement
 
 - PRB-01: Pi applies idle and provider timeouts but has no total duration limit for one streaming model response.

@@ -54,6 +54,18 @@ function compactionInterruption(): Record<string, unknown> {
 	};
 }
 
+/** Builds the context-free entry that announces one timeout retry. */
+function timeoutRetryScheduled(): Record<string, unknown> {
+	return {
+		type: "entry_appended",
+		entry: {
+			type: "custom",
+			customType: "model-response-timeout.retry-scheduled",
+			data: {},
+		},
+	};
+}
+
 /** Builds a low-level child RPC agent_end event. */
 function agentEnd(): Record<string, unknown> {
 	return { type: "agent_end" };
@@ -136,6 +148,78 @@ describe("child RPC prompt completion", () => {
 		expect(failedRunEnd).toEqual({ kind: "wait" });
 		expect(retriedRunEnd).toEqual({ kind: "wait" });
 		expect(settled).toEqual({ kind: "success", message: recovered });
+	});
+
+	test("waits for a scheduled timeout retry before completing the child prompt", () => {
+		// Purpose: the parent must not stop a child between timeout cancellation and its next provider attempt.
+		// Inputs and expected outputs: a timed-out response, retry marker, first settlement, and recovered answer end successfully.
+		// Edge case: the marker arrives after the failed assistant message and before its settlement.
+		// Dependencies: child RPC completion state and timeout extension's custom entry contract.
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		const recovered = assistantMessage();
+		completion.handleSessionEvent(
+			messageEnd(
+				assistantMessage({
+					stopReason: "error",
+					errorMessage: "Model response timed out",
+				}),
+			),
+		);
+		completion.handleSessionEvent(timeoutRetryScheduled());
+		expect(completion.handleSessionEvent(agentSettled())).toEqual({
+			kind: "wait",
+		});
+		completion.handleSessionEvent(messageEnd(recovered));
+		expect(completion.handleSessionEvent(agentSettled())).toEqual({
+			kind: "success",
+			message: recovered,
+		});
+	});
+
+	test("treats the last timed-out attempt as a final failure", () => {
+		// Purpose: a consumed retry marker must not suppress a later failure when the extension exhausts its budget.
+		// Inputs and expected outputs: first timeout announces retry, second timeout without marker fails on settlement.
+		// Edge case: the earlier timeout marker does not apply to the next run.
+		// Dependencies: child RPC completion state and timeout extension's custom entry contract.
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		const failure = assistantMessage({
+			stopReason: "error",
+			errorMessage: "Model response timed out",
+		});
+		completion.handleSessionEvent(messageEnd(failure));
+		completion.handleSessionEvent(timeoutRetryScheduled());
+		expect(completion.handleSessionEvent(agentSettled())).toEqual({
+			kind: "wait",
+		});
+		completion.handleSessionEvent(messageEnd(failure));
+		expect(completion.handleSessionEvent(agentSettled())).toEqual({
+			kind: "failure",
+			reason: "Model response timed out",
+		});
+	});
+
+	test("does not treat unrelated child entries as timeout retry markers", () => {
+		// Purpose: only the extension's marker delays a child failure.
+		// Inputs and expected outputs: an unrelated custom entry does not change the terminal decision.
+		// Edge case: the entry uses the same shape as a retry marker but a different type.
+		// Dependencies: child RPC completion state.
+		const completion = createChildRpcPromptCompletion(BASE_FACTS);
+		completion.handleSessionEvent(
+			messageEnd(
+				assistantMessage({
+					stopReason: "error",
+					errorMessage: "provider failure",
+				}),
+			),
+		);
+		completion.handleSessionEvent({
+			type: "entry_appended",
+			entry: { type: "custom", customType: "other", data: {} },
+		});
+		expect(completion.handleSessionEvent(agentSettled())).toEqual({
+			kind: "failure",
+			reason: "provider failure",
+		});
 	});
 
 	test("reports an unrecovered assistant error only after agent_settled", () => {

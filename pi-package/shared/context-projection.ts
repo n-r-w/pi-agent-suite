@@ -3,10 +3,9 @@ import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type BeforeAgentStartEvent,
-	buildContextEntries,
+	buildSessionProjection,
 	getAgentDir,
 	type SessionEntry,
-	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
@@ -208,6 +207,8 @@ export interface ProjectionDecision {
 	readonly newProjectedEntries: ProjectedEntryState[];
 	readonly savedTokens: number;
 	readonly newSavedTokens: number;
+	readonly savedTokensByEntryId: ReadonlyMap<string, number>;
+	readonly newSavedTokensByEntryId: ReadonlyMap<string, number>;
 	readonly changed: boolean;
 }
 
@@ -271,30 +272,38 @@ export interface RetainedContextProjectionReplayOptions
 	readonly firstKeptEntryId: string;
 }
 
+interface RuntimeProjectedReplacementState {
+	readonly branchLeafId: string | null;
+	readonly replacements: ReadonlyMap<string, string>;
+}
+
 const runtimeProjectedReplacementsByScope = new Map<
 	string,
-	Map<string, string>
+	RuntimeProjectedReplacementState
 >();
 
-interface PendingProjectionSavingsBatch {
-	readonly branchLeafId: string;
-	readonly entryIds: readonly [string, ...string[]];
+export interface ProjectedEntrySavings {
+	readonly entryId: string;
+	readonly replacementText: string;
 	readonly savedTokens: number;
-}
-
-interface PendingProjectionSavingsState {
-	readonly branchSavedTokens: number;
-	readonly liveBatches: readonly PendingProjectionSavingsBatch[];
-}
-
-export interface PendingProjectionSavingsEstimate {
-	readonly savedTokens: number;
-	readonly entryIds: readonly string[];
 }
 
 export interface LivePendingProjectionSavings {
 	readonly branchLeafId: string;
-	readonly entryIds: readonly [string, ...string[]];
+	readonly entries: readonly [
+		ProjectedEntrySavings,
+		...ProjectedEntrySavings[],
+	];
+}
+
+interface PendingProjectionSavingsState {
+	readonly branchEntries: readonly ProjectedEntrySavings[];
+	readonly liveBatches: readonly LivePendingProjectionSavings[];
+}
+
+export interface PendingProjectionSavingsEstimate {
+	readonly savedTokens: number;
+	readonly entries: readonly ProjectedEntrySavings[];
 }
 
 const pendingProjectionSavingsByScope = new Map<
@@ -308,53 +317,76 @@ export interface ContextProjectionUsage {
 	readonly percent: number | null;
 }
 
-/** Records token savings that have not been confirmed by a later successful provider usage. */
+/** Records entry-level token savings before the appended projection state becomes branch-visible. */
 export function addPendingProjectionSavings(
 	sessionId: string,
-	savedTokens: number,
 	liveSavings: LivePendingProjectionSavings,
 ): void {
-	if (savedTokens <= 0) {
+	const entries = deduplicateProjectedEntrySavings(liveSavings.entries);
+	if (entries.length === 0) {
 		return;
 	}
 
 	const scope = getRuntimePendingProjectionScope(sessionId);
 	const state = getPendingProjectionSavingsState(scope);
 	pendingProjectionSavingsByScope.set(scope, {
-		branchSavedTokens: state.branchSavedTokens,
+		branchEntries: state.branchEntries,
 		liveBatches: [
 			...state.liveBatches,
 			{
 				branchLeafId: liveSavings.branchLeafId,
-				entryIds: [...new Set(liveSavings.entryIds)] as [string, ...string[]],
-				savedTokens,
+				entries: entries as [ProjectedEntrySavings, ...ProjectedEntrySavings[]],
 			},
 		],
 	});
 }
 
-/** Replaces branch-backed pending savings while preserving live projections that are not branch-visible yet. */
+interface PendingProjectionSavingsSync {
+	readonly entries: readonly ProjectedEntrySavings[];
+	readonly branchEntries: readonly SessionEntry[];
+}
+
+/** Replaces branch-backed savings and retains only live entries not yet controlled by later branch state. */
 export function setPendingProjectionSavings(
 	sessionId: string,
-	savedTokens: number,
-	entryIds: readonly string[],
-	activeBranchEntryIds: ReadonlySet<string>,
+	{ entries, branchEntries }: PendingProjectionSavingsSync,
 ): void {
 	const scope = getRuntimePendingProjectionScope(sessionId);
 	const state = getPendingProjectionSavingsState(scope);
-	const branchEntryIds = new Set(entryIds);
-	const liveBatches = state.liveBatches.filter((batch) => {
-		if (!activeBranchEntryIds.has(batch.branchLeafId)) {
-			return false;
+	const liveBatches = state.liveBatches.flatMap((batch) => {
+		const anchorIndex = branchEntries.findIndex(
+			(entry) => entry.id === batch.branchLeafId,
+		);
+		if (anchorIndex < 0) {
+			return [];
 		}
 
-		return !batch.entryIds.every((entryId) => branchEntryIds.has(entryId));
+		const laterActions = foldProjectedReplacements(
+			branchEntries.slice(anchorIndex + 1),
+		).latestActions;
+		const remainingEntries = batch.entries.filter(
+			(entry) => !laterActions.has(entry.entryId),
+		);
+		return remainingEntries.length === 0
+			? []
+			: [
+					{
+						branchLeafId: batch.branchLeafId,
+						entries: remainingEntries as [
+							ProjectedEntrySavings,
+							...ProjectedEntrySavings[],
+						],
+					},
+				];
 	});
 	const nextState = {
-		branchSavedTokens: Math.max(0, savedTokens),
+		branchEntries: deduplicateProjectedEntrySavings(entries),
 		liveBatches,
 	};
-	if (getPendingProjectionSavingsTotal(nextState) <= 0) {
+	if (
+		nextState.branchEntries.length === 0 &&
+		nextState.liveBatches.length === 0
+	) {
 		pendingProjectionSavingsByScope.delete(scope);
 		return;
 	}
@@ -369,9 +401,10 @@ export function resetPendingProjectionSavings(sessionId: string): void {
 	);
 }
 
-/** Returns context usage adjusted by projection savings not yet reflected by provider usage. */
+/** Returns context usage adjusted by savings selected from the current active branch. */
 export function getProjectionAwareContextUsage(
 	sessionId: string,
+	branchEntries: readonly SessionEntry[],
 	usage: ContextProjectionUsage | undefined,
 ): ContextProjectionUsage | undefined {
 	if (usage === undefined || usage.tokens === null) {
@@ -382,6 +415,7 @@ export function getProjectionAwareContextUsage(
 		pendingProjectionSavingsByScope.get(
 			getRuntimePendingProjectionScope(sessionId),
 		),
+		branchEntries,
 	);
 	if (pendingSavings <= 0) {
 		return usage;
@@ -404,49 +438,152 @@ function getPendingProjectionSavingsState(
 ): PendingProjectionSavingsState {
 	return (
 		pendingProjectionSavingsByScope.get(scope) ?? {
-			branchSavedTokens: 0,
+			branchEntries: [],
 			liveBatches: [],
 		}
 	);
 }
 
-/** Sums branch-backed and live savings that provider usage has not confirmed yet. */
+interface LiveSavingsVisibility {
+	readonly effective: boolean;
+	readonly projectionIndex: number | undefined;
+}
+
+/** Sums savings selected by canonical visibility and raw append-order boundaries. */
 function getPendingProjectionSavingsTotal(
 	state: PendingProjectionSavingsState | undefined,
+	branchEntries: readonly SessionEntry[],
 ): number {
 	if (state === undefined) {
 		return 0;
 	}
 
-	return (
-		state.branchSavedTokens +
-		state.liveBatches.reduce((total, batch) => total + batch.savedTokens, 0)
+	const selection = selectUsageProjectionReplacements(branchEntries);
+	const selectedSavings = collectSelectedLiveSavings(
+		state.liveBatches,
+		branchEntries,
+		selection.responseIndex,
+		selection.visibleEntryIds,
+	);
+	for (const entry of state.branchEntries) {
+		if (
+			entry.savedTokens > 0 &&
+			selection.visibleEntryIds.has(entry.entryId) &&
+			selection.replacements.get(entry.entryId) === entry.replacementText
+		) {
+			selectedSavings.set(entry.entryId, entry.savedTokens);
+		}
+	}
+
+	return [...selectedSavings.values()].reduce(
+		(total, savedTokens) => total + savedTokens,
+		0,
 	);
 }
 
-/** Estimates projected savings that are newer than the latest successful provider usage. */
-export function estimatePendingProjectionSavings({
+/** Collects effective entry-level live savings that the selected native estimate does not include. */
+function collectSelectedLiveSavings(
+	batches: readonly LivePendingProjectionSavings[],
+	branchEntries: readonly SessionEntry[],
+	responseIndex: number | undefined,
+	visibleEntryIds: ReadonlySet<string>,
+): Map<string, number> {
+	const selectedSavings = new Map<string, number>();
+	for (const batch of batches) {
+		const anchorIndex = branchEntries.findIndex(
+			(entry) => entry.id === batch.branchLeafId,
+		);
+		if (anchorIndex < 0) {
+			continue;
+		}
+		const laterState = foldProjectedReplacements(
+			branchEntries.slice(anchorIndex + 1),
+		);
+		for (const entry of batch.entries) {
+			if (!visibleEntryIds.has(entry.entryId)) {
+				continue;
+			}
+			const visibility = resolveLiveSavingsVisibility(
+				entry,
+				laterState,
+				anchorIndex,
+			);
+			if (
+				visibility.effective &&
+				entry.savedTokens > 0 &&
+				isLiveSavingsAfterResponse(visibility, anchorIndex, responseIndex)
+			) {
+				selectedSavings.set(entry.entryId, entry.savedTokens);
+			}
+		}
+	}
+	return selectedSavings;
+}
+
+/** Resolves whether later branch state preserves, persists, replaces, or invalidates one live entry. */
+function resolveLiveSavingsVisibility(
+	entry: ProjectedEntrySavings,
+	laterState: ReturnType<typeof foldProjectedReplacements>,
+	anchorIndex: number,
+): LiveSavingsVisibility {
+	const laterAction = laterState.latestActions.get(entry.entryId);
+	if (
+		laterAction?.kind === "invalidated" ||
+		(laterAction?.kind === "projected" &&
+			laterAction.replacementText !== entry.replacementText)
+	) {
+		return { effective: false, projectionIndex: undefined };
+	}
+	return {
+		effective: true,
+		projectionIndex:
+			laterAction?.kind === "projected"
+				? anchorIndex + 1 + laterAction.entryIndex
+				: undefined,
+	};
+}
+
+/** Returns whether one effective live projection was created after the selected response. */
+function isLiveSavingsAfterResponse(
+	visibility: LiveSavingsVisibility,
+	anchorIndex: number,
+	responseIndex: number | undefined,
+): boolean {
+	if (responseIndex === undefined) {
+		return true;
+	}
+	return visibility.projectionIndex === undefined
+		? anchorIndex >= responseIndex
+		: visibility.projectionIndex > responseIndex;
+}
+
+/** Keeps only the latest positive savings value for each projected target. */
+function deduplicateProjectedEntrySavings(
+	entries: readonly ProjectedEntrySavings[],
+): ProjectedEntrySavings[] {
+	const byEntryId = new Map<string, ProjectedEntrySavings>();
+	for (const entry of entries) {
+		if (entry.savedTokens > 0) {
+			byEntryId.set(entry.entryId, entry);
+		}
+	}
+	return [...byEntryId.values()];
+}
+
+/** Estimates all effective branch-backed projection savings for later branch-aware selection. */
+export function estimateEffectiveProjectionSavings({
 	branchEntries,
 	cwd,
 	config,
 	loadedSkillRoots = [],
 }: PendingProjectionSavingsEstimateOptions): PendingProjectionSavingsEstimate {
-	const pendingReplacements =
-		collectPendingProjectedReplacements(branchEntries);
-	if (pendingReplacements.size === 0) {
-		return { savedTokens: 0, entryIds: [] };
-	}
-
-	return {
-		savedTokens: estimateProjectedSavedTokens({
-			branchEntries,
-			cwd,
-			projectedReplacementsByEntryId: pendingReplacements,
-			config,
-			loadedSkillRoots,
-		}),
-		entryIds: [...pendingReplacements.keys()],
-	};
+	return estimateProjectionSavings({
+		branchEntries,
+		cwd,
+		config,
+		loadedSkillRoots,
+		projectedReplacementsByEntryId: collectProjectedReplacements(branchEntries),
+	});
 }
 
 /** Reads and validates context-projection config while absent config keeps projection disabled. */
@@ -722,9 +859,9 @@ export async function replayRetainedContextProjection({
 		return originalMessages;
 	}
 
-	const projectedReplacementsByEntryId = mergeProjectedReplacements(
-		collectProjectedReplacements(branchEntries),
-		getRuntimeProjectedReplacements(cwd),
+	const projectedReplacementsByEntryId = collectEffectiveProjectedReplacements(
+		branchEntries,
+		cwd,
 	);
 	if (projectedReplacementsByEntryId.size === 0) {
 		return originalMessages;
@@ -768,9 +905,9 @@ export async function replayContextProjection({
 		return originalMessages;
 	}
 
-	const projectedReplacementsByEntryId = mergeProjectedReplacements(
-		collectProjectedReplacements(branchEntries),
-		getRuntimeProjectedReplacements(cwd),
+	const projectedReplacementsByEntryId = collectEffectiveProjectedReplacements(
+		branchEntries,
+		cwd,
 	);
 	if (projectedReplacementsByEntryId.size === 0) {
 		return originalMessages;
@@ -791,7 +928,39 @@ export async function replayContextProjection({
 export function collectProjectedReplacements(
 	branchEntries: readonly SessionEntry[],
 ): Map<string, string> {
-	return collectProjectedReplacementsFromEntries(branchEntries);
+	return foldProjectedReplacements(branchEntries).replacements;
+}
+
+/** Reconciles active-branch order with replacements not visible in the branch yet. */
+export function collectEffectiveProjectedReplacements(
+	branchEntries: readonly SessionEntry[],
+	cwd: string,
+): Map<string, string> {
+	const branchState = foldProjectedReplacements(branchEntries);
+	const runtimeState = runtimeProjectedReplacementsByScope.get(
+		getRuntimeProjectionScope(cwd),
+	);
+	if (runtimeState === undefined || runtimeState.branchLeafId === null) {
+		return branchState.replacements;
+	}
+
+	const anchorIndex = branchEntries.findIndex(
+		(entry) => entry.id === runtimeState.branchLeafId,
+	);
+	if (anchorIndex < 0) {
+		return branchState.replacements;
+	}
+
+	const laterState = foldProjectedReplacements(
+		branchEntries.slice(anchorIndex + 1),
+	);
+	for (const [entryId, replacementText] of runtimeState.replacements) {
+		if (laterState.latestActions.has(entryId)) {
+			continue;
+		}
+		branchState.replacements.set(entryId, replacementText);
+	}
+	return branchState.replacements;
 }
 
 /** Restores the deepest projection threshold recorded after the latest compaction. */
@@ -822,27 +991,84 @@ export function collectAppliedProjectionLevel(
 	return appliedLevel;
 }
 
-/** Collects projection state appended after the latest valid provider usage. */
-function collectPendingProjectedReplacements(
-	branchEntries: readonly SessionEntry[],
-): Map<string, string> {
-	const latestValidUsageIndex = findLastEntryIndex(
-		branchEntries,
-		(entry) =>
-			entry.type === "message" && hasValidAssistantContextUsage(entry.message),
-	);
+interface UsageProjectionSelection {
+	readonly replacements: Map<string, string>;
+	readonly responseIndex: number | undefined;
+	readonly visibleEntryIds: ReadonlySet<string>;
+}
 
-	return collectProjectedReplacementsFromEntries(
-		branchEntries.slice(latestValidUsageIndex + 1),
+/** Selects all active savings or only post-response savings from canonical visibility and raw append order. */
+function selectUsageProjectionReplacements(
+	branchEntries: readonly SessionEntry[],
+): UsageProjectionSelection {
+	const branchIndexById = new Map(
+		branchEntries.map((entry, index) => [entry.id, index] as const),
 	);
+	const mappedContext = buildContextEntryMapping(branchEntries);
+	const visibleEntryIds = new Set(mappedContext.map(({ entry }) => entry.id));
+	let responseIndex: number | undefined;
+	for (const { entry, message } of mappedContext) {
+		if (!hasValidAssistantContextUsage(message)) {
+			continue;
+		}
+		const index = branchIndexById.get(entry.id);
+		if (
+			index !== undefined &&
+			(responseIndex === undefined || index > responseIndex)
+		) {
+			responseIndex = index;
+		}
+	}
+
+	const latestBoundaryIndex = findLastEntryIndex(
+		branchEntries,
+		(entry) => entry.type === "context_edit" || entry.type === "compaction",
+	);
+	if (responseIndex === undefined || responseIndex <= latestBoundaryIndex) {
+		return {
+			replacements: collectProjectedReplacements(branchEntries),
+			responseIndex: undefined,
+			visibleEntryIds,
+		};
+	}
+
+	return {
+		replacements: collectProjectedReplacementsFromEntries(
+			branchEntries.slice(responseIndex + 1),
+		),
+		responseIndex,
+		visibleEntryIds,
+	};
 }
 
 /** Collects projection replacement text from extension-owned custom state entries. */
 function collectProjectedReplacementsFromEntries(
 	entries: readonly SessionEntry[],
 ): Map<string, string> {
-	const projectedReplacementsByEntryId = new Map<string, string>();
-	for (const entry of entries) {
+	return foldProjectedReplacements(entries).replacements;
+}
+
+type ProjectedReplacementAction =
+	| { readonly kind: "invalidated" }
+	| {
+			readonly kind: "projected";
+			readonly entryIndex: number;
+			readonly replacementText: string;
+	  };
+
+/** Folds repository replacements and Pi edits in raw active-branch append order. */
+function foldProjectedReplacements(entries: readonly SessionEntry[]): {
+	readonly replacements: Map<string, string>;
+	readonly latestActions: Map<string, ProjectedReplacementAction>;
+} {
+	const replacements = new Map<string, string>();
+	const latestActions = new Map<string, ProjectedReplacementAction>();
+	for (const [entryIndex, entry] of entries.entries()) {
+		if (entry.type === "context_edit") {
+			replacements.delete(entry.targetId);
+			latestActions.set(entry.targetId, { kind: "invalidated" });
+			continue;
+		}
 		if (
 			entry.type !== "custom" ||
 			entry.customType !== CONTEXT_PROJECTION_CUSTOM_TYPE ||
@@ -852,18 +1078,20 @@ function collectProjectedReplacementsFromEntries(
 		}
 
 		for (const projectedEntry of entry.data.projectedEntries) {
-			projectedReplacementsByEntryId.set(
-				projectedEntry.entryId,
-				projectedEntry.replacementText,
-			);
+			replacements.set(projectedEntry.entryId, projectedEntry.replacementText);
+			latestActions.set(projectedEntry.entryId, {
+				kind: "projected",
+				entryIndex,
+				replacementText: projectedEntry.replacementText,
+			});
 		}
 	}
 
-	return projectedReplacementsByEntryId;
+	return { replacements, latestActions };
 }
 
 /** Returns true when an assistant message contains provider usage that reflects its request. */
-export function hasValidAssistantContextUsage(message: AgentMessage): boolean {
+function hasValidAssistantContextUsage(message: AgentMessage): boolean {
 	if (message.role !== "assistant") {
 		return false;
 	}
@@ -889,23 +1117,31 @@ function estimateAssistantUsageTokens(
 export function publishRuntimeProjectedReplacements(
 	cwd: string,
 	projectedReplacementsByEntryId: ReadonlyMap<string, string>,
+	branchLeafId: string | null,
 ): void {
-	runtimeProjectedReplacementsByScope.set(
-		getRuntimeProjectionScope(cwd),
-		new Map(projectedReplacementsByEntryId),
-	);
+	runtimeProjectedReplacementsByScope.set(getRuntimeProjectionScope(cwd), {
+		branchLeafId,
+		replacements: new Map(projectedReplacementsByEntryId),
+	});
 }
 
 /** Estimates current projected token savings from branch-local projection state. */
-export function estimateProjectedSavedTokens({
+export function estimateProjectedSavedTokens(
+	options: ProjectionSavingsEstimateOptions,
+): number {
+	return estimateProjectionSavings(options).savedTokens;
+}
+
+/** Estimates entry-level values without duplicating the projection token calculation. */
+function estimateProjectionSavings({
 	branchEntries,
 	cwd,
 	projectedReplacementsByEntryId,
 	config,
 	loadedSkillRoots = [],
-}: ProjectionSavingsEstimateOptions): number {
+}: ProjectionSavingsEstimateOptions): PendingProjectionSavingsEstimate {
 	if (projectedReplacementsByEntryId.size === 0) {
-		return 0;
+		return { savedTokens: 0, entries: [] };
 	}
 
 	const decision = projectContextMessages({
@@ -916,7 +1152,18 @@ export function estimateProjectedSavedTokens({
 		cwd,
 		activeProjectionLevel: undefined,
 	});
-	return estimateSavedTokens(decision.savedTokens);
+	const entries = [...decision.savedTokensByEntryId].flatMap(
+		([entryId, savedTokens]) => {
+			const replacementText = projectedReplacementsByEntryId.get(entryId);
+			return replacementText === undefined || savedTokens <= 0
+				? []
+				: [{ entryId, replacementText, savedTokens }];
+		},
+	);
+	return {
+		savedTokens: entries.reduce((total, entry) => total + entry.savedTokens, 0),
+		entries,
+	};
 }
 
 /** Maps provider-context messages back to active branch entries without treating persisted retry errors as provider context. */
@@ -924,7 +1171,9 @@ export function mapEventMessagesToBranchEntries(
 	eventMessages: readonly AgentMessage[],
 	branchEntries: readonly SessionEntry[],
 ): MappedContextEntry[] | undefined {
-	const mappedEntries = buildContextEntryMapping(branchEntries);
+	const mappedEntries = buildContextEntryMapping(branchEntries).filter(
+		({ message }) => message.role !== "system",
+	);
 	const eventMappedEntries: MappedContextEntry[] = [];
 	let eventIndex = 0;
 
@@ -987,8 +1236,9 @@ function isPersistedProviderError(entry: MappedContextEntry): boolean {
 export function buildContextEntryMapping(
 	branchEntries: readonly SessionEntry[],
 ): MappedContextEntry[] {
-	return buildContextEntries([...branchEntries]).flatMap((entry) =>
-		sessionEntryToContextMessages(entry).map((message) => ({ entry, message })),
+	return buildSessionProjection([...branchEntries]).entries.flatMap(
+		({ sourceEntry, messages }) =>
+			messages.map((message) => ({ entry: sourceEntry, message })),
 	);
 }
 
@@ -1009,6 +1259,8 @@ export function projectContextMessages({
 	);
 	const ignoredTools = getProjectionIgnoredTools(config);
 	const newProjectedEntries: ProjectedEntryState[] = [];
+	const savedTokensByEntryId = new Map<string, number>();
+	const newSavedTokensByEntryId = new Map<string, number>();
 	let savedTokens = 0;
 	let newSavedTokens = 0;
 	let changed = false;
@@ -1030,9 +1282,17 @@ export function projectContextMessages({
 		}
 
 		savedTokens += result.savedTokens;
+		savedTokensByEntryId.set(
+			entry.id,
+			(savedTokensByEntryId.get(entry.id) ?? 0) + result.savedTokens,
+		);
 		changed = true;
 		if (result.projectedEntry !== undefined) {
 			newSavedTokens += result.savedTokens;
+			newSavedTokensByEntryId.set(
+				entry.id,
+				(newSavedTokensByEntryId.get(entry.id) ?? 0) + result.savedTokens,
+			);
 			newProjectedEntries.push(result.projectedEntry);
 		}
 
@@ -1044,6 +1304,8 @@ export function projectContextMessages({
 		newProjectedEntries,
 		savedTokens,
 		newSavedTokens,
+		savedTokensByEntryId,
+		newSavedTokensByEntryId,
 		changed,
 	};
 }
@@ -1442,28 +1704,12 @@ function getProjectionIgnoredTools(
 	]);
 }
 
-function getRuntimeProjectedReplacements(
-	cwd: string,
-): ReadonlyMap<string, string> {
-	return (
-		runtimeProjectedReplacementsByScope.get(getRuntimeProjectionScope(cwd)) ??
-		new Map()
-	);
-}
-
 function getRuntimeProjectionScope(cwd: string): string {
 	return `${getAgentDir()}\0${cwd}`;
 }
 
 function getRuntimePendingProjectionScope(sessionId: string): string {
 	return `${getAgentDir()}\0${sessionId}`;
-}
-
-function mergeProjectedReplacements(
-	persistedReplacements: ReadonlyMap<string, string>,
-	runtimeReplacements: ReadonlyMap<string, string>,
-): Map<string, string> {
-	return new Map([...persistedReplacements, ...runtimeReplacements]);
 }
 
 /** Returns true when a runtime value is a non-array object. */

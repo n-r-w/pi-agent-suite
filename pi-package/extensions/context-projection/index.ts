@@ -13,13 +13,13 @@ import {
 	type ContextProjectionConfig,
 	type ContextProjectionConfigResult,
 	collectAppliedProjectionLevel,
+	collectEffectiveProjectedReplacements,
 	collectLoadedSkillRoots,
 	collectProjectedReplacements,
-	estimatePendingProjectionSavings,
+	estimateEffectiveProjectionSavings,
 	estimateProjectedSavedTokens,
 	estimateSavedTokens,
 	getProjectionAwareContextUsage,
-	hasValidAssistantContextUsage,
 	isProjectionLevelDeeper,
 	type MappedContextEntry,
 	mapEventMessagesToBranchEntries,
@@ -155,6 +155,14 @@ interface RecordProjectionTransitionOptions {
 	readonly decision: ProjectionDecision;
 }
 
+interface ProjectionLifecycleContext {
+	readonly cwd: string;
+	readonly sessionManager: {
+		getBranch(): SessionEntry[];
+		getSessionId(): string;
+	};
+}
+
 interface RecordProjectionStateOptions {
 	readonly pi: Pick<ExtensionAPI, "appendEntry">;
 	readonly cwd: string;
@@ -162,7 +170,7 @@ interface RecordProjectionStateOptions {
 	readonly branchLeafId: string | null;
 	readonly projectedReplacementsByEntryId: Map<string, string>;
 	readonly newProjectedEntries: readonly ProjectedEntryState[];
-	readonly newSavedTokens: number;
+	readonly newSavedTokensByEntryId: ReadonlyMap<string, number>;
 	readonly appliedLevel: AppliedProjectionLevel;
 }
 
@@ -171,23 +179,25 @@ export default function contextProjection(
 	pi: ExtensionAPI,
 	dependencies: ContextProjectionDependencies = {},
 ): void {
-	const completeSimple = dependencies.completeSimple ?? defaultCompleteSimple;
 	let projectedReplacementsByEntryId = new Map<string, string>();
 	let appliedProjectionLevel: AppliedProjectionLevel | undefined;
 	let publishedStatusText: string | undefined;
 	let loadedSkillRoots: readonly string[] = [];
 
-	const reconstructProjectionState = (ctx: {
-		readonly cwd: string;
-		readonly sessionManager: { getBranch(): SessionEntry[] };
-	}): void => {
+	const reconstructProjectionState = (
+		ctx: ProjectionLifecycleContext,
+	): void => {
 		const branchEntries = ctx.sessionManager.getBranch();
+		// Lifecycle branches are authoritative. Delayed append state is valid only
+		// between live context handling and the next lifecycle reconstruction.
+		resetPendingProjectionSavings(ctx.sessionManager.getSessionId());
 		projectedReplacementsByEntryId =
 			collectProjectedReplacements(branchEntries);
 		appliedProjectionLevel = collectAppliedProjectionLevel(branchEntries);
 		publishRuntimeProjectedReplacements(
 			ctx.cwd,
 			projectedReplacementsByEntryId,
+			branchEntries.at(-1)?.id ?? null,
 		);
 	};
 
@@ -208,26 +218,26 @@ export default function contextProjection(
 		);
 	};
 
-	pi.on("session_start", async (_event, ctx) => {
+	const reconstructAndPublish = async (
+		_event: unknown,
+		ctx: ExtensionContext,
+	): Promise<void> => {
 		reconstructProjectionState(ctx);
 		await publishCurrentStatus(ctx);
-	});
-
-	pi.on("session_tree", async (_event, ctx) => {
-		reconstructProjectionState(ctx);
-		await publishCurrentStatus(ctx);
-	});
-
-	pi.on("session_compact", async (_event, ctx) => {
-		reconstructProjectionState(ctx);
-		await publishCurrentStatus(ctx);
-	});
+	};
+	pi.on("session_start", reconstructAndPublish);
+	pi.on("session_tree", reconstructAndPublish);
+	pi.on("session_compact", reconstructAndPublish);
 
 	pi.on("before_agent_start", (event) => {
 		loadedSkillRoots = collectLoadedSkillRoots(event);
 	});
 
 	pi.on("context", async (event, ctx) => {
+		projectedReplacementsByEntryId = collectEffectiveProjectedReplacements(
+			ctx.sessionManager.getBranch(),
+			ctx.cwd,
+		);
 		const result = await handleContextProjection({
 			pi,
 			event,
@@ -236,17 +246,11 @@ export default function contextProjection(
 			appliedProjectionLevel,
 			publishedStatusText,
 			loadedSkillRoots,
-			completeSimple,
+			completeSimple: dependencies.completeSimple ?? defaultCompleteSimple,
 		});
 		appliedProjectionLevel = result.appliedProjectionLevel;
 		publishedStatusText = result.statusText;
 		return result.contextResult;
-	});
-
-	pi.on("message_end", (event, ctx) => {
-		if (hasValidAssistantContextUsage(event.message)) {
-			resetPendingProjectionSavings(ctx.sessionManager.getSessionId());
-		}
 	});
 }
 
@@ -723,18 +727,16 @@ function syncPendingProjectionSavings(
 	}
 
 	const branchEntries = ctx.sessionManager.getBranch();
-	const pendingSavings = estimatePendingProjectionSavings({
+	const effectiveSavings = estimateEffectiveProjectionSavings({
 		branchEntries,
 		cwd: ctx.cwd,
 		config: config.config,
 		loadedSkillRoots,
 	});
-	setPendingProjectionSavings(
-		ctx.sessionManager.getSessionId(),
-		pendingSavings.savedTokens,
-		pendingSavings.entryIds,
-		new Set(branchEntries.map((entry) => entry.id)),
-	);
+	setPendingProjectionSavings(ctx.sessionManager.getSessionId(), {
+		entries: effectiveSavings.entries,
+		branchEntries,
+	});
 }
 
 function estimateCurrentProjectedSavedTokens(
@@ -763,6 +765,7 @@ function resolveActiveProjectionLevel(
 ): ProjectionLevel | undefined {
 	const usage = getProjectionAwareContextUsage(
 		ctx.sessionManager.getSessionId(),
+		ctx.sessionManager.getBranch(),
 		ctx.getContextUsage(),
 	);
 	if (usage === undefined || usage.tokens === null) {
@@ -839,7 +842,7 @@ function recordProjectionTransition({
 		branchLeafId: ctx.sessionManager.getLeafId(),
 		projectedReplacementsByEntryId,
 		newProjectedEntries: decision.newProjectedEntries,
-		newSavedTokens: decision.newSavedTokens,
+		newSavedTokensByEntryId: decision.newSavedTokensByEntryId,
 		appliedLevel: discoveryLevel.label,
 	});
 }
@@ -852,7 +855,7 @@ function recordProjectionState({
 	branchLeafId,
 	projectedReplacementsByEntryId,
 	newProjectedEntries,
-	newSavedTokens,
+	newSavedTokensByEntryId,
 	appliedLevel,
 }: RecordProjectionStateOptions): void {
 	if (newProjectedEntries.length > 0 && branchLeafId === null) {
@@ -886,13 +889,25 @@ function recordProjectionState({
 	if (newProjectedEntries.length === 0 || branchLeafId === null) {
 		return;
 	}
-	publishRuntimeProjectedReplacements(cwd, projectedReplacementsByEntryId);
-	addPendingProjectionSavings(sessionId, estimateSavedTokens(newSavedTokens), {
+	publishRuntimeProjectedReplacements(
+		cwd,
+		projectedReplacementsByEntryId,
 		branchLeafId,
-		entryIds: newProjectedEntries.map(
-			(projectedEntry) => projectedEntry.entryId,
-		) as [string, ...string[]],
+	);
+	const savingsEntries = newProjectedEntries.flatMap((projectedEntry) => {
+		const savedTokens =
+			newSavedTokensByEntryId.get(projectedEntry.entryId) ?? 0;
+		return savedTokens <= 0 ? [] : [{ ...projectedEntry, savedTokens }];
 	});
+	if (savingsEntries.length > 0) {
+		addPendingProjectionSavings(sessionId, {
+			branchLeafId,
+			entries: savingsEntries as [
+				(typeof savingsEntries)[number],
+				...(typeof savingsEntries)[number][],
+			],
+		});
+	}
 }
 
 /** Formats approximate saved-token counts for compact footer display. */

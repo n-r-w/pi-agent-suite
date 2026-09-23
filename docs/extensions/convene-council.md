@@ -10,6 +10,10 @@ The models with the highest "thinking" level and reasoning capabilities are reco
 
 When the `knowledge` extension resolves applicable stored knowledge, the shared external context package supplies the same `<knowledge>` block to both participants.
 
+## Council context
+
+Council participants receive raw active-branch evidence, not Pi's effective context used by provider requests. The context package keeps original target entries even when later `context_edit` records omit or replace them. It does not render the edit records as separate evidence blocks. Repository `context-projection` replacements are also ignored, and the pending council tool call is removed before the package is shared with participants.
+
 ## Configuration
 
 Default config file: `~/.pi/agent/agent-suite/convene-council/config.json`.

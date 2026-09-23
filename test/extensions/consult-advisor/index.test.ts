@@ -1377,14 +1377,10 @@ describe("consult-advisor", () => {
 		});
 	});
 
-	test("replays persisted context projection state before calling the advisor", async () => {
-		// Purpose: advisor input must match the projected task state when context-projection has recorded omitted tool results.
-		// Input and expected output: valid projection config plus persisted state replaces old tool output with the recorded replacement text.
-		// Edge case: the current pending consult_advisor call is still removed after projection replay.
-		// Dependencies: temp context-projection config, fake model registry, fake completion function, and fake session entries.
+	test("replays Pi-edited history before calling the advisor", async () => {
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeProjectionConfig(agentDir, { enabled: true });
-			const replacementText = "[projected old output]";
+			const replacementText = "edited old output";
 			const model = createModel("openai", "advisor");
 			const completion = createCompletionFake();
 			const pi = createExtensionApiFake();
@@ -1417,7 +1413,14 @@ describe("consult-advisor", () => {
 						timestamp: 3,
 					},
 				},
-				createProjectionStateEntry("4", "3", replacementText, "3"),
+				{
+					type: "context_edit",
+					id: "4",
+					parentId: "3",
+					timestamp: "t",
+					targetId: "3",
+					replacement: { content: replacementText },
+				} as SessionEntry,
 				{
 					type: "message",
 					id: "5",
@@ -1436,13 +1439,28 @@ describe("consult-advisor", () => {
 			await executeConsult(pi, ctx, "Should we proceed?");
 
 			expect(completion.calls).toHaveLength(1);
-			const advisorMessages = JSON.stringify(
-				completion.calls[0]?.context.messages,
-			);
-			expect(advisorMessages).toContain(replacementText);
-			expect(advisorMessages).not.toContain("old full tool output");
-			expect(advisorMessages).not.toContain("current question");
-			expect(advisorMessages).not.toContain("call-1");
+			const advisorContext = completion.calls[0]?.context;
+			if (advisorContext === undefined) {
+				throw new Error("Expected advisor completion context");
+			}
+			const normalized = normalizeContext(advisorContext);
+			expect(normalized.messages.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"toolResult",
+				"user",
+			]);
+			expect(getCurrentTools(normalized.messages)).toEqual([]);
+			expect(normalized.messages[2]).toMatchObject({
+				role: "assistant",
+				content: [{ type: "toolCall", id: "old-tool", name: "bash" }],
+			});
+			expect(normalized.messages[3]).toMatchObject({
+				role: "toolResult",
+				toolCallId: "old-tool",
+				content: [{ type: "text", text: replacementText }],
+			});
 		});
 	});
 
