@@ -64,6 +64,9 @@ describe("agent runtime composition", () => {
 				}
 				return [...activeTools];
 			},
+			getAllTools() {
+				return activeTools.map((name) => ({ name }));
+			},
 			setActiveTools(names: readonly string[]) {
 				if (!runtimeReady) {
 					throw new Error("Extension runtime not initialized");
@@ -97,6 +100,104 @@ describe("agent runtime composition", () => {
 
 		composition.replaceBaselineToolNames("provider", ["new_tool"]);
 
+		expect(pi.getActiveTools()).toEqual(["read", "new_tool"]);
+	});
+
+	test("preserves a late external activation across agent-start turns", async () => {
+		const registered = ["read"];
+		const pi = createPi(["read"], registered);
+		getAgentRuntimeComposition(pi);
+		const start = pi.handlers.find(
+			(handler) => handler.name === "before_agent_start",
+		);
+		expect(start).toBeDefined();
+		await start?.run({ systemPrompt: "" }, { cwd: "/tmp" });
+		registered.push("room_tool");
+		pi.setActiveTools(["read", "room_tool"]);
+		await start?.run({ systemPrompt: "" }, { cwd: "/tmp" });
+		await start?.run({ systemPrompt: "" }, { cwd: "/tmp" });
+		expect(pi.getActiveTools()).toEqual(["read", "room_tool"]);
+	});
+
+	test("does not adopt unregistered external tool names", () => {
+		const pi = createPi(["read"]);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.reconcileActiveTools();
+		pi.setActiveTools(["read", "disconnected_tool"]);
+		composition.reconcileActiveTools();
+		expect(pi.getActiveTools()).toEqual(["read"]);
+	});
+
+	test("does not restore an externally deactivated or disconnected tool", () => {
+		const pi = createPi(["read", "room_tool"]);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.reconcileActiveTools();
+		pi.setActiveTools(["read"]);
+		composition.reconcileActiveTools();
+		composition.setRestrictiveToolNames("child", ["read", "room_tool"]);
+		expect(pi.getActiveTools()).toEqual(["read"]);
+	});
+
+	test("filters late external activation and restores it when restrictions lift", () => {
+		const pi = createPi(["read", "hidden"], ["read", "hidden", "room_tool"]);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.setMainAgentContribution({
+			prompt: "",
+			tools: ["read", "room_tool"],
+		});
+		composition.setRestrictiveToolNames("child", ["read"]);
+		composition.setRestrictiveToolFilter("deny-room", (names) =>
+			names.filter((name) => name !== "room_tool"),
+		);
+		pi.setActiveTools(["read", "room_tool"]);
+		composition.reconcileActiveTools();
+		expect(pi.getActiveTools()).toEqual(["read"]);
+		composition.setRestrictiveToolNames("child", undefined);
+		composition.setRestrictiveToolFilter("deny-room", undefined);
+		expect(pi.getActiveTools()).toEqual(["read", "room_tool"]);
+		composition.clearMainAgentContribution();
+		expect(pi.getActiveTools()).toEqual(["read", "hidden", "room_tool"]);
+	});
+
+	test("does not adopt a retired owner tool activated before staged replacement", () => {
+		const pi = createPi(
+			["read", "old_tool"],
+			["read", "old_tool", "new_tool", "room_tool"],
+		);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.replaceBaselineToolNames("provider", ["old_tool"]);
+		composition.setRestrictiveToolFilter("deferred", (names) =>
+			names.filter((name) => name !== "old_tool"),
+		);
+		pi.setActiveTools(["read", "old_tool", "room_tool"]);
+		composition.stageBaselineToolNames("provider", ["new_tool"]);
+		composition.setRestrictiveToolFilter("deferred", (names) => names);
+		expect(pi.getActiveTools()).toEqual(["read", "new_tool", "room_tool"]);
+		composition.reconcileActiveTools();
+		expect(pi.getActiveTools()).toEqual(["read", "new_tool", "room_tool"]);
+		pi.setActiveTools(["read", "new_tool", "room_tool", "old_tool"]);
+		composition.reconcileActiveTools();
+		expect(pi.getActiveTools()).toEqual(["read", "new_tool", "room_tool"]);
+		composition.stageBaselineToolNames("provider", ["old_tool"]);
+		composition.reconcileActiveTools();
+		expect(pi.getActiveTools()).toEqual(["read", "room_tool", "old_tool"]);
+	});
+
+	test("retires the active old owner tool when replacing its catalog", () => {
+		const pi = createPi(["read", "old_tool"]);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.replaceBaselineToolNames("provider", ["old_tool"]);
+		composition.replaceBaselineToolNames("provider", ["new_tool"]);
+		composition.reconcileActiveTools();
+		expect(pi.getActiveTools()).toEqual(["read", "new_tool"]);
+	});
+
+	test("does not re-add an externally deactivated owner tool during replacement", () => {
+		const pi = createPi(["read", "old_tool"]);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.replaceBaselineToolNames("provider", ["old_tool"]);
+		pi.setActiveTools(["read"]);
+		composition.replaceBaselineToolNames("provider", ["new_tool"]);
 		expect(pi.getActiveTools()).toEqual(["read", "new_tool"]);
 	});
 
