@@ -11,7 +11,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
-	ExtensionContext,
+	ExtensionToolContext,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import consultAdvisor from "./index";
@@ -131,8 +131,14 @@ function createExtensionApiFake(): ExtensionAPI & {
 }
 
 /** Creates the smallest tool context with an isolated model registry and empty session. */
-function createToolContext(models: readonly Model<Api>[]): ExtensionContext {
+function createToolContext(
+	models: readonly Model<Api>[],
+): ExtensionToolContext {
 	return {
+		tools: [],
+		async executeTool() {
+			throw new Error("Unexpected nested tool call");
+		},
 		cwd: "/tmp/project",
 		hasUI: false,
 		model: models[0],
@@ -151,7 +157,7 @@ function createToolContext(models: readonly Model<Api>[]): ExtensionContext {
 				return [];
 			},
 		},
-	} as unknown as ExtensionContext;
+	} as unknown as ExtensionToolContext;
 }
 
 /** Returns the single registered advisor tool. */

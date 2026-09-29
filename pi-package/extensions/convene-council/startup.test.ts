@@ -33,6 +33,7 @@ function createPi(toolNames: readonly string[]) {
 				name,
 				description: name,
 				parameters: {},
+				exposure: "direct",
 				sourceInfo: {
 					path: `<test:${name}>`,
 					source: "test",
