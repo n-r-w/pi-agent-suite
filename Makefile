@@ -32,8 +32,10 @@ pi-update:
 		}; \
 	done
 	bun add --dev --exact $(addsuffix @$(PI_VERSION),$(PI_PACKAGES))
+	cd pi-package && npm pkg set $(foreach package,$(PI_PACKAGES),'peerDependencies.$(package)=$(PI_VERSION)')
 	rm -f pi-package/bun.lock
 	cd pi-package && bun install
+	cd pi-package && npm install --package-lock-only --ignore-scripts --legacy-peer-deps
 	bun run verify
 	./node_modules/.bin/pi --version
 
