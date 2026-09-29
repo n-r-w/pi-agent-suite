@@ -46,7 +46,7 @@ Supported variables:
 | `{{contextFiles}}` | Loaded context files inside `<project_specific_instructions>` XML-style blocks. |
 | `{{skills}}` | Loaded skills formatted by pi when the `read` tool is active. |
 
-Unsupported variables are removed from the rendered prompt. `{{toolsets}}` is expanded only where the template contains it: a custom template that omits it receives no trigger catalog. Before values are built, active tools are reconciled; the catalog contains only loaded, still-deferred toolsets with at least one tool allowed for the current agent.
+Unsupported variables are removed from the rendered prompt. `{{toolsets}}` is expanded only where the template contains it: a custom template that omits it receives no trigger catalog. Before values are built, active tools are reconciled; the catalog contains only loaded, still-deferred toolsets with at least one tool allowed for the current agent. Registered tools activated by other extensions after startup remain available on later turns unless a current agent or toolset policy excludes them. Observed external deactivation is respected. Deactivation of a tool already hidden by policy cannot be observed through Pi's active-tool list; an explicit owner replacement can still retire that tool.
 
 ## Template example
 

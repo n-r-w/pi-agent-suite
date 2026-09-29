@@ -163,7 +163,9 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private consultAdvisorContribution: PromptContribution | undefined;
 	private conveneCouncilContribution: PromptContribution | undefined;
 	private baselineActiveTools: string[] | undefined;
+	private lastAppliedActiveTools: string[] | undefined;
 	private readonly pendingBaselineToolNames: string[] = [];
+	private readonly retiredOwnerToolNames = new Set<string>();
 	private readonly baselineToolNamesByOwner = new Map<
 		string,
 		readonly string[]
@@ -277,6 +279,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 
 	public publishBaselineToolNames(toolNames: readonly string[]): void {
 		for (const name of toolNames) {
+			this.retiredOwnerToolNames.delete(name);
 			if (
 				!this.pendingBaselineToolNames.includes(name) &&
 				!this.baselineActiveTools?.includes(name)
@@ -289,6 +292,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	public addBaselineToolNames(toolNames: readonly string[]): void {
 		const baseline = this.ensureBaselineActiveTools();
 		for (const name of toolNames) {
+			this.retiredOwnerToolNames.delete(name);
 			if (!baseline.includes(name)) {
 				baseline.push(name);
 			}
@@ -302,6 +306,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	): void {
 		const baseline = this.ensureBaselineActiveTools();
 		const previousBaseline = [...baseline];
+		const previousRetired = new Set(this.retiredOwnerToolNames);
 		const previousContribution = this.baselineToolNamesByOwner.get(owner);
 		this.stageBaselineToolNames(owner, toolNames);
 		try {
@@ -309,6 +314,10 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		} catch (error) {
 			// Baseline ownership and Pi's active list must describe the same catalog.
 			baseline.splice(0, baseline.length, ...previousBaseline);
+			this.retiredOwnerToolNames.clear();
+			for (const name of previousRetired) {
+				this.retiredOwnerToolNames.add(name);
+			}
 			if (previousContribution === undefined) {
 				this.baselineToolNamesByOwner.delete(owner);
 			} else {
@@ -343,7 +352,11 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			baseline.length,
 			...baseline.filter((name) => !removedNames.has(name)),
 		);
+		for (const name of removedNames) {
+			this.retiredOwnerToolNames.add(name);
+		}
 		for (const name of nextContribution) {
+			this.retiredOwnerToolNames.delete(name);
 			if (!baseline.includes(name)) {
 				baseline.push(name);
 			}
@@ -388,6 +401,31 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 
 	public reconcileActiveTools(): void {
 		const baseline = this.ensureBaselineActiveTools();
+		const current = this.pi.getActiveTools();
+		const previous = this.lastAppliedActiveTools ?? current;
+		// Only observed changes since our last write are external intent. Policy-hidden
+		// baseline tools are absent from both lists and must remain restorable.
+		const removed = new Set(previous.filter((name) => !current.includes(name)));
+		baseline.splice(
+			0,
+			baseline.length,
+			...baseline.filter((name) => !removed.has(name)),
+		);
+		const added = current.filter((name) => !previous.includes(name));
+		if (added.length > 0) {
+			const registered = new Set(
+				this.pi.getAllTools().map((tool) => tool.name),
+			);
+			for (const name of added) {
+				if (
+					registered.has(name) &&
+					!this.retiredOwnerToolNames.has(name) &&
+					!baseline.includes(name)
+				) {
+					baseline.push(name);
+				}
+			}
+		}
 		const resolved = [...baseline];
 		if (this.mainAgentContribution?.tools !== undefined) {
 			intersectToolNames(resolved, this.mainAgentContribution.tools);
@@ -398,9 +436,10 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		for (const filter of this.restrictiveToolFilters.values()) {
 			intersectToolNames(resolved, filter(resolved));
 		}
-		if (!areStringArraysEqual(this.pi.getActiveTools(), resolved)) {
+		if (!areStringArraysEqual(current, resolved)) {
 			this.pi.setActiveTools(resolved);
 		}
+		this.lastAppliedActiveTools = resolved;
 	}
 
 	public setConsultAdvisorContribution(
