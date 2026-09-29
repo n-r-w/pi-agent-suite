@@ -206,12 +206,11 @@ Current working directory: {{cwd}}
 SKILLS are task-specific instruction sets that define required knowledge, rules, and workflow for agent
 
 Skills guidelines:
-1. When task matches skill description, load SKILL.md before related work. Follow its instructions.
-2. Skip loading only when complete verbatim text from direct reading remains in context.
-3. Summaries, fragments, and prior reading records are insufficient.
-4. After compaction or summary, or whenever text completeness is uncertain, reread SKILL.md immediately.
-5. Explicit user instructions override skills. Higher-priority instructions still apply.
-6. If skill blocks requested work, cite file and exact rule. Explain conflict.
+1. When task matches skill description, read SKILL.md before related work. Follow its instructions.
+2. Read each SKILL.md once per session. Its rules stay in force for all later work in session. Same applies to asset files that skill tells you to read.
+3. Read SKILL.md again only when its text is no longer in context: after compaction or summary, or when earlier read was truncated.
+4. Explicit user instructions override skills. Higher-priority instructions still apply.
+5. If skill blocks requested work, cite file and exact rule. Explain conflict.
 
 <available_skills>
 {{skills}}
