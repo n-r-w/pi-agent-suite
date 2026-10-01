@@ -7,7 +7,6 @@ import codexQuota from "../../../pi-package/extensions/codex-quota/index";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
-const HOME_ENV = "HOME";
 
 interface RegisteredHandler {
 	readonly eventName: string;
@@ -147,19 +146,17 @@ function createSessionContextFake(
 	};
 }
 
-/** Runs a test with an isolated pi agent directory so config and auth reads never touch real user files. */
+/** Isolates quota configuration in a temporary pi agent directory. */
 async function withIsolatedAgentDir<T>(
 	action: (agentDir: string) => Promise<T>,
 	options: { readonly writeDefaultEnabledConfig?: boolean } = {},
 ): Promise<T> {
 	const previousAgentDir = process.env[AGENT_DIR_ENV];
 	const previousAgentSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
-	const previousHome = process.env[HOME_ENV];
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-codex-quota-"));
 
 	process.env[AGENT_DIR_ENV] = agentDir;
 	delete process.env[AGENT_SUITE_DIR_ENV];
-	process.env[HOME_ENV] = agentDir;
 	try {
 		if (options.writeDefaultEnabledConfig ?? true) {
 			await writeQuotaConfig(agentDir, JSON.stringify({ enabled: true }));
@@ -176,11 +173,6 @@ async function withIsolatedAgentDir<T>(
 			delete process.env[AGENT_SUITE_DIR_ENV];
 		} else {
 			process.env[AGENT_SUITE_DIR_ENV] = previousAgentSuiteDir;
-		}
-		if (previousHome === undefined) {
-			delete process.env[HOME_ENV];
-		} else {
-			process.env[HOME_ENV] = previousHome;
 		}
 		await rm(agentDir, { recursive: true, force: true });
 	}
@@ -1057,24 +1049,11 @@ describe("codex-quota", () => {
 		});
 	});
 
-	test("ignores Codex CLI fallback auth and uses pi Codex OAuth", async () => {
-		// Purpose: quota auth must stay owned by pi OAuth instead of stale Codex CLI auth files.
-		// Input and expected output: auth in .config/codex/auth.json is ignored, and the pi token sends bearer and account ID headers.
-		// Edge case: a stale secondary Codex CLI auth file exists.
-		// Dependencies: this test uses temp Codex CLI auth, fake model registry, fake fetch, and fake intervals.
-		await withIsolatedAgentDir(async (agentDir) => {
-			const authDir = join(agentDir, ".config", "codex");
-			await mkdir(authDir, { recursive: true });
-			await writeFile(
-				join(authDir, "auth.json"),
-				JSON.stringify({
-					tokens: {
-						access_token: "fallback-token",
-						account_id: "fallback-account",
-					},
-				}),
-			);
-
+	test("reads quota credentials from pi model registry", async () => {
+		// Purpose: quota requests use the credentials supplied by pi's model registry.
+		// Inputs and expected outputs: a fake pi token supplies bearer and account ID headers.
+		// Dependencies: temporary config, fake model registry, fake fetch, and fake intervals.
+		await withIsolatedAgentDir(async () => {
 			await withFakeIntervals(async () => {
 				const observedHeaders: Array<{
 					authorization: string | null;

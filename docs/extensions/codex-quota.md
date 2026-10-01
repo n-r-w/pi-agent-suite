@@ -30,7 +30,7 @@ Full example:
 
 ## Usage notes
 
-- The extension needs Codex authentication available through pi.
+- The extension obtains Codex credentials from pi's model registry.
 - A refresh publishes footer status only when the rendered status text changes.
 - Invalid JSON, unsupported keys, or invalid parameter values create a configuration issue in pi.
 - If the config file exists but is invalid, the extension uses `refreshInterval: 60`, `retryAttempts: 5`, and `retryInterval: 2`.
