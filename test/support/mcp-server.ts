@@ -34,10 +34,19 @@ export function fixtureResponse(request: FixtureRequest): unknown {
 			},
 		};
 	}
-	if (request.params?.name === "protocol-error") {
+	if (
+		request.params?.name === "protocol-error" ||
+		request.params?.name === "protocol-not-connected"
+	) {
 		return {
 			...reply,
-			error: { code: -32603, message: "Fixture server failure" },
+			error: {
+				code: -32603,
+				message:
+					request.params.name === "protocol-not-connected"
+						? "Not connected"
+						: "Fixture server failure",
+			},
 		};
 	}
 	return {

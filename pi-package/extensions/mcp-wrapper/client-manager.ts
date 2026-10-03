@@ -1,4 +1,5 @@
 import type { McpServerConfig, McpWrapperTimeouts } from "./config.ts";
+import { McpRequestNotSentError } from "./errors.ts";
 import type {
 	McpServerToolList,
 	McpToolSummary,
@@ -134,6 +135,29 @@ export class McpClientManager {
 		config: McpServerConfig,
 		args: Record<string, unknown>,
 	): Promise<unknown> {
+		try {
+			return await this.callToolOnce(route, config, args);
+		} catch (error) {
+			if (!(error instanceof McpRequestNotSentError)) {
+				throw error;
+			}
+		}
+
+		try {
+			return await this.callToolOnce(route, config, args);
+		} catch (error) {
+			throw new Error(
+				`MCP tool ${route.serverKey}/${route.mcpToolName} failed after one connection recovery attempt: ${formatError(error)}`,
+				{ cause: error },
+			);
+		}
+	}
+
+	private async callToolOnce(
+		route: PiToolRoute,
+		config: McpServerConfig,
+		args: Record<string, unknown>,
+	): Promise<unknown> {
 		const connection = await this.getOrCreateConnection(
 			route.serverKey,
 			config,
@@ -141,6 +165,7 @@ export class McpClientManager {
 		try {
 			return await withAbortTimeout(
 				this.timeouts.callSeconds,
+				`MCP tool ${route.serverKey}/${route.mcpToolName}`,
 				(signal) =>
 					connection.client.callTool(
 						{ name: route.mcpToolName, arguments: args },
@@ -228,6 +253,7 @@ export class McpClientManager {
 		try {
 			await withAbortTimeout(
 				this.timeouts.startupSeconds,
+				`MCP server ${serverKey} startup`,
 				(signal) =>
 					client.connect({
 						signal,
@@ -259,6 +285,7 @@ export class McpClientManager {
 	): Promise<readonly McpToolSummary[]> {
 		const page = await withAbortTimeout(
 			this.timeouts.listToolsSeconds,
+			"MCP tools/list",
 			(signal) =>
 				client.listTools(cursor === undefined ? undefined : { cursor }, {
 					signal,
@@ -301,14 +328,18 @@ export class McpClientManager {
 
 async function withAbortTimeout<T>(
 	seconds: number,
+	operationName: string,
 	operation: (signal: AbortSignal) => Promise<T>,
 	onTimeout: () => Promise<void>,
 ): Promise<T> {
 	const controller = new AbortController();
+	const timeoutError = new Error(
+		`${operationName} timed out after ${seconds} seconds`,
+	);
 	let timedOut = false;
 	const timeout = setTimeout(() => {
 		timedOut = true;
-		controller.abort();
+		controller.abort(timeoutError);
 	}, secondsToMilliseconds(seconds));
 
 	try {
@@ -316,6 +347,7 @@ async function withAbortTimeout<T>(
 	} catch (error) {
 		if (timedOut) {
 			await onTimeout();
+			throw new Error(timeoutError.message, { cause: error });
 		}
 		throw error;
 	} finally {

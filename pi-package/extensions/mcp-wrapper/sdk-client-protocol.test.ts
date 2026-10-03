@@ -22,6 +22,36 @@ const TIMEOUT_ERROR = /timed out/i;
 const execFileAsync = promisify(execFile);
 
 describe("SDK v2 stdio diagnostics", () => {
+	test("does not repeat a tool call when the server closes after receiving it", async () => {
+		const fixture = createFixture("stdio");
+		let createCalls = 0;
+		const manager = new McpClientManager({
+			createClient: () => {
+				createCalls += 1;
+				return fixture.client;
+			},
+			timeouts: {
+				startupSeconds: 5,
+				listToolsSeconds: 5,
+				callSeconds: 5,
+				maxTotalSeconds: 5,
+			},
+		});
+		try {
+			await expect(
+				manager.callTool(
+					{ serverKey: "fixture", mcpToolName: "disconnect" },
+					fixture.config,
+					{},
+				),
+			).rejects.toThrow("Connection closed");
+			expect(createCalls).toBe(1);
+		} finally {
+			await manager.closeAll();
+			fixture.remove();
+		}
+	});
+
 	test("writes server stderr to the shared rotating log", async () => {
 		// Purpose: stdio server diagnostics must remain available without writing through the parent terminal.
 		// Inputs and expected outputs: a local MCP server writes before and after initialization; each record has the available identities.
@@ -95,6 +125,102 @@ describe.each([
 			await expect(
 				fixture.client.callTool({ name: "protocol-error", arguments: {} }),
 			).rejects.toThrow("Fixture server failure");
+		} finally {
+			await manager.closeAll();
+			fixture.remove();
+		}
+		expect(fixture.closed()).toBe(true);
+	});
+
+	test("recovers a closed cached client before sending the tool call", async () => {
+		const fixtures = [createFixture(type), createFixture(type)] as const;
+		const first = fixtures[0];
+		let createCalls = 0;
+		const manager = new McpClientManager({
+			createClient: () => {
+				const fixture = fixtures[createCalls++];
+				if (fixture === undefined) {
+					throw new Error("unexpected recovery attempt");
+				}
+				return fixture.client;
+			},
+			timeouts: {
+				startupSeconds: 5,
+				listToolsSeconds: 5,
+				callSeconds: 5,
+				maxTotalSeconds: 5,
+			},
+		});
+		try {
+			await manager.getConnection("fixture", first.config);
+			await first.client.close();
+			await expect(
+				manager.callTool(
+					{ serverKey: "fixture", mcpToolName: "echo" },
+					first.config,
+					{ text: "recovered" },
+				),
+			).resolves.toMatchObject({
+				content: [{ type: "text", text: "recovered" }],
+			});
+			expect(createCalls).toBe(2);
+		} finally {
+			await manager.closeAll();
+			for (const fixture of fixtures) {
+				fixture.remove();
+			}
+		}
+	});
+
+	test("does not retry a server error with the message Not connected", async () => {
+		const fixture = createFixture(type);
+		let createCalls = 0;
+		const manager = new McpClientManager({
+			createClient: () => {
+				createCalls += 1;
+				return fixture.client;
+			},
+			timeouts: {
+				startupSeconds: 5,
+				listToolsSeconds: 5,
+				callSeconds: 5,
+				maxTotalSeconds: 5,
+			},
+		});
+		try {
+			await expect(
+				manager.callTool(
+					{ serverKey: "fixture", mcpToolName: "protocol-not-connected" },
+					fixture.config,
+					{},
+				),
+			).rejects.toThrow("Not connected");
+			expect(createCalls).toBe(1);
+		} finally {
+			await manager.closeAll();
+			fixture.remove();
+		}
+	});
+
+	test("reports the tool and duration when the manager times out a call", async () => {
+		const fixture = createFixture(type);
+		const manager = new McpClientManager({
+			createClient: () => fixture.client,
+			timeouts: {
+				startupSeconds: 5,
+				listToolsSeconds: 5,
+				callSeconds: 0.02,
+				maxTotalSeconds: 5,
+			},
+		});
+		try {
+			await expect(
+				manager.callTool(
+					{ serverKey: "fixture", mcpToolName: "wait" },
+					fixture.config,
+					{},
+				),
+			).rejects.toThrow("MCP tool fixture/wait timed out after 0.02 seconds");
 		} finally {
 			await manager.closeAll();
 			fixture.remove();

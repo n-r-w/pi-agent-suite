@@ -10,6 +10,12 @@ if (startupDiagnostic !== undefined) {
 const lines = createInterface({ input: process.stdin });
 lines.on("line", (line) => {
 	const request: FixtureRequest = JSON.parse(line);
+	if (
+		request.method === "tools/call" &&
+		request.params?.name === "disconnect"
+	) {
+		process.exit(0);
+	}
 	if (request.method === "tools/list") {
 		const connectedDiagnostic = env["MCP_STDERR_CONNECTED_DIAGNOSTIC"];
 		if (connectedDiagnostic !== undefined) {

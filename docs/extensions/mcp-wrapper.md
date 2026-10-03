@@ -12,6 +12,14 @@ The adapter passes cancellation and timeout options as the second `callTool` arg
 
 The protocol tests use the real client with a local stdio fixture and fake HTTP fetch responses. Consumer installation and upgrade audits are separate release checks described in [Publishing](../PUBLISHING.md#consumer-installation-checks).
 
+## Connection recovery and errors
+
+When the SDK reports that a tool request was rejected before being sent because the connection is closed, the wrapper discards the affected client and makes one attempt to reconnect and repeat the call. This applies to all configured MCP servers. Concurrent calls to one server share the replacement connection.
+
+If recovery fails, the error includes the server key, tool name, and failure reason. Requests already sent, server errors, and timeouts are returned without automatic repetition because the server may have executed the operation.
+
+Timeout errors include the operation and configured duration, for example `MCP tool files/read timed out after 120 seconds`. The underlying exception is retained in the error's `cause`.
+
 ## Configuration file
 
 By default, place the configuration at `agent-suite/mcp-wrapper/config.json`. If the file is missing, no MCP tools are registered.

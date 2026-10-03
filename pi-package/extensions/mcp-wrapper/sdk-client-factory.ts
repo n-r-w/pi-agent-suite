@@ -7,6 +7,7 @@ import {
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { McpClientLike, McpRequestOptions } from "./client-manager.ts";
 import type { McpServerConfig } from "./config.ts";
+import { McpRequestNotSentError } from "./errors.ts";
 import { McpStdioLogWriter } from "./stdio-log.ts";
 
 const CLIENT_VERSION = "1.0.0";
@@ -131,7 +132,22 @@ class SdkMcpClientAdapter implements SdkMcpClient {
 		},
 		options?: McpRequestOptions,
 	): Promise<unknown> {
-		return this.client.callTool(params, options);
+		try {
+			return await this.client.callTool(params, options);
+		} catch (error) {
+			// The SDK's plain "Not connected" error precedes transport.send; server errors use ProtocolError.
+			if (
+				error instanceof Error &&
+				error.constructor === Error &&
+				error.message === "Not connected"
+			) {
+				throw new McpRequestNotSentError(
+					`MCP server ${this.serverKey} is disconnected before sending the request`,
+					{ cause: error },
+				);
+			}
+			throw error;
+		}
 	}
 
 	getInstructions(): string | undefined {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type McpClientLike, McpClientManager } from "./client-manager.ts";
 import type { McpServerConfig, McpWrapperTimeouts } from "./config.ts";
+import { McpRequestNotSentError } from "./errors.ts";
 
 const DEFAULT_TIMEOUTS: McpWrapperTimeouts = {
 	startupSeconds: 30,
@@ -211,7 +212,7 @@ describe("mcp-wrapper client manager", () => {
 		client.listTools = async (_params, options) =>
 			new Promise((_, reject) => {
 				options.signal?.addEventListener("abort", () => {
-					reject(new Error("operation timed out"));
+					reject(new DOMException("This operation was aborted", "AbortError"));
 				});
 			});
 		let createCalls = 0;
@@ -231,12 +232,34 @@ describe("mcp-wrapper client manager", () => {
 		const second = await manager.discoverServers({ files: STDIO_SERVER });
 
 		expect(first.failures).toEqual([
-			{ serverKey: "files", issue: "operation timed out" },
+			{
+				serverKey: "files",
+				issue: "MCP tools/list timed out after 0.001 seconds",
+			},
 		]);
 		expect(client.closeCalls).toEqual(["close"]);
 		expect(second.failures).toEqual([]);
 		expect(second.serverToolLists).toEqual([{ serverKey: "files", tools: [] }]);
 		expect(createCalls).toBe(2);
+	});
+
+	test("reports the server and duration after startup timeout", async () => {
+		const client = new FakeMcpClient();
+		client.connect = async (options) =>
+			new Promise((_, reject) => {
+				options?.signal?.addEventListener("abort", () => {
+					reject(options.signal?.reason);
+				});
+			});
+		const manager = new McpClientManager({
+			createClient: () => client,
+			timeouts: { ...DEFAULT_TIMEOUTS, startupSeconds: 0.001 },
+		});
+
+		await expect(manager.getConnection("files", STDIO_SERVER)).rejects.toThrow(
+			"MCP server files startup timed out after 0.001 seconds",
+		);
+		expect(client.closeCalls.length).toBeGreaterThan(0);
 	});
 
 	test("deduplicates concurrent connection attempts for the same server", async () => {
@@ -339,6 +362,76 @@ describe("mcp-wrapper client manager", () => {
 		]);
 	});
 
+	test("shares one recovered connection across concurrent unsent calls", async () => {
+		const disconnected = new FakeMcpClient();
+		disconnected.callTool = async () => {
+			throw new McpRequestNotSentError("connection unavailable");
+		};
+		const recovered = new FakeMcpClient();
+		let createCalls = 0;
+		const manager = new McpClientManager({
+			createClient: () => (++createCalls === 1 ? disconnected : recovered),
+			timeouts: DEFAULT_TIMEOUTS,
+		});
+		const route = { serverKey: "files", mcpToolName: "read" };
+
+		await expect(
+			Promise.all([
+				manager.callTool(route, STDIO_SERVER, { path: "/tmp/a" }),
+				manager.callTool(route, STDIO_SERVER, { path: "/tmp/b" }),
+			]),
+		).resolves.toEqual([recovered.callResult, recovered.callResult]);
+		expect(createCalls).toBe(2);
+		expect(disconnected.closeCalls).toEqual(["close"]);
+		expect(recovered.callToolCalls).toHaveLength(2);
+		expect(recovered.callToolCalls.map((call) => call.arguments)).toEqual(
+			expect.arrayContaining([{ path: "/tmp/a" }, { path: "/tmp/b" }]),
+		);
+	});
+
+	test.each([
+		"connect",
+		"call",
+	] as const)("reports a failed recovery during %s without another attempt", async (failureStage) => {
+		const disconnected = new FakeMcpClient();
+		disconnected.callTool = async () => {
+			throw new McpRequestNotSentError("connection unavailable");
+		};
+		const failedRecovery = new FakeMcpClient();
+		const recoveryError = new McpRequestNotSentError(
+			"fixture recovery failure",
+		);
+		if (failureStage === "connect") {
+			failedRecovery.connect = async () => {
+				throw recoveryError;
+			};
+		} else {
+			failedRecovery.callTool = async () => {
+				throw recoveryError;
+			};
+		}
+		let createCalls = 0;
+		const manager = new McpClientManager({
+			createClient: () => (++createCalls === 1 ? disconnected : failedRecovery),
+			timeouts: DEFAULT_TIMEOUTS,
+		});
+
+		await expect(
+			manager.callTool(
+				{ serverKey: "files", mcpToolName: "read" },
+				STDIO_SERVER,
+				{},
+			),
+		).rejects.toMatchObject({
+			message:
+				"MCP tool files/read failed after one connection recovery attempt: fixture recovery failure",
+			cause: recoveryError,
+		});
+		expect(createCalls).toBe(2);
+		expect(disconnected.closeCalls).toEqual(["close"]);
+		expect(failedRecovery.closeCalls.length).toBeGreaterThan(0);
+	});
+
 	test("closes and replaces the affected connection after call failure", async () => {
 		// Purpose: a failed tool call must not leave a dead MCP client cached for later calls.
 		// Input and expected output: the first client throws once, is closed, and the next call uses a new client.
@@ -407,10 +500,16 @@ describe("mcp-wrapper client manager", () => {
 
 	test("closes the affected connection after call timeout", async () => {
 		const client = new FakeMcpClient();
+		const abortError = new DOMException(
+			"This operation was aborted",
+			"AbortError",
+		);
+		let callSignal: AbortSignal | undefined;
 		client.callTool = async (_params, options) =>
 			new Promise((_, reject) => {
+				callSignal = options.signal;
 				options.signal?.addEventListener("abort", () => {
-					reject(new Error("operation timed out"));
+					reject(abortError);
 				});
 			});
 		const manager = new McpClientManager({
@@ -424,7 +523,13 @@ describe("mcp-wrapper client manager", () => {
 				STDIO_SERVER,
 				{},
 			),
-		).rejects.toThrow("operation timed out");
+		).rejects.toMatchObject({
+			message: "MCP tool files/read timed out after 0.001 seconds",
+			cause: abortError,
+		});
+		expect(callSignal?.reason).toMatchObject({
+			message: "MCP tool files/read timed out after 0.001 seconds",
+		});
 		expect(client.closeCalls).toEqual(["close"]);
 	});
 });
