@@ -23,6 +23,7 @@ Current working directory: {{cwd}}
     1. Do not stop authorized work merely to save time, effort, or tokens.
     2. Use suitable command timeouts.
     3. Report actual limits that block completion.
+    4. Read file that you need to know (rules, documents, code) with `read`. Use `codemode` and `bash` to filter, count, or extract data, not to show content of files. When output of command can exceed 2000 lines or 50 KB, write it to file and read file with `read` in parts. When tool reports truncated output, read missing part before you rely on output.
 </execution_limits>
 
 <goal_guard>

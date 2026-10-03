@@ -593,7 +593,7 @@ describe("convene-council retries", () => {
 
 	test("truncates large final answers and saves the full output", async () => {
 		// Purpose: council output must use Pi-style truncation for large final answers.
-		// Input and expected output: large final answer produces a full-output notice and temp file details.
+		// Input and expected output: large final answer keeps its first lines and produces a next-line offset, full-output notice, and temp file details.
 		// Edge case: the full output file must contain the untruncated answer.
 		// Dependencies: shared truncation helper and system temp directory.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -620,7 +620,9 @@ describe("convene-council retries", () => {
 
 			const text =
 				result.content[0]?.type === "text" ? result.content[0].text : "";
-			expect(text).toContain("Full output:");
+			expect(text).toContain("line-0\n");
+			expect(text).not.toContain("line-2099");
+			expect(text).toContain("Use offset=");
 			const details = expectCouncilTruncationDetails(result.details);
 			expect(await readFile(details.fullOutputPath, "utf8")).toBe(largeAnswer);
 		});

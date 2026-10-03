@@ -1,7 +1,7 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation";
 
-/** Formats model-facing tool output using the same truncation policy as consult_advisor. */
+/** Formats model-facing tool output with shared truncation that keeps start of text, as consult_advisor does. */
 export async function formatToolOutput(
 	text: string,
 ): Promise<AgentToolResult<unknown>> {

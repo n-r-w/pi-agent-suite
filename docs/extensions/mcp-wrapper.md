@@ -91,6 +91,14 @@ Collapsed call arguments and text results are normalized into one logical line b
 
 Expanded calls retain their complete serialized arguments. Expanded results retain the original MCP text and use Pi Markdown rendering.
 
+## Result size
+
+The model receives at most 2000 lines or 50 KB of MCP text, as with Pi's `read` tool:
+
+- A JSON object or array larger than 50 KB is formatted with one value per line. Smaller JSON text stays unchanged.
+- When text exceeds the limit, the model receives its start, the range of shown lines, the offset of the next line, and the path of a temporary file with the complete text. The model reads the rest of this file with `read`.
+- A single line longer than 50 KB is cut at its first 50 KB.
+
 `settings.timeouts` parameters:
 
 | Parameter | Required | Type or shape | Default | Meaning |

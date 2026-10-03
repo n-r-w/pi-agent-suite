@@ -6,6 +6,8 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
 import { truncateToolTextOutput } from "../../shared/tool-output-truncation.ts";
 
+/** Spaces per nesting level of formatted JSON text. */
+const JSON_INDENT = 2;
 const TEMP_FILE_ID_BYTES = 8;
 const TEMP_FILE_MODE = 0o600;
 const IMAGE_MIME_EXTENSIONS: Readonly<Record<string, string>> = {
@@ -114,12 +116,31 @@ async function mapContentBlock(
 	block: McpContentBlock,
 ): Promise<MappedContentBlock> {
 	if (block.type === "text") {
-		return { text: block.text ?? "" };
+		return { text: formatJsonText(block.text ?? "") };
 	}
 	if (block.type === "image") {
 		return mapImageContent(block);
 	}
 	return { text: formatNonTextContent(block) };
+}
+
+/**
+ * Returns JSON object or array text larger than Pi's output byte limit with one value per line, so truncated
+ * output and saved full output can be read by line offset. Other text is returned unchanged.
+ */
+function formatJsonText(text: string): string {
+	if (Buffer.byteLength(text, "utf8") <= DEFAULT_MAX_BYTES) {
+		return text;
+	}
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		return text;
+	}
+	return typeof value === "object" && value !== null
+		? JSON.stringify(value, null, JSON_INDENT)
+		: text;
 }
 
 async function mapImageContent(

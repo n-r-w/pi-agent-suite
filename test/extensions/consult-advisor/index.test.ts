@@ -1040,8 +1040,8 @@ describe("consult-advisor", () => {
 
 	test("truncates large advisor output and saves full output to a temp file", async () => {
 		// Purpose: model-facing consult_advisor content must be bounded while complete advisor answers remain available from a temp file.
-		// Input and expected output: an advisor answer over the Pi line limit returns tail-truncated content plus a full-output path.
-		// Edge case: tail truncation preserves the latest advisor lines and omits the earliest line.
+		// Input and expected output: an advisor answer over the Pi line limit returns its first lines, the next line offset, and a full-output path.
+		// Edge case: truncation keeps the first advisor line, where the advisor summary starts, and omits the latest lines.
 		// Dependencies: this test uses temp config, Pi truncation constants, fake model registry, and fake completion function.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeConfig(agentDir, {
@@ -1077,11 +1077,11 @@ describe("consult-advisor", () => {
 			};
 
 			expect(content).not.toBe(advisorOutput);
-			expect(content).not.toContain("advisor line 1\n");
-			expect(content).toContain("advisor line 6\n");
-			expect(content).toContain(`advisor line ${totalLines}`);
+			expect(content).toStartWith("advisor line 1\n");
+			expect(content).toContain(`advisor line ${DEFAULT_MAX_LINES}\n`);
+			expect(content).not.toContain(`advisor line ${totalLines}`);
 			expect(content).toContain(
-				`[Showing lines 6-${totalLines} of ${totalLines}. Full output: `,
+				`[Showing lines 1-${DEFAULT_MAX_LINES} of ${totalLines}. Use offset=${DEFAULT_MAX_LINES + 1} to continue. Full output: `,
 			);
 			expect(details.truncation).toMatchObject({
 				truncated: true,
