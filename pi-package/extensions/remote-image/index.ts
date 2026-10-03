@@ -69,6 +69,8 @@ async function pasteRemoteImage(
 			return;
 		}
 		ctx.ui.pasteToEditor(result.path);
+		// TODO: Remove this redraw workaround when pi's pasteToEditor requests a render.
+		ctx.ui.setStatus("remote-image", undefined);
 	} catch (error) {
 		ctx.ui.notify(
 			`${ISSUE_PREFIX} Failed to receive image: ${formatError(error)}`,

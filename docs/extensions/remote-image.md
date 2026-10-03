@@ -11,7 +11,7 @@ The local computer runs the standalone helper. A local pi process and a local No
 - Local computer: macOS, Linux desktop, or Windows.
 - Remote server: Linux with pi-agent-suite installed.
 - Local and remote systems: OpenSSH.
-- SSH server: loopback reverse forwarding must be permitted.
+- SSH server: loopback reverse forwarding must be permitted. Configure server-side client liveness checks as described below so an interrupted tunnel releases its remote port.
 - Linux local computer: an X11 session, or a Wayland compositor with data-control support or XWayland. The desktop must activate `graphical-session.target` in the systemd user manager. Run setup from a terminal inside that graphical session.
 
 ## Local setup
@@ -50,6 +50,52 @@ The setup installs the helper for the current user, adds or updates the specifie
 The first connection can require normal OpenSSH host-key confirmation. Run `ssh user@server.example` once before setup when the host key has not been accepted.
 
 ## Remote setup
+
+### SSH server liveness checks
+
+Configure this on every remote server before using image paste. The local setup script installs the helper and its startup service; it does not change the remote SSH server configuration.
+
+With administrator access, append this block at the end of `/etc/ssh/sshd_config`. Replace `image-user` with the account used by the helper's SSH target:
+
+```text
+Match User image-user
+    ClientAliveInterval 30
+    ClientAliveCountMax 3
+```
+
+These settings apply to all SSH connections for `image-user`, including interactive sessions. Responsive clients remain connected. The server disconnects an unresponsive client after unanswered liveness checks and releases its reverse-forward ports. Detection is not instantaneous; use the 120-second interruption in the recovery check below. The helper already sets `ServerAliveInterval=30` and `ServerAliveCountMax=3` on the client, but client-side checks cannot terminate a stale session on the server. `TCPKeepAlive` alone does not provide the same detection interval.
+
+Check syntax and the effective settings before applying the configuration. Replace `image-user` and `192.0.2.10` with the SSH account and client address as seen by the server:
+
+```bash
+sudo /usr/sbin/sshd -t
+sudo /usr/sbin/sshd -T -C user=image-user,addr=192.0.2.10,host=192.0.2.10 | grep '^clientalive'
+```
+
+Expected output:
+
+```text
+clientaliveinterval 30
+clientalivecountmax 3
+```
+
+When the values differ, check earlier settings and matching blocks in `/etc/ssh/sshd_config` and its included files. Use the SSH client's reverse-resolved hostname for `host` when the server configuration uses `Match Host`.
+
+On Debian or Ubuntu, apply the configuration without terminating active sessions:
+
+```bash
+sudo systemctl reload ssh.service
+```
+
+On other systems, use the SSH server's reload command. Existing SSH sessions keep their original settings. Restart the local helper after the reload so its tunnels use new SSH sessions. On macOS:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/dev.pi.agent-suite.remote-image"
+```
+
+A pre-existing stale server session can still occupy the port. Use the targeted recovery procedure in Troubleshooting before checking reconnection.
+
+### Pi environment
 
 Set these variables in the environment that starts pi:
 
@@ -91,7 +137,21 @@ When other servers remain, removal restarts the helper with their tunnels. Remov
 3. Wait for the server path to appear in the editor.
 4. Submit the prompt when ready.
 
+After an image arrives, the extension requests an editor redraw so the saved path appears without another key press. This adds no visible status or success notification. The [editor redraw issue](../specs/issues/remote-image-editor-redraw/solution.md) records the pi 1.0.0 compatibility workaround and its removal condition.
+
 An empty image clipboard produces a warning and inserts no text. A tunnel, HTTP, or file error produces an error notification and inserts no path.
+
+## Verify tunnel recovery
+
+Run this check after the helper has established a new tunnel with the server-side liveness settings:
+
+1. Confirm that image paste works with a screenshot in the local clipboard.
+2. Interrupt network access between the local computer and the remote server. Keep access to the local computer so the network can be restored.
+3. Leave the tunnel unreachable for at least 120 seconds. On the remote server, verify that the old listener is gone with `sudo ss -ltnp '( sport = :18775 )'`. Use the configured image port when it differs from `18775`.
+4. Restore network access. The helper must establish a new tunnel without manual server-session cleanup. Inspect its runtime diagnostics for repeated forwarding failures.
+5. Copy another screenshot and press `Ctrl+V` in pi. The extension must insert a temporary PNG path.
+
+An image request during the outage can still time out. Server-side liveness checks prevent the old tunnel from blocking recovery after network access returns; they do not make image transfer work during an outage.
 
 ## Configuration
 
@@ -123,5 +183,6 @@ On macOS and Windows, diagnostics are appended to `remote-image.json.log` next t
 - `connection refused`: check that the helper is running and that the local and remote port values match. Inspect the runtime diagnostics for startup or SSH errors.
 - `Linux setup requires an active systemd graphical user session`: run setup in a desktop session that activates `graphical-session.target`. A machine-level service or a plain SSH login does not satisfy this requirement.
 - `remote port forwarding failed`: check that the remote port is unused and the SSH server permits loopback reverse forwarding.
+- Image paste times out and the SSH server reports `Address already in use`: a stale tunnel can still hold the image port after the local client loses its network address or connection. Check the listener with `sudo ss -ltnp '( sport = :18775 )'`, then inspect the owning SSH session with `sudo ss -tnp '( sport = :22 )'`. Use the configured image and SSH ports when they differ. Before terminating a process, verify that its PID owns the image listener and that its SSH connection belongs to the helper's local computer. Terminate only that stale session with `sudo kill -TERM <verified-session-pid>`. Do not kill all SSH sessions. Configure server-side liveness checks and establish a new tunnel as described in Remote setup; clearing the stale session alone does not prevent recurrence.
 - Repeated SSH authentication failures: run the same SSH target with the system `ssh` command. Check the host key and authentication settings.
 - Empty clipboard warning with an image copied on Linux: check the desktop session. Wayland requires data-control support or XWayland.

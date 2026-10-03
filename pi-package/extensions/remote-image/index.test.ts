@@ -8,6 +8,7 @@ interface ExtensionContextFake {
 	readonly ui: {
 		notify(message: string, level: string): void;
 		pasteToEditor(text: string): void;
+		setStatus(key: string, text: string | undefined): void;
 	};
 }
 
@@ -39,12 +40,16 @@ function createContext(): {
 		readonly level: string;
 	}>;
 	readonly pasted: string[];
+	readonly readRenderedEditorText: () => string;
+	readonly statuses: ReadonlyMap<string, string>;
 } {
 	const notifications: Array<{
 		message: string;
 		level: string;
 	}> = [];
 	const pasted: string[] = [];
+	let renderedEditorText = "";
+	const statuses = new Map([["another-extension", "Existing status"]]);
 	return {
 		context: {
 			ui: {
@@ -54,10 +59,20 @@ function createContext(): {
 				pasteToEditor(text): void {
 					pasted.push(text);
 				},
+				setStatus(key, text): void {
+					if (text === undefined) {
+						statuses.delete(key);
+					} else {
+						statuses.set(key, text);
+					}
+					renderedEditorText = pasted.join("");
+				},
 			},
 		},
 		notifications,
 		pasted,
+		readRenderedEditorText: () => renderedEditorText,
+		statuses,
 	};
 }
 
@@ -85,13 +100,10 @@ describe("remote-image", () => {
 		expect(localApi.shortcuts).toHaveLength(0);
 	});
 
-	test("pastes a saved server path", async () => {
-		// Purpose: a successful transfer must insert the remote file path into the editor.
-		// Input and expected output: the receiver returns a PNG path and the editor receives it once.
-		// Edge case: no success notification or message submission is required.
-		// Dependencies: the transfer is isolated behind a deterministic fake.
+	test("renders a saved server path without another key press", async () => {
 		const api = createApi();
-		const { context, notifications, pasted } = createContext();
+		const { context, notifications, pasted, readRenderedEditorText, statuses } =
+			createContext();
 		const dependencies: RemoteImageDependencies = {
 			readConfig: () => ({ kind: "enabled", port: 18775 }),
 			receiveImage: async () => ({
@@ -104,6 +116,8 @@ describe("remote-image", () => {
 		await api.shortcuts[0]?.handler(context);
 
 		expect(pasted).toEqual(["/tmp/pi-remote-image/example.png"]);
+		expect(readRenderedEditorText()).toBe("/tmp/pi-remote-image/example.png");
+		expect([...statuses]).toEqual([["another-extension", "Existing status"]]);
 		expect(notifications).toEqual([]);
 	});
 
