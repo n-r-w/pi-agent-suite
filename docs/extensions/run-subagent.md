@@ -84,6 +84,40 @@ Configuration and description files are read once while the extension runtime st
 
 The root agent has depth `0`. With the default `maxDepth` of `1`, the root can start direct children, but those children cannot delegate further.
 
+## Additional extensions
+
+Configure child extension loading in `~/.pi/agent/agent-suite/agent-selection/config.json`. The suite root follows `PI_AGENT_SUITE_DIR` when set. This is separate from `run-subagent/config.json`.
+
+```json
+{
+  "subagents": {
+    "extensions": {
+      "mode": "explicit",
+      "include": [
+        "builtin:codemode",
+        "/absolute/path/to/custom-extension.ts"
+      ]
+    }
+  }
+}
+```
+
+| Mode | Child extension loading |
+| --- | --- |
+| `none` | Only `pi-package`. User, project, and built-in extension discovery is disabled. |
+| `all` | `pi-package` plus extensions enabled by ordinary Pi user and project settings. |
+| `explicit` | `pi-package` plus only the sources listed in `include`. Automatic discovery is disabled. |
+
+An absent file, `subagents` section, or `extensions` section uses `all`. This permits ordinary Pi extension settings without an implicit package-only restriction. Select `none` to require package-only workers.
+
+`include` is required and permitted only in `explicit` mode. It accepts file paths, directory paths, and `builtin:<name>` identifiers using Pi's `-e` semantics. Relative paths resolve against the child's project working directory. Entries must be non-whitespace strings; an empty array loads no additional extensions. Built-in extensions such as `builtin:codemode` are additional extensions and must be listed in `explicit` mode.
+
+The top-level object accepts `enabled` and `subagents`. `enabled` retains its main-agent selection meaning. The `subagents` object accepts only `extensions`, which accepts only `mode` and the explicit-mode `include` list. Invalid JSON, unreadable files, unknown keys, or invalid values reject run-subagent extension loading with a diagnostic identifying the configuration file. This setting has no legacy configuration fallback.
+
+Extension loading and tool permission are separate. The agent's `tools` policy still restricts its final tool set. `defaultTools` and enable-tools can activate a registered tool, but neither can supply an extension disabled by the loading mode.
+
+The policy is read once during extension initialization. Restart Pi to apply changes. New direct children, nested children, and resumed terminal sessions use the policy. Steering an active child reuses its already loaded extensions. Other package child launchers are outside this setting.
+
 ## Callable agents and tool policy
 
 Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended or replaced by definitions under `<cwd>/.pi/agents`.

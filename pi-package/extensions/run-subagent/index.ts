@@ -63,6 +63,7 @@ import {
 } from "./entry-config";
 import { readSubagentAgentId } from "./environment";
 import { errorMessage } from "./error-message";
+import { readSubagentExtensionArgs } from "./extension-config";
 import { materializeForkHierarchy } from "./fork-hierarchy";
 import { InvocationSupervisor } from "./invocation-supervisor";
 import { parseFeedback, parseJournalRecord } from "./journal-codec";
@@ -156,6 +157,7 @@ interface RuntimeState {
 	readonly resolveConfig: () => Promise<SubagentsConfig>;
 	readonly failures: Map<string, SubagentFailureDetails>;
 	readonly childStartupConfig: ChildStartupConfig;
+	readonly extensionArgs: readonly string[];
 	readonly recordChildStartupAttempt: ReturnType<
 		typeof createChildAuthStartupDiagnosticRecorder
 	>;
@@ -206,6 +208,7 @@ export default async function subagents(
 			Promise.reject(new Error("subagent configuration is initializing")),
 		failures: new Map(),
 		childStartupConfig,
+		extensionArgs: readSubagentExtensionArgs(),
 		recordChildStartupAttempt,
 		config: undefined,
 		initialization: undefined,
@@ -773,7 +776,10 @@ async function executeTool(
 async function createRootRuntime(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
-	state: Pick<RuntimeState, "childStartupConfig" | "recordChildStartupAttempt">,
+	state: Pick<
+		RuntimeState,
+		"childStartupConfig" | "recordChildStartupAttempt" | "extensionArgs"
+	>,
 ): Promise<RootRuntime> {
 	const owner = ownerFromContext(ctx);
 	const writer = createActiveWriter(pi, ctx, owner);
@@ -796,6 +802,7 @@ async function createRootRuntime(
 		recoveries,
 		queryBranches,
 		childStartupConfig: state.childStartupConfig,
+		extensionArgs: state.extensionArgs,
 		recordChildStartupAttempt: state.recordChildStartupAttempt,
 		getCoordinator: () => requireCoordinator(coordinator),
 	});
@@ -849,6 +856,7 @@ function createRootSupervisor(options: {
 	readonly recoveries: RuntimeFailureRecoveryTracker;
 	readonly queryBranches: QueryBranchAccess;
 	readonly childStartupConfig: ChildStartupConfig;
+	readonly extensionArgs: readonly string[];
 	readonly recordChildStartupAttempt: ReturnType<
 		typeof createChildAuthStartupDiagnosticRecorder
 	>;
@@ -857,6 +865,7 @@ function createRootSupervisor(options: {
 	let supervisor: InvocationSupervisor;
 	supervisor = new InvocationSupervisor({
 		bridge: options.bridge,
+		extensionArgs: options.extensionArgs,
 		childStartupConfig: options.childStartupConfig,
 		recordChildStartupAttempt: options.recordChildStartupAttempt,
 		rootSessionId: options.ctx.sessionManager.getSessionId(),

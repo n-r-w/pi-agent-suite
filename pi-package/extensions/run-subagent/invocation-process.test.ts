@@ -51,8 +51,42 @@ function createShutdownChild(exitAt: "abort" | "term" | "kill" | "stubborn"): {
 }
 
 describe("invocation process helpers", () => {
+	test.each([
+		{ extensionArgs: ["--no-extensions"] },
+		{
+			extensionArgs: [
+				"--no-extensions",
+				"-e",
+				"builtin:codemode",
+				"-e",
+				"/custom.ts",
+			],
+		},
+	])("applies extension selection while always loading the package %#", ({
+		extensionArgs,
+	}) => {
+		expect(
+			buildChildArgs({
+				packagePath: "/package",
+				extensionArgs,
+				childPiSessionId: "child-id",
+				childSessionDir: "/sessions",
+			}),
+		).toEqual([
+			"--mode",
+			"rpc",
+			...extensionArgs,
+			"-e",
+			"/package",
+			"--session-dir",
+			"/sessions",
+			"--session-id",
+			"child-id",
+		]);
+	});
+
 	test("builds new and resumed worker arguments with explicit launch policy", () => {
-		// Purpose: process arguments must isolate extensions and preserve exactly one session selection mode.
+		// Purpose: normal extension discovery must preserve exactly one session selection mode.
 		// Input and expected output: new and resumed launches share package, model, and thinking arguments.
 		// Edge case: prompt-free launch omits model policy while a resumed launch omits a new session ID.
 		// Dependencies: pure production argument builder.
@@ -70,12 +104,14 @@ describe("invocation process helpers", () => {
 		expect({
 			created: buildChildArgs({
 				packagePath: "/package",
+				extensionArgs: [],
 				childPiSessionId: "child-id",
 				childSessionDir: "/sessions",
 				launch,
 			}),
 			resumed: buildChildArgs({
 				packagePath: "/package",
+				extensionArgs: [],
 				childPiSessionId: "ignored-id",
 				childSessionDir: "/sessions",
 				childSessionFile: "/sessions/child.jsonl",
@@ -83,6 +119,7 @@ describe("invocation process helpers", () => {
 			}),
 			promptFree: buildChildArgs({
 				packagePath: "/package",
+				extensionArgs: [],
 				childPiSessionId: "child-id",
 				childSessionDir: "/sessions",
 			}),
@@ -90,7 +127,6 @@ describe("invocation process helpers", () => {
 			created: [
 				"--mode",
 				"rpc",
-				"--no-extensions",
 				"-e",
 				"/package",
 				"--session-dir",
@@ -105,7 +141,6 @@ describe("invocation process helpers", () => {
 			resumed: [
 				"--mode",
 				"rpc",
-				"--no-extensions",
 				"-e",
 				"/package",
 				"--session-dir",
@@ -120,7 +155,6 @@ describe("invocation process helpers", () => {
 			promptFree: [
 				"--mode",
 				"rpc",
-				"--no-extensions",
 				"-e",
 				"/package",
 				"--session-dir",

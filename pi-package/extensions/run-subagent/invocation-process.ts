@@ -15,9 +15,10 @@ const ABORT_COMMAND_ID = "abort";
 const ABORT_GRACE_MS = 10_000;
 const TERMINATE_GRACE_MS = 5_000;
 
-/** Builds an isolated package-loaded Pi RPC worker command. */
+/** Builds a Pi RPC worker command with explicit package and extension loading. */
 export function buildChildArgs(options: {
 	readonly packagePath: string;
+	readonly extensionArgs: readonly string[];
 	readonly childPiSessionId: string;
 	readonly childSessionDir: string;
 	readonly childSessionFile?: string;
@@ -40,7 +41,7 @@ export function buildChildArgs(options: {
 	return [
 		"--mode",
 		"rpc",
-		"--no-extensions",
+		...options.extensionArgs,
 		"-e",
 		options.packagePath,
 		...sessionArgs,

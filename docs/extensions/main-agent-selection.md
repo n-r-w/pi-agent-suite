@@ -14,7 +14,12 @@ Full example:
 
 ```json
 {
-  "enabled": true
+  "enabled": true,
+  "subagents": {
+    "extensions": {
+      "mode": "all"
+    }
+  }
 }
 ```
 
@@ -23,6 +28,7 @@ Full example:
 | Name | Type or shape | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `enabled` | Boolean | No | `true` | Enables `/agent` and `Ctrl+Alt+A`. Set to `false` to disable this extension. |
+| `subagents.extensions` | Object | No | `{ "mode": "all" }` | Controls additional extensions loaded by run-subagent workers. Modes are `none`, `all`, and `explicit`. See [additional extensions](run-subagent.md#additional-extensions) for list syntax and behavior. |
 
 ## Agent definitions
 

@@ -420,6 +420,7 @@ export class InvocationSupervisor implements InvocationControl {
 		const launch = request.launchConfiguration;
 		const args = buildChildArgs({
 			packagePath: this.options.packagePath ?? defaultPackagePath(),
+			extensionArgs: this.options.extensionArgs ?? [],
 			childPiSessionId,
 			childSessionDir,
 			...(request.childSessionFile === undefined

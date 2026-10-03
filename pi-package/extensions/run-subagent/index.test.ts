@@ -50,6 +50,7 @@ import type { JournalRecord, LogicalSession, OwnerIdentity } from "./domain";
 import { readPrompt } from "./entry-config";
 import subagents from "./index";
 import type { InvocationAcceptance } from "./invocation-contracts";
+import { defaultPackagePath } from "./invocation-process";
 import { InvocationSupervisor } from "./invocation-supervisor";
 import type { ManagementScreen } from "./management-screen/screen";
 import { SessionStore, SUBAGENT_JOURNAL_CUSTOM_TYPE } from "./persistence";
@@ -307,6 +308,82 @@ afterEach(() => {
 });
 
 describe("subagents entry", () => {
+	test.each([
+		{ mode: "all", expected: [] },
+		{ mode: "none", expected: ["--no-extensions"] },
+		{
+			mode: "explicit",
+			expected: ["--no-extensions", "-e", "builtin:codemode"],
+		},
+	])("starts children with the configured $mode extension selection", async ({
+		mode,
+		expected,
+	}) => {
+		writeFileSync(
+			join(suiteDir, "agent-selection", "config.json"),
+			JSON.stringify({
+				subagents: {
+					extensions: {
+						mode,
+						...(mode === "explicit" ? { include: ["builtin:codemode"] } : {}),
+					},
+				},
+			}),
+		);
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Helper.md"),
+			"---\ndescription: Helper\ntype: subagent\n---\nFixture",
+		);
+		const spawnedArgs: string[][] = [];
+		const spawn = spyOn(
+			await import("./invocation-process"),
+			"defaultSpawnProcess",
+		).mockImplementation((_command, args) => {
+			spawnedArgs.push([...args]);
+			throw new Error("fixture process startup intercepted");
+		});
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, [], {
+			model: TEST_MODEL,
+			authenticated: true,
+		});
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			await expect(
+				getTool(pi, "subagent_start").execute(
+					"extension-start",
+					{ agentId: "Helper", taskName: "Fixture", prompt: "fixture" },
+					undefined,
+					undefined,
+					ctx,
+				),
+			).rejects.toThrow("fixture process startup intercepted");
+			const args = spawnedArgs[0] ?? [];
+			expect(args.slice(0, args.indexOf("--session-dir"))).toEqual([
+				"--mode",
+				"rpc",
+				...expected,
+				"-e",
+				defaultPackagePath(),
+			]);
+			expect(spawnedArgs).toHaveLength(1);
+		} finally {
+			spawn.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
+
+	test("rejects invalid agent-selection extension settings during loading", async () => {
+		writeFileSync(
+			join(suiteDir, "agent-selection", "config.json"),
+			JSON.stringify({ subagents: { extensions: { mode: "unknown" } } }),
+		);
+		await expect(subagents(createPiFake())).rejects.toThrow(
+			"agent-selection/config.json",
+		);
+	});
+
 	test("rejects invalid shared child startup configuration during extension loading", async () => {
 		// Purpose: child launchers must fail before tool use when their shared recovery policy is invalid.
 		// Input and expected output: an unsupported child-startup key rejects the extension factory.

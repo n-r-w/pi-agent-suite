@@ -140,6 +140,7 @@ export interface InvocationSupervisorOptions {
 	) => Promise<InvocationLaunchConfiguration>;
 	readonly sessionsDir?: string;
 	readonly packagePath?: string;
+	readonly extensionArgs?: readonly string[];
 	readonly command?: string;
 	readonly childEnvironment?: Readonly<Record<string, string>>;
 	readonly rootSessionId?: string;

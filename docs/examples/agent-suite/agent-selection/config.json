@@ -1,0 +1,8 @@
+{
+	"enabled": true,
+	"subagents": {
+		"extensions": {
+			"mode": "all"
+		}
+	}
+}
