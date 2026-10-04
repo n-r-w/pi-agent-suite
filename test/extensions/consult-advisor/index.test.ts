@@ -956,7 +956,7 @@ describe("consult-advisor", () => {
 			expect(ctx.notifications).toEqual([]);
 			expect(completion.calls).toHaveLength(1);
 			expect(completion.calls[0]?.context.systemPrompt).toContain(
-				"You are an advisor: a highly skilled",
+				"You are advisor. Executor is agent that works on task of user.",
 			);
 		});
 	});
