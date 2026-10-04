@@ -21,6 +21,7 @@ import {
 	type AgentDefinition,
 	loadAgentDefinitions,
 } from "../../shared/agent-registry";
+import { getAgentRegistryWarningReporter } from "../../shared/agent-registry-warnings";
 import {
 	getAgentRuntimeComposition,
 	markAgentRuntimeCompositionStale,
@@ -91,6 +92,7 @@ interface MainAgentContext {
 	readonly hasUI?: boolean;
 	readonly model: Model<Api> | undefined;
 	readonly sessionManager: {
+		getSessionId(): string;
 		getSessionFile(): string | undefined;
 	};
 	readonly ui: {
@@ -599,7 +601,7 @@ async function restoreSessionReplacementMainAgent(
 	}
 
 	const activeAgentId = handoff.activeAgentId;
-	const agents = await loadSelectableAgents(mainContext.cwd);
+	const agents = await loadSelectableAgents(pi, mainContext);
 	const agent = agents.find((candidate) =>
 		agentIdMatches(candidate.id, activeAgentId),
 	);
@@ -714,7 +716,7 @@ async function restoreSelectedMainAgent(
 ): Promise<void> {
 	const composition = getAgentRuntimeComposition(pi);
 	const normalizedCwd = normalizeCwd(mainContext.cwd);
-	const agents = await loadSelectableAgents(mainContext.cwd);
+	const agents = await loadSelectableAgents(pi, mainContext);
 	const state = await readSelectedAgentState(normalizedCwd);
 	writeRuntimeDiagnostic("main-agent-selection.restore.state-read", {
 		cwd: normalizedCwd,
@@ -769,7 +771,7 @@ async function selectMainAgent(
 		ctx: MainAgentContext,
 	) => Promise<void>,
 ): Promise<void> {
-	const agents = await loadSelectableAgents(ctx.cwd);
+	const agents = await loadSelectableAgents(pi, ctx);
 	const selectedAgentId =
 		explicitAgentId ?? (await promptForAgent(pi, ctx, agents));
 	if (selectedAgentId === undefined) {
@@ -821,8 +823,14 @@ async function applySelectedMainAgent(
 }
 
 /** Loads agents that can be used as top-level main agents for the active project registry. */
-async function loadSelectableAgents(cwd: string): Promise<AgentDefinition[]> {
-	const agents = await loadAgentDefinitions(cwd);
+async function loadSelectableAgents(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+): Promise<AgentDefinition[]> {
+	const agents = await loadAgentDefinitions(
+		ctx.cwd,
+		getAgentRegistryWarningReporter(pi, ctx),
+	);
 	return agents.filter(
 		(agent) => agent.type === "main" || agent.type === "both",
 	);
@@ -1285,23 +1293,11 @@ function normalizeCwd(cwd: string): string {
 /** Reports a visible issue scoped only to main-agent-selection. */
 function reportIssue(ctx: MainAgentContext, issue: string): void {
 	if (ctx.hasUI === false) {
+		process.stderr.write(`${ISSUE_PREFIX} ${issue}\n`);
 		return;
 	}
 
 	ctx.ui.notify(`${ISSUE_PREFIX} ${issue}`, "warning");
-}
-
-/**
- * Reports an agent selection error to the user.
- * In interactive mode, delegates to {@link reportIssue}.
- * In print mode (-p), writes to stderr because ctx.ui is unavailable.
- */
-function reportAgentError(ctx: MainAgentContext, issue: string): void {
-	if (ctx.hasUI === false) {
-		process.stderr.write(`${ISSUE_PREFIX} ${issue}\n`);
-		return;
-	}
-	reportIssue(ctx, issue);
 }
 
 /**
@@ -1319,12 +1315,12 @@ async function applyEphemeralAgent(
 		getAgentRuntimeComposition(pi).clearMainAgentContribution();
 		return;
 	}
-	const agents = await loadSelectableAgents(ctx.cwd);
+	const agents = await loadSelectableAgents(pi, ctx);
 	const agent = agents.find((candidate) =>
 		agentIdMatches(candidate.id, agentId),
 	);
 	if (agent === undefined) {
-		reportAgentError(ctx, `agent ${agentId} was not found`);
+		reportIssue(ctx, `agent ${agentId} was not found`);
 		return;
 	}
 	await applyAgentSelection(pi, ctx, agent);

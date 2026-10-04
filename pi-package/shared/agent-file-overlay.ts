@@ -14,6 +14,7 @@ export interface SelectedAgentFile {
 export function selectAgentFiles(
 	globalEntries: readonly string[] = [],
 	projectEntries: readonly string[] = [],
+	reportWarning?: (warning: string) => void,
 ): SelectedAgentFile[] {
 	const projectGroups = groupProjectEntries(projectEntries);
 	const projectKeys = new Set(projectGroups.keys());
@@ -25,9 +26,13 @@ export function selectAgentFiles(
 		.map((entry) => ({ source: "global" as const, entry }));
 	const projectFiles = [...projectGroups.values()].flatMap((entries) => {
 		const [entry, duplicate] = entries;
-		return entry === undefined || duplicate !== undefined
-			? []
-			: [{ source: "project" as const, entry }];
+		if (duplicate !== undefined) {
+			reportWarning?.(
+				`ambiguous agent filenames after Unicode normalization; skipped: ${entries.join(", ")}`,
+			);
+			return [];
+		}
+		return entry === undefined ? [] : [{ source: "project" as const, entry }];
 	});
 
 	return [...globalFiles, ...projectFiles].sort((left, right) =>

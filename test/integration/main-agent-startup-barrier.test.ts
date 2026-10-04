@@ -336,7 +336,7 @@ test("real extension runner blocks first input before main-agent startup dispatc
 	);
 });
 
-test("real extension runner handles input after selected-agent startup restoration throws", async () => {
+test("real extension runner continues input after an agent registry warning", async () => {
 	await withIsolatedStartupEnvironment(
 		"pi-main-agent-startup-failure-",
 		async (environment) => {
@@ -391,15 +391,9 @@ test("real extension runner handles input after selected-agent startup restorati
 				});
 			}
 
-			expect(inputResult).toEqual({ action: "handled" });
-			expect(extensionErrors).toHaveLength(1);
-			expect(extensionErrors[0]).toMatchObject({
-				event: "session_start",
-			});
-			expect(extensionErrors[0]?.error).toContain(
-				"failed to read suite agents directory",
-			);
-			expect(environment.sharedGlobal[BEFORE_AGENT_START_COUNT_KEY]).toBe(0);
+			expect(inputResult).toEqual({ action: "continue" });
+			expect(extensionErrors).toHaveLength(0);
+			expect(environment.sharedGlobal[BEFORE_AGENT_START_COUNT_KEY]).toBe(1);
 
 			rmSync(agentsPath);
 			mkdirSync(agentsPath);
@@ -419,14 +413,14 @@ test("real extension runner handles input after selected-agent startup restorati
 				].join("\n"),
 			);
 			await runner.emit({ type: "session_start", reason: "reload" });
-			expect(extensionErrors).toHaveLength(1);
+			expect(extensionErrors).toHaveLength(0);
 			expect(
 				await runner.emitInput("later input", undefined, "interactive"),
 			).toMatchObject({ action: "continue" });
 			await runner.emitBeforeAgentStart("later input", undefined, {
 				cwd: environment.cwd,
 			});
-			expect(environment.sharedGlobal[BEFORE_AGENT_START_COUNT_KEY]).toBe(1);
+			expect(environment.sharedGlobal[BEFORE_AGENT_START_COUNT_KEY]).toBe(2);
 			expect(environment.sharedGlobal[RUNTIME_OBSERVATION_KEY]).toEqual({
 				tools: ["read"],
 				workflows: [],

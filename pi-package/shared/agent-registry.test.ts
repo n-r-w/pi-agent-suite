@@ -20,6 +20,65 @@ afterEach(async () => {
 	);
 });
 
+describe("agent registry warnings", () => {
+	test.each([
+		["YAML syntax", 'tools: [read,\n"bash"]', "indented"],
+		["unknown field", "typo: true", "typo"],
+		["agent type", "type: worker", "type"],
+		["description", "description: 17", "description"],
+		["model", "model: [bad]", "model"],
+		["tools", "tools: [read, read]", "tools"],
+		["workflows", "workflows: review", "workflows"],
+		["agents", "agents: [Worker, Worker]", "agents"],
+	])("warns about %s while keeping valid agents", async (_case, metadata, reason) => {
+		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
+			const path = join(globalAgentsDir, "Invalid.md");
+			await writeFile(path, `---\n${metadata}\n---\n`);
+			await writeAgent(globalAgentsDir, "Valid.md", "main", "Valid");
+			const warnings: string[] = [];
+			const agents = await loadAgentDefinitions(projectDir, (warning: string) =>
+				warnings.push(warning),
+			);
+			expect(agents.map((agent) => agent.id)).toEqual(["Valid"]);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain(path);
+			expect(warnings[0]).toContain(reason);
+		});
+	});
+
+	test("warns about unreadable agent files without failing the registry", async () => {
+		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
+			const path = join(globalAgentsDir, "Directory.md");
+			await mkdir(path);
+			await writeAgent(globalAgentsDir, "Valid.md", "main", "Valid");
+			const warnings: string[] = [];
+			const agents = await loadAgentDefinitions(projectDir, (warning: string) =>
+				warnings.push(warning),
+			);
+			expect(agents.map((agent) => agent.id)).toEqual(["Valid"]);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain(path);
+			expect(warnings[0]).toContain("read");
+		});
+	});
+
+	test("warns about an unreadable project registry while keeping global agents", async () => {
+		await withRegistryFixture(async ({ globalAgentsDir, projectDir }) => {
+			await writeAgent(globalAgentsDir, "Valid.md", "main", "Valid");
+			await mkdir(join(projectDir, ".pi"));
+			const path = join(projectDir, ".pi", "agents");
+			await writeFile(path, "");
+			const warnings: string[] = [];
+			const agents = await loadAgentDefinitions(projectDir, (warning: string) =>
+				warnings.push(warning),
+			);
+			expect(agents.map((agent) => agent.id)).toEqual(["Valid"]);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain(path);
+		});
+	});
+});
+
 describe("agent registry project overlay", () => {
 	test("merges project agents while preserving exact case variants", async () => {
 		// Purpose: one project registry must extend both main-agent selection and Subagents without collapsing distinct agent names.

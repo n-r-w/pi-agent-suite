@@ -7,15 +7,20 @@ describe("agent file overlay", () => {
 		// Input and expected output: K and Kelvin-sign files normalize to K and are excluded, while lowercase global k remains distinct.
 		// Edge case: unrelated global and project agents remain selected in deterministic order.
 		// Dependencies: the pure selector avoids filesystem normalization differences between macOS and Linux.
+		const warnings: string[] = [];
 		expect(
 			selectAgentFiles(
 				["k.md", "GlobalOnly.md"],
 				["K.md", "K.md", "ProjectOnly.md", "notes.txt"],
+				(warning: string) => warnings.push(warning),
 			),
 		).toEqual([
 			{ source: "global", entry: "GlobalOnly.md" },
 			{ source: "global", entry: "k.md" },
 			{ source: "project", entry: "ProjectOnly.md" },
 		]);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("K.md");
+		expect(warnings[0]).toContain("K.md");
 	});
 });

@@ -122,6 +122,8 @@ The policy is read once during extension initialization. Restart Pi to apply cha
 
 Callable agents come from the shared agent registry documented in [main-agent-selection](main-agent-selection.md). Global definitions under `~/.pi/agent/agent-suite/agent-selection/agents` are extended or replaced by definitions under `<cwd>/.pi/agents`.
 
+Registry failures produce [warnings](main-agent-selection.md#registry-warnings) while startup continues. `run-subagent` uses the shared reporter even when loaded alone, so each distinct warning appears once per session.
+
 A project agent definition supplies the child prompt, model, thinking level, tool patterns, workflow policy, and callable subagents. Each child resolves its own tool patterns against its complete runtime tool catalog. The caller's active tool list does not become the child's tool list.
 
 An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.

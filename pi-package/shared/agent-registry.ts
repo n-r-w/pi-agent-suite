@@ -24,12 +24,9 @@ const TOP_LEVEL_KEYS = [
 const AGENT_TYPES = ["main", "subagent", "both"] as const;
 
 type AgentType = (typeof AGENT_TYPES)[number];
-type AgentSource = "suite" | "legacy" | "project";
-
 interface AgentDirectory {
 	readonly path: string;
 	readonly entries: readonly string[];
-	readonly source: AgentSource;
 }
 
 interface AgentFile {
@@ -52,21 +49,28 @@ export interface AgentDefinition {
 /** Loads the global registry overlaid by valid project-owned agent file identities for one working directory. */
 export async function loadAgentDefinitions(
 	cwd: string,
+	reportWarning: (warning: string) => void = (warning) =>
+		process.stderr.write(`[agent-registry] ${warning}\n`),
 ): Promise<AgentDefinition[]> {
 	const [globalDirectory, projectDirectory] = await Promise.all([
-		resolveGlobalAgentsDir(),
-		resolveProjectAgentsDir(cwd),
+		resolveGlobalAgentsDir(reportWarning),
+		resolveProjectAgentsDir(cwd, reportWarning),
 	]);
 	const agentFiles = resolveSelectedAgentFiles(
 		globalDirectory,
 		projectDirectory,
+		reportWarning,
 	);
-	const agents = await Promise.all(agentFiles.map(readAgentDefinition));
+	const agents = await Promise.all(
+		agentFiles.map((file) => readAgentDefinition(file, reportWarning)),
+	);
 	return agents.filter((agent) => agent !== undefined);
 }
 
 /** Resolves suite-owned agent definitions and uses the legacy directory only when suite storage is absent. */
-async function resolveGlobalAgentsDir(): Promise<AgentDirectory | undefined> {
+async function resolveGlobalAgentsDir(
+	reportWarning: (warning: string) => void,
+): Promise<AgentDirectory | undefined> {
 	const suiteAgentsDir = join(
 		getSuiteExtensionDir(AGENT_SELECTION_EXTENSION_DIR),
 		AGENTS_DIR,
@@ -75,13 +79,13 @@ async function resolveGlobalAgentsDir(): Promise<AgentDirectory | undefined> {
 		return {
 			path: suiteAgentsDir,
 			entries: await readdir(suiteAgentsDir),
-			source: "suite",
 		};
 	} catch (error) {
 		if (!isFileNotFoundError(error)) {
-			throw new Error(
-				`failed to read suite agents directory: ${formatError(error)}`,
+			reportWarning(
+				`failed to read agents directory ${suiteAgentsDir}: ${formatError(error)}`,
 			);
+			return undefined;
 		}
 	}
 
@@ -90,31 +94,36 @@ async function resolveGlobalAgentsDir(): Promise<AgentDirectory | undefined> {
 		return {
 			path: legacyAgentsDir,
 			entries: await readdir(legacyAgentsDir),
-			source: "legacy",
 		};
-	} catch {
+	} catch (error) {
+		if (!isFileNotFoundError(error)) {
+			reportWarning(
+				`failed to read agents directory ${legacyAgentsDir}: ${formatError(error)}`,
+			);
+		}
 		return undefined;
 	}
 }
 
-/** Resolves the optional project registry without treating an unreadable path as an empty registry. */
+/** Resolves project agents and reports unreadable storage while preserving global agents. */
 async function resolveProjectAgentsDir(
 	cwd: string,
+	reportWarning: (warning: string) => void,
 ): Promise<AgentDirectory | undefined> {
 	const projectAgentsDir = join(cwd, PROJECT_RESOURCES_DIR, AGENTS_DIR);
 	try {
 		return {
 			path: projectAgentsDir,
 			entries: await readdir(projectAgentsDir),
-			source: "project",
 		};
 	} catch (error) {
 		if (isFileNotFoundError(error)) {
 			return undefined;
 		}
-		throw new Error(
-			`failed to read project agents directory: ${formatError(error)}`,
+		reportWarning(
+			`failed to read agents directory ${projectAgentsDir}: ${formatError(error)}`,
 		);
+		return undefined;
 	}
 }
 
@@ -122,10 +131,12 @@ async function resolveProjectAgentsDir(
 function resolveSelectedAgentFiles(
 	globalDirectory: AgentDirectory | undefined,
 	projectDirectory: AgentDirectory | undefined,
+	reportWarning: (warning: string) => void,
 ): AgentFile[] {
 	const selectedFiles = selectAgentFiles(
 		globalDirectory?.entries,
 		projectDirectory?.entries,
+		(warning) => reportWarning(`${projectDirectory?.path}: ${warning}`),
 	);
 	return selectedFiles.map((selectedFile) => ({
 		directory: resolveSelectedAgentDirectory(
@@ -152,38 +163,46 @@ function resolveSelectedAgentDirectory(
 	throw new Error(`selected ${source} agent file has no source directory`);
 }
 
-/** Reads and parses one selected agent definition while isolating malformed project and legacy files. */
+/** Reads one selected agent file and reports read or validation failures before skipping it. */
 async function readAgentDefinition(
 	file: AgentFile,
+	reportWarning: (warning: string) => void,
 ): Promise<AgentDefinition | undefined> {
+	const filePath = join(file.directory.path, file.entry);
 	let content: string;
 	try {
-		content = await readFile(join(file.directory.path, file.entry), "utf8");
+		content = await readFile(filePath, "utf8");
 	} catch (error) {
-		if (file.directory.source === "suite") {
-			throw new Error(
-				`failed to read suite agent definition ${file.entry}: ${formatError(error)}`,
-			);
-		}
+		reportWarning(
+			`failed to read agent definition ${filePath}; skipped: ${formatError(error)}`,
+		);
 		return undefined;
 	}
 
 	try {
 		return parseAgentDefinition(file.entry, content);
-	} catch {
+	} catch (error) {
+		reportWarning(
+			`invalid agent definition ${filePath}; skipped: ${formatError(error)}`,
+		);
 		return undefined;
 	}
 }
 
-/** Parses and validates one agent definition file. */
+/** Parses one agent definition and throws a field-specific error for invalid metadata. */
 function parseAgentDefinition(
 	fileName: string,
 	content: string,
-): AgentDefinition | undefined {
+): AgentDefinition {
 	const parsed = parseFrontmatter(content);
 	const frontmatter = parsed.frontmatter;
 	if (!hasOnlyKeys(frontmatter, TOP_LEVEL_KEYS)) {
-		return undefined;
+		const unknownKeys = Object.keys(frontmatter).filter(
+			(key) => !TOP_LEVEL_KEYS.includes(key as never),
+		);
+		throw new Error(
+			`unsupported frontmatter fields: ${unknownKeys.join(", ")}`,
+		);
 	}
 
 	const {
@@ -196,36 +215,42 @@ function parseAgentDefinition(
 	} = frontmatter;
 	const type = rawType ?? "main";
 	if (!isAgentType(type)) {
-		return undefined;
+		throw new Error("type must be main, subagent, or both");
 	}
 
 	if (description !== undefined && !isSingleLineText(description)) {
-		return undefined;
+		throw new Error("description must be non-empty, trimmed, single-line text");
 	}
 
 	const model = parseModel(rawModel);
 	if (model === false) {
-		return undefined;
+		throw new Error("model must contain only a valid id and thinking level");
 	}
 
 	const tools = parseStringList(rawTools);
 	if (tools === false) {
-		return undefined;
+		throw new Error("tools must be a list of unique non-empty strings");
 	}
 
 	const workflows = parseIdentityList(rawWorkflows);
 	if (workflows === false) {
-		return undefined;
+		throw new Error(
+			"workflows must be a list of unique, trimmed, single-line names",
+		);
 	}
 
 	const agents = parseIdentityList(rawAgents);
 	if (agents === false) {
-		return undefined;
+		throw new Error(
+			"agents must be a list of unique, trimmed, single-line names",
+		);
 	}
 
 	const id = basename(fileName, AGENT_FILE_EXTENSION).normalize("NFC");
 	if (!isSingleLineText(id)) {
-		return undefined;
+		throw new Error(
+			"agent filename must be non-empty, trimmed, single-line text",
+		);
 	}
 
 	return {

@@ -9,6 +9,7 @@ import {
 	type AgentDefinition,
 	loadAgentDefinitions,
 } from "../../shared/agent-registry";
+import { getAgentRegistryWarningReporter } from "../../shared/agent-registry-warnings";
 import {
 	getAgentRuntimeComposition,
 	type MainAgentRuntimeInfo,
@@ -152,7 +153,10 @@ export function publishPromptContribution(
 		buildPrompt: async (activeToolNames, cwd) =>
 			buildSubagentsPrompt({
 				activeToolNames,
-				agents: await loadCallableAgents(cwd),
+				agents: await loadCallableAgents(
+					cwd,
+					getAgentRegistryWarningReporter(pi),
+				),
 				mainAgent: composition.getMainAgentContribution()?.agent,
 				selectedAgentId: readSubagentAgentId(),
 				depth: readCurrentDepth(),
@@ -383,8 +387,9 @@ export function applyChildToolPolicy(pi: ExtensionAPI): void {
 /** Loads only definitions that can act as callable subagents. */
 export async function loadCallableAgents(
 	cwd: string,
+	reportWarning: (warning: string) => void,
 ): Promise<AgentDefinition[]> {
-	return (await loadAgentDefinitions(cwd)).filter(
+	return (await loadAgentDefinitions(cwd, reportWarning)).filter(
 		(agent) => agent.type === "subagent" || agent.type === "both",
 	);
 }

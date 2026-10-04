@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { isAbortedAgentRun } from "../../shared/agent-end-state";
+import { getAgentRegistryWarningReporter } from "../../shared/agent-registry-warnings";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import type { AuxiliaryLlmCompletion } from "../../shared/auxiliary-llm";
@@ -301,6 +302,7 @@ async function handleSessionStart(
 	event: SessionStartEvent,
 	ctx: ExtensionContext,
 ): Promise<void> {
+	getAgentRegistryWarningReporter(pi, ctx);
 	const config = await state.resolveConfig();
 	state.config = config;
 	if (!config.enabled) {
@@ -783,7 +785,8 @@ async function createRootRuntime(
 ): Promise<RootRuntime> {
 	const owner = ownerFromContext(ctx);
 	const writer = createActiveWriter(pi, ctx, owner);
-	const agents = await loadCallableAgents(ctx.cwd);
+	const reportWarning = getAgentRegistryWarningReporter(pi, ctx);
+	const agents = await loadCallableAgents(ctx.cwd, reportWarning);
 	const bridge = new RootRuntimeBridge();
 	let supervisor: InvocationSupervisor | undefined;
 	const store = createRootSessionStore(bridge, () => supervisor);

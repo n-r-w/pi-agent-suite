@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	mkdir,
@@ -16,6 +16,66 @@ import { getAgentRuntimeComposition } from "../../shared/agent-runtime-compositi
 import { SUBAGENT_AGENT_ID_ENV } from "../../shared/subagent-environment";
 import { publishWorkflowCatalogPolicy } from "../../shared/workflow-policy";
 import mainAgentSelection from "./index";
+
+describe("agent definition warnings", () => {
+	test("writes startup warnings to stderr when the UI is unavailable", async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await mkdir(join(agentDir, "agents"));
+			const path = join(agentDir, "agents", "Broken.md");
+			await writeFile(path, "---\ntype: worker\n---\n");
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext(agentDir, undefined, [], false);
+			const stderr = spyOn(process.stderr, "write").mockImplementation(
+				() => true,
+			);
+			try {
+				mainAgentSelection(pi);
+				await getHandler(pi, "session_start")({ reason: "startup" }, ctx);
+				expect(stderr.mock.calls.flat().join("")).toContain(path);
+				expect(stderr.mock.calls.flat().join("")).toContain("type");
+				expect(ctx.notifications).toEqual([]);
+				expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+					action: "continue",
+				});
+			} finally {
+				stderr.mockRestore();
+			}
+		});
+	});
+	test("warns at session start and continues accepting input", async () => {
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeSuiteAgent(agentDir, {
+				id: "Valid",
+				description: "Valid",
+				body: "",
+			});
+			const path = join(
+				agentDir,
+				"agent-suite",
+				"agent-selection",
+				"agents",
+				"Broken.md",
+			);
+			await writeFile(path, '---\ntools: [read,\n"bash"]\n---\n');
+			const pi = createExtensionApiFake();
+			const ctx = createCommandContext(agentDir);
+			mainAgentSelection(pi);
+			await getHandler(pi, "session_start")({ reason: "startup" }, ctx);
+			expect(ctx.notifications).toHaveLength(1);
+			expect(ctx.notifications[0]?.type).toBe("warning");
+			expect(ctx.notifications[0]?.message).toContain(path);
+			expect(ctx.notifications[0]?.message).toContain("indented");
+			expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+				action: "continue",
+			});
+			const selectionContext = createCommandContext(agentDir, "Valid");
+			await getCommand(pi, "agent").handler("", selectionContext);
+			expect(
+				selectionContext.customCalls[0]?.renderedLines.join("\n"),
+			).toContain("Valid");
+		});
+	});
+});
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -88,6 +148,7 @@ interface CommandContextFake {
 	readonly hasUI?: boolean;
 	readonly model: Model<Api> | undefined;
 	readonly sessionManager: {
+		getSessionId(): string;
 		getSessionFile(): string | undefined;
 	};
 	readonly ui: {
@@ -431,6 +492,7 @@ function createCommandContext(
 		isIdle: () => true,
 		model: models[0],
 		sessionManager: {
+			getSessionId: () => sessionFile ?? cwd,
 			getSessionFile: () => sessionFile,
 		},
 		notifications,
@@ -985,9 +1047,9 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("fails startup when suite agents directory cannot be read without selected state", async () => {
-		// Purpose: broken suite agent storage must stop startup even when no agent is currently selected.
-		// Input and expected output: non-directory suite agents path rejects session_start.
+	test("warns and continues startup when suite agents directory cannot be read without selected state", async () => {
+		// Purpose: broken suite agent storage must warn and continue startup even when no agent is currently selected.
+		// Input and expected output: non-directory suite agents path warns during session_start.
 		// Edge case: no selected-agent state exists, so startup validation must not be state-dependent.
 		// Dependencies: this test uses isolated suite storage and the session_start handler.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1003,18 +1065,26 @@ describe("main-agent-selection", () => {
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
-			await expect(
-				getHandler(pi, "session_start")(
-					{ type: "session_start", reason: "startup" },
-					ctx,
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+			expect(
+				ctx.notifications.some(
+					(notification) =>
+						notification.type === "warning" &&
+						notification.message.includes("failed to read"),
 				),
-			).rejects.toThrow("failed to read suite agents directory");
+			).toBe(true);
+			expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+				action: "continue",
+			});
 		});
 	});
 
-	test("fails startup when suite agents directory cannot be read", async () => {
-		// Purpose: a broken suite agents path must stop startup instead of looking like no selected agent exists.
-		// Input and expected output: selected state plus non-directory suite agents path rejects session_start.
+	test("warns and continues startup when suite agents directory cannot be read", async () => {
+		// Purpose: a broken suite agents path must warn and continue startup instead of looking like no selected agent exists.
+		// Input and expected output: selected state plus non-directory suite agents path warns during session_start.
 		// Edge case: legacy agents exist but must not hide the suite directory read failure.
 		// Dependencies: this test uses isolated state, suite storage, legacy agent files, and the session_start handler.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1039,18 +1109,26 @@ describe("main-agent-selection", () => {
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
-			await expect(
-				getHandler(pi, "session_start")(
-					{ type: "session_start", reason: "startup" },
-					ctx,
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+			expect(
+				ctx.notifications.some(
+					(notification) =>
+						notification.type === "warning" &&
+						notification.message.includes("failed to read"),
 				),
-			).rejects.toThrow("failed to read suite agents directory");
+			).toBe(true);
+			expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+				action: "continue",
+			});
 		});
 	});
 
-	test("fails startup when a suite agent definition file cannot be read without selected state", async () => {
-		// Purpose: broken suite agent files must stop startup even when no agent is currently selected.
-		// Input and expected output: directory named broken.md rejects session_start.
+	test("warns and continues startup when a suite agent definition file cannot be read without selected state", async () => {
+		// Purpose: broken suite agent files must warn and continue startup even when no agent is currently selected.
+		// Input and expected output: directory named broken.md warns during session_start.
 		// Edge case: no selected-agent state exists, so startup validation must not be state-dependent.
 		// Dependencies: this test uses isolated suite storage and the session_start handler.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1062,18 +1140,26 @@ describe("main-agent-selection", () => {
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
-			await expect(
-				getHandler(pi, "session_start")(
-					{ type: "session_start", reason: "startup" },
-					ctx,
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+			expect(
+				ctx.notifications.some(
+					(notification) =>
+						notification.type === "warning" &&
+						notification.message.includes("failed to read"),
 				),
-			).rejects.toThrow("failed to read suite agent definition broken.md");
+			).toBe(true);
+			expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+				action: "continue",
+			});
 		});
 	});
 
-	test("fails startup when a suite agent definition file cannot be read", async () => {
-		// Purpose: unreadable suite agent files must stop startup instead of being skipped as malformed agents.
-		// Input and expected output: selected state plus directory named broken.md rejects session_start.
+	test("warns and continues startup when a suite agent definition file cannot be read", async () => {
+		// Purpose: unreadable suite agent files must warn and continue startup instead of being skipped as malformed agents.
+		// Input and expected output: selected state plus directory named broken.md warns during session_start.
 		// Edge case: the entry has the .md suffix, so it would otherwise be treated as an agent definition.
 		// Dependencies: this test uses isolated suite state and the session_start handler.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1089,12 +1175,20 @@ describe("main-agent-selection", () => {
 			const ctx = createCommandContext("/tmp/project");
 			mainAgentSelection(pi);
 
-			await expect(
-				getHandler(pi, "session_start")(
-					{ type: "session_start", reason: "startup" },
-					ctx,
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+			expect(
+				ctx.notifications.some(
+					(notification) =>
+						notification.type === "warning" &&
+						notification.message.includes("failed to read"),
 				),
-			).rejects.toThrow("failed to read suite agent definition broken.md");
+			).toBe(true);
+			expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+				action: "continue",
+			});
 		});
 	});
 
@@ -2966,37 +3060,26 @@ describe("main-agent-selection", () => {
 		});
 	});
 
-	test("skips malformed agent files while loading valid agent definitions", async () => {
-		// Purpose: malformed frontmatter must not break the whole agent registry.
-		// Input and expected output: one malformed file and one valid file still allow selecting the valid agent.
-		// Edge case: malformed YAML throws from parseFrontmatter.
-		// Dependencies: this test writes temporary Markdown agent files only.
+	test("warns about malformed agent files while selecting valid agents", async () => {
 		await withIsolatedAgentDir(async (agentDir) => {
 			await mkdir(join(agentDir, "agents"), { recursive: true });
-			await writeFile(
-				join(agentDir, "agents", "broken.md"),
-				"---\nmodel: [\n---\nBroken",
-			);
+			const brokenPath = join(agentDir, "agents", "broken.md");
+			await writeFile(brokenPath, "---\nmodel: [\n---\n");
 			await writeAgent(agentDir, {
 				id: "valid",
 				description: "Valid agent",
-				body: "Valid system prompt",
+				body: "",
 			});
 			const pi = createExtensionApiFake();
-			const ctx = createCommandContext("/tmp/project");
+			const ctx = createCommandContext(agentDir);
 			mainAgentSelection(pi);
-
 			await getCommand(pi, "agent").handler("valid", ctx);
-
-			expect(ctx.notifications).toEqual([]);
+			expect(ctx.notifications).toHaveLength(1);
+			expect(ctx.notifications[0]?.type).toBe("warning");
+			expect(ctx.notifications[0]?.message).toContain(brokenPath);
 			expect(
-				await getBeforeAgentStartHandler(pi)(
-					{ systemPrompt: "Base prompt" },
-					ctx,
-				),
-			).toEqual({
-				systemPrompt: "Base prompt\n\nValid system prompt",
-			});
+				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+			).toBe("valid");
 		});
 	});
 

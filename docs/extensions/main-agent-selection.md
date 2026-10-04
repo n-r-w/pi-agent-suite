@@ -81,6 +81,14 @@ You are a code review agent. Check correctness, risks, and missing validation.
 
 Only `main` and `both` agent definitions appear in the main-agent selector. `subagent` is used together with the [run-subagent](run-subagent.md) extension.
 
+### Registry warnings
+
+When an agent file has malformed YAML or invalid metadata, Pi displays a warning with the file path and rejection reason. The loader skips that definition and continues startup. For example, an unindented continuation of a `tools` list produces a YAML indentation warning.
+
+The registry also warns about unreadable files or directories and project filenames with the same NFC-normalized identity. Missing optional directories are normal. Other readable definitions remain available.
+
+`main-agent-selection` and `run-subagent` share one warning reporter. It displays each distinct warning once per session, including when both extensions load the registry. Interactive sessions use warning notifications; sessions without a UI use stderr. A changed rejection reason produces a new warning. A new session starts a fresh warning set.
+
 ## Usage
 
 - Run `/agent` to open the selector.

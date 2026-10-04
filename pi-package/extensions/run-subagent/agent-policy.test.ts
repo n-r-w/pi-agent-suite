@@ -278,7 +278,7 @@ describe("effective callable-agent policy", () => {
 			| ((event: unknown, ctx: unknown) => Promise<unknown>)
 			| undefined;
 		const pi = {
-			events: { emit: () => undefined },
+			events: { emit: () => undefined, on: () => () => {} },
 			on: (eventName: string, handler: typeof beforeAgentStart) => {
 				if (eventName === "before_agent_start") {
 					beforeAgentStart = handler;
@@ -327,7 +327,7 @@ describe("effective callable-agent policy", () => {
 			| ((event: unknown, ctx: unknown) => Promise<unknown>)
 			| undefined;
 		const pi = {
-			events: { emit: () => undefined },
+			events: { emit: () => undefined, on: () => () => {} },
 			on: (eventName: string, handler: typeof beforeAgentStart) => {
 				if (eventName === "before_agent_start") {
 					beforeAgentStart = handler;
