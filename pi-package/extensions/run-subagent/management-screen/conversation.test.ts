@@ -200,10 +200,52 @@ function options(): ConstructorParameters<typeof ConversationPane>[0] {
 		cwd: "/tmp",
 		tools,
 		expanded: false,
+		outputPad: 1,
 	};
 }
 
 describe("management conversation", () => {
+	test.each([
+		0, 1,
+	])("preserves native tool padding %s and recorded timing", (outputPad) => {
+		const settings = { ...options(), outputPad };
+		const pane = new ConversationPane(settings);
+		const assistant = assistantWithTools();
+		assistant.content = [
+			{
+				type: "toolCall",
+				id: "tool-builtin",
+				name: "bash",
+				arguments: { command: "echo tool-output" },
+			},
+		];
+		for (const durationMs of [2500, undefined]) {
+			pane.setEntries(
+				[
+					messageEntry("assistant", null, assistant),
+					messageEntry("result", "assistant", {
+						...toolResult("tool-builtin", "bash", "tool-output"),
+						...(durationMs === undefined ? {} : { durationMs }),
+					}),
+				],
+				true,
+				true,
+			);
+			for (const expanded of [false, true]) {
+				pane.setExpanded(expanded);
+				const lines = pane.render(60, 1000).map(stripVTControlCharacters);
+				expect(
+					lines
+						.find((line) => line.trim() === "tool-output")
+						?.startsWith(`${" ".repeat(outputPad)}tool-output`),
+				).toBe(true);
+				expect(lines.join("\n").includes("Took 2.5s")).toBe(
+					durationMs !== undefined,
+				);
+			}
+		}
+		pane.dispose();
+	});
 	test("renders the selected active branch through public Pi components", () => {
 		// Purpose: selected conversation entries must reuse Pi's user, assistant, tool, and custom-message components.
 		// Inputs and expected output: one active branch includes all three tool presentation categories and one custom message in chronological order.

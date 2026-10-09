@@ -1,7 +1,9 @@
 import {
 	type ExtensionContext,
+	getAgentDir,
 	getMarkdownTheme,
 	rawKeyHint,
+	SettingsManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -126,6 +128,8 @@ interface ManagementScreenOptions {
 	readonly submission: ManagementMessageSubmission;
 	readonly retained: ManagementRetainedState;
 	readonly toolsExpanded: boolean;
+	/** Horizontal tool-output padding sampled for this overlay. */
+	readonly outputPad: number;
 	readonly showCacheHitRate: boolean;
 	readonly readSessionTotals: (
 		sessionId: string,
@@ -182,6 +186,7 @@ export class ManagementScreen implements Component, Focusable {
 			cwd: options.cwd,
 			tools: options.tools,
 			expanded: this.toolsExpanded,
+			outputPad: options.outputPad,
 		});
 		this.conversation.setEntries(
 			this.view.selectedConversation,
@@ -1111,6 +1116,10 @@ export function createManagementScreenFactory(
 			retained: options.retained,
 			// Pi invokes the factory for every open, so each overlay samples the main conversation independently.
 			toolsExpanded: options.ctx.ui.getToolsExpanded(),
+			outputPad: SettingsManager.create(
+				options.ctx.cwd,
+				getAgentDir(),
+			).getOutputPad(),
 			showCacheHitRate: options.showCacheHitRate,
 			readSessionTotals: options.readSessionTotals,
 			notify: (message) => options.ctx.ui.notify(message, "error"),

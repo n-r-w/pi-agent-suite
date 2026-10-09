@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionContext,
@@ -10,6 +11,7 @@ import {
 	getMarkdownTheme,
 	initTheme,
 	SessionManager,
+	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { Terminal, TUI } from "@earendil-works/pi-tui";
 import {
@@ -167,7 +169,7 @@ function assistantConversationEntry(
 	totalTokens = 120,
 	cacheRead = 0,
 	input = 100,
-): ConversationProjectionEntry {
+) {
 	const message: AssistantMessage = {
 		role: "assistant",
 		content: [{ type: "text", text: "assistant metadata" }],
@@ -404,6 +406,7 @@ function createScreen(
 		submission,
 		retained,
 		toolsExpanded: options.toolsExpanded ?? false,
+		outputPad: 1,
 		showCacheHitRate: options.showCacheHitRate ?? false,
 		readSessionTotals: options.readSessionTotals ?? (() => undefined),
 		notify: (message) => notifications.push(message),
@@ -441,6 +444,82 @@ async function settleProjection(condition: () => boolean): Promise<void> {
 }
 
 describe("management screen", () => {
+	test("samples native tool output padding on each overlay open", async () => {
+		initTheme(undefined, false);
+		let outputPad: 0 | 1 = 0;
+		const settingsSpy = spyOn(SettingsManager, "create").mockImplementation(
+			() => SettingsManager.inMemory({ outputPad }),
+		);
+		try {
+			const source = new ViewSourceFake();
+			const assistant = assistantConversationEntry();
+			const entries: ConversationProjectionEntry[] = [
+				{
+					...assistant,
+					message: {
+						...assistant.message,
+						content: [
+							{
+								type: "toolCall",
+								id: "call",
+								name: "bash",
+								arguments: { command: "echo result-marker" },
+							},
+						],
+					},
+				},
+				{
+					type: "message",
+					id: "result",
+					parentId: assistant.id,
+					timestamp: new Date(0).toISOString(),
+					message: {
+						role: "toolResult",
+						toolCallId: "call",
+						toolName: "bash",
+						content: [{ type: "text", text: "result-marker" }],
+						isError: false,
+						timestamp: 0,
+					},
+				},
+			];
+			source.publish({ ...source.getView(), selectedConversation: entries });
+			const ctx = {
+				cwd: "/tmp",
+				ui: { getToolsExpanded: () => false, notify: () => {} },
+			} as unknown as ExtensionContext;
+			const factory = createManagementScreenFactory({
+				ctx,
+				source,
+				tools: createToolPresentationRegistry(ctx.cwd, createEventBus()),
+				submission: new SubmissionFake(),
+				retained: createManagementRetainedState(),
+				showCacheHitRate: false,
+				readSessionTotals: () => undefined,
+			});
+			for (const padding of [0, 1] as const) {
+				outputPad = padding;
+				const screen = await factory(
+					createTui(),
+					createTheme(),
+					createKeybindings() as unknown as Parameters<typeof factory>[2],
+					() => {},
+				);
+				try {
+					const lines = screen.render(100).map(stripVTControlCharacters);
+					expect(
+						lines.some((line) =>
+							line.includes(`│${" ".repeat(padding)}result-marker`),
+						),
+					).toBe(true);
+				} finally {
+					screen.dispose?.();
+				}
+			}
+		} finally {
+			settingsSpy.mockRestore();
+		}
+	});
 	test("keeps the selected pane empty when no agents exist", () => {
 		// Purpose: an empty hierarchy must not leave selected-header divider fragments in the wide pane.
 		// Inputs and expected output: a wide empty projection shows zero agent counts and ordinary blank pane borders.
@@ -1644,113 +1723,120 @@ describe("management screen", () => {
 		const customCalls: unknown[][] = [];
 		const notifications: string[] = [];
 		const modelLookups: string[] = [];
-		let mainToolsExpanded = true;
-		const ctx = {
-			cwd: "/tmp",
-			mode: "tui",
-			hasUI: true,
-			ui: {
-				custom: async (...args: unknown[]) => {
-					customCalls.push(args);
-					return undefined;
+		const settingsSpy = spyOn(SettingsManager, "create").mockReturnValue(
+			SettingsManager.inMemory(),
+		);
+		try {
+			let mainToolsExpanded = true;
+			const ctx = {
+				cwd: "/tmp",
+				mode: "tui",
+				hasUI: true,
+				ui: {
+					custom: async (...args: unknown[]) => {
+						customCalls.push(args);
+						return undefined;
+					},
+					getToolsExpanded: () => mainToolsExpanded,
+					notify: (message: string) => notifications.push(message),
 				},
-				getToolsExpanded: () => mainToolsExpanded,
-				notify: (message: string) => notifications.push(message),
-			},
-			modelRegistry: {
-				find: (provider: string, modelId: string) => {
-					modelLookups.push(`${provider}/${modelId}`);
-					return { contextWindow: 190_000 };
+				modelRegistry: {
+					find: (provider: string, modelId: string) => {
+						modelLookups.push(`${provider}/${modelId}`);
+						return { contextWindow: 190_000 };
+					},
 				},
-			},
-		} as unknown as ExtensionContext;
-		const tools = createToolPresentationRegistry(ctx.cwd, createEventBus());
-		const factory = createManagementScreenFactory({
-			ctx,
-			source,
-			tools,
-			submission,
-			retained,
-			showCacheHitRate: true,
-			readSessionTotals: () => undefined,
-		});
+			} as unknown as ExtensionContext;
+			const tools = createToolPresentationRegistry(ctx.cwd, createEventBus());
+			const factory = createManagementScreenFactory({
+				ctx,
+				source,
+				tools,
+				submission,
+				retained,
+				showCacheHitRate: true,
+				readSessionTotals: () => undefined,
+			});
 
-		// ACT: open through ctx.ui.custom, construct the component, and close it through Escape.
-		await openManagementOverlay(ctx, factory);
-		let doneCalls = 0;
-		const factoryKeybindings = createKeybindings() as unknown as Parameters<
-			typeof factory
-		>[2];
-		const component = await factory(
-			createTui(),
-			createTheme(),
-			factoryKeybindings,
-			() => {
-				doneCalls += 1;
-			},
-		);
-		if (!(component instanceof ManagementScreen)) {
-			throw new Error("management factory returned an unexpected component");
-		}
-		const initialToolsExpanded = component.getToolsExpanded();
-		component.handleInput(INPUT.expandTools);
-		const mainToolsExpandedAfterLocalToggle = mainToolsExpanded;
-		component.render(80);
-		component.handleInput(INPUT.escape);
-		component.dispose();
-		mainToolsExpanded = false;
-		const reopened = await factory(
-			createTui(),
-			createTheme(),
-			factoryKeybindings,
-			() => {
-				doneCalls += 1;
-			},
-		);
-		if (!(reopened instanceof ManagementScreen)) {
-			throw new Error("management factory returned an unexpected component");
-		}
-		const reopenedToolsExpanded = reopened.getToolsExpanded();
-		reopened.handleInput(INPUT.escape);
-		reopened.dispose();
-		const foundNode = findProjectionNode(
-			source.getView(),
-			"stable-descendant-key",
-		);
-
-		// ASSERT: public overlay options, component ownership, and close/dispose behavior are exact.
-		expect({
-			factoryIdentity: customCalls[0]?.[0] === factory,
-			options: customCalls[0]?.[1],
-			component: component.constructor.name,
-			doneCalls,
-			initialToolsExpanded,
-			mainToolsExpandedAfterLocalToggle,
-			reopenedToolsExpanded,
-			notifications,
-			modelLookups,
-			foundNode: foundNode?.agentId,
-			disposedSubscriptions: source.unsubscribeCalls,
-		}).toEqual({
-			factoryIdentity: true,
-			options: {
-				overlay: true,
-				overlayOptions: {
-					width: "100%",
-					maxHeight: "100%",
-					margin: 0,
+			// ACT: open through ctx.ui.custom, construct the component, and close it through Escape.
+			await openManagementOverlay(ctx, factory);
+			let doneCalls = 0;
+			const factoryKeybindings = createKeybindings() as unknown as Parameters<
+				typeof factory
+			>[2];
+			const component = await factory(
+				createTui(),
+				createTheme(),
+				factoryKeybindings,
+				() => {
+					doneCalls += 1;
 				},
-			},
-			component: "ManagementScreen",
-			doneCalls: 2,
-			initialToolsExpanded: true,
-			mainToolsExpandedAfterLocalToggle: true,
-			reopenedToolsExpanded: false,
-			notifications: [],
-			modelLookups: [],
-			foundNode: "SubAgentDeveloper",
-			disposedSubscriptions: 2,
-		});
+			);
+			if (!(component instanceof ManagementScreen)) {
+				throw new Error("management factory returned an unexpected component");
+			}
+			const initialToolsExpanded = component.getToolsExpanded();
+			component.handleInput(INPUT.expandTools);
+			const mainToolsExpandedAfterLocalToggle = mainToolsExpanded;
+			component.render(80);
+			component.handleInput(INPUT.escape);
+			component.dispose();
+			mainToolsExpanded = false;
+			const reopened = await factory(
+				createTui(),
+				createTheme(),
+				factoryKeybindings,
+				() => {
+					doneCalls += 1;
+				},
+			);
+			if (!(reopened instanceof ManagementScreen)) {
+				throw new Error("management factory returned an unexpected component");
+			}
+			const reopenedToolsExpanded = reopened.getToolsExpanded();
+			reopened.handleInput(INPUT.escape);
+			reopened.dispose();
+			const foundNode = findProjectionNode(
+				source.getView(),
+				"stable-descendant-key",
+			);
+
+			// ASSERT: public overlay options, component ownership, and close/dispose behavior are exact.
+			expect({
+				factoryIdentity: customCalls[0]?.[0] === factory,
+				options: customCalls[0]?.[1],
+				component: component.constructor.name,
+				doneCalls,
+				initialToolsExpanded,
+				mainToolsExpandedAfterLocalToggle,
+				reopenedToolsExpanded,
+				notifications,
+				modelLookups,
+				foundNode: foundNode?.agentId,
+				disposedSubscriptions: source.unsubscribeCalls,
+			}).toEqual({
+				factoryIdentity: true,
+				options: {
+					overlay: true,
+					overlayOptions: {
+						width: "100%",
+						maxHeight: "100%",
+						margin: 0,
+					},
+				},
+				component: "ManagementScreen",
+				doneCalls: 2,
+				initialToolsExpanded: true,
+				mainToolsExpandedAfterLocalToggle: true,
+				reopenedToolsExpanded: false,
+				notifications: [],
+				modelLookups: [],
+				foundNode: "SubAgentDeveloper",
+				disposedSubscriptions: 2,
+			});
+		} finally {
+			settingsSpy.mockRestore();
+		}
 	});
 
 	test("consumes global focus and expansion keys before focused children", () => {
@@ -1907,6 +1993,7 @@ describe("management screen", () => {
 			submission: new SubmissionFake(),
 			retained,
 			toolsExpanded: false,
+			outputPad: 1,
 			showCacheHitRate: true,
 			readSessionTotals: () => undefined,
 			notify: () => undefined,
