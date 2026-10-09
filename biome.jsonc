@@ -129,7 +129,10 @@
 	},
 	"overrides": [
 		{
-			"includes": ["pi-package/extensions/**/index.ts"],
+			"includes": [
+				"pi-package/extensions/**/index.ts",
+				"test/fixtures/native-mcp-provider.ts"
+			],
 			"linter": {
 				"rules": {
 					"style": {

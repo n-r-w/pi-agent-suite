@@ -22,6 +22,8 @@ export function createToolRenderContext(options: {
 		isPartial: false,
 		expanded: options.expanded,
 		showImages: false,
+		durationMs: undefined,
+		outputPad: 1,
 		isError: options.isError,
 	};
 }

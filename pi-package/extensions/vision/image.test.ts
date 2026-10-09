@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { createTempDir } from "../../../test/support/temp-dir";
 import { loadImage } from "./image";
 
 const PNG = "iVBORw0KGgo=";
@@ -48,34 +49,49 @@ describe("loadImage", () => {
 		}
 	});
 
-	test("uses the injected resizer when compression is enabled", async () => {
-		const directory = await mkdtemp(join(tmpdir(), "vision-image-"));
-		await writeFile(join(directory, "test.png"), Buffer.from(PNG, "base64"));
-		let calls = 0;
-		const resizedData = "R0lGODlh";
-		const image = await loadImage(
-			"test.png",
-			{
-				cwd: directory,
-				compression: { enabled: true, jpegQuality: 85, maxBytes: 4_718_592 },
-			},
-			{
-				resizeImage: async () => {
-					calls += 1;
-					return {
-						data: resizedData,
-						mimeType: "image/gif",
-						originalWidth: 1,
-						originalHeight: 1,
-						width: 1,
-						height: 1,
-						wasResized: true,
-					};
+	test.each([
+		{ mimeType: "image/jpeg", data: "/9j/", resized: true },
+		{ mimeType: "image/gif", data: "R0lGODlh", resized: true },
+		{ mimeType: "image/png", data: PNG, resized: true },
+		{ mimeType: "image/png", data: PNG, resized: false },
+	])("keeps image bytes paired with $mimeType after compression", async ({
+		mimeType,
+		data,
+		resized,
+	}) => {
+		const fixture = createTempDir("vision-image-");
+		try {
+			const directory = fixture.path;
+			await writeFile(join(directory, "test.png"), Buffer.from(PNG, "base64"));
+			let calls = 0;
+			const image = await loadImage(
+				"test.png",
+				{
+					cwd: directory,
+					compression: { enabled: true, jpegQuality: 85, maxBytes: 4_718_592 },
 				},
-			},
-		);
-		expect(calls).toBe(1);
-		expect(image).toEqual({ data: resizedData, mimeType: "image/png" });
+				{
+					resizeImage: async () => {
+						calls += 1;
+						return resized
+							? {
+									data,
+									mimeType,
+									originalWidth: 1,
+									originalHeight: 1,
+									width: 1,
+									height: 1,
+									wasResized: mimeType !== "image/png",
+								}
+							: null;
+					},
+				},
+			);
+			expect(calls).toBe(1);
+			expect(image).toEqual({ data, mimeType });
+		} finally {
+			fixture.remove();
+		}
 	});
 
 	test("reports file and input loading errors", async () => {

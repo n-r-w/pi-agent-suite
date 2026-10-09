@@ -20,9 +20,12 @@ export interface ImageCompressionConfig {
 	readonly maxBytes: number;
 }
 
+/** Encoded image and its media type for a model request. */
 export interface LoadedImage {
+	/** Base64-encoded image bytes. */
 	readonly data: string;
-	readonly mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+	/** Media type of the encoded bytes. */
+	readonly mimeType: string;
 }
 
 export class ImageLoadError extends Error {
@@ -36,6 +39,7 @@ export class ImageLoadError extends Error {
 
 type ResizeImage = typeof resizeImage;
 
+/** Loads an image with the configured compression. */
 export async function loadImage(
 	input: string,
 	options: {
@@ -55,23 +59,23 @@ export async function loadImage(
 			"image format is unsupported",
 		);
 	}
-	const data = await compress(
+	return compress(
 		bytes,
 		mimeType,
 		options.compression,
 		dependencies.resizeImage ?? resizeImage,
 	);
-	return { data, mimeType };
 }
 
+/** Keeps compressed image bytes paired with their media type. */
 async function compress(
 	bytes: Uint8Array,
 	mimeType: LoadedImage["mimeType"],
 	compression: ImageCompressionConfig,
 	resize: ResizeImage,
-): Promise<string> {
+): Promise<LoadedImage> {
 	if (!compression.enabled) {
-		return Buffer.from(bytes).toString("base64");
+		return { data: Buffer.from(bytes).toString("base64"), mimeType };
 	}
 	const resized = await resize(bytes, mimeType, {
 		maxBytes: compression.maxBytes,
@@ -79,7 +83,9 @@ async function compress(
 		maxWidth: Number.MAX_SAFE_INTEGER,
 		maxHeight: Number.MAX_SAFE_INTEGER,
 	});
-	return resized?.data ?? Buffer.from(bytes).toString("base64");
+	return resized === null
+		? { data: Buffer.from(bytes).toString("base64"), mimeType }
+		: { data: resized.data, mimeType: resized.mimeType };
 }
 
 async function readInput(input: string, cwd: string): Promise<Uint8Array> {

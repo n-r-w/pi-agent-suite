@@ -122,21 +122,30 @@ export function resolveCouncilToolArgsForNames(
 		return { issue: "required tool read is unavailable" };
 	}
 
-	if (config.tools === undefined || config.tools.length === 0) {
-		return { args: ["--tools", REQUIRED_READ_TOOL_NAME] };
-	}
-
-	const resolved = resolveToolPolicy(config.tools, availableToolNames);
+	const resolved = resolveToolPolicy(config.tools ?? [], availableToolNames);
 	if ("issue" in resolved) {
 		return resolved;
 	}
+	const tools = [
+		REQUIRED_READ_TOOL_NAME,
+		...resolved.tools.filter((tool) => tool !== REQUIRED_READ_TOOL_NAME),
+	];
+	// Pi filters native server tools by the allowlist only when it names an MCP server tool.
+	const excluded = tools.some((tool) => tool.startsWith("mcp__"))
+		? []
+		: ["mcp__*"];
+	excluded.push(
+		...[
+			"list_mcp_resources",
+			"list_mcp_resource_templates",
+			"read_mcp_resource",
+		].filter((tool) => !tools.includes(tool)),
+	);
 	return {
 		args: [
 			"--tools",
-			[
-				REQUIRED_READ_TOOL_NAME,
-				...resolved.tools.filter((tool) => tool !== REQUIRED_READ_TOOL_NAME),
-			].join(","),
+			tools.join(","),
+			...(excluded.length === 0 ? [] : ["--exclude-tools", excluded.join(",")]),
 		],
 	};
 }

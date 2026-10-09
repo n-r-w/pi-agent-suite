@@ -64,6 +64,8 @@ The extension is disabled when the config file is missing or when `enabled` is n
 | `responseDefectRetries` | No | Non-negative integer | `1` | Number of retries for malformed participant responses or defective final answers. |
 | `tools` | No | Array of non-empty tool-name patterns | Participants receive only `read` | Additional tools available to participants. `read` is always included. Exact tool names and wildcard patterns such as `fetch_*` are allowed. Full wildcard `*` is rejected. Each pattern must match at least one available tool. |
 
+Participant startup applies the resolved `tools` allowlist to native MCP server tools and resource helpers, including calls through `codemode`. For example, `tools: ["codemode", "mcp__docs__search"]` permits that server tool while excluding other native MCP tools. `tools: ["codemode", "list_mcp_resources"]` permits listing resources while excluding `read_mcp_resource`. The participant always retains `read`.
+
 Unsupported keys make the config invalid.
 
 ## Authentication startup recovery

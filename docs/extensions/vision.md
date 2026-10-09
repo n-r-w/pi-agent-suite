@@ -8,6 +8,8 @@ The tool is visible only when all of the following hold: `enabled` is `true`, `m
 
 The tool accepts required `image_path` and `prompt` strings. Relative image paths resolve from the working directory. Home-prefixed image paths accept `~`, `$HOME`, or `${HOME}`, either alone or followed by `/...`. Other environment variables are not expanded. `prompt` is limited to 2048 characters. Global errors (`not_configured`, `model_not_found`, `auth_error`) abort the call. Image loading and vision-model errors return `[error: code — message]` as the text result.
 
+The loader keeps image bytes and their MIME type together after compression. When Pi converts a PNG to JPEG, `vision` sends the JPEG bytes with `image/jpeg`. If Pi leaves the PNG unchanged or compression is disabled, the loader retains the original bytes and `image/png`.
+
 ## Configuration file
 
 Default path:

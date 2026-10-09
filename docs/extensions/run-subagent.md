@@ -236,6 +236,8 @@ Tool presentation follows three paths:
 - Other tool names use the universal presentation: the JSON call preview starts on the tool-name row and occupies at most two visual lines; collapsed results occupy at most five visual lines and include a hidden-line count with the configured expansion key; expanded results use full Markdown; failures use error styling; and Pi supplies the normal tool shell.
 - Collapsed arbitrary text uses the same whitespace, JSON-string, and terminal-control normalization as MCP tool previews. Expanded result text remains unchanged.
 
+Each overlay reads Pi's effective `outputPad` setting when it opens and applies that horizontal padding to its tool components. Reopening the overlay reads the setting again. The pane passes recorded tool durations to Pi's native renderer in compact and expanded views. For example, a result with `durationMs: 2500` displays `Took 2.5s`; older results without a recorded duration retain Pi's presentation without timing.
+
 `Ctrl+O`, the default `app.tools.expand` binding, toggles all tool and custom-message expansion states regardless of focus. Each overlay samples Pi's current main-conversation tool-expansion state when that overlay opens. Toggling expansion inside the overlay changes only that open overlay and does not change the main conversation.
 
 Conversation scrolling uses the configured up, down, page-up, and page-down bindings and counts wrapped visual rows. New content remains visible while the viewport is at the bottom. After the user scrolls upward, new content does not move the viewport. The pane does not show a scroll percentage.

@@ -8,6 +8,7 @@ import {
 import {
 	buildChildParticipantStartup,
 	resolveChildStartupPlan,
+	resolveCouncilToolArgsForNames,
 } from "./startup";
 import type { ConveneCouncilConfig, ParticipantRuntime } from "./types";
 
@@ -45,6 +46,53 @@ function createPi(toolNames: readonly string[]) {
 }
 
 describe("convene-council child startup", () => {
+	test.each([
+		{
+			tools: undefined,
+			allowed: "read",
+			excluded:
+				"mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
+		},
+		{
+			tools: [],
+			allowed: "read",
+			excluded:
+				"mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
+		},
+		{
+			tools: ["codemode"],
+			allowed: "read,codemode",
+			excluded:
+				"mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
+		},
+		{
+			tools: ["codemode", "mcp__fixture__echo"],
+			allowed: "read,codemode,mcp__fixture__echo",
+			excluded:
+				"list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
+		},
+		{
+			tools: ["codemode", "list_mcp_resources"],
+			allowed: "read,codemode,list_mcp_resources",
+			excluded: "mcp__*,list_mcp_resource_templates,read_mcp_resource",
+		},
+	])("restricts native MCP tools for $allowed", ({
+		tools,
+		allowed,
+		excluded,
+	}) => {
+		expect(
+			resolveCouncilToolArgsForNames({ ...baseConfig, tools }, [
+				"read",
+				"codemode",
+				"mcp__fixture__echo",
+				"mcp__fixture__other",
+				"list_mcp_resources",
+				"list_mcp_resource_templates",
+				"read_mcp_resource",
+			]),
+		).toEqual({ args: ["--tools", allowed, "--exclude-tools", excluded] });
+	});
 	test("preserves reproducible extension flags and documented Pi environment", () => {
 		// Purpose: child startup must use direct CLI/env inputs instead of inferred source metadata.
 		// Input and expected output: extension flags and Pi env keys are preserved in startup plan.
@@ -122,6 +170,8 @@ describe("convene-council child startup", () => {
 				"./pi-package",
 				"--tools",
 				"read",
+				"--exclude-tools",
+				"mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
 			],
 		});
 	});
@@ -142,7 +192,7 @@ describe("convene-council child startup", () => {
 				systemPrompt: "participant prompt",
 			});
 
-			expect("args" in startup ? startup.args.slice(-2) : startup).toEqual([
+			expect("args" in startup ? startup.args.slice(-4, -2) : startup).toEqual([
 				"--tools",
 				"read",
 			]);

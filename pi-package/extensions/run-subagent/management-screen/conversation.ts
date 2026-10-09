@@ -45,6 +45,8 @@ interface ConversationCompositionOptions {
 	readonly cwd: string;
 	readonly tools: ConversationToolPresentation;
 	readonly expanded: boolean;
+	/** Effective horizontal padding for native tool output. */
+	readonly outputPad: number;
 }
 
 type CustomMessageInput = ConstructorParameters<
@@ -192,7 +194,7 @@ function composeConversation(
 						content.name,
 						content.id,
 						content.arguments,
-						{},
+						{ outputPad: options.outputPad },
 						resolution.definition,
 						options.tui,
 						options.cwd,
@@ -488,14 +490,7 @@ function attachToolResult(
 	if (component === undefined) {
 		return;
 	}
-	component.updateResult(
-		{
-			content: message.content,
-			details: message.details,
-			isError: message.isError,
-		},
-		false,
-	);
+	component.updateResult(message, false);
 }
 
 /** Returns the first persisted user prompt for the selected subagent session. */

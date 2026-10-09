@@ -55,6 +55,8 @@ const RESULT_RENDER_CONTEXT: RenderResultContext = {
 	isPartial: false,
 	expanded: false,
 	showImages: false,
+	durationMs: undefined,
+	outputPad: 1,
 	isError: false,
 };
 
