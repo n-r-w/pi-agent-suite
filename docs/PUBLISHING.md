@@ -68,7 +68,7 @@ make release-minor
 make release-major
 ```
 
-The command runs validation, repository audit, and both consumer installation checks before changing the version. Only after all checks pass does it run `npm version` in `pi-package/`. A failed check leaves the version unchanged. Package staging and archives stay in system temporary directories; release checks do not write `pi-package/README.md`.
+The command installs locked dependencies in the repository root and in `pi-package/`, then runs validation, repository audit, and both consumer installation checks before changing the version. Only after all checks pass does it run `npm version` in `pi-package/`. A failed check leaves the version unchanged. Package staging and archives stay in system temporary directories; release checks do not write `pi-package/README.md`.
 
 Print the remaining manual steps:
 

@@ -9,17 +9,16 @@ export function checkRelease(
 	run: ReleaseCommand,
 	kind?: ReleaseKind,
 ): void {
+	const packageDir = join(root, "pi-package");
 	run(["bun", "install", "--frozen-lockfile"], root);
+	run(["bun", "install", "--frozen-lockfile"], packageDir);
 	run(["bun", "run", "verify"], root);
 	run(["make", "audit"], root);
 	for (const scenario of ["SCN-02", "SCN-03"]) {
 		run(["bun", "scripts/release-consumers.ts", scenario], root);
 	}
 	if (kind !== undefined) {
-		run(
-			["npm", "version", kind, "--no-git-tag-version"],
-			join(root, "pi-package"),
-		);
+		run(["npm", "version", kind, "--no-git-tag-version"], packageDir);
 	}
 }
 

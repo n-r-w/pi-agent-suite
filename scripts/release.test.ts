@@ -3,7 +3,7 @@ import { checkRelease } from "./release.ts";
 
 // Purpose: release failures must stop preparation before npm changes the version.
 // Inputs: a fake command runner fails installation, validation, audit, or either consumer scenario.
-// Expected: frozen installation runs first; errors propagate; success bumps last.
+// Expected: frozen installations of root and package run first; errors propagate; success bumps last.
 // Edges: all release kinds use the same checks. No real npm, git, or registry.
 // Dependencies: checkRelease only; no dependency on other tests.
 describe("release preparation", () => {
@@ -45,6 +45,10 @@ describe("release preparation", () => {
 		);
 		expect(calls).toEqual([
 			{ command: ["bun", "install", "--frozen-lockfile"], cwd: "/fixture" },
+			{
+				command: ["bun", "install", "--frozen-lockfile"],
+				cwd: "/fixture/pi-package",
+			},
 			{ command: ["bun", "run", "verify"], cwd: "/fixture" },
 			{ command: ["make", "audit"], cwd: "/fixture" },
 			{
