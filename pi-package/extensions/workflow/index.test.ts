@@ -2177,7 +2177,7 @@ describe("workflow extension lifecycle", () => {
 	test("delivers workflow records to the next provider request", async () => {
 		// Purpose: a journal record published during tool execution must join the active loop context.
 		// Input and expected output: activation uses steer delivery without forcing a separate agent turn.
-		// Edge case: triggerTurn false would persist the message but omit it from the active loop snapshot.
+		// Edge case: passive activation-options updates must not change lifecycle delivery.
 		// Dependencies: workflow activation and the public sendMessage delivery contract.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
@@ -2190,6 +2190,30 @@ describe("workflow extension lifecycle", () => {
 		);
 
 		expect(activation?.options).toEqual({ deliverAs: "steer" });
+	});
+
+	test("publishes activation options without requesting another provider turn", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await runBeforeAgentStart(fake);
+		fake.messages.length = 0;
+
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+
+		const options = fake.messages.filter(
+			({ details }) =>
+				typeof details === "object" &&
+				details !== null &&
+				Reflect.get(details, "kind") === "activation_options",
+		);
+		expect(options).toHaveLength(1);
+		expect(options[0]?.options).toEqual({
+			deliverAs: "steer",
+			triggerTurn: false,
+		});
 	});
 
 	/** Proves automatic compaction restores availability for the continuing run. */

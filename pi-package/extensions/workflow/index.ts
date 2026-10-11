@@ -477,7 +477,7 @@ function publishWorkflowActivationOptions(
 	const options = pi.getActiveTools().includes(WORKFLOW_ACTIVATE_TOOL)
 		? availability.activationOptions
 		: [];
-	runtime.journal.activationOptions(options, triggerTurn);
+	runtime.journal.activationOptions(options, triggerTurn ?? false);
 }
 
 /** Reports all skipped catalog workflows in one startup notification. */
