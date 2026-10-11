@@ -7,7 +7,7 @@
   1. Identify active goal, current state, or next required action.
   2. Follow an active user requirement, constraint, preference, or accepted decision.
   3. Avoid repeating a completed or failed action whose repetition would waste work or cause harm.
-  4. Identify a file, symbol, command, value, error, or validation result required for next action.
+  4. Identify a file, symbol, command, value, error, validation result, or ID of collaboration desk, topic, message, or subagent session required for next action.
   5. Act on an unresolved blocker or open question.
 </retention_test>
 <source_rules>
