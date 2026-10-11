@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defaultPackagePath } from "../../pi-package/extensions/run-subagent/invocation-process";
+import { createTempDir } from "../support/temp-dir";
 
 const SELECTED_AGENT_STATE_HASH_ENCODING = "hex";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -217,6 +218,8 @@ function writeWorkflowLoopDumpExtension(directory: string): string {
 			"const requests = [];",
 			"const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };",
 			"export default function dumpWorkflowLoop(pi) {",
+			"\tlet workflowRecords = [];",
+			'\tpi.on("context", event => { workflowRecords = event.messages.filter(message => message.role === "custom" && message.customType === "workflow").map(message => message.details); });',
 			'\tpi.registerTool({ name: "reminder_tick", label: "Reminder tick", description: "Complete one deterministic reminder test call", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) });',
 			'\tpi.on("before_agent_start", () => pi.setActiveTools([...pi.getActiveTools(), "workflow_activate", "reminder_tick"]));',
 			'\tpi.registerProvider("workflow-loop", {',
@@ -229,7 +232,8 @@ function writeWorkflowLoopDumpExtension(directory: string): string {
 			"\t\t\tconst stream = createAssistantMessageEventStream();",
 			"\t\t\tqueueMicrotask(() => {",
 			"\t\t\t\tcalls += 1;",
-			"\t\t\t\trequests.push({ order: calls, roles: context.messages.map(({ role }) => role), tools: getCurrentTools(context.messages).map(({ name }) => name) });",
+			"\t\t\t\trequests.push({ workflowRecords, order: calls, roles: context.messages.map(({ role }) => role), tools: getCurrentTools(context.messages).map(({ name }) => name) });",
+			"\t\t\t\tif (calls > 3) { process.exit(24); }",
 			"\t\t\t\tif (calls === 3) {",
 			"\t\t\t\t\twriteFileSync(process.env.PI_WORKFLOW_LOOP_DUMP_FILE, JSON.stringify(requests, null, 2));",
 			"\t\t\t\t}",
@@ -923,14 +927,28 @@ test("provider payload carries active tool definitions without prompt inventory"
 	}
 });
 
-test("workflow reminder reaches the next provider request in the active tool loop", () => {
+test.each([
+	"one-at-a-time",
+	"all",
+] as const)("workflow reminder reaches the next provider request in the active tool loop with %s steering", (steeringMode) => {
 	// Purpose: periodic workflow reminders must enter the active agent loop rather than only persisted session state.
 	// Input and expected output: a deterministic provider activates delivery, completes two parallel tools, then receives the reminder.
 	// Edge case: one parallel batch reaches the interval and produces one reminder before the next request.
 	// Dependencies: real Pi CLI, package loading, turn-end scheduling, sendMessage steer delivery, and an isolated workflow catalog.
-	const scratchDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-"));
-	const projectDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-project-"));
-	const suiteDir = mkdtempSync(join(tmpdir(), "pi-workflow-loop-suite-"));
+	const { path: scratchDir, remove: removeScratch } =
+		createTempDir("pi-workflow-loop-");
+	const { path: projectDir, remove: removeProject } = createTempDir(
+		"pi-workflow-loop-project-",
+	);
+	const { path: suiteDir, remove: removeSuite } = createTempDir(
+		"pi-workflow-loop-suite-",
+	);
+	const agentDir = join(scratchDir, "agent");
+	mkdirSync(agentDir);
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({ steeringMode }),
+	);
 	const workflowsDir = join(suiteDir, "workflow", "workflows");
 	mkdirSync(workflowsDir, { recursive: true });
 	writeFileSync(
@@ -946,6 +964,7 @@ test("workflow reminder reaches the next provider request in the active tool loo
 	const childEnv: NodeJS.ProcessEnv = {
 		...process.env,
 		PI_AGENT_SUITE_DIR: suiteDir,
+		PI_CODING_AGENT_DIR: agentDir,
 		PI_WORKFLOW_LOOP_DUMP_FILE: dumpFile,
 	};
 	delete childEnv[CHILD_AGENT_PROCESS_ENV];
@@ -981,6 +1000,11 @@ test("workflow reminder reaches the next provider request in the active tool loo
 		expect(result.status).toBe(0);
 		const requests: {
 			readonly order: number;
+			readonly workflowRecords: readonly {
+				readonly kind: string;
+				readonly workflowId?: string;
+				readonly currentStageId?: string;
+			}[];
 			readonly roles: readonly string[];
 			readonly tools: readonly string[];
 		}[] = JSON.parse(readFileSync(dumpFile, "utf8"));
@@ -1002,28 +1026,52 @@ test("workflow reminder reaches the next provider request in the active tool loo
 				"user",
 			],
 		]);
+		expect(
+			requests.map(
+				({ workflowRecords }) =>
+					workflowRecords.filter(({ kind }) => kind === "reminder").length,
+			),
+		).toEqual([0, 0, 1]);
+		expect(requests[2]?.workflowRecords.at(-1)).toMatchObject({
+			kind: "reminder",
+			workflowId: "delivery",
+			currentStageId: "start",
+		});
 		expect(requests[0]?.tools).toContain("workflow_activate");
 		expect(requests[1]?.tools).not.toContain("workflow_activate");
 		expect(requests[1]?.tools).toContain("workflow_transition");
 		expect(requests[1]?.tools).toContain("reminder_tick");
 		expect(requests[2]?.tools).toEqual(requests[1]?.tools);
 	} finally {
-		rmSync(projectDir, { recursive: true, force: true });
-		rmSync(scratchDir, { recursive: true, force: true });
-		rmSync(suiteDir, { recursive: true, force: true });
+		removeProject();
+		removeScratch();
+		removeSuite();
 	}
 });
 
-test("terminating workflow tool batches do not request another provider turn", () => {
+test.each([
+	"one-at-a-time",
+	"all",
+] as const)("terminating workflow tool batches do not request another provider turn with %s steering", (steeringMode) => {
 	// Purpose: an all-terminating finalized tool batch must not queue a periodic workflow reminder.
 	// Input and expected output: two parallel terminating tools at interval two end the agent after exactly two provider requests.
 	// Edge case: Pi polls steer messages after turn_end even though every finalized tool result terminates.
 	// Dependencies: real Pi CLI, tool_execution_end final results, turn-end scheduling, and an isolated workflow catalog.
-	const scratchDir = mkdtempSync(join(tmpdir(), "pi-workflow-terminate-"));
-	const projectDir = mkdtempSync(
-		join(tmpdir(), "pi-workflow-terminate-project-"),
+	const { path: scratchDir, remove: removeScratch } = createTempDir(
+		"pi-workflow-terminate-",
 	);
-	const suiteDir = mkdtempSync(join(tmpdir(), "pi-workflow-terminate-suite-"));
+	const { path: projectDir, remove: removeProject } = createTempDir(
+		"pi-workflow-terminate-project-",
+	);
+	const { path: suiteDir, remove: removeSuite } = createTempDir(
+		"pi-workflow-terminate-suite-",
+	);
+	const agentDir = join(scratchDir, "agent");
+	mkdirSync(agentDir);
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({ steeringMode }),
+	);
 	const workflowsDir = join(suiteDir, "workflow", "workflows");
 	mkdirSync(workflowsDir, { recursive: true });
 	writeFileSync(
@@ -1039,6 +1087,7 @@ test("terminating workflow tool batches do not request another provider turn", (
 	const childEnv: NodeJS.ProcessEnv = {
 		...process.env,
 		PI_AGENT_SUITE_DIR: suiteDir,
+		PI_CODING_AGENT_DIR: agentDir,
 		PI_WORKFLOW_LOOP_DUMP_FILE: dumpFile,
 	};
 	delete childEnv[CHILD_AGENT_PROCESS_ENV];
@@ -1073,9 +1122,9 @@ test("terminating workflow tool batches do not request another provider turn", (
 			JSON.parse(readFileSync(dumpFile, "utf8")) as { readonly calls: number },
 		).toEqual({ calls: 2 });
 	} finally {
-		rmSync(projectDir, { recursive: true, force: true });
-		rmSync(scratchDir, { recursive: true, force: true });
-		rmSync(suiteDir, { recursive: true, force: true });
+		removeProject();
+		removeScratch();
+		removeSuite();
 	}
 });
 
