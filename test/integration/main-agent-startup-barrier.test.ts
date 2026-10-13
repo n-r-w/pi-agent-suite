@@ -315,8 +315,7 @@ test("real extension runner blocks first input before main-agent startup dispatc
 			expect(extensionErrors).toEqual([]);
 			expect(await input).toMatchObject({ action: "continue" });
 			const beforeAgentStart = await runner.emitBeforeAgentStart(
-				"first input",
-				undefined,
+				{ messageType: "user", prompt: "first input" },
 				{ cwd: environment.cwd },
 			);
 
@@ -386,9 +385,10 @@ test("real extension runner continues input after an agent registry warning", as
 			await startup;
 			const inputResult = await input;
 			if (inputResult.action !== "handled") {
-				await runner.emitBeforeAgentStart("first input", undefined, {
-					cwd: environment.cwd,
-				});
+				await runner.emitBeforeAgentStart(
+					{ messageType: "user", prompt: "first input" },
+					{ cwd: environment.cwd },
+				);
 			}
 
 			expect(inputResult).toEqual({ action: "continue" });
@@ -417,9 +417,10 @@ test("real extension runner continues input after an agent registry warning", as
 			expect(
 				await runner.emitInput("later input", undefined, "interactive"),
 			).toMatchObject({ action: "continue" });
-			await runner.emitBeforeAgentStart("later input", undefined, {
-				cwd: environment.cwd,
-			});
+			await runner.emitBeforeAgentStart(
+				{ messageType: "user", prompt: "later input" },
+				{ cwd: environment.cwd },
+			);
 			expect(environment.sharedGlobal[BEFORE_AGENT_START_COUNT_KEY]).toBe(2);
 			expect(environment.sharedGlobal[RUNTIME_OBSERVATION_KEY]).toEqual({
 				tools: ["read"],
