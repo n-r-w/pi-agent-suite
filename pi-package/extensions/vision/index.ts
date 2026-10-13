@@ -26,8 +26,7 @@ const TOOL_PARAMETERS = Type.Object(
 		prompt: Type.String({
 			minLength: 1,
 			maxLength: 2048,
-			description:
-				"Question or instruction to answer about image. MUST use ASD-STE100 - Simplified Technical English, unless maintaining original language is essential for accuracy.",
+			description: "Question or instruction to answer about image",
 		}),
 	},
 	{ additionalProperties: false },

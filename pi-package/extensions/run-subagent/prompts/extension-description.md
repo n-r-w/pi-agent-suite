@@ -57,7 +57,7 @@
 - `Goal: Get user approval of plan.` vs `Goal: Obtain agreed plan.`
 - `Goal: Present results.` vs `Goal: Provide user with necessary information.`
 
-**SUBAGENT PROMPT FORMAT**. MUST USE `ASD-STE100` - Simplified Technical English:
+**SUBAGENT PROMPT FORMAT**. Write prompt in language of texts of project: language that project rules set for documents and code comments, otherwise language of existing documents and comments. When task does not write or check text of project, use language of user. Code, identifiers, commands, paths, and quotations keep their own language.
 ```
 <goal>
     <!-- Which goal subagent is expected to achieve -->
@@ -79,7 +79,7 @@
 </context>
 
 <guidelines>
-    1. MUST USE `ASD-STE100` - Simplified Technical English in your response
+    1. Write your response in language of this prompt, unless your agent definition sets other language. Code, identifiers, commands, paths, and quotations keep their own language.
     <!-- other relevant guidelines if any -->
 </guidelines>
 

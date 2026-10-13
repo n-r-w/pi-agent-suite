@@ -4,10 +4,6 @@
   When referring to identifiers, they must be retained COMPLETELY AS IS.
 </task>
 
-<language>
-  MUST use ASD-STE100 - Simplified Technical English, except for text where changing language would change its meaning.
-</language>
-
 <update_rules>
   1. PRESERVE all existing information from  previous summary unless new messages make it stale or irrelevant.
   2. ADD new progress, decisions, and context from  new messages.

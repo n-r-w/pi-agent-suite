@@ -4,7 +4,7 @@ USAGE:
 1. To get information about current progress of subagent.
 2. To clarify details of subagent's work if its answer is insufficient.
 3. Can be called for both an active subagent and one that has completed its work.
-4. Question MUST be written in ASD-STE100 - Simplified Technical English.
+4. Write question in language of texts of project: language that project rules set for documents and code comments, otherwise language of existing documents and comments. When task does not write or check text of project, use language of user. Code, identifiers, commands, paths, and quotations keep their own language.
 
 CONSTRAINTS:
 1. Tool does not change state of subagent session and does not control it.

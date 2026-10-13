@@ -25,7 +25,3 @@ File Path:
 4. Treat the context file as evidence for this council question.
 5. Do not repeat the full context file in your answer.
 </context_instructions>
-
-<constraints>
-MUST be written in ASD-STE100 - Simplified Technical English.
-</constraints>

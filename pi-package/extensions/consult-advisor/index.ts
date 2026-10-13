@@ -81,8 +81,7 @@ const DEFAULT_ADVISOR_PROMPT_FILE = join(
 const ConsultAdvisorParameters = Type.Object(
 	{
 		question: Type.String({
-			description:
-				"Focused question to ask the advisor. MUST use ASD-STE100 - Simplified Technical English",
+			description: "Focused question to ask the advisor",
 			minLength: 1,
 			maxLength: 8192,
 		}),

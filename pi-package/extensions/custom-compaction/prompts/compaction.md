@@ -4,10 +4,6 @@
   When referring to identifiers, they must be retained COMPLETELY AS IS.
 </task>
 
-<language>
-  MUST use ASD-STE100 - Simplified Technical English, except for text where changing language would change its meaning.
-</language>
-
 <summary_rules>
   1. Include only information present in conversation.
   2. Return only summary.

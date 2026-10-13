@@ -125,11 +125,6 @@ During design:
   3. MUST NOT praise executor.
 </answer_rules>
 
-<language_policy>
-  1. MUST ALWAYS answer in ASD-STE100 - Simplified Technical English. Exception: term, name, or quotation that context gives in other language stays in this language.
-  2. User language and conversation language NEVER override this rule.
-</language_policy>
-
 <escalation>
   Tell executor to stop and ask user when:
   1. `<additions>`, `<fix_strategy>`, or `<evidence>` gives ASK USER.
@@ -175,27 +170,34 @@ During design:
          Function with other purpose starts with verb of its action, then object: `Resolve`, `FindLinkRefusal`. Method without arguments and side effects that returns property of its value is named by property: `Hash()`, `LinksHash()`. Name that interface sets (`String`, `Error`) stays.
     </category>
     <category name="Code Comments">
-      1. Comment inside body of function that explains obvious things ==> **REMOVE**
-      2. Explaining "how" instead of "why" or "what" ==> **ADD "why" context, but KEEP original "how"/"what" explanation if it provides valuable information**
-      3. Explanations/references not related to code context: ==> **REMOVE**
-        1) Project standards & Best practices ==> **REMOVE**
-        2) Implementation plans/tasks/specs/options (e.g. plan units, options choice, task numbers, etc.) ==> **REMOVE**
-        3) Code review results ==> **REMOVE**
-        4) MEMORY references ==> **REMOVE**
-        5) History of change: removed or earlier code, earlier behavior, reason why code stayed or changed in this change ==> **REMOVE. Describe current purpose and behavior. History belongs in commit message and report of work.**
-      4. Declaration without comment: package or module, function, method, type, field, interface method, constant, or variable outside body of function. Name, visibility, size, and simplicity of object do not remove this rule ==> **ADD comment that states purpose and behavior of object: what function returns and its side effects, what value of field or variable means, and parameters or results that name does not explain.**
-      5. Code inside body of function without comment where comment is needed ==> **ADD comment that explains:**
-        1) Complex algorithms or logic
-        2) Non-obvious decisions or trade-offs
-        3) Local variable whose meaning name does not explain
-      6. Statements without Evidence:
-        Phrases like "confirmed", "verified", "supported", "validated", "proven", etc. DO NOT INCREASE value of comments, but only create meaningless NOISE.
-        Instead of such phrases, you MUST add specific evidence (e.g. variable/function names, etc.) that supports these statements. ==> **REMOVE such phrases and add specific evidence if possible**
-      7. Comments that do not explain concrete purpose, behavior, invariant, reason, or consequence ==> **REMOVE filler and abstract wording from comments. REWRITE to provide clear, simple and user friendly explanations.**
-      8. Comment that reader of code does not understand on first reading: term that reader does not know, complex wording, several statements in one sentence, negation that hides behavior, or word-by-word translation of identifier or of phrase in other language ==> **REWRITE: one statement in each sentence, positive form, one term for each concept, and named actor of each action. Actor is component or person that performs action: data, rule, and change do not act. Reader is developer that calls or changes code.**
-      9. Comments and descriptions of code objects and contracts (functions, methods, types, fields, variables, constants, API endpoints, proto messages, schemas) that state what object does not do, is not responsible for, or is not used for ==> **REMOVE. Describe purpose and behavior of object instead.**
-        Exception: contract limit that caller would otherwise assume and violate (concurrency safety, resource ownership, side effects). State it as condition of use, e.g. "Caller closes reader."
-      10. Comments and descriptions of external contracts (API endpoints, proto messages and fields, event schemas, public API of library) that describe internal implementation: internal rules, algorithm steps, storage, components, or terms that consumer of contract does not know ==> **REWRITE. Describe what consumer observes: meaning of value, when value is present or absent, and allowed values.**
+      Rules of comments follow. Comment that breaks them ==> **REWRITE or REMOVE by these rules**
+<comments>
+Reader of comment is developer who calls or changes code. Comment is road sign: it tells reader what object is for and helps to find way in code. Code holds exact behavior, so comment does not repeat its precision.
+1. Purpose of Declaration: each declaration outside function body has comment: package or module, function, method, type, field, interface method, constant, variable. Name, visibility, size, and simplicity of object do not remove this rule
+  1) Content: comment states purpose of object in one short sentence: why code needs function, what type holds, what value of field, variable, or constant means
+  2) Wording: sentence can state purpose with verb and clause, as developer says it to colleague, for example "retries: how many times to repeat failed attempt". Form `name - noun phrase` fits when noun phrase is short and plain: "width - width in pixels"
+  3) Parameters: comment names parameter or result only when its name does not explain it
+  4) Meaning in Module: object is part of module, package, or type, and its name adds to description of this module. Comment states what object adds: meaning of value or role of object, in words of module. Comment does not repeat module itself, does not narrow meaning to case where code uses object now (meaning that words of name state is not narrowing), does not retell logic (item Retold Logic), and does not only repeat words of name, also in other language (item Retold Identifier). Example: in package `storage` that keeps records by key, `ErrNotFound` gets "no record with this key"; "order not found" narrows meaning to current caller, "storage error: not found" repeats package, and "not found" only repeats words of name. In same package, `ErrOrderNotFound` gets "no order with this ID"
+2. Retold Logic: comment of declaration (function, method, RPC, type, message, field, constant, variable, enum value, error) does not retell business logic: conditions, cases, errors that object returns, steps, sources of data, callers and how they use object, or other components. Condition of use that caller would otherwise violate stays (item Negative Description). Comment of collection does not state which elements it holds or in which order, when code filters or sorts them. Comment does not state how object works inside: waits or does not wait, blocks, retries, copies. Comment has no qualifier that code checks or that module already gives: allowed values ("positive"), owner ("of customer"), or record that stores data ("of record"). Example: "Items: cart items except removed ones, in order of addition" → "Items: products in cart"; "flush writes buffer to disk without blocking" → "flush writes buffer to disk"; "RetryDelay: positive delay before retry of customer request" → "RetryDelay: delay before next attempt". Code and tests show business logic. Example: "ExportIncomplete: OrderExporter finished export after retry period of unavailable storage ended; part of orders stayed unexported" → "ExportIncomplete: export stopped before end of data"
+  1) Public Contract: this item does not remove from comment of field of public contract that other services read (proto message, OpenAPI schema) what consumer needs: for input field, requirements to its value; for output field, what it holds. Examples: allowed values, format, meaning of empty or zero value, fields that come only together. Example: "latitude: degrees; set only together with longitude" stays. Such comment does not state internal logic of service: how service gets, computes, checks, or stores value
+3. Body Comment: comment in function body explains complex algorithm or logic, non-obvious decision or trade-off, or local variable whose meaning context does not show
+  1) Context: context of local variable is line that sets it, code that uses variable next, and name, signature, and comment of function that this line calls. Body of called function, code that implements interface, and SQL query are not context. When reader gets fact of comment only from them, comment stays. Local variable gets comment only when reader cannot get its meaning from context. Example: `payload, err := mapRequest(invocation)` with next `if err != nil { return err }` gets no comment; `skew := 2 * time.Second` gets "allowed difference between clocks of broker and consumer"; `keys, err := repo.ReadBatch(ctx, cmd)` keeps comment "keys in order of customer ID and order ID", because comment of `ReadBatch` does not state order and only SQL query of repository sorts keys
+  2) Project Rule: rule of project that requires comments of variables applies to local variables by item Context. Declarations outside function body follow item Purpose of Declaration
+  3) Obvious Code: comment that explains obvious code is removed
+  4) How and Why: comment that explains "how" gets "why"; useful "how" stays
+4. Unrelated Context: comment holds no project standards or best practices; no plan, task, spec, or option labels; no code review results; no memory references; no history of change: removed or earlier code, earlier behavior, reason why code stayed or changed. Comment describes current purpose. History goes to commit message and report of work
+5. Evidence Words: comment has no words like "confirmed", "verified", "supported", "validated", "proven". Comment names specific evidence (variable, function) or drops claim
+6. Clear Text: comment has no filler or abstract wording, and reader understands it on first reading: no unknown term, no complex wording, no word-by-word translation of identifier or of phrase in other language. Text meets criteria Reader, One Statement, Positive Form, Terms, References, Order and Links, Actor, and Language of quality gate `document` of `gate-document` skill
+  1) Retold Identifier: comment states what object is or what value means. Translation of words of identifier one by one gives no meaning to reader: `originalBody` gives "stream of original", `FailureDetails` gives "data of reason of refusal"
+  2) Project Words: word that authors of project made up for concept (jargon) has explanation in comment, or comment uses plain words of field. Nearby comments that use this word do not make it known to reader
+  3) Hook: after each edit or shell command, hook checks new Russian comments by items Clear Text and Retold Logic, and adds remarks to tool result. Each remark names comment, its likely defect, and fix. Hook forbids edit that adds em dash to comment
+  4) Remark: fix each comment that remark names. Keep comment unchanged only when it has no such defect, and state line and reason in your answer
+  5) Dash: comment has no em dash (character U+2014) (item Dash of criterion Language of quality gate `document` of `gate-document` skill)
+  6) Empty Word: comment has no word that item Empty Word of criterion No Filler of quality gate `document` of `gate-document` skill forbids. Example: "readNumber returns exact numeric value of field" → "readNumber returns numeric value of field": function has no inexact value
+  7) Edit by Hand: work changes text of each comment with own edit of this place (item Edit by Hand of criterion Language of quality gate `document` of `gate-document` skill). Script and replacement by pattern only find places and check result
+7. Negative Description: comment or description of code object or contract (function, method, type, field, variable, constant, API endpoint, proto message, schema) states purpose of object, not what object does not do, is not responsible for, or is not used for. Exception: contract limit that caller would otherwise assume and violate (concurrency safety, resource ownership, side effects), stated as condition of use, for example "Caller closes reader."
+8. External Contract: description of external contract (API endpoint, proto message and field, event schema, public API of library) states purpose for consumer: what method gives, what value means. It holds no internal rules, algorithm steps, storage, components, or terms that consumer does not know
+</comments>
     </category>
     <category name="Style & Formatting">
       1. Style inconsistencies ==> **REWRITE to follow project style**

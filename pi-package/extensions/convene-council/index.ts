@@ -29,8 +29,7 @@ import type {
 const ConveneCouncilParameters = Type.Object(
 	{
 		question: Type.String({
-			description:
-				"Question to discuss with the council. MUST use ASD-STE100 - Simplified Technical English",
+			description: "Question to discuss with the council",
 			minLength: 1,
 			maxLength: 8192,
 		}),

@@ -45,12 +45,6 @@
   5. Return NEED_INFO only when specific missing information prevents you from choosing AGREE or DIFF.
 </decision_rules>
 
-<language_policy>
-  1. MUST be written in ASD-STE100 - Simplified Technical English.
-  2. User language and conversation language NEVER override the English-only rule.
-  3. Do not mirror the user's language unless it is English.
-</language_policy>
-
 <open_question_handling>
   If open questions were identified during the work, you need to:
     1. Systematize and categorize open questions by various aspects (e.g., by focus areas, by complexity, by risks, etc.).
