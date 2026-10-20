@@ -718,6 +718,9 @@ describe("workflow extension lifecycle", () => {
 			false,
 		);
 		expect(Check(editSchema, validEdit)).toBe(true);
+		expect(Check(editSchema, { ...validEdit, goal: "Outcome ready" })).toBe(
+			true,
+		);
 		for (const invalid of [
 			{ ...validEdit, workflowId: "other" },
 			{ ...validEdit, id: "replacement" },
@@ -1184,6 +1187,128 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.appended).toHaveLength(before);
 	});
 
+	/** Proves goal validation and persistence failures preserve both state and journal evidence. */
+	test.each([
+		"start",
+		"done",
+	])("edits goals atomically for %s and replays saved evidence", async (stageId) => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const calls = captureTriggers(fake);
+		await requireTool(fake, "workflow_create").execute(
+			"create",
+			triggeredCreateArguments(),
+		);
+		const edit = requireTool(fake, "workflow_edit_stage");
+		const get = requireTool(fake, "workflow_get_stage");
+		const replacement = {
+			stageId,
+			description: "Revised",
+			prompt: "Replacement instructions.",
+			model: { thinking: "high" },
+		};
+		const before = structuredClone(fake.appended);
+		const messages = structuredClone(fake.messages);
+		const triggerCount = calls.length;
+		const original = await get.execute("before", { stageId });
+		for (const goal of [undefined, null, "", "  ", 42]) {
+			await expect(
+				edit.execute("invalid", {
+					...replacement,
+					...(goal === undefined ? {} : { goal }),
+				}),
+			).rejects.toThrow("goal");
+			expect(fake.appended).toEqual(before);
+			expect(fake.messages).toEqual(messages);
+			expect(await get.execute("unchanged", { stageId })).toEqual(original);
+		}
+		fake.appendError = new Error("append failed");
+		await expect(
+			edit.execute("unpersisted", { ...replacement, goal: "Revised outcome" }),
+		).rejects.toThrow("append failed");
+		expect(fake.appended).toEqual(before);
+		expect(fake.messages).toEqual(messages);
+		expect(await get.execute("unchanged", { stageId })).toEqual(original);
+		expect(fake.thinkingLevel).toBe("medium");
+		fake.appendError = undefined;
+		await edit.execute("edit", {
+			...replacement,
+			goal: "  Revised <&> outcome  ",
+		});
+		expect(fake.appended.at(-1)?.data).toMatchObject({
+			kind: "stage_edited",
+			goal: "Revised <&> outcome",
+		});
+		expect(fake.thinkingLevel).toBe(stageId === "start" ? "high" : "medium");
+		expect(calls).toHaveLength(triggerCount);
+		const record = fake.messages.at(-1);
+		expect(record?.details).toMatchObject({
+			kind: "stage_update",
+			stageId,
+			active: stageId === "start",
+		});
+		const content = record?.content ?? "";
+		expect(content).toContain("<stage_goal>");
+		expect(content.indexOf("<stage_goal>")).toBeLessThan(
+			content.indexOf("<stage_guidelines>"),
+		);
+		expect(content).not.toContain("<workflow_stage_activated");
+		const branch = fake.appended.map(({ customType, data }) => ({
+			type: "custom",
+			customType,
+			data,
+		}));
+		const restored = replayWorkflowState(JSON.parse(JSON.stringify(branch)));
+		expect(restored?.route).toEqual(["start"]);
+		expect(
+			restored?.workflow.stages.find(({ id }) => id === stageId)?.goal,
+		).toBe("Revised <&> outcome");
+		await runLifecycle(fake, "session_tree", branch);
+		const result = (await get.execute("after", { stageId })) as {
+			content: Array<{ text: string }>;
+		};
+		expect(JSON.parse(result.content[0]?.text ?? "null")).toMatchObject({
+			goal: "Revised <&> outcome",
+		});
+	});
+
+	/** Proves restored format1 edits omit the goal key in persisted entries. */
+	test("edits restored format1 state without introducing a goal", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const saved = activatedEntry() as { data: { kind: string } };
+		saved.data.kind = "created";
+		await runLifecycle(fake, "session_start", [saved]);
+		const edit = requireTool(fake, "workflow_edit_stage");
+		const replacement = {
+			stageId: "start",
+			description: "Revised",
+			prompt: "Replacement instructions.",
+			model: { thinking: "high" },
+		};
+		const before = structuredClone(fake.messages);
+		await expect(
+			edit.execute("invalid", { ...replacement, goal: "Outcome ready" }),
+		).rejects.toThrow("format version 2");
+		expect(fake.messages).toEqual(before);
+		await edit.execute("legacy", replacement);
+		expect(fake.appended.at(-1)?.data).toEqual({
+			kind: "stage_edited",
+			...replacement,
+		});
+		expect(
+			replayWorkflowState([
+				saved,
+				...fake.appended.map(({ customType, data }) => ({
+					type: "custom",
+					customType,
+					data,
+				})),
+			])?.workflow.stages[0],
+		).not.toHaveProperty("goal");
+	});
+
 	/**
 	 * Proves stage tools read and change active and non-active stages in only the current active workflow.
 	 * Input and expected output: dynamic creation exposes both tools; edits persist in the workflow journal.
@@ -1217,6 +1342,7 @@ describe("workflow extension lifecycle", () => {
 
 		await edit.execute("edit-done", {
 			stageId: "done",
+			goal: "Replacement outcome",
 			description: "Revised done",
 			prompt: "Use the revised final-stage requirements.",
 			model: { thinking: "high" },
@@ -1238,6 +1364,7 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.thinkingLevel).toBe("high");
 		await edit.execute("edit-active", {
 			stageId: "done",
+			goal: "Replacement outcome",
 			description: "Correct final stage",
 			prompt: "Follow the corrected requirements now.",
 			model: { thinking: "low" },
@@ -1269,6 +1396,7 @@ describe("workflow extension lifecycle", () => {
 		const edit = requireTool(fake, "workflow_edit_stage");
 		await edit.execute("edit", {
 			stageId: "done",
+			goal: "Replacement outcome",
 			description: "Saved revision",
 			prompt: "Replay these corrected requirements.",
 			model: { thinking: "high" },
@@ -1300,6 +1428,7 @@ describe("workflow extension lifecycle", () => {
 		await expect(
 			edit.execute("completed-edit", {
 				stageId: "done",
+				goal: "Replacement outcome",
 				description: "Disallowed",
 				prompt: "Do not edit a completed workflow.",
 				model: { thinking: "medium" },
@@ -1330,6 +1459,7 @@ describe("workflow extension lifecycle", () => {
 		await expect(
 			edit.execute("missing-edit", {
 				stageId: "missing",
+				goal: "Replacement outcome",
 				description: "Missing",
 				prompt: "This stage does not exist.",
 				model: { thinking: "high" },
@@ -1341,6 +1471,7 @@ describe("workflow extension lifecycle", () => {
 		await expect(
 			edit.execute("failed-edit", {
 				stageId: "start",
+				goal: "Replacement outcome",
 				description: "Unpersisted revision",
 				prompt: "This change must roll back.",
 				model: { thinking: "high" },

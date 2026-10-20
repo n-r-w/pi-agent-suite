@@ -111,7 +111,14 @@ const CREATED_STAGE_KEYS = new Set([
 	"model",
 ]);
 const CREATED_MODEL_KEYS = new Set(["thinking"]);
-const STAGE_EDIT_KEYS = new Set(["stageId", "description", "prompt", "model"]);
+/** Accepted replacement fields shared by live edits and saved edit replay. */
+const STAGE_EDIT_KEYS = new Set([
+	"stageId",
+	"description",
+	"goal",
+	"prompt",
+	"model",
+]);
 const TRIGGER_KEYS = new Set(["type"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
@@ -264,6 +271,12 @@ export function editWorkflowStage(
 		const root = requireObject(value, "stage edit", STAGE_EDIT_KEYS);
 		const stageId = readTechnicalIdentifier(root, "stageId");
 		const description = readSingleLineText(root, "description");
+		const stageFields = selectWorkflowFormat(
+			state.workflow.version,
+		).stageFields({
+			...root,
+			id: stageId,
+		});
 		const prompt = readPromptText(root, "prompt");
 		const model = requireObject(
 			Reflect.get(root, "model"),
@@ -288,6 +301,7 @@ export function editWorkflowStage(
 		stages[stageIndex] = {
 			...stage,
 			description,
+			...stageFields,
 			prompt,
 			model: { ...stage.model, thinking },
 		};
@@ -477,7 +491,7 @@ function replayWorkflowStageEdit(
 ): WorkflowState {
 	assertExactKeys(
 		data,
-		new Set(["kind", "stageId", "description", "prompt", "model"]),
+		new Set(["kind", ...STAGE_EDIT_KEYS]),
 		"stage_edited entry",
 	);
 	if (state === undefined) {
@@ -488,6 +502,7 @@ function replayWorkflowStageEdit(
 		{
 			stageId: Reflect.get(data, "stageId"),
 			description: Reflect.get(data, "description"),
+			...("goal" in data ? { goal: Reflect.get(data, "goal") } : {}),
 			prompt: Reflect.get(data, "prompt"),
 			model: Reflect.get(data, "model"),
 		},

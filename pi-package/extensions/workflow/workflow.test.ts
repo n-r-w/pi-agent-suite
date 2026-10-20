@@ -5,6 +5,7 @@ import {
 	activateWorkflow,
 	completeWorkflow,
 	createWorkflow,
+	editWorkflowStage,
 	getAvailableTransitions,
 	getStageStatuses,
 	replayWorkflowState,
@@ -1271,5 +1272,111 @@ describe("workflow format boundaries", () => {
 		]);
 		expect(state?.workflow).toEqual(workflow);
 		expect(state?.route).toEqual(["start", "left"]);
+	});
+});
+
+/** Exercises replacement-goal validation and replay through the shared edit boundary. */
+describe("stage goal replacement", () => {
+	test.each([
+		undefined,
+		null,
+		"",
+		"   ",
+		42,
+	])("rejects invalid format2 goal %j atomically", (goal) => {
+		const state = createWorkflow(
+			validateCreatedWorkflowDefinition(
+				{ id: "goal-edit", ...validCreatedValue() },
+				SOURCE,
+			),
+		);
+		const before = structuredClone(state);
+		const edit = {
+			stageId: "a",
+			description: "Revised",
+			prompt: "Replacement instructions.",
+			model: { thinking: "high" },
+			...(goal === undefined ? {} : { goal }),
+		};
+		expect(() => editWorkflowStage(state, edit, SOURCE)).toThrow("goal");
+		expect(state).toEqual(before);
+	});
+
+	test.each([
+		"a",
+		"b",
+	])("replaces and replays format2 goal for stage %s", (stageId) => {
+		const state = {
+			...createWorkflow(
+				validateCreatedWorkflowDefinition(
+					{ id: "goal-edit", ...validCreatedValue() },
+					SOURCE,
+				),
+			),
+			restoration: { modelId: "provider/model", thinking: "low" as const },
+		};
+		const edit = {
+			stageId,
+			description: "Revised",
+			goal: "  Revised <&> outcome.\nSecond line.  ",
+			prompt: "Replacement instructions.",
+			model: { thinking: "high" as const },
+		};
+		const next = editWorkflowStage(state, edit, SOURCE);
+		const previous = requireFixtureItem(
+			state.workflow.stages,
+			state.workflow.stages.findIndex(({ id }) => id === stageId),
+		);
+		expect(next.workflow.stages.find(({ id }) => id === stageId)).toEqual({
+			...previous,
+			description: edit.description,
+			prompt: edit.prompt,
+			model: edit.model,
+			goal: edit.goal.trim(),
+		});
+		const replayed = replayWorkflowState([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow: state.workflow,
+					route: state.route,
+					restoration: state.restoration,
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				},
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "stage_edited", ...edit },
+			},
+		]);
+		expect(replayed).toEqual(next);
+		expect(next).toMatchObject({
+			route: state.route,
+			source: state.source,
+			restoration: state.restoration,
+			status: state.status,
+		});
+		expect(next.workflow.transitions).toEqual(state.workflow.transitions);
+	});
+
+	test("rejects a goal in legacy edits and keeps goal-free replay compatible", () => {
+		const state = createWorkflow(
+			validateWorkflowDefinition("legacy", validValue(), SOURCE),
+		);
+		const edit = {
+			stageId: "a",
+			description: "Revised",
+			prompt: "Replacement instructions.",
+			model: { thinking: "high" },
+		};
+		expect(() =>
+			editWorkflowStage(state, { ...edit, goal: "Outcome ready" }, SOURCE),
+		).toThrow("format version 2");
+		expect(
+			editWorkflowStage(state, edit, SOURCE).workflow.stages[0],
+		).not.toHaveProperty("goal");
 	});
 });

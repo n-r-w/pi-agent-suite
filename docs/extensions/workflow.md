@@ -234,6 +234,7 @@ For a format-2 stage, the JSON result contains `id`, `description`, `goal`, `pro
 {
   "stageId": "implementation",
   "description": "Implement the corrected change",
+  "goal": "The corrected implementation passes its checks",
   "prompt": "Follow the corrected requirements.",
   "model": {
     "thinking": "high"
@@ -241,9 +242,15 @@ For a format-2 stage, the JSON result contains `id`, `description`, `goal`, `pro
 }
 ```
 
-The tool replaces only `description`, `prompt`, and `model.thinking`. It preserves `id`, `goal`, `initial`, `final`, `triggers`, transitions, workflow fields, route, status, source, and restoration settings. All replacement fields are required. `model.thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+For format 2, the tool requires and replaces `description`, `goal`, `prompt`, and `model.thinking`. If the goal is missing, empty after trimming, or invalid, the tool rejects the edit before changing state. For a restored format-1 dynamic workflow, omit `goal`. If the call supplies `goal`, the tool rejects the edit with an error stating that a stage goal requires format version 2. The shared tool schema keeps `goal` optional so it can serve both formats; the domain validator enforces the workflow's format rules.
 
-The edit appends a `stage_edited` session entry. Editing the active stage applies its thinking level immediately and updates the prompt and description used by the next provider request. Editing another stage stores the new fields without changing current runtime thinking. A later transition applies that stage's edited thinking level. Editing does not enter the stage and does not run its triggers.
+The tool preserves `id`, `initial`, `final`, `triggers`, transitions, workflow fields, route, status, source, and restoration settings. `model.thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+
+The extension appends a `stage_edited` session entry with the normalized replacement fields. For format 2, it trims surrounding goal whitespace before saving. For example, `"  The corrected implementation passes its checks  "` is stored and restored as `"The corrected implementation passes its checks"`. For format 1, the extension omits the goal key. During replay, the extension applies the saved fields through the same stage-edit validation.
+
+If validation or persistence fails, the extension preserves workflow state and publishes no stage update. If persistence fails after the extension applies the active stage's thinking level, it rolls back the runtime settings. On success, the extension publishes the edited stage's description, goal when present, and complete prompt in `<workflow_stage_updated>` for the next provider request. It sets `active="true"` for an active-stage edit and `active="false"` for an inactive-stage edit.
+
+When you edit the active stage, the extension applies its thinking level immediately. When you edit an inactive stage, the extension preserves the active stage's runtime thinking. When a later transition enters the edited stage, the extension applies that stage's thinking level. During editing, the extension preserves the route and runs no stage-entry triggers.
 
 ### `workflow_transition`
 
@@ -295,6 +302,7 @@ Thinking: medium
 
 workflow_edit_stage: implementation
 Description: Implement the approved change -> Implement the corrected change
+Goal: The implementation passes the required checks -> The corrected implementation passes its checks
 Prompt: Implement and test the change -> Follow the corrected requirements.
 Thinking: medium -> high
 
@@ -336,6 +344,8 @@ transitions:
 ```
 
 For format-2 stage inspection, the renderer places `Goal` between `Description` and `Prompt`: a labeled row in collapsed (compact) mode and a `--- Goal ---` section in expanded mode. The renderer uses these attributes for live calls and replay on both main and subagent screens. When saved stage content has no goal, the renderer omits the `Goal` attribute.
+
+For stage edits, the renderer places the goal change between the description and prompt changes, using the same row and section conventions. If only the goal changes, the renderer displays only the old and replacement goal. Before comparing goals, the renderer trims surrounding whitespace from the replacement. If the normalized replacement equals the saved goal, the renderer omits the goal change row. If all editable values compare equal, it shows `No changes.`. The renderer reads saved presentation evidence during deferred rendering, so the first replay render shows the same changes as the live call.
 
 The renderer keeps the shared collapsed attribute budget of four visual lines. The tool title and expansion hint are outside this budget. When computing the hint, the renderer counts all wrapped attribute lines, including the goal. In the compact inspection example above, each attribute fits on one line, so the renderer shows four of six attribute lines and reports two hidden lines.
 
@@ -379,7 +389,7 @@ The journal is append-only:
 - Repeated entry into a known unchanged stage uses `guidelines="reuse"` and does not repeat the prompt.
 - In format 2, the extension includes `<stage_goal>` in every stage activation, including reuse entries. In inline entries, the goal precedes `<stage_guidelines>`. In reuse entries, the extension omits `<stage_guidelines>`.
 - Every stage activation includes current outgoing `<available_transitions>`. Route-dependent `rework` options are recalculated for each entry. For each transition with grounds, the extension includes all declared ground IDs and condition texts.
-- `workflow_edit_stage` appends `<workflow_stage_updated>` with the complete replacement description and prompt.
+- `workflow_edit_stage` appends `<workflow_stage_updated>` with the complete replacement description and prompt. For format 2, it includes the replacement `<stage_goal>` before `<stage_guidelines>`.
 - On `agent_settled` after a successful final-stage run, the extension appends `<workflow_completed>` with available rework transitions and their grounds. It omits the completed stage's goal and prompt. Settlement runs after the active agent loop ends, so the completion record reaches the next user-triggered provider request.
 - Periodic publication appends `<workflow_reminder id="workflow-id" active_stage_id="stage-id" />`. The marker contains only XML-escaped workflow and active stage IDs.
 - An empty transition set is represented by `<available_transitions />`.
@@ -409,7 +419,7 @@ For snapshots with `journalVersion: 1`, the validator applies the format-version
 The active branch reconstructs state on session start and branch changes:
 - `activated` restores catalog-backed active state and its restoration settings;
 - `created` restores dynamic active state and its restoration settings;
-- `stage_edited` replaces `description`, `prompt`, and `model.thinking` in the preceding active dynamic snapshot;
+- for a `stage_edited` entry, the extension replaces `description`, `prompt`, and `model.thinking` in the preceding active dynamic snapshot. For format 2, it also replaces `goal`;
 - `transitioned` updates the route of the preceding snapshot;
 - `completed` restores completed state and the persisted pre-workflow runtime settings without applying final-stage settings.
 

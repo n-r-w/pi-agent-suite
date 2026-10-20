@@ -668,6 +668,7 @@ describe("workflow semantic tool rendering", () => {
 		});
 		const edit = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "The implementation passes its checks",
 			description: "Revised implementation",
 			prompt: "Follow the corrected implementation requirements.",
 			model: { thinking: "high" },
@@ -816,6 +817,7 @@ describe("workflow semantic tool rendering", () => {
 
 		const unchanged = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "The implementation passes its checks",
 			description: "Revised implementation",
 			prompt: "Follow the corrected implementation requirements.",
 			model: { thinking: "high" },
@@ -848,6 +850,96 @@ describe("workflow semantic tool rendering", () => {
 		expect(edit.result.content).toEqual([
 			{ type: "text", text: '{"success":true}' },
 		]);
+	});
+
+	/** Checks goal-only change rows in real Pi shells on the first live or replay render. */
+	test.each(
+		[false, true].flatMap((replayed) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ replayed, subagent, expanded })),
+			),
+		),
+	)("renders first goal-only stage edit %j", async ({
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const args = createArguments("goal-edit", "Goal edit");
+		await executeTool(fixture, "workflow_create", args);
+		const stage = (args["stages"] as Record<string, unknown>[])[0];
+		if (stage === undefined) {
+			throw new Error("missing stage fixture");
+		}
+		const replacement = {
+			stageId: "implementation",
+			description: stage["description"],
+			prompt: stage["prompt"],
+			model: stage["model"],
+			goal: "  Revised outcome\n  ",
+		};
+		const edit = await executeTool(fixture, "workflow_edit_stage", replacement);
+		expect(edit.isError).toBe(false);
+		expect(edit.result.details).toMatchObject({
+			editedContent: { goal: replacement.goal.trim() },
+		});
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_edit_stage")
+			: screen.tools.find(({ name }) => name === "workflow_edit_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_edit_stage",
+			"goal-edit",
+			edit.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...(replayed ? JSON.parse(JSON.stringify(edit.result)) : edit.result),
+			isError: false,
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_edit_stage: implementation",
+						"--- Goal ---",
+						String(stage["goal"]),
+						"->",
+						"Revised outcome",
+					]
+				: [
+						"workflow_edit_stage: implementation",
+						`Goal: ${String(stage["goal"])} -> Revised outcome`,
+					],
+		);
+		for (const line of component.render(100)) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(100);
+		}
+		const unchanged = await executeTool(
+			fixture,
+			"workflow_edit_stage",
+			replacement,
+		);
+		expect(unchanged.isError).toBe(false);
+		expect(
+			renderCompletedTool(
+				unchanged.definition,
+				unchanged,
+				PLAIN_THEME,
+				100,
+				expanded,
+			).call,
+		).toEqual(["workflow_edit_stage: implementation", "No changes."]);
 	});
 
 	/** Checks stage attributes on the first render after result delivery. */
@@ -972,6 +1064,7 @@ describe("workflow semantic tool rendering", () => {
 		});
 		const edit = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "Checks pass.\nEvidence is saved.",
 			description: "Implementation stage",
 			prompt: "Read corrected requirements.\nImplement the corrected change.",
 			model: { thinking: "medium" },
@@ -1288,6 +1381,7 @@ describe("workflow semantic tool rendering", () => {
 		);
 		const stageEdit = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "The implementation passes its checks",
 			description: "A revised implementation description",
 			prompt: "A revised implementation prompt that wraps",
 			model: { thinking: "high" },

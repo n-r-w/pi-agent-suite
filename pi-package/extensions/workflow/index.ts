@@ -213,6 +213,14 @@ const WORKFLOW_EDIT_STAGE_SCHEMA = Type.Object(
 			minLength: 1,
 			maxLength: 128,
 		}),
+		goal: Type.Optional(
+			Type.String({
+				description:
+					"Replacement stage goal, required for format 2 and unavailable for format 1",
+				minLength: 1,
+				maxLength: 8192,
+			}),
+		),
 		prompt: Type.String({
 			description: "Replacement instructions for this stage",
 			minLength: 10,
@@ -1522,6 +1530,7 @@ function registerWorkflowEditStageTool(
 				kind: "stage_edited",
 				stageId,
 				description: stage.description,
+				...(stage.goal === undefined ? {} : { goal: stage.goal }),
 				prompt: stage.prompt,
 				model: { thinking },
 			};

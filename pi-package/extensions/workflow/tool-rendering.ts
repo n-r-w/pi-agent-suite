@@ -262,9 +262,11 @@ function createEditedStageContent(
 	) {
 		return undefined;
 	}
+	const goal = readInputString(args, "goal")?.trim();
 	return {
 		id,
 		description,
+		...(goal === undefined ? {} : { goal }),
 		prompt,
 		model: { thinking },
 		...(initial === undefined ? {} : { initial }),
@@ -656,6 +658,9 @@ function createStageChanges(
 	}
 	const editableValues: ReadonlyArray<readonly [string, string, string]> = [
 		["Description", content.description, editedContent.description],
+		...(content.goal === undefined || editedContent.goal === undefined
+			? []
+			: [["Goal", content.goal, editedContent.goal] as const]),
 		["Prompt", content.prompt, editedContent.prompt],
 		[
 			"Thinking",
