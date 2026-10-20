@@ -12,7 +12,12 @@ Create ready-made `.yaml` files under:
 
 When `PI_AGENT_SUITE_DIR` is set, the extension uses `<PI_AGENT_SUITE_DIR>/workflow/workflows/` instead. The NFC-normalized file name without `.yaml` is the workflow ID. Workflow IDs may use any Unicode language, internal spaces, and punctuation. They must be non-empty, trimmed, and single-line.
 
+### Format 2
+
+Use format version 2 for new workflows. Declare `version: 2` in catalog files. `workflow_create` always creates format-2 workflows without a caller-supplied version selector. Existing unversioned files follow the [legacy format-1 rules](#legacy-compatibility-format-1).
+
 ```yaml
+version: 2
 description: Use for software delivery
 prompt: |
   Follow these guidelines throughout the workflow.
@@ -22,6 +27,7 @@ model:
 stages:
   - id: implementation
     description: Implement the approved change
+    goal: The implementation passes the required checks
     prompt: |
       Implement only the approved scope.
       Follow the project testing rules.
@@ -32,6 +38,7 @@ stages:
       thinking: xhigh
   - id: review
     description: Review the implementation
+    goal: The reviewer has approved the implementation
     prompt: Review the implementation and report evidence-backed findings
     final: true
 transitions:
@@ -41,43 +48,16 @@ transitions:
   - from: review
     to: implementation
     type: rework
+    grounds:
+      - id: evidence_missing
+        when: The reviewer identifies missing implementation evidence
 ```
 
-### Catalog format versions
-
-The catalog loader accepts `version: 1` and `version: 2` in YAML. When `version` is omitted, the loader selects format 1. For any other version value, the loader rejects the file with an error naming the value. For format 1, the validator rejects stage `goal` and transition `grounds` fields and explains that they require format 2.
-
-Declaring `version: 1` is equivalent to omitting `version`: the validator produces identical normalized definitions. Both forms therefore have the same definition revision and model-facing records. `workflow_create` always creates format-2 workflows without a caller-supplied version selector.
-
-In format 2, each stage requires a non-empty string in `goal`: the stage goal, or state that must hold when the stage ends. A transition can declare a `grounds` list. Each transition ground contains only a technical `id` and a non-empty string in `when` that describes its condition. Ground IDs follow the stage-ID rules and must be unique within their transition. Different transitions can reuse an ID.
+Each stage requires a non-empty string in `goal`: the stage goal, or state that must hold when the stage ends. Put the actions for reaching that state in `prompt`. A transition can declare a `grounds` list. Each transition ground contains only a technical `id` and a non-empty string in `when` that describes its condition. Ground IDs follow the stage-ID rules and must be unique within their transition. Different transitions can reuse an ID.
 
 Each `rework` transition requires at least one ground. If a stage has multiple outgoing `advance` transitions, each requires at least one ground. If a stage has only one outgoing `advance` transition, that transition can omit `grounds` or use an empty list; the transition is then unconditional.
 
-```yaml
-version: 2
-description: Prepare a delivery
-stages:
-  - id: prepare
-    description: Prepare the delivery
-    goal: Delivery evidence is ready for review
-    prompt: Collect and check the delivery evidence
-    initial: true
-  - id: review
-    description: Review the delivery
-    goal: The reviewer has approved the delivery
-    prompt: Review the evidence and record the decision
-    final: true
-transitions:
-  - from: prepare
-    to: review
-    type: advance
-  - from: review
-    to: prepare
-    type: rework
-    grounds:
-      - id: evidence_missing
-        when: The reviewer identifies missing delivery evidence
-```
+The catalog loader accepts only versions 1 and 2. For any other version value, it rejects the file with an error naming the value.
 
 For goal and condition text, the validator removes surrounding whitespace and preserves internal line structure, as it does for stage prompts. When a goal is invalid, the validator names the stage in the error. When required grounds are missing or grounds are invalid, the validator names the source and target stages. The validator applies shared graph rules to both formats.
 
@@ -85,7 +65,7 @@ On activation of a format-2 workflow, the extension publishes the initial stage 
 
 See [`workflow_transition`](#workflow_transition) for ground selection and validation.
 
-Every catalog or dynamic workflow requires:
+Additional validation rules for catalog definitions and newly created workflows:
 - one initial stage and at least one final stage;
 - non-empty stage IDs without spaces, tabs, line breaks, or other Unicode whitespace;
 - trimmed single-line workflow and stage descriptions;
@@ -110,6 +90,14 @@ Catalog YAML model settings use independently optional `id` and `thinking` field
 Workflow activation and dynamic creation persist the current runtime model identifier and thinking level as a restoration snapshot. When a successful agent run settles on a final stage, the extension restores that snapshot and marks the workflow completed. A run ending with `stopReason: "aborted"` or `stopReason: "error"` leaves the final stage active with its runtime settings and instructions unchanged. This lifecycle handling uses `turn_end` and `agent_settled` and does not require TUI or user interaction, so it also applies to subagents, RPC sessions, and print mode.
 
 Each invalid or unreadable `.yaml` file is excluded independently, while valid sibling workflows remain available. At session start, Pi shows one warning that lists every excluded file and its validation issue when UI notifications are available. Catalog IDs must be unique after NFC normalization and remain case-sensitive. An unreadable workflow directory or an NFC-equivalent catalog ID collision rejects the catalog. A missing or empty workflow directory is a valid empty catalog. The catalog is read when the extension loads.
+
+### Legacy compatibility: format 1
+
+Format 1 remains supported for existing catalog files and saved sessions. When `version` is omitted, the loader selects format 1. Declaring `version: 1` produces the same normalized definition, definition revision, and model-facing records as omitting the version.
+
+Format 1 has stage prompts and transitions without separate stage goals or declared grounds. The validator rejects `goal` and `grounds` fields and explains that they require format 2. Calls to `workflow_transition` for a format-1 workflow supply only the target stage ID.
+
+Saved format-1 dynamic workflows remain readable and editable. Their `workflow_get_stage` results omit `goal`, and `workflow_edit_stage` requires a replacement without `goal`. New dynamic workflows use format 2.
 
 ### Agent workflow policy
 
@@ -256,7 +244,7 @@ When you edit the active stage, the extension applies its thinking level immedia
 
 `workflow_transition` enters the target stage named by `stageId` in `<available_transitions>`. Permission for `workflow_create` does not grant transition permission.
 
-When the selected transition has grounds, supply one of its declared IDs in `ground`. If the ID is missing or undeclared on that transition, the extension rejects the call with an error listing all allowed ground IDs for that transition. The extension validates the ID; the agent evaluates whether the selected ground's condition holds. For example, when `review` is active or completed in the format-2 workflow above, the extension accepts `{"stageId":"prepare","ground":"evidence_missing"}`.
+When the selected transition has grounds, supply one of its declared IDs in `ground`. If the ID is missing or undeclared on that transition, the extension rejects the call with an error listing all allowed ground IDs for that transition. The extension validates the ID; the agent evaluates whether the selected ground's condition holds. For example, when `review` is active or completed in the [catalog configuration example](#format-2), the extension accepts `{"stageId":"implementation","ground":"evidence_missing"}`.
 
 For a transition without grounds, including every format-1 transition, omit `ground`. If a call supplies `ground` for such a transition, the extension rejects the call.
 
@@ -437,12 +425,12 @@ Catalog activation options are filtered through `workflows`. A resolved agent po
 
 Catalog activation stores an `activated` snapshot with the validated workflow definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Stage edits store the stage ID and normalized replacement fields. Transition snapshots contain only `kind: "transitioned"` and the updated `route`. The extension preserves the workflow source and restoration settings. It omits the selected ground from workflow-state snapshots. Completion stores a `completed` snapshot with the final route. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
 
-For snapshots with `journalVersion: 1`, the validator applies the format-version rules to saved catalog and dynamic definitions. The extension restores unversioned definitions as format 1. For format-2 definitions, the extension restores `version: 2`, stage goals, and transition grounds. In both formats, the extension restores the saved route. The workflow format version is independent of `journalVersion`.
+For snapshots with `journalVersion: 1`, the validator applies the format-version rules to saved catalog and dynamic definitions. For format-2 definitions, the extension restores `version: 2`, stage goals, transition grounds, and the saved route. It also restores legacy format-1 definitions and their routes, treating an omitted version as format 1. The workflow format version is independent of `journalVersion`.
 
 The active branch reconstructs state on session start and branch changes:
 - `activated` restores catalog-backed active state and its restoration settings;
 - `created` restores dynamic active state and its restoration settings;
-- for a `stage_edited` entry, the extension replaces `description`, `prompt`, and `model.thinking` in the preceding active dynamic snapshot. For format 2, it also replaces `goal`;
+- for a format-2 `stage_edited` entry, the extension replaces `description`, `goal`, `prompt`, and `model.thinking` in the preceding active dynamic snapshot. Legacy format-1 edits omit `goal`;
 - `transitioned` updates the route of the preceding snapshot;
 - `completed` restores completed state and the persisted pre-workflow runtime settings without applying final-stage settings.
 
