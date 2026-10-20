@@ -536,6 +536,11 @@ describe("workflow semantic tool rendering", () => {
 			...JSON.parse(JSON.stringify(transition.result)),
 			isError: false,
 		});
+		for (const width of [8, 22, 120]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
 		const lines = component
 			.render(120)
 			.map((line) => stripVTControlCharacters(line).trim())
@@ -563,11 +568,6 @@ describe("workflow semantic tool rendering", () => {
 			to: { id: "implementation" },
 			ground: selected,
 		});
-		for (const width of [22, 120]) {
-			for (const line of component.render(width)) {
-				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
-			}
-		}
 	});
 
 	/** Proves activation is semantic and its internal success payload stays hidden. */
