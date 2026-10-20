@@ -29,10 +29,17 @@ export interface WorkflowStage {
 	readonly id: string;
 	readonly description: string;
 	readonly prompt: string;
+	readonly goal?: string;
 	readonly triggers: readonly WorkflowTrigger[];
 	readonly initial: boolean;
 	readonly final: boolean;
 	readonly model?: ModelSettings;
+}
+
+/** A named condition for taking a transition. */
+export interface WorkflowGround {
+	readonly id: string;
+	readonly when: string;
 }
 
 /** One directed edge in a validated workflow graph. */
@@ -40,10 +47,12 @@ export interface WorkflowTransition {
 	readonly from: string;
 	readonly to: string;
 	readonly type: WorkflowTransitionType;
+	readonly grounds?: readonly WorkflowGround[];
 }
 
 /** A complete workflow definition accepted at a runtime boundary. */
 export interface WorkflowDefinition {
+	readonly version?: 2;
 	readonly id: string;
 	readonly description: string;
 	readonly prompt?: string;
@@ -67,7 +76,9 @@ export interface WorkflowStateReplayResult {
 	readonly warnings: readonly string[];
 }
 
+/** Accepted root fields of a catalog definition. */
 const ROOT_KEYS = new Set([
+	"version",
 	"description",
 	"prompt",
 	"model",
@@ -104,7 +115,8 @@ const STAGE_EDIT_KEYS = new Set(["stageId", "description", "prompt", "model"]);
 const TRIGGER_KEYS = new Set(["type"]);
 const TRANSITION_KEYS = new Set(["from", "to", "type"]);
 const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
-const SAVED_DYNAMIC_WORKFLOW_KEYS = new Set(CREATED_ROOT_KEYS);
+/** Allowed root fields of a saved dynamic definition. */
+const SAVED_DYNAMIC_WORKFLOW_KEYS = new Set([...CREATED_ROOT_KEYS, "version"]);
 const RESTORATION_KEYS = new Set(["modelId", "thinking"]);
 
 /** Journal contract required by persisted workflow root snapshots. */
@@ -518,6 +530,7 @@ function validateSavedWorkflow(
 	return validateWorkflowDefinition(
 		id,
 		{
+			version: Reflect.get(saved, "version"),
 			description: Reflect.get(saved, "description"),
 			prompt: Reflect.get(saved, "prompt"),
 			model: Reflect.get(saved, "model"),
@@ -585,12 +598,107 @@ function validateRoute(
 	return ids;
 }
 
+/** Format-specific validation rules for catalog and saved definitions. */
+interface WorkflowFormatRules {
+	readonly definitionFields: { readonly version?: 2 };
+	stageFields(stage: Record<string, unknown>): Pick<WorkflowStage, "goal">;
+	transitionFields(
+		transition: Record<string, unknown>,
+	): Pick<WorkflowTransition, "grounds">;
+	validateTransitions(transitions: readonly WorkflowTransition[]): void;
+}
+
+/** Validation rules for each accepted workflow format version. */
+const WORKFLOW_FORMATS: Readonly<Record<number, WorkflowFormatRules>> = {
+	1: {
+		definitionFields: {},
+		stageFields(stage) {
+			if ("goal" in stage) {
+				throw new Error("stage goal requires workflow format version 2");
+			}
+			return {};
+		},
+		transitionFields(transition) {
+			if ("grounds" in transition) {
+				throw new Error("transition grounds require workflow format version 2");
+			}
+			return {};
+		},
+		validateTransitions() {},
+	},
+	2: {
+		definitionFields: { version: 2 },
+		stageFields(stage) {
+			try {
+				return { goal: readPromptText(stage, "goal") };
+			} catch (error) {
+				throw new Error(`stage ${String(stage["id"])}: ${errorMessage(error)}`);
+			}
+		},
+		transitionFields(transition) {
+			try {
+				const value = transition["grounds"];
+				if (value === undefined) {
+					return {};
+				}
+				const ids = new Set<string>();
+				const grounds = requireArray(value, "grounds").map((value) => {
+					const ground = requireObject(value, "ground", GROUND_KEYS);
+					const id = readTechnicalIdentifier(ground, "id");
+					if (ids.has(id)) {
+						throw new Error(`duplicate ground id ${id}`);
+					}
+					ids.add(id);
+					return { id, when: readPromptText(ground, "when") };
+				});
+				return { grounds };
+			} catch (error) {
+				throw new Error(
+					`transition ${String(transition["from"])} -> ${String(transition["to"])}: ${errorMessage(error)}`,
+				);
+			}
+		},
+		validateTransitions(transitions) {
+			for (const edge of transitions) {
+				const required =
+					edge.type === "rework" ||
+					transitions.filter(
+						(candidate) =>
+							candidate.from === edge.from && candidate.type === "advance",
+					).length > 1;
+				if (required && !edge.grounds?.length) {
+					throw new Error(
+						`transition ${edge.from} -> ${edge.to} requires grounds`,
+					);
+				}
+			}
+		},
+	},
+};
+
+/** Allowed fields of a transition ground. */
+const GROUND_KEYS = new Set(["id", "when"]);
+
+/** Selects validation rules for a workflow format version. */
+function selectWorkflowFormat(version: unknown): WorkflowFormatRules {
+	const selected = version === undefined ? 1 : version;
+	const rules =
+		typeof selected === "number" ? WORKFLOW_FORMATS[selected] : undefined;
+	if (rules === undefined) {
+		throw new Error(
+			`unknown workflow format version ${typeof selected === "number" ? String(selected) : JSON.stringify(selected)}`,
+		);
+	}
+	return rules;
+}
+
 /** Parses one exact-key workflow object and applies the shared graph rules. */
 function parseWorkflowDefinition(
 	id: string,
 	root: Readonly<Record<string, unknown>>,
 	modelSettingsSource: "catalog" | "created" | "saved-created" = "catalog",
 ): WorkflowDefinition {
+	const format = selectWorkflowFormat(Reflect.get(root, "version"));
 	const description = readSingleLineText(root, "description");
 	const prompt = readOptionalPromptText(root, "prompt");
 	const model =
@@ -603,10 +711,10 @@ function parseWorkflowDefinition(
 		"transitions",
 	);
 	const stages = rawStages.map((stage, index) =>
-		parseStage(stage, index, modelSettingsSource),
+		parseStage(stage, index, modelSettingsSource, format),
 	);
 	const transitions = rawTransitions.map((transition, index) =>
-		parseTransition(transition, index),
+		parseTransition(transition, index, format),
 	);
 	const modelSettings = model === undefined ? {} : { model };
 	const workflow =
@@ -614,7 +722,8 @@ function parseWorkflowDefinition(
 			? { id, description, ...modelSettings, stages, transitions }
 			: { id, description, prompt, ...modelSettings, stages, transitions };
 	validateGraph(workflow);
-	return workflow;
+	format.validateTransitions(transitions);
+	return { ...workflow, ...format.definitionFields };
 }
 
 /** Parses one stage with closed keys and explicit defaults. */
@@ -622,11 +731,15 @@ function parseStage(
 	value: unknown,
 	index: number,
 	modelSettingsSource: "catalog" | "created" | "saved-created",
+	format: WorkflowFormatRules,
 ): WorkflowStage {
 	const stage = requireObject(
 		value,
 		`stages[${index}]`,
-		modelSettingsSource === "catalog" ? STAGE_KEYS : CREATED_STAGE_KEYS,
+		new Set([
+			...(modelSettingsSource === "catalog" ? STAGE_KEYS : CREATED_STAGE_KEYS),
+			"goal",
+		]),
 	);
 	const model =
 		modelSettingsSource === "catalog"
@@ -640,6 +753,7 @@ function parseStage(
 					modelSettingsSource === "created",
 				);
 	return {
+		...format.stageFields(stage),
 		id: readTechnicalIdentifier(stage, "id"),
 		description: readSingleLineText(stage, "description"),
 		prompt: readPromptText(stage, "prompt"),
@@ -695,17 +809,22 @@ function parseTrigger(value: unknown, path: string): WorkflowTrigger {
 }
 
 /** Parses one transition with a closed finite type. */
-function parseTransition(value: unknown, index: number): WorkflowTransition {
+function parseTransition(
+	value: unknown,
+	index: number,
+	format: WorkflowFormatRules,
+): WorkflowTransition {
 	const transition = requireObject(
 		value,
 		`transitions[${index}]`,
-		TRANSITION_KEYS,
+		new Set([...TRANSITION_KEYS, "grounds"]),
 	);
 	const type = Reflect.get(transition, "type");
 	if (type !== "advance" && type !== "rework") {
 		throw new Error(`transitions[${index}].type must be advance or rework`);
 	}
 	return {
+		...format.transitionFields(transition),
 		from: readTechnicalIdentifier(transition, "from"),
 		to: readTechnicalIdentifier(transition, "to"),
 		type,

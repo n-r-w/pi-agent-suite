@@ -43,6 +43,48 @@ transitions:
     type: rework
 ```
 
+### Catalog format versions
+
+The catalog loader accepts `version: 1` and `version: 2` in YAML. When `version` is omitted, the loader selects format 1. For any other version value, the loader rejects the file with an error naming the value. For format 1, the validator rejects stage `goal` and transition `grounds` fields and explains that they require format 2.
+
+Declaring `version: 1` is equivalent to omitting `version`: the validator produces identical normalized definitions. Both forms therefore have the same definition revision and model-facing records. `workflow_create` creates unversioned format-1 workflows.
+
+In format 2, each stage requires a non-empty string in `goal`: the stage goal, or state that must hold when the stage ends. A transition can declare a `grounds` list. Each transition ground contains only a technical `id` and a non-empty string in `when` that describes its condition. Ground IDs follow the stage-ID rules and must be unique within their transition. Different transitions can reuse an ID.
+
+Each `rework` transition requires at least one ground. If a stage has multiple outgoing `advance` transitions, each requires at least one ground. If a stage has only one outgoing `advance` transition, that transition can omit `grounds` or use an empty list; the transition is then unconditional.
+
+```yaml
+version: 2
+description: Prepare a delivery
+stages:
+  - id: prepare
+    description: Prepare the delivery
+    goal: Delivery evidence is ready for review
+    prompt: Collect and check the delivery evidence
+    initial: true
+  - id: review
+    description: Review the delivery
+    goal: The reviewer has approved the delivery
+    prompt: Review the evidence and record the decision
+    final: true
+transitions:
+  - from: prepare
+    to: review
+    type: advance
+  - from: review
+    to: prepare
+    type: rework
+    grounds:
+      - id: evidence_missing
+        when: The reviewer identifies missing delivery evidence
+```
+
+For goal and condition text, the validator removes surrounding whitespace and preserves internal line structure, as it does for stage prompts. When a goal is invalid, the validator names the stage in the error. When required grounds are missing or grounds are invalid, the validator names the source and target stages. The validator applies shared graph rules to both formats.
+
+On activation of a format-2 workflow, the extension publishes the initial stage goal in a separate `<stage_goal>` element before `<stage_guidelines>` in the initial `<workflow_stage_activated>` record. When a transition has grounds, the extension includes `<ground id="...">condition</ground>` elements inside that transition in `<available_transitions>`. For transitions with no grounds, the extension uses self-closing `<transition ... />` elements. In the complete graph in `<workflow_activated>`, the extension lists transition endpoints and types only.
+
+`workflow_transition` accepts only `stageId`. The tool checks whether the target stage is available; ground IDs are outside its input contract.
+
 Every catalog or dynamic workflow requires:
 - one initial stage and at least one final stage;
 - non-empty stage IDs without spaces, tabs, line breaks, or other Unicode whitespace;
@@ -318,6 +360,8 @@ Catalog activation options are filtered through `workflows`. A resolved agent po
 ## Session snapshots
 
 Catalog activation stores an `activated` snapshot with the validated workflow definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Stage edits store the stage ID and normalized replacement fields. Later transitions store only the updated route and preserve the workflow source and restoration settings. Completion stores a `completed` snapshot with the final route. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
+
+For snapshots with `journalVersion: 1`, the validator applies the format-version rules to saved catalog and dynamic definitions. The extension restores unversioned definitions as format 1. For format-2 definitions, the extension restores `version: 2`, stage goals, and transition grounds. In both formats, the extension restores the saved route. The workflow format version is independent of `journalVersion`.
 
 The active branch reconstructs state on session start and branch changes:
 - `activated` restores catalog-backed active state and its restoration settings;

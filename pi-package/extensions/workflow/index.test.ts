@@ -2639,3 +2639,76 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.activeTools).toEqual(["read"]);
 	});
 });
+
+/** Exercises catalog activation, persisted definition replay, and record structure together. */
+test("activates and restores a format-2 catalog workflow", async () => {
+	await createSuite(`version: 2
+description: Delivery
+stages:
+  - id: start
+    description: Start
+    goal: Ready <&> approved
+    prompt: Perform work
+    initial: true
+  - id: done
+    description: Done
+    goal: Delivery ready
+    prompt: Finish work
+    final: true
+transitions:
+  - from: start
+    to: done
+    type: advance
+    grounds:
+      - id: ready
+        when: Evidence <&> approved
+  - from: done
+    to: start
+    type: rework
+    grounds:
+      - id: retry
+        when: Revision needed
+`);
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	await requireTool(fake, "workflow_activate").execute("activate", {
+		workflowId: "delivery",
+	});
+	const activation = fake.messages.find(
+		({ details }) =>
+			(details as Record<string, unknown>)?.["kind"] === "activation",
+	);
+	expect(activation).toBeDefined();
+	if (activation === undefined) {
+		throw new Error("missing activation record");
+	}
+	const content = activation.content;
+	const [graph, entry] = content.split("</workflow_activated>");
+	expect(graph).not.toContain("<ground");
+	expect(entry).toContain("<stage_goal>");
+	expect(entry).toContain("Ready &lt;&amp;&gt; approved");
+	expect(entry?.indexOf("<stage_goal>")).toBeLessThan(
+		entry?.indexOf("<stage_guidelines>") ?? -1,
+	);
+	expect(entry).toContain('<ground id="ready">');
+	expect(entry).toContain("Evidence &lt;&amp;&gt; approved");
+	const snapshot = fake.appended[0];
+	if (snapshot === undefined) {
+		throw new Error("missing activation snapshot");
+	}
+	expect(snapshot.data).toMatchObject({
+		journalVersion: 1,
+		workflow: {
+			version: 2,
+			stages: [{ goal: "Ready <&> approved" }, { goal: "Delivery ready" }],
+		},
+		route: ["start"],
+	});
+	const restored = await createFakePi();
+	await runLifecycle(restored, "session_start", [
+		{ type: "custom", ...snapshot },
+	]);
+	await runBeforeAgentStart(restored);
+	expect(latestWorkflowContent(restored)).toContain("<stage_goal>");
+	expect(latestWorkflowContent(restored)).toContain('<ground id="ready">');
+});

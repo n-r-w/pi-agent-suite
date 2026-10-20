@@ -11,7 +11,7 @@ See [problem.md](problem.md) and the agreed requirements in [prd.md](prd.md). Te
 ### SOL-01: Format version as an optional part of the workflow definition
 Requirements: FRQ-01, FRQ-02, FRQ-11, NRQ-01.
 
-The workflow definition gets an optional format version. The catalog boundary and the saved-snapshot boundary read it from the root of the definition. An absent version means format version 1, and the format version selects the set of stage and transition fields that the parser accepts:
+The workflow definition gets an optional format version. The catalog boundary and the saved-snapshot boundary read it from the root of the definition. The shared domain validator selects the format rules as described in SOL-11. An absent version means format version 1, and the selected rules determine the stage and transition fields that the parser accepts:
 - format version 1 accepts exactly the fields that it accepts now, so a goal or grounds in such a file fail the existing closed-field validation; the error message names format version 2 as the version that defines these fields;
 - format version 2 additionally accepts the stage goal and transition grounds and applies their rules from SOL-02 and SOL-04;
 - any other value fails validation with an error that names the value.
@@ -28,23 +28,23 @@ In format version 2, each stage has a required goal with the same text validatio
 ### SOL-03: Goal in model-facing records
 Requirements: FRQ-04, FRQ-05.
 
-For a workflow of format version 2, the record renderer emits the goal as its own element:
+The record renderer uses the goal in the validated stage definition. When the stage has a goal, the renderer emits it as its own element:
 - before the stage prompt in the inline entry, in the active-stage part of the checkpoint after compaction, and in the stage update record;
 - together with the available transitions in the reuse entry, which still omits the stage prompt.
 
-For format version 1, the renderer takes its current path, so these records keep their text.
+Stages of format version 1 have no separate goal, so the renderer emits the same records as before. The renderer depends on the presence of the goal in the domain model; format selection belongs to the domain validator in SOL-11.
 
 Alternative considered: prepend the goal as text to the stage prompt in the records with the complete stage text. It was rejected because the reuse entry needs the goal as a separate element anyway, and two forms of the same goal would make the records of one stage inconsistent.
 
 ### SOL-04: Transition grounds and their validation
 Requirements: FRQ-06.
 
-In format version 2, a transition can hold a list of grounds. Each ground has a technical identifier that is unique within its transition and a non-empty condition text. The graph validation, which already sees all transitions of each stage, applies the rule of required grounds:
+In format version 2, a transition can hold a list of grounds. Each ground has a technical identifier that is unique within its transition and a non-empty condition text. The format-2 validation rules use the outgoing transitions of each stage to check required grounds:
 - each `rework` transition has at least one ground;
 - when a stage has more than one `advance` transition, each of them has at least one ground;
 - the only `advance` transition of a stage can have no grounds.
 
-A violation fails validation with an error that names the transition by its source and target stages.
+A violation fails validation with an error that names the transition by its source and target stages. Graph invariants shared by both formats, including reachability, acyclicity, and rework ancestry, remain in the shared graph validator.
 
 ### SOL-05: Grounds in the list of available transitions
 Requirements: FRQ-07.
@@ -56,7 +56,7 @@ The transition graph in the activation record stays without grounds. The reason:
 ### SOL-06: Choice of a ground in `workflow_transition`
 Requirements: FRQ-08.
 
-`workflow_transition` gets an optional ground parameter. It is optional in the tool schema because the same schema serves workflows of format version 1 and unconditional transitions, where no ground exists. The domain transition function checks the ground together with the target stage, so catalog and dynamic workflows follow one rule:
+`workflow_transition` gets an optional ground parameter. It is optional in the tool schema because the same schema serves workflows of format version 1 and unconditional transitions, where no ground exists. The domain transition function checks the grounds of the validated transition together with the target stage. It uses these domain values for both catalog and dynamic workflows:
 - a transition with grounds requires a ground ID of this transition, and a missing or unknown ID fails with an error that lists the ground IDs of this transition;
 - a transition without grounds fails when the call names a ground.
 
@@ -68,7 +68,7 @@ Requirements: FRQ-10.
 The `workflow_create` boundary always produces a definition of format version 2: its stage schema requires a goal, and its transition schema accepts grounds. Unlike format version 1, the created definition stores its version, so a saved `created` snapshot restores as format version 2 through SOL-08.
 
 - `workflow_get_stage` returns the goal together with the other stage fields.
-- `workflow_edit_stage` requires a replacement goal for a stage of format version 2 and rejects a goal for a dynamic workflow of format version 1, which can come from a session saved before the change.
+- `workflow_edit_stage` uses the applicable format rules to require a replacement goal for a stage of format version 2 and to reject a goal for a dynamic workflow of format version 1, which can come from a session saved before the change. A format-2 `stage_edited` entry stores the replacement goal, and replay applies it through the same stage-edit validation.
 - The description of the stage prompt in the `workflow_create` schema no longer asks for a goal line and a rework-rules section, because the goal and the transition conditions now have their own fields.
 
 Cost: the input of `workflow_create` and `workflow_edit_stage` changes. Agents receive the current schema with each session, so no stored data depends on the old input.
@@ -103,13 +103,30 @@ Tests follow the project rules on test layout, and they check the logic and the 
 - domain tests: ground checks of transitions;
 - record tests: presence of the goal and grounds in records of format version 2;
 - tool tests: inputs of `workflow_create`, `workflow_edit_stage`, and `workflow_transition`;
-- restoration tests: snapshots without a version, including dynamic ones.
+- restoration tests: snapshots without a version, including dynamic ones, and format-2 snapshots followed by stage edits that replace the goal.
 
 The existing tests of format version 1 records keep their expected records unchanged. This verifies NRQ-01.
 
+### SOL-11: Version-specific validation and domain consumers
+Requirements: FRQ-01, FRQ-02, FRQ-10, FRQ-11, NRQ-01. Design constraint: the user confirmed localized extension points for later format versions.
+
+The workflow domain validator owns one mechanism for selecting format rules. Catalog loading, dynamic creation, and saved-session restoration use this mechanism. Stage editing uses the rules for the active definition's format. Format-specific parsing and validation stay with those rules, while shared text checks and graph invariants remain common to both formats.
+
+Renderers and runtime operations consume the validated domain model. They use stage goals and transition grounds according to their domain meaning. Version-dependent acceptance rules stay in the domain validator. For example, the record renderer emits a stage goal when the validated stage contains one. Its output depends on these domain values.
+
+Adding another format requires extending the central format selection and implementing its parsing and validation rules. Existing format rules retain their own behavior. If a later format introduces new semantics, its implementation also extends the domain model and the affected consumers.
+
+For example, under SOL-01 a catalog definition with `version: 3` fails validation with an error naming 3. After format-3 support is implemented, catalog loading and saved-session restoration select its rules through the shared mechanism. Dynamic creation continues to produce format 2 until its contract is explicitly changed.
+
+Alternatives considered:
+- With versioning present from the start, every normalized definition could retain an explicit version. For this extension, preserving the format-1 representation from SOL-01 keeps saved definition revisions compatible.
+- Version comparisons in individual boundaries and renderers would require reviewing each consumer when adding a version. The selected approach keeps format selection in the domain validator and uses the existing domain model for consumers.
+
+Cost: the domain validator must keep common validation separate from format-specific rules. Both supported formats already require this distinction. Format 3 and a general plugin mechanism are outside this change.
+
 ## Overengineering and Overspecification Considerations
 Elements beyond the smallest change:
-- None. Each method above serves at least one agreed requirement.
+- None. Each method above serves at least one agreed requirement or the confirmed extension constraint. Shared format selection serves the two supported formats at the catalog, creation, and restoration boundaries.
 
 Deliberately left out:
 - The chosen ground is not persisted and not shown in the tool call presentation, because no requirement reads it.
@@ -120,7 +137,8 @@ Deliberately left out:
 Left to the implementer:
 - names of the record elements and of the ground parameter;
 - length limits of the goal and of the condition text;
-- wording of error messages and of the guidance text.
+- wording of error messages and of the guidance text;
+- organization of format-specific rules within the workflow domain, with format selection kept in the shared mechanism of SOL-11.
 
 ## Open Questions
 

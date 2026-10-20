@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
 import {
 	activateWorkflow,
+	completeWorkflow,
 	createWorkflow,
 	getAvailableTransitions,
 	getStageStatuses,
@@ -844,5 +847,309 @@ describe("workflow state", () => {
 		];
 
 		expect(replayWorkflowState(legacyEntries)).toBeUndefined();
+	});
+});
+
+/** Returns a fixture item or fails the test if it is missing. */
+function requireFixtureItem<T>(items: readonly T[], index: number): T {
+	const item = items[index];
+	if (item === undefined) {
+		throw new Error(`missing fixture item ${index}`);
+	}
+	return item;
+}
+
+/** Identifies errors for fields that require format version 2. */
+const FORMAT_TWO_REQUIRED = /format.*2/i;
+/** Identifies goal errors for the left stage. */
+const LEFT_GOAL_ERROR = /left.*goal/;
+
+/** Builds a branching workflow fixture with transition grounds. */
+function createVersionedDefinition(version: unknown = 2) {
+	return {
+		version,
+		description: "Delivery",
+		stages: [
+			{
+				id: "start",
+				description: "Start",
+				goal: "Ready <&> approved",
+				prompt: "Perform work",
+				initial: true,
+			},
+			{
+				id: "left",
+				description: "Left",
+				goal: "Left ready",
+				prompt: "Work",
+				final: true,
+			},
+			{
+				id: "right",
+				description: "Right",
+				goal: "Right ready",
+				prompt: "Work",
+				final: true,
+			},
+		],
+		transitions: [
+			{
+				from: "start",
+				to: "left",
+				type: "advance",
+				grounds: [{ id: "ready", when: "Left <&> ready" }],
+			},
+			{
+				from: "start",
+				to: "right",
+				type: "advance",
+				grounds: [{ id: "ready", when: "Right ready" }],
+			},
+			{
+				from: "left",
+				to: "start",
+				type: "rework",
+				grounds: [{ id: "retry", when: "Revision needed" }],
+			},
+		],
+	};
+}
+
+/** Builds an unversioned format-1 workflow fixture. */
+function createLegacyDefinition() {
+	const { version: _version, ...value } = createVersionedDefinition();
+	return {
+		...value,
+		stages: value.stages.map(({ goal: _goal, ...stage }) => stage),
+		transitions: value.transitions.map(
+			({ grounds: _grounds, ...edge }) => edge,
+		),
+	};
+}
+
+describe("workflow format boundaries", () => {
+	test("normalizes explicit version 1 without changing JSON, revision, or records", () => {
+		const raw = createLegacyDefinition();
+		const legacy = validateWorkflowDefinition("delivery", raw, "catalog");
+		const explicit = validateWorkflowDefinition(
+			"delivery",
+			{ ...raw, version: 1 },
+			"catalog",
+		);
+		expect(JSON.stringify(explicit)).toBe(JSON.stringify(legacy));
+		const records: WorkflowJournalRecord[] = [];
+		const journal = new WorkflowJournal((record) => records.push(record));
+		journal.activate(activateWorkflow(legacy));
+		journal.activate(activateWorkflow(explicit));
+		expect(records[1]).toEqual(records[0]);
+		expect(records[0]?.details["workflowRevision"]).toBe(
+			createHash("sha256").update(JSON.stringify(legacy)).digest("hex"),
+		);
+	});
+
+	test.each(
+		[3, "future", null, false, [2], { requested: 3 }].map((version) => ({
+			version,
+		})),
+	)("rejects unknown version %j by value", ({ version }) => {
+		expect(() =>
+			validateWorkflowDefinition(
+				"delivery",
+				createVersionedDefinition(version),
+				"catalog",
+			),
+		).toThrow(JSON.stringify(version));
+	});
+
+	test.each([
+		Number.POSITIVE_INFINITY,
+		Number.NEGATIVE_INFINITY,
+		Number.NaN,
+	])("names the rejected non-finite version %s", (version) => {
+		expect(() =>
+			validateWorkflowDefinition(
+				"delivery",
+				createVersionedDefinition(version),
+				"catalog",
+			),
+		).toThrow(String(version));
+	});
+
+	test.each([
+		"goal",
+		"grounds",
+	])("explains format-1 rejection of %s", (field) => {
+		const value = createLegacyDefinition();
+		if (field === "goal") {
+			Object.assign(requireFixtureItem(value.stages, 0), { goal: "Ready" });
+		} else {
+			Object.assign(requireFixtureItem(value.transitions, 0), {
+				grounds: [{ id: "ready", when: "Ready" }],
+			});
+		}
+		expect(() =>
+			validateWorkflowDefinition("delivery", value, "catalog"),
+		).toThrow(FORMAT_TWO_REQUIRED);
+	});
+
+	test.each([
+		undefined,
+		"",
+		"  ",
+		42,
+	])("names the stage with invalid goal %j", (goal) => {
+		const value = createVersionedDefinition();
+		Object.assign(requireFixtureItem(value.stages, 1), { goal });
+		expect(() =>
+			validateWorkflowDefinition("delivery", value, "catalog"),
+		).toThrow(LEFT_GOAL_ERROR);
+	});
+
+	test.each([
+		0, 1, 2,
+	])("names the transition with missing required grounds at %i", (index) => {
+		const value = createVersionedDefinition();
+		const edge = requireFixtureItem(value.transitions, index);
+		for (const grounds of [undefined, []]) {
+			Object.assign(edge, { grounds });
+			expect(() =>
+				validateWorkflowDefinition("delivery", value, "catalog"),
+			).toThrow(`${edge.from} -> ${edge.to}`);
+		}
+	});
+
+	test.each(
+		[
+			[
+				{ id: "same", when: "One" },
+				{ id: "same", when: "Two" },
+			],
+			[{ id: "bad id", when: "Ready" }],
+			[{ id: "ready", when: " " }],
+			[{ id: "ready", when: "Ready", extra: true }],
+		].map((grounds) => [grounds]),
+	)("rejects invalid grounds %j", (grounds) => {
+		const value = createVersionedDefinition();
+		Object.assign(requireFixtureItem(value.transitions, 0), { grounds });
+		expect(() =>
+			validateWorkflowDefinition("delivery", value, "catalog"),
+		).toThrow("start -> left");
+	});
+
+	test("accepts an unconditional single advance and preserves normalized format-2 values", () => {
+		const value = createVersionedDefinition();
+		value.stages.splice(2, 1);
+		value.transitions.splice(1, 1);
+		Object.assign(requireFixtureItem(value.transitions, 0), {
+			grounds: undefined,
+		});
+		requireFixtureItem(value.stages, 0).goal = "  Ready\n  approved  ";
+		const workflow = validateWorkflowDefinition("delivery", value, "catalog");
+		expect(workflow).toMatchObject({
+			version: 2,
+			stages: [{ goal: "Ready\n  approved" }, { goal: "Left ready" }],
+		});
+	});
+
+	test("keeps goals and grounds in shared lifecycle record structures", () => {
+		const workflow = validateWorkflowDefinition(
+			"delivery",
+			createVersionedDefinition(),
+			"catalog",
+		);
+		const records: WorkflowJournalRecord[] = [];
+		const journal = new WorkflowJournal((record) => records.push(record));
+		let state = activateWorkflow(workflow);
+		journal.activate(state);
+		state = transitionWorkflow(state, "left");
+		journal.enterStage(state);
+		state = transitionWorkflow(state, "start");
+		journal.enterStage(state);
+		journal.checkpoint(state);
+		journal.updateStage(state, "start");
+		state = transitionWorkflow(state, "left");
+		journal.complete(completeWorkflow(state));
+
+		for (const index of [0, 1, 2, 3, 4]) {
+			const content = requireFixtureItem(records, index).content;
+			expect(content).toContain("<stage_goal>");
+			const instructions = content.indexOf(
+				index === 3 ? "<active_stage_guidelines>" : "<stage_guidelines>",
+			);
+			if (index === 2) {
+				expect(instructions).toBe(-1);
+				expect(content).toContain('guidelines="reuse"');
+			} else {
+				expect(content.indexOf("<stage_goal>")).toBeLessThan(instructions);
+			}
+		}
+		for (const index of [0, 2, 3]) {
+			const content = requireFixtureItem(records, index).content;
+			expect(content).toContain(
+				'<ground id="ready">Left &lt;&amp;&gt; ready</ground>',
+			);
+			expect(content).toContain('<ground id="ready">Right ready</ground>');
+		}
+		for (const index of [1, 5]) {
+			expect(requireFixtureItem(records, index).content).toContain(
+				'<ground id="retry">Revision needed</ground>',
+			);
+		}
+	});
+
+	test.each([
+		"activated",
+		"created",
+	])("replays %s format-2 snapshots and subsequent saved route", (kind) => {
+		const workflow = validateWorkflowDefinition(
+			"delivery",
+			createVersionedDefinition(),
+			"catalog",
+		);
+		const state = replayWorkflowState([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind,
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+					workflow,
+					route: ["start"],
+				},
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["start", "left"] },
+			},
+		]);
+		expect(state?.workflow).toEqual(workflow);
+		expect(state?.route).toEqual(["start", "left"]);
+		expect(state?.source).toBe(kind === "created" ? "dynamic" : "catalog");
+	});
+
+	test.each([
+		"activated",
+		"created",
+	])("keeps unversioned %s snapshots compatible with journal revisions", (kind) => {
+		const workflow = validateWorkflowDefinition(
+			"delivery",
+			createLegacyDefinition(),
+			"catalog",
+		);
+		const state = replayWorkflowState([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind,
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+					workflow,
+					route: ["start", "left"],
+				},
+			},
+		]);
+		expect(state?.workflow).toEqual(workflow);
+		expect(state?.route).toEqual(["start", "left"]);
 	});
 });
