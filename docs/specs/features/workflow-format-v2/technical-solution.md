@@ -1,0 +1,135 @@
+# Technical Solution: Workflow Format Version 2
+
+## Problem Statement
+See [problem.md](problem.md) and the agreed requirements in [prd.md](prd.md). Terms are defined in [terms.md](terms.md).
+- PRB-01: A reuse entry gives the agent no stage goal, and the workflow format has no goal element that the extension could render.
+- PRB-02: The list of available transitions gives the agent no conditions of transitions, and the workflow format has no element for them.
+- PRB-03: Existing catalog files and saved sessions have no format version and must keep their behavior.
+
+## Proposed Solution
+
+### SOL-01: Format version as an optional part of the workflow definition
+Requirements: FRQ-01, FRQ-02, FRQ-11, NRQ-01.
+
+The workflow definition gets an optional format version. The catalog boundary and the saved-snapshot boundary read it from the root of the definition. An absent version means format version 1, and the format version selects the set of stage and transition fields that the parser accepts:
+- format version 1 accepts exactly the fields that it accepts now, so a goal or grounds in such a file fail the existing closed-field validation; the error message names format version 2 as the version that defines these fields;
+- format version 2 additionally accepts the stage goal and transition grounds and applies their rules from SOL-02 and SOL-04;
+- any other value fails validation with an error that names the value.
+
+A definition of format version 1 keeps no version value in memory, also when its file states version 1 explicitly. The reason: lifecycle records carry a SHA-256 revision of the serialized definition, and current-format compatibility of a saved session requires a matching revision. If format version 1 definitions gained a stored version, every resumed session would get a mismatching revision and one extra repair checkpoint. Without a stored version, definitions of format version 1 serialize as before, their revision does not change, and their records keep their text.
+
+An invalid file follows the existing catalog behavior: the catalog reports it as invalid and loads the other files.
+
+### SOL-02: Stage goal
+Requirements: FRQ-03.
+
+In format version 2, each stage has a required goal with the same text validation as other stage text. The goal is a separate field of the stage, so the extension renders it without parsing the prompt. A stage without a goal fails validation with an error that names the stage.
+
+### SOL-03: Goal in model-facing records
+Requirements: FRQ-04, FRQ-05.
+
+For a workflow of format version 2, the record renderer emits the goal as its own element:
+- before the stage prompt in the inline entry, in the active-stage part of the checkpoint after compaction, and in the stage update record;
+- together with the available transitions in the reuse entry, which still omits the stage prompt.
+
+For format version 1, the renderer takes its current path, so these records keep their text.
+
+Alternative considered: prepend the goal as text to the stage prompt in the records with the complete stage text. It was rejected because the reuse entry needs the goal as a separate element anyway, and two forms of the same goal would make the records of one stage inconsistent.
+
+### SOL-04: Transition grounds and their validation
+Requirements: FRQ-06.
+
+In format version 2, a transition can hold a list of grounds. Each ground has a technical identifier that is unique within its transition and a non-empty condition text. The graph validation, which already sees all transitions of each stage, applies the rule of required grounds:
+- each `rework` transition has at least one ground;
+- when a stage has more than one `advance` transition, each of them has at least one ground;
+- the only `advance` transition of a stage can have no grounds.
+
+A violation fails validation with an error that names the transition by its source and target stages.
+
+### SOL-05: Grounds in the list of available transitions
+Requirements: FRQ-07.
+
+The renderer of `<available_transitions>` is shared by the stage entry records, the checkpoint, and the completion record. For a transition with grounds, it renders each ground with its ID and condition text inside the transition element. A transition without grounds keeps its current self-closing form, so records of format version 1 keep their text.
+
+The transition graph in the activation record stays without grounds. The reason: the activation record lists all transitions of the workflow once, and the stage entry that it contains, as well as each later stage entry, already shows the grounds of the transitions available from that stage. Grounds in the graph would repeat the same text for every transition.
+
+### SOL-06: Choice of a ground in `workflow_transition`
+Requirements: FRQ-08.
+
+`workflow_transition` gets an optional ground parameter. It is optional in the tool schema because the same schema serves workflows of format version 1 and unconditional transitions, where no ground exists. The domain transition function checks the ground together with the target stage, so catalog and dynamic workflows follow one rule:
+- a transition with grounds requires a ground ID of this transition, and a missing or unknown ID fails with an error that lists the ground IDs of this transition;
+- a transition without grounds fails when the call names a ground.
+
+The extension does not persist the chosen ground. No requirement reads it, and the existing `transitioned` snapshot stays unchanged.
+
+### SOL-07: Dynamic workflows
+Requirements: FRQ-10.
+
+The `workflow_create` boundary always produces a definition of format version 2: its stage schema requires a goal, and its transition schema accepts grounds. Unlike format version 1, the created definition stores its version, so a saved `created` snapshot restores as format version 2 through SOL-08.
+
+- `workflow_get_stage` returns the goal together with the other stage fields.
+- `workflow_edit_stage` requires a replacement goal for a stage of format version 2 and rejects a goal for a dynamic workflow of format version 1, which can come from a session saved before the change.
+- The description of the stage prompt in the `workflow_create` schema no longer asks for a goal line and a rework-rules section, because the goal and the transition conditions now have their own fields.
+
+Cost: the input of `workflow_create` and `workflow_edit_stage` changes. Agents receive the current schema with each session, so no stored data depends on the old input.
+
+### SOL-08: Restoration of saved sessions
+Requirements: FRQ-11.
+
+Saved snapshots are already revalidated against the definition contract on session start and branch navigation. The same version rules from SOL-01 apply there:
+- a snapshot without a version restores as format version 1, also a dynamic snapshot from an earlier `workflow_create`;
+- a snapshot with format version 2 restores with its goals and grounds.
+
+The journal version of workflow state stays unchanged, because the format version lives inside the saved definition and the snapshot structure around it does not change.
+
+### SOL-09: Agent guidance
+Requirements: FRQ-09.
+
+The default prompt that every workflow tool contributes as its shared guidance gets the explanation of the stage goal and the stage task and the rule for a situation that fits no ground. The rule refers only to transitions that list grounds. Transitions of format version 1 and unconditional transitions list none, so a rule about "no fitting ground" without this limit would stop an agent in every workflow of format version 1.
+
+The description of the goal field in the `workflow_create` schema gives authors the same explanation of goal and task with one example of a goal.
+
+Costs:
+- The shared guidance reaches agents of every workflow, also of format version 1. It changes the tool guidance and leaves the workflow records of NRQ-01 unchanged. The explanation of goal and task applies to format version 1 as well, because its stage prompts start with a goal by convention.
+- A user who replaced the default prompt through `extensionDescriptionPromptFile` does not get the new text until the user updates that file. The documentation states this.
+
+### SOL-10: Documentation and tests
+Requirements: all.
+
+`docs/extensions/workflow.md` describes the format version, the stage goal, transition grounds, their place in the records, and the ground parameter of `workflow_transition`, with an example of format version 2.
+
+Tests follow the project rules on test layout, and they check the logic and the structure of records, never the text of prompts:
+- parser tests: rejection of a goal or grounds in format version 1, a required goal in format version 2, the rule of required grounds, and an unknown version;
+- domain tests: ground checks of transitions;
+- record tests: presence of the goal and grounds in records of format version 2;
+- tool tests: inputs of `workflow_create`, `workflow_edit_stage`, and `workflow_transition`;
+- restoration tests: snapshots without a version, including dynamic ones.
+
+The existing tests of format version 1 records keep their expected records unchanged. This verifies NRQ-01.
+
+## Overengineering and Overspecification Considerations
+Elements beyond the smallest change:
+- None. Each method above serves at least one agreed requirement.
+
+Deliberately left out:
+- The chosen ground is not persisted and not shown in the tool call presentation, because no requirement reads it.
+- The activation graph has no grounds, because each stage entry shows the grounds of its available transitions.
+- No migration tool converts catalog files to format version 2, because the conversion is out of scope.
+- The periodic `<workflow_reminder>` record does not change, because it is out of scope.
+
+Left to the implementer:
+- names of the record elements and of the ground parameter;
+- length limits of the goal and of the condition text;
+- wording of error messages and of the guidance text.
+
+## Open Questions
+
+None.
+
+## References
+- REF-01: `pi-package/extensions/workflow/workflow.ts`: workflow definition types, closed-field parsing, graph validation, transitions, stage edits, and snapshot revalidation.
+- REF-02: `pi-package/extensions/workflow/context.ts`: model-facing records, known stages, available transitions, and the definition revision.
+- REF-03: `pi-package/extensions/workflow/index.ts`: tool schemas and execution of `workflow_create`, `workflow_get_stage`, `workflow_edit_stage`, and `workflow_transition`.
+- REF-04: `pi-package/extensions/workflow/config.ts`: catalog loading and reporting of invalid files.
+- REF-05: `pi-package/extensions/workflow/prompts/extension-description.md`: default shared guidance of workflow tools.
+- REF-06: `docs/extensions/workflow.md`: current behavior of records and snapshots.
