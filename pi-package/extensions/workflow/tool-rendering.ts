@@ -53,7 +53,7 @@ interface WorkflowStageContent {
 	readonly description: string;
 	readonly goal?: string;
 	readonly prompt: string;
-	readonly model: Readonly<Record<string, unknown>>;
+	readonly model: { readonly thinking?: string | undefined };
 	readonly initial?: boolean;
 	readonly final?: boolean;
 }
@@ -541,7 +541,7 @@ function parseStagePresentation(
 	};
 }
 
-/** Parses persisted stage content before rendering it as YAML. */
+/** Validates saved stage attributes for inspection and edit display. */
 function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 	if (!isRecord(value) || !isRecord(value["model"])) {
 		return undefined;
@@ -558,7 +558,7 @@ function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 		!isNonEmptyString(description) ||
 		!isNonEmptyString(prompt) ||
 		(goal !== undefined && !isNonEmptyString(goal)) ||
-		!isNonEmptyString(thinking) ||
+		(thinking !== undefined && !isNonEmptyString(thinking)) ||
 		(initial !== undefined && typeof initial !== "boolean") ||
 		(final !== undefined && typeof final !== "boolean")
 	) {
@@ -625,7 +625,7 @@ interface StageAttributeRow {
 	readonly nextValue?: string;
 }
 
-/** Selects every stage field shown by the read tool. */
+/** Selects available stage attributes for inspection display. */
 function createStageAttributes(
 	content: WorkflowStageContent | undefined,
 ): readonly StageAttributeRow[] | undefined {
@@ -638,7 +638,9 @@ function createStageAttributes(
 			? []
 			: [{ label: "Goal", value: content.goal }]),
 		{ label: "Prompt", value: content.prompt },
-		{ label: "Thinking", value: String(content.model["thinking"]) },
+		...(content.model.thinking === undefined
+			? []
+			: [{ label: "Thinking", value: content.model.thinking }]),
 		...(content.initial === undefined
 			? []
 			: [{ label: "Initial", value: String(content.initial) }]),
@@ -648,7 +650,7 @@ function createStageAttributes(
 	];
 }
 
-/** Selects only editable fields whose captured old and new values differ. */
+/** Selects captured stage changes with a known replacement value. */
 function createStageChanges(
 	content: WorkflowStageContent | undefined,
 	editedContent: WorkflowStageContent | undefined,
@@ -656,21 +658,28 @@ function createStageChanges(
 	if (content === undefined || editedContent === undefined) {
 		return undefined;
 	}
-	const editableValues: ReadonlyArray<readonly [string, string, string]> = [
+	const editableValues: ReadonlyArray<
+		readonly [string, string | undefined, string | undefined]
+	> = [
 		["Description", content.description, editedContent.description],
 		...(content.goal === undefined || editedContent.goal === undefined
 			? []
 			: [["Goal", content.goal, editedContent.goal] as const]),
 		["Prompt", content.prompt, editedContent.prompt],
-		[
-			"Thinking",
-			String(content.model["thinking"]),
-			String(editedContent.model["thinking"]),
-		],
+		["Thinking", content.model.thinking, editedContent.model.thinking],
 	];
-	return editableValues
-		.filter(([, previous, next]) => previous !== next)
-		.map(([label, value, nextValue]) => ({ label, value, nextValue }));
+	return editableValues.flatMap(([label, previous, next]) => {
+		if (next === undefined || previous === next) {
+			return [];
+		}
+		return [
+			{
+				label,
+				value: previous ?? next,
+				...(previous === undefined ? {} : { nextValue: next }),
+			},
+		];
+	});
 }
 
 /** Renders one collapsed attribute after normalizing its source line breaks. */

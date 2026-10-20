@@ -224,7 +224,7 @@ The `workflow_create` TypeBox schema adds LLM-facing length and collection-size 
 
 `workflow_get_stage` is available only while a workflow created through `workflow_create` is active. It accepts only `stageId` and reads that stage from the current workflow. It does not accept `workflowId` and cannot read catalog workflows.
 
-For a format-2 stage, the JSON result contains `id`, `description`, `goal`, `prompt`, `model.thinking`, `initial`, and `final`. For a restored format-1 dynamic workflow, the result omits `goal`. The tool reads stage data without changing workflow state. It rejects an unknown stage.
+For a format-2 stage, the JSON result contains `id`, `description`, `goal`, `prompt`, `model.thinking`, `initial`, and `final`. For a restored format-1 dynamic workflow, the result omits `goal`. When the inspected stage has no thinking override, the tool returns `model: {}`. The tool reads stage data without changing workflow state. It rejects an unknown stage.
 
 ### `workflow_edit_stage`
 
@@ -344,6 +344,10 @@ transitions:
 ```
 
 For format-2 stage inspection, the renderer places `Goal` between `Description` and `Prompt`: a labeled row in collapsed (compact) mode and a `--- Goal ---` section in expanded mode. The renderer uses these attributes for live calls and replay on both main and subagent screens. When saved stage content has no goal, the renderer omits the `Goal` attribute.
+
+When a user views a stored `workflow_get_stage` block whose valid presentation metadata contains `model: {}`, the renderer omits `Thinking`. It displays `Description`, `Prompt`, and any saved `Goal`, `Initial`, and `Final` attributes within the compact budget or as expanded sections. This applies on both main and subagent screens, including replay without the source workflow active. A restored format-1 dynamic stage without a model override also produces `model: {}` for inspection. When the metadata contains thinking, the renderer displays that value. The presentation parser requires a model object and validates provided thinking as a non-empty string; it also validates the remaining stage fields.
+
+When saved edit metadata contains a new thinking value and no prior thinking value, the renderer shows only the new value. For example, `model: {}` followed by `model: { thinking: "high" }` produces `Thinking: high` in compact mode and a `--- Thinking ---` section containing `high` in expanded mode. The renderer adds no comparison arrow for this attribute. When the replacement thinking value is absent, the renderer omits `Thinking` and displays any other captured changes. When two known thinking values differ, it shows the old-to-new comparison; when they are equal, it omits `Thinking`. These presentation rules leave workflow state and runtime model settings unchanged.
 
 For stage edits, the renderer places the goal change between the description and prompt changes, using the same row and section conventions. If only the goal changes, the renderer displays only the old and replacement goal. Before comparing goals, the renderer trims surrounding whitespace from the replacement. If the normalized replacement equals the saved goal, the renderer omits the goal change row. If all editable values compare equal, it shows `No changes.`. The renderer reads saved presentation evidence during deferred rendering, so the first replay render shows the same changes as the live call.
 

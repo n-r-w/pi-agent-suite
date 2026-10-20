@@ -1044,6 +1044,346 @@ describe("workflow semantic tool rendering", () => {
 		}
 	});
 
+	/** Checks absent thinking through restored execution and independent persisted evidence. */
+	test.each(
+		["live", "replay", "synthetic"].flatMap((mode) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ mode, subagent, expanded })),
+			),
+		),
+	)("renders stage attributes without stored thinking %j", async ({
+		mode,
+		subagent,
+		expanded,
+	}) => {
+		const synthetic = mode === "synthetic";
+		await createWorkflowSuite();
+		const workflow = createArguments("optional-thinking", "Optional thinking");
+		for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+			delete stage["model"];
+			delete stage["goal"];
+		}
+		const source = await createFixture([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow,
+					route: ["implementation"],
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				},
+			},
+		]);
+		const execution = await executeTool(source, "workflow_get_stage", {
+			stageId: "implementation",
+		});
+		expect(execution.isError).toBe(false);
+		expect(
+			JSON.parse((execution.result.content[0] as { text: string }).text),
+		).toMatchObject({ model: {} });
+		const screen = mode === "live" ? source : await createFixture();
+		const result = synthetic
+			? {
+					content: [{ type: "text" as const, text: "{}" }],
+					details: {
+						presentationKind: "workflow-tool",
+						toolName: "workflow_get_stage",
+						stage: { id: "implementation" },
+						content: {
+							id: "implementation",
+							description: "Implementation stage",
+							goal: "Saved outcome",
+							prompt: "Saved instructions",
+							model: {},
+							initial: true,
+							final: false,
+						},
+					},
+				}
+			: execution.result;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_get_stage")
+			: screen.tools.find(({ name }) => name === "workflow_get_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_get_stage",
+			"optional-thinking",
+			execution.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(result)),
+			isError: false,
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toContain(
+			expanded ? "--- Description ---" : "Description: Implementation stage",
+		);
+		expect(
+			lines.some((line) =>
+				expanded ? line === "--- Prompt ---" : line.startsWith("Prompt:"),
+			),
+		).toBe(true);
+		expect(lines.some((line) => line.includes("Thinking"))).toBe(false);
+		expect(lines.join("\n")).not.toContain("undefined");
+		if (synthetic) {
+			expect(lines).toContain(
+				expanded ? "--- Goal ---" : "Goal: Saved outcome",
+			);
+		} else {
+			expect(lines.some((line) => line.includes("Goal"))).toBe(false);
+		}
+		if (expanded) {
+			expect(lines).toContain("--- Initial ---");
+			expect(lines).toContain("--- Final ---");
+			expect(lines).toContain("true");
+			expect(lines).toContain("false");
+		} else {
+			expect(lines).toContain("Initial: true");
+			expect(
+				lines.some((line) =>
+					synthetic ? LEGACY_STAGE_HINT.test(line) : line === "Final: false",
+				),
+			).toBe(true);
+		}
+		for (const width of [22, 100]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+	});
+
+	/** Keeps known edit values when the saved stage has no thinking override. */
+	test.each(
+		[false, true].flatMap((replayed) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ replayed, subagent, expanded })),
+			),
+		),
+	)("renders stage edit without prior thinking %j", async ({
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const workflow = createArguments(
+			"optional-edit-thinking",
+			"Optional edit thinking",
+		);
+		for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+			delete stage["model"];
+			delete stage["goal"];
+		}
+		const fixture = await createFixture([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow,
+					route: ["implementation"],
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				},
+			},
+		]);
+		const edit = await executeTool(fixture, "workflow_edit_stage", {
+			stageId: "implementation",
+			description: "Revised stage",
+			prompt: "Revised instructions",
+			model: { thinking: "high" },
+		});
+		expect(edit.isError).toBe(false);
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_edit_stage")
+			: screen.tools.find(({ name }) => name === "workflow_edit_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_edit_stage",
+			"optional-edit-thinking",
+			edit.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(edit.result)),
+			isError: false,
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toContain(
+			expanded
+				? "--- Description ---"
+				: "Description: Implementation stage -> Revised stage",
+		);
+		expect(
+			lines.some((line) =>
+				expanded ? line === "--- Prompt ---" : line.startsWith("Prompt:"),
+			),
+		).toBe(true);
+		expect(lines).toContain(expanded ? "--- Thinking ---" : "Thinking: high");
+		if (expanded) {
+			expect(lines).toContain("high");
+		}
+		expect(lines.join("\n")).not.toContain("undefined");
+		if (expanded) {
+			expect(lines.filter((line) => line === "->")).toHaveLength(2);
+		}
+		for (const width of [22, 100]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+	});
+
+	/** Validates optional presentation thinking without weakening other saved attributes. */
+	test.each([
+		{ model: {}, accepted: true },
+		{ model: { thinking: "medium" }, accepted: true },
+		{ model: { thinking: "" }, accepted: false },
+		{ model: { thinking: null }, accepted: false },
+		{ model: { thinking: 1 }, accepted: false },
+		{ model: { thinking: false }, accepted: false },
+		{ model: { thinking: [] }, accepted: false },
+		{ model: null, accepted: false },
+		{ model: {}, description: "", accepted: false },
+	])("validates persisted stage attributes %j", async ({
+		model,
+		accepted,
+		description,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const definition = resolveSessionDefinition(fixture, "workflow_get_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_get_stage",
+			"validation",
+			{ stageId: "saved" },
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.setExpanded(true);
+		component.updateResult({
+			content: [],
+			isError: false,
+			details: {
+				presentationKind: "workflow-tool",
+				toolName: "workflow_get_stage",
+				stage: { id: "saved" },
+				content: {
+					id: "saved",
+					description: description ?? "Saved stage",
+					prompt: "Saved instructions",
+					model,
+				},
+			},
+		});
+		const text = stripVTControlCharacters(component.render(100).join("\n"));
+		expect(text.includes("--- Description ---")).toBe(accepted);
+		expect(text.includes("--- Thinking ---")).toBe(
+			accepted && model !== null && "thinking" in model,
+		);
+		if (accepted && model !== null && "thinking" in model) {
+			expect(text).toContain("medium");
+		}
+	});
+
+	/** Preserves edit details when replacement thinking is absent. */
+	test.each(
+		[undefined, "medium"].flatMap((previousThinking) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({
+					previousThinking,
+					subagent,
+					expanded,
+				})),
+			),
+		),
+	)("renders persisted edit details without replacement thinking %j", async ({
+		previousThinking,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const content = {
+			id: "saved",
+			description: "Saved stage",
+			prompt: "Saved instructions",
+			model: {},
+		};
+		const definition = subagent
+			? resolveSessionDefinition(fixture, "workflow_edit_stage")
+			: fixture.tools.find(({ name }) => name === "workflow_edit_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_edit_stage",
+			"saved-edit",
+			{ stageId: "saved" },
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.setExpanded(expanded);
+		component.updateResult({
+			content: [],
+			isError: false,
+			details: {
+				presentationKind: "workflow-tool",
+				toolName: "workflow_edit_stage",
+				stage: { id: "saved" },
+				content: {
+					...content,
+					model:
+						previousThinking === undefined
+							? {}
+							: { thinking: previousThinking },
+				},
+				editedContent: { ...content, description: "Revised stage" },
+			},
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_edit_stage: saved",
+						"--- Description ---",
+						"Saved stage",
+						"->",
+						"Revised stage",
+					]
+				: [
+						"workflow_edit_stage: saved",
+						"Description: Saved stage -> Revised stage",
+					],
+		);
+		for (const width of [22, 100]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+	});
+
 	/** Proves multiline stage values retain labels and unambiguous edit boundaries. */
 	test("renders multiline stage values as labeled semantic blocks", async () => {
 		await createWorkflowSuite();
