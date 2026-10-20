@@ -244,6 +244,55 @@ interface BeforeAgentStartEventFake {
 }
 
 describe("system-prompt", () => {
+	test("maps visible active tool guidelines before normalized global contributions", async () => {
+		await withIsolatedAgentDir(async ({ suiteDir }) => {
+			const templateFile = join(suiteDir, "guidelines.md");
+			await writeFile(templateFile, "{{toolGuidelines}}");
+			await writeSuiteConfig(suiteDir, { templateFile });
+			const pi = createExtensionApiFake([
+				"beta",
+				"alpha",
+				"concealed",
+				"empty",
+			]);
+			const context = createContextFake();
+			systemPrompt(pi);
+			await getRegisteredHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				context.ctx,
+			);
+
+			const prompt = await runBeforeAgentStartHandlers(
+				pi,
+				createBeforeAgentStartEvent({
+					selectedTools: ["inactive"],
+					hiddenTools: ["concealed"],
+					toolSnippets: {},
+					toolGuidelines: {
+						alpha: [" ALPHA_MARKER ", "SHARED_MARKER"],
+						beta: [" BETA_MARKER ", "  ", " SHARED_MARKER "],
+						concealed: ["HIDDEN_MARKER"],
+						inactive: ["INACTIVE_MARKER"],
+					},
+					promptGuidelines: [
+						"SHARED_MARKER",
+						" GLOBAL_MARKER ",
+						"",
+						"GLOBAL_MARKER",
+					],
+				}),
+				context.ctx,
+			);
+
+			expect(prompt.split("\n")).toEqual([
+				"- BETA_MARKER",
+				"- SHARED_MARKER",
+				"- ALPHA_MARKER",
+				"- GLOBAL_MARKER",
+			]);
+		});
+	});
+
 	test("renders only requested dynamic variables from the Markdown template", async () => {
 		// Purpose: a template must own all static prose while variables inject only runtime values.
 		// Input and expected output: a custom template references every supported variable plus one unknown placeholder.

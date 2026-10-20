@@ -93,6 +93,15 @@ Costs:
 - The shared guidance reaches agents of every workflow, also of format version 1. It changes the tool guidance and leaves the workflow records of NRQ-01 unchanged. The explanation of goal and task applies to format version 1 as well, because its stage prompts start with a goal by convention.
 - A user who replaced the default prompt through `extensionDescriptionPromptFile` does not get the new text until the user updates that file. The documentation states this.
 
+### SOL-09.1: Common formatter delivery prerequisite
+Requirements: FRQ-09.
+
+The common system-prompt formatter delivers per-tool shared guidance through `{{toolGuidelines}}`. Workflow agents need this delivery to receive the guidance of FRQ-09. Pi supplies per-tool guidance in `options.toolGuidelines`, keyed by tool name, and global guidance in `options.promptGuidelines`.
+
+In `pi-package/extensions/system-prompt/index.ts`, the `before_agent_start` handler registered by `systemPrompt` reconciles runtime policy and selects tools from `pi.getActiveTools()`. `formatToolGuidelines` reads their contributions in active-tool order, excludes names in `options.hiddenTools`, and appends global guidance. It trims contributions, drops empty results, and retains the first occurrence of each normalized value as one bullet. Individual workflow tool descriptions reach the model separately through the provider tool payload.
+
+The [system-prompt-tool-guidelines solution](../../issues/system-prompt-tool-guidelines/solution.md), SOL-01 and SOL-02, describes formatter delivery and its checks. Synthetic unit fixtures check selection, ordering, normalization, and deduplication. Isolated real-Pi package cases check that a configured shared marker appears once in `before_agent_start.systemPrompt` when workflow tools are active and is absent when policy excludes them. The common formatter covers all tools that supply shared guidance, so a workflow-specific fallback would duplicate delivery logic.
+
 ### SOL-10: Documentation and tests
 Requirements: all.
 

@@ -265,9 +265,13 @@ function buildTemplateValues(
 	};
 }
 
-/** Formats only dynamic promptGuidelines supplied by active tools or extensions. */
+/** Formats visible active-tool guidelines together with global prompt guidelines. */
 function formatToolGuidelines(options: BuildSystemPromptOptions): string {
-	const normalized = (options.promptGuidelines ?? [])
+	const selectedTools = options.selectedTools ?? [...DEFAULT_SELECTED_TOOLS];
+	const guidelines = selectedTools
+		.filter((name) => !options.hiddenTools?.includes(name))
+		.flatMap((name) => options.toolGuidelines?.[name] ?? []);
+	const normalized = [...guidelines, ...(options.promptGuidelines ?? [])]
 		.map((guideline) => guideline.trim())
 		.filter((guideline) => guideline.length > 0);
 	return [...new Set(normalized)]
