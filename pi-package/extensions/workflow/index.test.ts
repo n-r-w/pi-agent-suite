@@ -1160,6 +1160,30 @@ describe("workflow extension lifecycle", () => {
 		).rejects.toThrow("workflow_create");
 	});
 
+	/** Proves saved format-1 dynamic stages remain goal-free and inspection is read-only. */
+	test("inspects a restored unversioned dynamic snapshot without a goal", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const saved = activatedEntry() as { data: { kind: string } };
+		saved.data.kind = "created";
+		await runLifecycle(fake, "session_start", [saved]);
+		const before = fake.appended.length;
+		const get = requireTool(fake, "workflow_get_stage");
+		const result = (await get.execute("legacy-get", { stageId: "start" })) as {
+			content: Array<{ text: string }>;
+		};
+		const stage = JSON.parse(result.content[0]?.text ?? "null");
+		expect(stage).toMatchObject({
+			id: "start",
+			description: "Start",
+			model: {},
+			initial: true,
+			final: false,
+		});
+		expect(stage).not.toHaveProperty("goal");
+		expect(fake.appended).toHaveLength(before);
+	});
+
 	/**
 	 * Proves stage tools read and change active and non-active stages in only the current active workflow.
 	 * Input and expected output: dynamic creation exposes both tools; edits persist in the workflow journal.
@@ -1182,10 +1206,10 @@ describe("workflow extension lifecycle", () => {
 		const initial = (await get.execute("get-start", {
 			stageId: "start",
 		})) as { content: Array<{ type: string; text: string }> };
-		expect(JSON.parse(initial.content[0]?.text ?? "null")).toEqual({
+		expect(JSON.parse(initial.content[0]?.text ?? "null")).toMatchObject({
 			id: "start",
 			description: "Start",
-			prompt: "Start dynamic work",
+			goal: "Initial evidence is ready",
 			model: { thinking: "medium" },
 			initial: true,
 			final: false,

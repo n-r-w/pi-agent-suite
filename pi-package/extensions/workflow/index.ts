@@ -1458,6 +1458,7 @@ function registerWorkflowGetStageTool(
 						text: JSON.stringify({
 							id: stage.id,
 							description: stage.description,
+							...(stage.goal === undefined ? {} : { goal: stage.goal }),
 							prompt: stage.prompt,
 							model: { thinking: stage.model?.thinking },
 							initial: stage.initial,

@@ -224,7 +224,7 @@ The `workflow_create` TypeBox schema adds LLM-facing length and collection-size 
 
 `workflow_get_stage` is available only while a workflow created through `workflow_create` is active. It accepts only `stageId` and reads that stage from the current workflow. It does not accept `workflowId` and cannot read catalog workflows.
 
-The JSON result contains `id`, `description`, `prompt`, `model.thinking`, `initial`, and `final`. The tool rejects an unknown stage without changing workflow state.
+For a format-2 stage, the JSON result contains `id`, `description`, `goal`, `prompt`, `model.thinking`, `initial`, and `final`. For a restored format-1 dynamic workflow, the result omits `goal`. The tool reads stage data without changing workflow state. It rejects an unknown stage.
 
 ### `workflow_edit_stage`
 
@@ -288,10 +288,10 @@ Workflow: delivery · Software delivery
 
 workflow_get_stage: implementation
 Description: Implement the approved change
+Goal: The implementation passes the required checks
 Prompt: Implement and test the change
 Thinking: medium
-Initial: true
-... (1 more line, 5 total, ctrl+o to expand)
+... (2 more lines, 6 total, ctrl+o to expand)
 
 workflow_edit_stage: implementation
 Description: Implement the approved change -> Implement the corrected change
@@ -335,9 +335,31 @@ transitions:
     type: advance
 ```
 
+For format-2 stage inspection, the renderer places `Goal` between `Description` and `Prompt`: a labeled row in collapsed (compact) mode and a `--- Goal ---` section in expanded mode. The renderer uses these attributes for live calls and replay on both main and subagent screens. When saved stage content has no goal, the renderer omits the `Goal` attribute.
+
+The renderer keeps the shared collapsed attribute budget of four visual lines. The tool title and expansion hint are outside this budget. When computing the hint, the renderer counts all wrapped attribute lines, including the goal. In the compact inspection example above, each attribute fits on one line, so the renderer shows four of six attribute lines and reports two hidden lines.
+
+For example, an expanded format-2 inspection includes:
+
+```text
+workflow_get_stage: implementation
+--- Description ---
+Implement the approved change
+--- Goal ---
+The implementation passes the required checks
+--- Prompt ---
+Implement and test the change
+--- Thinking ---
+medium
+--- Initial ---
+true
+--- Final ---
+false
+```
+
 The extension shows the source and target stages in transition tool rows and omits the selected ground in both collapsed and expanded views.
 
-Compact `Workflow:`, `Stage:`, `From:`, `To:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and shows at most four content rows before Pi's expansion hint. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
+Compact `Workflow:`, `Stage:`, `From:`, `To:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and applies the collapsed attribute budget described above. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 

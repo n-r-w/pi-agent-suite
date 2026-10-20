@@ -67,7 +67,12 @@ Requirements: FRQ-10.
 
 The `workflow_create` boundary always produces a definition of format version 2: its stage schema requires a goal, and its transition schema accepts grounds. Unlike format version 1, the created definition stores its version, so a saved `created` snapshot restores as format version 2 through SOL-08.
 
-- `workflow_get_stage` returns the goal together with the other stage fields.
+- `workflow_get_stage` provides read-only stage inspection:
+  - For format version 2, the tool returns `goal` together with the other stage fields in JSON. For a restored format-1 dynamic workflow, it omits `goal`.
+  - The tool reads stages only from the active dynamic workflow and leaves workflow state unchanged.
+  - The shared renderer places `Goal` between `Description` and `Prompt` in collapsed rows and expanded sections. It uses these attributes for live calls and replay on both main and subagent screens.
+  - The extension stores the optional goal in presentation evidence. When saved stage content has no goal, the renderer omits the `Goal` attribute. The collapsed attribute budget remains four visual lines, excluding the title and expansion hint.
+  - When a result contains saved presentation evidence, Pi constructs the call component before invoking the result renderer. The result renderer restores that evidence in the shared render state. Like the transition renderer, the stage renderer reads that state inside its deferred row callback, so the first render after result delivery includes saved attributes without an expansion toggle.
 - `workflow_edit_stage` uses the applicable format rules to require a replacement goal for a stage of format version 2 and to reject a goal for a dynamic workflow of format version 1, which can come from a session saved before the change. A format-2 `stage_edited` entry stores the replacement goal, and replay applies it through the same stage-edit validation.
 - The description of the stage prompt in the `workflow_create` schema no longer asks for a goal line and a rework-rules section, because the goal and the transition conditions now have their own fields.
 

@@ -47,10 +47,11 @@ interface WorkflowContent {
 	readonly transitions?: readonly unknown[];
 }
 
-/** Contains the stage fields exposed by get and accepted by edit. */
+/** Holds stage attributes for inspection and edit presentation. */
 interface WorkflowStageContent {
 	readonly id: string;
 	readonly description: string;
+	readonly goal?: string;
 	readonly prompt: string;
 	readonly model: Readonly<Record<string, unknown>>;
 	readonly initial?: boolean;
@@ -221,6 +222,7 @@ function createWorkflowStagePresentation(
 			: {
 					id: savedStage.id,
 					description: savedStage.description,
+					...(savedStage.goal === undefined ? {} : { goal: savedStage.goal }),
 					prompt: savedStage.prompt,
 					model: { thinking: savedStage.model?.thinking },
 					initial: savedStage.initial,
@@ -408,10 +410,10 @@ export function renderWorkflowStageCall(
 	theme: Theme,
 	context: WorkflowToolRenderContext,
 ): Component {
-	const presentation = readStagePresentation(context, toolName);
-	const fallback = createWorkflowStagePresentation(toolName, args, undefined);
-	const resolved = presentation ?? fallback;
 	return new WorkflowRows((width) => {
+		const presentation = readStagePresentation(context, toolName);
+		const fallback = createWorkflowStagePresentation(toolName, args, undefined);
+		const resolved = presentation ?? fallback;
 		const stageId = resolved?.stage.id;
 		const title = stageId === undefined ? toolName : `${toolName}: ${stageId}`;
 		const attributes =
@@ -544,6 +546,7 @@ function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 	}
 	const id = value["id"];
 	const description = value["description"];
+	const goal = value["goal"];
 	const prompt = value["prompt"];
 	const thinking = value["model"]["thinking"];
 	const initial = value["initial"];
@@ -552,6 +555,7 @@ function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 		!isNonEmptyString(id) ||
 		!isNonEmptyString(description) ||
 		!isNonEmptyString(prompt) ||
+		(goal !== undefined && !isNonEmptyString(goal)) ||
 		!isNonEmptyString(thinking) ||
 		(initial !== undefined && typeof initial !== "boolean") ||
 		(final !== undefined && typeof final !== "boolean")
@@ -561,6 +565,7 @@ function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 	return {
 		id,
 		description,
+		...(goal === undefined ? {} : { goal }),
 		prompt,
 		model: { thinking },
 		...(initial === undefined ? {} : { initial }),
@@ -627,6 +632,9 @@ function createStageAttributes(
 	}
 	return [
 		{ label: "Description", value: content.description },
+		...(content.goal === undefined
+			? []
+			: [{ label: "Goal", value: content.goal }]),
 		{ label: "Prompt", value: content.prompt },
 		{ label: "Thinking", value: String(content.model["thinking"]) },
 		...(content.initial === undefined

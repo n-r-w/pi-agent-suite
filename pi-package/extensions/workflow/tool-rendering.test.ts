@@ -21,6 +21,7 @@ import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment.ts
 import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../shared/subagent-environment.ts";
 import { createToolPresentationRegistry } from "../run-subagent/tool-rendering.ts";
 import workflowExtension from "./index.ts";
+import { WORKFLOW_STATE_JOURNAL_VERSION } from "./workflow.ts";
 
 const PLAIN_THEME = {
 	bold: (value: string) => value,
@@ -33,6 +34,10 @@ const MARKED_THEME = {
 /** Matches Pi's standard summary for wrapped lines hidden in collapsed mode. */
 const HIDDEN_LINE_HINT =
 	/^\.\.\. \(\d+ more lines?, \d+ total, .* to expand\)$/;
+/** Matches the collapsed hint for six single-line stage attributes. */
+const GOAL_STAGE_HINT = /^\.\.\. \(2 more lines, 6 total,/;
+/** Matches the collapsed hint for five single-line stage attributes. */
+const LEGACY_STAGE_HINT = /^\.\.\. \(1 more line, 5 total,/;
 
 interface WorkflowRenderingFixture {
 	readonly api: ExtensionAPI;
@@ -73,7 +78,9 @@ async function createWorkflowSuite(
 }
 
 /** Creates the smallest Pi runtime that preserves lifecycle and presentation events. */
-async function createFixture(): Promise<WorkflowRenderingFixture> {
+async function createFixture(
+	branch: readonly unknown[] = [],
+): Promise<WorkflowRenderingFixture> {
 	const handlers = new Map<
 		string,
 		Array<(event: unknown, context: unknown) => unknown>
@@ -140,7 +147,7 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 						: undefined;
 				},
 			},
-			sessionManager: { getBranch: () => [] },
+			sessionManager: { getBranch: () => branch },
 			shutdown: () => {},
 		} as never);
 	}
@@ -263,6 +270,7 @@ function renderCompletedTool(
 		expanded,
 		isError: execution.isError,
 	});
+	const call = definition.renderCall(execution.args, theme, context);
 	const result = definition.renderResult(
 		execution.result,
 		{ expanded, isPartial: false },
@@ -270,10 +278,7 @@ function renderCompletedTool(
 		context,
 	);
 	return {
-		call: definition
-			.renderCall(execution.args, theme, context)
-			.render(width)
-			.map((line) => line.trimEnd()),
+		call: call.render(width).map((line) => line.trimEnd()),
 		result: result.render(width).map((line) => line.trimEnd()),
 	};
 }
@@ -638,6 +643,26 @@ describe("workflow semantic tool rendering", () => {
 			"workflow_create",
 			createArguments("dynamic-delivery", "Dynamic delivery process"),
 		);
+		const getDefinition = fixture.tools.find(
+			({ name }) => name === "workflow_get_stage",
+		);
+		const renderCall = getDefinition?.renderCall;
+		if (renderCall === undefined) {
+			throw new Error("stage inspection renderer is missing");
+		}
+		const liveRows = [false, true].map((expanded) =>
+			renderCall(
+				{ stageId: "implementation" },
+				PLAIN_THEME,
+				createToolRenderContext({
+					args: { stageId: "implementation" },
+					expanded,
+					isError: false,
+				}),
+			)
+				.render(expanded ? 100 : 500)
+				.map((line) => line.trimEnd()),
+		);
 		const get = await executeTool(fixture, "workflow_get_stage", {
 			stageId: "implementation",
 		});
@@ -664,9 +689,9 @@ describe("workflow semantic tool rendering", () => {
 		expect(getCollapsed.call.slice(0, -1)).toEqual([
 			"workflow_get_stage: implementation",
 			"Description: Implementation stage",
-			"Prompt: Implement the change",
+			"Goal: The implementation passes its checks",
+			expect.stringContaining("Prompt:"),
 			"Thinking: medium",
-			"Initial: true",
 		]);
 		expect(getCollapsed.call.at(-1)).toMatch(HIDDEN_LINE_HINT);
 		expect(getCollapsed.result).toEqual([]);
@@ -687,13 +712,16 @@ describe("workflow semantic tool rendering", () => {
 				true,
 			),
 		).toEqual(getExpanded);
+		expect([getCollapsed.call, getExpanded.call]).toEqual(liveRows);
 		expect(getExpanded).toEqual({
 			call: [
 				"workflow_get_stage: implementation",
 				"--- Description ---",
 				"Implementation stage",
+				"--- Goal ---",
+				"The implementation passes its checks",
 				"--- Prompt ---",
-				"Implement the change",
+				expect.any(String),
 				"--- Thinking ---",
 				"medium",
 				"--- Initial ---",
@@ -804,15 +832,124 @@ describe("workflow semantic tool rendering", () => {
 			call: ["workflow_edit_stage: implementation", "No changes."],
 			result: [],
 		});
-		expect(get.result.content).toEqual([
-			{
-				type: "text",
-				text: '{"id":"implementation","description":"Implementation stage","prompt":"Implement the change","model":{"thinking":"medium"},"initial":true,"final":false}',
-			},
-		]);
+		expect(get.result.content).toHaveLength(1);
+		const stageResult = get.result.content[0];
+		if (stageResult?.type !== "text") {
+			throw new Error("stage inspection must return text JSON");
+		}
+		expect(JSON.parse(stageResult.text)).toMatchObject({
+			id: "implementation",
+			description: "Implementation stage",
+			goal: "The implementation passes its checks",
+			model: { thinking: "medium" },
+			initial: true,
+			final: false,
+		});
 		expect(edit.result.content).toEqual([
 			{ type: "text", text: '{"success":true}' },
 		]);
+	});
+
+	/** Checks stage attributes on the first render after result delivery. */
+	test.each(
+		[false, true].flatMap((format2) =>
+			[false, true].flatMap((replayed) =>
+				[false, true].flatMap((subagent) =>
+					[false, true].map((expanded) => ({
+						format2,
+						replayed,
+						subagent,
+						expanded,
+					})),
+				),
+			),
+		),
+	)("renders first stage inspection %j", async ({
+		format2,
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const workflow = createArguments("saved-delivery", "Saved delivery");
+		if (format2) {
+			workflow["version"] = 2;
+		} else {
+			for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+				delete stage["goal"];
+			}
+		}
+		const fixture = await createFixture([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow,
+					route: ["implementation"],
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				},
+			},
+		]);
+		const get = await executeTool(fixture, "workflow_get_stage", {
+			stageId: "implementation",
+		});
+		expect(get.isError).toBe(false);
+		// A replay screen has saved evidence but no active workflow to prime its call.
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_get_stage")
+			: screen.tools.find(({ name }) => name === "workflow_get_stage");
+		expect(definition).toBeDefined();
+		const component = new ToolExecutionComponent(
+			"workflow_get_stage",
+			"first-stage-inspection",
+			get.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		const result = replayed
+			? JSON.parse(JSON.stringify(get.result))
+			: get.result;
+		component.updateResult({ ...result, isError: false });
+		// Render immediately after result delivery, without another display update.
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim());
+		expect(lines).toContain("workflow_get_stage: implementation");
+		expect(lines).toContain(
+			expanded ? "--- Description ---" : "Description: Implementation stage",
+		);
+		expect(
+			lines.some((line) => line.includes(expanded ? "--- Goal ---" : "Goal:")),
+		).toBe(format2);
+		if (format2) {
+			expect(lines).toContain(
+				expanded
+					? "The implementation passes its checks"
+					: "Goal: The implementation passes its checks",
+			);
+		}
+		if (expanded) {
+			expect(lines).toContain("--- Prompt ---");
+			expect(lines).toContain("--- Initial ---");
+			expect(lines).toContain("--- Final ---");
+		} else {
+			expect(
+				lines.some((line) =>
+					(format2 ? GOAL_STAGE_HINT : LEGACY_STAGE_HINT).test(line),
+				),
+			).toBe(true);
+		}
+		expect(lines.join("\n")).not.toContain('"id":"implementation"');
+		for (const line of component.render(100)) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(100);
+		}
 	});
 
 	/** Proves multiline stage values retain labels and unambiguous edit boundaries. */
@@ -827,6 +964,7 @@ describe("workflow semantic tool rendering", () => {
 		if (implementation === undefined) {
 			throw new Error("implementation stage fixture is missing");
 		}
+		implementation["goal"] = "Checks pass.\nEvidence is saved.";
 		implementation["prompt"] = "Inspect current state.\nImplement the change.";
 		await executeTool(fixture, "workflow_create", args);
 		const get = await executeTool(fixture, "workflow_get_stage", {
@@ -846,6 +984,9 @@ describe("workflow semantic tool rendering", () => {
 			100,
 			true,
 		);
+		expect(getExpanded.call).toContain("--- Goal ---");
+		expect(getExpanded.call).toContain("Checks pass.");
+		expect(getExpanded.call).toContain("Evidence is saved.");
 		expect(getExpanded.call).toContain("--- Prompt ---");
 		expect(getExpanded.call).toContain("Inspect current state.");
 		expect(getExpanded.call).toContain("Implement the change.");
@@ -875,6 +1016,9 @@ describe("workflow semantic tool rendering", () => {
 		);
 		expect(getCollapsed.call).toContain(
 			"Prompt: Inspect current state. Implement the change.",
+		);
+		expect(getCollapsed.call).toContain(
+			"Goal: Checks pass. Evidence is saved.",
 		);
 		expect(getCollapsed.call).not.toContain("  Inspect current state.");
 		const editCollapsed = renderCompletedTool(
