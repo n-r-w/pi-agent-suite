@@ -504,7 +504,10 @@ describe("workflow state", () => {
 			"c",
 		]);
 
-		const atFinal = ["b", "d", "f"].reduce(transitionWorkflow, activated);
+		const atFinal = ["b", "d", "f"].reduce(
+			(state, stageId) => transitionWorkflow(state, stageId),
+			activated,
+		);
 		expect(atFinal.route).toEqual(["a", "b", "d", "f"]);
 		expect(Object.fromEntries(getStageStatuses(atFinal))).toEqual({
 			a: "completed",
@@ -518,10 +521,12 @@ describe("workflow state", () => {
 
 		const created = createWorkflow(workflow);
 		expect(created).toHaveProperty("source", "dynamic");
-		expect(["b", "d"].reduce(transitionWorkflow, created)).toHaveProperty(
-			"source",
-			"dynamic",
-		);
+		expect(
+			["b", "d"].reduce(
+				(state, stageId) => transitionWorkflow(state, stageId),
+				created,
+			),
+		).toHaveProperty("source", "dynamic");
 	});
 
 	/** Proves a graph ancestor absent from the actual route cannot be a rework target. */
@@ -532,7 +537,7 @@ describe("workflow state", () => {
 			SOURCE,
 		);
 		const atFinal = ["c", "d", "f"].reduce(
-			transitionWorkflow,
+			(state, stageId) => transitionWorkflow(state, stageId),
 			activateWorkflow(workflow),
 		);
 		expect(() => transitionWorkflow(atFinal, "b")).toThrow(
@@ -1051,6 +1056,66 @@ describe("workflow format boundaries", () => {
 		});
 	});
 
+	/** Applies the same ground rule to catalog activation and dynamic state. */
+	test.each([
+		activateWorkflow,
+		createWorkflow,
+	])("selects only grounds of the available transition with %p", (startWorkflow) => {
+		const value = createVersionedDefinition();
+		requireFixtureItem(value.transitions, 0).grounds.push({
+			id: "approved",
+			when: "Review approved",
+		});
+		const state = startWorkflow(
+			validateWorkflowDefinition("delivery", value, "catalog"),
+		);
+		const before = structuredClone(state);
+		for (const ground of [undefined, "missing", "retry"]) {
+			for (const allowed of ["ready", "approved"]) {
+				expect(() => transitionWorkflow(state, "left", ground)).toThrow(
+					allowed,
+				);
+			}
+			expect(state).toEqual(before);
+		}
+		for (const ground of ["ready", "approved"]) {
+			const advanced = transitionWorkflow(state, "left", ground);
+			expect(advanced.route).toEqual(["start", "left"]);
+			expect(state).toEqual(before);
+			const completed = completeWorkflow(advanced);
+			expect(() => transitionWorkflow(completed, "start")).toThrow("retry");
+			const reworked = transitionWorkflow(completed, "start", "retry");
+			expect(reworked).toEqual(state);
+			expect(completed.status).toBe("completed");
+			expect(completed.route).toEqual(["start", "left"]);
+		}
+	});
+
+	/** Keeps both forms of unconditional format-2 transitions compatible with format 1. */
+	test.each([
+		"legacy",
+		"absent",
+		"empty",
+	])("rejects a ground on an unconditional %s transition", (mode) => {
+		const raw =
+			mode === "legacy"
+				? createLegacyDefinition()
+				: createVersionedDefinition();
+		if (mode !== "legacy") {
+			raw.stages.splice(2, 1);
+			raw.transitions.splice(1, 1);
+			Object.assign(requireFixtureItem(raw.transitions, 0), {
+				grounds: mode === "empty" ? [] : undefined,
+			});
+		}
+		const state = activateWorkflow(
+			validateWorkflowDefinition("delivery", raw, "catalog"),
+		);
+		expect(() => transitionWorkflow(state, "left", "ready")).toThrow("ground");
+		expect(state.route).toEqual(["start"]);
+		expect(transitionWorkflow(state, "left").route).toEqual(["start", "left"]);
+	});
+
 	test("keeps goals and grounds in shared lifecycle record structures", () => {
 		const workflow = validateWorkflowDefinition(
 			"delivery",
@@ -1061,13 +1126,13 @@ describe("workflow format boundaries", () => {
 		const journal = new WorkflowJournal((record) => records.push(record));
 		let state = activateWorkflow(workflow);
 		journal.activate(state);
-		state = transitionWorkflow(state, "left");
+		state = transitionWorkflow(state, "left", "ready");
 		journal.enterStage(state);
-		state = transitionWorkflow(state, "start");
+		state = transitionWorkflow(state, "start", "retry");
 		journal.enterStage(state);
 		journal.checkpoint(state);
 		journal.updateStage(state, "start");
-		state = transitionWorkflow(state, "left");
+		state = transitionWorkflow(state, "left", "ready");
 		journal.complete(completeWorkflow(state));
 
 		for (const index of [0, 1, 2, 3, 4]) {

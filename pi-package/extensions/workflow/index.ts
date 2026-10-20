@@ -243,6 +243,24 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 	{ additionalProperties: false },
 );
 
+/** Closed workflow_transition input with an optional declared ground ID. */
+const WORKFLOW_TRANSITION_ARGUMENTS_SCHEMA = Type.Object(
+	{
+		stageId: technicalIdentifierSchema({
+			description: "Target stage ID listed in <available_transitions>",
+			minLength: 1,
+		}),
+		ground: Type.Optional(
+			technicalIdentifierSchema({
+				description:
+					"Ground ID declared by the selected transition, when it has grounds",
+				minLength: 1,
+			}),
+		),
+	},
+	{ additionalProperties: false },
+);
+
 /** Complete workflow_create boundary shape; graph invariants remain domain validation. */
 const WORKFLOW_CREATE_SCHEMA = Type.Object(
 	{
@@ -1561,15 +1579,7 @@ function registerWorkflowTransitionTool(
 		label: "Transition workflow",
 		description: prompts.transitionDescription,
 		promptGuidelines: [prompts.extensionDescription],
-		parameters: Type.Object(
-			{
-				stageId: technicalIdentifierSchema({
-					description: "Target stage ID listed in <available_transitions>",
-					minLength: 1,
-				}),
-			},
-			{ additionalProperties: false },
-		),
+		parameters: WORKFLOW_TRANSITION_ARGUMENTS_SCHEMA,
 		executionMode: "sequential",
 		renderCall(args, theme, context) {
 			primeWorkflowRenderState(
@@ -1585,7 +1595,11 @@ function registerWorkflowTransitionTool(
 		},
 		renderResult: renderWorkflowResult,
 		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
-			const stageId = readExactStringArgument(params, "stageId");
+			const stageId = readExactStringArgument(params, "stageId", ["ground"]);
+			const ground =
+				Reflect.get(params as object, "ground") === undefined
+					? undefined
+					: readStringArgumentField(params, "ground");
 			const current = getState();
 			if (current === undefined) {
 				throw new Error("no workflow is active");
@@ -1597,7 +1611,7 @@ function registerWorkflowTransitionTool(
 			if (resolveAvailability().projectedState !== current) {
 				throw new Error(`workflow ${current.workflow.id} is not available`);
 			}
-			const candidate = transitionWorkflow(current, stageId);
+			const candidate = transitionWorkflow(current, stageId, ground);
 			const persisted = await commitWorkflowStateChange(
 				pi,
 				runtime,
@@ -1628,21 +1642,28 @@ function requireWorkflowAllowed(
 }
 
 /** Validates one closed tool argument object and returns its narrowed value. */
-function readExactStringArgument(value: unknown, key: string): string {
+function readExactStringArgument(
+	value: unknown,
+	key: string,
+	optionalKeys: readonly string[] = [],
+): string {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new Error("tool arguments must be an object");
 	}
 	const keys = Object.keys(value);
 	const candidate = Reflect.get(value, key);
 	if (
-		keys.length !== 1 ||
-		keys[0] !== key ||
+		!keys.includes(key) ||
+		keys.some(
+			(candidateKey) =>
+				candidateKey !== key && !optionalKeys.includes(candidateKey),
+		) ||
 		typeof candidate !== "string" ||
 		candidate.length === 0 ||
 		candidate.trim() !== candidate
 	) {
 		throw new Error(
-			`${key} must be the only argument and a non-empty trimmed string`,
+			`${key} must be a non-empty trimmed string; allowed arguments: ${[key, ...optionalKeys].join(", ")}`,
 		);
 	}
 	return candidate;

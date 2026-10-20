@@ -95,6 +95,40 @@ function validYaml(): string {
 	return "description: Delivery\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
 }
 
+/** Returns a format-2 catalog workflow with grounded advance and rework. */
+function groundedYaml(): string {
+	return `version: 2
+description: Delivery
+stages:
+  - id: start
+    description: Start
+    goal: Ready <&> approved
+    prompt: Perform work
+    initial: true
+  - id: done
+    description: Done
+    goal: Delivery ready
+    prompt: Finish work
+    model:
+      id: openai/workflow-model
+      thinking: high
+    final: true
+transitions:
+  - from: start
+    to: done
+    type: advance
+    grounds:
+      - id: ready
+        when: Evidence <&> approved
+  - from: done
+    to: start
+    type: rework
+    grounds:
+      - id: retry
+        when: Revision needed
+`;
+}
+
 /** Returns a catalog workflow with root and initial-stage model settings. */
 function modelYaml(): string {
 	return "description: Delivery\nmodel:\n  id: openai/workflow-model\n  thinking: high\nstages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n    model:\n      thinking: xhigh\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n  - from: done\n    to: start\n    type: rework\n";
@@ -2642,33 +2676,7 @@ describe("workflow extension lifecycle", () => {
 
 /** Exercises catalog activation, persisted definition replay, and record structure together. */
 test("activates and restores a format-2 catalog workflow", async () => {
-	await createSuite(`version: 2
-description: Delivery
-stages:
-  - id: start
-    description: Start
-    goal: Ready <&> approved
-    prompt: Perform work
-    initial: true
-  - id: done
-    description: Done
-    goal: Delivery ready
-    prompt: Finish work
-    final: true
-transitions:
-  - from: start
-    to: done
-    type: advance
-    grounds:
-      - id: ready
-        when: Evidence <&> approved
-  - from: done
-    to: start
-    type: rework
-    grounds:
-      - id: retry
-        when: Revision needed
-`);
+	await createSuite(groundedYaml());
 	const fake = await createFakePi();
 	await runLifecycle(fake, "session_start");
 	await requireTool(fake, "workflow_activate").execute("activate", {
@@ -2711,4 +2719,148 @@ transitions:
 	await runBeforeAgentStart(restored);
 	expect(latestWorkflowContent(restored)).toContain("<stage_goal>");
 	expect(latestWorkflowContent(restored)).toContain('<ground id="ready">');
+});
+
+/** Checks the registered schema and executor together with the real domain and journal. */
+test.each([
+	"catalog",
+	"dynamic",
+])("transitions %s state with declared grounds and preserves it on failure", async (source) => {
+	await createSuite(
+		source === "catalog"
+			? groundedYaml()
+			: groundedYaml().replace("      id: openai/workflow-model\n", ""),
+	);
+	let fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	await requireTool(fake, "workflow_activate").execute("activate", {
+		workflowId: "delivery",
+	});
+	if (source === "dynamic") {
+		const snapshot = fake.appended[0];
+		if (snapshot === undefined) {
+			throw new Error("missing workflow snapshot");
+		}
+		fake = await createFakePi();
+		await runLifecycle(fake, "session_start", [
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { ...(snapshot.data as object), kind: "created" },
+			},
+		]);
+		await runBeforeAgentStart(fake);
+	}
+	const tool = requireTool(fake, "workflow_transition");
+	const schema = tool.parameters as Parameters<typeof Check>[0];
+	expect(
+		Check(schema, {
+			stageId: "done",
+			ground: "ready",
+		}),
+	).toBe(true);
+	expect(Check(schema, { stageId: "done" })).toBe(true);
+	expect(
+		Check(schema, {
+			stageId: "done",
+			ground: 42,
+		}),
+	).toBe(false);
+	expect(
+		Check(schema, {
+			stageId: "done",
+			ground: "ready",
+			extra: true,
+		}),
+	).toBe(false);
+	const entries = structuredClone(fake.appended);
+	const messages = structuredClone(fake.messages);
+	const model = fake.model;
+	const thinking = fake.thinkingLevel;
+	for (const params of [
+		{ stageId: "done" },
+		{ stageId: "done", ground: "missing" },
+		{ stageId: "done", ground: "retry" },
+	]) {
+		await expect(tool.execute("invalid", params)).rejects.toThrow("ready");
+		expect(fake.appended).toEqual(entries);
+		expect(fake.messages).toEqual(messages);
+	}
+	for (const params of [
+		{ stageId: "done", ground: 42 },
+		{ stageId: "done", ground: null },
+		{ stageId: "done", ground: "ready", extra: true },
+	]) {
+		await expect(tool.execute("invalid", params)).rejects.toThrow();
+		expect(fake.appended).toEqual(entries);
+		expect(fake.messages).toEqual(messages);
+	}
+	fake.appendError = new Error("append failed");
+	await expect(
+		tool.execute("failed", { stageId: "done", ground: "ready" }),
+	).rejects.toThrow("append failed");
+	expect(fake.appended).toEqual(entries);
+	expect(fake.messages).toEqual(messages);
+	expect(fake.model).toBe(model);
+	expect(fake.thinkingLevel).toBe(thinking);
+	fake.appendError = undefined;
+	expect(
+		await tool.execute("advance", { stageId: "done", ground: "ready" }),
+	).toMatchObject({ content: [{ type: "text", text: '{"success":true}' }] });
+	expect(fake.appended.at(-1)?.data).toEqual({
+		kind: "transitioned",
+		route: ["start", "done"],
+	});
+	expect(latestWorkflowContent(fake)).toContain('stage_id="done"');
+	expect(latestWorkflowContent(fake)).toContain("<stage_goal>");
+	expect(latestWorkflowContent(fake)).toContain('guidelines="inline"');
+	expect(latestWorkflowContent(fake)).toContain('<ground id="retry">');
+	await runTurn(fake, 0);
+	await runAgentSettled(fake);
+	expect(latestWorkflowContent(fake)).toContain("<workflow_completed");
+	expect(latestWorkflowContent(fake)).toContain('<ground id="retry">');
+	await tool.execute("rework", { stageId: "start", ground: "retry" });
+	expect(fake.appended.at(-1)?.data).toEqual({
+		kind: "transitioned",
+		route: ["start"],
+	});
+	const reuse = latestWorkflowContent(fake);
+	expect(reuse).toContain('stage_id="start"');
+	expect(reuse).toContain('guidelines="reuse"');
+	expect(reuse).toContain("<stage_goal>");
+	expect(reuse).not.toContain("<stage_guidelines>");
+	expect(reuse).toContain('<ground id="ready">');
+});
+
+/** Keeps format-1 and unconditional format-2 tool transitions free of grounds. */
+test.each([
+	"legacy",
+	"unconditional",
+])("rejects supplied grounds on %s tool transitions", async (mode) => {
+	await createSuite(
+		mode === "legacy"
+			? validYaml()
+			: groundedYaml().replace(
+					"    grounds:\n      - id: ready\n        when: Evidence <&> approved\n",
+					"",
+				),
+	);
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	await requireTool(fake, "workflow_activate").execute("activate", {
+		workflowId: "delivery",
+	});
+	const tool = requireTool(fake, "workflow_transition");
+	const entries = structuredClone(fake.appended);
+	const messages = structuredClone(fake.messages);
+	await expect(
+		tool.execute("invalid", { stageId: "done", ground: "ready" }),
+	).rejects.toThrow("ground");
+	expect(fake.appended).toEqual(entries);
+	expect(fake.messages).toEqual(messages);
+	await tool.execute("advance", { stageId: "done" });
+	expect(fake.appended.at(-1)?.data).toEqual({
+		kind: "transitioned",
+		route: ["start", "done"],
+	});
 });

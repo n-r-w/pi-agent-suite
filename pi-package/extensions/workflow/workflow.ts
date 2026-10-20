@@ -208,6 +208,7 @@ export function completeWorkflow(state: WorkflowState): WorkflowState {
 export function transitionWorkflow(
 	state: WorkflowState,
 	stageId: string,
+	ground?: string,
 ): WorkflowState {
 	assertTechnicalIdentifier(stageId, "stageId");
 	const availableTransitions = getAvailableTransitions(state);
@@ -219,6 +220,16 @@ export function transitionWorkflow(
 		throw new Error(
 			`transition to ${stageId} is not allowed; available transitions: ${available.length === 0 ? "none" : available.join(", ")}`,
 		);
+	}
+	const allowedGrounds = transition.grounds?.map(({ id }) => id) ?? [];
+	if (allowedGrounds.length > 0) {
+		if (ground === undefined || !allowedGrounds.includes(ground)) {
+			throw new Error(
+				`transition to ${stageId} requires a declared ground; allowed grounds: ${allowedGrounds.join(", ")}`,
+			);
+		}
+	} else if (ground !== undefined) {
+		throw new Error(`transition to ${stageId} has no grounds; omit ground`);
 	}
 	if (transition.type === "advance") {
 		return {

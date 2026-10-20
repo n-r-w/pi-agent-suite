@@ -83,7 +83,7 @@ For goal and condition text, the validator removes surrounding whitespace and pr
 
 On activation of a format-2 workflow, the extension publishes the initial stage goal in a separate `<stage_goal>` element before `<stage_guidelines>` in the initial `<workflow_stage_activated>` record. When a transition has grounds, the extension includes `<ground id="...">condition</ground>` elements inside that transition in `<available_transitions>`. For transitions with no grounds, the extension uses self-closing `<transition ... />` elements. In the complete graph in `<workflow_activated>`, the extension lists transition endpoints and types only.
 
-`workflow_transition` accepts only `stageId`. The tool checks whether the target stage is available; ground IDs are outside its input contract.
+See [`workflow_transition`](#workflow_transition) for ground selection and validation.
 
 Every catalog or dynamic workflow requires:
 - one initial stage and at least one final stage;
@@ -237,7 +237,11 @@ The edit appends a `stage_edited` session entry. Editing the active stage applie
 
 ### `workflow_transition`
 
-`workflow_transition` moves the active workflow to one target listed in `<available_transitions>`. Permission for `workflow_create` does not grant transition permission.
+`workflow_transition` enters the target stage named by `stageId` in `<available_transitions>`. Permission for `workflow_create` does not grant transition permission.
+
+When the selected transition has grounds, supply one of its declared IDs in `ground`. If the ID is missing or undeclared on that transition, the extension rejects the call with an error listing all allowed ground IDs for that transition. The extension validates the ID; the agent evaluates whether the selected ground's condition holds. For example, when `review` is active or completed in the format-2 workflow above, the extension accepts `{"stageId":"prepare","ground":"evidence_missing"}`.
+
+For a transition without grounds, including every format-1 transition, omit `ground`. If a call supplies `ground` for such a transition, the extension rejects the call.
 
 Every tool rechecks its input and current state before reading or appending session state. Creation and activation also recheck the policy information they require. A malformed policy blocks all workflow operations. Validation or persistence errors leave the previous workflow state unchanged.
 
@@ -319,6 +323,8 @@ transitions:
     type: advance
 ```
 
+The extension shows the source and target stages in transition tool rows and omits the selected ground in both collapsed and expanded views.
+
 Compact `Workflow:`, `Stage:`, `From:`, `To:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and shows at most four content rows before Pi's expansion hint. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
@@ -337,9 +343,10 @@ The journal is append-only:
 - Activation appends `<workflow_activated>` with root guidance, stage descriptions, and the complete transition graph. The same message then appends `<workflow_stage_activated guidelines="inline">` for the initial stage.
 - First entry into a stage appends its prompt with `guidelines="inline"`.
 - Repeated entry into a known unchanged stage uses `guidelines="reuse"` and does not repeat the prompt.
-- Every stage activation includes current outgoing `<available_transitions>`. Route-dependent `rework` options are recalculated for each entry.
+- In format 2, the extension includes `<stage_goal>` in every stage activation, including reuse entries. In inline entries, the goal precedes `<stage_guidelines>`. In reuse entries, the extension omits `<stage_guidelines>`.
+- Every stage activation includes current outgoing `<available_transitions>`. Route-dependent `rework` options are recalculated for each entry. For each transition with grounds, the extension includes all declared ground IDs and condition texts.
 - `workflow_edit_stage` appends `<workflow_stage_updated>` with the complete replacement description and prompt.
-- `agent_settled` appends `<workflow_completed>` with available rework transitions and no completed-stage prompt. Settlement runs after the active agent loop ends, so the completion record reaches the next user-triggered provider request.
+- On `agent_settled` after a successful final-stage run, the extension appends `<workflow_completed>` with available rework transitions and their grounds. It omits the completed stage's goal and prompt. Settlement runs after the active agent loop ends, so the completion record reaches the next user-triggered provider request.
 - Periodic publication appends `<workflow_reminder id="workflow-id" active_stage_id="stage-id" />`. The marker contains only XML-escaped workflow and active stage IDs.
 - An empty transition set is represented by `<available_transitions />`.
 
@@ -351,6 +358,8 @@ Activation-options updates default to `triggerTurn: false`. Pi appends updates a
 
 Already published records remain unchanged and retain their order. Replacement means appending another record, not modifying an earlier record. Main-agent selection during a run is deferred as described in [main-agent-selection](main-agent-selection.md).
 
+In a format-2 active checkpoint, the extension places `<stage_goal>` before `<active_stage_guidelines>`, then lists available transitions with their declared grounds. In a completed checkpoint, the extension omits the stage goal and stage guidelines and lists available rework transitions with their grounds.
+
 After `session_compact`, the extension resets journal deduplication for the new provider-visible segment. It appends one `<workflow_checkpoint>` when workflow state exists, independently of activation options. During a running session, it also publishes non-empty activation options for the continuing run with `triggerTurn: false`. Manual compaction while Pi is idle leaves activation-options publication to the next `before_agent_start`. Without workflow state, the extension applies the same activation-options rule without a checkpoint. A repair checkpoint outside compaction preserves activation-options deduplication. Other stage definitions become unknown. The first later entry into another stage therefore uses `guidelines="inline"`.
 
 New `activated` and `created` workflow-state snapshots require `journalVersion: 1`. State without this field belongs to the old format, is ignored with a warning, and produces no repair checkpoint. On session start and branch navigation, the extension scans `custom_message` workflow entries after the latest `compaction` or `branch_summary` entry. Every lifecycle record carries a SHA-256 revision of the normalized workflow definition. Current-format compatibility requires matching workflow ID, status, route-tail stage, and definition revision. A current-format state without a compatible lifecycle record receives one checkpoint.
@@ -359,7 +368,7 @@ Catalog activation options are filtered through `workflows`. A resolved agent po
 
 ## Session snapshots
 
-Catalog activation stores an `activated` snapshot with the validated workflow definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Stage edits store the stage ID and normalized replacement fields. Later transitions store only the updated route and preserve the workflow source and restoration settings. Completion stores a `completed` snapshot with the final route. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
+Catalog activation stores an `activated` snapshot with the validated workflow definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Stage edits store the stage ID and normalized replacement fields. Transition snapshots contain only `kind: "transitioned"` and the updated `route`. The extension preserves the workflow source and restoration settings. It omits the selected ground from workflow-state snapshots. Completion stores a `completed` snapshot with the final route. Stored workflow definitions preserve stage triggers, but replaying snapshots never executes them.
 
 For snapshots with `journalVersion: 1`, the validator applies the format-version rules to saved catalog and dynamic definitions. The extension restores unversioned definitions as format 1. For format-2 definitions, the extension restores `version: 2`, stage goals, and transition grounds. In both formats, the extension restores the saved route. The workflow format version is independent of `journalVersion`.
 
