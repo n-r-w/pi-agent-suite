@@ -139,11 +139,15 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 			minLength: 1,
 			maxLength: 128,
 		}),
+		goal: Type.String({
+			description:
+				"The stage goal is the state that must hold when the stage ends. The stage task consists of the actions that reach this state. Example goal: The reviewer has approved the delivery.",
+			minLength: 1,
+			maxLength: 8192,
+		}),
 		prompt: Type.String({
 			description: `Instructions for this stage. Format:
 \`\`\`
-Goal: [Describes resulting state to achieve. NOT rules, actions or completion criteria]
-
 Rules:
 1. [Instruction]
 2. ...
@@ -155,9 +159,6 @@ Actions:
 Subagents:
 1. [Optional subagents rules]
 2. ...
-
-Rework rules:
-1. [Optional rework rules]
 
 Completion criteria:
 1. [Criterion]
@@ -212,6 +213,14 @@ const WORKFLOW_EDIT_STAGE_SCHEMA = Type.Object(
 			minLength: 1,
 			maxLength: 128,
 		}),
+		goal: Type.Optional(
+			Type.String({
+				description:
+					"Replacement stage goal, required for format 2 and unavailable for format 1",
+				minLength: 1,
+				maxLength: 8192,
+			}),
+		),
 		prompt: Type.String({
 			description: "Replacement instructions for this stage",
 			minLength: 10,
@@ -239,6 +248,45 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 			description:
 				"Transition direction: advance for forward progress; rework for return to a strict advance ancestor.",
 		}),
+		grounds: Type.Optional(
+			Type.Array(
+				Type.Object(
+					{
+						id: Type.String({
+							description: "Ground ID unique within this transition",
+							minLength: 1,
+						}),
+						when: Type.String({
+							description: "Condition under which this transition is taken",
+							minLength: 1,
+						}),
+					},
+					{ additionalProperties: false },
+				),
+				{
+					description:
+						"Required on rework transitions and on every advance transition when its source has multiple advance transitions. A sole advance transition can omit grounds and is then unconditional.",
+				},
+			),
+		),
+	},
+	{ additionalProperties: false },
+);
+
+/** Closed workflow_transition input with an optional declared ground ID. */
+const WORKFLOW_TRANSITION_ARGUMENTS_SCHEMA = Type.Object(
+	{
+		stageId: technicalIdentifierSchema({
+			description: "Target stage ID listed in <available_transitions>",
+			minLength: 1,
+		}),
+		ground: Type.Optional(
+			technicalIdentifierSchema({
+				description:
+					"Ground ID declared by the selected transition, when it has grounds",
+				minLength: 1,
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -1418,6 +1466,7 @@ function registerWorkflowGetStageTool(
 						text: JSON.stringify({
 							id: stage.id,
 							description: stage.description,
+							...(stage.goal === undefined ? {} : { goal: stage.goal }),
 							prompt: stage.prompt,
 							model: { thinking: stage.model?.thinking },
 							initial: stage.initial,
@@ -1481,6 +1530,7 @@ function registerWorkflowEditStageTool(
 				kind: "stage_edited",
 				stageId,
 				description: stage.description,
+				...(stage.goal === undefined ? {} : { goal: stage.goal }),
 				prompt: stage.prompt,
 				model: { thinking },
 			};
@@ -1561,15 +1611,7 @@ function registerWorkflowTransitionTool(
 		label: "Transition workflow",
 		description: prompts.transitionDescription,
 		promptGuidelines: [prompts.extensionDescription],
-		parameters: Type.Object(
-			{
-				stageId: technicalIdentifierSchema({
-					description: "Target stage ID listed in <available_transitions>",
-					minLength: 1,
-				}),
-			},
-			{ additionalProperties: false },
-		),
+		parameters: WORKFLOW_TRANSITION_ARGUMENTS_SCHEMA,
 		executionMode: "sequential",
 		renderCall(args, theme, context) {
 			primeWorkflowRenderState(
@@ -1585,7 +1627,11 @@ function registerWorkflowTransitionTool(
 		},
 		renderResult: renderWorkflowResult,
 		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
-			const stageId = readExactStringArgument(params, "stageId");
+			const stageId = readExactStringArgument(params, "stageId", ["ground"]);
+			const ground =
+				Reflect.get(params as object, "ground") === undefined
+					? undefined
+					: readStringArgumentField(params, "ground");
 			const current = getState();
 			if (current === undefined) {
 				throw new Error("no workflow is active");
@@ -1597,7 +1643,7 @@ function registerWorkflowTransitionTool(
 			if (resolveAvailability().projectedState !== current) {
 				throw new Error(`workflow ${current.workflow.id} is not available`);
 			}
-			const candidate = transitionWorkflow(current, stageId);
+			const candidate = transitionWorkflow(current, stageId, ground);
 			const persisted = await commitWorkflowStateChange(
 				pi,
 				runtime,
@@ -1628,21 +1674,28 @@ function requireWorkflowAllowed(
 }
 
 /** Validates one closed tool argument object and returns its narrowed value. */
-function readExactStringArgument(value: unknown, key: string): string {
+function readExactStringArgument(
+	value: unknown,
+	key: string,
+	optionalKeys: readonly string[] = [],
+): string {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new Error("tool arguments must be an object");
 	}
 	const keys = Object.keys(value);
 	const candidate = Reflect.get(value, key);
 	if (
-		keys.length !== 1 ||
-		keys[0] !== key ||
+		!keys.includes(key) ||
+		keys.some(
+			(candidateKey) =>
+				candidateKey !== key && !optionalKeys.includes(candidateKey),
+		) ||
 		typeof candidate !== "string" ||
 		candidate.length === 0 ||
 		candidate.trim() !== candidate
 	) {
 		throw new Error(
-			`${key} must be the only argument and a non-empty trimmed string`,
+			`${key} must be a non-empty trimmed string; allowed arguments: ${[key, ...optionalKeys].join(", ")}`,
 		);
 	}
 	return candidate;

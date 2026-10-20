@@ -1471,6 +1471,9 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 					: runtimeCase.policyTools.filter((name) =>
 							name.startsWith("workflow_"),
 						);
+			expect(
+				runtime.systemPrompt.split("WORKFLOW_RUNTIME_GUIDELINES").length - 1,
+			).toBe(Number(expectedWorkflowTools.length > 0));
 			for (const [name, description] of [
 				["workflow_activate", "WORKFLOW_ACTIVATE_RUNTIME_DESCRIPTION"],
 				["workflow_transition", "WORKFLOW_TRANSITION_RUNTIME_DESCRIPTION"],

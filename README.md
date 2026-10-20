@@ -178,24 +178,29 @@ Full config example:
 
 Solution: the ability to create workflows represented by a graph of stages, each of which can be completed by a subagent.
 
+Use format version 2 for new workflows. It separates stage goals, stage tasks, and transition grounds.
+
 ![Workflow TUI](https://raw.githubusercontent.com/n-r-w/pi-agent-suite/main/docs/images/tui-compact.png)
 
 #### Available tools
 
 - `workflow_activate` - activates an available workflow and places it in the model context.
 - `workflow_transition` - transitions between stages of the active workflow.
-- `workflow_create` - allows the model to create a custom workflow. It exists only in the context of the current session, is not saved to disk, and is activated immediately after creation.
+- `workflow_create` - creates and immediately activates a format-2 workflow for the current session. The extension saves it in session state.
 
 #### Workflow structure
 
 - Base prompt. It remains in the context and applies to all workflow stages.
 - Stages. One initial stage and any number of intermediate and final stages are allowed.
-- Stage prompt. It remains in the context only during that stage and does not clutter it with irrelevant requirements.
+- Stage goal. The state that must hold when the stage ends.
+- Stage prompt. The actions and instructions for reaching the goal. It remains in the context only during that stage.
 - Transition type between stages. It can be either `advance` (move forward) or `rework` (return for revision).
+- Transition ground. A declared condition that the agent evaluates before selecting the transition.
 
 ### Example workflow configuration file (YAML)
 
 ```yaml
+version: 2
 description: Use for read-only inspection of code and technical artifacts
 prompt: |-
   1. Do not modify inspected files.
@@ -205,42 +210,45 @@ prompt: |-
 stages:
   - id: define_scope
     description: Define inspection scope
+    goal: The inspection scope and exclusions are defined
     prompt: |-
       1. Determine files, changes, modules, or repository areas permitted by scope rules.
       2. Identify excluded generated code and out-of-scope artifacts.
       3. Stop and request clarification when inspection scope cannot be determined safely.
     initial: true
-  - id:  load_rules
+  - id: load_rules
     description: Load inspection rules
+    goal: Relevant rules and criteria for findings are identified
     prompt: |-
       1. Load every relevant skill and project rules.
       2. Identify patterns, invariants, and exclusions that define a valid finding.
   - id: inspect_artifacts
     description: Inspect code and technical artifacts
+    goal: Permitted artifacts are inspected and candidate findings are recorded
     prompt: |-
       1. Inspect permitted scope systematically.
       2. Include configuration, build scripts, and other technical artifacts when allowed by scope rules.
       3. Record evidence and source locations for candidate findings.
   - id: verify_findings
     description: Verify findings are valid and material
+    goal: Every remaining finding is supported by evidence and permitted by the inspection rules
     prompt: |-
       1. Verify each candidate against project behavior, rules, and context.
       2. Remove duplicate, speculative, insignificant, or out-of-scope findings.
       3. Confirm that every recommendation preserves required behavior when scope rules require behavior preservation.
-      4. Return to inspection when evidence is incomplete.
   - id: report_findings
     description: Deliver findings using required format
+    goal: The user has received findings in the required format
     prompt: |-
       1. Report only findings permitted by scope rules.
       2. Include required source locations, evidence, impact, and recommendations.
       3. Deliver result through required channel.
-      4. Return to inspection when parent feedback requires additional analysis.
     final: true
 transitions:
   - from: define_scope
-    to:  load_rules
+    to: load_rules
     type: advance
-  - from:  load_rules
+  - from: load_rules
     to: inspect_artifacts
     type: advance
   - from: inspect_artifacts
@@ -252,25 +260,41 @@ transitions:
   - from: verify_findings
     to: inspect_artifacts
     type: rework
+    grounds:
+      - id: evidence_missing
+        when: A candidate finding needs evidence that inspection has not collected
   - from: report_findings
     to: inspect_artifacts
     type: rework
+    grounds:
+      - id: further_inspection
+        when: The user requests further inspection within the agreed scope
   - from: report_findings
     to: define_scope
     type: rework
+    grounds:
+      - id: scope_changed
+        when: The user changes the permitted inspection scope
 ```
 
-Every workflow requires:
+A format-2 workflow requires:
 - one initial stage and at least one final stage
 - non-empty stage IDs without spaces, tabs, line breaks, or other Unicode whitespace
 - single-line workflow and stage descriptions
-- a non-empty `prompt` for every stage
+- a non-empty `goal` and `prompt` for every stage
 - an optional root `prompt` for guidance that applies to every stage
 - unique stage IDs and valid transition endpoints
 - an acyclic `advance` graph in which every stage is reachable
 - no outgoing `advance` from final stages
 - at least one outgoing `advance` from non-final stages
 - `rework` transitions only to strict `advance` ancestors
+- at least one ground for every `rework` transition and every branch when a stage has multiple outgoing `advance` transitions
+
+See the [workflow documentation](docs/extensions/workflow.md) for the full configuration and tool contracts.
+
+#### Legacy format 1
+
+Format 1 remains supported for existing catalog files and saved sessions. Omitting `version` selects format 1; explicitly declaring `version: 1` has the same behavior. See [legacy compatibility](docs/extensions/workflow.md#legacy-compatibility-format-1) for its restrictions.
 
 #### Workflow system configuration (optional)
 

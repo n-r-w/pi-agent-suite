@@ -21,6 +21,7 @@ import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment.ts
 import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../shared/subagent-environment.ts";
 import { createToolPresentationRegistry } from "../run-subagent/tool-rendering.ts";
 import workflowExtension from "./index.ts";
+import { WORKFLOW_STATE_JOURNAL_VERSION } from "./workflow.ts";
 
 const PLAIN_THEME = {
 	bold: (value: string) => value,
@@ -33,6 +34,10 @@ const MARKED_THEME = {
 /** Matches Pi's standard summary for wrapped lines hidden in collapsed mode. */
 const HIDDEN_LINE_HINT =
 	/^\.\.\. \(\d+ more lines?, \d+ total, .* to expand\)$/;
+/** Matches the collapsed hint for six single-line stage attributes. */
+const GOAL_STAGE_HINT = /^\.\.\. \(2 more lines, 6 total,/;
+/** Matches the collapsed hint for five single-line stage attributes. */
+const LEGACY_STAGE_HINT = /^\.\.\. \(1 more line, 5 total,/;
 
 interface WorkflowRenderingFixture {
 	readonly api: ExtensionAPI;
@@ -73,7 +78,9 @@ async function createWorkflowSuite(
 }
 
 /** Creates the smallest Pi runtime that preserves lifecycle and presentation events. */
-async function createFixture(): Promise<WorkflowRenderingFixture> {
+async function createFixture(
+	branch: readonly unknown[] = [],
+): Promise<WorkflowRenderingFixture> {
 	const handlers = new Map<
 		string,
 		Array<(event: unknown, context: unknown) => unknown>
@@ -140,7 +147,7 @@ async function createFixture(): Promise<WorkflowRenderingFixture> {
 						: undefined;
 				},
 			},
-			sessionManager: { getBranch: () => [] },
+			sessionManager: { getBranch: () => branch },
 			shutdown: () => {},
 		} as never);
 	}
@@ -263,6 +270,7 @@ function renderCompletedTool(
 		expanded,
 		isError: execution.isError,
 	});
+	const call = definition.renderCall(execution.args, theme, context);
 	const result = definition.renderResult(
 		execution.result,
 		{ expanded, isPartial: false },
@@ -270,10 +278,7 @@ function renderCompletedTool(
 		context,
 	);
 	return {
-		call: definition
-			.renderCall(execution.args, theme, context)
-			.render(width)
-			.map((line) => line.trimEnd()),
+		call: call.render(width).map((line) => line.trimEnd()),
 		result: result.render(width).map((line) => line.trimEnd()),
 	};
 }
@@ -291,6 +296,7 @@ function createArguments(
 			{
 				id: "implementation",
 				description: "Implementation stage",
+				goal: "The implementation passes its checks",
 				prompt: "Implement the change",
 				model: { thinking: "medium" },
 				initial: true,
@@ -298,6 +304,7 @@ function createArguments(
 			{
 				id: "review",
 				description: "Review stage",
+				goal: "The reviewer has approved the change",
 				prompt: "Review the change",
 				model: { thinking: "medium" },
 				final: true,
@@ -338,6 +345,231 @@ afterEach(async () => {
 });
 
 describe("workflow semantic tool rendering", () => {
+	/** Keeps unconditional and legacy evidence limited to transition endpoints. */
+	test.each(
+		[false, true].flatMap((legacy) =>
+			[false, true].flatMap((replayed) =>
+				[false, true].flatMap((subagent) =>
+					[false, true].map((expanded) => ({
+						legacy,
+						replayed,
+						subagent,
+						expanded,
+					})),
+				),
+			),
+		),
+	)("omits unconditional transition ground %j", async ({
+		legacy,
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const workflow = createArguments("unconditional", "Unconditional");
+		if (legacy) {
+			for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+				delete stage["goal"];
+			}
+		}
+		const fixture = await createFixture(
+			legacy
+				? [
+						{
+							type: "custom",
+							customType: "workflow-state",
+							data: {
+								kind: "created",
+								workflow,
+								route: ["implementation"],
+								journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+							},
+						},
+					]
+				: [],
+		);
+		if (!legacy) {
+			await executeTool(fixture, "workflow_create", workflow);
+		}
+		const transition = await executeTool(fixture, "workflow_transition", {
+			stageId: "review",
+		});
+		expect(transition.isError).toBe(false);
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_transition")
+			: screen.tools.find(({ name }) => name === "workflow_transition");
+		const component = new ToolExecutionComponent(
+			"workflow_transition",
+			"unconditional",
+			transition.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(transition.result)),
+			isError: false,
+		});
+		const lines = component
+			.render(120)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_transition",
+						"--- From ---",
+						"implementation · Implementation stage",
+						"--- To ---",
+						"review · Review stage",
+					]
+				: [
+						"workflow_transition",
+						"From: implementation · Implementation stage",
+						"To: review · Review stage",
+					],
+		);
+	});
+
+	/** Shows the selected edge condition on the first live or replay Pi render. */
+	test.each(
+		[false, true].flatMap((replayed) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ replayed, subagent, expanded })),
+			),
+		),
+	)("renders selected transition ground %j", async ({
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const workflow = createArguments("ground-choice", "Ground choice");
+		const selected = { id: "shared", when: "A finding needs uncovered units." };
+		workflow["transitions"] = [
+			{
+				from: "implementation",
+				to: "review",
+				type: "advance",
+				grounds: [
+					{ id: "shared", when: "An unrelated edge condition." },
+					{ id: "other", when: "Another advance condition." },
+				],
+			},
+			{
+				from: "review",
+				to: "implementation",
+				type: "rework",
+				grounds: [
+					{ id: "first", when: "A different rework condition." },
+					{ ...selected, when: `  ${selected.when}\n  ` },
+				],
+			},
+		];
+		await executeTool(fixture, "workflow_create", workflow);
+		await executeTool(fixture, "workflow_transition", {
+			stageId: "review",
+			ground: "other",
+		});
+		const args = { stageId: "implementation", ground: selected.id };
+		const tool = fixture.tools.find(
+			({ name }) => name === "workflow_transition",
+		);
+		if (tool?.renderCall === undefined || tool.renderResult === undefined) {
+			throw new Error("missing transition renderers");
+		}
+		const context = createToolRenderContext({ args, expanded, isError: false });
+		const call = tool.renderCall(args, PLAIN_THEME, context);
+		const groundRow = expanded
+			? `${selected.id} · ${selected.when}`
+			: `Ground: ${selected.when}`;
+		expect(call.render(120).map((line) => line.trimEnd())).toContain(groundRow);
+		const transition = await executeTool(fixture, "workflow_transition", args);
+		tool.renderResult(
+			transition.result,
+			{ expanded, isPartial: false },
+			PLAIN_THEME,
+			context,
+		);
+		expect(call.render(120).map((line) => line.trimEnd())).toContain(groundRow);
+		expect(transition.isError).toBe(false);
+		const hooked = renderCompletedTool(
+			transition.definition,
+			transition,
+			PLAIN_THEME,
+			120,
+			expanded,
+		);
+		expect(hooked.call).toContain(
+			expanded
+				? `${selected.id} · ${selected.when}`
+				: `Ground: ${selected.when}`,
+		);
+		// Replace the active definition to prove rendering uses captured evidence.
+		await executeTool(
+			fixture,
+			"workflow_create",
+			createArguments("replacement", "Replacement"),
+		);
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_transition")
+			: screen.tools.find(({ name }) => name === "workflow_transition");
+		const component = new ToolExecutionComponent(
+			"workflow_transition",
+			"ground-choice",
+			transition.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(transition.result)),
+			isError: false,
+		});
+		for (const width of [8, 22, 120]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+		const lines = component
+			.render(120)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_transition",
+						"--- From ---",
+						"review · Review stage",
+						"--- To ---",
+						"implementation · Implementation stage",
+						"--- Ground ---",
+						`${selected.id} · ${selected.when}`,
+					]
+				: [
+						"workflow_transition",
+						"From: review · Review stage",
+						"To: implementation · Implementation stage",
+						`Ground: ${selected.when}`,
+					],
+		);
+		expect(transition.result.details).toMatchObject({
+			from: { id: "review" },
+			to: { id: "implementation" },
+			ground: selected,
+		});
+	});
+
 	/** Proves activation is semantic and its internal success payload stays hidden. */
 	test("renders activation identically in the active and subagent session screens", async () => {
 		await createWorkflowSuite();
@@ -636,11 +868,32 @@ describe("workflow semantic tool rendering", () => {
 			"workflow_create",
 			createArguments("dynamic-delivery", "Dynamic delivery process"),
 		);
+		const getDefinition = fixture.tools.find(
+			({ name }) => name === "workflow_get_stage",
+		);
+		const renderCall = getDefinition?.renderCall;
+		if (renderCall === undefined) {
+			throw new Error("stage inspection renderer is missing");
+		}
+		const liveRows = [false, true].map((expanded) =>
+			renderCall(
+				{ stageId: "implementation" },
+				PLAIN_THEME,
+				createToolRenderContext({
+					args: { stageId: "implementation" },
+					expanded,
+					isError: false,
+				}),
+			)
+				.render(expanded ? 100 : 500)
+				.map((line) => line.trimEnd()),
+		);
 		const get = await executeTool(fixture, "workflow_get_stage", {
 			stageId: "implementation",
 		});
 		const edit = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "The implementation passes its checks",
 			description: "Revised implementation",
 			prompt: "Follow the corrected implementation requirements.",
 			model: { thinking: "high" },
@@ -662,9 +915,9 @@ describe("workflow semantic tool rendering", () => {
 		expect(getCollapsed.call.slice(0, -1)).toEqual([
 			"workflow_get_stage: implementation",
 			"Description: Implementation stage",
-			"Prompt: Implement the change",
+			"Goal: The implementation passes its checks",
+			expect.stringContaining("Prompt:"),
 			"Thinking: medium",
-			"Initial: true",
 		]);
 		expect(getCollapsed.call.at(-1)).toMatch(HIDDEN_LINE_HINT);
 		expect(getCollapsed.result).toEqual([]);
@@ -685,13 +938,16 @@ describe("workflow semantic tool rendering", () => {
 				true,
 			),
 		).toEqual(getExpanded);
+		expect([getCollapsed.call, getExpanded.call]).toEqual(liveRows);
 		expect(getExpanded).toEqual({
 			call: [
 				"workflow_get_stage: implementation",
 				"--- Description ---",
 				"Implementation stage",
+				"--- Goal ---",
+				"The implementation passes its checks",
 				"--- Prompt ---",
-				"Implement the change",
+				expect.any(String),
 				"--- Thinking ---",
 				"medium",
 				"--- Initial ---",
@@ -786,6 +1042,7 @@ describe("workflow semantic tool rendering", () => {
 
 		const unchanged = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "The implementation passes its checks",
 			description: "Revised implementation",
 			prompt: "Follow the corrected implementation requirements.",
 			model: { thinking: "high" },
@@ -802,15 +1059,554 @@ describe("workflow semantic tool rendering", () => {
 			call: ["workflow_edit_stage: implementation", "No changes."],
 			result: [],
 		});
-		expect(get.result.content).toEqual([
-			{
-				type: "text",
-				text: '{"id":"implementation","description":"Implementation stage","prompt":"Implement the change","model":{"thinking":"medium"},"initial":true,"final":false}',
-			},
-		]);
+		expect(get.result.content).toHaveLength(1);
+		const stageResult = get.result.content[0];
+		if (stageResult?.type !== "text") {
+			throw new Error("stage inspection must return text JSON");
+		}
+		expect(JSON.parse(stageResult.text)).toMatchObject({
+			id: "implementation",
+			description: "Implementation stage",
+			goal: "The implementation passes its checks",
+			model: { thinking: "medium" },
+			initial: true,
+			final: false,
+		});
 		expect(edit.result.content).toEqual([
 			{ type: "text", text: '{"success":true}' },
 		]);
+	});
+
+	/** Checks goal-only change rows in real Pi shells on the first live or replay render. */
+	test.each(
+		[false, true].flatMap((replayed) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ replayed, subagent, expanded })),
+			),
+		),
+	)("renders first goal-only stage edit %j", async ({
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const args = createArguments("goal-edit", "Goal edit");
+		await executeTool(fixture, "workflow_create", args);
+		const stage = (args["stages"] as Record<string, unknown>[])[0];
+		if (stage === undefined) {
+			throw new Error("missing stage fixture");
+		}
+		const replacement = {
+			stageId: "implementation",
+			description: stage["description"],
+			prompt: stage["prompt"],
+			model: stage["model"],
+			goal: "  Revised outcome\n  ",
+		};
+		const edit = await executeTool(fixture, "workflow_edit_stage", replacement);
+		expect(edit.isError).toBe(false);
+		expect(edit.result.details).toMatchObject({
+			editedContent: { goal: replacement.goal.trim() },
+		});
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_edit_stage")
+			: screen.tools.find(({ name }) => name === "workflow_edit_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_edit_stage",
+			"goal-edit",
+			edit.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...(replayed ? JSON.parse(JSON.stringify(edit.result)) : edit.result),
+			isError: false,
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_edit_stage: implementation",
+						"--- Goal ---",
+						String(stage["goal"]),
+						"->",
+						"Revised outcome",
+					]
+				: [
+						"workflow_edit_stage: implementation",
+						`Goal: ${String(stage["goal"])} -> Revised outcome`,
+					],
+		);
+		for (const line of component.render(100)) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(100);
+		}
+		const unchanged = await executeTool(
+			fixture,
+			"workflow_edit_stage",
+			replacement,
+		);
+		expect(unchanged.isError).toBe(false);
+		expect(
+			renderCompletedTool(
+				unchanged.definition,
+				unchanged,
+				PLAIN_THEME,
+				100,
+				expanded,
+			).call,
+		).toEqual(["workflow_edit_stage: implementation", "No changes."]);
+	});
+
+	/** Checks stage attributes on the first render after result delivery. */
+	test.each(
+		[false, true].flatMap((format2) =>
+			[false, true].flatMap((replayed) =>
+				[false, true].flatMap((subagent) =>
+					[false, true].map((expanded) => ({
+						format2,
+						replayed,
+						subagent,
+						expanded,
+					})),
+				),
+			),
+		),
+	)("renders first stage inspection %j", async ({
+		format2,
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const workflow = createArguments("saved-delivery", "Saved delivery");
+		if (format2) {
+			workflow["version"] = 2;
+		} else {
+			for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+				delete stage["goal"];
+			}
+		}
+		const fixture = await createFixture([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow,
+					route: ["implementation"],
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				},
+			},
+		]);
+		const get = await executeTool(fixture, "workflow_get_stage", {
+			stageId: "implementation",
+		});
+		expect(get.isError).toBe(false);
+		// A replay screen has saved evidence but no active workflow to prime its call.
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_get_stage")
+			: screen.tools.find(({ name }) => name === "workflow_get_stage");
+		expect(definition).toBeDefined();
+		const component = new ToolExecutionComponent(
+			"workflow_get_stage",
+			"first-stage-inspection",
+			get.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		const result = replayed
+			? JSON.parse(JSON.stringify(get.result))
+			: get.result;
+		component.updateResult({ ...result, isError: false });
+		// Render immediately after result delivery, without another display update.
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim());
+		expect(lines).toContain("workflow_get_stage: implementation");
+		expect(lines).toContain(
+			expanded ? "--- Description ---" : "Description: Implementation stage",
+		);
+		expect(
+			lines.some((line) => line.includes(expanded ? "--- Goal ---" : "Goal:")),
+		).toBe(format2);
+		if (format2) {
+			expect(lines).toContain(
+				expanded
+					? "The implementation passes its checks"
+					: "Goal: The implementation passes its checks",
+			);
+		}
+		if (expanded) {
+			expect(lines).toContain("--- Prompt ---");
+			expect(lines).toContain("--- Initial ---");
+			expect(lines).toContain("--- Final ---");
+		} else {
+			expect(
+				lines.some((line) =>
+					(format2 ? GOAL_STAGE_HINT : LEGACY_STAGE_HINT).test(line),
+				),
+			).toBe(true);
+		}
+		expect(lines.join("\n")).not.toContain('"id":"implementation"');
+		for (const line of component.render(100)) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(100);
+		}
+	});
+
+	/** Checks absent thinking through restored execution and independent persisted evidence. */
+	test.each(
+		["live", "replay", "synthetic"].flatMap((mode) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ mode, subagent, expanded })),
+			),
+		),
+	)("renders stage attributes without stored thinking %j", async ({
+		mode,
+		subagent,
+		expanded,
+	}) => {
+		const synthetic = mode === "synthetic";
+		await createWorkflowSuite();
+		const workflow = createArguments("optional-thinking", "Optional thinking");
+		for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+			delete stage["model"];
+			delete stage["goal"];
+		}
+		const source = await createFixture([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow,
+					route: ["implementation"],
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				},
+			},
+		]);
+		const execution = await executeTool(source, "workflow_get_stage", {
+			stageId: "implementation",
+		});
+		expect(execution.isError).toBe(false);
+		expect(
+			JSON.parse((execution.result.content[0] as { text: string }).text),
+		).toMatchObject({ model: {} });
+		const screen = mode === "live" ? source : await createFixture();
+		const result = synthetic
+			? {
+					content: [{ type: "text" as const, text: "{}" }],
+					details: {
+						presentationKind: "workflow-tool",
+						toolName: "workflow_get_stage",
+						stage: { id: "implementation" },
+						content: {
+							id: "implementation",
+							description: "Implementation stage",
+							goal: "Saved outcome",
+							prompt: "Saved instructions",
+							model: {},
+							initial: true,
+							final: false,
+						},
+					},
+				}
+			: execution.result;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_get_stage")
+			: screen.tools.find(({ name }) => name === "workflow_get_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_get_stage",
+			"optional-thinking",
+			execution.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(result)),
+			isError: false,
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toContain(
+			expanded ? "--- Description ---" : "Description: Implementation stage",
+		);
+		expect(
+			lines.some((line) =>
+				expanded ? line === "--- Prompt ---" : line.startsWith("Prompt:"),
+			),
+		).toBe(true);
+		expect(lines.some((line) => line.includes("Thinking"))).toBe(false);
+		expect(lines.join("\n")).not.toContain("undefined");
+		if (synthetic) {
+			expect(lines).toContain(
+				expanded ? "--- Goal ---" : "Goal: Saved outcome",
+			);
+		} else {
+			expect(lines.some((line) => line.includes("Goal"))).toBe(false);
+		}
+		if (expanded) {
+			expect(lines).toContain("--- Initial ---");
+			expect(lines).toContain("--- Final ---");
+			expect(lines).toContain("true");
+			expect(lines).toContain("false");
+		} else {
+			expect(lines).toContain("Initial: true");
+			expect(
+				lines.some((line) =>
+					synthetic ? LEGACY_STAGE_HINT.test(line) : line === "Final: false",
+				),
+			).toBe(true);
+		}
+		for (const width of [22, 100]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+	});
+
+	/** Keeps known edit values when the saved stage has no thinking override. */
+	test.each(
+		[false, true].flatMap((replayed) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ replayed, subagent, expanded })),
+			),
+		),
+	)("renders stage edit without prior thinking %j", async ({
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const workflow = createArguments(
+			"optional-edit-thinking",
+			"Optional edit thinking",
+		);
+		for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+			delete stage["model"];
+			delete stage["goal"];
+		}
+		const fixture = await createFixture([
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: {
+					kind: "created",
+					workflow,
+					route: ["implementation"],
+					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+				},
+			},
+		]);
+		const edit = await executeTool(fixture, "workflow_edit_stage", {
+			stageId: "implementation",
+			description: "Revised stage",
+			prompt: "Revised instructions",
+			model: { thinking: "high" },
+		});
+		expect(edit.isError).toBe(false);
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_edit_stage")
+			: screen.tools.find(({ name }) => name === "workflow_edit_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_edit_stage",
+			"optional-edit-thinking",
+			edit.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(edit.result)),
+			isError: false,
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toContain(
+			expanded
+				? "--- Description ---"
+				: "Description: Implementation stage -> Revised stage",
+		);
+		expect(
+			lines.some((line) =>
+				expanded ? line === "--- Prompt ---" : line.startsWith("Prompt:"),
+			),
+		).toBe(true);
+		expect(lines).toContain(expanded ? "--- Thinking ---" : "Thinking: high");
+		if (expanded) {
+			expect(lines).toContain("high");
+		}
+		expect(lines.join("\n")).not.toContain("undefined");
+		if (expanded) {
+			expect(lines.filter((line) => line === "->")).toHaveLength(2);
+		}
+		for (const width of [22, 100]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+	});
+
+	/** Validates optional presentation thinking without weakening other saved attributes. */
+	test.each([
+		{ model: {}, accepted: true },
+		{ model: { thinking: "medium" }, accepted: true },
+		{ model: { thinking: "" }, accepted: false },
+		{ model: { thinking: null }, accepted: false },
+		{ model: { thinking: 1 }, accepted: false },
+		{ model: { thinking: false }, accepted: false },
+		{ model: { thinking: [] }, accepted: false },
+		{ model: null, accepted: false },
+		{ model: {}, description: "", accepted: false },
+	])("validates persisted stage attributes %j", async ({
+		model,
+		accepted,
+		description,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const definition = resolveSessionDefinition(fixture, "workflow_get_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_get_stage",
+			"validation",
+			{ stageId: "saved" },
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.setExpanded(true);
+		component.updateResult({
+			content: [],
+			isError: false,
+			details: {
+				presentationKind: "workflow-tool",
+				toolName: "workflow_get_stage",
+				stage: { id: "saved" },
+				content: {
+					id: "saved",
+					description: description ?? "Saved stage",
+					prompt: "Saved instructions",
+					model,
+				},
+			},
+		});
+		const text = stripVTControlCharacters(component.render(100).join("\n"));
+		expect(text.includes("--- Description ---")).toBe(accepted);
+		expect(text.includes("--- Thinking ---")).toBe(
+			accepted && model !== null && "thinking" in model,
+		);
+		if (accepted && model !== null && "thinking" in model) {
+			expect(text).toContain("medium");
+		}
+	});
+
+	/** Preserves edit details when replacement thinking is absent. */
+	test.each(
+		[undefined, "medium"].flatMap((previousThinking) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({
+					previousThinking,
+					subagent,
+					expanded,
+				})),
+			),
+		),
+	)("renders persisted edit details without replacement thinking %j", async ({
+		previousThinking,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const content = {
+			id: "saved",
+			description: "Saved stage",
+			prompt: "Saved instructions",
+			model: {},
+		};
+		const definition = subagent
+			? resolveSessionDefinition(fixture, "workflow_edit_stage")
+			: fixture.tools.find(({ name }) => name === "workflow_edit_stage");
+		const component = new ToolExecutionComponent(
+			"workflow_edit_stage",
+			"saved-edit",
+			{ stageId: "saved" },
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.setExpanded(expanded);
+		component.updateResult({
+			content: [],
+			isError: false,
+			details: {
+				presentationKind: "workflow-tool",
+				toolName: "workflow_edit_stage",
+				stage: { id: "saved" },
+				content: {
+					...content,
+					model:
+						previousThinking === undefined
+							? {}
+							: { thinking: previousThinking },
+				},
+				editedContent: { ...content, description: "Revised stage" },
+			},
+		});
+		const lines = component
+			.render(100)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_edit_stage: saved",
+						"--- Description ---",
+						"Saved stage",
+						"->",
+						"Revised stage",
+					]
+				: [
+						"workflow_edit_stage: saved",
+						"Description: Saved stage -> Revised stage",
+					],
+		);
+		for (const width of [22, 100]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
 	});
 
 	/** Proves multiline stage values retain labels and unambiguous edit boundaries. */
@@ -825,6 +1621,7 @@ describe("workflow semantic tool rendering", () => {
 		if (implementation === undefined) {
 			throw new Error("implementation stage fixture is missing");
 		}
+		implementation["goal"] = "Checks pass.\nEvidence is saved.";
 		implementation["prompt"] = "Inspect current state.\nImplement the change.";
 		await executeTool(fixture, "workflow_create", args);
 		const get = await executeTool(fixture, "workflow_get_stage", {
@@ -832,6 +1629,7 @@ describe("workflow semantic tool rendering", () => {
 		});
 		const edit = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "Checks pass.\nEvidence is saved.",
 			description: "Implementation stage",
 			prompt: "Read corrected requirements.\nImplement the corrected change.",
 			model: { thinking: "medium" },
@@ -844,6 +1642,9 @@ describe("workflow semantic tool rendering", () => {
 			100,
 			true,
 		);
+		expect(getExpanded.call).toContain("--- Goal ---");
+		expect(getExpanded.call).toContain("Checks pass.");
+		expect(getExpanded.call).toContain("Evidence is saved.");
 		expect(getExpanded.call).toContain("--- Prompt ---");
 		expect(getExpanded.call).toContain("Inspect current state.");
 		expect(getExpanded.call).toContain("Implement the change.");
@@ -873,6 +1674,9 @@ describe("workflow semantic tool rendering", () => {
 		);
 		expect(getCollapsed.call).toContain(
 			"Prompt: Inspect current state. Implement the change.",
+		);
+		expect(getCollapsed.call).toContain(
+			"Goal: Checks pass. Evidence is saved.",
 		);
 		expect(getCollapsed.call).not.toContain("  Inspect current state.");
 		const editCollapsed = renderCompletedTool(
@@ -1142,6 +1946,7 @@ describe("workflow semantic tool rendering", () => {
 		);
 		const stageEdit = await executeTool(fixture, "workflow_edit_stage", {
 			stageId: "implementation",
+			goal: "The implementation passes its checks",
 			description: "A revised implementation description",
 			prompt: "A revised implementation prompt that wraps",
 			model: { thinking: "high" },

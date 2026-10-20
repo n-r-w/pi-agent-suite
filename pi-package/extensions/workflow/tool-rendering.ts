@@ -18,7 +18,11 @@ import {
 	BoundedToolResult,
 	getToolResultText,
 } from "../../shared/tool-presentation/bounded.ts";
-import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
+import type {
+	WorkflowDefinition,
+	WorkflowGround,
+	WorkflowState,
+} from "./workflow.ts";
 
 const PRESENTATION_KIND = "workflow-tool";
 const STAGE_CHANGE_ARROW = "->";
@@ -47,12 +51,13 @@ interface WorkflowContent {
 	readonly transitions?: readonly unknown[];
 }
 
-/** Contains the stage fields exposed by get and accepted by edit. */
+/** Holds stage attributes for inspection and edit presentation. */
 interface WorkflowStageContent {
 	readonly id: string;
 	readonly description: string;
+	readonly goal?: string;
 	readonly prompt: string;
-	readonly model: Readonly<Record<string, unknown>>;
+	readonly model: { readonly thinking?: string | undefined };
 	readonly initial?: boolean;
 	readonly final?: boolean;
 }
@@ -72,12 +77,13 @@ interface WorkflowActivatePresentation {
 	readonly workflow: WorkflowPresentationReference;
 }
 
-/** Persists both sides of a transition before execution mutates workflow state. */
+/** Preserves transition endpoints and the selected ground for tool presentation. */
 interface WorkflowTransitionPresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
 	readonly toolName: "workflow_transition";
 	readonly from?: WorkflowPresentationReference;
 	readonly to: WorkflowPresentationReference;
+	readonly ground?: WorkflowGround;
 }
 
 /** Persists one stage and the values needed to render reads or edits. */
@@ -184,7 +190,12 @@ function createWorkflowTransitionPresentation(
 		return undefined;
 	}
 	const fromId = state?.route.at(-1);
+	const groundId = readInputString(args, "ground");
+	const ground = state?.workflow.transitions
+		.find(({ from, to }) => from === fromId && to === stageId)
+		?.grounds?.find(({ id }) => id === groundId);
 	return {
+		...(ground === undefined ? {} : { ground: { ...ground } }),
 		presentationKind: PRESENTATION_KIND,
 		toolName: "workflow_transition",
 		...(fromId === undefined || state === undefined
@@ -221,6 +232,7 @@ function createWorkflowStagePresentation(
 			: {
 					id: savedStage.id,
 					description: savedStage.description,
+					...(savedStage.goal === undefined ? {} : { goal: savedStage.goal }),
 					prompt: savedStage.prompt,
 					model: { thinking: savedStage.model?.thinking },
 					initial: savedStage.initial,
@@ -260,9 +272,11 @@ function createEditedStageContent(
 	) {
 		return undefined;
 	}
+	const goal = readInputString(args, "goal")?.trim();
 	return {
 		id,
 		description,
+		...(goal === undefined ? {} : { goal }),
 		prompt,
 		model: { thinking },
 		...(initial === undefined ? {} : { initial }),
@@ -397,6 +411,19 @@ export function renderWorkflowTransitionCall(
 						width,
 						theme,
 					})),
+			...(presentation?.ground === undefined
+				? []
+				: renderReference({
+						label: "Ground",
+						reference: createReference(
+							presentation.ground.id,
+							presentation.ground.when,
+						),
+						compactText: presentation.ground.when,
+						expanded: context.expanded,
+						width,
+						theme,
+					})),
 		];
 	});
 }
@@ -408,10 +435,10 @@ export function renderWorkflowStageCall(
 	theme: Theme,
 	context: WorkflowToolRenderContext,
 ): Component {
-	const presentation = readStagePresentation(context, toolName);
-	const fallback = createWorkflowStagePresentation(toolName, args, undefined);
-	const resolved = presentation ?? fallback;
 	return new WorkflowRows((width) => {
+		const presentation = readStagePresentation(context, toolName);
+		const fallback = createWorkflowStagePresentation(toolName, args, undefined);
+		const resolved = presentation ?? fallback;
 		const stageId = resolved?.stage.id;
 		const title = stageId === undefined ? toolName : `${toolName}: ${stageId}`;
 		const attributes =
@@ -502,6 +529,18 @@ function parseTransitionPresentation(
 	const from =
 		value["from"] === undefined ? undefined : parseReference(value["from"]);
 	const to = parseReference(value["to"]);
+	const savedGround = value["ground"];
+	let ground: WorkflowGround | undefined;
+	if (savedGround !== undefined) {
+		if (
+			!isRecord(savedGround) ||
+			!isNonEmptyString(savedGround["id"]) ||
+			!isNonEmptyString(savedGround["when"])
+		) {
+			return undefined;
+		}
+		ground = { id: savedGround["id"], when: savedGround["when"] };
+	}
 	if ((value["from"] !== undefined && from === undefined) || to === undefined) {
 		return undefined;
 	}
@@ -510,6 +549,7 @@ function parseTransitionPresentation(
 		toolName: "workflow_transition",
 		...(from === undefined ? {} : { from }),
 		to,
+		...(ground === undefined ? {} : { ground }),
 	};
 }
 
@@ -537,13 +577,14 @@ function parseStagePresentation(
 	};
 }
 
-/** Parses persisted stage content before rendering it as YAML. */
+/** Validates saved stage attributes for inspection and edit display. */
 function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 	if (!isRecord(value) || !isRecord(value["model"])) {
 		return undefined;
 	}
 	const id = value["id"];
 	const description = value["description"];
+	const goal = value["goal"];
 	const prompt = value["prompt"];
 	const thinking = value["model"]["thinking"];
 	const initial = value["initial"];
@@ -552,7 +593,8 @@ function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 		!isNonEmptyString(id) ||
 		!isNonEmptyString(description) ||
 		!isNonEmptyString(prompt) ||
-		!isNonEmptyString(thinking) ||
+		(goal !== undefined && !isNonEmptyString(goal)) ||
+		(thinking !== undefined && !isNonEmptyString(thinking)) ||
 		(initial !== undefined && typeof initial !== "boolean") ||
 		(final !== undefined && typeof final !== "boolean")
 	) {
@@ -561,6 +603,7 @@ function parseStageContent(value: unknown): WorkflowStageContent | undefined {
 	return {
 		id,
 		description,
+		...(goal === undefined ? {} : { goal }),
 		prompt,
 		model: { thinking },
 		...(initial === undefined ? {} : { initial }),
@@ -618,7 +661,7 @@ interface StageAttributeRow {
 	readonly nextValue?: string;
 }
 
-/** Selects every stage field shown by the read tool. */
+/** Selects available stage attributes for inspection display. */
 function createStageAttributes(
 	content: WorkflowStageContent | undefined,
 ): readonly StageAttributeRow[] | undefined {
@@ -627,8 +670,13 @@ function createStageAttributes(
 	}
 	return [
 		{ label: "Description", value: content.description },
+		...(content.goal === undefined
+			? []
+			: [{ label: "Goal", value: content.goal }]),
 		{ label: "Prompt", value: content.prompt },
-		{ label: "Thinking", value: String(content.model["thinking"]) },
+		...(content.model.thinking === undefined
+			? []
+			: [{ label: "Thinking", value: content.model.thinking }]),
 		...(content.initial === undefined
 			? []
 			: [{ label: "Initial", value: String(content.initial) }]),
@@ -638,7 +686,7 @@ function createStageAttributes(
 	];
 }
 
-/** Selects only editable fields whose captured old and new values differ. */
+/** Selects captured stage changes with a known replacement value. */
 function createStageChanges(
 	content: WorkflowStageContent | undefined,
 	editedContent: WorkflowStageContent | undefined,
@@ -646,18 +694,28 @@ function createStageChanges(
 	if (content === undefined || editedContent === undefined) {
 		return undefined;
 	}
-	const editableValues: ReadonlyArray<readonly [string, string, string]> = [
+	const editableValues: ReadonlyArray<
+		readonly [string, string | undefined, string | undefined]
+	> = [
 		["Description", content.description, editedContent.description],
+		...(content.goal === undefined || editedContent.goal === undefined
+			? []
+			: [["Goal", content.goal, editedContent.goal] as const]),
 		["Prompt", content.prompt, editedContent.prompt],
-		[
-			"Thinking",
-			String(content.model["thinking"]),
-			String(editedContent.model["thinking"]),
-		],
+		["Thinking", content.model.thinking, editedContent.model.thinking],
 	];
-	return editableValues
-		.filter(([, previous, next]) => previous !== next)
-		.map(([label, value, nextValue]) => ({ label, value, nextValue }));
+	return editableValues.flatMap(([label, previous, next]) => {
+		if (next === undefined || previous === next) {
+			return [];
+		}
+		return [
+			{
+				label,
+				value: previous ?? next,
+				...(previous === undefined ? {} : { nextValue: next }),
+			},
+		];
+	});
 }
 
 /** Renders one collapsed attribute after normalizing its source line breaks. */
@@ -776,8 +834,9 @@ function renderWorkflowContent(options: {
 
 /** Selects the complete section or Pi's standard bounded collapsed preview. */
 function renderReference(options: {
-	readonly label: "Workflow" | "Stage" | "From" | "To";
+	readonly label: "Workflow" | "Stage" | "From" | "To" | "Ground";
 	readonly reference: WorkflowPresentationReference;
+	readonly compactText?: string;
 	readonly expanded: boolean;
 	readonly width: number;
 	readonly theme: Theme;
@@ -807,7 +866,9 @@ function renderReference(options: {
 		renderCollapsedLines: (width) =>
 			renderLabeledWrappedText({
 				label: `${options.label}:`,
-				text: normalizeCollapsedToolText(formatReference(options.reference)),
+				text: normalizeCollapsedToolText(
+					options.compactText ?? formatReference(options.reference),
+				),
 				width,
 				labelStyle: (value) =>
 					options.theme.fg("toolTitle", options.theme.bold(value)),

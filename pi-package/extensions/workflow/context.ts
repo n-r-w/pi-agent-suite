@@ -333,6 +333,7 @@ function renderStageActivation(
 ): string {
 	return [
 		`<workflow_stage_activated workflow_id="${escapeXml(state.workflow.id)}" stage_id="${escapeXml(stage.id)}" guidelines="${guidelines}">`,
+		...renderOptionalGuidelines(stage.goal, "stage_goal", "  "),
 		...(guidelines === "inline"
 			? [
 					"  <stage_guidelines>",
@@ -351,6 +352,7 @@ function renderStageUpdate(state: WorkflowState, stage: WorkflowStage): string {
 	return [
 		`<workflow_stage_updated workflow_id="${escapeXml(state.workflow.id)}" stage_id="${escapeXml(stage.id)}" active="${active}">`,
 		`  <stage_definition description="${escapeXml(stage.description)}"${flags}>`,
+		...renderOptionalGuidelines(stage.goal, "stage_goal", "    "),
 		"    <stage_guidelines>",
 		escapeXml(stage.prompt),
 		"    </stage_guidelines>",
@@ -385,6 +387,7 @@ function renderWorkflowCheckpoint(
 		...renderOptionalGuidelines(state.workflow.prompt, "guidelines", "  "),
 		...(state.status === "active"
 			? [
+					...renderOptionalGuidelines(stage.goal, "stage_goal", "  "),
 					"  <active_stage_guidelines>",
 					escapeXml(stage.prompt),
 					"  </active_stage_guidelines>",
@@ -430,10 +433,19 @@ function renderAvailableTransitions(
 	}
 	return [
 		`${indent}<available_transitions>`,
-		...transitions.map(
-			(edge) =>
-				`${indent}  <transition to="${escapeXml(edge.to)}" type="${edge.type}" />`,
-		),
+		...transitions.flatMap((edge) => {
+			const opening = `${indent}  <transition to="${escapeXml(edge.to)}" type="${edge.type}"`;
+			return edge.grounds?.length
+				? [
+						`${opening}>`,
+						...edge.grounds.map(
+							(ground) =>
+								`${indent}    <ground id="${escapeXml(ground.id)}">${escapeXml(ground.when)}</ground>`,
+						),
+						`${indent}  </transition>`,
+					]
+				: [`${opening} />`];
+		}),
 		`${indent}</available_transitions>`,
 	];
 }

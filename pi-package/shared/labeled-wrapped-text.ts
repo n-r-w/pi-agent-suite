@@ -1,9 +1,10 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { sliceTextByWidth, truncateTextByWidth } from "./display-width.ts";
 
+/** Separates the label from the first value slot. */
 const SEPARATOR = " ";
 
-/** Defines the styled label and plain text that must wrap inside one TUI row width. */
+/** Supplies a label, plain value, row width, and separate label and value styles. */
 interface LabeledWrappedTextOptions {
 	readonly label: string;
 	readonly text: string;
@@ -12,7 +13,7 @@ interface LabeledWrappedTextOptions {
 	readonly textStyle: (value: string) => string;
 }
 
-/** Renders a styled label followed by wrapped text without exceeding the provided display width. */
+/** Returns display rows containing a styled label and wrapped value. */
 export function renderLabeledWrappedText(
 	options: LabeledWrappedTextOptions,
 ): string[] {
@@ -56,13 +57,13 @@ function wrapTextWithFirstLineWidth(
 		return [];
 	}
 	if (firstLineWidth <= 0) {
-		return wrapTextByWidth(text, otherLineWidth);
+		return ["", ...wrapTextByWidth(text, otherLineWidth)];
 	}
 
 	const [firstParagraph = "", ...remainingParagraphs] = text.split("\n");
 	const firstChunk = sliceTextByWidth(firstParagraph, firstLineWidth);
 	if (firstChunk.length === 0 && firstParagraph.length > 0) {
-		return wrapTextByWidth(text, otherLineWidth);
+		return ["", ...wrapTextByWidth(text, otherLineWidth)];
 	}
 
 	const remainder = [
