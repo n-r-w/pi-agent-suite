@@ -59,12 +59,18 @@ function validCreatedValue(
 ): Record<string, unknown> {
 	const value = validValue() as {
 		stages: Record<string, unknown>[];
+		transitions: Record<string, unknown>[];
 	};
 	return {
 		...value,
 		stages: value.stages.map((stage) => ({
 			...stage,
+			goal: `  Outcome ${String(stage["id"])} holds.  `,
 			model: { thinking },
+		})),
+		transitions: value.transitions.map((edge) => ({
+			...edge,
+			grounds: [{ id: "ready", when: "  The condition holds.  " }],
 		})),
 	};
 }
@@ -169,6 +175,11 @@ describe("workflow definition validation", () => {
 			"workflow_create",
 		);
 		expect(created.id).toBe("delivery");
+		expect(created.version).toBe(2);
+		expect(created.stages[0]?.goal).toBe("Outcome a holds.");
+		expect(created.transitions[0]?.grounds).toEqual([
+			{ id: "ready", when: "The condition holds." },
+		]);
 		expect(created).not.toHaveProperty("model");
 		expect(created.stages).toHaveLength(5);
 		expect(() =>
@@ -199,6 +210,48 @@ describe("workflow definition validation", () => {
 				"workflow_create",
 			),
 		).toThrow("unsupported key");
+	});
+
+	/** Checks required goals and grounds in dynamically created workflows. */
+	test("requires format-2 goals and choice grounds without accepting a version selector", () => {
+		for (const goal of [undefined, "", "   ", 4]) {
+			const value = validCreatedValue();
+			const stages = value["stages"] as Record<string, unknown>[];
+			stages[0] = { ...stages[0], goal };
+			expect(() =>
+				validateCreatedWorkflowDefinition({ id: "delivery", ...value }, SOURCE),
+			).toThrow("stage a");
+		}
+		for (const edgeIndex of [0, 1, 5]) {
+			for (const grounds of [undefined, []]) {
+				const value = validCreatedValue();
+				const edges = value["transitions"] as Record<string, unknown>[];
+				edges[edgeIndex] = { ...edges[edgeIndex], grounds };
+				expect(() =>
+					validateCreatedWorkflowDefinition(
+						{ id: "delivery", ...value },
+						SOURCE,
+					),
+				).toThrow("requires grounds");
+			}
+		}
+		const unconditional = validCreatedValue();
+		const edges = unconditional["transitions"] as Record<string, unknown>[];
+		delete edges[2]?.["grounds"];
+		expect(
+			validateCreatedWorkflowDefinition(
+				{ id: "delivery", ...unconditional },
+				SOURCE,
+			).transitions[2]?.grounds,
+		).toBeUndefined();
+		for (const version of [1, 2, 3]) {
+			expect(() =>
+				validateCreatedWorkflowDefinition(
+					{ id: "delivery", ...validCreatedValue(), version },
+					SOURCE,
+				),
+			).toThrow("unsupported key");
+		}
 	});
 
 	/**
@@ -693,9 +746,10 @@ describe("workflow state", () => {
 	 * Dependencies: saved workflow validation and ordered custom-entry replay.
 	 */
 	test("replays persisted stage edits into the workflow snapshot", () => {
-		const workflow = validateCreatedWorkflowDefinition(
-			{ id: "dynamic-delivery", ...validCreatedValue() },
-			"workflow_create",
+		const workflow = validateWorkflowDefinition(
+			"dynamic-delivery",
+			validValue(),
+			SOURCE,
 		);
 		const replayed = replayWorkflowState([
 			{
@@ -762,9 +816,10 @@ describe("workflow state", () => {
 			validValue(),
 			SOURCE,
 		);
-		const dynamicWorkflow = validateCreatedWorkflowDefinition(
-			{ id: "dynamic-delivery", ...validCreatedValue() },
-			"workflow_create",
+		const dynamicWorkflow = validateWorkflowDefinition(
+			"dynamic-delivery",
+			validValue(),
+			SOURCE,
 		);
 		const edit = {
 			type: "custom",

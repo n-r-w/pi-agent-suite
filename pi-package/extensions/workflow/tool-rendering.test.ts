@@ -291,6 +291,7 @@ function createArguments(
 			{
 				id: "implementation",
 				description: "Implementation stage",
+				goal: "The implementation passes its checks",
 				prompt: "Implement the change",
 				model: { thinking: "medium" },
 				initial: true,
@@ -298,6 +299,7 @@ function createArguments(
 			{
 				id: "review",
 				description: "Review stage",
+				goal: "The reviewer has approved the change",
 				prompt: "Review the change",
 				model: { thinking: "medium" },
 				final: true,

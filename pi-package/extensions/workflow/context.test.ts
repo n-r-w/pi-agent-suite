@@ -5,13 +5,13 @@ import {
 	createWorkflow,
 	editWorkflowStage,
 	transitionWorkflow,
-	validateCreatedWorkflowDefinition,
+	validateWorkflowDefinition,
 } from "./workflow";
 
 function workflow(description = "Build & review") {
-	return validateCreatedWorkflowDefinition(
+	return validateWorkflowDefinition(
+		"delivery",
 		{
-			id: "delivery",
 			description,
 			prompt: "Follow <global> & stay safe.",
 			stages: [

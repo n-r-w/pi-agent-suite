@@ -150,7 +150,7 @@ export function validateCreatedWorkflowDefinition(
 	try {
 		const root = requireObject(value, "workflow", CREATED_ROOT_KEYS);
 		const id = readSingleLineText(root, "id").normalize("NFC");
-		return parseWorkflowDefinition(id, root, "created");
+		return parseWorkflowDefinition(id, { ...root, version: 2 }, "created");
 	} catch (error) {
 		throw new Error(`${source}: ${errorMessage(error)}`);
 	}

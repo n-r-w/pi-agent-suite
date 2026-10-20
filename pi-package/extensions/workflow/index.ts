@@ -139,11 +139,15 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 			minLength: 1,
 			maxLength: 128,
 		}),
+		goal: Type.String({
+			description:
+				"The stage goal is the state that must hold when the stage ends. The stage task consists of the actions that reach this state. Example goal: The reviewer has approved the delivery.",
+			minLength: 1,
+			maxLength: 8192,
+		}),
 		prompt: Type.String({
 			description: `Instructions for this stage. Format:
 \`\`\`
-Goal: [Describes resulting state to achieve. NOT rules, actions or completion criteria]
-
 Rules:
 1. [Instruction]
 2. ...
@@ -155,9 +159,6 @@ Actions:
 Subagents:
 1. [Optional subagents rules]
 2. ...
-
-Rework rules:
-1. [Optional rework rules]
 
 Completion criteria:
 1. [Criterion]
@@ -239,6 +240,27 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 			description:
 				"Transition direction: advance for forward progress; rework for return to a strict advance ancestor.",
 		}),
+		grounds: Type.Optional(
+			Type.Array(
+				Type.Object(
+					{
+						id: Type.String({
+							description: "Ground ID unique within this transition",
+							minLength: 1,
+						}),
+						when: Type.String({
+							description: "Condition under which this transition is taken",
+							minLength: 1,
+						}),
+					},
+					{ additionalProperties: false },
+				),
+				{
+					description:
+						"Required on rework transitions and on every advance transition when its source has multiple advance transitions. A sole advance transition can omit grounds and is then unconditional.",
+				},
+			),
+		),
 	},
 	{ additionalProperties: false },
 );

@@ -47,7 +47,7 @@ transitions:
 
 The catalog loader accepts `version: 1` and `version: 2` in YAML. When `version` is omitted, the loader selects format 1. For any other version value, the loader rejects the file with an error naming the value. For format 1, the validator rejects stage `goal` and transition `grounds` fields and explains that they require format 2.
 
-Declaring `version: 1` is equivalent to omitting `version`: the validator produces identical normalized definitions. Both forms therefore have the same definition revision and model-facing records. `workflow_create` creates unversioned format-1 workflows.
+Declaring `version: 1` is equivalent to omitting `version`: the validator produces identical normalized definitions. Both forms therefore have the same definition revision and model-facing records. `workflow_create` always creates format-2 workflows without a caller-supplied version selector.
 
 In format 2, each stage requires a non-empty string in `goal`: the stage goal, or state that must hold when the stage ends. A transition can declare a `grounds` list. Each transition ground contains only a technical `id` and a non-empty string in `when` that describes its condition. Ground IDs follow the stage-ID rules and must be unique within their transition. Different transitions can reuse an ID.
 
@@ -153,6 +153,10 @@ Workflow settings and optional prompt overrides belong in `~/.pi/agent/agent-sui
 
 `extensionDescriptionPromptFile` supplies one `promptGuidelines` contribution on each workflow tool. The system prompt formatter normalizes duplicate contributions, so the guidance appears once while any workflow tool is active. The other files replace the Pi tool description for the corresponding tool.
 
+With the default shared guidance, the agent completes a stage only when its goal state holds. When every available transition has grounds and none of their conditions holds, the agent takes no transition and describes the situation in its reply. Transitions without grounds remain unconditional.
+
+If you set `extensionDescriptionPromptFile`, the extension uses your file in place of the entire default shared guidance. Include the goal, task, completion, and transition guidance in your file so the agent receives it.
+
 ## Tools
 
 All workflow tools run sequentially. Mutating tools return model-visible success content `{"success":true}`. `workflow_get_stage` returns the requested stage as JSON.
@@ -174,6 +178,7 @@ A final-stage agent run remains active until `agent_settled`. The settlement res
     {
       "id": "implementation",
       "description": "Implement the change",
+      "goal": "The implementation passes the required checks",
       "prompt": "Implement and test the change.",
       "model": {
         "thinking": "medium"
@@ -183,6 +188,7 @@ A final-stage agent run remains active until `agent_settled`. The settlement res
     {
       "id": "review",
       "description": "Review the result",
+      "goal": "The reviewer has approved the implementation",
       "prompt": "Review the implementation.",
       "model": {
         "thinking": "high"
@@ -200,7 +206,11 @@ A final-stage agent run remains active until `agent_settled`. The settlement res
 }
 ```
 
-A successful call validates the whole graph, stores one `created` snapshot, and immediately activates the initial stage. It replaces an active workflow with a different ID. A replaced dynamic workflow cannot be reactivated. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
+Each stage requires a `goal` describing the state that must hold when the stage ends. The stage task consists of the actions that reach this state. The agent must achieve this state to complete the stage. Put actions and instructions in `prompt`, and transition conditions in `grounds`. The required-grounds rules are the same as for format-2 catalog workflows.
+
+On a successful call, the extension validates the whole graph, stores one format-2 `created` snapshot including goals and grounds, and immediately activates the initial stage. The initial stage activation record includes its goal. See [Session snapshots](#session-snapshots) for restoration of format-2 workflows and older unversioned definitions.
+
+The extension replaces an active workflow when the new workflow has a different ID. A replaced dynamic workflow cannot be reactivated. The new ID must not match a catalog ID or the active dynamic ID after NFC normalization and exact case comparison. Reusing the active dynamic ID is rejected without resetting its route.
 
 The `workflow_create` TypeBox schema adds LLM-facing length and collection-size budgets. It leaves exact single-line and identifier rules to domain validation so providers do not need to compile nested regex constraints. YAML catalog definitions use the same domain text rules without the tool-specific budgets. `workflow_create` requires a closed `model` object on every stage. Every stage model requires `thinking`. The allowed values are `low`, `medium`, and `high`. Root model settings, `model.id`, and other thinking levels are rejected.
 
@@ -231,7 +241,7 @@ The JSON result contains `id`, `description`, `prompt`, `model.thinking`, `initi
 }
 ```
 
-The tool replaces only `description`, `prompt`, and `model.thinking`. It preserves `id`, `initial`, `final`, `triggers`, transitions, workflow fields, route, status, source, and restoration settings. All replacement fields are required. `model.thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+The tool replaces only `description`, `prompt`, and `model.thinking`. It preserves `id`, `goal`, `initial`, `final`, `triggers`, transitions, workflow fields, route, status, source, and restoration settings. All replacement fields are required. `model.thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
 
 The edit appends a `stage_edited` session entry. Editing the active stage applies its thinking level immediately and updates the prompt and description used by the next provider request. Editing another stage stores the new fields without changing current runtime thinking. A later transition applies that stage's edited thinking level. Editing does not enter the stage and does not run its triggers.
 
@@ -271,7 +281,7 @@ Content:
 description: Task-specific delivery workflow
 prompt: Follow the approved scope.
 stages:
-... (16 more lines, 19 total, ctrl+o to expand)
+... (18 more lines, 21 total, ctrl+o to expand)
 
 workflow_activate
 Workflow: delivery · Software delivery
@@ -293,7 +303,7 @@ From: implementation · Implement the approved change
 To: review · Review the implementation
 ```
 
-When the YAML has three or fewer visual lines, collapsed mode shows every line and omits the hidden-content hint. Expanded `workflow_create` output shows all received workflow content as catalog-shaped YAML. The workflow ID remains in the `Workflow` section because catalog files derive it from the file name:
+When the YAML has three or fewer visual lines, collapsed mode shows every line and omits the hidden-content hint. In expanded mode, the extension displays the submitted creation content as YAML and keeps the workflow ID in the separate `Workflow` section. The display contains no `version` field because `workflow_create` accepts no caller-supplied version selector. Before saving the displayed content as a catalog file, add `version: 2` and name the file after the workflow ID with a `.yaml` extension.
 
 ```text
 workflow_create
@@ -307,12 +317,14 @@ prompt: Follow the approved scope.
 stages:
   - id: implementation
     description: Implement the approved change
+    goal: The implementation passes the required checks
     prompt: Implement and test the change
     model:
       thinking: medium
     initial: true
   - id: review
     description: Review the result
+    goal: The reviewer has approved the implementation
     prompt: Review the implementation
     model:
       thinking: high

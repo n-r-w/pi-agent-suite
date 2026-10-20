@@ -25,6 +25,7 @@ import {
 import workflowExtension from "./index";
 import {
 	activateWorkflow,
+	replayWorkflowState,
 	validateWorkflowDefinition,
 	WORKFLOW_STATE_JOURNAL_VERSION,
 } from "./workflow";
@@ -177,6 +178,7 @@ function createArguments(id = "dynamic-delivery"): Record<string, unknown> {
 			{
 				id: "start",
 				description: "Start",
+				goal: "Initial evidence is ready",
 				prompt: "Start dynamic work",
 				model: { thinking: "medium" },
 				initial: true,
@@ -184,6 +186,7 @@ function createArguments(id = "dynamic-delivery"): Record<string, unknown> {
 			{
 				id: "done",
 				description: "Done",
+				goal: "Delivery is approved",
 				prompt: "Finish dynamic work",
 				model: { thinking: "medium" },
 				final: true,
@@ -191,7 +194,12 @@ function createArguments(id = "dynamic-delivery"): Record<string, unknown> {
 		],
 		transitions: [
 			{ from: "start", to: "done", type: "advance" },
-			{ from: "done", to: "start", type: "rework" },
+			{
+				from: "done",
+				to: "start",
+				type: "rework",
+				grounds: [{ id: "revise", when: "The review requires changes" }],
+			},
 		],
 	};
 }
@@ -752,6 +760,97 @@ describe("workflow extension lifecycle", () => {
 		}
 	});
 
+	/** Checks required goals and transition ground shapes in the public creation schema. */
+	test("exposes required goals and closed optional transition grounds", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		const schema = requireTool(fake, "workflow_create")
+			.parameters as Parameters<typeof Check>[0];
+		expect(Check(schema, createArguments())).toBe(true);
+		const missingGoal = createArguments();
+		delete (missingGoal["stages"] as Record<string, unknown>[])[0]?.["goal"];
+		expect(Check(schema, missingGoal)).toBe(false);
+		for (const grounds of [
+			[{}],
+			[{ id: "revise" }],
+			[{ id: "revise", when: "Condition", extra: true }],
+			"condition",
+		]) {
+			const args = createArguments();
+			(args["transitions"] as Record<string, unknown>[])[1] = {
+				from: "done",
+				to: "start",
+				type: "rework",
+				grounds,
+			};
+			expect(Check(schema, args)).toBe(false);
+		}
+		const versioned = { ...createArguments(), version: 2 };
+		expect(Check(schema, versioned)).toBe(false);
+	});
+
+	/** Checks format-2 creation and restoration through the registered tool. */
+	test("creates and restores format-2 goals grounds and routes", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_create").execute(
+			"create",
+			createArguments(),
+		);
+		const created = fake.appended[0]?.data;
+		expect(created).toMatchObject({
+			kind: "created",
+			route: ["start"],
+			workflow: {
+				version: 2,
+				stages: [
+					{ goal: "Initial evidence is ready" },
+					{ goal: "Delivery is approved" },
+				],
+			},
+		});
+		const initial = latestWorkflowContent(fake) ?? "";
+		expect(initial).toContain("<stage_goal>");
+		expect(initial.indexOf("<stage_goal>")).toBeLessThan(
+			initial.indexOf("<stage_guidelines>"),
+		);
+		await requireTool(fake, "workflow_transition").execute("done", {
+			stageId: "done",
+		});
+		const branch = JSON.parse(
+			JSON.stringify(
+				fake.appended.map(({ customType, data }) => ({
+					type: "custom",
+					customType,
+					data,
+				})),
+			),
+		);
+		const restored = replayWorkflowState(branch);
+		expect(restored?.route).toEqual(["start", "done"]);
+		expect(restored?.workflow.version).toBe(2);
+		expect(
+			restored?.workflow.stages.map(({ id, goal }) => ({ id, goal })),
+		).toEqual([
+			{ id: "start", goal: "Initial evidence is ready" },
+			{ id: "done", goal: "Delivery is approved" },
+		]);
+		expect(restored?.workflow.transitions[1]?.grounds).toEqual([
+			{ id: "revise", when: "The review requires changes" },
+		]);
+		await runLifecycle(fake, "session_tree", branch);
+		await expect(
+			requireTool(fake, "workflow_transition").execute("invalid", {
+				stageId: "start",
+			}),
+		).rejects.toThrow("revise");
+		await requireTool(fake, "workflow_transition").execute("rework", {
+			stageId: "start",
+			ground: "revise",
+		});
+	});
+
 	/**
 	 * Proves the provider-facing create schema delegates exact string checks to workflow execution.
 	 * Inputs and expected outputs: structurally valid strings pass TypeBox, then execution rejects invalid workflow text.
@@ -1250,7 +1349,7 @@ describe("workflow extension lifecycle", () => {
 
 		await create.execute("create", triggeredCreateArguments());
 		await transition.execute("advance", { stageId: "done" });
-		await transition.execute("rework", { stageId: "start" });
+		await transition.execute("rework", { stageId: "start", ground: "revise" });
 
 		expect(calls.map(({ trigger }) => trigger.type)).toEqual([
 			"local_knowledge_accumulation",
