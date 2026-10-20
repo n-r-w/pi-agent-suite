@@ -345,6 +345,231 @@ afterEach(async () => {
 });
 
 describe("workflow semantic tool rendering", () => {
+	/** Keeps unconditional and legacy evidence limited to transition endpoints. */
+	test.each(
+		[false, true].flatMap((legacy) =>
+			[false, true].flatMap((replayed) =>
+				[false, true].flatMap((subagent) =>
+					[false, true].map((expanded) => ({
+						legacy,
+						replayed,
+						subagent,
+						expanded,
+					})),
+				),
+			),
+		),
+	)("omits unconditional transition ground %j", async ({
+		legacy,
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const workflow = createArguments("unconditional", "Unconditional");
+		if (legacy) {
+			for (const stage of workflow["stages"] as Record<string, unknown>[]) {
+				delete stage["goal"];
+			}
+		}
+		const fixture = await createFixture(
+			legacy
+				? [
+						{
+							type: "custom",
+							customType: "workflow-state",
+							data: {
+								kind: "created",
+								workflow,
+								route: ["implementation"],
+								journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+							},
+						},
+					]
+				: [],
+		);
+		if (!legacy) {
+			await executeTool(fixture, "workflow_create", workflow);
+		}
+		const transition = await executeTool(fixture, "workflow_transition", {
+			stageId: "review",
+		});
+		expect(transition.isError).toBe(false);
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_transition")
+			: screen.tools.find(({ name }) => name === "workflow_transition");
+		const component = new ToolExecutionComponent(
+			"workflow_transition",
+			"unconditional",
+			transition.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(transition.result)),
+			isError: false,
+		});
+		const lines = component
+			.render(120)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_transition",
+						"--- From ---",
+						"implementation · Implementation stage",
+						"--- To ---",
+						"review · Review stage",
+					]
+				: [
+						"workflow_transition",
+						"From: implementation · Implementation stage",
+						"To: review · Review stage",
+					],
+		);
+	});
+
+	/** Shows the selected edge condition on the first live or replay Pi render. */
+	test.each(
+		[false, true].flatMap((replayed) =>
+			[false, true].flatMap((subagent) =>
+				[false, true].map((expanded) => ({ replayed, subagent, expanded })),
+			),
+		),
+	)("renders selected transition ground %j", async ({
+		replayed,
+		subagent,
+		expanded,
+	}) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const workflow = createArguments("ground-choice", "Ground choice");
+		const selected = { id: "shared", when: "A finding needs uncovered units." };
+		workflow["transitions"] = [
+			{
+				from: "implementation",
+				to: "review",
+				type: "advance",
+				grounds: [
+					{ id: "shared", when: "An unrelated edge condition." },
+					{ id: "other", when: "Another advance condition." },
+				],
+			},
+			{
+				from: "review",
+				to: "implementation",
+				type: "rework",
+				grounds: [
+					{ id: "first", when: "A different rework condition." },
+					{ ...selected, when: `  ${selected.when}\n  ` },
+				],
+			},
+		];
+		await executeTool(fixture, "workflow_create", workflow);
+		await executeTool(fixture, "workflow_transition", {
+			stageId: "review",
+			ground: "other",
+		});
+		const args = { stageId: "implementation", ground: selected.id };
+		const tool = fixture.tools.find(
+			({ name }) => name === "workflow_transition",
+		);
+		if (tool?.renderCall === undefined || tool.renderResult === undefined) {
+			throw new Error("missing transition renderers");
+		}
+		const context = createToolRenderContext({ args, expanded, isError: false });
+		const call = tool.renderCall(args, PLAIN_THEME, context);
+		const groundRow = expanded
+			? `${selected.id} · ${selected.when}`
+			: `Ground: ${selected.when}`;
+		expect(call.render(120).map((line) => line.trimEnd())).toContain(groundRow);
+		const transition = await executeTool(fixture, "workflow_transition", args);
+		tool.renderResult(
+			transition.result,
+			{ expanded, isPartial: false },
+			PLAIN_THEME,
+			context,
+		);
+		expect(call.render(120).map((line) => line.trimEnd())).toContain(groundRow);
+		expect(transition.isError).toBe(false);
+		const hooked = renderCompletedTool(
+			transition.definition,
+			transition,
+			PLAIN_THEME,
+			120,
+			expanded,
+		);
+		expect(hooked.call).toContain(
+			expanded
+				? `${selected.id} · ${selected.when}`
+				: `Ground: ${selected.when}`,
+		);
+		// Replace the active definition to prove rendering uses captured evidence.
+		await executeTool(
+			fixture,
+			"workflow_create",
+			createArguments("replacement", "Replacement"),
+		);
+		const screen = replayed ? await createFixture() : fixture;
+		const definition = subagent
+			? resolveSessionDefinition(screen, "workflow_transition")
+			: screen.tools.find(({ name }) => name === "workflow_transition");
+		const component = new ToolExecutionComponent(
+			"workflow_transition",
+			"ground-choice",
+			transition.args,
+			{},
+			definition,
+			{ requestRender(): void {} } as TUI,
+			"/tmp",
+		);
+		component.markExecutionStarted();
+		component.setArgsComplete();
+		component.setExpanded(expanded);
+		component.updateResult({
+			...JSON.parse(JSON.stringify(transition.result)),
+			isError: false,
+		});
+		const lines = component
+			.render(120)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+		expect(lines).toEqual(
+			expanded
+				? [
+						"workflow_transition",
+						"--- From ---",
+						"review · Review stage",
+						"--- To ---",
+						"implementation · Implementation stage",
+						"--- Ground ---",
+						`${selected.id} · ${selected.when}`,
+					]
+				: [
+						"workflow_transition",
+						"From: review · Review stage",
+						"To: implementation · Implementation stage",
+						`Ground: ${selected.when}`,
+					],
+		);
+		expect(transition.result.details).toMatchObject({
+			from: { id: "review" },
+			to: { id: "implementation" },
+			ground: selected,
+		});
+		for (const width of [22, 120]) {
+			for (const line of component.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+	});
+
 	/** Proves activation is semantic and its internal success payload stays hidden. */
 	test("renders activation identically in the active and subagent session screens", async () => {
 		await createWorkflowSuite();

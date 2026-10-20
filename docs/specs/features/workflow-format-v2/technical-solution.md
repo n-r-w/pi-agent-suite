@@ -54,13 +54,21 @@ The renderer of `<available_transitions>` is shared by the stage entry records, 
 The transition graph in the activation record stays without grounds. The reason: the activation record lists all transitions of the workflow once, and the stage entry that it contains, as well as each later stage entry, already shows the grounds of the transitions available from that stage. Grounds in the graph would repeat the same text for every transition.
 
 ### SOL-06: Choice of a ground in `workflow_transition`
-Requirements: FRQ-08.
+Requirements: FRQ-08, FRQ-12.
 
 `workflow_transition` gets an optional ground parameter. It is optional in the tool schema because the same schema serves workflows of format version 1 and unconditional transitions, where no ground exists. The domain transition function checks the grounds of the validated transition together with the target stage. It uses these domain values for both catalog and dynamic workflows:
 - a transition with grounds requires a ground ID of this transition, and a missing or unknown ID fails with an error that lists the ground IDs of this transition;
 - a transition without grounds fails when the call names a ground.
 
-The extension does not persist the chosen ground. No requirement reads it, and the existing `transitioned` snapshot stays unchanged.
+For FRQ-12, the presentation runtime captures the selected ground ID and validated `when` text from the matching source-to-target transition before execution changes the route. The extension saves this pair alongside the endpoints in tool-result `details`. Workflow-state transition records remain separate: each contains only `kind: "transitioned"` and the updated `route`.
+
+The shared transition renderer appends `Ground` after `From` and `To`. Compact mode displays only the condition, for example `Ground: A finding needs units that inspection did not cover.` Expanded mode displays `--- Ground ---` followed by the selected ID, ` · `, and condition, for example `finding_needs_uncovered_units · A finding needs units that inspection did not cover.`
+
+In `pi-package/extensions/workflow/tool-rendering.ts`, `renderReference` uses the shared labeled wrapping helper for compact rows. The helper reserves the label width and one separating space on the first value row, then uses the shell-provided content width for continuation rows. If the label fills or exceeds the content width, the helper truncates the label and starts the value on the next row. The renderer normalizes source line breaks to spaces and shows up to four visual lines per reference, including `Ground`. Each reference has its own budget, excluding the tool title and hidden-line hint. The hint reports the hidden and total line counts. Expanded mode uses Pi's `Text` wrapping at the content width, preserves source line breaks, and displays all lines. Both modes use Pi's default tool shell and the reference styles described in [workflow.md](../../../extensions/workflow.md), section "Tool presentation".
+
+The presentation parser restores the optional ground pair after JSON serialization. The result renderer places the saved values in shared call/result state, and the deferred call renderer reads that state on its first render. Therefore, replay uses the saved condition even when the source workflow is inactive or its definition has changed. Main and subagent screens use one shared renderer, with no screen-specific copies of the transition rendering logic.
+
+For unconditional transitions, the renderer omits `Ground`. When saved presentation metadata has no ground, the renderer displays the saved endpoints. It neither reconstructs a ground from workflow history nor displays an ID-only ground. The domain validator requires an ID and non-empty `when` text for each declared ground; only the earlier tool-result presentation metadata omitted the selected ground.
 
 ### SOL-07: Dynamic workflows
 Requirements: FRQ-10.
@@ -144,7 +152,7 @@ Elements beyond the smallest change:
 - None. Each method above serves at least one agreed requirement or the confirmed extension constraint. Shared format selection serves the two supported formats at the catalog, creation, and restoration boundaries.
 
 Deliberately left out:
-- The chosen ground is not persisted and not shown in the tool call presentation, because no requirement reads it.
+- Selected-ground history in workflow-state journal entries. These entries retain their route-only transition representation.
 - The activation graph has no grounds, because each stage entry shows the grounds of its available transitions.
 - No migration tool converts catalog files to format version 2, because the conversion is out of scope.
 - The periodic `<workflow_reminder>` record does not change, because it is out of scope.

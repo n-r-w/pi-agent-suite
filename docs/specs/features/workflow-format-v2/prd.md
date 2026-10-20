@@ -104,6 +104,16 @@ Non-scope:
   - Goal achievement: Full. Each saved definition restores in the format in which it was saved.
   - Feasibility: Confirmed. Restoration already validates each saved definition, so a definition without a version follows the rules of format version 1.
 
+- [X] FRQ-12: When `workflow_transition` selects a declared ground, its custom Pi UI appends `Ground` after `From` and `To`. Compact mode shows only the selected condition. Expanded mode shows `--- Ground ---` followed by the selected ID, ` · `, and condition. For example, the compact row is `Ground: A finding needs units that inspection did not cover.` and the expanded value is `finding_needs_uncovered_units · A finding needs units that inspection did not cover.` Main and subagent screens use one shared renderer to show the choice on the first live or replay render; screen-specific copies of the rendering logic are excluded.
+
+  The extension captures the selected ID and validated condition from the matching source-to-target transition before execution changes the route. It saves the pair with the endpoints in tool-result `details` and restores it after JSON serialization. When the source workflow is inactive or its definition has changed, the renderer still uses the saved pair. For unconditional transitions, the renderer omits `Ground`. When saved presentation metadata has no ground, the renderer displays the saved endpoints without reconstructing a ground or showing an ID-only ground. Each ground in a validated definition requires an ID and non-empty `when` text; only the earlier presentation metadata omitted the selected ground.
+
+  The renderer uses the shared reference wrapping and a separate four-visual-line compact budget for `Ground`, excluding the tool title and hidden-line hint. Expanded mode preserves source line breaks and displays all wrapped lines. Transition execution and tool input schemas remain unchanged. Workflow-state transition records contain only `kind: "transitioned"` and the updated `route`.
+  - Origin: source. The user approved displaying the selected declared transition ground.
+  - Goal: The user sees which declared condition the agent selected.
+  - Goal achievement: Full. The UI displays the selected condition independently of active workflow state or later definition changes.
+  - Feasibility: Confirmed. Transition presentation already captures endpoints before route mutation and restores them for replay.
+
 ### Non-Functional Requirements
 - [X] NRQ-01: Each catalog workflow file that loads before the change loads after it, and each of its model-facing records has the same text as before the change. Verification: the existing workflow tests pass without changes of their expected records for workflows without a format version.
   - Origin: formulated. The user required backward compatibility for people who already use the package.

@@ -15,6 +15,8 @@ Two parts of the stage text that the agent needs at the moment of a decision are
 
 In addition, LLMs confuse the stage goal with the stage task, both when they write a workflow and when they execute a stage.
 
+When a transition tool block shows only the source and target stages, the user cannot see which declared condition the agent selected. The user needs this condition on both main and subagent screens, including saved-session replay. Validated workflow definitions require an ID and non-empty `when` text for each ground; the earlier tool-result presentation metadata captured only the endpoints.
+
 ## Affected Audience
 - Agents that execute catalog workflows and workflows created through `workflow_create`.
 - Users who lead these agents and must notice when an agent skips the goal of a stage or takes a transition without its condition.
@@ -60,7 +62,7 @@ Workflows without a declared version behave as they do now. The agent guidance s
 - Catalog workflows loaded from YAML files.
 - Workflows created and edited through `workflow_create` and `workflow_edit_stage`.
 - Entries into stages, in particular reuse entries after rework transitions.
-- Choice of a transition by the agent.
+- Choice of a transition by the agent and its presentation to the user on main and subagent screens, including saved-session replay.
 - Existing users of the package whose catalog files and saved sessions have no format version.
 
 ## Assumptions

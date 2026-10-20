@@ -371,9 +371,26 @@ true
 false
 ```
 
-The extension shows the source and target stages in transition tool rows and omits the selected ground in both collapsed and expanded views.
+For a grounded transition, the extension appends `Ground` after `From` and `To`. Compact mode shows only the selected condition:
 
-Compact `Workflow:`, `Stage:`, `From:`, `To:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and applies the collapsed attribute budget described above. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
+```text
+Ground: A finding needs units that inspection did not cover.
+```
+
+Expanded mode shows the selected ID, ` · `, and condition:
+
+```text
+--- Ground ---
+finding_needs_uncovered_units · A finding needs units that inspection did not cover.
+```
+
+The extension captures the selected ID and validated `when` text from the matching source-to-target transition before execution changes the route. It saves this pair with the endpoints in tool-result `details`. During replay, the renderer reads these saved values on the first render, even when the source workflow is inactive or its definition has changed. Main and subagent screens use one shared renderer; neither screen has a separate copy of the transition rendering logic.
+
+For unconditional transitions, including every format-1 transition, the renderer omits `Ground`. When saved presentation metadata has no ground, the renderer retains the saved `From` and `To` display. It neither reconstructs a ground from workflow history nor displays a ground ID without condition text. Each ground in a validated definition requires an ID and non-empty `when` text. Only the earlier tool-result presentation metadata omitted the selected ground. Workflow-state transition records remain separate: each contains only `kind: "transitioned"` and the updated `route`.
+
+For `Ground`, the shared reference renderer normalizes source line breaks to spaces in compact mode. The wrapping helper reserves the width of `Ground:` and one separating space on the first value row, then uses the shell-provided content width for continuation rows. If the label fills or exceeds the content width, the helper truncates the label and starts the value on the next row. The renderer shows at most four visual lines for `Ground`, independently of the `From` and `To` budgets. It excludes the tool title and hidden-line hint from this budget. When more lines exist, the hint reports the hidden and total line counts. Expanded mode preserves source line breaks and uses Pi's `Text` wrapping at the content width, with no line-count limit.
+
+Compact `Workflow:`, `Stage:`, `From:`, `To:`, `Ground:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and applies the collapsed attribute budget described above. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 

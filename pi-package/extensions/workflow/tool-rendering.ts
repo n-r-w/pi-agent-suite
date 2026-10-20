@@ -18,7 +18,11 @@ import {
 	BoundedToolResult,
 	getToolResultText,
 } from "../../shared/tool-presentation/bounded.ts";
-import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
+import type {
+	WorkflowDefinition,
+	WorkflowGround,
+	WorkflowState,
+} from "./workflow.ts";
 
 const PRESENTATION_KIND = "workflow-tool";
 const STAGE_CHANGE_ARROW = "->";
@@ -73,12 +77,13 @@ interface WorkflowActivatePresentation {
 	readonly workflow: WorkflowPresentationReference;
 }
 
-/** Persists both sides of a transition before execution mutates workflow state. */
+/** Preserves transition endpoints and the selected ground for tool presentation. */
 interface WorkflowTransitionPresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
 	readonly toolName: "workflow_transition";
 	readonly from?: WorkflowPresentationReference;
 	readonly to: WorkflowPresentationReference;
+	readonly ground?: WorkflowGround;
 }
 
 /** Persists one stage and the values needed to render reads or edits. */
@@ -185,7 +190,12 @@ function createWorkflowTransitionPresentation(
 		return undefined;
 	}
 	const fromId = state?.route.at(-1);
+	const groundId = readInputString(args, "ground");
+	const ground = state?.workflow.transitions
+		.find(({ from, to }) => from === fromId && to === stageId)
+		?.grounds?.find(({ id }) => id === groundId);
 	return {
+		...(ground === undefined ? {} : { ground: { ...ground } }),
 		presentationKind: PRESENTATION_KIND,
 		toolName: "workflow_transition",
 		...(fromId === undefined || state === undefined
@@ -401,6 +411,19 @@ export function renderWorkflowTransitionCall(
 						width,
 						theme,
 					})),
+			...(presentation?.ground === undefined
+				? []
+				: renderReference({
+						label: "Ground",
+						reference: createReference(
+							presentation.ground.id,
+							presentation.ground.when,
+						),
+						compactText: presentation.ground.when,
+						expanded: context.expanded,
+						width,
+						theme,
+					})),
 		];
 	});
 }
@@ -506,6 +529,18 @@ function parseTransitionPresentation(
 	const from =
 		value["from"] === undefined ? undefined : parseReference(value["from"]);
 	const to = parseReference(value["to"]);
+	const savedGround = value["ground"];
+	let ground: WorkflowGround | undefined;
+	if (savedGround !== undefined) {
+		if (
+			!isRecord(savedGround) ||
+			!isNonEmptyString(savedGround["id"]) ||
+			!isNonEmptyString(savedGround["when"])
+		) {
+			return undefined;
+		}
+		ground = { id: savedGround["id"], when: savedGround["when"] };
+	}
 	if ((value["from"] !== undefined && from === undefined) || to === undefined) {
 		return undefined;
 	}
@@ -514,6 +549,7 @@ function parseTransitionPresentation(
 		toolName: "workflow_transition",
 		...(from === undefined ? {} : { from }),
 		to,
+		...(ground === undefined ? {} : { ground }),
 	};
 }
 
@@ -798,8 +834,9 @@ function renderWorkflowContent(options: {
 
 /** Selects the complete section or Pi's standard bounded collapsed preview. */
 function renderReference(options: {
-	readonly label: "Workflow" | "Stage" | "From" | "To";
+	readonly label: "Workflow" | "Stage" | "From" | "To" | "Ground";
 	readonly reference: WorkflowPresentationReference;
+	readonly compactText?: string;
 	readonly expanded: boolean;
 	readonly width: number;
 	readonly theme: Theme;
@@ -829,7 +866,9 @@ function renderReference(options: {
 		renderCollapsedLines: (width) =>
 			renderLabeledWrappedText({
 				label: `${options.label}:`,
-				text: normalizeCollapsedToolText(formatReference(options.reference)),
+				text: normalizeCollapsedToolText(
+					options.compactText ?? formatReference(options.reference),
+				),
 				width,
 				labelStyle: (value) =>
 					options.theme.fg("toolTitle", options.theme.bold(value)),
