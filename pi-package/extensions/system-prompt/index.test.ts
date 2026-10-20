@@ -414,6 +414,73 @@ describe("system-prompt", () => {
 		});
 	});
 
+	test("renders model-invocable skills as escaped skill entries only", async () => {
+		// Purpose: {{skills}} must expose only skill data so that the template owns all skill rules and wrappers.
+		// Input and expected output: two visible skills render as <skill> entries in runtime order, with no text from pi.
+		// Edge case: a skill with disableModelInvocation is omitted, and XML-sensitive characters are escaped.
+		// Dependencies: this test uses isolated temp config/template files and in-memory pi lifecycle fakes.
+		await withIsolatedAgentDir(async ({ suiteDir }) => {
+			const templateFile = join(suiteDir, "template.md");
+			await writeFile(templateFile, "{{skills}}");
+			await writeSuiteConfig(suiteDir, { templateFile });
+			const pi = createExtensionApiFake(["read"]);
+			const context = createContextFake();
+			const createSkill = (
+				name: string,
+				description: string,
+				disableModelInvocation: boolean,
+			) => ({
+				name,
+				description,
+				filePath: `/skills/${name}/SKILL.md`,
+				baseDir: `/skills/${name}`,
+				sourceInfo: {
+					path: `/skills/${name}/SKILL.md`,
+					source: "test",
+					scope: "temporary" as const,
+					origin: "top-level" as const,
+				},
+				disableModelInvocation,
+			});
+
+			systemPrompt(pi);
+			await getRegisteredHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				context.ctx,
+			);
+
+			expect(
+				await runBeforeAgentStartHandlers(
+					pi,
+					createBeforeAgentStartEvent({
+						selectedTools: ["read"],
+						skills: [
+							createSkill("alpha", `first & <β> "'`, false),
+							createSkill("hidden", "manual only", true),
+							createSkill("beta", "second", false),
+						],
+					}),
+					context.ctx,
+				),
+			).toBe(
+				[
+					"<available_skills>",
+					"  <skill>",
+					"    <name>alpha</name>",
+					"    <description>first &amp; &lt;β&gt; &quot;&apos;</description>",
+					"    <location>/skills/alpha/SKILL.md</location>",
+					"  </skill>",
+					"  <skill>",
+					"    <name>beta</name>",
+					"    <description>second</description>",
+					"    <location>/skills/beta/SKILL.md</location>",
+					"  </skill>",
+					"</available_skills>",
+				].join("\n"),
+			);
+		});
+	});
+
 	test("removes the trigger after activation and restores it after history rewind", async () => {
 		// Purpose: prompt discovery must follow the runtime's active branch state.
 		// Input and expected output: one eligible toolset activates, then an empty history branch restores it.

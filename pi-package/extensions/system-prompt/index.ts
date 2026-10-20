@@ -1,10 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	type BuildSystemPromptOptions,
-	type ExtensionAPI,
-	formatSkillsForPrompt,
+import type {
+	BuildSystemPromptOptions,
+	ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
@@ -293,14 +292,29 @@ function formatContextFiles(options: BuildSystemPromptOptions): string {
 	].join("\n");
 }
 
-/** Formats loaded skills only when the read tool is active, matching pi's skill visibility rule. */
+/** Formats model-invocable skills as <available_skills> XML only when the read tool is active, matching pi's skill visibility rule. */
 function formatSkills(options: BuildSystemPromptOptions): string {
 	const selectedTools = options.selectedTools ?? [...DEFAULT_SELECTED_TOOLS];
-	if (!selectedTools.includes("read") || (options.skills ?? []).length === 0) {
+	const skills = (options.skills ?? []).filter(
+		(skill) => !skill.disableModelInvocation,
+	);
+	if (!selectedTools.includes("read") || skills.length === 0) {
 		return "";
 	}
 
-	return formatSkillsForPrompt(options.skills ?? []);
+	return [
+		"<available_skills>",
+		...skills.map((skill) =>
+			[
+				"  <skill>",
+				`    <name>${escapeXml(skill.name)}</name>`,
+				`    <description>${escapeXml(skill.description)}</description>`,
+				`    <location>${escapeXml(skill.filePath)}</location>`,
+				"  </skill>",
+			].join("\n"),
+		),
+		"</available_skills>",
+	].join("\n");
 }
 
 /** Formats the visible deferred catalog without exposing tool schemas or provider details. */
@@ -313,14 +327,14 @@ function formatToolsets(toolsets: readonly VisibleToolset[]): string {
 		"<toolsets>",
 		...toolsets.map(
 			({ name, description }) =>
-				`<toolset name="${escapeXmlAttribute(name)}" description="${escapeXmlAttribute(description)}"/>`,
+				`<toolset name="${escapeXml(name)}" description="${escapeXml(description)}"/>`,
 		),
 		"</toolsets>",
 	].join("\n");
 }
 
-/** Escapes XML-sensitive attribute characters while preserving all other Unicode text. */
-function escapeXmlAttribute(value: string): string {
+/** Escapes XML-sensitive characters while preserving all other Unicode text. */
+function escapeXml(value: string): string {
 	return value
 		.replaceAll("&", "&amp;")
 		.replaceAll("<", "&lt;")

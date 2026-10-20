@@ -1,23 +1,22 @@
 **DESCRIPTION**:
 1. Create and immediately activate a task-specific workflow when no ready-made workflow fits user's task.
-2. If a workflow created through workflow_create is replaced, it cannot be reactivated.
+2. A workflow created through workflow_create cannot be reactivated after another workflow replaces it.
 3. Creation replaces current workflow state.
 
 **RULES**:
-1. Submit complete workflow definition in one call. Use an ID that does not match a ready-made workflow ID case-insensitively.
-2. Define EXACTLY ONE initial stage and AT LEAST ONE final stage.
-3. Every stage MUST be reachable through an acyclic `advance` graph.
-4. Final stages MUST NOT have outgoing `advance` transitions; every other stage must have at least one.
-5. MUST NOT create dead-end nodes. Even a final stage MUST have at least one outgoing `rework` transition.
-6. A `rework` transition MAY target only a strict `advance` ancestor.
-7. If completing a stage may require changing an `advance` ancestor’s output, a path consisting only of `rework` transitions MUST exist from that stage to that ancestor.
-8. A stage’s completion criteria MUST be satisfiable using outputs available at that stage and its `advance` ancestors; they MUST NOT depend on outputs produced only by its `advance` descendants.
-9. If you understand that your current workflow does not fit goals, you MUST IMMEDIATELY create a new, suitable workflow.
-10. MUST use ASD-STE100 - Simplified Technical English, unless using other language is essential for accuracy.
-11. Set each stage's `thinking` to lowest level that can reliably complete stage:
+1. Submit complete workflow definition in one call. Use an ID that differs from each ready-made workflow ID, also when letter case is ignored.
+2. Define exactly one initial stage and at least one final stage.
+3. Each stage is reachable through an acyclic `advance` graph.
+4. A final stage has no outgoing `advance` transition, and each other stage has at least one.
+5. Each stage has an outgoing transition, so a final stage has at least one outgoing `rework` transition.
+6. A `rework` transition targets only a strict `advance` ancestor.
+7. When completion of a stage may require a change of output of an `advance` ancestor, a path of `rework` transitions leads from this stage to this ancestor.
+8. Completion criteria of a stage use only outputs of this stage and of its `advance` ancestors, because outputs of its `advance` descendants do not exist yet.
+9. When current workflow does not fit goals, create a new suitable workflow at once.
+10. Set `thinking` of each stage to lowest level that reliably completes stage:
     1) `low`: Mechanical extraction, predefined commands, formatting, or deterministic checks. No material interpretation, trade-offs, or design decisions.
     2) `medium`: Bounded analysis, implementation, verification, synthesis from known evidence, or routine user interaction with established criteria.
     3) `high`: Ambiguous requirements, architecture or design, multi-option planning, cross-component trade-offs, contradiction resolution, or replanning.
-    4) Choose level by hardest reasoning required in stage, not file count, tool count, task duration, or output size.
+    4) Choose level by hardest reasoning that stage requires. File count, tool count, task duration, and output size do not set level.
     5) Use `medium` when neither `low` nor `high` clearly applies.
-12. MUST NOT include information in a general prompt that is NOT NEEDED at all stages. DON'T BLOW UP GENERAL PROMPT! Instead, create focused prompts for specific stages.
+11. General prompt holds only rules that two or more stages apply. A rule of one stage goes to prompt of this stage.

@@ -90,8 +90,6 @@ Each attempt appends a `child-auth-startup-diagnostic` session entry with the la
 }
 ```
 
-`question` is required and must be an English question for the council. No other tool input fields are allowed.
-
 ## Output
 
 When the participants agree, the tool returns the final answer.
