@@ -117,7 +117,7 @@ MEDIUM: settings shape or overrides alter threshold behavior. In-process caller 
 
 ### Unit UNT-03 - SLICE: Restore skills after compaction
 
-Status: in progress. The initial uncommitted content-bearing implementation is superseded by user-approved D9. Resume with path-only persistence and per-request disk reads; no content-bearing record will be committed.
+Status: done, implementation commit `8e113b8`. D9 path-only persistence and per-request disk reads are implemented. CodeQuality, TextQuality, and Analyst accepted the settled unit. Final main-agent verification: 1,882 Bun tests passed, 1 existing skip; Go tests, strict TypeScript, formatting, and lint passed. The earlier content-bearing draft and proposed D8 were superseded before any feature commit.
 
 #### Goal
 
