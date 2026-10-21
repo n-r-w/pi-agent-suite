@@ -1,13 +1,9 @@
-DESCRIPTION: Ask question based on current state of specified subagent session. Use when information is insufficient and you need to clarify something without steering subagent's work.
+Ask separate model a question about saved conversation of specified subagent session, for example about progress of subagent or about details that its response lacks. Session may be active or finished. Subagent never receives question or answer, because separate model answers from saved conversation of subagent.
 
-USAGE:
-1. To get information about current progress of subagent.
-2. To clarify details of subagent's work if its answer is insufficient.
-3. Can be called for both an active subagent and one that has completed its work.
-4. Write question in language of texts of project: language that project rules set for documents and code comments, otherwise language of existing documents and comments. When task does not write or check text of project, use language of user. Code, identifiers, commands, paths, and quotations keep their own language.
-
-CONSTRAINTS:
-1. Tool does not change state of subagent session and does not control it.
-2. Tool does not support any commands (e.g., reading files, etc.), it can only operate on content of subagent session context.
-3. MUST NOT add requirements unrelated to query, e.g., "Do not change files". It makes no sense, since tool cannot use commands anyway.
-4. Queries are stateless. Each question MUST be self-contained and MUST NOT depend on prior query answers.
+<usage>
+1. Use this tool when information is insufficient and subagent does not need to act.
+2. Present answer to others as conclusions of query, because answer holds conclusions of separate model about conversation of subagent.
+3. When `subagent_steer` prompt relies on answer, state in prompt each fact from answer that subagent needs, for example exact command or file path.
+4. Question holds no rules of work, for example "do not change files", because model has no tools and sees only saved conversation and question.
+5. Each question holds all context that it needs, because each query is independent of previous queries.
+</usage>

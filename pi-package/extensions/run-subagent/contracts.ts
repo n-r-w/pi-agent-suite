@@ -53,7 +53,8 @@ export const SubagentStartParameters = Type.Object(
 			minLength: 1,
 		}),
 		taskName: singleLineTextSchema({
-			description: "Short task name for subagent session",
+			description:
+				'Short name of subtask focus, for example "Schema check". Each call of a parallel batch has its own name.',
 			minLength: 3,
 			maxLength: 60,
 		}),
@@ -108,7 +109,8 @@ export const SubagentWaitParameters = Type.Object(
 			uniqueItems: true,
 		}),
 		timeout: Type.Integer({
-			description: "Maximum wait time in seconds",
+			description:
+				"Maximum wait time in seconds. Tool returns as soon as feedback arrives, so a large timeout costs nothing. Timeout does not stop or change subagents.",
 			minimum: 1,
 			maximum: 3600,
 		}),

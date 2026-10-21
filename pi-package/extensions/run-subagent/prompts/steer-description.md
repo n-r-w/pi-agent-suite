@@ -1,10 +1,8 @@
-DESCRIPTION: Send a prompt to previously started subagent session.
+Send a prompt to subagent session that you started, for example a correction of its task. Active session receives prompt in its current run, and finished session continues in a new run of same session.
 
-USAGE:
-1. Active session accepts steering in its current invocation.
-2. Terminal session continues through new invocation of same session.
-3. Can be used not only for steering, but also for discussion with subagents, obtaining additional opinions, etc.
-4. Write prompt in language of texts of project: language that project rules set for documents and code comments, otherwise language of existing documents and comments. When task does not write or check text of project, use language of user. Code, identifiers, commands, paths, and quotations keep their own language.
-
-CONSTRAINTS: MUST NOT be used to solve multiple subtasks in one session. Steering should be used to clarify and adjust ONE ATOMIC subtask.
-
+<usage>
+1. Ask an active session with `subagent_query`, because subagent may reply to a question and end its run before its task is done. Ask a finished session with this tool.
+2. Use one session for one subtask, and start a new subagent for a new subtask.
+3. Do not send a prompt to hurry a subagent that has not finished its work. Wait for its response.
+4. Do not ask a subagent to send `subagent_steer` to subagents that you started.
+</usage>
