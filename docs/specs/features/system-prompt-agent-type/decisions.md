@@ -44,5 +44,9 @@ The user selected O4-1 after the baseline correction. This confirms the problem,
 ## Implementation checks
 Both units passed RED-GREEN verification, project scripts, the required code/text/behavior reviews, and their runtime checks under `final_only`. `implementation-checks.md` records outcomes and separate findings F2/F3. The main agent's final `bun run verify` passed with 1862 tests, 1 existing skip, and 0 failures. No scope expansion or compatibility change was accepted during implementation.
 
+## User-authorized follow-up
+- D11: The user requested correction of F2 and F3 after the implementation acceptance report. This extends the task only to replacing the named bundled-content test with fixture logic and adding the missing README fence. The earlier exclusion of these two corrections is superseded. Other unrelated defects remain outside scope.
+- The follow-up retains `final_only` and adds sequential UNT-03 and UNT-04 in `plan.md`. No production behavior, dependency, or feature requirement changes. F3 uses the already installed Markdown parser; before correction it produces one JSON code token containing the full-example label, with no separate full-example paragraph.
+
 ## Open questions
 None requiring a user decision within the implementation scope.

@@ -80,13 +80,19 @@ SubAgentCodeQuality found no new in-scope issue and reproduced RED/GREEN and pas
 
 Code, document, and overengineering gates pass for the new behavior. The implementation adds no dependency, configuration flag, general-purpose template engine, duplicate common template, fallback, or unrelated refactoring. F2 and F3 remain unchanged outside the task.
 
-## Separate findings outside the task
+## User-authorized follow-up findings
 
-### F2: Existing bundled-content test
-When a developer changes bundled template markers or their placement, the test `places bundled toolsets between skills and tool guidelines` can fail even if rendering logic is unchanged. It asserts marker presence and ordering in `pi-package/extensions/system-prompt/index.test.ts`. Project testing rule 5 requires logic-only tests. Proposed correction: exercise placement with a synthetic template fixture. The finding is based on static inspection; no marker-changing experiment was run. The existing test is unchanged by both implementation units. Further investigation and modification require user approval.
+The user requested correction of F2 and F3 after the original implementation report. D11 and UNT-03/04 record this scope extension.
+
+### F2: Bundled-content test, resolved in UNT-03
+Before UNT-03, `places bundled toolsets between skills and tool guidelines` in `pi-package/extensions/system-prompt/index.test.ts` asserted bundled marker presence and ordering. This conflicted with project testing rule 5. The original finding was based on static inspection, without a marker-changing experiment.
+
+UNT-03 replaces that test with `inserts dynamic toolsets between fixture-defined surrounding text`. It writes an isolated synthetic template containing literal text around `{{toolsets}}`, configures the real handler to use it, and compares the complete dynamic output with the fixture-defined expected string. Bundled prompt content and production code are unchanged.
+
+The focused suite passed all 34 tests before and after the test-only refactor. The main agent ran `bun run verify` after the last comment correction: exit 0, 1862 passed, 1 existing skip, 0 failures, 8563 assertions; Go tests, strict TypeScript, Biome, gofmt, and go vet passed. Code, text, and behavior reviews found no unresolved in-scope issue. No new production behavior or artificial RED change was introduced.
 
 ### F3: Existing README code fence
-When a reader views the context-projection configuration examples, the full-example label and opening fence belong to the preceding code block. `README.md`, context-projection minimum configuration example, opens a JSON fence and has no closing fence before the full-example label. Expected documentation has separate fenced minimum and full examples. Proposed correction: close the minimum-example fence. This was checked from source and Markdown fence grammar; rendered-page behavior was not reproduced. The example is unchanged by this task. Further investigation and modification require user approval.
+When a reader views the context-projection configuration examples, the full-example label and opening fence belong to the preceding code block. `README.md`, context-projection minimum configuration example, opens a JSON fence and has no closing fence before the full-example label. Expected documentation has separate fenced minimum and full examples. Proposed correction: close the minimum-example fence. This was checked from source and Markdown fence grammar; rendered-page behavior was not reproduced. The user authorized the missing-fence correction in D11; UNT-04 is pending. Before correction, the already installed Markdown parser produces one JSON code token containing the full-example label and no separate paragraph for that label.
 
 ## Open questions
-None within the implementation scope. Both units passed their checks and reviews. Separate findings F2 and F3 are reported without authorization to change them.
+None within the implementation scope. The feature units and UNT-03 passed their checks and reviews. The authorized F3 correction remains pending in UNT-04.

@@ -8,7 +8,7 @@ The implementation follows `prd.md` and `solution.md`. Main-agent text changes o
 ## Decision authority
 The implementer chooses internal module structure, isolated test fixtures, and documentation wording within the specification. Each implementation decision is recorded in `decisions.md`.
 
-The user retains decisions about dependencies, scope expansion, new backward-compatibility trade-offs, and fallback behavior beyond the approved solution. Unrelated defects are reported separately and require approval before investigation of a fix or modification.
+The user retains decisions about dependencies, scope expansion, new backward-compatibility trade-offs, and fallback behavior beyond the approved solution. Unrelated defects are reported separately and require approval before investigation of a fix or modification. After the acceptance report, the user explicitly added F2 and F3: replace the named bundled-content test with fixture logic and close the README context-projection minimum-example fence. These two corrections are now in scope; production feature behavior remains unchanged.
 
 ## Task directory
 Task documents belong in `docs/specs/features/system-prompt-agent-type`. Existing documents are the starting point and may be updated with research findings.

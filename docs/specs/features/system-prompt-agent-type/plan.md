@@ -1,6 +1,6 @@
 # Delivery Plan: System prompt by kind of agent session
 
-Implement the approved solution in two sequential behavior slices. The verification policy is `final_only`; checkpoint approval O4-1 authorizes implementation.
+Implement the approved solution in two sequential behavior slices, followed by the user's requested F2 and F3 corrections. The verification policy is `final_only`; O4-1 authorizes the original implementation, and the user's request to fix F2 and F3 authorizes the two follow-up units.
 
 ## Key definitions and abbreviations
 Use [terms.md](terms.md). A slice delivers one observable behavior through the extension entry point, its documentation, and its tests.
@@ -33,10 +33,12 @@ config:
 ---
 flowchart TD
     U1["`Preserve custom prompts`"] --> U2["`Select role sections`"]
+    U2 --> U3["`Use a template fixture`"]
+    U3 --> U4["`Close README example`"]
 ```
 
 ### Decomposition Justification
-Each unit can be verified independently through the registered `session_start` and `before_agent_start` handlers. Real Pi runs check CLI and child-process wiring beyond fixture coverage. Neither unit needs a temporary production entry point or code from the following unit to pass. Both units modify the extension entry point and documentation, so the implementers execute them sequentially.
+The two feature slices can each be verified through the registered `session_start` and `before_agent_start` handlers. Real Pi runs check CLI and child-process wiring beyond fixture coverage. Neither slice needs a temporary production entry point or code from the following unit to pass. The F2 follow-up has independent test-suite verification; the F3 document follow-up has independent Markdown-parser verification. Execute units sequentially to keep source and validation state stable.
 
 ## Overengineering and Overspecification Considerations
 The two slices correspond to FRQ-05/06 and FRQ-01/02/03/04 plus NRQ-01/02. Fixture tests cover their own observable behavior; no bundled prompt-content test is added. There is no unrelated refactoring, dependency change, fallback, or future-facing configuration. Parser mechanics and fixture layout remain implementation choices.
@@ -91,14 +93,59 @@ Depends on UNT-01. Concurrent implementation would modify the same files, so sta
 #### Risks
 Whitespace trimming could alter bundled output; exact fixture line-ending checks and the one-time comparison verify this. User templates are external input; validate markers once at load and retain ordinary-variable behavior.
 
+### Unit UNT-03 - OTHER TASK: Replace bundled-content assertions with fixture logic
+
+#### Goal
+Resolve F2 without changing production behavior or reducing renderer verification.
+
+#### Work
+SubAgentCoderSimple replaces the existing bundled-layout test in `pi-package/extensions/system-prompt/index.test.ts` with an isolated synthetic-template check of dynamic toolset insertion at fixture-defined positions. Use the existing test helpers and runtime fake. Remove assertions tied to bundled-template tags and update the test name/comments. Do not change production code, bundled content, neighboring tests, or dependencies.
+
+SubAgentCodeQuality checks and corrects the test change, SubAgentTextQuality checks its name/comments, and SubAgentAnalyst reviews it against the approved F2 correction. Follow the workflow's sequential review order.
+
+#### Verification
+Run the existing focused suite before and after the fixture-only refactor. This is test maintenance with no production behavior change, so no artificial failing-first production change is required. Verify the new assertion against fixture-defined substitution output. Full root test, typecheck, and check scripts must pass under D9.
+
+#### Exit criteria
+The replacement reads only isolated fixture input and checks rendering logic. The focused suite and root scripts pass, all three reviews have no unresolved in-scope finding, and the unit has a local commit. No new dependency or prompt-content assertion is introduced.
+
+#### Relation
+Follows completed UNT-02. It is logically independent of UNT-04, but runs first so validation and review use a stable test file.
+
+#### Risks
+A weaker replacement could lose insertion-order verification. Use fixture-defined surrounding text and exact dynamic output, rather than checking bundled prose or markup.
+
+### Unit UNT-04 - DOCUMENT: Close the README configuration example
+
+#### Goal
+Resolve F3 by displaying separate minimum and full context-projection configuration examples.
+
+#### Behavior
+When a reader views the README, the full-example label is ordinary text and each JSON example has its own fenced code block.
+
+#### Work
+SubAgentCoderSimple adds the missing closing fence in the context-projection minimum example in `README.md`. Preserve both JSON objects and all other README content. SubAgentCodeQuality checks the technical-syntax change, SubAgentTextQuality checks the example boundaries, and SubAgentAnalyst checks the correction against F3. Follow the workflow's sequential review order.
+
+#### Verification
+Use the already installed Markdown parser to inspect the affected excerpt before and after the change. Before the fix, the full-example label is part of the minimum code block. After the fix, the parser produces the full-example paragraph followed by a JSON code block, and both code blocks parse as JSON. Run `git diff --check`. No permanent README-content test, new package, or production-code check is needed for this document-only unit.
+
+#### Exit criteria
+The existing parser confirms separate example blocks, both JSON objects retain their original content, all three reviews have no unresolved in-scope finding, and the unit has a local commit.
+
+#### Relation
+Runs after UNT-03 for stable sequential validation. It requires no production code from UNT-03.
+
+#### Risks
+Adding the fence at the wrong boundary could alter another example. Inspect only the named example and compare the complete README diff.
+
 ## Test Strategy
 Use Bun fixture tests through the extension handlers. Add integration tests only if unit tests cannot prove package loading, single registration, or child Pi behavior. Real Pi checks use temporary cwd/state and debug extensions, inspect the final before-agent-start prompt and active tools, and terminate before any provider request. No prompt is passed in offline mode. Tests verify logic, never bundled prompt content.
 
 ## Dependencies and Resourcing
-Each unit uses SubAgentCoderRegular and the required SubAgentCodeQuality, SubAgentTextQuality, and SubAgentAnalyst checks. Independent read-only reviews may run in parallel only with an explicit dependency map. Text corrections follow the individual review assignment. No new dependencies are required.
+UNT-01 and UNT-02 use SubAgentCoderRegular. UNT-03 and UNT-04 use SubAgentCoderSimple for the approved local corrections. Every unit receives SubAgentCodeQuality, SubAgentTextQuality, and SubAgentAnalyst checks in the workflow's required order. No new dependencies are required.
 
 ## Project Definition of Done
-Both slices are committed locally, project scripts pass, extension docs describe the implemented behavior, runtime checks and NRQ-01 comparison pass, temporary runtime state is removed, and the user receives an acceptance report. No push occurs.
+Both feature slices and the two authorized follow-up corrections are committed locally. Project scripts pass; extension docs describe the implemented behavior; runtime checks and NRQ-01 comparison pass; the README example parser check passes; temporary runtime state is removed; the user receives an acceptance report. No push occurs.
 
 ## Assumptions
 No unresolved implementation assumption. Real Pi routing observations were collected before the checkpoint.
@@ -114,6 +161,8 @@ None.
 | --- | --- | --- |
 | UNT-01 | Done | `4a37e4b` |
 | UNT-02 | Done | `1a4aeed` |
+| UNT-03 | Ready; fixture correction and all reviews passed | Recorded after commit |
+| UNT-04 | Planned | Pending |
 
 ## References
 - [technical-solution.md](technical-solution.md)

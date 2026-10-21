@@ -769,12 +769,18 @@ describe("system-prompt", () => {
 		});
 	});
 
-	test("places bundled toolsets between skills and tool guidelines", async () => {
-		// Purpose: the bundled template must expose the deferred catalog at the approved structural location.
-		// Input and expected output: the bundled template renders one eligible toolset between populated skills and guidelines.
-		// Edge case: placement is asserted by required section boundaries rather than mutable prompt prose.
-		// Dependencies: bundled template loading plus the shared runtime/composition lifecycle.
-		await withIsolatedAgentDir(async () => {
+	test("inserts dynamic toolsets between fixture-defined surrounding text", async () => {
+		// Purpose: the renderer must insert dynamic toolsets at the fixture-defined position.
+		// Input and expected output: a synthetic template surrounds one runtime toolset with fixed text.
+		// Edge case: the renderer must preserve fixture text before and after the insertion.
+		// Dependencies: isolated template/config helpers and the shared runtime lifecycle fake.
+		await withIsolatedAgentDir(async ({ suiteDir }) => {
+			const templateFile = join(suiteDir, "template.md");
+			await writeFile(
+				templateFile,
+				"Before catalog\n{{toolsets}}\nAfter catalog",
+			);
+			await writeSuiteConfig(suiteDir, { templateFile });
 			const pi = createExtensionApiFake(["files_read"]);
 			systemPrompt(pi);
 			getToolsetRuntime(pi).replaceProvider("mcp", [
@@ -797,12 +803,8 @@ describe("system-prompt", () => {
 				createBeforeAgentStartEvent(),
 				context.ctx,
 			);
-			expect(prompt.indexOf("</skills>")).toBeGreaterThanOrEqual(0);
-			expect(prompt.indexOf("<toolsets>")).toBeGreaterThan(
-				prompt.indexOf("</skills>"),
-			);
-			expect(prompt.indexOf("<tool_guidelines>")).toBeGreaterThan(
-				prompt.indexOf("<toolsets>"),
+			expect(prompt).toBe(
+				'Before catalog\n<toolsets>\n<toolset name="files" description="Read files"/>\n</toolsets>\nAfter catalog',
 			);
 		});
 	});
