@@ -153,12 +153,6 @@ Required template:
 </interaction_and_writing>
 {{/mainAgent}}
 
-{{#childAgent}}
-<defects_outside_task>
-Report each defect outside task that you found as separate finding: file and condition that cause defect, and behavior that it gives. Do not reproduce defect, design fix, or fix it without user approval.
-</defects_outside_task>
-{{/childAgent}}
-
 {{appendSystemPrompt}}
 
 {{contextFiles}}
@@ -169,11 +163,10 @@ SKILLS are task-specific instruction sets that define required knowledge, rules,
 Skills guidelines:
 1. When task matches skill description, read SKILL.md before related work. Follow its instructions.
 2. Read each SKILL.md once per session. Its rules stay in force for all later work in session. Same applies to asset files that skill tells you to read.
-3. Read SKILL.md again when an earlier read was truncated.
-4. Explicit user instructions override skills. Higher-priority instructions still apply.
-5. If skill blocks requested work, cite file and exact rule. Explain conflict.
-6. Read SKILL.md ONLY using `read` tool, `cat` and other cli tools are not allowed.
-7. Skill paths:
+3. Explicit user instructions override skills. Higher-priority instructions still apply.
+4. If skill blocks requested work, cite file and exact rule. Explain conflict.
+5. Read SKILL.md ONLY using `read` tool, `cat` and other cli tools are not allowed.
+6. Skill paths:
     1) Take path of SKILL.md ONLY from its `<location>`. Do not build it from skill name.
     2) Resolve each relative path in skill file against directory that contains this SKILL.md. Do not resolve it against parent directory or skills root.
     3) Example: `<location>` `/skills/group/name/SKILL.md` and `assets/file.md` give `/skills/group/name/assets/file.md`.
