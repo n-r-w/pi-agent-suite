@@ -70,7 +70,7 @@ The bundled template `pi-package/extensions/system-prompt/prompts/system.md` cha
 The `system-prompt` row in `README.md` states that the extension replaces Pi's base prompt unless the session has a custom prompt. The extension documentation names CLI and both `SYSTEM.md` sources.
 
 ### Checks
-- UNT-01 behavior tests in `pi-package/extensions/system-prompt/index.test.ts` cover custom-prompt preservation, tool reconciliation, selected-agent prompt contributions, and absent or empty custom prompts. UNT-02 tests will cover role-section selection and invalid templates. These feature tests use synthetic fixture values and check rendering logic. They preserve the project prohibition on testing prompt content.
+- UNT-01 behavior tests in `pi-package/extensions/system-prompt/index.test.ts` cover custom-prompt preservation, tool reconciliation, selected-agent prompt contributions, and absent or empty custom prompts. UNT-02 tests cover role-section selection and invalid templates. These feature tests use synthetic fixture values and check rendering logic. They preserve the project prohibition on testing prompt content.
 - NRQ-01 needs a one-time comparison during the implementation: the main prompt that the bundled template gives before the change and after it differs only in rule 3 of `<scope_control>`.
 - QST-01 is resolved by real Pi runs in `facts.md`. Repeat the same probes after implementation to check custom-prompt preservation and active tools.
 
@@ -93,7 +93,7 @@ None. QST-01 is resolved by the pre-implementation probes in [facts.md](facts.md
 
 ## References
 - [problem.md](problem.md) - problem statement.
-- [prd.md](prd.md) - requirements and the planned text of the bundled template.
+- [prd.md](prd.md) - requirements and the approved text of the bundled template.
 - `pi-package/extensions/system-prompt/index.ts` - the extension that renders the template.
 - `pi-package/shared/child-agent-environment.ts` - the marker of a child agent process.
 - `pi-package/shared/agent-runtime-composition.ts` - the handler that appends agent prompts.

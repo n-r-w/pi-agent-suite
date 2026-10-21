@@ -26,13 +26,13 @@ Before UNT-01, `system-prompt` rendered the bundled template for every session w
 - The maintainer of the harness, who cannot give a rule to main agents only or to subagents only.
 
 ## Evidence
-- `pi-package/extensions/system-prompt/index.ts`, `systemPrompt`: before UNT-01, the ready-template handler returned a replacement for every session. The handler still performs no process-kind classification; that work is planned for UNT-02.
+- `pi-package/extensions/system-prompt/index.ts`, `systemPrompt`: before UNT-01, the ready-template handler returned a replacement for every session. Before UNT-02, the handler performed no process-kind classification.
 - `docs/extensions/run-subagent.md`, section "Additional extensions": child processes of `run-subagent` load `pi-package` in each mode of extension loading, so each subagent runs extension `system-prompt`.
 - Custom prompts, from the code of Pi, of `system-prompt`, and of `convene-council`:
   - Pi passes the custom prompt to the prompt options as `customPrompt` (`core/agent-session.js` of `@earendil-works/pi-coding-agent`). It takes the text from flag `--system-prompt`, or from a file `SYSTEM.md` when the flag is absent (`core/resource-loader.js`, function `discoverSystemPromptFile`). A `systemPrompt` that a handler of `before_agent_start` returns replaces the whole prompt (`core/extensions/runner.js`).
   - `SUPPORTED_TEMPLATE_VARIABLES` in `pi-package/extensions/system-prompt/index.ts` contains no custom-prompt variable. Before UNT-01, the handler replaced Pi's prompt without incorporating `customPrompt`.
   - `convene-council/startup.ts`, functions `resolveChildStartupPlan` and `buildChildParticipantStartupFromToolArgs`: the child process of a participant gets the extension flags of the parent process and the participant prompt by flag `--system-prompt`. So it loads `system-prompt` when the parent session loads it.
-- The bundled template contains, for example, these conversation rules:
+- Before UNT-02, the bundled template contained, for example, these conversation rules:
   - `<questions>`: "After you ask question, end turn".
   - `<scope_control>`, rule 2: "Do not limit investigation to requested change scope. Investigate related areas when they can materially affect task or reveal relevant findings".
   - `<scope_control>`, rule 3: "Report relevant out-of-scope findings and proposed changes".
@@ -47,21 +47,19 @@ Before UNT-01, `system-prompt` rendered the bundled template for every session w
 - Before UNT-01, users of custom prompts received the rendered template in place of their instructions.
 
 ## Current State
-UNT-01 now preserves custom prompts. The remaining role-selection and bundled-rule work is planned for UNT-02. [facts.md](facts.md) records the pre-implementation observations.
+UNT-01 preserves custom prompts. UNT-02 implements role selection and the approved bundled rules; its commit remains pending. [facts.md](facts.md) records the pre-implementation observations.
 
 - Extension `system-prompt` takes the template from `templateFile` of its config, or the bundled template when the config file is missing.
-- The bundled template has one text for all sessions. Its blocks fall into two groups:
-  - blocks for any agent: `<system>`, `<role>`, `<safety>`, `<execution_limits>`, `<skills>`, `{{toolsets}}`, and `<tool_guidelines>`;
-  - the conversation rules.
-- The template syntax has no way to include a block only for some kind of session.
-- The bundled template has no rule that tells a subagent what to do with a defect outside its task.
+- The bundled template contains common rules, main-agent conversation rules, and a child-only `<defects_outside_task>` block.
+- The extension selects common text and the matching process kind's sections before substituting variables.
+- The child-only block requires a separate finding for each defect outside the task, naming the file, triggering condition, and observed behavior. Reproduction, fix design, and modification require caller approval.
 - For a nonempty custom prompt, the ready-template handler reconciles active tools and returns no replacement. Runtime composition still appends selected-agent and eligible tool prompt contributions. Disabled and invalid-template handlers also return no replacement.
 - For sessions using the template, Pi's `--append-system-prompt` input reaches the rendered template through `{{appendSystemPrompt}}`.
 - Extensions `ask-llm` and `consult-advisor` call the model directly by function `completeSimple` with their own system prompt, without a child Pi process. The template does not reach them.
 - The package marks child processes by environment variables:
   - `PI_AGENT_SUITE_CHILD_AGENT_PROCESS` in `pi-package/shared/child-agent-environment.ts` marks child processes of `run-subagent` and of `convene-council`;
   - `PI_SUBAGENT_AGENT_ID` in `pi-package/shared/subagent-environment.ts` marks only child processes of `run-subagent`. Function `isChildSubagentProcess` of `main-agent-selection` checks it.
-- Extension `system-prompt` reads neither variable.
+- Extension `system-prompt` classifies the process once when it loads, using `isChildAgentProcess` through its extension-local environment module. The shared reader identifies a child process when `PI_AGENT_SUITE_CHILD_AGENT_PROCESS` equals `1`.
 - Before UNT-01, real Pi checks after rebase onto `main` captured the final system prompt and active tools with temporary state and a debug extension. CLI `--system-prompt`, trusted-project `.pi/SYSTEM.md`, and agent-directory `SYSTEM.md` each populated `customPrompt`; the final prompt omitted that text and contained the bundled conversation rules. A real `convene_council` invocation started a participant with a 3830-character custom prompt and active tool `read`; its final prompt also omitted the custom prompt and contained the conversation rules. The debug hook stopped each participant before a model request. See [facts.md](facts.md), FND-02 and FND-03.
 
 ## Desired State

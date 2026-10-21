@@ -1,6 +1,6 @@
 # System prompt runtime and source facts
 
-The investigator recorded these pre-implementation observations after rebase onto `main` at `7e88dc9`, with feature HEAD `a487bbc`. UNT-01 implements custom-prompt preservation; role sections and bundled-rule changes remain planned for UNT-02.
+The investigator recorded these pre-implementation observations after rebase onto `main` at `7e88dc9`, with feature HEAD `a487bbc`. UNT-01 implements custom-prompt preservation. UNT-02 implements role sections and bundled-rule changes; its commit remains pending.
 
 ## Summary
 Real Pi sessions with CLI, trusted-project, and agent-directory custom prompts received the bundled template. A real council invocation started a child Pi process with its participant prompt in `customPrompt`; the final child prompt contained the bundled conversation rules and omitted that participant prompt.

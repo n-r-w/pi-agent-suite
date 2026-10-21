@@ -36,5 +36,13 @@
 ## Checkpoint approval
 The user selected O4-1 after the baseline correction. This confirms the problem, requirements, technical solution, and D1-D9, selects `final_only`, and authorizes planning and implementation with one local commit per unit and no push. No exception for failing normal-environment tests was requested or approved.
 
+## Implementation decisions
+- D10: Keep role-section grammar and selection together in the extension-local `sections.ts`; keep environment access in `environment.ts` using the existing shared classifier. This is within D2 and follows the approved design and small-module project rule. A general-purpose template engine, second common template, and new process marker were not introduced.
+- The final marker-only line without a trailing newline is handled by the same line-span calculation. The case is reachable in a user template and is part of marker-only line semantics; it requires no extra abstraction or configuration.
+- The longer README custom-prompt source list proposed during text review was rejected. The extension documentation already lists the sources, and the README retains the specified concise exception.
+
+## Implementation checks
+Both units passed RED-GREEN verification, project scripts, the required code/text/behavior reviews, and their runtime checks under `final_only`. `implementation-checks.md` records outcomes and separate findings F2/F3. The main agent's final `bun run verify` passed with 1862 tests, 1 existing skip, and 0 failures. No scope expansion or compatibility change was accepted during implementation.
+
 ## Open questions
-None requiring a user decision at this stage.
+None requiring a user decision within the implementation scope.

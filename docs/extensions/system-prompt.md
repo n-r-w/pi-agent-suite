@@ -56,6 +56,30 @@ For `{{toolGuidelines}}`, the formatter reads each active tool's contributions f
 
 For example, if two active, visible tools contribute `" SHARED_MARKER "` and `"SHARED_MARKER"`, and the global guidelines contain `" GLOBAL_MARKER "`, `{{toolGuidelines}}` renders `- SHARED_MARKER` followed by `- GLOBAL_MARKER` on separate lines.
 
+## Role sections
+
+Use `{{#mainAgent}}...{{/mainAgent}}` for main-agent text and `{{#childAgent}}...{{/childAgent}}` for child-agent text. The extension includes text outside sections for both process kinds. It includes the matching role's sections and omits the other role's sections. Sections may repeat and appear inline. Whitespace inside the braces is allowed, as with variables.
+
+The extension determines the process kind once when it loads. If `PI_AGENT_SUITE_CHILD_AGENT_PROCESS` equals `1`, the extension treats the process as a child agent. For every other value, including an absent variable, it treats the process as a main agent. Both `run-subagent` and `convene-council` set this shared marker for their children. Custom prompts take precedence over role selection.
+
+For example, the extension renders `C{{#mainAgent}}M{{/mainAgent}}{{#childAgent}}S{{/childAgent}}` as `CM` in a main process and `CS` in a child process.
+
+If a line contains only one section marker and optional spaces or tabs, the extension removes the entire line, including its LF or CRLF line break. It also removes a final marker-only line without a line break. For example, `A\r\n {{#mainAgent}}\r\nM\r\n{{/mainAgent}}\r\nZ` renders as `A\r\nM\r\nZ` in a main process. The extension preserves inline surrounding text and the bytes of selected text.
+
+The extension selects sections before substituting variables. Therefore, section markers in inserted runtime values remain literal text. For example, if `cwd` contains `/tmp/{{#childAgent}}x{{/childAgent}}`, the extension inserts that entire value for `{{cwd}}` in either process kind. Templates without section markers retain their variable-rendering behavior.
+
+When loading the template, the extension validates all sections. If it finds an unmatched opening or closing marker, a mismatched closing marker, a nested section, or an unknown section kind, it rejects the template. For example, `{{#mainAgent}}M{{/childAgent}}` is invalid. The extension uses its startup warning path to report the issue and retains Pi's original prompt. For ordinary unsupported variables, it uses the warning path and removes those variables during rendering.
+
+## Bundled rule groups
+
+For sessions without a custom prompt, both process kinds receive the system, role, safety, execution-limit, skill, toolset, and tool-guideline blocks, plus append-system-prompt text and project context.
+
+Main agents also receive the conversation rules: goal guard, scope control, formatting, and user communication, including the question template. Scope-control rule 3 requires a separate finding for every defect outside the task found by the main agent or another agent. This includes pre-existing defects and defects without an effect on the task.
+
+The main agent reports each finding in the first message ending its turn. Each finding describes the initiating action, actual and expected behavior, file, triggering condition, proposed fix, and each unchecked fact. The main agent takes facts from the named code. Reproduction, fix design, and modification require user approval.
+
+Child agents receive the `defects_outside_task` block at scope control's position. This block requires the child agent to report a separate finding with the file, triggering condition, and observed behavior for each defect outside the task. Reproduction, fix design, and modification require caller approval. The extension omits the conversation rules from child-agent prompts.
+
 ## Template example
 
 ```md

@@ -112,8 +112,8 @@ None.
 ## Unit status
 | Unit | Status | Commit |
 | --- | --- | --- |
-| UNT-01 | Ready; all slice checks and reviews passed | Recorded after commit |
-| UNT-02 | Planned | Pending |
+| UNT-01 | Done | `4a37e4b` |
+| UNT-02 | Ready; all slice checks and reviews passed | Recorded after commit |
 
 ## References
 - [technical-solution.md](technical-solution.md)
