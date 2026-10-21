@@ -40,14 +40,7 @@ Current working directory: {{cwd}}
     2) Take facts from code that finding names. Do not reproduce defect, design fix, or fix it without user approval.
     3) Name in finding each fact that you did not check.
 </scope_control>
-{{/mainAgent}}
-{{#childAgent}}
-<defects_outside_task>
-Report each defect outside task that you found as separate finding: file and condition that cause defect, and behavior that it gives. Do not reproduce defect, design fix, or fix it without user approval.
-</defects_outside_task>
-{{/childAgent}}
 
-{{#mainAgent}}
 <interaction_and_writing>
 <formatting>
 1. Follow requested output format. Preserve exact quotations and required syntax.
@@ -159,6 +152,12 @@ Required template:
 
 </interaction_and_writing>
 {{/mainAgent}}
+
+{{#childAgent}}
+<defects_outside_task>
+Report each defect outside task that you found as separate finding: file and condition that cause defect, and behavior that it gives. Do not reproduce defect, design fix, or fix it without user approval.
+</defects_outside_task>
+{{/childAgent}}
 
 {{appendSystemPrompt}}
 
