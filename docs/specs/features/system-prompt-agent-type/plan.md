@@ -1,0 +1,122 @@
+# Delivery Plan: System prompt by kind of agent session
+
+Implement the approved solution in two sequential behavior slices. The verification policy is `final_only`; checkpoint approval O4-1 authorizes implementation.
+
+## Key definitions and abbreviations
+Use [terms.md](terms.md). A slice delivers one observable behavior through the extension entry point, its documentation, and its tests.
+
+## Delivery Strategy
+Follow `technical-solution.md`, Custom prompts and tools, then Template representation and session kind. No release, push, migration, or new configuration flag is included. Download only the dependency versions already declared by the rebased lockfile before validation.
+
+## Main Changes
+Preserve Pi's custom prompts, then render role-specific template sections and apply the approved bundled rules.
+
+## Entities and Invariants
+Follow `technical-solution.md`, Template representation and session kind and Template boundary validation. Preserve the visible active-tool guideline formatter received from `main`, active-tool reconciliation, and runtime prompt contributions.
+
+## New Folders and Components
+Follow `technical-solution.md`, Template representation and session kind. The implementer may use small extension-local modules for section handling and process-environment access. No new package or general template engine is planned.
+
+## Backward Compatibility
+NRQ-01 and NRQ-02 retain bundled main-agent text except the approved defect rule and retain custom-template rendering without markers. The invalid-template behavior and section syntax are the confirmed design, not a new compatibility decision.
+
+## Plan Units
+
+### Unit Tree
+```mermaid
+---
+config:
+  layout: elk
+  flowchart:
+    wrappingWidth: 700
+    htmlLabels: true
+---
+flowchart TD
+    U1["`Preserve custom prompts`"] --> U2["`Select role sections`"]
+```
+
+### Decomposition Justification
+Each unit can be verified independently through the registered `session_start` and `before_agent_start` handlers. Real Pi runs check CLI and child-process wiring beyond fixture coverage. Neither unit needs a temporary production entry point or code from the following unit to pass. Both units modify the extension entry point and documentation, so the implementers execute them sequentially.
+
+## Overengineering and Overspecification Considerations
+The two slices correspond to FRQ-05/06 and FRQ-01/02/03/04 plus NRQ-01/02. Fixture tests cover their own observable behavior; no bundled prompt-content test is added. There is no unrelated refactoring, dependency change, fallback, or future-facing configuration. Parser mechanics and fixture layout remain implementation choices.
+
+### Unit UNT-01 - SLICE: Preserve custom prompts
+
+#### Goal
+A session with a custom prompt retains Pi's prompt while runtime composition continues to apply tool policy and prompt contributions.
+
+#### Behavior
+After session initialization, the `before_agent_start` handler preserves the incoming prompt when Pi supplies a truthy custom prompt. The handler applies this condition with bundled and custom templates. Custom-prompt sources are CLI `--system-prompt` text or files, a trusted project's `.pi/SYSTEM.md`, and the Pi agent directory's `SYSTEM.md`, including council participant CLI prompts. Sessions without a custom prompt retain template rendering.
+
+#### Work
+SubAgentCoderRegular implements FRQ-05 and its part of FRQ-06 with RED-GREEN-REFACTOR. Sources include `pi-package/extensions/system-prompt/index.ts`, its colocated tests, `pi-package/shared/agent-runtime-composition.ts`, `docs/extensions/system-prompt.md`, and the README extension row. Scope includes the handler, fixture behavior tests, and documentation of the custom-prompt exception. Runtime composition and dependency declarations remain unchanged. Include the task's confirmed research documents in this unit's local commit.
+
+SubAgentCodeQuality checks the complete changed code path and tests. SubAgentTextQuality checks changed documentation and comments. SubAgentAnalyst checks behavior from entry point through reconciliation and prompt contributions. The main agent accepts their results and runs the project checks in a normal execution environment.
+
+#### Verification
+Independent in-process verification: failing-first fixture tests cover prompt preservation with both template sources, active-tool reconciliation, selected-agent contributions, and Pi-compatible empty-string behavior. Runtime verification: repeat CLI, trusted-project `.pi/SYSTEM.md`, agent-directory `SYSTEM.md`, and actual council-child probes with prompt and active-tool dumps before any provider request.
+
+#### Exit criteria
+The tests fail before the implementation and pass afterward. Full `bun run test`, `bun run typecheck`, and `bun run check` pass with declared dependency versions. All three reviews have no unresolved in-scope findings. Runtime dumps show custom prompts retained and the expected active tools. No temporary debug code is in the diff. Code, document, and overengineering gates pass. Record the results and create one local commit.
+
+#### Relation
+Independent of UNT-02 implementation output. UNT-01 precedes UNT-02 because both modify the same entry point and documentation.
+
+#### Risks
+Skipping too early could bypass reconciliation. Fixture tests and runtime active-tool dumps verify preservation. Inherited collector markers can cause false test failures. Follow D9: omit `PI_SUBAGENT_*` and `PI_AGENT_SUITE_CHILD_AGENT_PROCESS` from a copied check-subprocess environment while preserving the parent environment and HOME.
+
+### Unit UNT-02 - SLICE: Render sections for the process role
+
+#### Goal
+The extension renders each session's applicable template parts and supplies the approved bundled role rules.
+
+#### Behavior
+For a session without a custom prompt, template rendering includes common parts and the selected role's sections. Malformed role sections use the invalid-template path and preserve Pi's prompt. Marker-only lines disappear with their line breaks; section-free templates retain their bytes.
+
+#### Work
+SubAgentCoderRegular implements section parsing, shared-marker classification through the existing environment pattern, bundled rule placement, fixture behavior tests, and documentation. Sources include `pi-package/extensions/system-prompt/index.ts`, its tests and bundled template, `pi-package/shared/child-agent-environment.ts`, extension-local environment patterns, and `docs/extensions/system-prompt.md`. Preserve the exact approved wording in `prd.md` and preserve all other bundled text. Do not add generalized template syntax or configuration.
+
+SubAgentCodeQuality checks code and tests, SubAgentTextQuality checks changed docs/comments and the approved wording, and SubAgentAnalyst checks complete role-selection and validation paths. The main agent accepts results and validates the slice.
+
+#### Verification
+Independent in-process verification: fixture templates cover common, main-agent, and child-agent selection; repeated and inline sections; marker-only LF and CRLF lines; ordinary variables; section-free compatibility; and unmatched, mismatched, nested, and unknown-kind markers. Selection precedes variable substitution. Runtime verification: check single-extension and whole-package loading, main and child sessions, and custom-prompt preservation. Perform the one-time NRQ-01 byte comparison against the Git baseline with only the approved rule substitution; do not commit a bundled prompt-content test.
+
+#### Exit criteria
+RED-GREEN evidence, complete project scripts, all three reviews, runtime prompt/tool checks, and the one-time byte comparison pass. No temporary debug code is in the diff. Code, document, and overengineering gates pass. Record results and create one local commit.
+
+#### Relation
+Depends on UNT-01. Concurrent implementation would modify the same files, so start only after UNT-01 is ready and committed.
+
+#### Risks
+Whitespace trimming could alter bundled output; exact fixture line-ending checks and the one-time comparison verify this. User templates are external input; validate markers once at load and retain ordinary-variable behavior.
+
+## Test Strategy
+Use Bun fixture tests through the extension handlers. Add integration tests only if unit tests cannot prove package loading, single registration, or child Pi behavior. Real Pi checks use temporary cwd/state and debug extensions, inspect the final before-agent-start prompt and active tools, and terminate before any provider request. No prompt is passed in offline mode. Tests verify logic, never bundled prompt content.
+
+## Dependencies and Resourcing
+Each unit uses SubAgentCoderRegular and the required SubAgentCodeQuality, SubAgentTextQuality, and SubAgentAnalyst checks. Independent read-only reviews may run in parallel only with an explicit dependency map. Text corrections follow the individual review assignment. No new dependencies are required.
+
+## Project Definition of Done
+Both slices are committed locally, project scripts pass, extension docs describe the implemented behavior, runtime checks and NRQ-01 comparison pass, temporary runtime state is removed, and the user receives an acceptance report. No push occurs.
+
+## Assumptions
+No unresolved implementation assumption. Real Pi routing observations were collected before the checkpoint.
+
+## Open Questions
+None.
+
+## Standards Deviations
+None.
+
+## Unit status
+| Unit | Status | Commit |
+| --- | --- | --- |
+| UNT-01 | Ready; all slice checks and reviews passed | Recorded after commit |
+| UNT-02 | Planned | Pending |
+
+## References
+- [technical-solution.md](technical-solution.md)
+- [requirements.md](requirements.md)
+- [decisions.md](decisions.md)
+- [project-state.md](project-state.md)

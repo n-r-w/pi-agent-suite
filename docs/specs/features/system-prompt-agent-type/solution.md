@@ -2,19 +2,19 @@
 
 ## Problem Statement
 [problem.md](problem.md) describes the problem, and [prd.md](prd.md) holds the requirements. In short:
-- Extension `system-prompt` renders one template for every session, so a subagent gets the rules for a conversation with a person.
-- The extension replaces a custom prompt, so a council participant and a user with `--system-prompt` or `SYSTEM.md` lose their own prompt.
+- Without role selection, `system-prompt` renders the conversation rules for subagents as well as main agents.
+- Before UNT-01, the extension replaced custom prompts from CLI `--system-prompt`, a trusted project's `.pi/SYSTEM.md`, and the Pi agent directory's `SYSTEM.md`. Council participants also lost their custom prompts.
 - Rule 3 of `<scope_control>` of the bundled template does not state what a report about a defect outside the task contains.
 
 ## Proposed Solution
 The solution has four parts:
-1. The extension skips each session with a custom prompt.
+1. For a session with a nonempty custom prompt, the extension reconciles active tools and returns no template replacement.
 2. The template gets parts for one kind of session.
 3. The bundled template uses these parts and gets the new rules about defects.
 4. The documentation describes both changes.
 
 ### Redesign check
-If the requirements had existed from the start, the extension would still render one template and skip sessions with a custom prompt, and the template would mark the blocks of each kind of session. The smallest change gives the same design, so the solution adds nothing beyond it.
+A design built with these requirements from the start would use one template with role-specific sections and preserve Pi's custom prompts. The proposed handler condition and section selection meet those requirements without an additional template or configuration flag.
 
 ### Kind of session
 The extension classifies each session into one of two kinds:
@@ -28,13 +28,13 @@ Reasons:
 The kind of a process does not change while the process runs, so the extension determines it once when it loads.
 
 ### Session with a custom prompt (FRQ-05)
-Pi gives each handler of `before_agent_start` the prompt options of the session. Field `customPrompt` of these options holds the custom prompt from flag `--system-prompt` or from a file `SYSTEM.md` (`core/agent-session.js` and `core/resource-loader.js` of Pi). When this field has text, the handler of `system-prompt` returns no prompt, and Pi keeps the prompt that it builds from the custom prompt.
+Pi supplies the session's prompt options to each `before_agent_start` handler. The `customPrompt` field contains text from CLI `--system-prompt`, a trusted project's `.pi/SYSTEM.md`, or the Pi agent directory's `SYSTEM.md`. See Pi's `core/agent-session.js` and `core/resource-loader.js`. For a truthy `customPrompt`, the ready-template handler reconciles active tools and returns no replacement. Pi therefore retains the prompt it builds from the custom prompt. An empty custom-prompt string permits template rendering.
 
 Consequences:
 - The check depends neither on the template nor on the kind of session, so it applies to the bundled template and to each custom template.
-- The handler keeps its reconciliation of active tools in such a session. Today the handler reconciles tools in each session before it renders the template, so skipping the reconciliation would change the set of tools of sessions with a custom prompt, and no requirement asks for this.
-- The prompt of a selected agent still reaches the session. The handler of `shared/agent-runtime-composition.ts` appends the agent prompts to the prompt that Pi or `system-prompt` produced, and this change does not touch it.
-- A user who has a file `SYSTEM.md` now loses the template of the extension in each session, including subagents in a project with `.pi/SYSTEM.md`. The user accepted this: such a user does not need the template.
+- The ready-template handler retains active-tool reconciliation before the custom-prompt condition. Tool availability therefore remains subject to the runtime policy.
+- Runtime composition still appends the selected-agent prompt and eligible tool prompt contributions to the prompt from Pi or `system-prompt`. See `pi-package/shared/agent-runtime-composition.ts`, `AgentRuntimeCompositionImpl`.
+- When Pi supplies a custom prompt from `SYSTEM.md`, the extension preserves Pi's prompt in that session, including subagent sessions that load a trusted project's `.pi/SYSTEM.md`.
 
 ### Parts of a template for one kind of session (FRQ-01, FRQ-02)
 A template can mark a part that only one kind of session gets:
@@ -67,12 +67,12 @@ The bundled template `pi-package/extensions/system-prompt/prompts/system.md` cha
 - the parts for one kind of session, what main agent and child agent mean, and when a template is invalid;
 - the changed bundled template.
 
-The row of `system-prompt` in the table of extensions in `README.md` says that the extension replaces the base prompt of Pi. It gets the condition "unless the session has a custom prompt", so the short description stays true.
+The `system-prompt` row in `README.md` states that the extension replaces Pi's base prompt unless the session has a custom prompt. The extension documentation names CLI and both `SYSTEM.md` sources.
 
 ### Checks
-- Behavior tests in `pi-package/extensions/system-prompt/index.test.ts` cover the selection of parts by kind of session, the skip of a session with a custom prompt, the reconciliation of tools in such a session, and each case of an invalid template. They use fixture templates and check which parts reach the result, not the text of the bundled template, as rule 5 of "Testing rules" of `AGENTS.md` requires.
+- UNT-01 behavior tests in `pi-package/extensions/system-prompt/index.test.ts` cover custom-prompt preservation, tool reconciliation, selected-agent prompt contributions, and absent or empty custom prompts. UNT-02 tests will cover role-section selection and invalid templates. These feature tests use synthetic fixture values and check rendering logic. They preserve the project prohibition on testing prompt content.
 - NRQ-01 needs a one-time comparison during the implementation: the main prompt that the bundled template gives before the change and after it differs only in rule 3 of `<scope_control>`.
-- QST-01 needs a run of real Pi.
+- QST-01 is resolved by real Pi runs in `facts.md`. Repeat the same probes after implementation to check custom-prompt preservation and active tools.
 
 ## Overengineering and Overspecification Considerations
 Elements and their reasons:
@@ -89,12 +89,7 @@ Overspecification: the document leaves to the implementer how the extension spli
 
 ## Open Questions
 
-### QST-01: Does a session with a custom prompt lose this prompt in a real run?
-  - Purpose: confirm the conclusion that the code of Pi and of `system-prompt` gives. Without an answer, the change may fix a case that does not occur.
-  - Impact: the skip of a session with a custom prompt.
-  - Answer: the final system prompt of three sessions: Pi with `--system-prompt`, Pi in a project with `.pi/SYSTEM.md`, and a participant of `convene-council`. The same run after the change shows that each of them keeps its custom prompt.
-  - Done: the code of Pi and of `system-prompt` was traced; see sections Evidence and Current State of [problem.md](problem.md).
-  - Resolution: during the implementation, before and after the change of the extension, by real Pi with a temporary extension that dumps the system prompt, as rule 5 of "Validation rules" of `AGENTS.md` describes.
+None. QST-01 is resolved by the pre-implementation probes in [facts.md](facts.md). CLI, trusted-project, agent-directory, and actual council participant custom prompts were present in structured options and absent from the final runtime prompt. The debug extension recorded active tools and exited before provider calls. Repeat these observations after implementation.
 
 ## References
 - [problem.md](problem.md) - problem statement.

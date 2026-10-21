@@ -7,6 +7,7 @@ import {
 	createEventBus,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import systemPrompt from "./index";
 
@@ -244,6 +245,69 @@ interface BeforeAgentStartEventFake {
 }
 
 describe("system-prompt", () => {
+	for (const templateSource of ["bundled", "configured"] as const) {
+		test(`preserves custom prompts with a ${templateSource} template while reconciling tools and composing agent contributions`, async () => {
+			await withIsolatedAgentDir(async ({ suiteDir }) => {
+				if (templateSource === "configured") {
+					const templateFile = join(suiteDir, "template.md");
+					await writeFile(templateFile, "Fixture template: {{cwd}}");
+					await writeSuiteConfig(suiteDir, { templateFile });
+				}
+				const pi = createExtensionApiFake(["read", "bash"]);
+				const context = createContextFake();
+				systemPrompt(pi);
+				await getRegisteredHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					context.ctx,
+				);
+				const composition = getAgentRuntimeComposition(pi);
+				composition.setMainAgentContribution({
+					prompt: "Fixture selected-agent contribution",
+					tools: ["read", "bash"],
+				});
+				let allowedTools = ["read", "bash"];
+				composition.setRestrictiveToolFilter("fixture", () => allowedTools);
+				allowedTools = ["read"];
+				const event = createBeforeAgentStartEvent({
+					customPrompt: "Fixture custom prompt",
+				});
+				expect(
+					await getRegisteredHandler(pi, "before_agent_start")(
+						event,
+						context.ctx,
+					),
+				).toBeUndefined();
+				expect(pi.getActiveTools()).toEqual(["read"]);
+				expect(await runBeforeAgentStartHandlers(pi, event, context.ctx)).toBe(
+					`${event.systemPrompt}\n\nFixture selected-agent contribution`,
+				);
+			});
+		});
+	}
+
+	for (const customPrompt of [undefined, ""]) {
+		test(`renders a fixture template when customPrompt is ${customPrompt === undefined ? "absent" : "empty"}`, async () => {
+			await withIsolatedAgentDir(async ({ suiteDir }) => {
+				const templateFile = join(suiteDir, "template.md");
+				await writeFile(templateFile, "Fixture directory: {{cwd}}");
+				await writeSuiteConfig(suiteDir, { templateFile });
+				const pi = createExtensionApiFake(["read"]);
+				const context = createContextFake();
+				systemPrompt(pi);
+				await getRegisteredHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					context.ctx,
+				);
+				const event = createBeforeAgentStartEvent(
+					customPrompt === undefined ? {} : { customPrompt },
+				);
+				expect(await runBeforeAgentStartHandlers(pi, event, context.ctx)).toBe(
+					`Fixture directory: ${event.systemPromptOptions.cwd}`,
+				);
+			});
+		});
+	}
+
 	test("maps visible active tool guidelines before normalized global contributions", async () => {
 		await withIsolatedAgentDir(async ({ suiteDir }) => {
 			const templateFile = join(suiteDir, "guidelines.md");

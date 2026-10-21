@@ -2,7 +2,11 @@
 
 ## Purpose
 
-`system-prompt` replaces pi's base system prompt with a Markdown template. The template can include runtime values such as the current date, working directory, tool guidelines, deferred-toolset triggers, and loaded project context. Tool names, descriptions, and parameter schemas reach the model through the provider tool payload instead of the template.
+When Pi has no custom prompt, `system-prompt` replaces Pi's base system prompt with a Markdown template. The template can include runtime values such as the current date, working directory, tool guidelines, deferred-toolset triggers, and loaded project context. Tool names, descriptions, and parameter schemas reach the model through the provider tool payload instead of the template.
+
+If Pi supplies a nonempty custom prompt, the extension preserves the prompt that Pi builds. This applies with both the bundled template and configured custom templates. Custom-prompt sources are CLI `--system-prompt` text or files, a trusted project's `.pi/SYSTEM.md`, and the Pi agent directory's `SYSTEM.md`. The extension also preserves council participant custom prompts. An empty custom-prompt string permits template rendering.
+
+Before preserving a custom prompt, the ready-template handler still reconciles active tools. Runtime composition still appends the selected-agent prompt and eligible tool prompt contributions. Tool availability and these contributions remain subject to runtime policy.
 
 ## Configuration
 

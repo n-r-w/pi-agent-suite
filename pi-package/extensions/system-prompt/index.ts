@@ -95,6 +95,9 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 		const typedEvent = event as BeforeAgentStartEventLike;
 		const composition = getAgentRuntimeComposition(pi);
 		composition.reconcileActiveTools();
+		if (typedEvent.systemPromptOptions.customPrompt) {
+			return undefined;
+		}
 		const options = {
 			...typedEvent.systemPromptOptions,
 			selectedTools: [...pi.getActiveTools()],
