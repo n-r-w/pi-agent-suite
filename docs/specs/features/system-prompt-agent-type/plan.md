@@ -187,7 +187,7 @@ None.
 | UNT-02 | Done | `1a4aeed` |
 | UNT-03 | Done | `a0d0db7` |
 | UNT-04 | Done | `9350849` |
-| UNT-05 | Ready; example validation and all reviews passed | Recorded after commit |
+| UNT-05 | Done | `85553eb` |
 
 ## References
 - [technical-solution.md](technical-solution.md)
