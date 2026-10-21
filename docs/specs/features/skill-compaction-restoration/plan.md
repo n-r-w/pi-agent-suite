@@ -85,7 +85,7 @@ MEDIUM: extraction changes resolution or protection. Existing path-form and proj
 
 ### Unit UNT-02 - SLICE: Apply model-specific compaction limits
 
-Status: pending.
+Status: done, commit `a2df9dc`. Helper and caller RED/GREEN tests and all three reviews passed. Final checks: 1,849 Bun tests passed, 1 skipped; Go tests, typecheck, and check passed.
 
 #### Goal
 
@@ -117,23 +117,23 @@ MEDIUM: settings shape or overrides alter threshold behavior. In-process caller 
 
 ### Unit UNT-03 - SLICE: Restore skills after compaction
 
-Status: pending.
+Status: in progress. The initial uncommitted content-bearing implementation is superseded by user-approved D9. Resume with path-only persistence and per-request disk reads; no content-bearing record will be committed.
 
 #### Goal
 
-Deliver FRQ-01 through FRQ-04 across compaction, request insertion, persistence, budget, and package loading.
+Deliver FRQ-01 through FRQ-04 across compaction, request insertion, path-only persistence, budget, and package loading.
 
 #### Behavior
 
-After successful compaction, each subsequent request receives the branch-associated restored files and absent-file list. Repeated compaction, session reopening, context edits, retained suffixes, model limits, and child loading follow the approved design.
+After successful compaction, each subsequent request receives current disk contents of the branch-associated files that fit and the absent-file list. The session stores only tracked paths. Repeated compaction, session reopening, context edits, retained suffixes, changing file contents and request budgets, model limits, and child loading follow the D9 design.
 
 #### Work
 
-SubAgentCoderRegular implements the separate extension, its isolated tests, enabled-only configuration, record rendering, package registration/order tests, and extension documentation. It uses UNT-01 and UNT-02 helpers with existing context mapping and request estimation. Integration sources include custom-compaction, context-projection, compaction-trigger, system-prompt, and existing real Pi loading fixtures. The system-prompt prose change is verified by review, never by prompt-content assertions.
+SubAgentCoderRegular implements the separate extension, its isolated tests, enabled-only configuration, path-record rendering with in-memory delivery metadata, package registration/order tests, and extension documentation. It uses UNT-01 and UNT-02 helpers with existing context mapping and request estimation. Persisted restoration data contains paths only. Each context event reads disk and packs against its actual runtime prompt, tools, and messages; no content cache, snapshots, or fit-decision entries are introduced. Integration sources include custom-compaction, context-projection, compaction-trigger, system-prompt, and existing real Pi loading fixtures. The system-prompt prose change is verified by review, never by prompt-content assertions.
 
 #### Verification
 
-OWN VERIFICATION, IN PROCESS plus RUN. RED tests cover effective successful loads, skill commands, ownership, retained exclusions, previous returned and absent paths, repeat compaction, same-summary IDs, reopen/tree replay, malformed records, configuration, full/partial/zero budget, changed/missing files, and stable single-copy insertion. Real Pi checks prove single registration and main/child loading with temporary state and a debug extension. Run all three package checks.
+OWN VERIFICATION, IN PROCESS plus RUN. RED tests cover effective successful loads, independently observable replaced/omitted loads, skill commands, ownership, retained exclusions, prior path priority, repeat compaction, same-summary IDs, reopen/tree replay, malformed path records, configuration, full/partial/zero and boundary budgets, current disk reads after file changes and deletion/reappearance, changing runtime prompt/model budgets, and deterministic single-copy insertion. A behavior check proves path-only persistence without assertions about prompt wording. Real Pi checks prove single registration and main/child loading with temporary state and a debug extension. Run all three package checks.
 
 #### Exit criteria
 
@@ -145,7 +145,7 @@ DEPENDENT on UNT-01 and UNT-02. No concurrent implementation.
 
 #### Risks
 
-HIGH: a misplaced or oversized insertion violates the restoration goal. Effective-context tests, real Pi compaction/loading checks, and complete-request budget assertions cover this risk. Model compliance with absent-file instructions remains external behavior.
+HIGH: a misplaced or oversized insertion violates the restoration goal. Effective-context tests, real Pi compaction/loading checks, actual package runtime-prompt coverage, and complete-request budget assertions cover this risk. Model compliance with absent-file instructions remains external behavior.
 
 ## Test Strategy
 

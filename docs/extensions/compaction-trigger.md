@@ -18,7 +18,7 @@ For example, with a 100,000-token window, ordinary `reserveTokens` of 16,000, a 
 
 `tolerancePercent` has no upper limit and the result is not capped at `contextWindow`. The declared window can therefore represent a billing boundary below the provider's real capacity. For example, `contextWindow: 275000`, `reserveTokens: 16384`, and `tolerancePercent: 250` produce a threshold of 946116 tokens. The user is responsible for keeping the threshold within the provider's real capacity and intended pricing range.
 
-The extension runs after `context-projection`. For each `context` event, it uses the same projection-aware `ctx.getContextUsage()` value as the footer. Pending projection savings reduce both the displayed usage and the trigger input. The extension blocks the request when the visible token count is equal to or greater than the threshold. When Pi reports unknown usage after compaction, the request proceeds until the next provider response establishes a known value.
+The package loads `skill-restoration` immediately after `context-projection`, followed by `compaction-trigger`. For each request, restoration packs current disk contents of tracked skill files after source-message mapping and before the trigger can block dispatch. For each `context` event, `compaction-trigger` uses the same projection-aware `ctx.getContextUsage()` value as the footer. Pending projection savings reduce both the displayed usage and the trigger input. The extension blocks the request when the visible token count is equal to or greater than the threshold. When Pi reports unknown usage after compaction, the request proceeds until the next provider response establishes a known value.
 
 ## Configuration
 

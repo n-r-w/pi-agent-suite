@@ -6,7 +6,7 @@ See `problem.md` and `prd.md`. After compaction, the content of skill files that
 
 ## Proposed Solution
 
-A separate `skill-restoration` extension decides after each compaction which skill files return to the context and stores this decision in the session. Before each model request, the extension inserts the stored files right after the compaction summary.
+A separate `skill-restoration` extension stores candidate skill file paths after each compaction. Before each model request, it reads current file contents from disk, selects the files that fit the current request budget, and inserts them right after the compaction summary. Restoration session records contain no file contents.
 
 ### Extension and configuration
 
@@ -16,9 +16,9 @@ The configuration file is `~/.pi/agent/agent-suite/skill-restoration/config.json
 
 ### Restoration record
 
-The restoration record is the main data structure. The extension creates one record per compaction as a `custom` session entry through `pi.appendEntry` and never changes it. The record holds the compaction entry ID, the returned files with their content in insertion order, and the paths of files that did not fit.
+The extension persists one immutable `custom` entry per compaction through `pi.appendEntry`. It associates the compaction with ordered candidate paths. File contents, rendered messages, and fit decisions remain outside persisted session state.
 
-The model never receives the record itself. On `session_start` and `session_tree`, the extension selects the record of the latest compaction on the current branch, so restoration keeps working after the session is reopened and after `/tree` navigation (FRQ-01). Persisted session data enters the extension at this point, so the extension checks the record shape here; a malformed record means that the extension inserts nothing.
+The model never receives the entry itself. On `session_start` and `session_tree`, the extension selects the latest compaction's path record on the current branch. This preserves restoration after reopening and `/tree` navigation (FRQ-01). The extension validates persisted path records at this boundary; malformed data means that it inserts nothing.
 
 ### Selection of skill files
 
@@ -36,9 +36,9 @@ A path counts as a skill file when it lies inside the directory of a skill from 
 
 ### Content and budget
 
-The extension reads each selected file from disk when the compaction completes. A file that no longer exists is skipped. If a skill changed after the model read it, the model receives the current version.
+The extension reads candidate files from disk for each context event. A missing file is skipped for that request, while its tracked path remains available for later requests. If a skill changes, the next request uses its current contents. The extension creates no persistent content copy or content cache.
 
-The free space for skill files equals the model context window minus Pi `reserveTokens`, minus Pi `keepRecentTokens`, minus the estimated context after compaction: system prompt, active tools, summary, and retained suffix (FRQ-03). `keepRecentTokens` keeps room for work before the next compaction, so the returned skills do not trigger another compaction on the next turn. The estimate uses the shared `o200k_base` estimator in `shared/context-size.ts`, which `custom-compaction` also uses, and covers the whole inserted message, including the list of files that did not fit.
+The free space for skill files equals the current model context window minus Pi `reserveTokens`, minus Pi `keepRecentTokens`, minus the estimated current request: runtime system prompt, active tools, summary, retained suffix, and any new input (FRQ-03). Pi can compact before runtime prompt contributions are available, so the extension packs files during each context event. `keepRecentTokens` keeps room for work before the next compaction, so the returned skills do not trigger another compaction on the next turn. The estimate uses the shared `o200k_base` estimator in `shared/context-size.ts`, which `custom-compaction` also uses, and covers the whole inserted message, including the list of files that did not fit.
 
 Pi reads `reserveTokens` and `keepRecentTokens` for the current model, so `compaction.modelOverrides` can replace the ordinary values. The shared helper `readNativeCompactionSettings` reads them without a model now. The helper gets the current model as an argument, and `skill-restoration`, `compaction-trigger`, and `footer` pass it. All three then use the values that Pi applies. Example: with a 100,000-token window, ordinary `reserveTokens` 16,000, and a model override of 8,000, Pi, `compaction-trigger` with zero tolerance, and the footer threshold all use 92,000; before the change, `compaction-trigger` compacted at 84,000. The `compaction-trigger` threshold adds a non-negative tolerance to the same value, so a context below Pi's threshold stays below both.
 
@@ -46,7 +46,7 @@ The extension adds files starting from the most recently loaded one while they f
 
 ### Insertion into the model request
 
-On each `context` event, the extension inserts one message with the record content right after the summary of the latest compaction. The message content stays the same until the next compaction, preserving a stable request prefix. Cache hits depend on the provider. Pi rebuilds every request from the session and passes it through `context` handlers, so the insertion repeats for each request and the context holds one copy of the files.
+On each `context` event, the extension reads the tracked files and inserts one message with the fitting contents right after the summary of the latest compaction. The fitting subset can change when file contents or the current request budget change. Identical inputs produce the same insertion. Pi rebuilds every request from the session, so each request holds one inserted copy. Cache hits depend on the provider.
 
 Pi has provider-usage and canonical-estimate compaction accounting paths. Provider-reported usage of a response includes the inserted files; canonical session estimates do not include context-only insertion. Restoration uses its own complete request estimate for the budget.
 
@@ -62,7 +62,7 @@ A package order test pins this order, following `compaction-trigger/package-orde
 
 ### User interface
 
-The extension renders the restoration record in the TUI through `pi.registerEntryRenderer`, as `custom-compaction` renders its outcome entry. The compact view is one line with the counts, for example `[skill-restoration] Restored 14 skill files (~37k tokens); 2 files did not fit`. The expanded view adds the paths of the returned files and of the files that did not fit. The subagent screen of `run-subagent` shows no `custom` entries of other extensions, so the line appears only on the main screen.
+The extension renders the path record through `pi.registerEntryRenderer`. Before request preparation, the compact view reports tracked paths. After a context event, the renderer can use in-memory delivery metadata to show restored and absent counts, for example `[skill-restoration] Restored 14 skill files (~37k tokens); 2 files did not fit`. The expanded view adds paths. No file contents enter delivery metadata or session records. The subagent conversation filter excludes plain custom entries, so the line appears only on the main screen.
 
 ### Shared skill path rule
 
@@ -82,8 +82,8 @@ The skill guidelines in `system-prompt/prompts/system.md` stop telling the model
 
 ### Trade-offs
 
-- The inserted restoration message is not a separate persisted transcript entry. Raw session exports include the custom record and its stored file contents. `consult-advisor` does not receive the context-only inserted message.
-- Each compaction adds the returned file content to the session file: a median of about 149,000 characters in the sampled sessions.
+- The inserted restoration message is request-only. Restoration adds only path records to raw session exports. `consult-advisor` does not receive the inserted message.
+- Each request reads candidate files from disk. File changes and request growth can change the returned contents or subset.
 - `custom-compaction` sizes the summary without the returned skills, so the summary gets space first and skills get the rest.
 - `compaction-trigger` no longer follows `context-projection` directly in the extension list.
 - Users with `compaction.modelOverrides` see `compaction-trigger` compact at a different token count, and the footer show a different threshold, than before the change: both now match Pi.
@@ -91,7 +91,7 @@ The skill guidelines in `system-prompt/prompts/system.md` stop telling the model
 
 ## Overengineering and Overspecification Considerations
 
-- Persisted record: FRQ-01 requires restoration after the session is reopened.
+- Persisted paths: FRQ-01 requires restoration after reopening. The user prohibits persisting skill file contents; every request reads those contents from disk.
 - Record shape check: persisted session data has the type `unknown` when the extension reads it back.
 - Budget, recency order, and `keepRecentTokens` headroom: FRQ-03 and the user decision on headroom.
 - Skipping missing files: skills are edited and renamed during sessions, and reading a missing file fails.
