@@ -46,7 +46,7 @@ Both units passed RED-GREEN verification, project scripts, the required code/tex
 
 ## User-authorized follow-up
 - D11: The user requested correction of F2 and F3 after the implementation acceptance report. This extends the task only to replacing the named bundled-content test with fixture logic and adding the missing README fence. The earlier exclusion of these two corrections is superseded. Other unrelated defects remain outside scope.
-- The follow-up retains `final_only` and adds sequential UNT-03 and UNT-04 in `plan.md`. No production behavior, dependency, or feature requirement changes. F3 uses the already installed Markdown parser; before correction it produces one JSON code token containing the full-example label, with no separate full-example paragraph.
+- The follow-up retains `final_only` and adds sequential UNT-03 and UNT-04 in `plan.md`. No production behavior, dependency, or feature requirement changes. F2 is resolved by an isolated template fixture with exact insertion-output verification. F3 is resolved by one closing-fence line. The already installed Markdown parser now produces two valid JSON blocks and the full-example paragraph between them. Both units passed the required reviews; final root verification after the last code/test edit had 1862 passing tests, 1 existing skip, and 0 failures.
 
 ## Open questions
 None requiring a user decision within the implementation scope.

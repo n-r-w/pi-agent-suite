@@ -161,8 +161,8 @@ None.
 | --- | --- | --- |
 | UNT-01 | Done | `4a37e4b` |
 | UNT-02 | Done | `1a4aeed` |
-| UNT-03 | Ready; fixture correction and all reviews passed | Recorded after commit |
-| UNT-04 | Planned | Pending |
+| UNT-03 | Done | `a0d0db7` |
+| UNT-04 | Ready; parser checks and all reviews passed | Recorded after commit |
 
 ## References
 - [technical-solution.md](technical-solution.md)

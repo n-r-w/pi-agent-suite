@@ -356,6 +356,7 @@ Minimum config example:
 {
   "enabled": true
 }
+```
 
 Full config example:
 ```json

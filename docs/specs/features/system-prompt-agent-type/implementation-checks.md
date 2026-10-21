@@ -78,7 +78,7 @@ The implementer separately selected the bundled template through the production 
 ### Reviews
 SubAgentCodeQuality found no new in-scope issue and reproduced RED/GREEN and passing root scripts. SubAgentTextQuality clarified documentation, declaration comments, and stale task status without changing code behavior or approved prompt wording. SubAgentAnalyst found no in-scope mismatch; its fresh focused check passed all 34 tests and independent verification reproduced RED and passed verify. The main agent read the complete code/test diff and accepted the reviewed changes.
 
-Code, document, and overengineering gates pass for the new behavior. The implementation adds no dependency, configuration flag, general-purpose template engine, duplicate common template, fallback, or unrelated refactoring. F2 and F3 remain unchanged outside the task.
+Code, document, and overengineering gates pass for the new behavior. The implementation adds no dependency, configuration flag, general-purpose template engine, duplicate common template, fallback, or unrelated refactoring. F2 and F3 were left unchanged in UNT-02. The user later authorized their correction, recorded below.
 
 ## User-authorized follow-up findings
 
@@ -91,8 +91,12 @@ UNT-03 replaces that test with `inserts dynamic toolsets between fixture-defined
 
 The focused suite passed all 34 tests before and after the test-only refactor. The main agent ran `bun run verify` after the last comment correction: exit 0, 1862 passed, 1 existing skip, 0 failures, 8563 assertions; Go tests, strict TypeScript, Biome, gofmt, and go vet passed. Code, text, and behavior reviews found no unresolved in-scope issue. No new production behavior or artificial RED change was introduced.
 
-### F3: Existing README code fence
-When a reader views the context-projection configuration examples, the full-example label and opening fence belong to the preceding code block. `README.md`, context-projection minimum configuration example, opens a JSON fence and has no closing fence before the full-example label. Expected documentation has separate fenced minimum and full examples. Proposed correction: close the minimum-example fence. This was checked from source and Markdown fence grammar; rendered-page behavior was not reproduced. The user authorized the missing-fence correction in D11; UNT-04 is pending. Before correction, the already installed Markdown parser produces one JSON code token containing the full-example label and no separate paragraph for that label.
+### F3: README code fence, resolved in UNT-04
+Before UNT-04, the context-projection minimum configuration example in `README.md` had no closing fence before the full-example label. The installed Markdown parser produced one JSON code token containing that label; the combined token was invalid JSON.
+
+UNT-04 adds only the missing closing-fence line. The parser now produces two separate JSON code tokens, with `Full config example:` as an ordinary paragraph between them. Both code tokens parse successfully as JSON. A complete README comparison confirms that both JSON objects and every other byte are unchanged.
+
+The implementer, code reviewer, text reviewer, behavior reviewer, and main agent checked the correction. All reviews found no unresolved in-scope issue, and `git diff --check` passed. No permanent README-content test, new dependency, or production change was introduced. Full project tests were not rerun for this document-only unit; the last code/test change had already passed the main agent's full `bun run verify` in UNT-03.
 
 ## Open questions
-None within the implementation scope. The feature units and UNT-03 passed their checks and reviews. The authorized F3 correction remains pending in UNT-04.
+None. Both feature units and the authorized F2/F3 follow-up units passed their checks and required reviews. No unresolved task finding, new workaround, deprecation, or technical debt remains.
