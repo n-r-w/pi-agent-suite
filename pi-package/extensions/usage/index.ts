@@ -249,7 +249,7 @@ function registerEnabledRuntime(
 	const resolveAgentId = () =>
 		childProcess
 			? readNonEmptyString(dependencies.environment[SUBAGENT_AGENT_ID_ENV])
-			: resolveMainAgentId(pi);
+			: resolveSelectedAgentId(pi);
 	const recordResponse: ResponseRecorder = (message, source, eventId, ctx) =>
 		persistResponse({
 			message,
@@ -560,9 +560,9 @@ function resolveRootSessionId(
 		: activeSessionId;
 }
 
-function resolveMainAgentId(pi: ExtensionAPI): string | undefined {
+function resolveSelectedAgentId(pi: ExtensionAPI): string | undefined {
 	return readNonEmptyString(
-		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+		getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent?.id,
 	);
 }
 

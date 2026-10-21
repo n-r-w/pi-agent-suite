@@ -538,7 +538,7 @@ describe("usage extension lifecycle", () => {
 				queryRange: () => [],
 			}),
 		)(harness.pi);
-		getAgentRuntimeComposition(harness.pi).setMainAgentContribution({
+		getAgentRuntimeComposition(harness.pi).setSelectedAgentContribution({
 			prompt: "main",
 			tools: [],
 			agent: { id: "agent-a" },
@@ -606,7 +606,7 @@ describe("usage extension lifecycle", () => {
 					},
 				),
 			)(harness.pi);
-			getAgentRuntimeComposition(harness.pi).setMainAgentContribution({
+			getAgentRuntimeComposition(harness.pi).setSelectedAgentContribution({
 				prompt: "must-not-be-used",
 				tools: [],
 				agent: { id: "root-agent" },
@@ -655,7 +655,7 @@ describe("usage extension lifecycle", () => {
 				queryRange: () => [],
 			}),
 		)(harness.pi);
-		getAgentRuntimeComposition(harness.pi).setMainAgentContribution({
+		getAgentRuntimeComposition(harness.pi).setSelectedAgentContribution({
 			prompt: "main",
 			tools: [],
 			agent: { id: "agent-a" },
@@ -745,7 +745,7 @@ describe("usage extension lifecycle", () => {
 				queryRange: () => [],
 			}),
 		)(harness.pi);
-		getAgentRuntimeComposition(harness.pi).setMainAgentContribution({
+		getAgentRuntimeComposition(harness.pi).setSelectedAgentContribution({
 			prompt: "main",
 			tools: [],
 			agent: { id: "agent-a" },
@@ -919,7 +919,7 @@ describe("usage extension lifecycle", () => {
 				} as unknown as Partial<UsageExtensionDependencies>,
 			),
 		)(harness.pi);
-		getAgentRuntimeComposition(harness.pi).setMainAgentContribution({
+		getAgentRuntimeComposition(harness.pi).setSelectedAgentContribution({
 			prompt: "main",
 			tools: [],
 			agent: { id: "agent-a" },
@@ -981,7 +981,7 @@ describe("usage extension lifecycle", () => {
 		const second = createHarness();
 		extension(first.pi);
 		extension(second.pi);
-		getAgentRuntimeComposition(first.pi).setMainAgentContribution({
+		getAgentRuntimeComposition(first.pi).setSelectedAgentContribution({
 			prompt: "main",
 			tools: [],
 			agent: { id: "agent-a" },

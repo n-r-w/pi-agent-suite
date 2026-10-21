@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -7,6 +7,7 @@ import {
 	createEventBus,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import systemPrompt from "./index";
 
@@ -244,6 +245,210 @@ interface BeforeAgentStartEventFake {
 }
 
 describe("system-prompt", () => {
+	for (const child of [false, true]) {
+		for (const fixture of [
+			{
+				name: "repeated inline sections",
+				input:
+					"A{{#mainAgent}}M{{/mainAgent}}B{{#childAgent}}C{{/childAgent}}D{{#mainAgent}}N{{/mainAgent}}E",
+				output: child ? "ABCDE" : "AMBDNE",
+			},
+			...(["\n", "\r\n"] as const).map((newline) => ({
+				name: `marker-only lines ${JSON.stringify(newline)}`,
+				input: [
+					"A",
+					" \t{{#mainAgent}}  ",
+					"M",
+					"{{/mainAgent}}",
+					"{{#childAgent}}",
+					"C",
+					"{{/childAgent}}",
+					"Z",
+				].join(newline),
+				output: ["A", child ? "C" : "M", "Z"].join(newline),
+			})),
+			{
+				name: "selection before substitution",
+				input:
+					"{{#mainAgent}}{{cwd}}{{/mainAgent}}{{#childAgent}}{{appendSystemPrompt}}{{/childAgent}}",
+				output: child
+					? "{{#mainAgent}}runtime{{/mainAgent}}"
+					: "/tmp/{{#childAgent}}runtime{{/childAgent}}",
+			},
+			{
+				name: "section-free bytes and ordinary variables",
+				input: " \r\n{{cwd}}\n{{unsupported}}tail\r\n",
+				output: " \r\n/tmp/{{#childAgent}}runtime{{/childAgent}}\ntail\r\n",
+			},
+			{
+				name: "inline surrounding spaces and final marker-only line",
+				input:
+					"a {{#mainAgent}} M {{/mainAgent}} z\n{{#childAgent}}\nC\n{{/childAgent}}",
+				output: child ? "a  z\nC\n" : "a  M  z\n",
+			},
+		]) {
+			test(`renders ${fixture.name} for ${child ? "child" : "main"} with role captured at extension load`, async () => {
+				await withIsolatedAgentDir(async ({ suiteDir }) => {
+					const templateFile = join(suiteDir, "sections.md");
+					await writeFile(templateFile, fixture.input);
+					await writeSuiteConfig(suiteDir, { templateFile });
+					const pi = createExtensionApiFake();
+					const context = createContextFake();
+					const environment = await import("./environment");
+					const role = spyOn(
+						environment,
+						"isSystemPromptChildProcess",
+					).mockReturnValue(child);
+					try {
+						systemPrompt(pi);
+						role.mockReturnValue(!child);
+						await getRegisteredHandler(pi, "session_start")({}, context.ctx);
+						for (let turn = 0; turn < 2; turn++) {
+							expect(
+								await runBeforeAgentStartHandlers(
+									pi,
+									createBeforeAgentStartEvent({
+										cwd: "/tmp/{{#childAgent}}runtime{{/childAgent}}",
+										appendSystemPrompt: "{{#mainAgent}}runtime{{/mainAgent}}",
+									}),
+									context.ctx,
+								),
+							).toBe(fixture.output);
+						}
+						expect(context.notifications.length).toBe(
+							fixture.input.includes("unsupported") ? 1 : 0,
+						);
+					} finally {
+						role.mockRestore();
+					}
+				});
+			});
+		}
+	}
+
+	for (const launched of [false, true]) {
+		test(`renders ${launched ? "child" : "main"} sections when the composition ${launched ? "reports" : "does not report"} a launched subagent`, async () => {
+			await withIsolatedAgentDir(async ({ suiteDir }) => {
+				const templateFile = join(suiteDir, "sections.md");
+				await writeFile(
+					templateFile,
+					"{{#mainAgent}}M{{/mainAgent}}{{#childAgent}}C{{/childAgent}}",
+				);
+				await writeSuiteConfig(suiteDir, { templateFile });
+				const pi = createExtensionApiFake();
+				const context = createContextFake();
+				systemPrompt(pi);
+				// The owner of the flag registers the resolver after system-prompt has loaded.
+				getAgentRuntimeComposition(pi).setLaunchedSubagentResolver(() =>
+					launched ? "Extractor" : undefined,
+				);
+				await getRegisteredHandler(pi, "session_start")({}, context.ctx);
+
+				expect(
+					await runBeforeAgentStartHandlers(
+						pi,
+						createBeforeAgentStartEvent(),
+						context.ctx,
+					),
+				).toBe(launched ? "C" : "M");
+			});
+		});
+	}
+
+	for (const input of [
+		"{{#mainAgent}}open",
+		"{{/childAgent}}",
+		"{{#mainAgent}}m{{/childAgent}}",
+		"{{#mainAgent}}{{#childAgent}}c{{/childAgent}}{{/mainAgent}}",
+		"{{#mainAgent}}{{#mainAgent}}m{{/mainAgent}}{{/mainAgent}}",
+		"{{#other}}x{{/other}}",
+		"{{/other}}",
+	]) {
+		test(`retains Pi prompt and reports invalid sections: ${input}`, async () => {
+			await withIsolatedAgentDir(async ({ suiteDir }) => {
+				const templateFile = join(suiteDir, "invalid-sections.md");
+				await writeFile(templateFile, input);
+				await writeSuiteConfig(suiteDir, { templateFile });
+				const pi = createExtensionApiFake();
+				const context = createContextFake();
+				systemPrompt(pi);
+				await getRegisteredHandler(pi, "session_start")({}, context.ctx);
+				expect(context.notifications).toHaveLength(1);
+				expect(context.notifications[0]?.message).toContain("section");
+				expect(
+					await runBeforeAgentStartHandlers(
+						pi,
+						createBeforeAgentStartEvent(),
+						context.ctx,
+					),
+				).toBe("Original pi prompt");
+			});
+		});
+	}
+
+	for (const templateSource of ["bundled", "configured"] as const) {
+		test(`preserves custom prompts with a ${templateSource} template while reconciling tools and composing agent contributions`, async () => {
+			await withIsolatedAgentDir(async ({ suiteDir }) => {
+				if (templateSource === "configured") {
+					const templateFile = join(suiteDir, "template.md");
+					await writeFile(templateFile, "Fixture template: {{cwd}}");
+					await writeSuiteConfig(suiteDir, { templateFile });
+				}
+				const pi = createExtensionApiFake(["read", "bash"]);
+				const context = createContextFake();
+				systemPrompt(pi);
+				await getRegisteredHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					context.ctx,
+				);
+				const composition = getAgentRuntimeComposition(pi);
+				composition.setSelectedAgentContribution({
+					prompt: "Fixture selected-agent contribution",
+					tools: ["read", "bash"],
+				});
+				let allowedTools = ["read", "bash"];
+				composition.setRestrictiveToolFilter("fixture", () => allowedTools);
+				allowedTools = ["read"];
+				const event = createBeforeAgentStartEvent({
+					customPrompt: "Fixture custom prompt",
+				});
+				expect(
+					await getRegisteredHandler(pi, "before_agent_start")(
+						event,
+						context.ctx,
+					),
+				).toBeUndefined();
+				expect(pi.getActiveTools()).toEqual(["read"]);
+				expect(await runBeforeAgentStartHandlers(pi, event, context.ctx)).toBe(
+					`${event.systemPrompt}\n\nFixture selected-agent contribution`,
+				);
+			});
+		});
+	}
+
+	for (const customPrompt of [undefined, ""]) {
+		test(`renders a fixture template when customPrompt is ${customPrompt === undefined ? "absent" : "empty"}`, async () => {
+			await withIsolatedAgentDir(async ({ suiteDir }) => {
+				const templateFile = join(suiteDir, "template.md");
+				await writeFile(templateFile, "Fixture directory: {{cwd}}");
+				await writeSuiteConfig(suiteDir, { templateFile });
+				const pi = createExtensionApiFake(["read"]);
+				const context = createContextFake();
+				systemPrompt(pi);
+				await getRegisteredHandler(pi, "session_start")(
+					{ type: "session_start", reason: "startup" },
+					context.ctx,
+				);
+				const event = createBeforeAgentStartEvent(
+					customPrompt === undefined ? {} : { customPrompt },
+				);
+				expect(await runBeforeAgentStartHandlers(pi, event, context.ctx)).toBe(
+					`Fixture directory: ${event.systemPromptOptions.cwd}`,
+				);
+			});
+		});
+	}
+
 	test("maps visible active tool guidelines before normalized global contributions", async () => {
 		await withIsolatedAgentDir(async ({ suiteDir }) => {
 			const templateFile = join(suiteDir, "guidelines.md");
@@ -593,12 +798,18 @@ describe("system-prompt", () => {
 		});
 	});
 
-	test("places bundled toolsets between skills and tool guidelines", async () => {
-		// Purpose: the bundled template must expose the deferred catalog at the approved structural location.
-		// Input and expected output: the bundled template renders one eligible toolset between populated skills and guidelines.
-		// Edge case: placement is asserted by required section boundaries rather than mutable prompt prose.
-		// Dependencies: bundled template loading plus the shared runtime/composition lifecycle.
-		await withIsolatedAgentDir(async () => {
+	test("inserts dynamic toolsets between fixture-defined surrounding text", async () => {
+		// Purpose: the renderer must insert dynamic toolsets at the fixture-defined position.
+		// Input and expected output: a synthetic template surrounds one runtime toolset with fixed text.
+		// Edge case: the renderer must preserve fixture text before and after the insertion.
+		// Dependencies: isolated template/config helpers and the shared runtime lifecycle fake.
+		await withIsolatedAgentDir(async ({ suiteDir }) => {
+			const templateFile = join(suiteDir, "template.md");
+			await writeFile(
+				templateFile,
+				"Before catalog\n{{toolsets}}\nAfter catalog",
+			);
+			await writeSuiteConfig(suiteDir, { templateFile });
 			const pi = createExtensionApiFake(["files_read"]);
 			systemPrompt(pi);
 			getToolsetRuntime(pi).replaceProvider("mcp", [
@@ -621,12 +832,8 @@ describe("system-prompt", () => {
 				createBeforeAgentStartEvent(),
 				context.ctx,
 			);
-			expect(prompt.indexOf("</skills>")).toBeGreaterThanOrEqual(0);
-			expect(prompt.indexOf("<toolsets>")).toBeGreaterThan(
-				prompt.indexOf("</skills>"),
-			);
-			expect(prompt.indexOf("<tool_guidelines>")).toBeGreaterThan(
-				prompt.indexOf("<toolsets>"),
+			expect(prompt).toBe(
+				'Before catalog\n<toolsets>\n<toolset name="files" description="Read files"/>\n</toolsets>\nAfter catalog',
 			);
 		});
 	});

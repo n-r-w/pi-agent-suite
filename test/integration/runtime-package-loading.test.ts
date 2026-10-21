@@ -320,7 +320,7 @@ function writeWorkflowRuntimeDumpExtension(
 				? []
 				: [
 						'\tpi.on("session_start", () => {',
-						`\t\tgetAgentRuntimeComposition(pi).setMainAgentContribution({ prompt: "Runtime reset", tools: ${JSON.stringify(mainContributionReset.tools)} });`,
+						`\t\tgetAgentRuntimeComposition(pi).setSelectedAgentContribution({ prompt: "Runtime reset", tools: ${JSON.stringify(mainContributionReset.tools)} });`,
 						"\t});",
 					]),
 			'\tlet systemPrompt = "";',

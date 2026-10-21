@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT } from "../../shared/agent-runtime-composition";
+import { SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT } from "../../shared/agent-runtime-composition";
 import {
 	CHILD_AGENT_PROCESS_ENV,
 	CHILD_AGENT_PROCESS_ENV_VALUE,
@@ -206,7 +206,7 @@ describe("footer", () => {
 	});
 
 	test("ignores main-agent events that keep the visible agent label unchanged", async () => {
-		// Purpose: an unrelated main-agent contribution change must not trigger a global render for an unchanged footer label.
+		// Purpose: an unrelated selected-agent contribution change must not trigger a global render for an unchanged footer label.
 		// Inputs and expected output: the footer receives one contribution event while its resolved agent remains unavailable and requests no render.
 		// Edge case: the event is emitted after the footer component subscribes.
 		// Dependencies: an in-memory Pi event bus and an isolated footer config.
@@ -248,7 +248,7 @@ describe("footer", () => {
 				},
 			);
 
-			pi.events.emit(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, undefined);
+			pi.events.emit(SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT, undefined);
 
 			expect(renderRequests).toBe(0);
 			component.dispose?.();

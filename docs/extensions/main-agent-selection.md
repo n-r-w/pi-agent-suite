@@ -110,6 +110,15 @@ Selecting an agent does not append workflow availability to session history. See
 | Flag | Type | Description |
 | --- | --- | --- |
 | `--agent <id>` | String | Applies the agent with the matching ID for the current session only, without persisting to disk. Takes priority over any previously selected agent. |
-| `--agent none` | String | Clears the main agent contribution for the current session without writing to disk. |
+| `--agent none` | String | Clears the selected main agent for the current session without writing to disk. |
 
-When `--agent` is set, disk-based agent restoration at session start is skipped. Invalid agent IDs produce an error visible in all modes, including `-p` (print) mode via stderr. The flag is ignored in child subagent processes.
+When `--agent` is set, disk-based agent restoration at session start is skipped. Invalid agent IDs produce an error visible in all modes, including `-p` (print) mode via stderr. The flag is ignored in child subagent processes. This extension shares the value of `--agent` with [run-subagent](run-subagent.md#errors-of---subagent), which fails a process that has both `--agent` and `--subagent`: the flags name two agents, so Pi reports an error and runs no agent.
+
+## Process with a launched subagent
+
+`run-subagent` owns flag `--subagent <id>`, which runs one subagent definition as the agent of the Pi process. See [launching a subagent from the command line](run-subagent.md#launching-a-subagent-from-the-command-line). In such a process only that definition shapes the agent, so this extension changes nothing:
+
+- It does not restore the saved main agent or the agent of a session replacement, and it applies no `--agent` value. A process with both flags is an error: [run-subagent](run-subagent.md#errors-of---subagent) reports it and ends the process.
+- `/agent`, `/agent none`, and `Ctrl+Alt+A` show a warning and do not open the selector, change the agent, or write state. Therefore no selection can wait for the next input.
+
+Processes without `--subagent` keep the behavior described above.

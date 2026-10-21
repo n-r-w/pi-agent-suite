@@ -88,7 +88,7 @@ describe("codex-verbosity", () => {
 				{ type: "before_provider_request", payload: { input: "hello" } },
 				{
 					model: {
-						provider: "openai",
+						provider: "openai-codex",
 						api: "openai-codex-responses",
 					},
 					ui: {
@@ -129,7 +129,7 @@ describe("codex-verbosity", () => {
 				{ type: "before_provider_request", payload },
 				{
 					model: {
-						provider: "openai",
+						provider: "openai-codex",
 						api: "openai-codex-responses",
 					},
 				},
@@ -164,7 +164,7 @@ describe("codex-verbosity", () => {
 				{ type: "before_provider_request", payload: { input: "hello" } },
 				{
 					model: {
-						provider: "openai",
+						provider: "openai-codex",
 						api: "openai-codex-responses",
 					},
 					ui: {
@@ -216,7 +216,7 @@ describe("codex-verbosity", () => {
 					},
 					{
 						model: {
-							provider: "openai",
+							provider: "openai-codex",
 							api: "openai-codex-responses",
 						},
 					},
@@ -305,7 +305,7 @@ describe("codex-verbosity", () => {
 					},
 					{
 						model: {
-							provider: "openai",
+							provider: "openai-codex",
 							api: "openai-codex-responses",
 						},
 						ui: {
@@ -350,7 +350,7 @@ describe("codex-verbosity", () => {
 				{
 					hasUI: false,
 					model: {
-						provider: "openai",
+						provider: "openai-codex",
 						api: "openai-codex-responses",
 					},
 					ui: {
@@ -408,7 +408,7 @@ describe("codex-verbosity", () => {
 					{ type: "before_provider_request", payload: { input: "hello" } },
 					{
 						model: {
-							provider: "openai",
+							provider: "openai-codex",
 							api: "openai-codex-responses",
 						},
 						ui: {

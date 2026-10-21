@@ -15,6 +15,12 @@ import { expandHomePath } from "../../shared/path-expansion";
 import type { VisibleToolset } from "../../shared/toolsets/contracts";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../run-subagent/contracts";
+import { isSystemPromptChildProcess } from "./environment";
+import {
+	parseTemplateSections,
+	selectTemplateSections,
+	type TemplatePart,
+} from "./sections";
 
 const EXTENSION_DIR = "system-prompt";
 const ISSUE_PREFIX = "[system-prompt]";
@@ -51,8 +57,9 @@ type ConfigReadResult =
 	| { readonly kind: "disabled" }
 	| { readonly kind: "invalid"; readonly issue: string };
 
+/** Represents template availability and validated text parts for rendering. */
 type TemplateState =
-	| { readonly kind: "ready"; readonly template: string }
+	| { readonly kind: "ready"; readonly parts: readonly TemplatePart[] }
 	| { readonly kind: "disabled" }
 	| { readonly kind: "invalid" };
 
@@ -69,6 +76,7 @@ interface BeforeAgentStartEventLike {
 }
 
 export default function systemPrompt(pi: ExtensionAPI): void {
+	const hasChildMarker = isSystemPromptChildProcess();
 	let templateState: TemplateState = { kind: "invalid" };
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -95,18 +103,23 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 		const typedEvent = event as BeforeAgentStartEventLike;
 		const composition = getAgentRuntimeComposition(pi);
 		composition.reconcileActiveTools();
+		if (typedEvent.systemPromptOptions.customPrompt) {
+			return undefined;
+		}
 		const options = {
 			...typedEvent.systemPromptOptions,
 			selectedTools: [...pi.getActiveTools()],
 		};
-		const toolsets = hasTemplateVariable(templateState.template, "toolsets")
+		// The owner of `--subagent` registers its resolver after this extension loads.
+		const agentKind =
+			hasChildMarker || composition.getLaunchedSubagentId() !== undefined
+				? "childAgent"
+				: "mainAgent";
+		const template = selectTemplateSections(templateState.parts, agentKind);
+		const toolsets = hasTemplateVariable(template, "toolsets")
 			? getToolsetRuntime(pi).getVisibleToolsets()
 			: [];
-		const systemPrompt = renderTemplate(
-			templateState.template,
-			options,
-			toolsets,
-		);
+		const systemPrompt = renderTemplate(template, options, toolsets);
 		writeRuntimeDiagnostic("system-prompt.before-agent-start.applied", {
 			incomingPromptLength: incomingPrompt.length,
 			finalPromptLength: systemPrompt.length,
@@ -139,8 +152,13 @@ async function loadTemplateState(
 		return { kind: "invalid" };
 	}
 
+	const sections = parseTemplateSections(templateResult.template);
+	if (sections.kind === "invalid") {
+		reportIssue(ctx, sections.issue);
+		return { kind: "invalid" };
+	}
 	const unknownVariables = findUnknownTemplateVariables(
-		templateResult.template,
+		sections.parts.map((part) => part.text).join(""),
 	);
 	if (unknownVariables.length > 0) {
 		reportIssue(
@@ -149,7 +167,10 @@ async function loadTemplateState(
 		);
 	}
 
-	return { kind: "ready", template: templateResult.template };
+	return {
+		kind: "ready",
+		parts: sections.parts,
+	};
 }
 
 /** Reads suite-owned config only; legacy config files are intentionally ignored. */

@@ -1,9 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readExtensionConfigFile } from "../../shared/agent-suite-storage";
 
-/** Provider name used by the built-in OpenAI provider. */
-const OPENAI_PROVIDER = "openai";
-
 /** Provider API used by OpenAI Codex responses requests. */
 const OPENAI_CODEX_API = "openai-codex-responses";
 
@@ -43,13 +40,12 @@ type VerbosityConfigResult =
 
 /** Model fields used to decide whether this provider request belongs to OpenAI Codex. */
 interface ProviderRequestModel {
-	readonly provider?: string;
 	readonly api?: string;
 }
 
-/** Returns true only for OpenAI Codex provider requests owned by this extension. */
+/** Returns true for requests of any provider that uses the OpenAI Codex responses API. */
 function shouldHandleRequest(model: ProviderRequestModel | undefined): boolean {
-	return model?.provider === OPENAI_PROVIDER && model.api === OPENAI_CODEX_API;
+	return model?.api === OPENAI_CODEX_API;
 }
 
 /** Reads and parses the extension config without leaking failures outside this extension. */

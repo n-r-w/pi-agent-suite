@@ -28,7 +28,7 @@ export function selectionProbe(pi: ExtensionAPI, file: string): void {
 					requests,
 					prompts,
 					activeAgent:
-						getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+						getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
 							?.id,
 					activeTools: pi.getActiveTools(),
 					model: ctx.model?.id,

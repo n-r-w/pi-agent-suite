@@ -820,7 +820,7 @@ describe("main-agent-selection", () => {
 				ctx,
 			);
 			const contribution =
-				getAgentRuntimeComposition(pi).getMainAgentContribution();
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution();
 			expect(beforeAgentStart).toBeDefined();
 			expect(pi.getThinkingLevel()).toBe("xhigh");
 			expect(pi.getActiveTools()).toEqual(["read"]);
@@ -875,7 +875,8 @@ describe("main-agent-selection", () => {
 			await command.handler("b", ctx);
 			await command.handler("c", ctx);
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("a");
 			expect({
 				model: pi.setModelCalls.length,
@@ -884,12 +885,14 @@ describe("main-agent-selection", () => {
 			}).toEqual(initialCalls);
 			await getHandler(pi, "input")({ type: "input" }, ctx);
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("a");
 			ctx.isIdle = () => true;
 			await getHandler(pi, "input")({ type: "input" }, ctx);
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("c");
 			expect(pi.setModelCalls.map(({ id }) => id)).toEqual(["a", "c"]);
 			expect(pi.getActiveTools()).toEqual(["bash"]);
@@ -923,12 +926,13 @@ describe("main-agent-selection", () => {
 			await getShortcut(pi, "ctrl+alt+a").handler(ctx);
 			await getCommand(pi, "agent").handler("missing", ctx);
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("a");
 			ctx.isIdle = () => true;
 			await getHandler(pi, "input")({ type: "input" }, ctx);
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
 			).toBeUndefined();
 		});
 	});
@@ -957,7 +961,8 @@ describe("main-agent-selection", () => {
 			ctx.isIdle = () => false;
 			await getShortcut(pi, "ctrl+alt+a").handler(ctx);
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("a");
 			ctx.isIdle = () => true;
 			if (outcome === "replace") {
@@ -968,7 +973,8 @@ describe("main-agent-selection", () => {
 			}
 			await getHandler(pi, "input")({ type: "input" }, ctx);
 			const selected =
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id;
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id;
 			if (outcome === "shutdown") {
 				expect(selected).toBeUndefined();
 			} else {
@@ -1394,7 +1400,7 @@ describe("main-agent-selection", () => {
 			await getCommand(pi, "agent").handler("Reviewer", ctx);
 
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
 					?.workflows,
 			).toEqual(["Review"]);
 			expect(pi.activeToolCalls).toEqual([["read"]]);
@@ -1433,7 +1439,7 @@ describe("main-agent-selection", () => {
 			mainAgentSelection(pi);
 			await getCommand(pi, "agent").handler("Stable", ctx);
 			const contributionBeforeRejection =
-				getAgentRuntimeComposition(pi).getMainAgentContribution();
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution();
 			const activeToolCallsBeforeRejection = [...pi.activeToolCalls];
 
 			await getCommand(pi, "agent").handler("Broken", ctx);
@@ -1441,9 +1447,9 @@ describe("main-agent-selection", () => {
 			expect(pi.setModelCalls).toEqual([]);
 			expect(pi.thinkingCalls).toEqual([]);
 			expect(pi.activeToolCalls).toEqual(activeToolCallsBeforeRejection);
-			expect(getAgentRuntimeComposition(pi).getMainAgentContribution()).toBe(
-				contributionBeforeRejection,
-			);
+			expect(
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+			).toBe(contributionBeforeRejection);
 			expect(ctx.notifications[0]?.message).toContain("Missing");
 			expect(await readOnlyStateFile(agentDir)).toEqual({
 				cwd: "/tmp/project",
@@ -1479,7 +1485,7 @@ describe("main-agent-selection", () => {
 			await getCommand(pi, "agent").handler("Stable", ctx);
 
 			const contribution =
-				getAgentRuntimeComposition(pi).getMainAgentContribution();
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution();
 			const modelCalls = [...pi.setModelCalls];
 			const thinkingCalls = [...pi.thinkingCalls];
 			const activeToolCalls = pi.activeToolCalls.map((names) => [...names]);
@@ -1499,9 +1505,9 @@ describe("main-agent-selection", () => {
 			expect(pi.setModelCalls).toEqual(modelCalls);
 			expect(pi.thinkingCalls).toEqual(thinkingCalls);
 			expect(pi.activeToolCalls).toEqual(activeToolCalls);
-			expect(getAgentRuntimeComposition(pi).getMainAgentContribution()).toBe(
-				contribution,
-			);
+			expect(
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+			).toBe(contribution);
 			expect(await readSelectedStateBytes(agentDir, "/tmp/project")).toEqual(
 				stateBytes,
 			);
@@ -1571,7 +1577,7 @@ describe("main-agent-selection", () => {
 			newFactory(newPi);
 			await getCommand(newPi, "agent").handler("Guard", newCtx);
 			const contribution =
-				getAgentRuntimeComposition(newPi).getMainAgentContribution();
+				getAgentRuntimeComposition(newPi).getSelectedAgentContribution();
 			const modelCalls = [...newPi.setModelCalls];
 			const thinkingCalls = [...newPi.thinkingCalls];
 			const activeToolCalls = newPi.activeToolCalls.map((names) => [...names]);
@@ -1587,9 +1593,9 @@ describe("main-agent-selection", () => {
 			expect(newPi.setModelCalls).toEqual(modelCalls);
 			expect(newPi.thinkingCalls).toEqual(thinkingCalls);
 			expect(newPi.activeToolCalls).toEqual(activeToolCalls);
-			expect(getAgentRuntimeComposition(newPi).getMainAgentContribution()).toBe(
-				contribution,
-			);
+			expect(
+				getAgentRuntimeComposition(newPi).getSelectedAgentContribution(),
+			).toBe(contribution);
 			expect(await readSelectedStateBytes(agentDir, "/tmp/project")).toEqual(
 				stateBytes,
 			);
@@ -1611,7 +1617,7 @@ describe("main-agent-selection", () => {
 
 	test("does not apply external selected-agent state changes before reload when the session started without an agent", async () => {
 		// Purpose: running sessions must not reread selected-agent state before each prompt.
-		// Input and expected output: missing state at startup keeps mainAgentContribution undefined after an external Sage state file appears.
+		// Input and expected output: missing state at startup keeps selectedAgentContribution undefined after an external Sage state file appears.
 		// Edge case: the external state is valid for the current working directory.
 		// Dependencies: this test uses the session_start and before_agent_start handlers from the shared runtime composition.
 		await withIsolatedAgentDir(async (agentDir) => {
@@ -1640,7 +1646,7 @@ describe("main-agent-selection", () => {
 			});
 
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
 			).toBeUndefined();
 			expect(
 				await getBeforeAgentStartHandler(pi)(
@@ -1649,7 +1655,7 @@ describe("main-agent-selection", () => {
 				),
 			).toBeUndefined();
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
 			).toBeUndefined();
 		});
 	});
@@ -1687,7 +1693,8 @@ describe("main-agent-selection", () => {
 			await sessionStart({ type: "session_start", reason: "reload" }, ctx);
 
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("Sage");
 			expect(
 				await getBeforeAgentStartHandler(pi)(
@@ -1776,8 +1783,8 @@ describe("main-agent-selection", () => {
 			expect(resumedPi.thinkingCalls).toEqual(["high"]);
 			expect(resumedPi.activeToolCalls).toEqual([["read", "write"]]);
 			expect(
-				getAgentRuntimeComposition(resumedPi).getMainAgentContribution()?.agent
-					?.id,
+				getAgentRuntimeComposition(resumedPi).getSelectedAgentContribution()
+					?.agent?.id,
 			).toBe("Coder");
 			expect(
 				await getBeforeAgentStartHandler(resumedPi)(
@@ -1818,7 +1825,8 @@ describe("main-agent-selection", () => {
 			await sessionStart({ type: "session_start", reason: "new" }, ctx);
 
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("Coder");
 			expect(
 				await getBeforeAgentStartHandler(pi)(
@@ -1883,7 +1891,8 @@ describe("main-agent-selection", () => {
 			expect(newPi.thinkingCalls).toEqual(["high"]);
 			expect(newPi.activeToolCalls).toEqual([["read", "write"]]);
 			expect(
-				getAgentRuntimeComposition(newPi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(newPi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("Coder");
 			expect(
 				await getBeforeAgentStartHandler(newPi)(
@@ -1948,11 +1957,11 @@ describe("main-agent-selection", () => {
 			);
 
 			expect(
-				getAgentRuntimeComposition(firstNewPi).getMainAgentContribution()?.agent
-					?.id,
+				getAgentRuntimeComposition(firstNewPi).getSelectedAgentContribution()
+					?.agent?.id,
 			).toBe("Coder");
 			expect(
-				getAgentRuntimeComposition(secondNewPi).getMainAgentContribution(),
+				getAgentRuntimeComposition(secondNewPi).getSelectedAgentContribution(),
 			).toBeUndefined();
 			expect(
 				await getBeforeAgentStartHandler(secondNewPi)(
@@ -2005,8 +2014,8 @@ describe("main-agent-selection", () => {
 			);
 
 			expect(
-				getAgentRuntimeComposition(forkedPi).getMainAgentContribution()?.agent
-					?.id,
+				getAgentRuntimeComposition(forkedPi).getSelectedAgentContribution()
+					?.agent?.id,
 			).toBe("Coder");
 			expect(
 				await getBeforeAgentStartHandler(forkedPi)(
@@ -2051,7 +2060,7 @@ describe("main-agent-selection", () => {
 			await sessionStart({ type: "session_start", reason: "reload" }, ctx);
 
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution(),
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
 			).toBeUndefined();
 			expect(
 				await getBeforeAgentStartHandler(pi)(
@@ -3078,7 +3087,8 @@ describe("main-agent-selection", () => {
 			expect(ctx.notifications[0]?.type).toBe("warning");
 			expect(ctx.notifications[0]?.message).toContain(brokenPath);
 			expect(
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id,
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+					?.id,
 			).toBe("valid");
 		});
 	});
@@ -3086,7 +3096,7 @@ describe("main-agent-selection", () => {
 	test("restores baseline active tools when switching to an agent without tools", async () => {
 		// Purpose: omitted tools must not leak a previous agent-specific tool policy.
 		// Input and expected output: first agent applies write-only tools, second agent without tools restores baseline tools.
-		// Edge case: baseline tools are captured before the first main-agent contribution.
+		// Edge case: baseline tools are captured before the first selected-agent contribution.
 		// Dependencies: this test observes active-tool calls through the shared runtime composition fake.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeAgent(agentDir, {
@@ -3138,12 +3148,12 @@ describe("main-agent-selection", () => {
 				);
 
 				const contribution =
-					getAgentRuntimeComposition(pi).getMainAgentContribution();
+					getAgentRuntimeComposition(pi).getSelectedAgentContribution();
 				expect(contribution?.agent?.id).toBe("reviewer");
 			});
 		});
 
-		test("clears main agent contribution when flag value is 'none'", async () => {
+		test("clears selected-agent contribution when flag value is 'none'", async () => {
 			await withIsolatedAgentDir(async () => {
 				const pi = createExtensionApiFake({
 					flagValues: new Map([["agent", "none"]]),
@@ -3158,7 +3168,7 @@ describe("main-agent-selection", () => {
 				);
 
 				const contribution =
-					getAgentRuntimeComposition(pi).getMainAgentContribution();
+					getAgentRuntimeComposition(pi).getSelectedAgentContribution();
 				expect(contribution).toBeUndefined();
 			});
 		});
@@ -3184,7 +3194,7 @@ describe("main-agent-selection", () => {
 				);
 
 				const contribution =
-					getAgentRuntimeComposition(pi).getMainAgentContribution();
+					getAgentRuntimeComposition(pi).getSelectedAgentContribution();
 				expect(contribution).toBeUndefined();
 			});
 		});
@@ -3214,7 +3224,7 @@ describe("main-agent-selection", () => {
 					);
 
 					const contribution =
-						getAgentRuntimeComposition(pi).getMainAgentContribution();
+						getAgentRuntimeComposition(pi).getSelectedAgentContribution();
 					expect(contribution).toBeUndefined();
 				} finally {
 					if (previousSubagentId === undefined) {
@@ -3224,6 +3234,126 @@ describe("main-agent-selection", () => {
 					}
 				}
 			});
+		});
+	});
+});
+
+describe("process with a launched subagent", () => {
+	const launchedContribution = {
+		prompt: "Launched prompt",
+		agent: { id: "Launched" },
+	};
+
+	/** Creates a fake pi whose composition reports a launched subagent and holds its slot. */
+	function createLaunchedPi(options: ExtensionApiFakeOptions = {}) {
+		const pi = createExtensionApiFake(options);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.setLaunchedSubagentResolver(() => "Launched");
+		composition.setSelectedAgentContribution(launchedContribution);
+		return pi;
+	}
+
+	test("keeps the launched agent over the --agent flag and the saved main agent", async () => {
+		// Purpose: only the subagent definition shapes the agent of a launched process.
+		// Input and expected output: a saved main agent and flag --agent name Reviewer, and the slot still holds the launched agent without model, thinking, or tool calls.
+		// Edge case: the restoration reads the same state file that a previous process wrote.
+		// Dependencies: isolated state, the composition resolver of the launch flag.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = createModel("openai", "gpt-test");
+			await writeAgent(agentDir, {
+				id: "Reviewer",
+				description: "Reviews code",
+				body: "Reviewer prompt",
+				model: { id: "openai/gpt-test", thinking: "high" },
+				tools: ["read"],
+			});
+			const previousPi = createExtensionApiFake();
+			mainAgentSelection(previousPi);
+			await getCommand(previousPi, "agent").handler(
+				"Reviewer",
+				createCommandContext("/tmp/project", undefined, [model]),
+			);
+			const pi = createLaunchedPi({
+				flagValues: new Map([["agent", "Reviewer"]]),
+			});
+			const toolCalls = pi.activeToolCalls.length;
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
+			mainAgentSelection(pi);
+
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+
+			expect(
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+			).toBe(launchedContribution);
+			expect(pi.setModelCalls).toEqual([]);
+			expect(pi.thinkingCalls).toEqual([]);
+			expect(pi.activeToolCalls).toHaveLength(toolCalls);
+			expect(ctx.notifications).toEqual([]);
+			expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+				action: "continue",
+			});
+		});
+	});
+
+	test("shares the --agent value through the composition", async () => {
+		// Purpose: main-agent-selection alone reads flag --agent, and run-subagent needs its value to report both flags.
+		// Input and expected output: the composition reports the flag value that main-agent-selection owns; an absent flag reads as no value.
+		// Edge case: a boolean flag value reads as no value, and the value is read at call time.
+		// Dependencies: isolated state and the composition resolver of the agent flag.
+		await withIsolatedAgentDir(async () => {
+			const pi = createExtensionApiFake();
+			const composition = getAgentRuntimeComposition(pi);
+			mainAgentSelection(pi);
+
+			expect(composition.getAgentFlagId()).toBeUndefined();
+			pi.flagValues.set("agent", true);
+			expect(composition.getAgentFlagId()).toBeUndefined();
+			pi.flagValues.set("agent", "Reviewer");
+			expect(composition.getAgentFlagId()).toBe("Reviewer");
+		});
+	});
+
+	test("rejects /agent, /agent none, and the shortcut without opening the selector or changing state", async () => {
+		// Purpose: selection commands must not replace or clear the launched agent.
+		// Input and expected output: each selection entry reports one warning, opens no selector, and leaves the slot and the saved state unchanged.
+		// Edge case: an explicit ID of an existing main agent is rejected too.
+		// Dependencies: isolated registry and state, the composition resolver of the launch flag.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Reviewer",
+				description: "Reviews code",
+				body: "Reviewer prompt",
+			});
+			const pi = createLaunchedPi();
+			const ctx = createCommandContext("/tmp/project", "Reviewer", [], true);
+			mainAgentSelection(pi);
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+
+			await getCommand(pi, "agent").handler("Reviewer", ctx);
+			await getCommand(pi, "agent").handler("none", ctx);
+			await getCommand(pi, "agent").handler("", ctx);
+			await getShortcut(pi, "ctrl+alt+a").handler(ctx);
+
+			expect(ctx.notifications.map((entry) => entry.type)).toEqual([
+				"warning",
+				"warning",
+				"warning",
+				"warning",
+			]);
+			expect(ctx.customCalls).toEqual([]);
+			expect(
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+			).toBe(launchedContribution);
+			expect(pi.setModelCalls).toEqual([]);
+			await expect(
+				readSelectedStateBytes(agentDir, "/tmp/project"),
+			).rejects.toThrow();
 		});
 	});
 });

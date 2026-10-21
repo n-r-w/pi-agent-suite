@@ -36,6 +36,7 @@ import {
 	splitModelId,
 } from "../../shared/model-settings";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
+import { buildSelectedAgentContribution } from "../../shared/selected-agent-contribution";
 import { isSingleLineText } from "../../shared/text-contracts";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import {
@@ -45,6 +46,8 @@ import {
 import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import { isChildSubagentProcess } from "./environment";
 
+/** CLI flag that selects the main agent for one process. */
+const AGENT_FLAG = "agent";
 const COMMAND_NAME = "agent";
 
 /** Command argument and selector label that clear the main-agent selection. */
@@ -381,7 +384,7 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	}
 
 	writeRuntimeDiagnostic("main-agent-selection.loaded");
-	getAgentRuntimeComposition(pi);
+	const composition = getAgentRuntimeComposition(pi);
 	const initializationGate = createInitializationGate();
 	const restorationState: SessionRestorationState = {
 		initializationGate,
@@ -413,15 +416,49 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 		return { action: "continue" };
 	});
 
-	pi.registerFlag("agent", {
+	pi.registerFlag(AGENT_FLAG, {
 		description:
 			"Set main agent for this session (ephemeral, not persisted to disk)",
 		type: "string",
 	});
+	// Pi shows a flag value only to its owner, so run-subagent reads --agent through the composition.
+	composition.setAgentFlagResolver(() => {
+		const value = pi.getFlag(AGENT_FLAG);
+		return typeof value === "string" ? value : undefined;
+	});
 
+	registerSelectionEntries(pi, select);
+
+	pi.on("session_start", async (event, ctx) => {
+		pendingAgent = undefined;
+		await runSessionRestoration(
+			pi,
+			event,
+			ctx as MainAgentContext,
+			restorationState,
+		);
+	});
+
+	pi.on("session_shutdown", (event, ctx) => {
+		pendingAgent = undefined;
+		handleSessionShutdown(pi, event, ctx as MainAgentContext);
+	});
+}
+
+/** Selects an agent, or queues the selection while a run is active. */
+type SelectAgent = (
+	agent: AgentDefinition | null,
+	ctx: MainAgentContext,
+) => Promise<void>;
+
+/** Registers the command and the shortcut that select a main agent. */
+function registerSelectionEntries(pi: ExtensionAPI, select: SelectAgent): void {
 	pi.registerCommand(COMMAND_NAME, {
 		description: "Select the main agent for this working directory",
 		handler: async (args, ctx) => {
+			if (rejectSelectionInLaunchedProcess(pi, ctx as MainAgentContext)) {
+				return;
+			}
 			const trimmedArgs = args.trim();
 			if (trimmedArgs.toLowerCase() === NO_AGENT_ARGUMENT) {
 				await select(null, ctx as MainAgentContext);
@@ -440,23 +477,11 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	pi.registerShortcut(SHORTCUT, {
 		description: "Select the main agent",
 		handler: async (ctx) => {
+			if (rejectSelectionInLaunchedProcess(pi, ctx as MainAgentContext)) {
+				return;
+			}
 			await selectMainAgent(pi, ctx as MainAgentContext, undefined, select);
 		},
-	});
-
-	pi.on("session_start", async (event, ctx) => {
-		pendingAgent = undefined;
-		await runSessionRestoration(
-			pi,
-			event,
-			ctx as MainAgentContext,
-			restorationState,
-		);
-	});
-
-	pi.on("session_shutdown", (event, ctx) => {
-		pendingAgent = undefined;
-		handleSessionShutdown(pi, event, ctx as MainAgentContext);
 	});
 }
 
@@ -471,11 +496,11 @@ async function handleSessionStart(
 		isChildSubagentProcess: isChildSubagentProcess(),
 		cwd: mainContext.cwd,
 	});
-	if (isChildSubagentProcess()) {
+	if (isChildSubagentProcess() || isLaunchedSubagentProcess(pi)) {
 		return;
 	}
 
-	const agentFlag = pi.getFlag("agent");
+	const agentFlag = pi.getFlag(AGENT_FLAG);
 	if (typeof agentFlag === "string") {
 		await applyEphemeralAgent(pi, mainContext, agentFlag);
 		writeRuntimeDiagnostic(
@@ -483,7 +508,7 @@ async function handleSessionStart(
 			{
 				agentFlag,
 				activeAgentId:
-					getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+					getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
 						?.id ?? null,
 			},
 		);
@@ -502,7 +527,7 @@ async function handleSessionStart(
 				{
 					reason: (event as SessionStartEventLike).reason ?? null,
 					activeAgentId:
-						getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+						getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
 							?.id ?? null,
 				},
 			);
@@ -521,8 +546,8 @@ async function handleSessionStart(
 	writeRuntimeDiagnostic("main-agent-selection.session-start.completed", {
 		reason: (event as SessionStartEventLike).reason ?? null,
 		activeAgentId:
-			getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
-			null,
+			getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+				?.id ?? null,
 		activeTools: pi.getActiveTools(),
 	});
 }
@@ -543,6 +568,26 @@ function handleSessionShutdown(
 
 	captureSessionReplacementMainAgent(pi, event, mainContext);
 	markAgentRuntimeCompositionStale(pi);
+}
+
+/** Returns true when `--subagent` launched this process, so only its definition shapes the agent. */
+function isLaunchedSubagentProcess(pi: ExtensionAPI): boolean {
+	return getAgentRuntimeComposition(pi).getLaunchedSubagentId() !== undefined;
+}
+
+/** Reports and returns true when a selection entry runs in a process with a launched subagent. */
+function rejectSelectionInLaunchedProcess(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+): boolean {
+	if (!isLaunchedSubagentProcess(pi)) {
+		return false;
+	}
+	reportIssue(
+		ctx,
+		"agent selection is unavailable in a process started with --subagent",
+	);
+	return true;
 }
 
 /** Returns whether this session-start reason must refresh selected-agent state from disk. */
@@ -566,7 +611,7 @@ function captureSessionReplacementMainAgent(
 	}
 
 	const activeAgentId =
-		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
+		getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent?.id ??
 		null;
 	writeRuntimeDiagnostic("main-agent-selection.handoff.captured", {
 		handoffKey,
@@ -596,7 +641,7 @@ async function restoreSessionReplacementMainAgent(
 		return { handled: false };
 	}
 	if (handoff.activeAgentId === null) {
-		getAgentRuntimeComposition(pi).clearMainAgentContribution();
+		getAgentRuntimeComposition(pi).clearSelectedAgentContribution();
 		return { handled: true, applied: true };
 	}
 
@@ -610,7 +655,7 @@ async function restoreSessionReplacementMainAgent(
 			mainContext,
 			`selected agent ${handoff.activeAgentId} was not found`,
 		);
-		getAgentRuntimeComposition(pi).clearMainAgentContribution();
+		getAgentRuntimeComposition(pi).clearSelectedAgentContribution();
 		return { handled: true, applied: true };
 	}
 
@@ -725,16 +770,16 @@ async function restoreSelectedMainAgent(
 		issue: state.kind === "invalid" ? state.issue : null,
 	});
 	if (state.kind === "missing") {
-		composition.clearMainAgentContribution();
+		composition.clearSelectedAgentContribution();
 		return;
 	}
 	if (state.kind === "invalid") {
-		composition.clearMainAgentContribution();
+		composition.clearSelectedAgentContribution();
 		reportIssue(mainContext, state.issue);
 		return;
 	}
 	if (state.state.activeAgentId === null) {
-		composition.clearMainAgentContribution();
+		composition.clearSelectedAgentContribution();
 		return;
 	}
 
@@ -747,7 +792,7 @@ async function restoreSelectedMainAgent(
 			mainContext,
 			`selected agent ${state.state.activeAgentId} was not found`,
 		);
-		composition.clearMainAgentContribution();
+		composition.clearSelectedAgentContribution();
 		return;
 	}
 
@@ -848,7 +893,7 @@ async function promptForAgent(
 	}
 
 	const currentAgentId =
-		getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
+		getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent?.id ??
 		null;
 	const options: SelectItem[] = [
 		{ value: NO_AGENT_VALUE, label: NO_AGENT_LABEL },
@@ -901,7 +946,7 @@ async function selectNoMainAgent(
 	ctx: MainAgentContext,
 ): Promise<void> {
 	const normalizedCwd = normalizeCwd(ctx.cwd);
-	getAgentRuntimeComposition(pi).clearMainAgentContribution();
+	getAgentRuntimeComposition(pi).clearSelectedAgentContribution();
 
 	await writeSelectedAgentState({
 		cwd: normalizedCwd,
@@ -958,17 +1003,9 @@ async function applyAgentSelection(
 		resolvedWorkflows: policies.workflows ?? null,
 		configuredSubagents: agent.agents ?? null,
 	});
-	getAgentRuntimeComposition(pi).setMainAgentContribution({
-		prompt: agent.prompt,
-		agent: {
-			id: agent.id,
-			...(policies.tools !== undefined ? { tools: policies.tools } : {}),
-			...workflowPolicyMetadata(policies.workflows),
-			...(agent.agents !== undefined ? { agents: agent.agents } : {}),
-		},
-		...(agent.model !== undefined ? { model: agent.model } : {}),
-		...(policies.tools !== undefined ? { tools: policies.tools } : {}),
-	});
+	getAgentRuntimeComposition(pi).setSelectedAgentContribution(
+		buildSelectedAgentContribution(agent, policies),
+	);
 	return "applied";
 }
 
@@ -1078,13 +1115,6 @@ function resolveMainAgentPolicies(
 	};
 }
 
-/** Omits unrestricted policy while preserving empty and explicit canonical IDs. */
-function workflowPolicyMetadata(policy: ResolvedWorkflowPolicy): {
-	readonly workflows?: readonly string[];
-} {
-	return policy === undefined ? {} : { workflows: policy };
-}
-
 /** Resolves a main-agent tool policy through the same exact-name and wildcard rules used by subagents. */
 function resolveMainAgentTools(
 	pi: ExtensionAPI,
@@ -1119,7 +1149,7 @@ function formatAgentOption(agent: AgentDefinition): string {
 
 /** Clears selected runtime contribution after failed selection so stale agents cannot stay active. */
 function clearMainAgentSelection(pi: ExtensionAPI): void {
-	getAgentRuntimeComposition(pi).clearMainAgentContribution();
+	getAgentRuntimeComposition(pi).clearSelectedAgentContribution();
 }
 
 /** Reads selected-agent state for the current working directory. */
@@ -1303,7 +1333,7 @@ function reportIssue(ctx: MainAgentContext, issue: string): void {
 /**
  * Applies a main agent for the current session only, without persisting
  * the selection to disk. Used by the --agent CLI flag.
- * When agentId is "none", clears the main agent contribution.
+ * When agentId is "none", clears the selected-agent contribution.
  * When the agent ID is not found, reports an error without changing state.
  */
 async function applyEphemeralAgent(
@@ -1312,7 +1342,7 @@ async function applyEphemeralAgent(
 	agentId: string,
 ): Promise<void> {
 	if (agentId.toLowerCase() === NO_AGENT_ARGUMENT) {
-		getAgentRuntimeComposition(pi).clearMainAgentContribution();
+		getAgentRuntimeComposition(pi).clearSelectedAgentContribution();
 		return;
 	}
 	const agents = await loadSelectableAgents(pi, ctx);

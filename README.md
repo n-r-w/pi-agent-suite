@@ -356,6 +356,7 @@ Minimum config example:
 {
   "enabled": true
 }
+```
 
 Full config example:
 ```json
@@ -493,7 +494,7 @@ Parameters:
 
 | Extension | Default behavior | What it does | Quick settings | Details |
 | --- | --- | --- | --- | --- |
-| `system-prompt` | Enabled | Replaces pi's base system prompt with a Markdown template and runtime variables. | `system-prompt/config.json`: `enabled`, `templateFile`. | [docs/extensions/system-prompt.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/system-prompt.md) |
+| `system-prompt` | Enabled | Replaces Pi's base system prompt with a Markdown template and runtime variables unless the session has a custom prompt. | `system-prompt/config.json`: `enabled`, `templateFile`. | [docs/extensions/system-prompt.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/system-prompt.md) |
 | `project-rules` | Enabled | Appends recursive project Markdown rules from `.pi/rules`; global `~/.pi` storage is excluded. | `project-rules/config.json`: `enabled`, `rulesDir`. | [docs/extensions/project-rules.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/project-rules.md) |
 | `mcp-wrapper` | No MCP tools until configured | Registers tools from configured MCP servers, caches tool metadata, and adds `/mcp-refresh`. | `mcp-wrapper/config.json`: `settings.enabled`, `settings.timeouts`, `mcpServers`. | [docs/extensions/mcp-wrapper.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/mcp-wrapper.md) |
 | `enable-tools` | Enabled | Enables configured built-in tools such as `grep`, `find`, and `ls`. | `enable-tools/config.json`: `enabled`, `include`, `exclude`. | [docs/extensions/enable-tools.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/enable-tools.md) |

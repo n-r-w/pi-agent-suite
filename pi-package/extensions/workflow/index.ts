@@ -8,7 +8,7 @@ import type {
 import { Type } from "typebox";
 import {
 	getAgentRuntimeComposition,
-	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+	SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { getSuiteExtensionDir } from "../../shared/agent-suite-storage";
 import {
@@ -332,7 +332,7 @@ const WORKFLOW_CREATE_SCHEMA = Type.Object(
 /** Provides the contribution event used after main-agent policy replaces active tools. */
 interface WorkflowEventBus {
 	on(
-		eventName: typeof MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+		eventName: typeof SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 		listener: () => void,
 	): () => void;
 }
@@ -717,7 +717,7 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 	});
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
-	).on(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
+	).on(SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
 		refreshTools("policy-reset");
 	});
 	pi.on("session_start", async (_event, ctx) => {
@@ -854,7 +854,7 @@ function createWorkflowPolicyReader(
 		childPolicy ?? {
 			kind: "resolved",
 			policy:
-				getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
 					?.workflows,
 		};
 }
@@ -1140,7 +1140,7 @@ async function synchronizeWorkflowModelRuntime(
 		workflow: state.workflow,
 		stageId,
 		agentSettings:
-			getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
+			getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.model,
 		currentThinking: pi.getThinkingLevel(),
 		restoration: state.restoration,
 	});
@@ -1180,7 +1180,7 @@ async function commitWorkflowStateChange(
 		workflow: persistedCandidate.workflow,
 		stageId,
 		agentSettings:
-			getAgentRuntimeComposition(pi).getMainAgentContribution()?.model,
+			getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.model,
 		currentThinking: pi.getThinkingLevel(),
 		restoration: persistedCandidate.restoration,
 	});

@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
-import { readConfig } from "./entry-config";
+import { SUBAGENT_DEPTH_ENV } from "../../shared/subagent-environment";
+import { readConfig, readCurrentDepth } from "./entry-config";
 
 describe("subagents entry config", () => {
 	let suiteDir = "";
@@ -245,5 +246,43 @@ describe("subagents entry config", () => {
 				issue: "string",
 			});
 		}
+	});
+});
+
+describe("current delegation depth", () => {
+	let previousDepth: string | undefined;
+
+	beforeEach(() => {
+		previousDepth = process.env[SUBAGENT_DEPTH_ENV];
+		delete process.env[SUBAGENT_DEPTH_ENV];
+	});
+
+	afterEach(() => {
+		if (previousDepth === undefined) {
+			delete process.env[SUBAGENT_DEPTH_ENV];
+		} else {
+			process.env[SUBAGENT_DEPTH_ENV] = previousDepth;
+		}
+	});
+
+	test.each([
+		{ env: undefined, launched: false, expected: 0 },
+		{ env: undefined, launched: true, expected: 1 },
+		{ env: "2", launched: false, expected: 2 },
+		{ env: "2", launched: true, expected: 2 },
+	])("reads depth $expected for variable $env and launched $launched", ({
+		env,
+		launched,
+		expected,
+	}) => {
+		// Purpose: a launched subagent has no parent that sets the variable, so it gets the depth of a direct child.
+		// Input and expected output: an absent variable gives 1 only for a launched subagent; a present variable always wins.
+		// Edge case: a non-launched process without the variable keeps depth 0.
+		// Dependencies: process environment.
+		if (env !== undefined) {
+			process.env[SUBAGENT_DEPTH_ENV] = env;
+		}
+
+		expect(readCurrentDepth(launched)).toBe(expected);
 	});
 });
