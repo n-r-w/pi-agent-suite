@@ -8,11 +8,13 @@ The extension owns threshold detection and compaction initiation. `custom-compac
 
 ## Threshold source
 
-The extension uses the active model's `contextWindow`, Pi's native `compaction.reserveTokens`, and its own `tolerancePercent`. Project settings take precedence over agent settings for `reserveTokens` through Pi's native settings rules. The threshold is:
+The extension uses the selected model's `contextWindow` and `reserveTokens`, plus its own `tolerancePercent`. Pi first merges project settings over agent settings. For `reserveTokens`, Pi then uses the selected model's `compaction.modelOverrides["provider/id"].reserveTokens`, ordinary `compaction.reserveTokens`, or its built-in default of 16,384 tokens, in that order. The extension reads these settings for each threshold check, so model changes apply to the next check. The threshold is:
 
 ```text
 contextWindow - reserveTokens + contextWindow * tolerancePercent / 100
 ```
+
+For example, with a 100,000-token window, ordinary `reserveTokens` of 16,000, a selected-model override of 8,000, and zero tolerance, the threshold is 92,000 tokens.
 
 `tolerancePercent` has no upper limit and the result is not capped at `contextWindow`. The declared window can therefore represent a billing boundary below the provider's real capacity. For example, `contextWindow: 275000`, `reserveTokens: 16384`, and `tolerancePercent: 250` produce a threshold of 946116 tokens. The user is responsible for keeping the threshold within the provider's real capacity and intended pricing range.
 
@@ -38,7 +40,7 @@ The optional configuration file is `~/.pi/agent/agent-suite/compaction-trigger/c
 
 When `enabled` is `false`, the extension registers no lifecycle handlers. It does not abort runs, replace messages, initiate compaction, or append service messages. Pi's native compaction behavior remains controlled by `compaction.enabled`.
 
-`compaction-trigger` remains active when `compaction.enabled` is `false`. It continues to use `compaction.reserveTokens` and calls the public `ctx.compact()` API when its own threshold is reached. Disable native automatic compaction when `tolerancePercent` must postpone compaction beyond Pi's declared `contextWindow`; otherwise Pi can compact first at its native threshold. Disabling native automatic compaction also disables Pi's automatic overflow recovery, so a provider rejection beyond its real capacity remains a failed run.
+`compaction-trigger` remains active when `compaction.enabled` is `false`. It continues to use the selected model's `reserveTokens` and calls the public `ctx.compact()` API when its own threshold is reached. Disable native automatic compaction when `tolerancePercent` must postpone compaction beyond Pi's declared `contextWindow`; otherwise Pi can compact first at its native threshold. Disabling native automatic compaction also disables Pi's automatic overflow recovery, so a provider rejection beyond its real capacity remains a failed run.
 
 The extension also passes requests through when the active model has no positive `contextWindow`.
 

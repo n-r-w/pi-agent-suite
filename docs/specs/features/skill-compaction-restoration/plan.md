@@ -53,7 +53,7 @@ Each unit implements an approved design element. No separate test infrastructure
 
 ### Unit UNT-01 - SLICE: Preserve skill read ownership
 
-Status: pending.
+Status: done, commit `69a351c`. RED/GREEN boundary test and all three reviews passed. Final checks: 1,841 Bun tests passed, 1 skipped; Go tests, typecheck, and check passed.
 
 #### Goal
 

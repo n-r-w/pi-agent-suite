@@ -2,7 +2,10 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT } from "../../shared/agent-runtime-composition";
 import {
 	CHILD_AGENT_PROCESS_ENV,
@@ -48,6 +51,7 @@ interface FooterComponentFake {
 	dispose?(): void;
 }
 
+/** Supplies session data and UI hooks for footer event tests. */
 interface SessionContextFake {
 	readonly cwd: string;
 	readonly hasUI: true;
@@ -60,7 +64,14 @@ interface SessionContextFake {
 	readonly modelRegistry: {
 		isUsingOAuth(): boolean;
 	};
-	getContextUsage(): undefined;
+	/** Provides token usage for context display assertions. */
+	getContextUsage():
+		| {
+				readonly tokens: number;
+				readonly contextWindow: number;
+				readonly percent: number;
+		  }
+		| undefined;
 	readonly ui: {
 		notify(message: string, type: "warning"): void;
 		setFooter(
@@ -95,6 +106,124 @@ afterEach(async () => {
 });
 
 describe("footer", () => {
+	test("refreshes model-specific thresholds and omits them for disabled or invalid settings", async () => {
+		await withIsolatedSuiteDir(async (suiteDir) => {
+			await writeFooterConfig(suiteDir, {
+				showApiCost: false,
+				showApiTokens: false,
+			});
+			const cwd = join(suiteDir, "project");
+			const agentDir = join(suiteDir, "agent");
+			await mkdir(agentDir);
+			await mkdir(join(cwd, ".pi"), { recursive: true });
+			const createSettings = SettingsManager.create.bind(SettingsManager);
+			const settingsSpy = spyOn(SettingsManager, "create").mockImplementation(
+				(projectDir) => createSettings(projectDir, agentDir),
+			);
+			try {
+				for (const [settings, expected] of [
+					[
+						{
+							compaction: {
+								enabled: true,
+								reserveTokens: 16_000,
+								modelOverrides: {
+									"github-copilot/gpt-5.3-codex": { reserveTokens: 8_000 },
+								},
+							},
+						},
+						"90k/92k/100k",
+					],
+					[
+						{
+							compaction: {
+								enabled: true,
+								reserveTokens: 16_000,
+								modelOverrides: { "other/model": { reserveTokens: 8_000 } },
+							},
+						},
+						"90k/84k/100k",
+					],
+					[
+						{
+							compaction: {
+								modelOverrides: {
+									"github-copilot/gpt-5.3-codex": { reserveTokens: -1 },
+								},
+							},
+						},
+						"90k/100k",
+					],
+					[
+						{ compaction: { enabled: false, reserveTokens: 8_000 } },
+						"90k/100k",
+					],
+					["{", "90k/100k"],
+				] as const) {
+					await writeFile(
+						join(cwd, ".pi", "settings.json"),
+						typeof settings === "string" ? settings : JSON.stringify(settings),
+					);
+					const pi = createExtensionApiFake();
+					let component: FooterComponentFake | undefined;
+					const ctx = {
+						...createSessionContextFake((factory) => {
+							component = factory(
+								{ requestRender() {} },
+								{ fg: (_color, text) => text },
+								{
+									getExtensionStatuses: () => new Map(),
+									getGitBranch: () => null,
+								},
+							);
+						}),
+						cwd,
+						getContextUsage: () => ({
+							tokens: 90_000,
+							contextWindow: 100_000,
+							percent: 90,
+						}),
+					};
+					footer(pi as unknown as ExtensionAPI);
+					await getSessionStartHandler(pi)({}, ctx);
+					expect(component?.render(200)[0]).toContain(expected);
+					if (expected === "90k/92k/100k") {
+						const selectModel = pi.handlers.find(
+							({ eventName }) => eventName === "model_select",
+						)?.handler as (
+							event: { model: SessionContextFake["model"] },
+							ctx: SessionContextFake,
+						) => Promise<void>;
+						await selectModel(
+							{ model: { provider: "other", id: "model" } },
+							ctx,
+						);
+						expect(component?.render(200)[0]).toContain("90k/84k/100k");
+						await selectModel({ model: ctx.model }, ctx);
+						expect(component?.render(200)[0]).toContain("90k/92k/100k");
+						await writeFile(
+							join(cwd, ".pi", "settings.json"),
+							JSON.stringify({
+								compaction: {
+									modelOverrides: { "other/model": { keepRecentTokens: -1 } },
+								},
+							}),
+						);
+						await selectModel(
+							{ model: { provider: "other", id: "model" } },
+							ctx,
+						);
+						expect(component?.render(200)[0]).toContain("90k/100k");
+						expect(component?.render(200)[0]).toContain("other/model/");
+					}
+					component?.dispose?.();
+				}
+			} finally {
+				settingsSpy.mockRestore();
+			}
+		});
+	});
+
 	test("renders only when the ten-second usage refresh changes stored totals", async () => {
 		// Purpose: the active root footer must not request a global render when refreshed usage is unchanged.
 		// Inputs and expected output: the broker repeats the initial totals, then returns changed totals on the next fake tick.
