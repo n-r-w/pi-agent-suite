@@ -12,7 +12,7 @@ A separate `skill-restoration` extension decides after each compaction which ski
 
 `skill-restoration` is a separate package extension, so it works for `custom-compaction` results and for Pi standard compaction, also when `custom-compaction` is disabled.
 
-The configuration file is `~/.pi/agent/agent-suite/skill-restoration/config.json`, resolved through the shared agent-suite storage helpers, so `PI_AGENT_SUITE_DIR` overrides the root. The file has one key, `enabled`, with the default `true`. A missing file keeps the extension enabled. An unknown key, a value of a wrong type, or malformed JSON makes the configuration invalid: the extension then restores nothing and reports one warning, as `cmux` and `project-rules` do.
+The configuration file is `~/.pi/agent/agent-suite/skill-restoration/config.json`, resolved through the shared agent-suite storage helpers, so `PI_AGENT_SUITE_DIR` overrides the root. The file has one key, `enabled`, with the default `true`. A missing file keeps the extension enabled. An unknown key, a value of a wrong type, or malformed JSON makes the configuration invalid: the extension then restores nothing and reports one warning per extension instance. Configuration parsing follows the `cmux` and `project-rules` patterns.
 
 ### Restoration record
 
@@ -32,7 +32,7 @@ Files that the model loaded again inside the retained suffix stay in the context
 
 The extension takes the completed compaction from the latest compaction entry on the current branch. Pi appends the new compaction to the branch before `session_compact`, while the event field `compactionEntry` comes from a lookup by summary text and points to an older entry when two summaries have the same text.
 
-A path counts as a skill file when it lies inside the directory of a skill from the Pi skill list (FRQ-02). The extension takes this list from `pi.getCommands()`: for entries with `source: "skill"`, `sourceInfo.path` is the `SKILL.md` path, and its directory is the skill directory. Pi's resource loader sets `sourceInfo.path` to the skill file path for every skill source. This list is available at `session_compact`, which `systemPromptOptions.skills` of `before_agent_start` does not guarantee, for example when the user runs `/compact` right after reopening a session.
+A path counts as a skill file when it lies inside the directory of a skill from the Pi skill list (FRQ-02). The extension takes this list from `pi.getCommands()`: for entries with `source: "skill"`, `sourceInfo.path` is the `SKILL.md` path, and its directory is the skill directory. Pi's default and metadata resource-loading paths set `sourceInfo.path` to the skill file path. A custom resource-loader override remains responsible for the provenance it supplies. This list is available at `session_compact`, which `systemPromptOptions.skills` of `before_agent_start` does not guarantee, for example when the user runs `/compact` right after reopening a session.
 
 ### Content and budget
 
@@ -46,9 +46,9 @@ The extension adds files starting from the most recently loaded one while they f
 
 ### Insertion into the model request
 
-On each `context` event, the extension inserts one message with the record content right after the summary of the latest compaction. The message content stays the same until the next compaction, so prompt caching keeps working. Pi rebuilds every request from the session and passes it through `context` handlers, so the insertion repeats for each request and the context holds one copy of the files.
+On each `context` event, the extension inserts one message with the record content right after the summary of the latest compaction. The message content stays the same until the next compaction, preserving a stable request prefix. Cache hits depend on the provider. Pi rebuilds every request from the session and passes it through `context` handlers, so the insertion repeats for each request and the context holds one copy of the files.
 
-Pi checks the compaction threshold against the provider-reported usage of the latest response. Starting from the first response after compaction, this usage includes the inserted files.
+Pi has provider-usage and canonical-estimate compaction accounting paths. Provider-reported usage of a response includes the inserted files; canonical session estimates do not include context-only insertion. Restoration uses its own complete request estimate for the budget.
 
 ### Extension order
 
@@ -82,7 +82,7 @@ The skill guidelines in `system-prompt/prompts/system.md` stop telling the model
 
 ### Trade-offs
 
-- Returned skills do not appear in session exports, and `consult-advisor` does not see them.
+- The inserted restoration message is not a separate persisted transcript entry. Raw session exports include the custom record and its stored file contents. `consult-advisor` does not receive the context-only inserted message.
 - Each compaction adds the returned file content to the session file: a median of about 149,000 characters in the sampled sessions.
 - `custom-compaction` sizes the summary without the returned skills, so the summary gets space first and skills get the rest.
 - `compaction-trigger` no longer follows `context-projection` directly in the extension list.

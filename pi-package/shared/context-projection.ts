@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
@@ -10,7 +10,11 @@ import {
 import { readExtensionConfigFile } from "./agent-suite-storage";
 import { countProjectionTextTokens } from "./context-size";
 import { readCustomCompactionConfig } from "./custom-compaction-config";
-import { expandHomePath } from "./path-expansion";
+import {
+	getReadToolCallPath,
+	isPathInsideOrEqual,
+	resolveReadInputPath,
+} from "./skill-paths";
 import {
 	parseToolResultSummaryConfig,
 	type ToolResultSummaryConfig,
@@ -1418,33 +1422,6 @@ function collectReadPathsByToolCallId(
 	return readPathsByToolCallId;
 }
 
-/** Returns the path argument accepted by pi's read tool. */
-function getReadToolCallPath(args: unknown): string | undefined {
-	if (!isRecord(args)) {
-		return undefined;
-	}
-
-	const path = args["path"];
-	if (typeof path === "string") {
-		return path;
-	}
-
-	const filePath = args["file_path"];
-	return typeof filePath === "string" ? filePath : undefined;
-}
-
-/** Resolves read input paths with the same cwd, tilde, and @-prefix semantics used by pi's read tool. */
-function resolveReadInputPath(inputPath: string, cwd: string): string {
-	const withoutAtPrefix = inputPath.startsWith("@")
-		? inputPath.slice(1)
-		: inputPath;
-	const expandedPath = expandHomePath(withoutAtPrefix);
-	return isAbsolute(expandedPath)
-		? resolve(expandedPath)
-		: resolve(cwd, expandedPath);
-}
-
-/** Expands the home directory shorthand accepted by pi path tools. */
 /** Returns true when a read result belongs to a loaded skill root and must stay visible. */
 function isLoadedSkillReadResult(
 	message: Extract<AgentMessage, { role: "toolResult" }>,
@@ -1461,15 +1438,6 @@ function isLoadedSkillReadResult(
 		loadedSkillRoots.some((skillRoot) =>
 			isPathInsideOrEqual(readPath, skillRoot),
 		)
-	);
-}
-
-/** Returns true when the target path is the root path or a descendant of it. */
-function isPathInsideOrEqual(targetPath: string, rootPath: string): boolean {
-	const relativePath = relative(resolve(rootPath), resolve(targetPath));
-	return (
-		relativePath === "" ||
-		(!relativePath.startsWith("..") && !isAbsolute(relativePath))
 	);
 }
 

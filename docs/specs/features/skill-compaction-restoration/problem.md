@@ -17,6 +17,8 @@ When the model loaded a skill file inside the summarized range, the content of t
 
 ## Evidence
 
+The source paths and current contracts were traced after rebasing onto local main; see `facts.md`. The local-session sample below is historical evidence from the original specification. Its raw records were not examined again during implementation research.
+
 - After compaction, Pi builds the model context from the system prompt, the compaction summary, and the retained suffix. The system prompt keeps only the skill list: name, description, and path. No extension of the package adds skill file content back.
 - The bundled `custom-compaction` prompts tell the summarizer to drop skills: `compaction-system.md` forbids "SKILLS.md files content and links" in the summary, `compaction-reduction.md` keeps only the path of each loaded `SKILL.md` in intermediate summaries, and `compaction.md` with `compaction-update.md` forbid listing previously loaded resources in the `<done>` section.
 - Pi standard compaction, which runs when `custom-compaction` is disabled or falls back, keeps only the `<read-files>` path list.
@@ -48,6 +50,7 @@ After compaction, the model context contains the skill files that the model had 
 
 - Some of the 120 skills that the model did not read again after compaction were still needed for the task. Nobody checked this.
 - The model follows skill instructions less often after compaction. Nobody measured this.
+- The historical sample totals describe the original investigation. This delivery relies on the traced context-removal behavior, rather than on a new measurement of those totals.
 
 ## Open questions
 
