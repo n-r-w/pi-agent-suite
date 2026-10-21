@@ -1,6 +1,6 @@
 # Delivery Plan: System prompt by kind of agent session
 
-Implement the approved solution in two sequential behavior slices, followed by the user's requested F2 and F3 corrections. The verification policy is `final_only`; O4-1 authorizes the original implementation, and the user's request to fix F2 and F3 authorizes the two follow-up units.
+Implement the approved solution in two sequential behavior slices, followed by the user's requested F2/F3 corrections and template-example update. The verification policy is `final_only`; O4-1 authorizes the original implementation, and subsequent user requests authorize the follow-up units.
 
 ## Key definitions and abbreviations
 Use [terms.md](terms.md). A slice delivers one observable behavior through the extension entry point, its documentation, and its tests.
@@ -35,6 +35,7 @@ flowchart TD
     U1["`Preserve custom prompts`"] --> U2["`Select role sections`"]
     U2 --> U3["`Use a template fixture`"]
     U3 --> U4["`Close README example`"]
+    U4 --> U5["`Update template example`"]
 ```
 
 ### Decomposition Justification
@@ -138,14 +139,37 @@ Runs after UNT-03 for stable sequential validation. It requires no production co
 #### Risks
 Adding the fence at the wrong boundary could alter another example. Inspect only the named example and compare the complete README diff.
 
+### Unit UNT-05 - DOCUMENT: Show role sections in the template example
+
+#### Goal
+Complete the extension documentation by demonstrating the implemented role-section syntax in `Template example`.
+
+#### Behavior
+A template author can copy the example and obtain common instructions/runtime values plus instructions selected for the main or child role.
+
+#### Work
+SubAgentCoderSimple updates only the fenced example under `## Template example` in `docs/extensions/system-prompt.md`. Preserve its common runtime variables. Add a mainAgent section for conversation with the user and a childAgent section for the caller's delegated task. Keep the example short; do not duplicate the complete bundled prompt or change product behavior. SubAgentCodeQuality checks syntax, SubAgentTextQuality checks example wording, and SubAgentAnalyst checks consistency with the implemented section behavior, in the required sequential order.
+
+#### Verification
+Extract the example and pass it through the production section parser and selector for both roles. Confirm valid, non-nested sections for each role, common variables retained, and section markers removed from selected output. Use manual validation only; add no permanent prompt-content test. Run `git diff --check`. Production checks from the last code/test change remain applicable because this unit changes documentation only.
+
+#### Exit criteria
+The example demonstrates both role sections and common runtime values, production parsing/selection and diff checks pass, all three reviews have no unresolved in-scope finding, and the correction has a local commit.
+
+#### Relation
+Follows completed UNT-04. It needs no new production behavior or dependency.
+
+#### Risks
+Moving runtime values into only one role would obscure their shared use. Keep all existing runtime variables outside both role sections.
+
 ## Test Strategy
 Use Bun fixture tests through the extension handlers. Add integration tests only if unit tests cannot prove package loading, single registration, or child Pi behavior. Real Pi checks use temporary cwd/state and debug extensions, inspect the final before-agent-start prompt and active tools, and terminate before any provider request. No prompt is passed in offline mode. Tests verify logic, never bundled prompt content.
 
 ## Dependencies and Resourcing
-UNT-01 and UNT-02 use SubAgentCoderRegular. UNT-03 and UNT-04 use SubAgentCoderSimple for the approved local corrections. Every unit receives SubAgentCodeQuality, SubAgentTextQuality, and SubAgentAnalyst checks in the workflow's required order. No new dependencies are required.
+UNT-01 and UNT-02 use SubAgentCoderRegular. UNT-03, UNT-04, and UNT-05 use SubAgentCoderSimple for the approved local corrections. Every unit receives SubAgentCodeQuality, SubAgentTextQuality, and SubAgentAnalyst checks in the workflow's required order. No new dependencies are required.
 
 ## Project Definition of Done
-Both feature slices and the two authorized follow-up corrections are committed locally. Project scripts pass; extension docs describe the implemented behavior; runtime checks and NRQ-01 comparison pass; the README example parser check passes; temporary runtime state is removed; the user receives an acceptance report. No push occurs.
+Both feature slices and all authorized follow-up corrections are committed locally. Project scripts pass; extension docs describe the implemented behavior; runtime checks and NRQ-01 comparison pass; the README example parser check passes; temporary runtime state is removed; the user receives an acceptance report. No push occurs.
 
 ## Assumptions
 No unresolved implementation assumption. Real Pi routing observations were collected before the checkpoint.
@@ -163,6 +187,7 @@ None.
 | UNT-02 | Done | `1a4aeed` |
 | UNT-03 | Done | `a0d0db7` |
 | UNT-04 | Done | `9350849` |
+| UNT-05 | Ready; example validation and all reviews passed | Recorded after commit |
 
 ## References
 - [technical-solution.md](technical-solution.md)

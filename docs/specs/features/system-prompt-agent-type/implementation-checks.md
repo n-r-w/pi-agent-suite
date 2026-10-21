@@ -98,5 +98,12 @@ UNT-04 adds only the missing closing-fence line. The parser now produces two sep
 
 The implementer, code reviewer, text reviewer, behavior reviewer, and main agent checked the correction. All reviews found no unresolved in-scope issue, and `git diff --check` passed. No permanent README-content test, new dependency, or production change was introduced. Full project tests were not rerun for this document-only unit; the last code/test change had already passed the main agent's full `bun run verify` in UNT-03.
 
+### UNT-05: Template example, corrected
+The user identified that `docs/extensions/system-prompt.md`, `Template example`, still showed only the original common template text. UNT-05 adds a mainAgent section for work with the user and a childAgent section for delegated work. The shared expert-assistant sentence and all seven existing runtime variables remain outside both sections.
+
+The implementer, code reviewer, behavior reviewer, and main agent extracted the example and validated it through the production section parser and selector. Both role sections are valid and nonempty. Each selection contains the common text and matching role instructions, with no section markers remaining. All seven runtime variables remain shared. The text review corrected child-role wording; all three required reviews have no unresolved finding, and `git diff --check` passed.
+
+Only the documented example and task records changed. No permanent prompt-content test or full production-test run was added for this documentation-only correction. The last code/test change remains covered by the successful UNT-03 verification.
+
 ## Open questions
-None. Both feature units and the authorized F2/F3 follow-up units passed their checks and required reviews. No unresolved task finding, new workaround, deprecation, or technical debt remains.
+None. Both feature units and all authorized follow-up units passed their checks and required reviews. No unresolved task finding, new workaround, deprecation, or technical debt remains.
