@@ -932,7 +932,7 @@ function createRootCoordinator(options: {
 		isAgentAvailable: (caller, agentId) =>
 			isAgentAvailableForCaller({
 				agents: options.agents,
-				mainAgent: composition.getMainAgentContribution()?.agent,
+				sessionAgent: composition.getSelectedAgentContribution()?.agent,
 				rootOwner: options.owner,
 				caller,
 				catalog: options.catalog,

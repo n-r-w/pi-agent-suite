@@ -391,9 +391,9 @@ describe("footer", () => {
 		await installFooterTestHarness();
 	});
 
-	test("renders No agent when runtime composition has no main-agent contribution", async () => {
-		// Purpose: the agent footer segment must reflect absence of the runtime main-agent contribution.
-		// Input and expected output: undefined mainAgentContribution renders `No agent`.
+	test("renders No agent when runtime composition has no selected-agent contribution", async () => {
+		// Purpose: the agent footer segment must reflect absence of the runtime selected-agent contribution.
+		// Input and expected output: undefined selectedAgentContribution renders `No agent`.
 		// Edge case: no legacy agent status is present in footerData.
 		// Dependencies: this test uses in-memory extension, session, footer data, and TUI fakes.
 		const { footerRenderer } = await installFooterTestHarness();
@@ -409,11 +409,11 @@ describe("footer", () => {
 
 	test("renders the main-agent ID from runtime composition", async () => {
 		// Purpose: the agent footer segment must use the same in-memory contribution that prompt composition uses.
-		// Input and expected output: runtime mainAgentContribution with agent id Sage renders `Sage`.
+		// Input and expected output: runtime selectedAgentContribution with agent id Sage renders `Sage`.
 		// Edge case: contribution without custom tools still updates the agent segment.
 		// Dependencies: this test uses shared runtime composition through the fake ExtensionAPI event bus.
 		const { pi, footerRenderer } = await installFooterTestHarness();
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Sage prompt",
 			agent: { id: "Sage" },
 		});
@@ -428,7 +428,7 @@ describe("footer", () => {
 		expect(renderedText).not.toContain("No agent");
 	});
 
-	test("ignores legacy agent extension status when runtime composition has no main-agent contribution", async () => {
+	test("ignores legacy agent extension status when runtime composition has no selected-agent contribution", async () => {
 		// Purpose: stale ctx.ui.setStatus("agent") data must not become a second source of truth.
 		// Input and expected output: footerData agent status Sage renders `No agent` because runtime composition is empty.
 		// Edge case: stale status text matches a valid agent-like label.
@@ -458,7 +458,7 @@ describe("footer", () => {
 				configurable: false,
 				enumerable: false,
 				value: {
-					getMainAgentContribution: () => ({
+					getSelectedAgentContribution: () => ({
 						prompt: "Stale prompt",
 						agent: { id: "Stale" },
 					}),
@@ -477,7 +477,7 @@ describe("footer", () => {
 		expect(renderedText).not.toContain("Stale");
 	});
 
-	test("requests render after runtime main-agent contribution changes", async () => {
+	test("requests render after runtime selected-agent contribution changes", async () => {
 		// Purpose: /agent changes must redraw the footer even though agent status is no longer written through ctx.ui.setStatus.
 		// Input and expected output: setting Sage after component creation triggers one render request and renders Sage.
 		// Edge case: the footer component reads the latest runtime state at render time.
@@ -490,7 +490,7 @@ describe("footer", () => {
 			tui,
 		);
 
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Sage prompt",
 			agent: { id: "Sage" },
 		});
@@ -556,7 +556,7 @@ describe("footer", () => {
 		const { pi, footerRenderer } = await installFooterTestHarness({
 			contextUsage: { tokens: 0, contextWindow: 272_000 },
 		});
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Coder prompt",
 			agent: { id: "Coder" },
 		});
@@ -654,7 +654,7 @@ describe("footer", () => {
 		const { pi, footerRenderer } = await installFooterTestHarness(
 			"/workspace/customer-platform-with-a-very-long-service-name/src/extensions/footer",
 		);
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Coder prompt",
 			agent: { id: "Coder" },
 		});
@@ -1057,7 +1057,7 @@ describe("footer", () => {
 			cwd: "/workspace/customer-platform-with-a-very-long-service-name/src/extensions/footer",
 			usageCost: 12.345,
 		});
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Coder prompt",
 			agent: { id: "Coder" },
 		});
@@ -1233,7 +1233,7 @@ describe("footer", () => {
 		// Edge case: an MCP failure without English error keywords remains primary, and publication order differs from key order.
 		// Dependencies: this test uses runtime agent composition and in-memory footer status data.
 		const { pi, footerRenderer } = await installFooterTestHarness();
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Architect prompt",
 			agent: { id: "Architect" },
 		});

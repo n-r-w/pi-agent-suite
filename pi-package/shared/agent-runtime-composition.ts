@@ -2,17 +2,17 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { writeRuntimeDiagnostic } from "./agent-runtime-diagnostics";
 import type { ModelSettings } from "./model-settings";
 
-export interface MainAgentRuntimeInfo {
+export interface SelectedAgentRuntimeInfo {
 	readonly id: string;
 	readonly tools?: readonly string[];
 	readonly workflows?: readonly string[];
 	readonly agents?: readonly string[];
 }
 
-export interface MainAgentContribution {
+export interface SelectedAgentContribution {
 	readonly prompt: string;
 	readonly tools?: readonly string[];
-	readonly agent?: MainAgentRuntimeInfo;
+	readonly agent?: SelectedAgentRuntimeInfo;
 	readonly model?: ModelSettings;
 }
 
@@ -34,11 +34,11 @@ type ActiveToolFilter = (toolNames: readonly string[]) => readonly string[];
 
 /** Runtime composition owner for agent-related prompt and active-tool contributions. */
 export interface AgentRuntimeComposition {
-	setMainAgentContribution(
-		contribution: MainAgentContribution | undefined,
+	setSelectedAgentContribution(
+		contribution: SelectedAgentContribution | undefined,
 	): void;
-	clearMainAgentContribution(): void;
-	getMainAgentContribution(): MainAgentContribution | undefined;
+	clearSelectedAgentContribution(): void;
+	getSelectedAgentContribution(): SelectedAgentContribution | undefined;
 	setSubagentsContribution(contribution: PromptContribution | undefined): void;
 	/** Records tools registered during extension loading without invoking Pi action methods. */
 	publishBaselineToolNames(toolNames: readonly string[]): void;
@@ -69,8 +69,8 @@ export interface AgentRuntimeComposition {
 	): void;
 }
 
-export const MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT =
-	"pi-harness:main-agent-contribution-change";
+export const SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT =
+	"pi-harness:selected-agent-contribution-change";
 
 /** Event bus channel for synchronous cross-extension composition lookup. */
 const COMPOSITION_REQUEST_CHANNEL =
@@ -95,7 +95,7 @@ const holderByPi = new WeakMap<ExtensionAPI, RuntimeCompositionHolder>();
 
 interface AgentRuntimeEventBus {
 	emit(
-		eventName: typeof MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+		eventName: typeof SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 		data: undefined,
 	): void;
 }
@@ -158,7 +158,7 @@ export function markAgentRuntimeCompositionStale(pi: ExtensionAPI): void {
 
 /** Owns final prompt and active-tool application for agent-related extensions. */
 class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
-	private mainAgentContribution: MainAgentContribution | undefined;
+	private selectedAgentContribution: SelectedAgentContribution | undefined;
 	private subagentsContribution: PromptContribution | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
 	private conveneCouncilContribution: PromptContribution | undefined;
@@ -177,13 +177,13 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 		writeRuntimeDiagnostic("runtime-composition.before-agent-start.registered");
 		this.pi.on("before_agent_start", async (event, ctx) => {
 			writeRuntimeDiagnostic("runtime-composition.before-agent-start.started", {
-				mainAgentId: this.mainAgentContribution?.agent?.id ?? null,
-				mainPromptLength: this.mainAgentContribution?.prompt.length ?? 0,
+				mainAgentId: this.selectedAgentContribution?.agent?.id ?? null,
+				mainPromptLength: this.selectedAgentContribution?.prompt.length ?? 0,
 				activeToolsBeforeFilter: this.pi.getActiveTools(),
 			});
 			const activeToolNames = await this.resolveActiveToolNames(ctx);
 			const { cwd } = ctx;
-			const mainAgentPrompt = this.mainAgentContribution?.prompt;
+			const selectedAgentPrompt = this.selectedAgentContribution?.prompt;
 			const subagentsPrompt = await resolvePromptContribution(
 				this.subagentsContribution,
 				activeToolNames,
@@ -200,7 +200,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 				cwd,
 			);
 			const contributionPrompts = [
-				mainAgentPrompt,
+				selectedAgentPrompt,
 				subagentsPrompt,
 				consultAdvisorPrompt,
 				conveneCouncilPrompt,
@@ -208,11 +208,11 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			writeRuntimeDiagnostic(
 				"runtime-composition.before-agent-start.resolved",
 				{
-					mainAgentId: this.mainAgentContribution?.agent?.id ?? null,
+					mainAgentId: this.selectedAgentContribution?.agent?.id ?? null,
 					activeTools: activeToolNames,
 					basePromptLength:
 						(event as BeforeAgentStartEventLike).systemPrompt?.length ?? 0,
-					mainAgentPromptLength: mainAgentPrompt?.length ?? 0,
+					mainAgentPromptLength: selectedAgentPrompt?.length ?? 0,
 					subagentsPromptLength: subagentsPrompt?.length ?? 0,
 					consultAdvisorPromptLength: consultAdvisorPrompt?.length ?? 0,
 					conveneCouncilPromptLength: conveneCouncilPrompt?.length ?? 0,
@@ -228,15 +228,15 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 				.filter(Boolean)
 				.join("\n\n");
 			writeRuntimeDiagnostic("runtime-composition.before-agent-start.applied", {
-				mainAgentId: this.mainAgentContribution?.agent?.id ?? null,
+				mainAgentId: this.selectedAgentContribution?.agent?.id ?? null,
 				finalPromptLength: systemPrompt.length,
 			});
 			return { systemPrompt };
 		});
 	}
 
-	public setMainAgentContribution(
-		contribution: MainAgentContribution | undefined,
+	public setSelectedAgentContribution(
+		contribution: SelectedAgentContribution | undefined,
 	): void {
 		this.ensureBaselineActiveTools();
 
@@ -247,28 +247,28 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			mainAgentSubagents: contribution?.agent?.agents ?? null,
 			activeToolsBeforeSet: this.pi.getActiveTools(),
 		});
-		this.mainAgentContribution = contribution;
+		this.selectedAgentContribution = contribution;
 		this.reconcileActiveTools();
 		writeRuntimeDiagnostic("runtime-composition.main-agent.tools-applied", {
 			mainAgentId: contribution?.agent?.id ?? null,
 			activeToolsAfterSet: this.pi.getActiveTools(),
 		});
 		(this.pi.events as unknown as AgentRuntimeEventBus).emit(
-			MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+			SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 			undefined,
 		);
 	}
 
-	public clearMainAgentContribution(): void {
-		if (this.mainAgentContribution === undefined) {
+	public clearSelectedAgentContribution(): void {
+		if (this.selectedAgentContribution === undefined) {
 			return;
 		}
 
-		this.setMainAgentContribution(undefined);
+		this.setSelectedAgentContribution(undefined);
 	}
 
-	public getMainAgentContribution(): MainAgentContribution | undefined {
-		return this.mainAgentContribution;
+	public getSelectedAgentContribution(): SelectedAgentContribution | undefined {
+		return this.selectedAgentContribution;
 	}
 
 	public setSubagentsContribution(
@@ -427,8 +427,8 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 			}
 		}
 		const resolved = [...baseline];
-		if (this.mainAgentContribution?.tools !== undefined) {
-			intersectToolNames(resolved, this.mainAgentContribution.tools);
+		if (this.selectedAgentContribution?.tools !== undefined) {
+			intersectToolNames(resolved, this.selectedAgentContribution.tools);
 		}
 		for (const allowedNames of this.restrictiveToolNames.values()) {
 			intersectToolNames(resolved, allowedNames);

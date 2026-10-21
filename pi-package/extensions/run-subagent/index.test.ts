@@ -1377,7 +1377,7 @@ describe("subagents entry", () => {
 		const pi = createPiFake();
 		const ctx = createContext(suiteDir, [], { model: TEST_MODEL });
 		await subagents(pi);
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Main prompt",
 			tools: ["subagent_start", "subagent_steer", "subagent_wait"],
 			agent: {
@@ -2374,7 +2374,7 @@ describe("subagents entry", () => {
 				},
 			});
 			await subagents(pi);
-			getAgentRuntimeComposition(pi).setMainAgentContribution({
+			getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 				prompt: "Main prompt",
 				tools: ["subagent_start", "subagent_steer", "subagent_wait"],
 				agent: {
@@ -2659,7 +2659,7 @@ describe("subagents entry", () => {
 		const grandchildAvailability = {
 			allowed: isAgentAvailableForCaller({
 				agents,
-				mainAgent: { id: "Main", agents: ["Blocked"] },
+				sessionAgent: { id: "Main", agents: ["Blocked"] },
 				rootOwner,
 				caller: grandchildOwner,
 				catalog: reconstructedCatalog,
@@ -2668,7 +2668,7 @@ describe("subagents entry", () => {
 			}),
 			blocked: isAgentAvailableForCaller({
 				agents,
-				mainAgent: { id: "Main", agents: ["Blocked"] },
+				sessionAgent: { id: "Main", agents: ["Blocked"] },
 				rootOwner,
 				caller: grandchildOwner,
 				catalog: reconstructedCatalog,
@@ -2992,7 +2992,7 @@ describe("subagents entry", () => {
 			...createContext(suiteDir, [], { model: TEST_MODEL }),
 			sessionManager: fork,
 		} as ExtensionContext;
-		getAgentRuntimeComposition(pi).setMainAgentContribution({
+		getAgentRuntimeComposition(pi).setSelectedAgentContribution({
 			prompt: "Main",
 			tools: ["subagent_start"],
 			agent: { id: "Main", tools: ["subagent_start"], agents: ["Allowed"] },

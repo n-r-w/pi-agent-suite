@@ -141,7 +141,7 @@ describe("agent runtime composition", () => {
 	test("filters late external activation and restores it when restrictions lift", () => {
 		const pi = createPi(["read", "hidden"], ["read", "hidden", "room_tool"]);
 		const composition = getAgentRuntimeComposition(pi);
-		composition.setMainAgentContribution({
+		composition.setSelectedAgentContribution({
 			prompt: "",
 			tools: ["read", "room_tool"],
 		});
@@ -155,7 +155,7 @@ describe("agent runtime composition", () => {
 		composition.setRestrictiveToolNames("child", undefined);
 		composition.setRestrictiveToolFilter("deny-room", undefined);
 		expect(pi.getActiveTools()).toEqual(["read", "room_tool"]);
-		composition.clearMainAgentContribution();
+		composition.clearSelectedAgentContribution();
 		expect(pi.getActiveTools()).toEqual(["read", "hidden", "room_tool"]);
 	});
 
@@ -233,7 +233,7 @@ describe("agent runtime composition", () => {
 	 * Proves every main-agent tool policy is a remove-only filter of the stable baseline.
 	 * Input and expected output: a reordered allowlist with registered baseline-external write preserves [read, edit]; clearing a narrower policy restores read under the child restriction.
 	 * Edge case: write is registered but absent from the baseline, so the policy cannot grant it.
-	 * Dependencies: main-agent contribution updates and named restrictive layers both trigger composition reconciliation.
+	 * Dependencies: selected-agent contribution updates and named restrictive layers both trigger composition reconciliation.
 	 */
 	test("treats main-agent tools as a baseline-ordered remove-only filter", () => {
 		const pi = createPi(
@@ -242,20 +242,20 @@ describe("agent runtime composition", () => {
 		);
 		const composition = getAgentRuntimeComposition(pi);
 		composition.setRestrictiveToolNames("child", ["read", "edit"]);
-		composition.setMainAgentContribution({
+		composition.setSelectedAgentContribution({
 			prompt: "Main-agent prompt",
 			tools: ["edit", "write", "read"],
 		});
 
 		expect(pi.getActiveTools()).toEqual(["read", "edit"]);
 
-		composition.setMainAgentContribution({
+		composition.setSelectedAgentContribution({
 			prompt: "Main-agent prompt",
 			tools: ["edit"],
 		});
 		expect(pi.getActiveTools()).toEqual(["edit"]);
 
-		composition.clearMainAgentContribution();
+		composition.clearSelectedAgentContribution();
 		expect(pi.getActiveTools()).toEqual(["read", "edit"]);
 	});
 

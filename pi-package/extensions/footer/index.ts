@@ -7,7 +7,7 @@ import type {
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	getAgentRuntimeComposition,
-	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+	SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { isChildAgentProcess } from "../../shared/child-agent-environment";
 import {
@@ -101,7 +101,7 @@ interface FooterTui {
 
 interface FooterEventBus {
 	on(
-		eventName: typeof MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+		eventName: typeof SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 		listener: () => void,
 	): () => void;
 }
@@ -398,8 +398,8 @@ function readFooterRenderState(
 ): FooterRenderState {
 	return {
 		agentLabel:
-			getAgentRuntimeComposition(pi).getMainAgentContribution()?.agent?.id ??
-			NO_AGENT_LABEL,
+			getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.agent
+				?.id ?? NO_AGENT_LABEL,
 		thinkingLevel: pi.getThinkingLevel(),
 		contextUsage: getProjectionAwareContextUsage(
 			ctx.sessionManager.getSessionId(),
@@ -690,7 +690,7 @@ function createFooterComponent({
 	const requestRender = () => tui.requestRender();
 	let agentLabel = readFooterRenderState(pi, ctx).agentLabel;
 	const unsubscribeFromAgentChanges = (pi.events as FooterEventBus).on(
-		MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+		SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 		() => {
 			const nextAgentLabel = readFooterRenderState(pi, ctx).agentLabel;
 			if (nextAgentLabel === agentLabel) {

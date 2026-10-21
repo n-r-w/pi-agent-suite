@@ -12,7 +12,7 @@ import {
 import { getAgentRegistryWarningReporter } from "../../shared/agent-registry-warnings";
 import {
 	getAgentRuntimeComposition,
-	type MainAgentRuntimeInfo,
+	type SelectedAgentRuntimeInfo,
 } from "../../shared/agent-runtime-composition";
 import { writeRuntimeDiagnostic } from "../../shared/agent-runtime-diagnostics";
 import { resolveThinkingLevel } from "../../shared/model-settings";
@@ -157,7 +157,7 @@ export function publishPromptContribution(
 					cwd,
 					getAgentRegistryWarningReporter(pi),
 				),
-				mainAgent: composition.getMainAgentContribution()?.agent,
+				sessionAgent: composition.getSelectedAgentContribution()?.agent,
 				selectedAgentId: readSubagentAgentId(),
 				depth: readCurrentDepth(),
 				maxDepth,
@@ -167,7 +167,7 @@ export function publishPromptContribution(
 	composition.setRestrictiveToolFilter("subagent-depth", (toolNames) =>
 		filterSubagentTools(
 			toolNames,
-			composition.getMainAgentContribution()?.agent,
+			composition.getSelectedAgentContribution()?.agent,
 			readCurrentDepth(),
 			maxDepth,
 		),
@@ -183,7 +183,7 @@ interface EffectiveCallableAgentPolicy {
 /** Carries one runtime authorization decision through the shared policy resolver. */
 interface AgentAvailabilityOptions {
 	readonly agents: readonly AgentDefinition[];
-	readonly mainAgent: MainAgentRuntimeInfo | undefined;
+	readonly sessionAgent: SelectedAgentRuntimeInfo | undefined;
 	readonly rootOwner: OwnerIdentity;
 	readonly caller: OwnerIdentity;
 	readonly catalog: SessionCatalogQuery;
@@ -194,14 +194,14 @@ interface AgentAvailabilityOptions {
 /** Resolves the selected caller policy and its globally defined callable subset. */
 export function resolveEffectiveCallableAgentPolicy(
 	agents: readonly AgentDefinition[],
-	mainAgent: MainAgentRuntimeInfo | undefined,
+	sessionAgent: SelectedAgentRuntimeInfo | undefined,
 	selectedAgentId: string | undefined,
 ): EffectiveCallableAgentPolicy {
 	const selectedAgent =
 		selectedAgentId === undefined
 			? undefined
 			: agents.find((agent) => agentIdMatches(agent.id, selectedAgentId));
-	const allowedAgentIds = (selectedAgent ?? mainAgent)?.agents;
+	const allowedAgentIds = (selectedAgent ?? sessionAgent)?.agents;
 	const callableAgents =
 		allowedAgentIds === undefined
 			? agents
@@ -229,7 +229,7 @@ export function isAgentAvailableForCaller(
 	}
 	return resolveEffectiveCallableAgentPolicy(
 		options.agents,
-		options.mainAgent,
+		options.sessionAgent,
 		selectedAgentId,
 	).callableAgents.some((agent) =>
 		agentIdMatches(agent.id, options.requestedAgentId),
@@ -273,7 +273,7 @@ export function resolveCallerSelectedAgentId(
 interface BuildSubagentsPromptOptions {
 	readonly activeToolNames: readonly string[];
 	readonly agents: readonly AgentDefinition[];
-	readonly mainAgent: MainAgentRuntimeInfo | undefined;
+	readonly sessionAgent: SelectedAgentRuntimeInfo | undefined;
 	readonly selectedAgentId: string | undefined;
 	readonly depth: number;
 	readonly maxDepth: number;
@@ -287,7 +287,7 @@ function buildSubagentsPrompt(
 	const {
 		activeToolNames,
 		agents,
-		mainAgent,
+		sessionAgent,
 		selectedAgentId,
 		depth,
 		maxDepth,
@@ -295,7 +295,7 @@ function buildSubagentsPrompt(
 	} = options;
 	const policy = resolveEffectiveCallableAgentPolicy(
 		agents,
-		mainAgent,
+		sessionAgent,
 		selectedAgentId,
 	);
 	const promptParts = policy.selectedAgent?.prompt
@@ -343,7 +343,7 @@ function buildSubagentsPrompt(
 /** Filters all three subagent tools through depth and selected-agent policy. */
 function filterSubagentTools(
 	toolNames: readonly string[],
-	mainAgent: MainAgentRuntimeInfo | undefined,
+	sessionAgent: SelectedAgentRuntimeInfo | undefined,
 	depth: number,
 	maxDepth: number,
 ): readonly string[] {
@@ -351,12 +351,12 @@ function filterSubagentTools(
 		depth >= maxDepth
 			? toolNames.filter((name) => !SUBAGENT_TOOL_NAME_SET.has(name))
 			: toolNames;
-	if (mainAgent?.tools === undefined) {
+	if (sessionAgent?.tools === undefined) {
 		return depthFiltered;
 	}
 	return depthFiltered.filter(
 		(name) =>
-			!SUBAGENT_TOOL_NAME_SET.has(name) || mainAgent.tools?.includes(name),
+			!SUBAGENT_TOOL_NAME_SET.has(name) || sessionAgent.tools?.includes(name),
 	);
 }
 

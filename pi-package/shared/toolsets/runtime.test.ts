@@ -248,7 +248,7 @@ describe("toolset runtime", () => {
 		const controls = createFakePi(["read", "files_read", "files_write"]);
 		const runtime = getToolsetRuntime(controls.pi);
 		runtime.replaceProvider("mcp", [filesToolset()]);
-		getAgentRuntimeComposition(controls.pi).setMainAgentContribution({
+		getAgentRuntimeComposition(controls.pi).setSelectedAgentContribution({
 			prompt: "Main-agent prompt",
 			tools: ["files_write", "read", "activate_toolset", "files_read"],
 		});

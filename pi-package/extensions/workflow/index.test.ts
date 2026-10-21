@@ -13,7 +13,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Check } from "typebox/value";
 import {
 	getAgentRuntimeComposition,
-	MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT,
+	SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
 } from "../../shared/agent-runtime-composition";
 import { CHILD_AGENT_PROCESS_ENV } from "../../shared/child-agent-environment";
 import { SUBAGENT_WORKFLOW_IDS_ENV } from "../../shared/subagent-environment";
@@ -435,7 +435,7 @@ function setMainWorkflowPolicy(
 	if (fake.api === undefined) {
 		throw new Error("extension API missing");
 	}
-	getAgentRuntimeComposition(fake.api).setMainAgentContribution({
+	getAgentRuntimeComposition(fake.api).setSelectedAgentContribution({
 		prompt: "main",
 		...(tools === undefined ? {} : { tools }),
 		agent: {
@@ -1776,7 +1776,7 @@ describe("workflow extension lifecycle", () => {
 		if (fake.api === undefined) {
 			throw new Error("extension API missing");
 		}
-		getAgentRuntimeComposition(fake.api).setMainAgentContribution({
+		getAgentRuntimeComposition(fake.api).setSelectedAgentContribution({
 			prompt: "main",
 			model: {
 				id: "openai-codex/gpt-5.6-luna",
@@ -2750,7 +2750,7 @@ describe("workflow extension lifecycle", () => {
 			throw new Error("extension API missing");
 		}
 		const composition = getAgentRuntimeComposition(fake.api);
-		composition.setMainAgentContribution({
+		composition.setSelectedAgentContribution({
 			prompt: "main",
 			tools: ["read", "workflow_activate", "workflow_transition"],
 		});
@@ -2770,7 +2770,7 @@ describe("workflow extension lifecycle", () => {
 	});
 
 	/** Proves a main-agent policy reset replaces stale suppression ownership. */
-	test("reconciles inactive state after main-agent contribution changes", async () => {
+	test("reconciles inactive state after selected-agent contribution changes", async () => {
 		await createSuite();
 		const fake = await createFakePi();
 		setMainWorkflowPolicy(fake, undefined, [
@@ -2802,17 +2802,17 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.activeTools).toEqual(["read"]);
 	});
 
-	/** Proves shutdown releases the main-agent contribution listener. */
+	/** Proves shutdown releases the selected-agent contribution listener. */
 	test("unsubscribes from main-agent changes on shutdown", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
-		expect(fake.listeners.get(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT)?.size).toBe(
-			1,
-		);
+		expect(
+			fake.listeners.get(SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT)?.size,
+		).toBe(1);
 		await runLifecycle(fake, "session_shutdown");
-		expect(fake.listeners.get(MAIN_AGENT_CONTRIBUTION_CHANGE_EVENT)?.size).toBe(
-			0,
-		);
+		expect(
+			fake.listeners.get(SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT)?.size,
+		).toBe(0);
 	});
 
 	/** Proves resolved policies preserve saved snapshots across removed and invalid catalogs. */
@@ -2869,7 +2869,7 @@ describe("workflow extension lifecycle", () => {
 		// Purpose: changing the selected agent must not hide workflow state persisted in the session branch.
 		// Inputs and expected output: delivery is restored while allowed, then remains visible after policy changes to another workflow.
 		// Edge case: tool and provider-context availability may change without deleting the saved active workflow.
-		// Dependencies: saved workflow replay, main-agent contribution changes, and independent status presentation.
+		// Dependencies: saved workflow replay, selected-agent contribution changes, and independent status presentation.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		setMainWorkflowPolicy(fake, ["delivery"]);

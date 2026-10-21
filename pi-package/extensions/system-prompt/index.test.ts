@@ -373,7 +373,7 @@ describe("system-prompt", () => {
 					context.ctx,
 				);
 				const composition = getAgentRuntimeComposition(pi);
-				composition.setMainAgentContribution({
+				composition.setSelectedAgentContribution({
 					prompt: "Fixture selected-agent contribution",
 					tools: ["read", "bash"],
 				});

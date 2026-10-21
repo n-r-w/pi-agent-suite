@@ -388,7 +388,7 @@ describe("effective callable-agent policy", () => {
 		const availability = {
 			topAllowed: isAgentAvailableForCaller({
 				agents: AGENTS,
-				mainAgent: { id: "Main", agents: ["Allowed"] },
+				sessionAgent: { id: "Main", agents: ["Allowed"] },
 				rootOwner: ROOT_OWNER,
 				caller: ROOT_OWNER,
 				catalog,
@@ -397,7 +397,7 @@ describe("effective callable-agent policy", () => {
 			}),
 			topBlocked: isAgentAvailableForCaller({
 				agents: AGENTS,
-				mainAgent: { id: "Main", agents: ["Allowed"] },
+				sessionAgent: { id: "Main", agents: ["Allowed"] },
 				rootOwner: ROOT_OWNER,
 				caller: ROOT_OWNER,
 				catalog,
@@ -406,7 +406,7 @@ describe("effective callable-agent policy", () => {
 			}),
 			nestedAllowed: isAgentAvailableForCaller({
 				agents: AGENTS,
-				mainAgent: { id: "Main", agents: ["Blocked"] },
+				sessionAgent: { id: "Main", agents: ["Blocked"] },
 				rootOwner: ROOT_OWNER,
 				caller: NESTED_OWNER,
 				catalog,
@@ -415,7 +415,7 @@ describe("effective callable-agent policy", () => {
 			}),
 			nestedBlocked: isAgentAvailableForCaller({
 				agents: AGENTS,
-				mainAgent: { id: "Main", agents: ["Blocked"] },
+				sessionAgent: { id: "Main", agents: ["Blocked"] },
 				rootOwner: ROOT_OWNER,
 				caller: NESTED_OWNER,
 				catalog,

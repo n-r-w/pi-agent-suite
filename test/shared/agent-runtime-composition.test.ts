@@ -92,14 +92,14 @@ test("creates a fresh runtime composition after shutdown marks the previous runt
 	const second = createCompositionApiFake(events);
 
 	const firstComposition = module.getAgentRuntimeComposition(first.pi);
-	firstComposition.setMainAgentContribution({
+	firstComposition.setSelectedAgentContribution({
 		prompt: "Old main prompt",
 		agent: { id: "old" },
 	});
 	module.markAgentRuntimeCompositionStale(first.pi);
 
 	const secondComposition = module.getAgentRuntimeComposition(second.pi);
-	secondComposition.setMainAgentContribution({
+	secondComposition.setSelectedAgentContribution({
 		prompt: "New main prompt",
 		agent: { id: "new" },
 	});
@@ -110,7 +110,9 @@ test("creates a fresh runtime composition after shutdown marks the previous runt
 	expect(
 		second.handlers.filter((handler) => handler.event === "before_agent_start"),
 	).toHaveLength(1);
-	expect(secondComposition.getMainAgentContribution()?.agent?.id).toBe("new");
+	expect(secondComposition.getSelectedAgentContribution()?.agent?.id).toBe(
+		"new",
+	);
 	const secondPromptHandler = second.handlers.find(
 		(handler) => handler.event === "before_agent_start",
 	)?.handler;
@@ -130,17 +132,17 @@ test("shares one runtime composition across isolated module instances", async ()
 
 	const compositionA = moduleA.getAgentRuntimeComposition(pi);
 	const compositionB = moduleB.getAgentRuntimeComposition(pi);
-	compositionA.setMainAgentContribution({
+	compositionA.setSelectedAgentContribution({
 		prompt: "Main prompt",
 		agent: { id: "main", agents: ["helper"] },
 	});
 	compositionB.setSubagentsContribution({
 		buildPrompt: () =>
-			compositionB.getMainAgentContribution()?.agent?.agents?.join(","),
+			compositionB.getSelectedAgentContribution()?.agent?.agents?.join(","),
 	});
 	compositionB.setConveneCouncilContribution({ prompt: "Council prompt" });
 
-	expect(compositionB.getMainAgentContribution()?.agent?.agents).toEqual([
+	expect(compositionB.getSelectedAgentContribution()?.agent?.agents).toEqual([
 		"helper",
 	]);
 	expect(
