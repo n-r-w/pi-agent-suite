@@ -72,9 +72,9 @@ export async function resolveLaunchConfiguration(
 	const providerConfigured = ctx.modelRegistry.hasConfiguredAuth(model);
 	const parentDepth =
 		request.ownerRuntimeLeaseId === undefined
-			? readCurrentDepth()
+			? readProcessDepth(pi)
 			: (supervisor?.findRuntimeDepth(request.ownerRuntimeLeaseId) ??
-				readCurrentDepth());
+				readProcessDepth(pi));
 	return {
 		cwd: ctx.cwd,
 		modelId: `${model.provider}/${model.id}`,
@@ -101,8 +101,15 @@ export async function resolveLaunchConfiguration(
 	};
 }
 
+/** Reads the delegation depth of this process, which a launched subagent counts as a direct child. */
+function readProcessDepth(pi: ExtensionAPI): number {
+	return readCurrentDepth(
+		getAgentRuntimeComposition(pi).getLaunchedSubagentId() !== undefined,
+	);
+}
+
 /** Resolves a configured agent model or the current owner model through public registry APIs. */
-function resolveAgentModel(
+export function resolveAgentModel(
 	agent: AgentDefinition,
 	ctx: ExtensionContext,
 ): {
@@ -159,7 +166,7 @@ export function publishPromptContribution(
 				),
 				sessionAgent: composition.getSelectedAgentContribution()?.agent,
 				selectedAgentId: readSubagentAgentId(),
-				depth: readCurrentDepth(),
+				depth: readProcessDepth(pi),
 				maxDepth,
 				extensionDescription,
 			}),
@@ -168,7 +175,7 @@ export function publishPromptContribution(
 		filterSubagentTools(
 			toolNames,
 			composition.getSelectedAgentContribution()?.agent,
-			readCurrentDepth(),
+			readProcessDepth(pi),
 			maxDepth,
 		),
 	);

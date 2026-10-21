@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentDefinition } from "../../shared/agent-registry";
+import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import {
 	SUBAGENT_AGENT_ID_ENV,
@@ -148,6 +149,8 @@ describe("effective callable-agent policy", () => {
 			}),
 		);
 		const pi = {
+			events: { emit: () => undefined, on: () => () => {} },
+			on: () => undefined,
 			getThinkingLevel: () => "high",
 		} as unknown as ExtensionAPI;
 		const ctx = {
@@ -312,6 +315,124 @@ describe("effective callable-agent policy", () => {
 				delete process.env[SUBAGENT_AGENT_ID_ENV];
 			} else {
 				process.env[SUBAGENT_AGENT_ID_ENV] = previousAgentId;
+			}
+		}
+	});
+
+	test.each([
+		{ maxDepth: 1, expectedTools: [] as string[] },
+		{
+			maxDepth: 2,
+			expectedTools: ["subagent_start", "subagent_wait"] as string[],
+		},
+	])("filters subagent tools of a launched subagent at maxDepth $maxDepth", async ({
+		maxDepth,
+		expectedTools,
+	}) => {
+		// Purpose: a launched subagent delegates like a direct child of a Pi main agent, which has depth 1.
+		// Input and expected output: without PI_SUBAGENT_DEPTH, maxDepth 1 removes subagent tools and maxDepth 2 keeps them.
+		// Edge case: the process has no parent, so the depth comes from the launch and not from the environment.
+		// Dependencies: production runtime composition and the launched-subagent resolver.
+		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
+		const previousAgentId = process.env[SUBAGENT_AGENT_ID_ENV];
+		delete process.env[SUBAGENT_DEPTH_ENV];
+		delete process.env[SUBAGENT_AGENT_ID_ENV];
+		let activeTools = ["subagent_start", "subagent_wait"];
+		let beforeAgentStart:
+			| ((event: unknown, ctx: unknown) => Promise<unknown>)
+			| undefined;
+		const pi = {
+			events: { emit: () => undefined, on: () => () => {} },
+			on: (eventName: string, handler: typeof beforeAgentStart) => {
+				if (eventName === "before_agent_start") {
+					beforeAgentStart = handler;
+				}
+			},
+			getActiveTools: () => [...activeTools],
+			setActiveTools: (toolNames: string[]) => {
+				activeTools = [...toolNames];
+			},
+		} as unknown as ExtensionAPI;
+		try {
+			getAgentRuntimeComposition(pi).setLaunchedSubagentResolver(
+				() => "Worker",
+			);
+			publishPromptContribution(pi, maxDepth, "Shared extension guidance");
+			if (beforeAgentStart === undefined) {
+				throw new Error("runtime composition handler was not registered");
+			}
+			await beforeAgentStart({ systemPrompt: "Base" }, { cwd: "/tmp" });
+
+			expect(activeTools).toEqual(expectedTools);
+		} finally {
+			if (previousDepth === undefined) {
+				delete process.env[SUBAGENT_DEPTH_ENV];
+			} else {
+				process.env[SUBAGENT_DEPTH_ENV] = previousDepth;
+			}
+			if (previousAgentId === undefined) {
+				delete process.env[SUBAGENT_AGENT_ID_ENV];
+			} else {
+				process.env[SUBAGENT_AGENT_ID_ENV] = previousAgentId;
+			}
+		}
+	});
+
+	test.each([
+		{ launched: false, expectedDepth: 1 },
+		{ launched: true, expectedDepth: 2 },
+	])("gives a child of a process with launched $launched the depth $expectedDepth", async ({
+		launched,
+		expectedDepth,
+	}) => {
+		// Purpose: children of a launched subagent start one level below the launched agent.
+		// Input and expected output: a child of a root process gets depth 1 and a child of a launched subagent gets depth 2.
+		// Edge case: PI_SUBAGENT_DEPTH is absent in both processes.
+		// Dependencies: production runtime composition and launch configuration resolution.
+		const previousDepth = process.env[SUBAGENT_DEPTH_ENV];
+		delete process.env[SUBAGENT_DEPTH_ENV];
+		const pi = {
+			events: { emit: () => undefined, on: () => () => {} },
+			on: () => undefined,
+			getThinkingLevel: () => "off",
+		} as unknown as ExtensionAPI;
+		getAgentRuntimeComposition(pi).setLaunchedSubagentResolver(() =>
+			launched ? "Worker" : undefined,
+		);
+		const ctx = {
+			cwd: "/tmp/project",
+			model: { provider: "test", id: "model", contextWindow: 1000 },
+			modelRegistry: {
+				hasConfiguredAuth: () => true,
+				async getApiKeyAndHeaders() {
+					return { ok: true };
+				},
+			},
+		};
+		try {
+			const configuration = await resolveLaunchConfiguration({
+				pi,
+				ctx: ctx as never,
+				agents: AGENTS,
+				supervisor: undefined,
+				request: {
+					owner: ROOT_OWNER,
+					sessionKey: {
+						ownerPiSessionId: ROOT_OWNER.ownerPiSessionId,
+						ownerLocalSessionId: 1,
+					},
+					agentId: "Allowed",
+					taskName: "Task",
+					prompt: "work",
+				},
+			});
+
+			expect(configuration.depth).toBe(expectedDepth);
+		} finally {
+			if (previousDepth === undefined) {
+				delete process.env[SUBAGENT_DEPTH_ENV];
+			} else {
+				process.env[SUBAGENT_DEPTH_ENV] = previousDepth;
 			}
 		}
 	});

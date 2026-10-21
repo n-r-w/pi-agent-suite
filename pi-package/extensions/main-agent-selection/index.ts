@@ -36,6 +36,7 @@ import {
 	splitModelId,
 } from "../../shared/model-settings";
 import type { ReasoningLevel } from "../../shared/reasoning-levels";
+import { buildSelectedAgentContribution } from "../../shared/selected-agent-contribution";
 import { isSingleLineText } from "../../shared/text-contracts";
 import { resolveToolPolicy } from "../../shared/tool-policy";
 import {
@@ -419,9 +420,38 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 		type: "string",
 	});
 
+	registerSelectionEntries(pi, select);
+
+	pi.on("session_start", async (event, ctx) => {
+		pendingAgent = undefined;
+		await runSessionRestoration(
+			pi,
+			event,
+			ctx as MainAgentContext,
+			restorationState,
+		);
+	});
+
+	pi.on("session_shutdown", (event, ctx) => {
+		pendingAgent = undefined;
+		handleSessionShutdown(pi, event, ctx as MainAgentContext);
+	});
+}
+
+/** Selects an agent, or queues the selection while a run is active. */
+type SelectAgent = (
+	agent: AgentDefinition | null,
+	ctx: MainAgentContext,
+) => Promise<void>;
+
+/** Registers the command and the shortcut that select a main agent. */
+function registerSelectionEntries(pi: ExtensionAPI, select: SelectAgent): void {
 	pi.registerCommand(COMMAND_NAME, {
 		description: "Select the main agent for this working directory",
 		handler: async (args, ctx) => {
+			if (rejectSelectionInLaunchedProcess(pi, ctx as MainAgentContext)) {
+				return;
+			}
 			const trimmedArgs = args.trim();
 			if (trimmedArgs.toLowerCase() === NO_AGENT_ARGUMENT) {
 				await select(null, ctx as MainAgentContext);
@@ -440,23 +470,11 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	pi.registerShortcut(SHORTCUT, {
 		description: "Select the main agent",
 		handler: async (ctx) => {
+			if (rejectSelectionInLaunchedProcess(pi, ctx as MainAgentContext)) {
+				return;
+			}
 			await selectMainAgent(pi, ctx as MainAgentContext, undefined, select);
 		},
-	});
-
-	pi.on("session_start", async (event, ctx) => {
-		pendingAgent = undefined;
-		await runSessionRestoration(
-			pi,
-			event,
-			ctx as MainAgentContext,
-			restorationState,
-		);
-	});
-
-	pi.on("session_shutdown", (event, ctx) => {
-		pendingAgent = undefined;
-		handleSessionShutdown(pi, event, ctx as MainAgentContext);
 	});
 }
 
@@ -471,7 +489,7 @@ async function handleSessionStart(
 		isChildSubagentProcess: isChildSubagentProcess(),
 		cwd: mainContext.cwd,
 	});
-	if (isChildSubagentProcess()) {
+	if (isChildSubagentProcess() || isLaunchedSubagentProcess(pi)) {
 		return;
 	}
 
@@ -543,6 +561,26 @@ function handleSessionShutdown(
 
 	captureSessionReplacementMainAgent(pi, event, mainContext);
 	markAgentRuntimeCompositionStale(pi);
+}
+
+/** Returns true when `--subagent` launched this process, so only its definition shapes the agent. */
+function isLaunchedSubagentProcess(pi: ExtensionAPI): boolean {
+	return getAgentRuntimeComposition(pi).getLaunchedSubagentId() !== undefined;
+}
+
+/** Reports and returns true when a selection entry runs in a process with a launched subagent. */
+function rejectSelectionInLaunchedProcess(
+	pi: ExtensionAPI,
+	ctx: MainAgentContext,
+): boolean {
+	if (!isLaunchedSubagentProcess(pi)) {
+		return false;
+	}
+	reportIssue(
+		ctx,
+		"agent selection is unavailable in a process started with --subagent",
+	);
+	return true;
 }
 
 /** Returns whether this session-start reason must refresh selected-agent state from disk. */
@@ -958,17 +996,9 @@ async function applyAgentSelection(
 		resolvedWorkflows: policies.workflows ?? null,
 		configuredSubagents: agent.agents ?? null,
 	});
-	getAgentRuntimeComposition(pi).setSelectedAgentContribution({
-		prompt: agent.prompt,
-		agent: {
-			id: agent.id,
-			...(policies.tools !== undefined ? { tools: policies.tools } : {}),
-			...workflowPolicyMetadata(policies.workflows),
-			...(agent.agents !== undefined ? { agents: agent.agents } : {}),
-		},
-		...(agent.model !== undefined ? { model: agent.model } : {}),
-		...(policies.tools !== undefined ? { tools: policies.tools } : {}),
-	});
+	getAgentRuntimeComposition(pi).setSelectedAgentContribution(
+		buildSelectedAgentContribution(agent, policies),
+	);
 	return "applied";
 }
 
@@ -1076,13 +1106,6 @@ function resolveMainAgentPolicies(
 		...(tools.tools === undefined ? {} : { tools: tools.tools }),
 		workflows: workflows.policy,
 	};
-}
-
-/** Omits unrestricted policy while preserving empty and explicit canonical IDs. */
-function workflowPolicyMetadata(policy: ResolvedWorkflowPolicy): {
-	readonly workflows?: readonly string[];
-} {
-	return policy === undefined ? {} : { workflows: policy };
 }
 
 /** Resolves a main-agent tool policy through the same exact-name and wildcard rules used by subagents. */

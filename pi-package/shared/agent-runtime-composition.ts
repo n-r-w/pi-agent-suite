@@ -39,6 +39,15 @@ export interface AgentRuntimeComposition {
 	): void;
 	clearSelectedAgentContribution(): void;
 	getSelectedAgentContribution(): SelectedAgentContribution | undefined;
+	/**
+	 * Registers the reader of the `--subagent` flag. Pi shows a flag value only to the
+	 * extension that registered the flag, so that extension shares it through this slot.
+	 */
+	setLaunchedSubagentResolver(
+		resolver: (() => string | undefined) | undefined,
+	): void;
+	/** Returns the ID that the process was launched with by `--subagent`, when present. */
+	getLaunchedSubagentId(): string | undefined;
 	setSubagentsContribution(contribution: PromptContribution | undefined): void;
 	/** Records tools registered during extension loading without invoking Pi action methods. */
 	publishBaselineToolNames(toolNames: readonly string[]): void;
@@ -159,6 +168,8 @@ export function markAgentRuntimeCompositionStale(pi: ExtensionAPI): void {
 /** Owns final prompt and active-tool application for agent-related extensions. */
 class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private selectedAgentContribution: SelectedAgentContribution | undefined;
+	/** Reads the launched subagent ID from the extension that owns flag `--subagent`. */
+	private launchedSubagentResolver: (() => string | undefined) | undefined;
 	private subagentsContribution: PromptContribution | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
 	private conveneCouncilContribution: PromptContribution | undefined;
@@ -269,6 +280,18 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 
 	public getSelectedAgentContribution(): SelectedAgentContribution | undefined {
 		return this.selectedAgentContribution;
+	}
+
+	/** Stores or clears the reader of the launched subagent ID. */
+	public setLaunchedSubagentResolver(
+		resolver: (() => string | undefined) | undefined,
+	): void {
+		this.launchedSubagentResolver = resolver;
+	}
+
+	/** Returns the launched subagent ID, or undefined when the process has none. */
+	public getLaunchedSubagentId(): string | undefined {
+		return this.launchedSubagentResolver?.();
 	}
 
 	public setSubagentsContribution(

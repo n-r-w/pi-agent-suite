@@ -238,11 +238,14 @@ function invalidConfig(issue: string): SubagentsConfig {
 	};
 }
 
-/** Reads one canonical root-relative delegation depth. */
-export function readCurrentDepth(): number {
+/**
+ * Reads one canonical root-relative delegation depth. A launched subagent has no
+ * parent that sets the variable, so it gets the depth of a direct child.
+ */
+export function readCurrentDepth(launchedSubagent: boolean): number {
 	const raw = readSubagentDepth();
 	if (raw === undefined) {
-		return 0;
+		return launchedSubagent ? 1 : 0;
 	}
 	if (!CANONICAL_DEPTH_PATTERN.test(raw)) {
 		throw new Error(

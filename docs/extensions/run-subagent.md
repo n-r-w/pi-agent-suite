@@ -82,7 +82,7 @@ The configuration object accepts only the seven top-level keys listed above. Inv
 
 Configuration and description files are read once while the extension runtime starts and before Pi creates its first model snapshot. Restart Pi to apply file or configuration changes; the extension does not reload them in a running session.
 
-The root agent has depth `0`. With the default `maxDepth` of `1`, the root can start direct children, but those children cannot delegate further.
+The root agent has depth `0`. With the default `maxDepth` of `1`, the root can start direct children, but those children cannot delegate further. A process started with `--subagent` has no parent that sets `PI_SUBAGENT_DEPTH`, so it has depth `1`, as a direct child of a root agent has. See [launching a subagent from the command line](#launching-a-subagent-from-the-command-line).
 
 ## Additional extensions
 
@@ -129,6 +129,26 @@ A project agent definition supplies the child prompt, model, thinking level, too
 An agent definition can allow any subset of the four tools by name. At or beyond the configured depth limit, all four subagent tools are removed while unrelated child tools remain active. Invalid child tool policy fails closed by activating no child tools.
 
 The optional `workflows` frontmatter field restricts which catalog workflows the child can activate. Matching is exact and case-sensitive after NFC normalization; omission allows activation of every catalog workflow, and `workflows: []` allows no catalog activation. This field does not block the current active workflow; child tools still control workflow operations. Unknown or NFC-equivalent duplicate names reject the launch before authorization and process startup. The launcher sends canonical IDs to the child through its owned environment; callers do not configure this transport directly.
+
+## Launching a subagent from the command line
+
+`pi --subagent <id>` runs the subagent definition with this ID as the agent of the Pi process. An external launcher uses it to run the same definition that `subagent_start` runs, without a Pi parent. `run-subagent` alone registers the flag.
+
+```bash
+pi --subagent Reviewer
+```
+
+The ID selects a definition with `type: subagent` or `type: both` from the shared registry, with the exact, case-sensitive matching that `subagent_start` uses. At session start the extension applies the definition to the process:
+
+- The agent gets the prompt, tools, allowed workflows, and callable subagents of the definition, as a child started by `subagent_start` does.
+- The model and the thinking level follow the rules for a child. A configured `model.id` is applied to the session. Without it, the session model stays. A configured thinking level, or otherwise the current session level, is applied as the nearest level that the model supports.
+- The system prompt contains the child-agent sections of the template. See [role sections](system-prompt.md#role-sections).
+- [main-agent-selection](main-agent-selection.md#process-with-a-launched-subagent) does not restore a saved main agent, ignores `--agent`, and rejects `/agent` and its shortcut.
+- The process does not carry `PI_AGENT_SUITE_CHILD_AGENT_PROCESS`. Usage, knowledge, footer, cmux, completion-sound, workflow, and algorithms treat it as a root process.
+
+The process has delegation depth `1` when `PI_SUBAGENT_DEPTH` is absent, and children that it starts have depth `2`. With `maxDepth` `1` the agent has no subagent tools and no subagent guidance. With `maxDepth` `2` or more it has the subagent tools that its `tools` policy allows. Subject to depth and tool restrictions, omitting `agents` permits all callable definitions, `agents: []` permits none, and a nonempty list permits only the callable definitions whose IDs it names.
+
+When Pi cannot apply the definition, the extension reports a warning and the process continues without the definition. The warning is a notification in an interactive session and a line on stderr without a UI. Causes include no definition with the ID, a definition with `type: main`, a model that Pi cannot find or apply, a tool pattern that matches no tool, and an unknown workflow name. `enabled: false` in the configuration of `run-subagent` also leaves the definition unapplied, without a warning.
 
 ## Startup acceptance
 

@@ -326,6 +326,35 @@ describe("system-prompt", () => {
 		}
 	}
 
+	for (const launched of [false, true]) {
+		test(`renders ${launched ? "child" : "main"} sections when the composition ${launched ? "reports" : "does not report"} a launched subagent`, async () => {
+			await withIsolatedAgentDir(async ({ suiteDir }) => {
+				const templateFile = join(suiteDir, "sections.md");
+				await writeFile(
+					templateFile,
+					"{{#mainAgent}}M{{/mainAgent}}{{#childAgent}}C{{/childAgent}}",
+				);
+				await writeSuiteConfig(suiteDir, { templateFile });
+				const pi = createExtensionApiFake();
+				const context = createContextFake();
+				systemPrompt(pi);
+				// The owner of the flag registers the resolver after system-prompt has loaded.
+				getAgentRuntimeComposition(pi).setLaunchedSubagentResolver(() =>
+					launched ? "Extractor" : undefined,
+				);
+				await getRegisteredHandler(pi, "session_start")({}, context.ctx);
+
+				expect(
+					await runBeforeAgentStartHandlers(
+						pi,
+						createBeforeAgentStartEvent(),
+						context.ctx,
+					),
+				).toBe(launched ? "C" : "M");
+			});
+		});
+	}
+
 	for (const input of [
 		"{{#mainAgent}}open",
 		"{{/childAgent}}",

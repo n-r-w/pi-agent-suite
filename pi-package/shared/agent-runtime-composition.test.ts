@@ -280,4 +280,36 @@ describe("agent runtime composition", () => {
 			"workflow_create",
 		]);
 	});
+	/**
+	 * Proves the owner of the launch flag shares its value with other extensions through the composition.
+	 * Input and expected output: no resolver reports no launch; a registered resolver reports its current value to another extension runtime.
+	 * Edge case: the resolver is read lazily, so a value that appears after registration is visible.
+	 * Dependencies: the event bus is the only channel between extension runtimes.
+	 */
+	test("reports the launched subagent through the registered resolver", () => {
+		const owner = createPi(["read"]);
+		const reader = { ...owner } as ExtensionAPI;
+		let flagValue: string | undefined;
+
+		expect(getAgentRuntimeComposition(reader).getLaunchedSubagentId()).toBe(
+			undefined,
+		);
+
+		getAgentRuntimeComposition(owner).setLaunchedSubagentResolver(
+			() => flagValue,
+		);
+		expect(getAgentRuntimeComposition(reader).getLaunchedSubagentId()).toBe(
+			undefined,
+		);
+
+		flagValue = "Extractor";
+		expect(getAgentRuntimeComposition(reader).getLaunchedSubagentId()).toBe(
+			"Extractor",
+		);
+
+		getAgentRuntimeComposition(owner).setLaunchedSubagentResolver(undefined);
+		expect(getAgentRuntimeComposition(reader).getLaunchedSubagentId()).toBe(
+			undefined,
+		);
+	});
 });

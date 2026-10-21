@@ -3237,3 +3237,105 @@ describe("main-agent-selection", () => {
 		});
 	});
 });
+
+describe("process with a launched subagent", () => {
+	const launchedContribution = {
+		prompt: "Launched prompt",
+		agent: { id: "Launched" },
+	};
+
+	/** Creates a fake pi whose composition reports a launched subagent and holds its slot. */
+	function createLaunchedPi(options: ExtensionApiFakeOptions = {}) {
+		const pi = createExtensionApiFake(options);
+		const composition = getAgentRuntimeComposition(pi);
+		composition.setLaunchedSubagentResolver(() => "Launched");
+		composition.setSelectedAgentContribution(launchedContribution);
+		return pi;
+	}
+
+	test("keeps the launched agent over the --agent flag and the saved main agent", async () => {
+		// Purpose: only the subagent definition shapes the agent of a launched process.
+		// Input and expected output: a saved main agent and flag --agent name Reviewer, and the slot still holds the launched agent without model, thinking, or tool calls.
+		// Edge case: the restoration reads the same state file that a previous process wrote.
+		// Dependencies: isolated state, the composition resolver of the launch flag.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const model = createModel("openai", "gpt-test");
+			await writeAgent(agentDir, {
+				id: "Reviewer",
+				description: "Reviews code",
+				body: "Reviewer prompt",
+				model: { id: "openai/gpt-test", thinking: "high" },
+				tools: ["read"],
+			});
+			const previousPi = createExtensionApiFake();
+			mainAgentSelection(previousPi);
+			await getCommand(previousPi, "agent").handler(
+				"Reviewer",
+				createCommandContext("/tmp/project", undefined, [model]),
+			);
+			const pi = createLaunchedPi({
+				flagValues: new Map([["agent", "Reviewer"]]),
+			});
+			const toolCalls = pi.activeToolCalls.length;
+			const ctx = createCommandContext("/tmp/project", undefined, [model]);
+			mainAgentSelection(pi);
+
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+
+			expect(
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+			).toBe(launchedContribution);
+			expect(pi.setModelCalls).toEqual([]);
+			expect(pi.thinkingCalls).toEqual([]);
+			expect(pi.activeToolCalls).toHaveLength(toolCalls);
+			expect(ctx.notifications).toEqual([]);
+			expect(await getHandler(pi, "input")({}, ctx)).toEqual({
+				action: "continue",
+			});
+		});
+	});
+
+	test("rejects /agent, /agent none, and the shortcut without opening the selector or changing state", async () => {
+		// Purpose: selection commands must not replace or clear the launched agent.
+		// Input and expected output: each selection entry reports one warning, opens no selector, and leaves the slot and the saved state unchanged.
+		// Edge case: an explicit ID of an existing main agent is rejected too.
+		// Dependencies: isolated registry and state, the composition resolver of the launch flag.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeAgent(agentDir, {
+				id: "Reviewer",
+				description: "Reviews code",
+				body: "Reviewer prompt",
+			});
+			const pi = createLaunchedPi();
+			const ctx = createCommandContext("/tmp/project", "Reviewer", [], true);
+			mainAgentSelection(pi);
+			await getHandler(pi, "session_start")(
+				{ type: "session_start", reason: "startup" },
+				ctx,
+			);
+
+			await getCommand(pi, "agent").handler("Reviewer", ctx);
+			await getCommand(pi, "agent").handler("none", ctx);
+			await getCommand(pi, "agent").handler("", ctx);
+			await getShortcut(pi, "ctrl+alt+a").handler(ctx);
+
+			expect(ctx.notifications.map((entry) => entry.type)).toEqual([
+				"warning",
+				"warning",
+				"warning",
+				"warning",
+			]);
+			expect(ctx.customCalls).toEqual([]);
+			expect(
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+			).toBe(launchedContribution);
+			expect(pi.setModelCalls).toEqual([]);
+			await expect(
+				readSelectedStateBytes(agentDir, "/tmp/project"),
+			).rejects.toThrow();
+		});
+	});
+});

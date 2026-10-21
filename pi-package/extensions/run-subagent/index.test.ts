@@ -118,9 +118,11 @@ interface RegisteredShortcutLike {
 function createPiFake(
 	options: {
 		readonly appendEntry?: (customType: string, data: unknown) => void;
+		readonly flags?: ReadonlyMap<string, boolean | string>;
 	} = {},
 ): ExtensionAPI & {
 	readonly appendedEntries: unknown[];
+	readonly registeredFlags: string[];
 	readonly commands: RegisteredCommandLike[];
 	readonly messageRenderers: Array<{
 		readonly customType: string;
@@ -132,6 +134,7 @@ function createPiFake(
 	emit(eventName: string, event: unknown, ctx: unknown): Promise<unknown[]>;
 } {
 	const appendedEntries: unknown[] = [];
+	const registeredFlags: string[] = [];
 	const commands: RegisteredCommandLike[] = [];
 	const messageRenderers: Array<{
 		readonly customType: string;
@@ -147,6 +150,7 @@ function createPiFake(
 	>();
 	const pi = {
 		appendedEntries,
+		registeredFlags,
 		commands,
 		messageRenderers,
 		sentMessages,
@@ -169,6 +173,8 @@ function createPiFake(
 			handlers.set(eventName, existing);
 		},
 		registerTool: (tool: RegisteredToolLike) => tools.push(tool),
+		registerFlag: (name: string) => registeredFlags.push(name),
+		getFlag: (name: string) => options.flags?.get(name),
 		registerMessageRenderer: (
 			customType: string,
 			renderer: (...args: unknown[]) => unknown,
@@ -208,6 +214,7 @@ function createPiFake(
 	};
 	return pi as unknown as ExtensionAPI & {
 		readonly appendedEntries: unknown[];
+		readonly registeredFlags: string[];
 		readonly commands: RegisteredCommandLike[];
 		readonly messageRenderers: Array<{
 			readonly customType: string;
@@ -3628,6 +3635,56 @@ function restoreEnvironment(name: string, value: string | undefined): void {
 	}
 	process.env[name] = value;
 }
+
+describe("subagents entry with a launched subagent", () => {
+	test("registers flag subagent and fills the selected-agent slot at session start", async () => {
+		// Purpose: run-subagent owns flag --subagent and applies the named definition to the root process.
+		// Input and expected output: flag Worker selects the definition of type subagent and the slot holds its ID, tools, and callable agents.
+		// Edge case: the definition names no model, so the session model stays.
+		// Dependencies: suite agent registry, production composition, and root runtime creation.
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Helper.md"),
+			"---\ndescription: Helper\ntype: subagent\n---\nHelper prompt",
+		);
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ndescription: Worker\ntype: subagent\ntools:\n  - subagent_start\nagents:\n  - Helper\n---\nWorker prompt",
+		);
+		const pi = createPiFake({ flags: new Map([["subagent", "Worker"]]) });
+		const ctx = createContext(suiteDir, [], { model: TEST_MODEL });
+		await subagents(pi);
+		await pi.emit("session_start", { type: "session_start" }, ctx);
+
+		const composition = getAgentRuntimeComposition(pi);
+		expect(pi.registeredFlags).toEqual(["subagent"]);
+		expect(composition.getLaunchedSubagentId()).toBe("Worker");
+		expect(composition.getSelectedAgentContribution()).toMatchObject({
+			prompt: "Worker prompt",
+			agent: { id: "Worker", tools: ["subagent_start"], agents: ["Helper"] },
+		});
+		await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	});
+
+	test("leaves the selected-agent slot empty without the flag", async () => {
+		// Purpose: processes without --subagent keep their behavior.
+		// Input and expected output: no flag value leaves the slot empty and reports no launch.
+		// Edge case: a definition of type subagent exists in the registry.
+		// Dependencies: suite agent registry and production composition.
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ndescription: Worker\ntype: subagent\n---\nWorker prompt",
+		);
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, [], { model: TEST_MODEL });
+		await subagents(pi);
+		await pi.emit("session_start", { type: "session_start" }, ctx);
+
+		const composition = getAgentRuntimeComposition(pi);
+		expect(composition.getLaunchedSubagentId()).toBeUndefined();
+		expect(composition.getSelectedAgentContribution()).toBeUndefined();
+		await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	});
+});
 
 /** Reads public failed-tool details from an execution error. */
 function readFailureDetails(error: unknown): unknown {

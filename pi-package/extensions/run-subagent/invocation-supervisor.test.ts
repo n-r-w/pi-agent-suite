@@ -587,6 +587,7 @@ describe("InvocationSupervisor", () => {
 		} as NonNullable<ExtensionContext["model"]>;
 		const pi = {
 			events: new EventEmitter(),
+			on: () => undefined,
 			getThinkingLevel: () => "off",
 		} as unknown as ExtensionAPI;
 		publishWorkflowCatalogPolicy({ ids: ["Review"] });

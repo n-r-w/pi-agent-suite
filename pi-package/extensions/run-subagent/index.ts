@@ -74,6 +74,10 @@ import {
 	handleKnowledgeRuntimeRequest,
 	type KnowledgeRuntimeRequestResult,
 } from "./knowledge-runtime";
+import {
+	applyLaunchedSubagent,
+	registerLaunchedSubagentFlag,
+} from "./launched-subagent";
 import { ManagementProjectionRuntime } from "./management-screen/runtime";
 import {
 	createManagementRetainedState,
@@ -240,6 +244,7 @@ export default async function subagents(
 	getAgentRuntimeComposition(pi).publishBaselineToolNames([
 		...SUBAGENT_TOOL_NAME_SET,
 	]);
+	registerLaunchedSubagentFlag(pi);
 	registerLifecycleHandlers(pi, state);
 	configReady = readConfig();
 	// Pi awaits the factory promise before copying definitions into its first agent snapshot.
@@ -328,6 +333,7 @@ async function handleSessionStart(
 				pi.appendEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, snapshot);
 			});
 		}
+		await applyLaunchedSubagent(pi, ctx);
 		state.rootRuntime = await createRootRuntime(pi, ctx, state);
 		registerManagementEntries(pi, state, ctx);
 		return;

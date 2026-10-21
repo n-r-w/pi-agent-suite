@@ -60,7 +60,12 @@ For example, if two active, visible tools contribute `" SHARED_MARKER "` and `"S
 
 Use `{{#mainAgent}}...{{/mainAgent}}` for main-agent text and `{{#childAgent}}...{{/childAgent}}` for child-agent text. The extension includes text outside sections for both process kinds. It includes the matching role's sections and omits the other role's sections. Sections may repeat and appear inline. Whitespace inside the braces is allowed, as with variables.
 
-The extension determines the process kind once when it loads. If `PI_AGENT_SUITE_CHILD_AGENT_PROCESS` equals `1`, the extension treats the process as a child agent. For every other value, including an absent variable, it treats the process as a main agent. Both `run-subagent` and `convene-council` set this shared marker for their children. Custom prompts take precedence over role selection.
+The extension chooses the process kind for each agent run, before it renders the template. The process is a child agent in either of these cases:
+
+- `PI_AGENT_SUITE_CHILD_AGENT_PROCESS` equals `1`. The extension reads the variable once when it loads, and both `run-subagent` and `convene-council` set this shared marker for their children.
+- The process was started with `pi --subagent <id>`. `run-subagent` registers this flag and reports its value to the extension. A launched subagent has no Pi parent and no marker, so other extensions treat it as a root process, but it receives the child-agent sections.
+
+In every other case, including an absent variable and an absent flag, the extension treats the process as a main agent. Custom prompts take precedence over role selection.
 
 For example, the extension renders `C{{#mainAgent}}M{{/mainAgent}}{{#childAgent}}S{{/childAgent}}` as `CM` in a main process and `CS` in a child process.
 

@@ -76,7 +76,7 @@ interface BeforeAgentStartEventLike {
 }
 
 export default function systemPrompt(pi: ExtensionAPI): void {
-	const agentKind = isSystemPromptChildProcess() ? "childAgent" : "mainAgent";
+	const hasChildMarker = isSystemPromptChildProcess();
 	let templateState: TemplateState = { kind: "invalid" };
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -110,6 +110,11 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 			...typedEvent.systemPromptOptions,
 			selectedTools: [...pi.getActiveTools()],
 		};
+		// The owner of `--subagent` registers its resolver after this extension loads.
+		const agentKind =
+			hasChildMarker || composition.getLaunchedSubagentId() !== undefined
+				? "childAgent"
+				: "mainAgent";
 		const template = selectTemplateSections(templateState.parts, agentKind);
 		const toolsets = hasTemplateVariable(template, "toolsets")
 			? getToolsetRuntime(pi).getVisibleToolsets()
