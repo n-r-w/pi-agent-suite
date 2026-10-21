@@ -46,7 +46,7 @@ An external launcher cannot run a subagent definition in a Pi process. A user wh
 - The external launcher learns that Pi could not apply the requested agent before the agent starts any work.
 
 ## Problem Boundary
-- In scope: Pi processes that an external launcher starts to run one subagent definition, in each Pi mode.
+- In scope: Pi processes that an external launcher starts to run one subagent definition, in RPC and print modes. The launcher is a program, and no person sees the session.
 - Out of scope: supervised child processes of run-subagent and convene-council, because they already get their definitions and roles.
 - Out of scope: selection of main agents through `/agent` and `--agent`, including an unknown ID passed to `--agent`.
 

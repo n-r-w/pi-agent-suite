@@ -48,6 +48,13 @@ export interface AgentRuntimeComposition {
 	): void;
 	/** Returns the ID that the process was launched with by `--subagent`, when present. */
 	getLaunchedSubagentId(): string | undefined;
+	/**
+	 * Registers the reader of the `--agent` flag. The extension that owns the flag shares its
+	 * value, so that run-subagent can report `--agent` together with `--subagent`.
+	 */
+	setAgentFlagResolver(resolver: (() => string | undefined) | undefined): void;
+	/** Returns the ID that `--agent` named in this process, when present. */
+	getAgentFlagId(): string | undefined;
 	setSubagentsContribution(contribution: PromptContribution | undefined): void;
 	/** Records tools registered during extension loading without invoking Pi action methods. */
 	publishBaselineToolNames(toolNames: readonly string[]): void;
@@ -170,6 +177,8 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private selectedAgentContribution: SelectedAgentContribution | undefined;
 	/** Reads the launched subagent ID from the extension that owns flag `--subagent`. */
 	private launchedSubagentResolver: (() => string | undefined) | undefined;
+	/** Reads the `--agent` value from the extension that owns flag `--agent`. */
+	private agentFlagResolver: (() => string | undefined) | undefined;
 	private subagentsContribution: PromptContribution | undefined;
 	private consultAdvisorContribution: PromptContribution | undefined;
 	private conveneCouncilContribution: PromptContribution | undefined;
@@ -292,6 +301,18 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	/** Returns the launched subagent ID, or undefined when the process has none. */
 	public getLaunchedSubagentId(): string | undefined {
 		return this.launchedSubagentResolver?.();
+	}
+
+	/** Stores or clears the reader of the `--agent` value. */
+	public setAgentFlagResolver(
+		resolver: (() => string | undefined) | undefined,
+	): void {
+		this.agentFlagResolver = resolver;
+	}
+
+	/** Returns the `--agent` value, or undefined when the process has none. */
+	public getAgentFlagId(): string | undefined {
+		return this.agentFlagResolver?.();
 	}
 
 	public setSubagentsContribution(

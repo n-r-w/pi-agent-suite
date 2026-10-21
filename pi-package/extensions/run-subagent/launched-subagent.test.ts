@@ -11,8 +11,10 @@ import { createTempDir } from "../../../test/support/temp-dir";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import { publishWorkflowCatalogPolicy } from "../../shared/workflow-policy";
+import { type ExitTarget, LaunchGate } from "./launch-gate";
 import {
 	applyLaunchedSubagent,
+	failLaunchWhenDisabled,
 	LAUNCHED_SUBAGENT_FLAG,
 	registerLaunchedSubagentFlag,
 } from "./launched-subagent";
@@ -39,9 +41,20 @@ interface PiFakeOptions {
 	readonly allTools?: readonly string[];
 }
 
-/** Fake session context that records notifications. */
+/** Fake session context that records notifications and shutdown requests. */
 interface ContextFake extends ExtensionContext {
+	/** Notifications that the code under test showed. */
 	readonly notifications: Array<{ message: string; type: string | undefined }>;
+	/** One entry per shutdown request. */
+	readonly shutdowns: number[];
+}
+
+/** How the fake model registry answers the lookup of provider credentials. */
+type ProviderAuthMode = "resolved" | "missing" | "failing";
+
+/** Process stand-in, so that a test never changes the exit code of the test run. */
+function createExitTarget(): ExitTarget {
+	return { exitCode: undefined, once: () => undefined };
 }
 
 /** Creates a fake model with the given reasoning support. */
@@ -102,15 +115,23 @@ function createPi(options: PiFakeOptions = {}): PiFake {
 	} as unknown as PiFake;
 }
 
-/** Creates the session context with an observable issue channel. */
-function createContext(cwd: string, hasUI = true): ContextFake {
+/** Creates the session context with observable notifications and shutdown requests. */
+function createContext(
+	cwd: string,
+	providerAuth: ProviderAuthMode = "resolved",
+): ContextFake {
 	const notifications: ContextFake["notifications"] = [];
+	const shutdowns: number[] = [];
 	return {
 		cwd,
-		hasUI,
+		hasUI: true,
 		model: SESSION_MODEL,
 		sessionManager: { getSessionId: () => "launched-session" },
 		notifications,
+		shutdowns,
+		shutdown: () => {
+			shutdowns.push(shutdowns.length);
+		},
 		ui: {
 			notify: (message: string, type?: string) => {
 				notifications.push({ message, type });
@@ -121,6 +142,16 @@ function createContext(cwd: string, hasUI = true): ContextFake {
 				[REASONING_MODEL, PLAIN_MODEL, SESSION_MODEL].find(
 					(model) => model.provider === provider && model.id === id,
 				),
+			getProviderAuth: async () => {
+				if (providerAuth === "failing") {
+					throw new Error(
+						"Failed to resolve API key from shell command: false",
+					);
+				}
+				return providerAuth === "missing"
+					? undefined
+					: { auth: { apiKey: "key" } };
+			},
 		},
 	} as unknown as ContextFake;
 }
@@ -163,6 +194,28 @@ describe("launched subagent", () => {
 		);
 	}
 
+	/** Creates the gate of one process with a process stand-in for the exit code. */
+	function createGate(): LaunchGate {
+		return new LaunchGate(createExitTarget());
+	}
+
+	/** Runs the application of a launched agent and returns the text that reached stderr. */
+	async function applyWithStderr(
+		pi: PiFake,
+		ctx: ContextFake,
+		gate: LaunchGate,
+	): Promise<string> {
+		const stderr = spyOn(process.stderr, "write").mockImplementation(
+			() => true,
+		);
+		try {
+			await applyLaunchedSubagent(pi, ctx, gate);
+			return stderr.mock.calls.flat().join("");
+		} finally {
+			stderr.mockRestore();
+		}
+	}
+
 	/** Creates a process that was launched for one agent ID. */
 	function createLaunchedPi(id: string, options: PiFakeOptions = {}): PiFake {
 		const pi = createPi({
@@ -199,13 +252,18 @@ describe("launched subagent", () => {
 		const pi = createPi();
 		registerLaunchedSubagentFlag(pi);
 
-		await applyLaunchedSubagent(pi, createContext(directory.path));
+		const ctx = createContext(directory.path);
+		const gate = createGate();
+
+		await applyLaunchedSubagent(pi, ctx, gate);
 
 		expect(
 			getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
 		).toBeUndefined();
 		expect(pi.setModelCalls).toEqual([]);
 		expect(pi.thinkingCalls).toEqual([]);
+		expect(gate.failed).toBe(false);
+		expect(ctx.shutdowns).toEqual([]);
 	});
 
 	test.each([
@@ -236,7 +294,10 @@ describe("launched subagent", () => {
 		);
 		const pi = createLaunchedPi("Worker");
 
-		await applyLaunchedSubagent(pi, createContext(directory.path));
+		const ctx = createContext(directory.path);
+		const gate = createGate();
+
+		await applyLaunchedSubagent(pi, ctx, gate);
 
 		expect(
 			getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
@@ -253,6 +314,8 @@ describe("launched subagent", () => {
 		});
 		expect(pi.setModelCalls).toEqual([REASONING_MODEL]);
 		expect(pi.thinkingCalls).toEqual(["high"]);
+		expect(gate.failed).toBe(false);
+		expect(ctx.shutdowns).toEqual([]);
 	});
 
 	test("resolves the thinking level of a child when the definition names none", async () => {
@@ -263,7 +326,10 @@ describe("launched subagent", () => {
 		writeAgent("Worker", ["type: subagent", "model:", "  id: provider/plain"]);
 		const pi = createLaunchedPi("Worker");
 
-		await applyLaunchedSubagent(pi, createContext(directory.path));
+		const ctx = createContext(directory.path);
+		const gate = createGate();
+
+		await applyLaunchedSubagent(pi, ctx, gate);
 
 		expect(pi.setModelCalls).toEqual([PLAIN_MODEL]);
 		expect(pi.thinkingCalls).toEqual(["off"]);
@@ -277,7 +343,10 @@ describe("launched subagent", () => {
 		writeAgent("Worker", ["type: subagent"]);
 		const pi = createLaunchedPi("Worker");
 
-		await applyLaunchedSubagent(pi, createContext(directory.path));
+		const ctx = createContext(directory.path);
+		const gate = createGate();
+
+		await applyLaunchedSubagent(pi, ctx, gate);
 
 		expect(pi.setModelCalls).toEqual([]);
 		expect(pi.thinkingCalls).toEqual([]);
@@ -295,7 +364,12 @@ describe("launched subagent", () => {
 		{
 			name: "the definition has type main",
 			files: () => writeAgent("Worker", ["type: main"]),
-			issue: "Worker",
+			issue: "type main",
+		},
+		{
+			name: "the definition is invalid",
+			files: () => writeAgent("Worker", ["type: subagent", "unknown: 1"]),
+			issue: "unsupported frontmatter fields: unknown",
 		},
 		{
 			name: "the model of the definition is unavailable",
@@ -319,23 +393,24 @@ describe("launched subagent", () => {
 				writeAgent("Worker", ["type: subagent", "workflows:", "  - Missing"]),
 			issue: "Missing",
 		},
-	])("reports an issue and applies nothing when $name", async ({
+	])("fails the launch and applies nothing when $name", async ({
 		files,
 		issue,
 	}) => {
-		// Purpose: an agent that cannot be applied must not leave a partial slot or session change.
-		// Input and expected output: one visible issue that names the cause, no slot, and no model or thinking call.
-		// Edge case: the process continues without the agent after the issue.
-		// Dependencies: isolated registry and the issue channel.
+		// Purpose: an agent that cannot be applied must end the launch with its reason, and leave no partial slot or session change.
+		// Input and expected output: stderr names the cause, the gate reports a failure, one shutdown is requested, no slot, and no model or thinking call.
+		// Edge case: Pi mode rpc has a UI, and the reason still reaches stderr, not only a notification.
+		// Dependencies: isolated registry, the gate, and process stderr.
 		files();
 		const pi = createLaunchedPi("Worker");
 		const ctx = createContext(directory.path);
+		const gate = createGate();
 
-		await applyLaunchedSubagent(pi, ctx);
+		const stderr = await applyWithStderr(pi, ctx, gate);
 
-		expect(ctx.notifications).toHaveLength(1);
-		expect(ctx.notifications[0]?.type).toBe("warning");
-		expect(ctx.notifications[0]?.message).toContain(issue);
+		expect(stderr).toContain(issue);
+		expect(gate.failed).toBe(true);
+		expect(ctx.shutdowns).toHaveLength(1);
 		expect(
 			getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
 		).toBeUndefined();
@@ -343,30 +418,149 @@ describe("launched subagent", () => {
 		expect(pi.thinkingCalls).toEqual([]);
 	});
 
-	test("reports the issue to stderr without a UI and applies nothing when Pi rejects the model", async () => {
-		// Purpose: an issue must reach a launcher that has no UI, and a rejected model leaves no slot.
+	test("fails the launch when Pi rejects the model", async () => {
+		// Purpose: a model that Pi cannot use, for example without credentials, ends the launch and leaves no slot.
 		// Input and expected output: setModel returns false, stderr names the model, and the slot stays empty.
 		// Edge case: the thinking level is not applied after the model failed.
-		// Dependencies: public model API and process stderr.
+		// Dependencies: public model API, the gate, and process stderr.
 		writeAgent("Worker", [
 			"type: subagent",
 			"model:",
 			"  id: provider/reasoner",
 		]);
 		const pi = createLaunchedPi("Worker", { setModelResult: false });
-		const stderr = spyOn(process.stderr, "write").mockImplementation(
-			() => true,
-		);
-		try {
-			await applyLaunchedSubagent(pi, createContext(directory.path, false));
+		const ctx = createContext(directory.path);
+		const gate = createGate();
 
-			expect(stderr.mock.calls.flat().join("")).toContain("provider/reasoner");
-		} finally {
-			stderr.mockRestore();
-		}
+		const stderr = await applyWithStderr(pi, ctx, gate);
+
+		expect(stderr).toContain("provider/reasoner");
+		expect(gate.failed).toBe(true);
+		expect(ctx.shutdowns).toHaveLength(1);
 		expect(
 			getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
 		).toBeUndefined();
 		expect(pi.thinkingCalls).toEqual([]);
+	});
+
+	test.each([
+		{
+			name: "the model of the definition matches the session model and has no credentials",
+			frontmatter: ["model:", "  id: session/default"],
+			providerAuth: "missing" as const,
+			issue: "session/default",
+		},
+		{
+			name: "the definition names no model and the session model has no credentials",
+			frontmatter: [],
+			providerAuth: "missing" as const,
+			issue: "session/default",
+		},
+		{
+			name: "the credential command of the provider fails",
+			frontmatter: ["model:", "  id: provider/reasoner"],
+			providerAuth: "failing" as const,
+			issue: "shell command: false",
+		},
+	])("fails the launch before the agent starts when $name", async ({
+		frontmatter,
+		providerAuth,
+		issue,
+	}) => {
+		// Purpose: Pi accepts a model without usable credentials until the first prompt, so the launch must check them before it publishes the agent.
+		// Input and expected output: stderr names the cause, the gate reports a failure, one shutdown is requested, and the slot stays empty.
+		// Edge case: setModel is skipped when the model matches the session model, and a failing credential command is not an absent credential.
+		// Dependencies: isolated registry, fake model registry, the gate, and process stderr.
+		writeAgent("Worker", ["type: subagent", ...frontmatter]);
+		const pi = createLaunchedPi("Worker");
+		const ctx = createContext(directory.path, providerAuth);
+		const gate = createGate();
+
+		const stderr = await applyWithStderr(pi, ctx, gate);
+
+		expect(stderr).toContain(issue);
+		expect(gate.failed).toBe(true);
+		expect(ctx.shutdowns).toHaveLength(1);
+		expect(
+			getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+		).toBeUndefined();
+		expect(pi.thinkingCalls).toEqual([]);
+	});
+
+	test("fails the launch when applying the definition throws", async () => {
+		// Purpose: an unexpected error while applying the definition must end the launch like any other reason, not only reject the session start.
+		// Input and expected output: stderr names the error, the gate reports a failure, one shutdown is requested, and the slot stays empty.
+		// Edge case: the error comes from the Pi API after the definition was found and validated.
+		// Dependencies: isolated registry, the gate, and process stderr.
+		writeAgent("Worker", ["type: subagent", "tools:", "  - read"]);
+		const pi = createLaunchedPi("Worker");
+		pi.getAllTools = () => {
+			throw new Error("tool registry is unavailable");
+		};
+		const ctx = createContext(directory.path);
+		const gate = createGate();
+
+		const stderr = await applyWithStderr(pi, ctx, gate);
+
+		expect(stderr).toContain("tool registry is unavailable");
+		expect(gate.failed).toBe(true);
+		expect(ctx.shutdowns).toHaveLength(1);
+		expect(
+			getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+		).toBeUndefined();
+	});
+
+	test("fails the launch when --agent is set in the same process", async () => {
+		// Purpose: the two flags name two different agents, so the process runs neither.
+		// Input and expected output: stderr names both flag values, the gate reports a failure, and the slot stays empty.
+		// Edge case: the subagent definition is valid.
+		// Dependencies: isolated registry, the composition resolver of flag --agent, and process stderr.
+		writeAgent("Worker", ["type: subagent"]);
+		const pi = createLaunchedPi("Worker");
+		getAgentRuntimeComposition(pi).setAgentFlagResolver(() => "Lead");
+		const ctx = createContext(directory.path);
+		const gate = createGate();
+
+		const stderr = await applyWithStderr(pi, ctx, gate);
+
+		expect(stderr).toContain("--agent Lead");
+		expect(stderr).toContain("--subagent Worker");
+		expect(gate.failed).toBe(true);
+		expect(ctx.shutdowns).toHaveLength(1);
+		expect(
+			getAgentRuntimeComposition(pi).getSelectedAgentContribution(),
+		).toBeUndefined();
+		expect(pi.setModelCalls).toEqual([]);
+	});
+
+	test("fails the launch when run-subagent is disabled", () => {
+		// Purpose: a disabled run-subagent cannot apply the definition, and the launcher must learn it.
+		// Input and expected output: stderr names the agent and the configuration issue, and the gate reports a failure.
+		// Edge case: the configuration has no issue text, and a process without the flag fails nothing.
+		// Dependencies: the composition resolver of the launch flag, the gate, and process stderr.
+		const ctx = createContext(directory.path);
+		const gate = createGate();
+		const stderr = spyOn(process.stderr, "write").mockImplementation(
+			() => true,
+		);
+		try {
+			failLaunchWhenDisabled(createPi(), ctx, gate, undefined);
+			expect(gate.failed).toBe(false);
+
+			failLaunchWhenDisabled(
+				createLaunchedPi("Worker"),
+				ctx,
+				gate,
+				"bad config",
+			);
+
+			const text = stderr.mock.calls.flat().join("");
+			expect(text).toContain("--subagent Worker");
+			expect(text).toContain("bad config");
+		} finally {
+			stderr.mockRestore();
+		}
+		expect(gate.failed).toBe(true);
+		expect(ctx.shutdowns).toHaveLength(1);
 	});
 });

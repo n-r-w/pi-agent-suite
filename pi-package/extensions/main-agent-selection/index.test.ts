@@ -3298,6 +3298,24 @@ describe("process with a launched subagent", () => {
 		});
 	});
 
+	test("shares the --agent value through the composition", async () => {
+		// Purpose: main-agent-selection alone reads flag --agent, and run-subagent needs its value to report both flags.
+		// Input and expected output: the composition reports the flag value that main-agent-selection owns; an absent flag reads as no value.
+		// Edge case: a boolean flag value reads as no value, and the value is read at call time.
+		// Dependencies: isolated state and the composition resolver of the agent flag.
+		await withIsolatedAgentDir(async () => {
+			const pi = createExtensionApiFake();
+			const composition = getAgentRuntimeComposition(pi);
+			mainAgentSelection(pi);
+
+			expect(composition.getAgentFlagId()).toBeUndefined();
+			pi.flagValues.set("agent", true);
+			expect(composition.getAgentFlagId()).toBeUndefined();
+			pi.flagValues.set("agent", "Reviewer");
+			expect(composition.getAgentFlagId()).toBe("Reviewer");
+		});
+	});
+
 	test("rejects /agent, /agent none, and the shortcut without opening the selector or changing state", async () => {
 		// Purpose: selection commands must not replace or clear the launched agent.
 		// Input and expected output: each selection entry reports one warning, opens no selector, and leaves the slot and the saved state unchanged.

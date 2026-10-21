@@ -74,8 +74,10 @@ import {
 	handleKnowledgeRuntimeRequest,
 	type KnowledgeRuntimeRequestResult,
 } from "./knowledge-runtime";
+import { type ExitTarget, LaunchGate } from "./launch-gate";
 import {
 	applyLaunchedSubagent,
+	failLaunchWhenDisabled,
 	registerLaunchedSubagentFlag,
 } from "./launched-subagent";
 import { ManagementProjectionRuntime } from "./management-screen/runtime";
@@ -166,6 +168,8 @@ interface RuntimeState {
 	readonly recordChildStartupAttempt: ReturnType<
 		typeof createChildAuthStartupDiagnosticRecorder
 	>;
+	/** Holds input until `--subagent` is applied and ends a process that could not apply it. */
+	readonly launch: LaunchGate;
 	config: SubagentsConfig | undefined;
 	initialization: Promise<void> | undefined;
 	workerBridge: WorkerRuntimeBridge | undefined;
@@ -194,6 +198,8 @@ interface RegisteredDescription {
 /** Provides isolated external effects used by subagent query execution. */
 interface SubagentsDependencies {
 	readonly completeSimple?: AuxiliaryLlmCompletion;
+	/** Receives the nonzero exit code of a failed launch, in place of the process. */
+	readonly exitTarget?: ExitTarget;
 }
 
 /** Registers stable subagent tools before session runtime performs asynchronous work. */
@@ -215,6 +221,7 @@ export default async function subagents(
 		childStartupConfig,
 		extensionArgs: readSubagentExtensionArgs(),
 		recordChildStartupAttempt,
+		launch: new LaunchGate(dependencies.exitTarget),
 		config: undefined,
 		initialization: undefined,
 		workerBridge: undefined,
@@ -281,8 +288,15 @@ function registerLifecycleHandlers(
 	state: RuntimeState,
 ): void {
 	pi.on("session_start", (event, ctx) => {
-		state.initialization = handleSessionStart(pi, state, event, ctx);
+		state.initialization = state.launch.run(() =>
+			handleSessionStart(pi, state, event, ctx),
+		);
 		return state.initialization;
+	});
+	// Pi can accept input before session_start settles, and a failed launch must run no agent.
+	pi.on("input", async () => {
+		await state.launch.wait();
+		return state.launch.failed ? { action: "handled" as const } : undefined;
 	});
 	pi.on("message_end", (_event, ctx) => reconcileRuntime(state, ctx));
 	pi.on("agent_end", (event, ctx) => handleAgentEnd(state, event, ctx));
@@ -314,6 +328,7 @@ async function handleSessionStart(
 		if (config.issue !== undefined && ctx.hasUI) {
 			ctx.ui.notify(config.issue, "error");
 		}
+		failLaunchWhenDisabled(pi, ctx, state.launch, config.issue);
 		return;
 	}
 	if (!state.promptPublished) {
@@ -333,7 +348,7 @@ async function handleSessionStart(
 				pi.appendEntry(SUBAGENT_JOURNAL_CUSTOM_TYPE, snapshot);
 			});
 		}
-		await applyLaunchedSubagent(pi, ctx);
+		await applyLaunchedSubagent(pi, ctx, state.launch);
 		state.rootRuntime = await createRootRuntime(pi, ctx, state);
 		registerManagementEntries(pi, state, ctx);
 		return;

@@ -312,4 +312,27 @@ describe("agent runtime composition", () => {
 			undefined,
 		);
 	});
+
+	/**
+	 * Proves the owner of flag `--agent` shares its value with other extensions through the composition.
+	 * Input and expected output: no resolver reports no value; a registered resolver reports its current value to another extension runtime.
+	 * Edge case: the resolver is read lazily, and removing it clears the value.
+	 * Dependencies: the event bus is the only channel between extension runtimes.
+	 */
+	test("reports the agent flag value through the registered resolver", () => {
+		const owner = createPi(["read"]);
+		const reader = { ...owner } as ExtensionAPI;
+		let flagValue: string | undefined;
+
+		expect(getAgentRuntimeComposition(reader).getAgentFlagId()).toBe(undefined);
+
+		getAgentRuntimeComposition(owner).setAgentFlagResolver(() => flagValue);
+		expect(getAgentRuntimeComposition(reader).getAgentFlagId()).toBe(undefined);
+
+		flagValue = "Lead";
+		expect(getAgentRuntimeComposition(reader).getAgentFlagId()).toBe("Lead");
+
+		getAgentRuntimeComposition(owner).setAgentFlagResolver(undefined);
+		expect(getAgentRuntimeComposition(reader).getAgentFlagId()).toBe(undefined);
+	});
 });

@@ -143,12 +143,34 @@ The ID selects a definition with `type: subagent` or `type: both` from the share
 - The agent gets the prompt, tools, allowed workflows, and callable subagents of the definition, as a child started by `subagent_start` does.
 - The model and the thinking level follow the rules for a child. A configured `model.id` is applied to the session. Without it, the session model stays. A configured thinking level, or otherwise the current session level, is applied as the nearest level that the model supports.
 - The system prompt contains the child-agent sections of the template. See [role sections](system-prompt.md#role-sections).
-- [main-agent-selection](main-agent-selection.md#process-with-a-launched-subagent) does not restore a saved main agent, ignores `--agent`, and rejects `/agent` and its shortcut.
+- [main-agent-selection](main-agent-selection.md#process-with-a-launched-subagent) does not restore a saved main agent, applies no `--agent` value, and rejects `/agent` and its shortcut. A process with both `--agent` and `--subagent` fails; see [errors of `--subagent`](#errors-of---subagent).
 - The process does not carry `PI_AGENT_SUITE_CHILD_AGENT_PROCESS`. Usage, knowledge, footer, cmux, completion-sound, workflow, and algorithms treat it as a root process.
 
 The process has delegation depth `1` when `PI_SUBAGENT_DEPTH` is absent, and children that it starts have depth `2`. With `maxDepth` `1` the agent has no subagent tools and no subagent guidance. With `maxDepth` `2` or more it has the subagent tools that its `tools` policy allows. Subject to depth and tool restrictions, omitting `agents` permits all callable definitions, `agents: []` permits none, and a nonempty list permits only the callable definitions whose IDs it names.
 
-When Pi cannot apply the definition, the extension reports a warning and the process continues without the definition. The warning is a notification in an interactive session and a line on stderr without a UI. Causes include no definition with the ID, a definition with `type: main`, a model that Pi cannot find or apply, a tool pattern that matches no tool, and an unknown workflow name. `enabled: false` in the configuration of `run-subagent` also leaves the definition unapplied, without a warning.
+### Errors of `--subagent`
+
+When Pi cannot apply the agent named by `--subagent`, the process runs no agent and makes no model request. Causes:
+
+| Cause | Reason that the process reports |
+| --- | --- |
+| No definition has the ID, or the file of the definition is invalid | The ID has no valid definition. For an invalid file, the reason includes the validation message of the registry. |
+| The definition has `type: main` | `--subagent` runs only `type: subagent` or `type: both`. |
+| The model cannot be used | The model of the definition is not found, Pi has no credentials for its provider, or the credential command of the provider fails. The extension resolves the credentials at session start, also when the model of the definition equals the session model or the definition names no model. |
+| The definition cannot be applied | A tool pattern matches no tool, a workflow name is unknown, or applying the definition raises an unexpected error. |
+| `--agent` is set in the same process | The two flags name two agents. [main-agent-selection](main-agent-selection.md#cli-flags) shares the `--agent` value for this check. |
+| `enabled: false`, or an invalid configuration, disables `run-subagent` | A disabled `run-subagent` cannot apply the definition. The reason includes the configuration issue, if there is one. |
+
+The extension reacts to a failure as follows:
+
+- It writes the reason to stderr with the prefix `[subagents]`. The reason goes to stderr in every mode, because a launcher reads stderr without any protocol. A warning notification reaches an RPC launcher only when the launcher handles extension UI requests.
+- It requests the shutdown of the process and sets exit code `1`.
+- It holds each input until the start of the session settles, so no task reaches the agent before the failure. After the failure, it handles each input without a run of the agent. In RPC mode, a `prompt` command, which carries a task, gets a response with disposition `handled`. Other RPC commands run as usual until the process ends. For example, `compact` on a resumed session with history still calls the provider, because Pi checks the shutdown request after it runs the command.
+
+How the process ends depends on the mode:
+
+- Print mode ignores the shutdown request. The process ends after the extension handles the task, and the exit code is `1`.
+- RPC mode completes a requested shutdown after the next command of any kind, or when the launcher closes stdin. The process therefore stays alive until the launcher sends a command or closes stdin. Pi ends RPC mode with exit code `0` after a requested shutdown, so the extension sets the exit code `1` when the process exits.
 
 ## Startup acceptance
 

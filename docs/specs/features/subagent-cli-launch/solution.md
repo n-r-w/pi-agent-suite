@@ -52,8 +52,10 @@ Method for FRQ-03 and FRQ-04.
   - no definition with the ID;
   - a definition with `type: main` or an invalid definition;
   - a model of the definition that Pi cannot resolve or has no credentials for;
-  - `--agent` set in the same process.
-- Stderr is the only output that each Pi mode delivers to the launcher without its own protocol. A `warning` notification reaches an RPC launcher only when it handles extension UI requests.
+  - `--agent` set in the same process;
+  - run-subagent disabled by `enabled: false` in its configuration, so it cannot apply the definition.
+- Fact, from real Pi 1.3.0 runs: `ctx.shutdown()` ends a print-mode process with exit code 0, and in RPC mode it ends the process with exit code 0 after the next command of the launcher or when stdin closes. So run-subagent sets exit code 1 for the end of the process after a failed launch. In RPC mode, the process ends at the first command of the launcher, before any run of the agent. An end with no input at all would need `process.exit` in `session_start`, which skips the `session_start` and `session_shutdown` handlers of other extensions.
+- Stderr is the only output that RPC and print modes deliver to the launcher without its own protocol. A `warning` notification reaches an RPC launcher only when it handles extension UI requests.
 
 ### Compatibility
 Method for NRQ-01.
@@ -76,12 +78,7 @@ Method for NRQ-01.
 
 ## Open Questions
 
-### QST-01: How does `ctx.shutdown()` end a process in RPC and print modes?
-  - Purpose: FRQ-04 requires that the launcher gets the error before the agent works. If `ctx.shutdown()` in RPC mode waits for a command of the launcher or ends with exit code 0, the launcher may treat the end as a normal exit.
-  - Impact: `MEDIUM`. The launcher may report an unclear failure in place of the reason.
-  - Answer: for each Pi mode, whether the process ends without further input and with which exit code.
-  - Done: the Pi documentation names `ctx.shutdown()` as an orderly shutdown and does not describe the exit code.
-  - Resolution: a real Pi run during implementation. If the exit code is 0, the implementer sets a nonzero exit code after the shutdown.
+None.
 
 ## References
 - `pi-package/shared/agent-runtime-composition.ts` - shared slot of the selected agent and exchange through the event bus.

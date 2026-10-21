@@ -47,7 +47,7 @@ Out of scope:
   - Goal: the agent works by its own definition.
   - Goal achievement: Full. Only the subagent definition shapes the agent.
   - Feasibility: Confirmed. The selection of main agents already skips its work in supervised child processes, and it can skip it by the same rule for a process with `--subagent`.
-- [X] FRQ-04: When Pi cannot apply the agent named by `--subagent`, the external launcher gets an error with the reason before the agent handles the first task, in each Pi mode. Examples of such a case: no definition has this ID, the definition has `type: main`, or the model of the definition is unavailable.
+- [X] FRQ-04: When Pi cannot apply the agent named by `--subagent`, the external launcher gets an error with the reason before the agent handles the first task, in RPC and print modes. Examples of such a case: no definition has this ID, the definition has `type: main`, or the model of the definition is unavailable.
   - Origin: source. Impact `HIGH` in [problem.md](problem.md): today the process continues without the agent.
   - Goal: the external launcher learns that Pi could not apply the requested agent before the agent starts any work.
   - Goal achievement: Full. The agent handles no task without its definition.

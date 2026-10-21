@@ -52,6 +52,7 @@ import subagents from "./index";
 import type { InvocationAcceptance } from "./invocation-contracts";
 import { defaultPackagePath } from "./invocation-process";
 import { InvocationSupervisor } from "./invocation-supervisor";
+import type { ExitTarget } from "./launch-gate";
 import type { ManagementScreen } from "./management-screen/screen";
 import { SessionStore, SUBAGENT_JOURNAL_CUSTOM_TYPE } from "./persistence";
 import { projectionStableKey } from "./projection";
@@ -237,13 +238,16 @@ function createContext(
 		readonly mode?: ExtensionContext["mode"];
 		readonly model?: Model<Api>;
 		readonly onAuthRequest?: () => void;
+		readonly providerAuth?: "resolved" | "missing" | "failing";
 		readonly setWidget?: (...args: unknown[]) => void;
+		readonly shutdown?: () => void;
 		readonly signal?: AbortSignal;
 	} = {},
 ): ExtensionContext {
 	return {
 		cwd: directory,
 		mode: options.mode ?? "rpc",
+		shutdown: options.shutdown ?? (() => undefined),
 		hasUI: options.mode === "tui",
 		model: options.model,
 		signal: options.signal,
@@ -257,6 +261,16 @@ function createContext(
 		modelRegistry: {
 			find: () => options.model,
 			hasConfiguredAuth: () => options.model !== undefined,
+			getProviderAuth: async () => {
+				if (options.providerAuth === "failing") {
+					throw new Error(
+						"Failed to resolve API key from shell command: false",
+					);
+				}
+				return options.providerAuth === "missing"
+					? undefined
+					: { auth: { apiKey: "test-key" } };
+			},
 			getApiKeyAndHeaders: async () => {
 				options.onAuthRequest?.();
 				return options.authenticated === true
@@ -3683,6 +3697,197 @@ describe("subagents entry with a launched subagent", () => {
 		expect(composition.getLaunchedSubagentId()).toBeUndefined();
 		expect(composition.getSelectedAgentContribution()).toBeUndefined();
 		await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	});
+});
+
+describe("subagents entry with a failed launch", () => {
+	/** Process stand-in that records exit listeners, so the test run keeps its own exit code. */
+	function createExitTarget(): ExitTarget & { readonly listeners: unknown[] } {
+		const listeners: unknown[] = [];
+		return {
+			listeners,
+			exitCode: undefined,
+			once: (_event: "exit", listener: () => void) => {
+				listeners.push(listener);
+			},
+		};
+	}
+
+	/** Starts the extension for one launch and returns what the launcher can observe. */
+	async function startLaunch(options: {
+		readonly flags?: ReadonlyMap<string, boolean | string>;
+		readonly config?: unknown;
+		readonly providerAuth?: "resolved" | "missing" | "failing";
+	}) {
+		if (options.config !== undefined) {
+			mkdirSync(join(suiteDir, "run-subagent"), { recursive: true });
+			writeFileSync(
+				join(suiteDir, "run-subagent", "config.json"),
+				JSON.stringify(options.config),
+			);
+		}
+		const shutdowns: number[] = [];
+		const exitTarget = createExitTarget();
+		const pi = createPiFake({ flags: options.flags ?? new Map() });
+		const ctx = createContext(suiteDir, [], {
+			model: TEST_MODEL,
+			...(options.providerAuth === undefined
+				? {}
+				: { providerAuth: options.providerAuth }),
+			shutdown: () => shutdowns.push(shutdowns.length),
+		});
+		const stderr = spyOn(process.stderr, "write").mockImplementation(
+			() => true,
+		);
+		await subagents(pi, { exitTarget });
+		return {
+			pi,
+			ctx,
+			shutdowns,
+			exitTarget,
+			start: () => pi.emit("session_start", { type: "session_start" }, ctx),
+			input: () => pi.emit("input", { text: "task" }, ctx),
+			stderrText: () => stderr.mock.calls.flat().join(""),
+			finish: async () => {
+				await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+				stderr.mockRestore();
+			},
+		};
+	}
+
+	test("handles each input without a run and ends the process when the agent cannot be applied", async () => {
+		// Purpose: the launcher gets the reason before any task runs, and the process ends with a nonzero code.
+		// Input and expected output: an unknown ID writes the reason to stderr, requests one shutdown, marks a nonzero exit, and handles the input.
+		// Edge case: the input handler of a failed launch answers each later input the same way.
+		// Dependencies: suite agent registry, the gate, process stderr, and the exit target.
+		const launch = await startLaunch({
+			flags: new Map([["subagent", "Missing"]]),
+		});
+		await launch.start();
+
+		expect(await launch.input()).toEqual([{ action: "handled" }]);
+		expect(await launch.input()).toEqual([{ action: "handled" }]);
+		expect(launch.stderrText()).toContain("Missing");
+		expect(launch.shutdowns).toHaveLength(1);
+		expect(launch.exitTarget.listeners).toHaveLength(1);
+		await launch.finish();
+	});
+
+	test("holds input that arrives before the session start settles", async () => {
+		// Purpose: no input may run the agent before the definition is applied or has failed.
+		// Input and expected output: an input before the session start stays pending, and it is handled after the failed application.
+		// Edge case: the input arrives before the session start event.
+		// Dependencies: suite agent registry and the gate.
+		const launch = await startLaunch({
+			flags: new Map([["subagent", "Missing"]]),
+		});
+		let answered = false;
+		const early = launch.input().then((results) => {
+			answered = true;
+			return results;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(answered).toBe(false);
+
+		await launch.start();
+
+		expect(await early).toEqual([{ action: "handled" }]);
+		await launch.finish();
+	});
+
+	test.each([
+		{
+			name: "the model of the definition matches the session model and has no credentials",
+			frontmatter: "model:\n  id: openai/test-model\n",
+			providerAuth: "missing" as const,
+			issue: "openai/test-model has no credentials",
+		},
+		{
+			name: "the definition names no model and the session model has no credentials",
+			frontmatter: "",
+			providerAuth: "missing" as const,
+			issue: "openai/test-model has no credentials",
+		},
+		{
+			name: "the credential command of the provider fails",
+			frontmatter: "model:\n  id: openai/test-model\n",
+			providerAuth: "failing" as const,
+			issue: "shell command: false",
+		},
+	])("handles input without a run when $name", async ({
+		frontmatter,
+		providerAuth,
+		issue,
+	}) => {
+		// Purpose: a model without usable credentials must fail the launch at startup, not at the first prompt.
+		// Input and expected output: stderr names the cause, one shutdown is requested, a nonzero exit is marked, the input is handled, and no agent is published.
+		// Edge case: the model of the definition equals the session model, so Pi is not asked to switch models.
+		// Dependencies: suite agent registry, fake model registry, the gate, and process stderr.
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			`---\ndescription: Worker\ntype: subagent\n${frontmatter}---\nWorker prompt`,
+		);
+		const launch = await startLaunch({
+			flags: new Map([["subagent", "Worker"]]),
+			providerAuth,
+		});
+		await launch.start();
+
+		expect(launch.stderrText()).toContain(issue);
+		expect(launch.shutdowns).toHaveLength(1);
+		expect(launch.exitTarget.listeners).toHaveLength(1);
+		expect(await launch.input()).toEqual([{ action: "handled" }]);
+		expect(
+			getAgentRuntimeComposition(launch.pi).getSelectedAgentContribution(),
+		).toBeUndefined();
+		await launch.finish();
+	});
+
+	test("fails the launch when run-subagent is disabled by its configuration", async () => {
+		// Purpose: a disabled run-subagent cannot apply the definition, so the launcher must not get an agent without it.
+		// Input and expected output: the reason names the disabled configuration on stderr, one shutdown is requested, and the input is handled.
+		// Edge case: the flag value names an existing definition.
+		// Dependencies: suite config and agent registry, the gate, and process stderr.
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ndescription: Worker\ntype: subagent\n---\nWorker prompt",
+		);
+		const launch = await startLaunch({
+			flags: new Map([["subagent", "Worker"]]),
+			config: { enabled: false },
+		});
+		await launch.start();
+
+		expect(launch.stderrText()).toContain("disabled");
+		expect(launch.shutdowns).toHaveLength(1);
+		expect(await launch.input()).toEqual([{ action: "handled" }]);
+		await launch.finish();
+	});
+
+	test("lets input run and ends nothing for a valid launch and for a process without the flag", async () => {
+		// Purpose: only a failed launch changes the input and the exit of a process.
+		// Input and expected output: a valid definition and an absent flag request no shutdown, mark no exit, and let each input continue.
+		// Edge case: run-subagent is disabled without the flag, which fails nothing.
+		// Dependencies: suite agent registry and config, and the gate.
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ndescription: Worker\ntype: subagent\n---\nWorker prompt",
+		);
+		const valid = await startLaunch({
+			flags: new Map([["subagent", "Worker"]]),
+		});
+		await valid.start();
+		expect(await valid.input()).not.toContainEqual({ action: "handled" });
+		expect(valid.shutdowns).toEqual([]);
+		expect(valid.exitTarget.listeners).toEqual([]);
+		await valid.finish();
+
+		const disabled = await startLaunch({ config: { enabled: false } });
+		await disabled.start();
+		expect(await disabled.input()).not.toContainEqual({ action: "handled" });
+		expect(disabled.shutdowns).toEqual([]);
+		expect(disabled.stderrText()).toBe("");
+		await disabled.finish();
 	});
 });
 

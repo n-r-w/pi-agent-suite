@@ -46,6 +46,8 @@ import {
 import { resolveModelSettingsWithAliasesSync } from "../model-aliases/config";
 import { isChildSubagentProcess } from "./environment";
 
+/** CLI flag that selects the main agent for one process. */
+const AGENT_FLAG = "agent";
 const COMMAND_NAME = "agent";
 
 /** Command argument and selector label that clear the main-agent selection. */
@@ -382,7 +384,7 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 	}
 
 	writeRuntimeDiagnostic("main-agent-selection.loaded");
-	getAgentRuntimeComposition(pi);
+	const composition = getAgentRuntimeComposition(pi);
 	const initializationGate = createInitializationGate();
 	const restorationState: SessionRestorationState = {
 		initializationGate,
@@ -414,10 +416,15 @@ export default function mainAgentSelection(pi: ExtensionAPI): void {
 		return { action: "continue" };
 	});
 
-	pi.registerFlag("agent", {
+	pi.registerFlag(AGENT_FLAG, {
 		description:
 			"Set main agent for this session (ephemeral, not persisted to disk)",
 		type: "string",
+	});
+	// Pi shows a flag value only to its owner, so run-subagent reads --agent through the composition.
+	composition.setAgentFlagResolver(() => {
+		const value = pi.getFlag(AGENT_FLAG);
+		return typeof value === "string" ? value : undefined;
 	});
 
 	registerSelectionEntries(pi, select);
@@ -493,7 +500,7 @@ async function handleSessionStart(
 		return;
 	}
 
-	const agentFlag = pi.getFlag("agent");
+	const agentFlag = pi.getFlag(AGENT_FLAG);
 	if (typeof agentFlag === "string") {
 		await applyEphemeralAgent(pi, mainContext, agentFlag);
 		writeRuntimeDiagnostic(
