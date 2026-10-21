@@ -56,5 +56,7 @@ If this file is missing, the footer is enabled. The git branch is hidden, and th
 - Primary-line segments never wrap or move to the additional line.
 - Each rendered line is truncated independently to the terminal width.
 - Context usage is shown as `used/threshold/window` when native pi compaction is enabled.
-- `threshold` is calculated from native pi settings: `contextWindow - compaction.reserveTokens`.
+- Pi first merges project settings over agent settings. For `reserveTokens`, Pi then uses the selected model's `compaction.modelOverrides["provider/id"].reserveTokens`, ordinary `compaction.reserveTokens`, or its built-in default of 16,384 tokens, in that order.
+- `threshold` is `max(0, contextWindow - reserveTokens)`. For a 100,000-token window and a selected-model override of 8,000, the threshold is 92,000 tokens.
+- When the model changes, the footer refreshes the threshold for the selected model.
 - If native pi compaction is disabled or its settings are invalid, context usage is shown as `used/window`.

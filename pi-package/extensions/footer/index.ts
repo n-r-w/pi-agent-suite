@@ -120,6 +120,8 @@ interface FooterContextUsageState {
 
 /** Mutable session state updated by pi events and read by the footer renderer. */
 interface FooterSessionState {
+	/** Resolved compaction settings for the selected model's context display. */
+	nativeCompactionSettings?: NativeCompactionSettings;
 	projectName: string | undefined;
 	model: FooterModelState | undefined;
 	requestRender: (() => void) | undefined;
@@ -661,9 +663,9 @@ function notifyUsageUnavailable(
 	ctx.ui.notify(USAGE_UNAVAILABLE_WARNING, "warning");
 }
 
+/** Supplies configuration and session dependencies for the footer component. */
 interface CreateFooterComponentOptions {
 	readonly config: FooterConfig;
-	readonly compactionSettings: FooterCompactionSettings | undefined;
 	readonly initialUsageTotals: UsageSessionTotals | undefined;
 	readonly rootSessionId: string | undefined;
 	readonly pi: ExtensionAPI;
@@ -677,7 +679,6 @@ interface CreateFooterComponentOptions {
 /** Creates the footer component installed into the active pi session. */
 function createFooterComponent({
 	config,
-	compactionSettings,
 	initialUsageTotals,
 	rootSessionId,
 	pi,
@@ -738,7 +739,10 @@ function createFooterComponent({
 		render(width: number) {
 			return renderFooterLines({
 				config,
-				compactionSettings,
+				compactionSettings:
+					state.nativeCompactionSettings?.status === "enabled"
+						? state.nativeCompactionSettings
+						: undefined,
 				footerData,
 				usageTotals,
 				ctx,
@@ -767,11 +771,10 @@ async function installSessionFooter(
 		return;
 	}
 
-	const nativeCompactionSettings = readNativeCompactionSettings(ctx.cwd);
-	const compactionSettings =
-		nativeCompactionSettings.status === "enabled"
-			? nativeCompactionSettings
-			: undefined;
+	state.nativeCompactionSettings = readNativeCompactionSettings(
+		ctx.cwd,
+		ctx.model,
+	);
 	state.projectName = await resolveProjectName(pi, ctx.cwd);
 	state.model = ctx.model;
 	const rootSessionId =
@@ -788,7 +791,6 @@ async function installSessionFooter(
 	ctx.ui.setFooter((tui, theme, footerData) =>
 		createFooterComponent({
 			config: config.config,
-			compactionSettings,
 			initialUsageTotals,
 			rootSessionId,
 			pi,
@@ -822,7 +824,11 @@ export default function footer(pi: ExtensionAPI): void {
 		warnedUsageRootSessionIds: getWarnedUsageRootSessionIds(),
 	};
 
-	pi.on("model_select", async (event) => {
+	pi.on("model_select", async (event, ctx) => {
+		state.nativeCompactionSettings = readNativeCompactionSettings(
+			ctx.cwd,
+			event.model,
+		);
 		state.model = event.model;
 		state.requestRender?.();
 	});

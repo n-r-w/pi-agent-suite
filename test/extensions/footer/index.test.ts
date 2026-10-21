@@ -1198,33 +1198,43 @@ describe("footer", () => {
 		// Purpose: model changes can affect the model-display segment and must request a footer redraw.
 		// Input and expected output: selecting openai-codex gpt-5.5 triggers one render request and renders the selected model.
 		// Edge case: the redraw request must come from model selection before the next footer render.
-		// Dependencies: this test uses only in-memory extension, session, footer data, and TUI fakes.
-		const { pi, footerRenderer } = await installFooterTestHarness();
-		const tui = createTuiFake();
-		const footerComponent = createFooterComponent(
-			footerRenderer,
-			createFooterDataFake(),
-			tui,
-		);
-		const modelSelectHandler = pi.handlers.find(
-			(handler) => handler.eventName === "model_select",
-		)?.handler;
+		// Dependencies: isolated native settings and in-memory extension, session, footer data, and TUI fakes.
+		await withIsolatedAgentDir(async () => {
+			const { pi, ctx, footerRenderer } = await installFooterTestHarness();
+			const tui = createTuiFake();
+			const footerComponent = createFooterComponent(
+				footerRenderer,
+				createFooterDataFake(),
+				tui,
+			);
+			const modelSelectHandler = pi.handlers.find(
+				(handler) => handler.eventName === "model_select",
+			)?.handler;
 
-		expect(modelSelectHandler).toEqual(expect.any(Function));
-		await (modelSelectHandler as (event: unknown) => Promise<void> | void)({
-			model: {
-				id: "gpt-5.5",
-				provider: "openai-codex",
-				reasoning: true,
-				contextWindow: 300000,
-			},
+			expect(modelSelectHandler).toEqual(expect.any(Function));
+			await (
+				modelSelectHandler as (
+					event: unknown,
+					ctx: unknown,
+				) => Promise<void> | void
+			)(
+				{
+					model: {
+						id: "gpt-5.5",
+						provider: "openai-codex",
+						reasoning: true,
+						contextWindow: 300000,
+					},
+				},
+				ctx,
+			);
+
+			const renderedText = footerComponent.render(120).join("\n");
+
+			expect(renderedText).toContain("openai-codex/gpt-5.5/high");
+			expect(renderedText).not.toContain("gpt-5.4");
+			expect(tui.requestRenderCalls).toHaveLength(1);
 		});
-
-		const renderedText = footerComponent.render(120).join("\n");
-
-		expect(renderedText).toContain("openai-codex/gpt-5.5/high");
-		expect(renderedText).not.toContain("gpt-5.4");
-		expect(tui.requestRenderCalls).toHaveLength(1);
 	});
 
 	test("renders only unconsumed extension statuses on the additional line", async () => {

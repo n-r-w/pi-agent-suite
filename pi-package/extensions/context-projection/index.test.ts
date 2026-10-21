@@ -3454,6 +3454,24 @@ describe("context-projection", () => {
 					shouldProject: false,
 				},
 				{
+					name: "leading-two-dot descendant",
+					skillRoot: join(agentDir, "skills", "review"),
+					readPath: "skills/review/..notes.md",
+					shouldProject: false,
+				},
+				{
+					name: "parent directory traversal",
+					skillRoot: join(agentDir, "skills", "review"),
+					readPath: "skills/review/../other.md",
+					shouldProject: true,
+				},
+				{
+					name: "parent directory itself",
+					skillRoot: join(agentDir, "skills", "review"),
+					readPath: "skills/review/..",
+					shouldProject: true,
+				},
+				{
 					name: "sibling path with shared prefix",
 					skillRoot: join(agentDir, "skills", "review"),
 					readPath: join(agentDir, "skills", "review-other", "SKILL.md"),

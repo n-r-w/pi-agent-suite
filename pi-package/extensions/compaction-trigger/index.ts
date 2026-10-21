@@ -100,7 +100,7 @@ function handleContext(
 		return undefined;
 	}
 
-	const settings = readNativeCompactionSettings(ctx.cwd);
+	const settings = readNativeCompactionSettings(ctx.cwd, model);
 	if (settings.status === "invalid") {
 		lifecycle.state = "failed";
 		reportFailure(pi);

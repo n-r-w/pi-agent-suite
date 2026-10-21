@@ -253,6 +253,89 @@ function diagnostics(pi: TestPi): SentMessage[] {
 }
 
 describe("compaction trigger", () => {
+	test("blocks requests and reports invalid selected-model settings", async () => {
+		const { cwd } = await createSettingsFixture({
+			compaction: {
+				modelOverrides: { "test/selected": { keepRecentTokens: -1 } },
+			},
+		});
+		const ctx = {
+			...createContext(cwd, 100_000, true, 0),
+			model: {
+				provider: "test",
+				id: "selected",
+				contextWindow: 100_000,
+			} as Model<Api>,
+		};
+		const harness = install();
+		expect(
+			await harness.context(
+				{ type: "context", messages: [userMessage()] },
+				ctx,
+			),
+		).toEqual({ messages: [] });
+		expect(ctx.abortCalls.count).toBe(1);
+		expect(diagnostics(harness.pi)).toHaveLength(1);
+	});
+
+	test("refreshes the threshold when the selected model changes between requests", async () => {
+		const { cwd } = await createSettingsFixture({
+			compaction: {
+				reserveTokens: 16_000,
+				modelOverrides: { "test/selected": { reserveTokens: 8_000 } },
+			},
+		});
+		const harness = install();
+		for (const [id, tokens, blocked] of [
+			["other", 83_999, false],
+			["selected", 90_000, false],
+			["other", 90_000, true],
+		] as const) {
+			const ctx = {
+				...createContext(cwd, 100_000, true, tokens),
+				model: { provider: "test", id, contextWindow: 100_000 } as Model<Api>,
+			};
+			expect(
+				await harness.context(
+					{ type: "context", messages: [userMessage()] },
+					ctx,
+				),
+			).toEqual(blocked ? { messages: [] } : undefined);
+			expect(ctx.abortCalls.count).toBe(blocked ? 1 : 0);
+		}
+	});
+
+	test("allows usage below the selected-model threshold and blocks equality", async () => {
+		const { cwd } = await createSettingsFixture({
+			compaction: {
+				reserveTokens: 16_000,
+				modelOverrides: {
+					"test/selected": { reserveTokens: 8_000, keepRecentTokens: 4_000 },
+				},
+			},
+		});
+		for (const [tokens, blocked] of [
+			[91_999, false],
+			[92_000, true],
+		] as const) {
+			const ctx = {
+				...createContext(cwd, 100_000, true, tokens),
+				model: {
+					provider: "test",
+					id: "selected",
+					contextWindow: 100_000,
+				} as Model<Api>,
+			};
+			const harness = install();
+			const result = await harness.context(
+				{ type: "context", messages: [userMessage()] },
+				ctx,
+			);
+			expect(result).toEqual(blocked ? { messages: [] } : undefined);
+			expect(ctx.abortCalls.count).toBe(blocked ? 1 : 0);
+		}
+	});
+
 	test("passes through a request below the native threshold", async () => {
 		// Purpose: normal requests must reach the provider unchanged.
 		// Input and expected output: an enabled threshold one token above the estimate returns no replacement and makes no lifecycle calls.
