@@ -63,21 +63,20 @@ for (const mode of ["native", "custom"]) {
 	});
 }
 
-test("retained renderer components refresh counts and paths after requests and tree navigation", () => {
-	const output = runScenario("renderer-live");
+test("renders tracked paths and the restored and absent files of each selection", () => {
+	const output = runScenario("renderer");
 	const text = (name: string): string => (output[name] as string[]).join("\n");
-	expect(text("beforeLines")).toContain("Tracking 2 skill files");
-	expect(text("preparedLines")).toContain("Prepared 2 skill files");
-	expect(text("preparedLines")).toContain("0 files did not fit");
-	expect(text("preparedLines")).toMatch(POSITIVE_TOKEN_COUNT);
-	expect(text("absentLines")).toContain("Prepared 0 skill files");
+	expect(text("trackedLines")).toContain("Tracking 2 skill files");
+	expect(text("restoredLines")).toContain("Restored 2 skill files");
+	expect(text("restoredLines")).toContain("0 files did not fit");
+	expect(text("restoredLines")).toMatch(POSITIVE_TOKEN_COUNT);
+	expect(text("absentLines")).toContain("Restored 0 skill files");
 	expect(text("absentLines")).toContain("2 files did not fit");
 	for (const path of [output["skill"], output["asset"]]) {
-		expect(text("preparedPaths")).toContain(`Prepared: ${path}`);
+		expect(text("trackedPaths")).toContain(`Tracked: ${path}`);
+		expect(text("restoredPaths")).toContain(`Restored: ${path}`);
 		expect(text("absentPaths")).toContain(`Absent: ${path}`);
-		expect(text("resetPaths")).toContain(`Tracked: ${path}`);
 	}
-	expect(text("resetLines")).toContain("Tracking 2 skill files");
 });
 
 test("invalid config disables and warns once across repeated callbacks", () => {
@@ -121,44 +120,42 @@ interface DeliverySnapshot {
 	requestTokens: number;
 }
 
-test("persists only ordered candidate paths", () => {
+test("persists ordered candidate paths at compaction and one content selection per compaction", () => {
 	const output = runScenario("changes");
 	const records = output["records"] as Record<string, unknown>[];
-	expect(records).toHaveLength(1);
-	expect(Object.keys(records[0] ?? {}).sort()).toEqual([
-		"candidates",
+	expect(records).toHaveLength(3);
+	for (const record of records) {
+		expect(Object.keys(record).sort()).toEqual(["candidates", "compactionId"]);
+		expect(record["candidates"]).toEqual([output["skill"], output["asset"]]);
+	}
+	const selections = output["selections"] as Record<string, unknown>[];
+	expect(selections).toHaveLength(3);
+	expect(Object.keys(selections[0] ?? {}).sort()).toEqual([
+		"absent",
 		"compactionId",
-	]);
-	expect(records[0]?.["candidates"]).toEqual([
-		output["skill"],
-		output["asset"],
+		"files",
 	]);
 });
 
-test("rereads changed disk contents between requests and after reopening", () => {
+test("reuses the selected contents after disk changes, reopening and deletion until the next compaction", () => {
+	const output = runScenario("changes");
+	for (const name of ["changed", "reopened", "deleted"]) {
+		expect(output[name]).toEqual(output["first"]);
+	}
+});
+
+test("a later compaction skips deleted files and restores them when they reappear without losing tracked paths", () => {
 	const output = runScenario("changes");
 	const first = output["first"] as DeliverySnapshot;
-	const changed = output["changed"] as DeliverySnapshot;
-	expect(changed.requestTokens).toBeGreaterThan(first.requestTokens);
-	expect(
-		(output["reopened"] as DeliverySnapshot).requestTokens,
-	).toBeGreaterThan(changed.requestTokens);
+	const recompacted = output["recompacted"] as DeliverySnapshot;
+	expect(recompacted.restoredPaths).toEqual([output["skill"] as string]);
+	expect(recompacted.absentPaths).toEqual([]);
+	const reappeared = output["reappeared"] as DeliverySnapshot;
+	expect(reappeared.restoredPaths).toEqual(first.restoredPaths);
+	expect(reappeared.requestTokens).toBeGreaterThan(first.requestTokens);
 });
 
-test("skips deleted files and restores them when they reappear without losing tracked paths", () => {
-	const output = runScenario("changes");
-	const deleted = output["deleted"] as DeliverySnapshot;
-	expect(deleted.restoredPaths).toEqual([output["skill"] as string]);
-	expect(deleted.absentPaths).toEqual([]);
-	expect(output["reappeared"]).toEqual(output["reopened"]);
-	const records = output["records"] as { candidates: string[] }[];
-	expect(records[0]?.candidates).toEqual([
-		output["skill"] as string,
-		output["asset"] as string,
-	]);
-});
-
-test("fits at the complete request estimator boundary and repacks below it", () => {
+test("fits at the complete request estimator boundary and selects fewer files below it", () => {
 	const output = runScenario("budgets");
 	const exact = output["exact"] as DeliverySnapshot;
 	const below = output["below"] as DeliverySnapshot;
@@ -168,7 +165,7 @@ test("fits at the complete request estimator boundary and repacks below it", () 
 	expect(below.absentPaths.length).toBeGreaterThan(0);
 });
 
-test("larger runtime prompts and tools reduce the fitting subset and a larger model restores room", () => {
+test("larger runtime prompts and tools reduce the selection and a larger model restores room", () => {
 	const output = runScenario("budgets");
 	const first = output["first"] as DeliverySnapshot;
 	for (const name of ["largerPrompt", "largerTools"]) {
@@ -179,6 +176,11 @@ test("larger runtime prompts and tools reduce the fitting subset and a larger mo
 	expect(
 		(output["largerWindow"] as DeliverySnapshot).restoredPaths,
 	).toHaveLength(2);
+});
+
+test("keeps every selected file in later requests when the budget shrinks before the next compaction", () => {
+	const output = runScenario("budgets");
+	expect(output["shrunk"]).toEqual(output["largerWindow"]);
 });
 
 test("preserves interleaved returned and absent priority through reopening and repeated compaction", () => {

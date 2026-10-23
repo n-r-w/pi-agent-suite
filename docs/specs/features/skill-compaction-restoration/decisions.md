@@ -50,6 +50,10 @@ Use the public merged session head and the shared before_agent_start options ref
 
 Estimating only ctx.getSystemPrompt omitted preserved state; estimating only the native head omitted Pi's later forced-prompt transformation. Requiring both estimates would unnecessarily omit fitting files. Public event identity resolves the actual branch, so no dependency change, private access, conservative reserve, or new user-visible behavior is needed.
 
+## D11: Select once per compaction and persist file contents
+
+Supersedes D9 and the storage constraint behind it: the user rejected content-bearing records because of a misunderstanding of their purpose, and now requires them. Per-request fitting moved files to the absent-file list whenever a request grew past `contextWindow - reserveTokens - keepRecentTokens`, and agents reread those files before the next compaction. The extension now selects files on the first request after a compaction, saves the selection with file contents, and inserts it unchanged in every request until the next compaction. See `docs/specs/issues/skill-restoration-rereads/`.
+
 ## Open questions
 
 None. The user approved the D9 technical design and resumption with final_only acceptance through O5-1. D10 implements its existing complete-request budget contract.

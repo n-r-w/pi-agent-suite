@@ -8,13 +8,19 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import skillRestoration from "../../pi-package/extensions/skill-restoration/index";
-import { RESTORATION_TYPE } from "../../pi-package/extensions/skill-restoration/restoration";
+import {
+	RESTORATION_TYPE,
+	SELECTION_TYPE,
+} from "../../pi-package/extensions/skill-restoration/restoration";
 import { buildActiveToolDefinitions } from "../../pi-package/shared/active-tool-definitions";
 import { createPersistedSession } from "./persisted-session";
 import { createSkillAssistant } from "./skill-restoration-fixtures";
 
 /** Supplies ample room for the default restoration fixture. */
 const CONTEXT_WINDOW = 10000;
+
+/** Supplies the pre-compaction token estimate in fake compaction entries. */
+const TOKENS_BEFORE = 5000;
 
 /** Captures entry rendering independently of model-message text. */
 type Renderer = (
@@ -38,8 +44,8 @@ export class RestorationHarness {
 		string,
 		(event: unknown, ctx: ExtensionContext) => unknown
 	>();
-	/** Captures the custom-entry renderer. */
-	renderer: Renderer | undefined;
+	/** Captures custom-entry renderers by entry type. */
+	readonly renderers = new Map<string, Renderer>();
 	/** Supplies fake Pi session context backed by real session storage. */
 	readonly ctx: ExtensionContext;
 	/** Supplies the extension API boundary. */
@@ -127,8 +133,8 @@ export class RestorationHarness {
 				event: string,
 				handler: (event: unknown, ctx: ExtensionContext) => unknown,
 			) => this.handlers.set(event, handler),
-			registerEntryRenderer: (_type: string, renderer: Renderer) => {
-				this.renderer = renderer;
+			registerEntryRenderer: (type: string, renderer: Renderer) => {
+				this.renderers.set(type, renderer);
 			},
 			getCommands: () => [
 				{ name: "sample", source: "skill", sourceInfo: { path: this.skill } },
@@ -172,13 +178,35 @@ export class RestorationHarness {
 		return result?.messages ?? visible;
 	}
 
-	/** Returns branch-local restoration records. */
+	/** Appends a compaction without retained messages and emits its completion event. */
+	async compact(): Promise<string> {
+		const id = this.session.appendCompaction("identical", null, TOKENS_BEFORE);
+		await this.emit("session_compact", {
+			compactionEntry: this.session.getEntry(id),
+			fromExtension: false,
+		});
+		return id;
+	}
+
+	/** Returns branch-local restoration path records. */
 	getRecords(): Extract<SessionEntry, { type: "custom" }>[] {
+		return this.getCustomEntries(RESTORATION_TYPE);
+	}
+
+	/** Returns branch-local restoration selection records. */
+	getSelections(): Extract<SessionEntry, { type: "custom" }>[] {
+		return this.getCustomEntries(SELECTION_TYPE);
+	}
+
+	/** Returns branch-local custom entries of one type. */
+	private getCustomEntries(
+		type: string,
+	): Extract<SessionEntry, { type: "custom" }>[] {
 		return this.session
 			.getBranch()
 			.filter(
 				(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
-					entry.type === "custom" && entry.customType === RESTORATION_TYPE,
+					entry.type === "custom" && entry.customType === type,
 			);
 	}
 

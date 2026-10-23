@@ -1,5 +1,7 @@
 # Technical Solution: Skill restoration after compaction
 
+> D11 in `decisions.md` supersedes the per-request disk reads and fitting described here. The extension selects files once per compaction and saves them in the session: see `docs/specs/issues/skill-restoration-rereads/solution.md`.
+
 ## Problem Statement
 
 See `problem.md` and `requirements.md`. The user requires skill file contents to come from disk and prohibits saving those contents in restoration session records.

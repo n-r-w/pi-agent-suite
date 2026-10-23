@@ -133,7 +133,7 @@ function registerLifecycle(
 	pi.on("session_compact", (event) => {
 		state.compactions.push(event.reason);
 	});
-	if (mode === "auto") {
+	if (mode === "auto" || mode === "replace") {
 		pi.on("session_before_compact", (event) => ({
 			compaction: {
 				summary: "automatic fixture summary",
@@ -176,7 +176,7 @@ function registerProvider(
 	});
 }
 
-/** Exercises native, later-forced and same-run continuation request preparation. */
+/** Exercises native, later-forced, rerun, manual and same-run continuation request preparation. */
 async function run(): Promise<void> {
 	const root = process.argv[2];
 	const mode = process.argv[3] ?? "native";
@@ -219,7 +219,11 @@ async function run(): Promise<void> {
 		await session.bindExtensions({});
 		await session.prompt("fixture request");
 		if (mode === "replace") {
-			await session.prompt("another fixture request");
+			// Manual compaction keeps this turn and summarizes the first one.
+			const keptRepeats = 100;
+			await session.prompt("another fixture request ".repeat(keptRepeats));
+			await session.compact();
+			await session.prompt("final fixture request");
 		}
 		process.stdout.write(
 			JSON.stringify({

@@ -36,7 +36,7 @@ function captureRequest(
 	};
 }
 
-/** Exercises disk changes, reopen and temporary deletion without comparing prompt text. */
+/** Exercises disk changes, reopening, deletion and later compactions without comparing prompt text. */
 async function changingFiles(harness: RestorationHarness): Promise<unknown> {
 	const first = captureRequest(harness, await harness.prepareContext());
 	const changedContent = "changed ".repeat(CHANGED_REPEATS);
@@ -44,45 +44,53 @@ async function changingFiles(harness: RestorationHarness): Promise<unknown> {
 	const changed = captureRequest(harness, await harness.prepareContext());
 	harness.reopen();
 	await harness.emit("session_start");
-	const reopenedContent = changedContent.repeat(2);
-	writeFileSync(harness.asset, reopenedContent);
 	const reopened = captureRequest(harness, await harness.prepareContext());
 	unlinkSync(harness.asset);
 	const deleted = captureRequest(harness, await harness.prepareContext());
-	writeFileSync(harness.asset, reopenedContent);
+	await harness.compact();
+	const recompacted = captureRequest(harness, await harness.prepareContext());
+	writeFileSync(harness.asset, changedContent);
+	await harness.compact();
 	const reappeared = captureRequest(harness, await harness.prepareContext());
 	return {
 		first,
 		changed,
 		reopened,
 		deleted,
+		recompacted,
 		reappeared,
 		records: harness.getRecords().map((entry) => entry.data),
+		selections: harness.getSelections().map((entry) => entry.data),
 		skill: harness.skill,
 		asset: harness.asset,
 	};
 }
 
-/** Exercises exact whole-request boundaries and changing runtime prompt/tool/model inputs. */
+/** Exercises exact whole-request boundaries, runtime prompt/tool/model inputs and a shrinking budget. */
 async function changingBudget(harness: RestorationHarness): Promise<unknown> {
+	await harness.compact();
 	const first = captureRequest(harness, await harness.prepareContext());
 	const fullTokens = first["requestTokens"] as number;
 	const headroom = 200;
+	const measure = async (): Promise<Record<string, unknown>> => {
+		await harness.compact();
+		return captureRequest(harness, await harness.prepareContext());
+	};
 	Object.assign(harness.ctx.model ?? {}, {
 		contextWindow: fullTokens + headroom,
 	});
-	const exact = captureRequest(harness, await harness.prepareContext());
+	const exact = await measure();
 	Object.assign(harness.ctx.model ?? {}, {
 		contextWindow: fullTokens + headroom - 1,
 	});
-	const below = captureRequest(harness, await harness.prepareContext());
+	const below = await measure();
 	Object.assign(harness.ctx.model ?? {}, {
 		contextWindow: fullTokens + headroom,
 	});
 	Object.assign(harness.ctx, {
 		getSystemPrompt: () => "runtime ".repeat(CHANGED_REPEATS),
 	});
-	const largerPrompt = captureRequest(harness, await harness.prepareContext());
+	const largerPrompt = await measure();
 	Object.assign(harness.ctx, { getSystemPrompt: () => "system fixture" });
 	Object.assign(harness.pi, {
 		getAllTools: () => [
@@ -93,9 +101,11 @@ async function changingBudget(harness: RestorationHarness): Promise<unknown> {
 			},
 		],
 	});
-	const largerTools = captureRequest(harness, await harness.prepareContext());
+	const largerTools = await measure();
 	Object.assign(harness.ctx.model ?? {}, { contextWindow: 10000 });
-	const largerWindow = captureRequest(harness, await harness.prepareContext());
+	const largerWindow = await measure();
+	Object.assign(harness.ctx.model ?? {}, { contextWindow: 1 });
+	const shrunk = captureRequest(harness, await harness.prepareContext());
 	return {
 		first,
 		exact,
@@ -103,6 +113,7 @@ async function changingBudget(harness: RestorationHarness): Promise<unknown> {
 		largerPrompt,
 		largerTools,
 		largerWindow,
+		shrunk,
 		fullTokens,
 	};
 }

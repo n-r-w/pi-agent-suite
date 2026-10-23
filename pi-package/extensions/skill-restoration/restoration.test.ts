@@ -10,12 +10,34 @@ import { createTempDir } from "../../../test/support/temp-dir";
 import { estimateSerializedInputTokens } from "../../shared/context-size";
 import {
 	findBranchRestoration,
-	insertRestoration,
+	insertSelection,
 	parseRestorationRecord,
+	parseSelectionRecord,
 	RESTORATION_TYPE,
+	type RestorationSelection,
+	SELECTION_TYPE,
+	selectRestoration,
 } from "./restoration";
 
-describe("restoration budgeting and replay", () => {
+/** Supplies a summary-bearing request without retained messages. */
+const SUMMARY: AgentMessage = {
+	role: "compactionSummary",
+	summary: "fixture summary",
+	tokensBefore: 10,
+	timestamp: 1,
+};
+
+/** Returns a selection or fails the test when the request had no summary. */
+function requireSelection(
+	selection: RestorationSelection | undefined,
+): RestorationSelection {
+	if (!selection) {
+		throw new Error("fixture request produced no selection");
+	}
+	return selection;
+}
+
+describe("restoration selection, insertion and replay", () => {
 	for (const field of ["content", "sections", "tools"]) {
 		test(`includes native system ${field} in complete-request fitting`, async () => {
 			const temp = createTempDir("skill-system-field-");
@@ -40,19 +62,12 @@ describe("restoration budgeting and replay", () => {
 							}
 						: {}),
 				};
-				const messages: AgentMessage[] = [
-					{
-						role: "compactionSummary",
-						summary: "fixture",
-						tokensBefore: 10,
-						timestamp: 2,
-					},
-				];
+				const messages = [SUMMARY];
 				const base = estimateSerializedInputTokens({
 					messages: convertToLlm([systemHead, ...messages]),
 				});
 				const limit = base + 1000;
-				const result = await insertRestoration({
+				const selection = await selectRestoration({
 					record: createPathRecord([path]),
 					messages,
 					timestamp: 1,
@@ -63,17 +78,21 @@ describe("restoration budgeting and replay", () => {
 				});
 				expect(
 					estimateSerializedInputTokens({
-						messages: convertToLlm([systemHead, ...result.messages]),
+						messages: convertToLlm([
+							systemHead,
+							...insertSelection(messages, requireSelection(selection), 1),
+						]),
 					}),
 				).toBeLessThanOrEqual(limit);
-				expect(result.delivery?.restoredPaths).toEqual([]);
-				expect(result.delivery?.absentPaths).toEqual([path]);
+				expect(selection?.files).toEqual([]);
+				expect(selection?.absent).toEqual([path]);
 			} finally {
 				temp.remove();
 			}
 		});
 	}
-	test("fits whole files in full, partial and zero space while keeping missing paths tracked", async () => {
+
+	test("selects whole files in full, partial and zero space and skips missing files", async () => {
 		const temp = createTempDir("skill-budget-");
 		try {
 			const paths = [
@@ -84,17 +103,11 @@ describe("restoration budgeting and replay", () => {
 			writeFileSync(paths[0], "large ".repeat(1000));
 			writeFileSync(paths[1], "small fixture data");
 			const messages: AgentMessage[] = [
-				{
-					role: "compactionSummary",
-					summary: "fixture summary",
-					tokensBefore: 10,
-					timestamp: 1,
-				},
+				SUMMARY,
 				{ role: "user", content: "retained", timestamp: 2 },
 			];
-			const tracked = createPathRecord([...paths]);
 			const base = {
-				record: tracked,
+				record: createPathRecord([...paths]),
 				messages,
 				timestamp: 1,
 				systemHead: {
@@ -115,36 +128,66 @@ describe("restoration budgeting and replay", () => {
 				reserveTokens: 100,
 				keepRecentTokens: 100,
 			};
-			const partial = await insertRestoration({ ...base, contextWindow: 900 });
-			expect(partial.delivery?.restoredPaths).toEqual([paths[1]]);
-			expect(partial.delivery?.absentPaths).toEqual([paths[0]]);
-			expect(tracked.candidates).toEqual(paths);
+			const partial = await selectRestoration({ ...base, contextWindow: 900 });
+			expect(partial?.files.map((file) => file.path)).toEqual([paths[1]]);
+			expect(partial?.absent).toEqual([paths[0]]);
 			expect(
 				estimateSerializedInputTokens({
-					messages: convertToLlm([base.systemHead, ...partial.messages]),
+					messages: convertToLlm([
+						base.systemHead,
+						...insertSelection(messages, requireSelection(partial), 1),
+					]),
 				}),
 			).toBeLessThanOrEqual(700);
-			const all = await insertRestoration({ ...base, contextWindow: 10000 });
-			expect(all.delivery?.restoredPaths).toEqual(paths.slice(0, 2));
-			expect(all.delivery?.absentPaths).toEqual([]);
-			const none = await insertRestoration({ ...base, contextWindow: 1 });
-			expect(none.delivery?.restoredPaths).toEqual([]);
-			expect(none.delivery?.absentPaths).toEqual(paths.slice(0, 2));
-			expect(none.messages.map((message) => message.role)).toEqual([
-				"compactionSummary",
-				"custom",
-				"user",
-			]);
-			const blocked = await insertRestoration({
-				...base,
-				messages: [],
-				contextWindow: 10000,
-			});
-			expect(blocked.messages).toEqual([]);
-			expect(blocked.delivery).toBeUndefined();
+			const all = await selectRestoration({ ...base, contextWindow: 10000 });
+			expect(all?.files.map((file) => file.path)).toEqual(paths.slice(0, 2));
+			expect(all?.absent).toEqual([]);
+			const none = await selectRestoration({ ...base, contextWindow: 1 });
+			expect(none?.files).toEqual([]);
+			expect(none?.absent).toEqual(paths.slice(0, 2));
+			expect(
+				insertSelection(messages, requireSelection(none), 1).map(
+					(message) => message.role,
+				),
+			).toEqual(["compactionSummary", "custom", "user"]);
+			expect(
+				await selectRestoration({
+					...base,
+					messages: [],
+					contextWindow: 10000,
+				}),
+			).toBeUndefined();
 		} finally {
 			temp.remove();
 		}
+	});
+
+	test("inserts every selected file after the latest summary whatever the request size", () => {
+		const selection = {
+			compactionId: "old",
+			files: [{ path: "/skills/a/SKILL.md", content: "rules" }],
+			absent: ["/skills/b/SKILL.md"],
+		};
+		const large: AgentMessage = {
+			role: "user",
+			content: "growth ".repeat(10000),
+			timestamp: 3,
+		};
+		const inserted = insertSelection([SUMMARY, large], selection, 1);
+		expect(inserted.map((message) => message.role)).toEqual([
+			"compactionSummary",
+			"custom",
+			"user",
+		]);
+		expect(inserted[1]?.role === "custom" && inserted[1].details).toEqual({
+			compactionId: "old",
+			restoredPaths: ["/skills/a/SKILL.md"],
+			absentPaths: ["/skills/b/SKILL.md"],
+		});
+		expect(insertSelection([large], selection, 1)).toEqual([large]);
+		expect(
+			insertSelection([SUMMARY], { ...selection, files: [], absent: [] }, 1),
+		).toEqual([SUMMARY]);
 	});
 
 	test("selects the latest equal-summary compaction and validates reopened branch records", () => {
@@ -156,9 +199,15 @@ describe("restoration budgeting and replay", () => {
 				...createPathRecord(["/skills/a/first", "/skills/a/absent"]),
 				compactionId: first,
 			};
+			session.appendCustomEntry(RESTORATION_TYPE, firstRecord);
+			const firstSelection = {
+				compactionId: first,
+				files: [{ path: "/skills/a/first", content: "first" }],
+				absent: ["/skills/a/absent"],
+			};
 			const firstLeaf = session.appendCustomEntry(
-				RESTORATION_TYPE,
-				firstRecord,
+				SELECTION_TYPE,
+				firstSelection,
 			);
 			const second = session.appendCompaction("identical", null, 10);
 			const secondRecord = {
@@ -171,13 +220,22 @@ describe("restoration budgeting and replay", () => {
 				throw new Error("fixture session was not persisted");
 			}
 			const reopened = SessionManager.open(file);
-			expect(findBranchRestoration(reopened.getBranch())?.record).toEqual(
-				secondRecord,
-			);
+			expect(findBranchRestoration(reopened.getBranch())).toMatchObject({
+				record: secondRecord,
+				selection: undefined,
+			});
 			reopened.branch(firstLeaf);
-			expect(findBranchRestoration(reopened.getBranch())?.record).toEqual(
-				firstRecord,
-			);
+			expect(findBranchRestoration(reopened.getBranch())).toMatchObject({
+				record: firstRecord,
+				selection: firstSelection,
+			});
+			session.appendCustomEntry(SELECTION_TYPE, {
+				...firstSelection,
+				compactionId: first,
+			});
+			expect(
+				findBranchRestoration(session.getBranch())?.selection,
+			).toBeUndefined();
 			session.appendCustomEntry(RESTORATION_TYPE, {
 				...secondRecord,
 				candidates: ["relative"],
@@ -190,7 +248,7 @@ describe("restoration budgeting and replay", () => {
 		}
 	});
 
-	test("rejects malformed and content-bearing persisted data at the boundary", () => {
+	test("rejects malformed and content-bearing path records at the boundary", () => {
 		const valid = createPathRecord(["/skills/a/first", "/skills/a/absent"]);
 		expect(parseRestorationRecord(valid)).toEqual(valid);
 		for (const invalid of [
@@ -207,6 +265,29 @@ describe("restoration budgeting and replay", () => {
 			{ ...valid, candidates: null },
 		]) {
 			expect(parseRestorationRecord(invalid)).toBeUndefined();
+		}
+	});
+
+	test("rejects malformed selection records at the boundary", () => {
+		const valid = {
+			compactionId: "old",
+			files: [{ path: "/skills/a/first", content: "" }],
+			absent: ["/skills/a/absent"],
+		};
+		expect(parseSelectionRecord(valid)).toEqual(valid);
+		for (const invalid of [
+			null,
+			[],
+			{ ...valid, compactionId: "" },
+			{ ...valid, extra: true },
+			{ ...valid, files: null },
+			{ ...valid, files: [{ path: "relative", content: "" }] },
+			{ ...valid, files: [{ path: "/skills/a/first" }] },
+			{ ...valid, files: [{ path: "/skills/a/first", content: 1 }] },
+			{ ...valid, absent: ["relative"] },
+			{ ...valid, absent: [...valid.absent, "/skills/a/first"] },
+		]) {
+			expect(parseSelectionRecord(invalid)).toBeUndefined();
 		}
 	});
 });

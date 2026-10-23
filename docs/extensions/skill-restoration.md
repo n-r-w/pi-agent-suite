@@ -1,6 +1,6 @@
 # skill-restoration
 
-After native or custom compaction, `skill-restoration` reads previously loaded skill files from disk for each model request. It inserts whole files that fit immediately after the compaction summary. Main agents and subagents load the extension through the package.
+After native or custom compaction, `skill-restoration` returns previously loaded skill files to the model context. On the first model request after a compaction, it reads the files from disk and selects the whole files that fit. It saves the selected files with their contents in the session and inserts them immediately after the compaction summary in every request until the next compaction. Main agents and subagents load the extension through the package.
 
 ## Configuration
 
@@ -14,19 +14,21 @@ The optional file `~/.pi/agent/agent-suite/skill-restoration/config.json` accept
 
 `PI_AGENT_SUITE_DIR` overrides the suite directory. Missing configuration enables restoration. The extension rereads configuration on lifecycle and request events. Invalid JSON, unknown keys, read errors, or a non-boolean `enabled` value disable restoration and produce one warning per extension instance.
 
-## Selection and persistence
+## Candidate paths
 
 A successful `read` result qualifies when its resolved path belongs to a directory listed by Pi's skill command catalog. Skill commands also qualify through their `location` attribute. Assets and subdirectories qualify. Bash reads and unrelated project files are excluded.
 
-The extension reconstructs effective messages before the latest active-branch compaction, including context-edit omissions and replacements. Files loaded successfully in messages retained after compaction remain in place and are excluded from restoration. Recent loads have priority. Previous candidate paths retain their relative priority across compactions, including paths that did not fit or were missing.
+When a compaction completes, the extension reconstructs effective messages before the latest active-branch compaction, including context-edit omissions and replacements. Files loaded successfully in messages retained after compaction remain in place and are excluded. Recent loads have priority. Previous candidate paths retain their relative priority across compactions, including paths that did not fit or were missing.
 
-Each compaction creates one immutable session record containing its compaction ID and ordered candidate paths. Restoration persists no file contents, snapshots, rendered messages, or fit decisions. Reopening a session or navigating its tree selects the latest compaction's path record on that branch. Malformed and content-bearing records insert nothing.
+Each compaction gets one immutable `skill-restoration` session record containing its compaction ID and ordered candidate paths.
 
-## Disk reads and request budget
+## Selection
 
-For each request with an associated path record and compaction summary, the extension reads candidate files from disk. It uses each file's contents at the time of that read. If a file is missing or unreadable, the extension skips it for that request and leaves it off the absent-file list. The path remains tracked, so the extension can restore the file on a later request if it becomes readable. The extension keeps no content cache.
+On the first request after a compaction, the extension reads the candidate files from disk and selects the files to restore. It skips a missing or unreadable file for this selection; the path stays among the candidates of later compactions. The extension saves the result in one immutable `skill-restoration-selection` session record: the compaction ID, the path and contents of each restored file, and the readable paths that did not fit.
 
-The request limit is the selected model's context window minus Pi's model-specific `reserveTokens` and `keepRecentTokens`. The extension uses the shared o200k_base estimator for the complete request: the selected system head, resolved tool declarations, summary, retained messages, new input, inserted framing, returned files, and absent-file list. Provider token accounting and billing can differ from this estimate.
+The selection limit is the selected model's context window minus Pi's model-specific `reserveTokens` and `keepRecentTokens`. The `keepRecentTokens` headroom leaves room for work, so restored files do not trigger the next compaction at once. The extension uses the shared o200k_base estimator for the complete request: the selected system head, resolved tool declarations, summary, retained messages, new input, inserted framing, restored files, and absent-file list. Provider token accounting and billing can differ from this estimate.
+
+When all readable files fit, the extension selects the whole set. Otherwise it considers files most-recent-first and continues considering smaller files after a larger file fails to fit. With zero headroom and at least one readable file, the selection contains only absent paths. The absent-file list has an irreducible size and may exceed the available budget. Missing models or invalid native compaction settings postpone the selection to a later request.
 
 Pi hides system messages from ordinary `context` handlers. The extension obtains the merged native system head through public session projection. This head contains preserved system content, named sections, and resolved tool declarations.
 
@@ -34,18 +36,22 @@ The extension retains the public `before_agent_start.systemPromptOptions` object
 
 During compaction and continuation within an active run, the extension retains the options reference. On each `before_agent_start`, it replaces the reference. On session start or shutdown, it clears the reference.
 
-When all readable files fit, the extension returns the whole set. Otherwise it considers files most-recent-first and continues considering smaller files after a larger file fails to fit. The extension lists readable paths that do not fit and instructs the model to read each file before relevant work. With zero headroom and at least one readable file, the extension delivers only the absent-file list. That list has an irreducible size and may exceed the available budget. Missing models or invalid native compaction settings prevent insertion.
+## Insertion
 
-The fitting subset can change as files, request messages, tools, or model settings change. Identical inputs produce deterministic insertion, once per request. Restoration does not queue another turn or add contents to the next compaction's summarizer. Provider cache hits depend on the provider. Pi's canonical context estimate can omit context-only insertions; restoration uses its own complete request estimate.
+For each request after the selection, the extension inserts one message with the saved file contents immediately after the latest compaction summary. The message lists the absent paths and instructs the model to read each of them before relevant work. The extension inserts the same message whatever the request size, file changes on disk, model, or prompt, so the model keeps the restored instructions until the next compaction. Reopening a session or navigating its tree uses the selection record of the latest compaction on that branch. Malformed path records insert nothing; a malformed selection record makes the extension select again.
+
+For example, a compaction tracks 19 files, and 15 of them fit on the first request. Every later request carries the same 15 files and the list of 4 absent paths, also when the request grows close to Pi's compaction threshold or after `/resume`. After the next compaction, the extension selects again from the current files on disk.
+
+Restoration does not queue another turn or add file contents to the next compaction's summarizer. Provider cache hits depend on the provider. Pi's canonical context estimate can omit context-only insertions.
 
 ## Display and package order
 
-Before request preparation, the compact entry renderer reports the tracked-file count. Ctrl+O lists tracked paths. After preparation, the renderer reports the prepared-file count, estimated inserted tokens, and absent-file count for the latest prepared request. The expanded view lists prepared and absent paths. On each repaint, the renderer reads the latest in-memory delivery metadata, including when the entry is already mounted. Reopening or tree navigation clears delivery metadata, so the renderer shows tracked paths until the next request is prepared. The run-subagent conversation screen excludes these custom entries.
+The compact entry renderer of a path record reports the tracked-file count, and Ctrl+O lists tracked paths. The compact renderer of a selection record reports the restored-file count, estimated inserted tokens, and absent-file count; Ctrl+O lists restored and absent paths. The run-subagent conversation screen excludes these custom entries.
 
 The package loads `context-projection`, then `skill-restoration`, then `compaction-trigger`. Projection maps session sources before insertion; the trigger can then block the whole request.
 
 ## Storage and limitations
 
-Restoration adds only path records to raw session exports. Existing ordinary read results remain ordinary session history. The request-only restoration message has no separate persisted transcript entry. `consult-advisor` uses session replay and does not receive that inserted message.
+Each compaction adds a path record and a selection record to the session file. The selection record holds the full text of the restored files: for example, 58,000 tokens of skill text take about 230 KB at 4 characters per token. Existing ordinary read results remain ordinary session history. The inserted message itself has no separate persisted transcript entry. `consult-advisor` uses session replay and does not receive that inserted message.
 
-Per-request reads add filesystem work. The absent-file instruction depends on model compliance. Restoration does not retry reads or guarantee that the model follows the instruction.
+The absent-file instruction depends on model compliance. Restoration does not retry reads or guarantee that the model follows the instruction.

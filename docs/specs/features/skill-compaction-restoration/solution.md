@@ -1,5 +1,7 @@
 # Technical Solution: Skill restoration after compaction
 
+> D11 in `decisions.md` supersedes the per-request disk reads and fitting described here. The extension selects files once per compaction and saves them in the session: see `docs/specs/issues/skill-restoration-rereads/solution.md`.
+
 ## Problem Statement
 
 See `problem.md` and `prd.md`. After compaction, the content of skill files that the model loaded in the summarized range leaves the model context. The solution returns these files to the model context after every compaction kind, in the main agent and in subagents.

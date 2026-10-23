@@ -90,16 +90,22 @@ for (const mode of ["later", "empty"]) {
 	});
 }
 
-test("a new run uses native fitting after an earlier run's forced prompt", () => {
+test("a later run reuses the selection until a manual compaction selects with the native head", () => {
 	const output = runScenario("replace");
-	expect(output.beforeStarts).toBe(2);
-	expect(output.snapshots).toHaveLength(2);
-	expect(output.snapshots[0]?.records[0]?.restoredPaths).toEqual([
-		output.skill,
-	]);
-	expect(output.snapshots[1]?.records[0]?.restoredPaths).toEqual([]);
+	expect(output.beforeStarts).toBe(3);
+	expect(output.compactions).toEqual(["manual"]);
+	expect(output.snapshots).toHaveLength(3);
+	const [forced, reused, compacted] = output.snapshots;
+	expect(forced?.requestTokens ?? Infinity).toBeLessThanOrEqual(output.limit);
+	expect(forced?.records[0]?.restoredPaths).toEqual([output.skill]);
+	expect(reused?.records).toEqual(forced?.records);
+	expect(reused?.requestTokens ?? 0).toBeGreaterThan(output.limit);
+	expect(compacted?.records[0]?.compactionId).not.toBe(
+		forced?.records[0]?.compactionId,
+	);
+	expect(compacted?.records[0]?.restoredPaths).toEqual([]);
+	expect(compacted?.records[0]?.absentPaths).toEqual([output.skill]);
 	for (const snapshot of output.snapshots) {
-		expect(snapshot.requestTokens).toBeLessThanOrEqual(output.limit);
 		expect(snapshot.headTools).toEqual(snapshot.nativeTools);
 		expect(snapshot.headToolTokens).toBe(snapshot.nativeToolTokens);
 	}

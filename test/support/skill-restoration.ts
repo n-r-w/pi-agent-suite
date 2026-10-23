@@ -57,33 +57,38 @@ async function replay(
 	};
 }
 
-/** Keeps the same components mounted while request metadata changes. */
-async function renderLive(harness: RestorationHarness): Promise<unknown> {
-	const entry = harness.getRecords()[0];
-	if (!entry || !harness.renderer) {
-		throw new Error("fixture has no rendered record");
-	}
-	const width = 100;
+/** Supplies a terminal width wide enough for unwrapped fixture lines. */
+const RENDER_WIDTH = 100;
+
+/** Renders one custom entry with the renderer registered for its type. */
+function renderEntry(
+	harness: RestorationHarness,
+	entry: { customType: string } | undefined,
+	expanded: boolean,
+): string[] {
+	const renderer = entry ? harness.renderers.get(entry.customType) : undefined;
 	const theme = { fg: (_color: string, text: string) => text };
-	const compact = harness.renderer(entry, { expanded: false }, theme);
-	const expanded = harness.renderer(entry, { expanded: true }, theme);
-	const beforeLines = compact.render(width);
+	return renderer?.(entry, { expanded }, theme).render(RENDER_WIDTH) ?? [];
+}
+
+/** Renders path records and the selections of a fitting and a non-fitting compaction. */
+async function renderEntries(harness: RestorationHarness): Promise<unknown> {
+	const record = harness.getRecords()[0];
+	const trackedLines = renderEntry(harness, record, false);
+	const trackedPaths = renderEntry(harness, record, true);
 	await harness.prepareContext();
-	const preparedLines = compact.render(width);
-	const preparedPaths = expanded.render(width);
+	const restored = harness.getSelections().at(-1);
 	Object.assign(harness.ctx.model ?? {}, { contextWindow: 1 });
+	await harness.compact();
 	await harness.prepareContext();
-	const absentLines = compact.render(width);
-	const absentPaths = expanded.render(width);
-	await harness.emit("session_tree");
+	const absent = harness.getSelections().at(-1);
 	return {
-		beforeLines,
-		preparedLines,
-		preparedPaths,
-		absentLines,
-		absentPaths,
-		resetLines: compact.render(width),
-		resetPaths: expanded.render(width),
+		trackedLines,
+		trackedPaths,
+		restoredLines: renderEntry(harness, restored, false),
+		restoredPaths: renderEntry(harness, restored, true),
+		absentLines: renderEntry(harness, absent, false),
+		absentPaths: renderEntry(harness, absent, true),
 		skill: harness.skill,
 		asset: harness.asset,
 	};
@@ -112,15 +117,11 @@ async function run(): Promise<unknown> {
 	if (["changes", "budgets", "interleaved"].includes(scenario)) {
 		return runRequestScenario(harness, scenario);
 	}
-	const width = 100;
-	const theme = { fg: (_color: string, text: string) => text };
 	const entry = saved[0];
-	if (scenario === "renderer-live") {
-		return renderLive(harness);
+	if (scenario === "renderer") {
+		return renderEntries(harness);
 	}
-	const beforeLines = entry
-		? harness.renderer?.(entry, { expanded: false }, theme).render(width)
-		: [];
+	const beforeLines = renderEntry(harness, entry, false);
 	const initial = await harness.prepareContext();
 	const repeated = await harness.prepareContext(initial);
 	if (scenario === "repeat") {
@@ -149,12 +150,8 @@ async function run(): Promise<unknown> {
 		stable:
 			JSON.stringify(messageMetadata(initial)) ===
 			JSON.stringify(messageMetadata(repeated)),
-		compactLines: entry
-			? harness.renderer?.(entry, { expanded: false }, theme).render(width)
-			: [],
-		expandedLines: entry
-			? harness.renderer?.(entry, { expanded: true }, theme).render(width)
-			: [],
+		compactLines: renderEntry(harness, entry, false),
+		expandedLines: renderEntry(harness, entry, true),
 		skill: harness.skill,
 		asset: harness.asset,
 	};
