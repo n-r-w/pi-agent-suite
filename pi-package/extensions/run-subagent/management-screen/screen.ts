@@ -192,6 +192,7 @@ export class ManagementScreen implements Component, Focusable {
 			this.view.selectedConversation,
 			true,
 			this.view.selectedConversationComplete,
+			this.selectedWorkingDirectory(),
 		);
 		this.editor = new ManagementMessageEditor({
 			tui: options.tui,
@@ -477,8 +478,18 @@ export class ManagementScreen implements Component, Focusable {
 				this.view.selectedConversation,
 				true,
 				this.view.selectedConversationComplete,
+				this.selectedWorkingDirectory(),
 			);
 		}
+	}
+
+	/** Supplies the selected child's process directory to its conversation tool renderers. */
+	private selectedWorkingDirectory(): string {
+		return (
+			this.view.nodes.find(
+				(node) => node.stableKey === this.view.selectedStableKey,
+			)?.cwd ?? this.options.cwd
+		);
 	}
 
 	/** Applies only visible projection revisions and preserves stable UI state. */
@@ -498,6 +509,7 @@ export class ManagementScreen implements Component, Focusable {
 				view.selectedConversation,
 				selected !== priorSelected,
 				view.selectedConversationComplete,
+				this.selectedWorkingDirectory(),
 			);
 		}
 		this.normalizeFocus();

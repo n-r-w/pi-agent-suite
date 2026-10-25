@@ -4,8 +4,12 @@ import {
 	isSingleLineText,
 	singleLineTextSchema,
 } from "../../shared/text-contracts";
+import { hasExactKeys } from "./boundary-validation";
 import { invocationElapsedSeconds, type SubagentFeedback } from "./domain";
 import { sanitizePublicSubagentErrorMessage } from "./public-error";
+
+/** Bounds a model-supplied process directory at the public request boundary. */
+const MAX_WORKING_DIRECTORY_LENGTH = 4096;
 
 const UNICODE_WHITE_SPACE_CODE_POINT = /^\p{White_Space}$/u;
 
@@ -58,6 +62,14 @@ export const SubagentStartParameters = Type.Object(
 			minLength: 3,
 			maxLength: 60,
 		}),
+		cwd: Type.Optional(
+			Type.String({
+				description:
+					"Working directory for the subagent and every continuation. Defaults to the calling agent's directory. Relative paths resolve from the calling agent's directory.",
+				minLength: 1,
+				maxLength: MAX_WORKING_DIRECTORY_LENGTH,
+			}),
+		),
 		prompt: Type.String({
 			description: "Instructions for subagent",
 			minLength: 1,
@@ -160,15 +172,22 @@ export class SubagentToolError extends Error {
 export function parseSubagentStartRequest(
 	value: unknown,
 ): SubagentStartRequest {
-	if (!isExactRecord(value, ["agentId", "taskName", "prompt"])) {
+	if (!hasExactKeys(value, ["agentId", "taskName", "prompt"], ["cwd"])) {
 		throw invalidRequest(
 			"subagent_start requires agentId, taskName, and prompt",
 		);
 	}
-	const agentId = value["agentId"];
-	const taskName = value["taskName"];
-	const prompt = value["prompt"];
+	const record = value as Record<string, unknown>;
+	const agentId = record["agentId"];
+	const taskName = record["taskName"];
+	const prompt = record["prompt"];
+	const cwd = record["cwd"];
 	if (
+		(cwd !== undefined &&
+			(typeof cwd !== "string" ||
+				cwd.trim().length === 0 ||
+				cwd.includes("\0") ||
+				cwd.length > MAX_WORKING_DIRECTORY_LENGTH)) ||
 		!isSingleLineText(agentId) ||
 		!isSingleLineText(taskName) ||
 		typeof prompt !== "string" ||
@@ -176,7 +195,12 @@ export function parseSubagentStartRequest(
 	) {
 		throw invalidRequest("subagent_start request fields are invalid");
 	}
-	return { agentId, taskName, prompt };
+	return {
+		agentId,
+		taskName,
+		prompt,
+		...(typeof cwd === "string" ? { cwd } : {}),
+	};
 }
 
 /** Validates and narrows an unknown steer request once at the tool boundary. */

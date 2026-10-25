@@ -86,6 +86,8 @@ describe("materializeForkHierarchy", () => {
 				throw new Error("fixture sessions must be persisted");
 			}
 			const nested = {
+				cwd: join(directory, "grandchild-project"),
+				callerCwd: join(directory, "child-project"),
 				...session(
 					child.getSessionId(),
 					child.getSessionDir(),
@@ -97,6 +99,8 @@ describe("materializeForkHierarchy", () => {
 			};
 			appendLifecycle(child, nested);
 			const selected = {
+				cwd: join(directory, "child-project"),
+				callerCwd: join(directory, "root-project"),
 				...session(
 					root.getSessionId(),
 					root.getSessionDir(),
@@ -148,6 +152,8 @@ describe("materializeForkHierarchy", () => {
 			expect(selectedSnapshot.childPiSessionId).not.toBe(child.getSessionId());
 			expect(selectedSnapshot.childSessionFile).not.toBe(childFile);
 			expect(selectedSnapshot.ownerRuntimeLeaseId).toBeUndefined();
+			expect(selectedSnapshot.cwd).toBe(selected.cwd);
+			expect(selectedSnapshot.callerCwd).toBe(selected.callerCwd);
 			expect(selectedSnapshot.agentId).toBe(selected.agentId);
 			expect(selectedSnapshot.taskName).toBe(selected.taskName);
 			expect(selectedSnapshot.invocationId).toBe(selected.invocationId);
@@ -187,6 +193,8 @@ describe("materializeForkHierarchy", () => {
 			);
 			expect(nestedRetained?.childSessionFile).not.toBe(grandchildFile);
 			expect(nestedRetained?.ownerRuntimeLeaseId).toBeUndefined();
+			expect(nestedRetained?.cwd).toBe(nested.cwd);
+			expect(nestedRetained?.callerCwd).toBe(nested.callerCwd);
 			expect(nestedRetained?.agentId).toBe(nested.agentId);
 			expect(nestedRetained?.taskName).toBe(nested.taskName);
 			expect(nestedRetained?.invocationId).toBe(nested.invocationId);

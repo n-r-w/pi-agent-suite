@@ -47,6 +47,21 @@ const FEEDBACK = {
 } as unknown as SubagentFeedback;
 
 describe("journal codec", () => {
+	test("retains directories in saved sessions and rejects malformed directory metadata", () => {
+		const session = { ...SESSION, cwd: "/work/other", callerCwd: "/work/main" };
+		const record = { kind: "session-accepted" as const, session };
+		expect(parseJournalRecord(record)).toEqual(record);
+		for (const field of ["cwd", "callerCwd"]) {
+			for (const value of ["", null, 42]) {
+				expect(
+					parseJournalRecord({
+						...record,
+						session: { ...session, [field]: value },
+					}),
+				).toBeUndefined();
+			}
+		}
+	});
 	test("parses every durable record discriminator", () => {
 		// Purpose: unknown persisted data must enter the runtime only through the closed journal union.
 		// Input and expected output: every journal discriminator round-trips to the corresponding validated record.

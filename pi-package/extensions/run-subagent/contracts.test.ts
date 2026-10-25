@@ -30,6 +30,21 @@ function failureCode(operation: () => unknown): string {
 }
 
 describe("Subagents contracts", () => {
+	test("accepts an optional working directory and rejects invalid directory values", () => {
+		const request = {
+			agentId: "Worker",
+			taskName: "Inspect files",
+			prompt: "work",
+		};
+		expect(
+			parseSubagentStartRequest({ ...request, cwd: "/work/other" }),
+		).toEqual({ ...request, cwd: "/work/other" });
+		for (const cwd of ["", "   ", "a\u0000b", 42, null]) {
+			expect(
+				failureCode(() => parseSubagentStartRequest({ ...request, cwd })),
+			).toBe("invalid_request");
+		}
+	});
 	test("validates structural requests before semantic coordination", () => {
 		// Purpose: each agent operation must receive one closed, normalized request shape.
 		// Input and expected output: valid requests round-trip while missing, extra, whitespace, duplicate, legacy, and range violations return invalid_request.

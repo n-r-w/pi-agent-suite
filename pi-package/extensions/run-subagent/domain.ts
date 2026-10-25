@@ -61,13 +61,18 @@ export interface SubagentPresentation {
 /** Carries accepted invocation identity in non-model-visible tool details. */
 export interface AcceptedPresentationEvidence {
 	readonly presentationKind: "accepted";
+	readonly cwd?: string;
+	readonly callerCwd?: string;
 	readonly agentId: string;
 	readonly taskName: string;
 	readonly modelId?: string;
 	readonly thinking?: string;
 }
 
+/** Retains one child conversation and the directories used at its initial launch. */
 export interface LogicalSession {
+	readonly cwd?: string;
+	readonly callerCwd?: string;
 	readonly key: SessionKey;
 	readonly childPiSessionId: string;
 	readonly childSessionDir: string;
@@ -80,6 +85,16 @@ export interface LogicalSession {
 	readonly ownerRuntimeLeaseId?: string;
 	readonly invocationMetadata: InvocationMetadata;
 	readonly state: InvocationState;
+}
+
+/** Returns the directory to display when a child works outside its immediate caller's directory. */
+export function getDisplayedWorkingDirectory(session: {
+	readonly cwd?: string;
+	readonly callerCwd?: string;
+}): string | undefined {
+	return session.callerCwd !== undefined && session.cwd !== session.callerCwd
+		? session.cwd
+		: undefined;
 }
 
 /** Carries terminal feedback independently from its eventual destination. */

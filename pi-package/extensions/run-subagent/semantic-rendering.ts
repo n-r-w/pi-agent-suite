@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type {
 	AgentToolResult,
 	MessageRenderer,
@@ -10,6 +11,7 @@ import { getToolResultText } from "../../shared/tool-presentation/bounded.ts";
 import { parseAgentOperationEvidence } from "./agent-operation-wire.ts";
 import {
 	type AcceptedPresentationEvidence,
+	getDisplayedWorkingDirectory,
 	MILLISECONDS_PER_SECOND,
 	type SubagentFeedback,
 	type WaitFeedbackPresentationEvidence,
@@ -21,6 +23,7 @@ import {
 	formatMetadataRuntime,
 	formatRuntime,
 	renderBoundedText,
+	renderClippedTextRow,
 	renderContextHeader,
 	renderError,
 	renderFeedbackBody,
@@ -31,6 +34,7 @@ import {
 	SemanticComponent,
 	type SemanticHeaderPart,
 } from "./semantic-layout.ts";
+import { resolveWorkingDirectory } from "./working-directory";
 
 type ToolRenderContext = Parameters<
 	NonNullable<ToolDefinition["renderCall"]>
@@ -83,6 +87,14 @@ export function renderSubagentStartCall(
 						{ value: `#${state.accepted.sessionId}`, role: "primary" },
 					];
 		const lines = [renderHeader("subagent_start", headerParts, width, theme)];
+		const cwd = getStartWorkingDirectory(
+			args,
+			state.accepted?.evidence,
+			context.cwd,
+		);
+		if (cwd !== undefined) {
+			lines.push(renderClippedTextRow("cwd:", cwd, width, theme));
+		}
 		if (taskName !== undefined) {
 			lines.push(...renderName(taskName, width, theme, context.expanded));
 		}
@@ -91,6 +103,33 @@ export function renderSubagentStartCall(
 		}
 		return lines;
 	});
+}
+
+/** Uses accepted directory evidence or resolves a pending start against its caller. */
+function getStartWorkingDirectory(
+	args: unknown,
+	evidence: AcceptedPresentationEvidence | undefined,
+	callerCwd: string,
+): string | undefined {
+	if (evidence !== undefined) {
+		return getDisplayedWorkingDirectory(evidence);
+	}
+	const physicalCaller = resolveDisplayWorkingDirectory(callerCwd);
+	return getDisplayedWorkingDirectory({
+		cwd: resolveDisplayWorkingDirectory(
+			resolve(physicalCaller, readString(args, "cwd") ?? "."),
+		),
+		callerCwd: physicalCaller,
+	});
+}
+
+/** Preserves an unavailable requested path for display before startup reports its error. */
+function resolveDisplayWorkingDirectory(path: string): string {
+	try {
+		return resolveWorkingDirectory(path);
+	} catch {
+		return path;
+	}
 }
 
 /** Updates one start row from accepted details or renders a structured error. */
@@ -417,6 +456,12 @@ function readAcceptedEvidence(
 		presentationKind: "accepted",
 		agentId: readField(details, "agentId"),
 		taskName: readField(details, "taskName"),
+		...(readField(details, "cwd") === undefined
+			? {}
+			: { cwd: readField(details, "cwd") }),
+		...(readField(details, "callerCwd") === undefined
+			? {}
+			: { callerCwd: readField(details, "callerCwd") }),
 		...(readField(details, "modelId") === undefined
 			? {}
 			: { modelId: readField(details, "modelId") }),

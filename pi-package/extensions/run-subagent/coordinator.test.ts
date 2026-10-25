@@ -509,6 +509,46 @@ function activeSession(localId = 1): LogicalSession {
 }
 
 describe("SubagentCoordinator", () => {
+	test("passes the directory to startup and retains it in journal and presentation evidence", async () => {
+		const harness = createHarness();
+		let received: NewInvocationRequest | undefined;
+		const originalStart = harness.invocations.start.bind(harness.invocations);
+		harness.invocations.start = async (request) => {
+			received = request;
+			return originalStart(request);
+		};
+		harness.invocations.nextAcceptance = {
+			...harness.invocations.nextAcceptance,
+			cwd: "/work/other",
+			callerCwd: "/work/main",
+		};
+		const accepted = await harness.coordinator.start(OWNER, {
+			agentId: "SubAgentCoder",
+			taskName: "Inspect files",
+			prompt: "work",
+			cwd: "/work/other",
+		});
+		expect(received?.cwd).toBe("/work/other");
+		expect(harness.catalog.get(OWNER, accepted.sessionId)).toMatchObject({
+			cwd: "/work/other",
+			callerCwd: "/work/main",
+		});
+		expect(
+			harness.coordinator.acceptedPresentationEvidence(
+				OWNER,
+				accepted.sessionId,
+			),
+		).toMatchObject({ cwd: "/work/other", callerCwd: "/work/main" });
+		expect(harness.store.records).toContainEqual(
+			expect.objectContaining({
+				kind: "session-accepted",
+				session: expect.objectContaining({
+					cwd: "/work/other",
+					callerCwd: "/work/main",
+				}),
+			}),
+		);
+	});
 	test("returns accepted before child completion", async () => {
 		// Purpose: start acceptance must not wait for terminal child feedback.
 		// Input and expected output: one available agent returns accepted session 1 while its invocation remains active.

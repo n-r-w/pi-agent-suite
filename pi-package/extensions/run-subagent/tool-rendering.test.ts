@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type {
 	AgentToolResult,
@@ -262,6 +265,57 @@ function result(details: Record<string, unknown>): AgentToolResult<unknown> {
 }
 
 describe("Subagents semantic rendering", () => {
+	test("omits pending cwd when a symlink names the caller's physical directory", () => {
+		const directory = mkdtempSync(join(tmpdir(), "subagent-cwd-render-"));
+		const alias = join(directory, "alias");
+		symlinkSync(directory, alias, "dir");
+		try {
+			for (const expanded of [false, true]) {
+				const args = {
+					agentId: "Worker",
+					taskName: "Inspect files",
+					prompt: "work",
+					cwd: alias,
+				};
+				const context = {
+					...createToolRenderContext({ args, expanded, isError: false }),
+					cwd: directory,
+				};
+				const lines = renderSubagentStartCall(
+					args,
+					PLAIN_THEME,
+					context,
+				).render(100);
+				expect(lines.some((line) => line.includes("cwd:"))).toBe(false);
+			}
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+	test("shows cwd only when it differs from the immediate caller", () => {
+		for (const expanded of [false, true]) {
+			for (const [cwd, callerCwd, shown] of [
+				["/work/other", "/work/main", true],
+				["/work/other", "/work/other", false],
+			] as const) {
+				const rendered = renderTool({
+					name: "subagent_start",
+					args: {
+						agentId: "SubAgentCoder",
+						taskName: "Inspect files",
+						prompt: "work",
+						cwd,
+					},
+					result: result({ ...acceptedDetails(), cwd, callerCwd }),
+					expanded,
+				});
+				expect(rendered.call.some((line) => line.includes("cwd:"))).toBe(shown);
+				if (shown) {
+					expect(rendered.call.join("\n")).toContain(cwd);
+				}
+			}
+		}
+	});
 	beforeEach(() => {
 		// Pi's Markdown renderer reads the process-global theme, so each test establishes its own render state.
 		initTheme(undefined, false);

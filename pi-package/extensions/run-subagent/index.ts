@@ -129,6 +129,7 @@ import { SessionSnapshotLoader } from "./session-snapshot-loader";
 import { executeSubagentQuery } from "./subagent-query";
 import { createToolPresentationRegistry } from "./tool-rendering.ts";
 import { WaitCoordinator } from "./wait-coordinator";
+import { resolveWorkingDirectory } from "./working-directory";
 
 const EXTENSION_DESCRIPTION = readPrompt("extension-description.md");
 const START_DESCRIPTION = readPrompt("start-description.md");
@@ -795,6 +796,39 @@ async function executeTool(
 	}
 }
 
+/** Supplies one immediate caller's project directory and callable agent definitions. */
+interface CallerProject {
+	readonly cwd: string;
+	readonly agents: Awaited<ReturnType<typeof loadCallableAgents>>;
+}
+
+/** Loads each caller's project agents while preserving the root runtime's existing registry snapshot. */
+async function createCallerProjectLoader(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	catalog: SessionCatalog,
+): Promise<(caller: OwnerIdentity) => Promise<CallerProject>> {
+	const rootCwd = ctx.cwd;
+	const reportWarning = getAgentRegistryWarningReporter(pi, ctx);
+	const agents = await loadCallableAgents(rootCwd, reportWarning);
+	return async (caller) => {
+		const physicalRootCwd = resolveWorkingDirectory(rootCwd);
+		const cwd = resolveWorkingDirectory(
+			catalog
+				.listAll()
+				.find((session) => session.childPiSessionId === caller.ownerPiSessionId)
+				?.cwd ?? physicalRootCwd,
+		);
+		return {
+			cwd,
+			agents:
+				cwd === physicalRootCwd
+					? agents
+					: await loadCallableAgents(cwd, reportWarning),
+		};
+	};
+}
+
 /** Creates one root coordinator, supervisor, persistence owner, and reconstruction state. */
 async function createRootRuntime(
 	pi: ExtensionAPI,
@@ -806,13 +840,12 @@ async function createRootRuntime(
 ): Promise<RootRuntime> {
 	const owner = ownerFromContext(ctx);
 	const writer = createActiveWriter(pi, ctx, owner);
-	const reportWarning = getAgentRegistryWarningReporter(pi, ctx);
-	const agents = await loadCallableAgents(ctx.cwd, reportWarning);
 	const bridge = new RootRuntimeBridge();
 	let supervisor: InvocationSupervisor | undefined;
 	const store = createRootSessionStore(bridge, () => supervisor);
 	store.registerActive(writer);
 	const catalog = new SessionCatalog();
+	const loadCallerProject = await createCallerProjectLoader(pi, ctx, catalog);
 	const sessionSnapshots = new SessionSnapshotLoader();
 	const queryBranches = new QueryBranchAccess(catalog, sessionSnapshots);
 	const recoveries = new RuntimeFailureRecoveryTracker();
@@ -820,7 +853,7 @@ async function createRootRuntime(
 	supervisor = createRootSupervisor({
 		pi,
 		ctx,
-		agents,
+		loadCallerProject,
 		bridge,
 		store,
 		recoveries,
@@ -833,7 +866,7 @@ async function createRootRuntime(
 	coordinator = createRootCoordinator({
 		pi,
 		owner,
-		agents,
+		loadCallerProject,
 		catalog,
 		supervisor,
 		store,
@@ -874,7 +907,7 @@ async function createRootRuntime(
 function createRootSupervisor(options: {
 	readonly pi: ExtensionAPI;
 	readonly ctx: ExtensionContext;
-	readonly agents: Awaited<ReturnType<typeof loadCallableAgents>>;
+	readonly loadCallerProject: (caller: OwnerIdentity) => Promise<CallerProject>;
 	readonly bridge: RootRuntimeBridge;
 	readonly store: SessionStore;
 	readonly recoveries: RuntimeFailureRecoveryTracker;
@@ -897,14 +930,17 @@ function createRootSupervisor(options: {
 			join(getSuiteExtensionDir(SUBAGENTS_EXTENSION_DIR), "sessions"),
 			options.ctx.cwd,
 		),
-		resolveLaunch: (request) =>
-			resolveLaunchConfiguration({
+		resolveLaunch: async (request) => {
+			const caller = await options.loadCallerProject(request.owner);
+			const launch = await resolveLaunchConfiguration({
 				pi: options.pi,
 				ctx: options.ctx,
-				agents: options.agents,
+				agents: caller.agents,
 				supervisor,
 				request,
-			}),
+			});
+			return { ...launch, cwd: caller.cwd };
+		},
 		onEvent: (event) => options.getCoordinator().observeInvocation(event),
 		onUsageEntry: (usage) => publishUsageEntry(options.pi, usage),
 		onRuntimeFailure: (failure) => {
@@ -935,7 +971,7 @@ function createRootSupervisor(options: {
 function createRootCoordinator(options: {
 	readonly pi: ExtensionAPI;
 	readonly owner: OwnerIdentity;
-	readonly agents: Awaited<ReturnType<typeof loadCallableAgents>>;
+	readonly loadCallerProject: (caller: OwnerIdentity) => Promise<CallerProject>;
 	readonly catalog: SessionCatalog;
 	readonly supervisor: InvocationSupervisor;
 	readonly store: SessionStore;
@@ -950,9 +986,9 @@ function createRootCoordinator(options: {
 			monotonicNow: () => performance.now(),
 			wallNow: () => Date.now(),
 		},
-		isAgentAvailable: (caller, agentId) =>
+		isAgentAvailable: async (caller, agentId) =>
 			isAgentAvailableForCaller({
-				agents: options.agents,
+				agents: (await options.loadCallerProject(caller)).agents,
 				sessionAgent: composition.getSelectedAgentContribution()?.agent,
 				rootOwner: options.owner,
 				caller,

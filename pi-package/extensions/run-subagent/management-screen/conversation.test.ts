@@ -205,6 +205,44 @@ function options(): ConstructorParameters<typeof ConversationPane>[0] {
 }
 
 describe("management conversation", () => {
+	test("passes the selected session directory to pending tool renderers", () => {
+		const settings = options();
+		const definition = settings.tools.resolve("bash").definition;
+		if (definition === undefined) {
+			throw new Error("bash presentation is required");
+		}
+		const renderedDirectories: string[] = [];
+		const pane = new ConversationPane({
+			...settings,
+			tools: {
+				resolve: () => ({
+					category: "builtin",
+					definition: {
+						...definition,
+						renderCall: (_args, _theme, context) => {
+							renderedDirectories.push(context.cwd);
+							return { render: () => ["pending tool"], invalidate: () => {} };
+						},
+					},
+				}),
+			},
+		});
+		const assistant = assistantWithTools();
+		assistant.content = [
+			{
+				type: "toolCall",
+				id: "pending",
+				name: "bash",
+				arguments: { command: "pwd" },
+			},
+		];
+		const entries = [messageEntry("assistant", null, assistant)];
+		for (const cwd of ["/work/other", "/work/nested"]) {
+			pane.setEntries(entries, true, true, cwd);
+			pane.render(60, 10);
+			expect(renderedDirectories.at(-1)).toBe(cwd);
+		}
+	});
 	test.each([
 		0, 1,
 	])("preserves native tool padding %s and recorded timing", (outputPad) => {

@@ -95,6 +95,35 @@ function deepRepeatedIdHierarchy(): readonly ProjectionNode[] {
 }
 
 describe("management hierarchy", () => {
+	test("shows a bounded directory row only for a different immediate caller directory", () => {
+		for (const [cwd, callerCwd, shown] of [
+			["/work/other", "/work/main", true],
+			["/work/other", "/work/other", false],
+		] as const) {
+			const selected = {
+				...node("nested", "parent", 1, null, "Worker", 1),
+				cwd,
+				callerCwd,
+			};
+			const header = renderSelectedSessionHeader({
+				nodes: [selected],
+				selectedStableKey: selected.stableKey,
+				width: 40,
+				theme: THEME,
+			});
+			expect(header.some((line) => line.includes("cwd:"))).toBe(shown);
+			if (shown) {
+				expect(header.join("\n")).toContain(cwd);
+			}
+			const narrow = renderSelectedSessionHeader({
+				nodes: [{ ...selected, cwd: "/work/".repeat(20) }],
+				selectedStableKey: selected.stableKey,
+				width: 20,
+				theme: THEME,
+			});
+			expect(narrow.every((line) => visibleWidth(line) <= 20)).toBe(true);
+		}
+	});
 	test("keeps hierarchy selection stable across status updates", () => {
 		// Purpose: a live status update must replace one stable-keyed row without reordering siblings or moving selection.
 		// Inputs and expected output: repeated owner-local IDs at three depths remain in caller creation order while the selected grandchild changes from active to successful.

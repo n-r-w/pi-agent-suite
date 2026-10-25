@@ -53,7 +53,10 @@ interface SubagentCoordinatorOptions {
 	readonly waits: WaitRuntime;
 	readonly store: OwnerSessionStore;
 	readonly clock: CoordinatorClock;
-	readonly isAgentAvailable: (owner: OwnerIdentity, agentId: string) => boolean;
+	readonly isAgentAvailable: (
+		owner: OwnerIdentity,
+		agentId: string,
+	) => boolean | Promise<boolean>;
 }
 
 /** Carries one terminal observation through durable feedback settlement. */
@@ -273,7 +276,7 @@ export class SubagentCoordinator {
 		const operationScope = { ...scope, signal: operation.signal };
 		return this.enqueue(async () => {
 			this.requireActiveRuntimeLease(scope.ownerRuntimeLeaseId, "start_failed");
-			if (!this.options.isAgentAvailable(owner, request.agentId)) {
+			if (!(await this.options.isAgentAvailable(owner, request.agentId))) {
 				throw new SubagentToolError(
 					"agent_unavailable",
 					`Subagent ${request.agentId} is unavailable`,
@@ -322,6 +325,10 @@ export class SubagentCoordinator {
 			childPiSessionId: acceptance.childPiSessionId,
 			childSessionDir: acceptance.childSessionDir,
 			childSessionFile: acceptance.childSessionFile,
+			...(acceptance.cwd === undefined ? {} : { cwd: acceptance.cwd }),
+			...(acceptance.callerCwd === undefined
+				? {}
+				: { callerCwd: acceptance.callerCwd }),
 			agentId: request.agentId,
 			taskName: request.taskName,
 			creationOrder: ownerLocalSessionId,
@@ -372,6 +379,7 @@ export class SubagentCoordinator {
 				agentId: request.agentId,
 				taskName: request.taskName,
 				prompt: request.prompt,
+				...(request.cwd === undefined ? {} : { cwd: request.cwd }),
 				...scope,
 			});
 		} catch (error) {
@@ -557,6 +565,10 @@ export class SubagentCoordinator {
 		const metadata = session.invocationMetadata;
 		return {
 			presentationKind: "accepted",
+			...(session.cwd === undefined ? {} : { cwd: session.cwd }),
+			...(session.callerCwd === undefined
+				? {}
+				: { callerCwd: session.callerCwd }),
 			agentId: session.agentId,
 			taskName: session.taskName,
 			...(metadata?.modelId === undefined ? {} : { modelId: metadata.modelId }),
