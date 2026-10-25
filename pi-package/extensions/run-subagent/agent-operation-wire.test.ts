@@ -52,6 +52,37 @@ const ACCEPTED_EVIDENCE = {
 } as const;
 
 describe("agent operation wire parser", () => {
+	test("retains directories in nested start requests and acceptance evidence", () => {
+		const payload = {
+			toolName: "subagent_start" as const,
+			toolCallId: "start-1",
+			params: {
+				agentId: "Worker",
+				taskName: "Inspect files",
+				prompt: "work",
+				cwd: "/work/other",
+			},
+		};
+		expect(parseAgentOperationPayload(payload)).toEqual(payload);
+		const response = {
+			kind: "ok" as const,
+			result: { outcome: "accepted" as const, sessionId: 1 },
+			evidence: {
+				...ACCEPTED_EVIDENCE,
+				cwd: "/work/other",
+				callerCwd: "/work/main",
+			},
+		};
+		expect(parseAgentOperationResponse(response)).toEqual(response);
+		for (const field of ["cwd", "callerCwd"]) {
+			expect(() =>
+				parseAgentOperationResponse({
+					...response,
+					evidence: { ...response.evidence, [field]: null },
+				}),
+			).toThrow();
+		}
+	});
 	test("rejects unknown and conditional keys in nested operation objects", () => {
 		// Purpose: nested agent operations must remain closed after outer runtime-request validation.
 		// Input and expected output: extra envelope, response, result, evidence, failure, and opposite-variant keys all reject.

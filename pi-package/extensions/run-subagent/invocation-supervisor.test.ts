@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -363,6 +369,7 @@ async function acceptStart(
 	options: {
 		readonly ownerPiSessionId?: string;
 		readonly ownerLocalSessionId?: number;
+		readonly cwd?: string;
 		readonly ownerRuntimeLeaseId?: string;
 	} = {},
 ): Promise<InvocationAcceptance> {
@@ -379,6 +386,7 @@ async function acceptStart(
 		agentId: "SubAgentCoder",
 		taskName: "Trace runtime",
 		prompt: "Inspect runtime",
+		...(options.cwd === undefined ? {} : { cwd: options.cwd }),
 		...(options.ownerRuntimeLeaseId === undefined
 			? {}
 			: { ownerRuntimeLeaseId: options.ownerRuntimeLeaseId }),
@@ -414,6 +422,10 @@ function terminalSession(acceptance: InvocationAcceptance): LogicalSession {
 		childPiSessionId: acceptance.childPiSessionId,
 		childSessionDir: acceptance.childSessionDir,
 		childSessionFile: acceptance.childSessionFile,
+		...(acceptance.cwd === undefined ? {} : { cwd: acceptance.cwd }),
+		...(acceptance.callerCwd === undefined
+			? {}
+			: { callerCwd: acceptance.callerCwd }),
 		agentId: "SubAgentCoder",
 		taskName: "Trace runtime",
 		creationOrder: 1,
@@ -567,6 +579,183 @@ function readGracefulOwnerFacts(manager: SessionManager): {
 }
 
 describe("InvocationSupervisor", () => {
+	test.each([
+		"start",
+		"continuation",
+	] as const)("resolves nested relative cwd from a symlinked parent's physical directory after %s", async (mode) => {
+		const fixture = mkdtempSync(join(supervisorSessionsRoot, "symlink-"));
+		const physicalParent = join(fixture, "projects", "parent");
+		const physicalSibling = join(fixture, "projects", "sibling");
+		const alias = join(fixture, "alias");
+		mkdirSync(physicalParent, { recursive: true });
+		mkdirSync(physicalSibling);
+		mkdirSync(join(fixture, "sibling"));
+		symlinkSync(physicalParent, alias, "dir");
+		const parentChild = createChildProcess();
+		const nestedChild = createChildProcess();
+		const directories: string[] = [];
+		const harness = createSupervisorHarness(
+			[parentChild, nestedChild],
+			[],
+			undefined,
+			undefined,
+			true,
+			{ onSpawn: (_args, cwd) => directories.push(cwd) },
+		);
+		const leases: string[] = [];
+		try {
+			let parent: InvocationAcceptance;
+			if (mode === "start") {
+				parent = await acceptStart(harness.supervisor, parentChild, {
+					cwd: alias,
+				});
+			} else {
+				const saved = terminalSession({
+					invocationId: "saved",
+					runtimeLeaseId: "saved-lease",
+					childPiSessionId: "saved-parent",
+					childSessionDir: fixture,
+					childSessionFile: join(fixture, "saved.jsonl"),
+					cwd: alias,
+					callerCwd: fixture,
+				});
+				const pending = harness.supervisor.continue(saved, "Continue work");
+				await waitForWriteCount(parentChild, 1);
+				parentChild.stdout?.emit(
+					"data",
+					Buffer.from(
+						'{"id":"prompt","type":"response","command":"prompt","success":true}\n',
+					),
+				);
+				parent = await pending;
+			}
+			leases.push(parent.runtimeLeaseId);
+			const nested = await acceptStart(harness.supervisor, nestedChild, {
+				ownerPiSessionId: parent.childPiSessionId,
+				ownerRuntimeLeaseId: parent.runtimeLeaseId,
+				cwd: "../sibling",
+			});
+			leases.push(nested.runtimeLeaseId);
+			expect(directories).toEqual([physicalParent, physicalSibling]);
+			expect(parent.cwd).toBe(physicalParent);
+			expect(nested.callerCwd).toBe(physicalParent);
+		} finally {
+			for (const lease of leases) {
+				await harness.supervisor.terminateLease(lease);
+			}
+			rmSync(fixture, { recursive: true, force: true });
+		}
+	});
+	test("inherits the immediate parent's directory through nested launches", async () => {
+		const parentChild = createChildProcess();
+		const nestedChild = createChildProcess();
+		const grandchild = createChildProcess();
+		const children = [parentChild, nestedChild, grandchild];
+		const directories: string[] = [];
+		const harness = createSupervisorHarness(
+			children,
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				onSpawn: (_args, cwd) => directories.push(cwd),
+			},
+		);
+		const parent = await acceptStart(harness.supervisor, parentChild, {
+			cwd: supervisorSessionsRoot,
+		});
+		const nested = await acceptStart(harness.supervisor, nestedChild, {
+			ownerPiSessionId: parent.childPiSessionId,
+			ownerRuntimeLeaseId: parent.runtimeLeaseId,
+		});
+		const deepest = await acceptStart(harness.supervisor, grandchild, {
+			ownerPiSessionId: nested.childPiSessionId,
+			ownerRuntimeLeaseId: nested.runtimeLeaseId,
+			cwd: ".",
+		});
+		expect(directories).toEqual([
+			supervisorSessionsRoot,
+			supervisorSessionsRoot,
+			supervisorSessionsRoot,
+		]);
+		expect(nested.callerCwd).toBe(supervisorSessionsRoot);
+		await Promise.all(
+			[parent, nested].map((item) =>
+				harness.supervisor.terminateLease(item.runtimeLeaseId),
+			),
+		);
+		await harness.supervisor.terminateLease(deepest.runtimeLeaseId);
+	});
+
+	test("reopens a saved session in its directory after supervisor restart", async () => {
+		const child = createChildProcess();
+		const first = createSupervisorHarness([child], []);
+		const accepted = await acceptStart(first.supervisor, child, {
+			cwd: supervisorSessionsRoot,
+		});
+		await first.supervisor.terminateLease(accepted.runtimeLeaseId);
+		const resumedChild = createChildProcess();
+		const directories: string[] = [];
+		const restarted = createSupervisorHarness(
+			[resumedChild],
+			[],
+			undefined,
+			undefined,
+			true,
+			{
+				onSpawn: (_args, cwd) => directories.push(cwd),
+			},
+		);
+		const pending = restarted.supervisor.continue(
+			terminalSession(accepted),
+			"Continue work",
+		);
+		await waitForWriteCount(resumedChild, 1);
+		resumedChild.stdout?.emit(
+			"data",
+			Buffer.from(
+				'{"id":"prompt","type":"response","command":"prompt","success":true}\n',
+			),
+		);
+		const resumed = await pending;
+		expect(directories).toEqual([supervisorSessionsRoot]);
+		await restarted.supervisor.terminateLease(resumed.runtimeLeaseId);
+	});
+
+	test("fails before spawning when a requested or saved directory is missing", async () => {
+		const missing = join(supervisorSessionsRoot, "missing-directory");
+		const harness = createSupervisorHarness([], []);
+		const request = {
+			owner: {
+				ownerPiSessionId: "owner-1",
+				ownerSessionFile: "/tmp/owner.jsonl",
+			},
+			sessionKey: { ownerPiSessionId: "owner-1", ownerLocalSessionId: 1 },
+			agentId: "Worker",
+			taskName: "Inspect files",
+			prompt: "work",
+			cwd: missing,
+		};
+		await expect(harness.supervisor.start(request)).rejects.toMatchObject({
+			code: "start_failed",
+			message: expect.stringContaining(missing),
+		});
+		const session = terminalSession({
+			invocationId: "old",
+			runtimeLeaseId: "old-lease",
+			childPiSessionId: "child",
+			childSessionDir: supervisorSessionsRoot,
+			childSessionFile: "/tmp/child.jsonl",
+		});
+		await expect(
+			harness.supervisor.continue({ ...session, cwd: missing }, "Continue"),
+		).rejects.toMatchObject({
+			code: "start_failed",
+			message: expect.stringContaining(missing),
+		});
+		expect(harness.spawnCount()).toBe(0);
+	});
 	test.each([
 		[undefined, undefined],
 		[[], "[]"],

@@ -238,10 +238,12 @@ export class ConversationPane {
 	private cachedRows: readonly RenderedConversationRow[] | undefined;
 	private pendingAnchor: ConversationRowAnchor | undefined;
 	private complete = true;
+	private cwd: string;
 	private disposed = false;
 
 	public constructor(private readonly options: ConversationCompositionOptions) {
 		this.expanded = options.expanded;
+		this.cwd = options.cwd;
 		this.composition = composeConversation([], options);
 	}
 
@@ -250,11 +252,16 @@ export class ConversationPane {
 		entries: readonly ConversationProjectionEntry[],
 		resetToBottom: boolean,
 		complete: boolean,
+		cwd = this.options.cwd,
 	): void {
 		if (this.disposed) {
 			return;
 		}
-		if (entries === this.entries && complete === this.complete) {
+		if (
+			entries === this.entries &&
+			complete === this.complete &&
+			cwd === this.cwd
+		) {
 			if (resetToBottom) {
 				this.pendingAnchor = undefined;
 				this.followBottom = true;
@@ -266,9 +273,11 @@ export class ConversationPane {
 			resetToBottom || wasFollowing ? undefined : this.currentRowAnchor();
 		this.composition = composeConversation(entries, {
 			...this.options,
+			cwd,
 			expanded: this.expanded,
 		});
 		this.entries = entries;
+		this.cwd = cwd;
 		this.complete = complete;
 		this.followBottom = resetToBottom || wasFollowing;
 		this.clearRenderedRows();

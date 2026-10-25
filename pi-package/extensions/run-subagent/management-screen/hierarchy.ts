@@ -7,6 +7,7 @@ import {
 import { normalizeTerminalDisplayText } from "../../../shared/terminal-display-text";
 import type { ScrollMetrics } from "../../../shared/tui/scroll-indicator";
 import { formatUsageTokenCount } from "../../../shared/usage-format";
+import { getDisplayedWorkingDirectory } from "../domain";
 import type { ProjectionNode } from "../projection";
 import { formatDuration, renderContext } from "../semantic-layout";
 import type { WorkflowStatus } from "../workflow-status";
@@ -481,7 +482,21 @@ export function renderSelectedSessionHeader(
 		options.width,
 		options.theme,
 	);
-	return [chain, prompt, metadata, ...workflow];
+	const cwd = getDisplayedWorkingDirectory(selected);
+	const directory =
+		cwd === undefined
+			? []
+			: [
+					options.theme.fg(
+						"muted",
+						truncateToWidth(
+							`cwd: ${normalizeTerminalDisplayText(cwd)}`,
+							options.width,
+							"…",
+						),
+					),
+				];
+	return [chain, prompt, ...directory, metadata, ...workflow];
 }
 
 /** Renders one status icon and the normalized initial prompt without wrapping. */

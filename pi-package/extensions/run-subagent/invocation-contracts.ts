@@ -17,6 +17,8 @@ import type { RuntimeRequest } from "./runtime-wire";
 
 /** Describes one accepted process invocation. */
 export interface InvocationAcceptance {
+	readonly cwd?: string;
+	readonly callerCwd?: string;
 	readonly invocationId: string;
 	readonly runtimeLeaseId: string;
 	readonly childPiSessionId: string;
@@ -35,6 +37,7 @@ export interface InvocationScope {
 
 /** Describes one new invocation request. */
 export interface NewInvocationRequest extends InvocationScope {
+	readonly cwd?: string;
 	readonly owner: OwnerIdentity;
 	readonly sessionKey: SessionKey;
 	readonly agentId: string;
@@ -98,6 +101,7 @@ export interface InvocationControl {
 
 /** Resolves model, tool policy, and process environment for one callable agent. */
 export interface InvocationLaunchConfiguration {
+	readonly callerCwd?: string;
 	readonly cwd: string;
 	readonly modelId: string;
 	readonly provider: string;

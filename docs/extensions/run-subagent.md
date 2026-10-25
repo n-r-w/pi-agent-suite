@@ -325,6 +325,19 @@ Starts a callable agent in a new saved logical session.
 | `agentId` | Yes | Trimmed single-line Unicode string | Exact NFC-normalized ID of an available callable agent. |
 | `taskName` | Yes | Trimmed single-line string with schema length 3–60 | Short name for the delegated task. |
 | `prompt` | Yes | String containing at least one non-whitespace Unicode code point | Initial child prompt. |
+| `cwd` | No | Non-blank directory path, at most 4,096 characters | Working directory of the subagent and every continuation. Relative paths resolve against the immediate calling agent's working directory. Omission uses that caller's directory. |
+
+The extension validates the original start arguments through Pi's `prepareArguments` hook before Pi normalizes optional nulls or converts primitive types. A supplied `cwd` must be a string. For example, `"cwd": null` and `"cwd": 42` produce `invalid_request` before authorization or process startup; `"cwd": "42"` remains a valid relative directory name.
+
+For example, a caller working in `/work/main` can pass `"cwd": "/work/other"`. The child process then runs in `/work/other`. If that child starts another subagent without `cwd`, the nested subagent also runs in `/work/other`. Passing `"cwd": "."` has the same effect as omission for a new session.
+
+The extension resolves symlinks and retains the physical absolute directory in the logical session. Relative paths use the immediate caller's physical directory. For example, if `/work/alias` points to `/work/projects/parent`, a nested `cwd: "../sibling"` selects `/work/projects/sibling`. Directory comparisons in the TUI and project registry also use physical paths. Terminal continuations through `subagent_steer`, management-screen messages, owner restart, and copied fork hierarchies use that directory. Sessions saved before directory metadata was introduced retain the previous owner-directory behavior. A missing, inaccessible, or non-directory path produces `start_failed` with the path before a child process starts. Active steering continues in the running process.
+
+Pi and package extensions retain their normal project-loading behavior relative to the child's directory, including project context such as `AGENTS.md`, project rules, project agent definitions, skills, settings, and extension discovery subject to the configured child extension-loading policy. This parameter adds no separate project-configuration source. For nested delegation, the root supervisor checks availability and resolves the requested agent's model, thinking, tools, and workflows using the immediate caller's project registry. A project-only definition such as `/work/other/.pi/agents/LocalReviewer.md` can therefore be called by a subagent working in `/work/other`. The immediate caller's `agents` restriction still applies. Calls from the root project retain its existing registry snapshot.
+
+The start-tool presentation and selected-session header show a clipped working-directory row only when the child's directory differs from its immediate caller's directory. The start-tool card uses the emphasized `Cwd:` label, matching `Name:` and `Prompt:`. The selected-session header uses lowercase `cwd:` and ordinary muted text for the entire row without bold emphasis. Explicitly passing the caller's own directory adds no row. Compact and expanded tool views use the same condition, in both the main conversation and subagent conversations.
+
+Saved child sessions remain in `run-subagent/sessions/<encoded owner directory>/`; `cwd` changes the process directory independently of session storage.
 
 After the child accepts the prompt, the tool returns:
 

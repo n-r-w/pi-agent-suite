@@ -222,9 +222,27 @@ function parseDispositionRecord(
 
 /** Parses one complete accepted logical-session record. */
 function parseLogicalSession(value: unknown): LogicalSession | undefined {
-	if (!hasExactKeys(value, LOGICAL_SESSION_KEYS, ["ownerRuntimeLeaseId"])) {
+	if (
+		!hasExactKeys(value, LOGICAL_SESSION_KEYS, [
+			"ownerRuntimeLeaseId",
+			"cwd",
+			"callerCwd",
+		])
+	) {
 		return undefined;
 	}
+	const cwd = readStringField(value, "cwd");
+	const callerCwd = readStringField(value, "callerCwd");
+	if (
+		(readField(value, "cwd") !== undefined && cwd === undefined) ||
+		(readField(value, "callerCwd") !== undefined && callerCwd === undefined)
+	) {
+		return undefined;
+	}
+	const directories = {
+		...(cwd === undefined ? {} : { cwd }),
+		...(callerCwd === undefined ? {} : { callerCwd }),
+	};
 	const key = parseSessionKey(readField(value, "key"));
 	const childPiSessionId = readStringField(value, "childPiSessionId");
 	const childSessionDir = readStringField(value, "childSessionDir");
@@ -254,34 +272,21 @@ function parseLogicalSession(value: unknown): LogicalSession | undefined {
 	) {
 		return undefined;
 	}
-	return ownerRuntimeLeaseId === undefined
-		? {
-				key,
-				childPiSessionId,
-				childSessionDir,
-				childSessionFile,
-				agentId,
-				taskName,
-				creationOrder,
-				invocationId,
-				runtimeLeaseId,
-				invocationMetadata,
-				state,
-			}
-		: {
-				key,
-				childPiSessionId,
-				childSessionDir,
-				childSessionFile,
-				agentId,
-				taskName,
-				creationOrder,
-				invocationId,
-				runtimeLeaseId,
-				ownerRuntimeLeaseId,
-				invocationMetadata,
-				state,
-			};
+	return {
+		...directories,
+		key,
+		childPiSessionId,
+		childSessionDir,
+		childSessionFile,
+		agentId,
+		taskName,
+		creationOrder,
+		invocationId,
+		runtimeLeaseId,
+		...(ownerRuntimeLeaseId === undefined ? {} : { ownerRuntimeLeaseId }),
+		invocationMetadata,
+		state,
+	};
 }
 
 /** Parses one complete terminal feedback payload. */

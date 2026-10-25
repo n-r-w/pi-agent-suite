@@ -130,13 +130,21 @@ function parseAcceptedEvidence(
 		!hasExactKeys(
 			value,
 			["presentationKind", "agentId", "taskName"],
-			["modelId", "thinking"],
+			["modelId", "thinking", "cwd", "callerCwd"],
 		)
 	) {
 		return undefined;
 	}
 	const agentId = readStringField(value, "agentId");
 	const taskName = readStringField(value, "taskName");
+	const cwd = readStringField(value, "cwd");
+	const callerCwd = readStringField(value, "callerCwd");
+	if (
+		(readField(value, "cwd") !== undefined && cwd === undefined) ||
+		(readField(value, "callerCwd") !== undefined && callerCwd === undefined)
+	) {
+		return undefined;
+	}
 	const rawModelId = readField(value, "modelId");
 	const rawThinking = readField(value, "thinking");
 	const modelId = readStringField(value, "modelId");
@@ -151,6 +159,8 @@ function parseAcceptedEvidence(
 	}
 	return {
 		presentationKind: "accepted",
+		...(cwd === undefined ? {} : { cwd }),
+		...(callerCwd === undefined ? {} : { callerCwd }),
 		agentId,
 		taskName,
 		...(modelId === undefined ? {} : { modelId }),

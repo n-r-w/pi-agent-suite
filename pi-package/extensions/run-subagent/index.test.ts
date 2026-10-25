@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	type AgentToolCallOutcome,
+	runToolCall,
+} from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
@@ -14,11 +24,13 @@ import {
 	createEventBus,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ExtensionRunner,
 	initTheme,
 	SessionManager,
 	type SessionStartEvent,
 	type Theme,
 	type ToolDefinition,
+	wrapRegisteredTool,
 } from "@earendil-works/pi-coding-agent";
 import {
 	KeybindingsManager,
@@ -299,6 +311,53 @@ function getTool(
 	return tool;
 }
 
+/** Runs the registered start tool through Pi's real preparation, validation, and execution path. */
+async function runRegisteredStartTool(
+	pi: ReturnType<typeof createPiFake>,
+	ctx: ExtensionContext,
+	params: Parameters<typeof runToolCall>[0]["arguments"],
+): Promise<AgentToolCallOutcome> {
+	const tool = wrapRegisteredTool(
+		{
+			definition: getTool(pi, "subagent_start") as ToolDefinition,
+			sourceInfo: {
+				path: "<inline:cwd-fixture>",
+				source: "inline",
+				scope: "temporary",
+				origin: "top-level",
+			},
+		},
+		{ createToolContext: () => ctx } as unknown as ExtensionRunner,
+	);
+	const call = {
+		type: "toolCall" as const,
+		id: "cwd-validation",
+		name: "subagent_start",
+		arguments: params,
+	};
+	return runToolCall(call, {
+		tools: [tool],
+		context: { messages: [], tools: [tool] },
+		assistantMessage: {
+			role: "assistant",
+			content: [call],
+			api: TEST_MODEL.api,
+			provider: TEST_MODEL.provider,
+			model: TEST_MODEL.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1,
+		},
+	});
+}
+
 let suiteDir = "";
 let previousSuiteDir: string | undefined;
 let previousDepth: string | undefined;
@@ -329,6 +388,355 @@ afterEach(() => {
 });
 
 describe("subagents entry", () => {
+	test.each(
+		[null, 42, true, false, [], {}].map((cwd) => ({
+			cwd,
+			label: JSON.stringify(cwd),
+		})),
+	)("rejects raw cwd $label before Pi can remove or coerce it", async ({
+		cwd,
+	}) => {
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ntype: subagent\ndescription: Worker\n---\nInstructions",
+		);
+		let spawnCalls = 0;
+		let authCalls = 0;
+		const spawn = spyOn(
+			await import("./invocation-process"),
+			"defaultSpawnProcess",
+		).mockImplementation(() => {
+			spawnCalls += 1;
+			throw new Error("fixture process startup intercepted");
+		});
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, [], {
+			model: TEST_MODEL,
+			authenticated: true,
+			onAuthRequest: () => {
+				authCalls += 1;
+			},
+		});
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const outcome = await runRegisteredStartTool(pi, ctx, {
+				agentId: "Worker",
+				taskName: "Inspect files",
+				prompt: "work",
+				cwd,
+			});
+			expect(outcome.isError).toBe(true);
+			expect(outcome.result.content).toContainEqual(
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("[invalid_request]"),
+				}),
+			);
+			expect(spawnCalls).toBe(0);
+			expect(authCalls).toBe(0);
+		} finally {
+			spawn.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
+
+	test.each([
+		"omitted",
+		"absolute",
+		"relative",
+		"numeric-string",
+	] as const)("preserves valid %s cwd through Pi's tool pipeline", async (kind) => {
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ntype: subagent\ndescription: Worker\n---\nInstructions",
+		);
+		mkdirSync(join(suiteDir, "42"));
+		const directories: string[] = [];
+		const spawn = spyOn(
+			await import("./invocation-process"),
+			"defaultSpawnProcess",
+		).mockImplementation((_command, _args, options) => {
+			directories.push(options.cwd);
+			throw new Error("fixture process startup intercepted");
+		});
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, [], {
+			model: TEST_MODEL,
+			authenticated: true,
+		});
+		const cwd = {
+			omitted: undefined,
+			absolute: suiteDir,
+			relative: ".",
+			"numeric-string": "42",
+		}[kind];
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const outcome = await runRegisteredStartTool(pi, ctx, {
+				agentId: "Worker",
+				taskName: "Inspect files",
+				prompt: "work",
+				...(cwd === undefined ? {} : { cwd }),
+			});
+			expect(outcome.result.content).toContainEqual(
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("fixture process startup intercepted"),
+				}),
+			);
+			expect(directories).toEqual([
+				kind === "numeric-string" ? join(suiteDir, "42") : suiteDir,
+			]);
+		} finally {
+			spawn.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
+	test("retains the root registry snapshot for nested callers using another path to the same directory", async () => {
+		const alias = join(suiteDir, "root-alias");
+		symlinkSync(suiteDir, alias, "dir");
+		const globalAgents = join(suiteDir, "agent-selection", "agents");
+		for (const id of ["Parent", "Reviewer"]) {
+			writeFileSync(
+				join(globalAgents, `${id}.md`),
+				`---\ntype: subagent\ndescription: ${id}\n---\nInstructions`,
+			);
+		}
+		const parent = createPersistedSession(join(suiteDir, "parent-session"), {
+			id: "parent",
+			text: "seed",
+		});
+		const parentFile = parent.getSessionFile();
+		if (parentFile === undefined) {
+			throw new Error("parent session must be persisted");
+		}
+		const session: LogicalSession = {
+			key: { ownerPiSessionId: "owner-pi", ownerLocalSessionId: 1 },
+			childPiSessionId: parent.getSessionId(),
+			childSessionDir: parent.getSessionDir(),
+			childSessionFile: parentFile,
+			agentId: "Parent",
+			taskName: "Parent task",
+			creationOrder: 1,
+			invocationId: "parent-invocation",
+			runtimeLeaseId: "parent-lease",
+			invocationMetadata: TEST_INVOCATION_METADATA,
+			state: "terminal-success",
+			cwd: suiteDir,
+			callerCwd: alias,
+		};
+		const ctx = createContext(
+			alias,
+			[
+				{
+					type: "custom",
+					id: "parent-journal",
+					parentId: null,
+					timestamp: new Date(0).toISOString(),
+					customType: SUBAGENT_JOURNAL_CUSTOM_TYPE,
+					data: { kind: "session-accepted", session },
+				},
+			],
+			{ model: TEST_MODEL, authenticated: true },
+		);
+		Object.assign(ctx.modelRegistry, { find: () => undefined });
+		let coordinator: SubagentCoordinator | undefined;
+		const originalRegister = SubagentCoordinator.prototype.registerOwner;
+		const register = spyOn(
+			SubagentCoordinator.prototype,
+			"registerOwner",
+		).mockImplementation(function (this: SubagentCoordinator, owner) {
+			coordinator = this;
+			originalRegister.call(this, owner);
+		});
+		let spawns = 0;
+		const spawn = spyOn(
+			await import("./invocation-process"),
+			"defaultSpawnProcess",
+		).mockImplementation(() => {
+			spawns += 1;
+			throw new Error("fixture process startup intercepted");
+		});
+		const pi = createPiFake();
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const projectAgents = join(suiteDir, ".pi", "agents");
+			mkdirSync(projectAgents, { recursive: true });
+			writeFileSync(
+				join(projectAgents, "Reviewer.md"),
+				"---\ntype: subagent\ndescription: Changed reviewer\nmodel:\n  id: openai/unavailable-model\n---\nInstructions",
+			);
+			if (coordinator === undefined) {
+				throw new Error("root coordinator was not registered");
+			}
+			await expect(
+				coordinator.start(
+					{
+						ownerPiSessionId: parent.getSessionId(),
+						ownerSessionFile: parentFile,
+					},
+					{ agentId: "Reviewer", taskName: "Review files", prompt: "review" },
+				),
+			).rejects.toThrow("fixture process startup intercepted");
+			expect(spawns).toBe(1);
+		} finally {
+			register.mockRestore();
+			spawn.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
+	test.each([
+		false,
+		true,
+	])("launches nested project agents with the immediate caller's definition and directory, global override %s", async (globalOverride) => {
+		if (globalOverride) {
+			writeFileSync(
+				join(suiteDir, "agent-selection", "agents", "LocalReviewer.md"),
+				"---\ntype: subagent\ndescription: Global reviewer\nmodel:\n  id: openai/global-model\n---\nReview instructions",
+			);
+		}
+		const project = join(suiteDir, "other-project");
+		const projectAgents = join(project, ".pi", "agents");
+		mkdirSync(projectAgents, { recursive: true });
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Parent.md"),
+			"---\ntype: subagent\ndescription: Parent\nagents: []\n---\nParent instructions",
+		);
+		writeFileSync(
+			join(projectAgents, "Parent.md"),
+			"---\ntype: subagent\ndescription: Project parent\nagents: [LocalReviewer]\n---\nParent instructions",
+		);
+		writeFileSync(
+			join(projectAgents, "LocalReviewer.md"),
+			"---\ntype: subagent\ndescription: Project reviewer\nmodel:\n  id: openai/project-model\n  thinking: low\n---\nReview instructions",
+		);
+		const parent = createPersistedSession(join(suiteDir, "parent-session"), {
+			id: "parent",
+			text: "seed",
+		});
+		const parentFile = parent.getSessionFile();
+		if (parentFile === undefined) {
+			throw new Error("parent session must be persisted");
+		}
+		const session: LogicalSession = {
+			key: { ownerPiSessionId: "owner-pi", ownerLocalSessionId: 1 },
+			childPiSessionId: parent.getSessionId(),
+			childSessionDir: parent.getSessionDir(),
+			childSessionFile: parentFile,
+			agentId: "Parent",
+			taskName: "Parent task",
+			creationOrder: 1,
+			invocationId: "parent-invocation",
+			runtimeLeaseId: "parent-lease",
+			invocationMetadata: TEST_INVOCATION_METADATA,
+			state: "terminal-success",
+			cwd: project,
+			callerCwd: suiteDir,
+		};
+		const ctx = createContext(
+			suiteDir,
+			[
+				{
+					type: "custom",
+					id: "parent-journal",
+					parentId: null,
+					timestamp: new Date(0).toISOString(),
+					customType: SUBAGENT_JOURNAL_CUSTOM_TYPE,
+					data: { kind: "session-accepted", session },
+				},
+			],
+			{ model: TEST_MODEL, authenticated: true },
+		);
+		Object.assign(ctx.modelRegistry, {
+			find: (provider: string, id: string) =>
+				provider === "openai" && id === "project-model"
+					? { ...TEST_MODEL, id: "project-model" }
+					: undefined,
+		});
+		let coordinator: SubagentCoordinator | undefined;
+		const originalRegister = SubagentCoordinator.prototype.registerOwner;
+		const register = spyOn(
+			SubagentCoordinator.prototype,
+			"registerOwner",
+		).mockImplementation(function (this: SubagentCoordinator, owner) {
+			coordinator = this;
+			originalRegister.call(this, owner);
+		});
+		const spawns: { args: readonly string[]; cwd: string }[] = [];
+		const spawn = spyOn(
+			await import("./invocation-process"),
+			"defaultSpawnProcess",
+		).mockImplementation((_command, args, options) => {
+			spawns.push({ args, cwd: options.cwd });
+			throw new Error("fixture process startup intercepted");
+		});
+		const pi = createPiFake();
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			if (coordinator === undefined) {
+				throw new Error("root coordinator was not registered");
+			}
+			await expect(
+				coordinator.start(
+					{
+						ownerPiSessionId: parent.getSessionId(),
+						ownerSessionFile: parentFile,
+					},
+					{
+						agentId: "LocalReviewer",
+						taskName: "Review files",
+						prompt: "review",
+					},
+				),
+			).rejects.toThrow("fixture process startup intercepted");
+			expect(spawns).toHaveLength(1);
+			expect(spawns[0]?.cwd).toBe(project);
+			const args = spawns[0]?.args ?? [];
+			expect(args[args.indexOf("--model") + 1]).toBe("openai/project-model");
+			expect(args[args.indexOf("--thinking") + 1]).toBe("low");
+			writeFileSync(
+				join(projectAgents, "Parent.md"),
+				"---\ntype: subagent\ndescription: Restricted project parent\nagents: []\n---\nParent instructions",
+			);
+			await expect(
+				coordinator.start(
+					{
+						ownerPiSessionId: parent.getSessionId(),
+						ownerSessionFile: parentFile,
+					},
+					{
+						agentId: "LocalReviewer",
+						taskName: "Review files",
+						prompt: "review",
+					},
+				),
+			).rejects.toThrow("agent_unavailable");
+			expect(spawns).toHaveLength(1);
+			rmSync(project, { recursive: true });
+			await expect(
+				coordinator.start(
+					{
+						ownerPiSessionId: parent.getSessionId(),
+						ownerSessionFile: parentFile,
+					},
+					{
+						agentId: "LocalReviewer",
+						taskName: "Review files",
+						prompt: "review",
+					},
+				),
+			).rejects.toThrow(project);
+			expect(spawns).toHaveLength(1);
+		} finally {
+			register.mockRestore();
+			spawn.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
 	test.each([
 		{ mode: "all", expected: [] },
 		{ mode: "none", expected: ["--no-extensions"] },

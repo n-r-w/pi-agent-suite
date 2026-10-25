@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	normalizeChildPrompt,
@@ -65,6 +65,7 @@ import {
 import { type LiveAgentStatus, reduceLiveAgentStatus } from "./live-status";
 import type { RuntimeRequest } from "./runtime-wire";
 import { parseConversationSessionEntry } from "./session-entry-validation";
+import { resolveWorkingDirectory } from "./working-directory";
 
 const PROMPT_COMMAND_ID = "prompt";
 const WORKER_READY_TIMEOUT_MS = 10_000;
@@ -218,7 +219,19 @@ export class InvocationSupervisor implements InvocationControl {
 		request: NewInvocationRequest,
 		savedSession?: LogicalSession,
 	): Promise<InvocationAcceptance> {
-		const launch = await this.requireLaunch(request);
+		const configuredLaunch = await this.requireLaunch(request);
+		const parent = [...this.handles.values()].find(
+			(handle) =>
+				handle.acceptance.childPiSessionId === request.owner.ownerPiSessionId &&
+				handle.teardown === undefined,
+		);
+		const callerCwd = resolveWorkingDirectory(
+			parent?.acceptance.cwd ?? savedSession?.callerCwd ?? configuredLaunch.cwd,
+		);
+		const cwd = resolveWorkingDirectory(
+			resolve(callerCwd, savedSession?.cwd ?? request.cwd ?? callerCwd),
+		);
+		const launch = { ...configuredLaunch, cwd, callerCwd };
 		const signal = request.signal;
 		let acceptedHandle: InvocationHandle | undefined;
 		try {
@@ -377,6 +390,10 @@ export class InvocationSupervisor implements InvocationControl {
 				childPiSessionId,
 				childSessionDir,
 				childSessionFile: request.childSessionFile ?? "",
+				...(launch === undefined ? {} : { cwd: launch.cwd }),
+				...(launch?.callerCwd === undefined
+					? {}
+					: { callerCwd: launch.callerCwd }),
 				...(launch === undefined ? {} : { modelId: launch.modelId }),
 				...(launch === undefined ? {} : { thinking: launch.thinking }),
 				...(launch === undefined
@@ -418,6 +435,9 @@ export class InvocationSupervisor implements InvocationControl {
 		childSessionDir: string,
 	): ChildProcess {
 		const launch = request.launchConfiguration;
+		if (launch !== undefined) {
+			resolveWorkingDirectory(launch.cwd);
+		}
 		const args = buildChildArgs({
 			packagePath: this.options.packagePath ?? defaultPackagePath(),
 			extensionArgs: this.options.extensionArgs ?? [],

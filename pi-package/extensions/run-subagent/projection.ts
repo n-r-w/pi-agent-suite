@@ -32,6 +32,8 @@ interface ProjectionSources {
 
 /** Identifies one immutable hierarchy row by complete owner-local identity. */
 export interface ProjectionNode {
+	readonly cwd?: string;
+	readonly callerCwd?: string;
 	readonly stableKey: string;
 	readonly key: Readonly<SessionKey>;
 	readonly parentStableKey: string | null;
@@ -393,6 +395,10 @@ function createNode(
 		key,
 		parentStableKey,
 		childPiSessionId: session.childPiSessionId,
+		...(session.cwd === undefined ? {} : { cwd: session.cwd }),
+		...(session.callerCwd === undefined
+			? {}
+			: { callerCwd: session.callerCwd }),
 		agentId: session.agentId,
 		taskName: session.taskName,
 		creationOrder: session.creationOrder,
@@ -409,6 +415,8 @@ function nodesEqual(left: ProjectionNode, right: ProjectionNode): boolean {
 		left.childPiSessionId === right.childPiSessionId &&
 		left.agentId === right.agentId &&
 		left.taskName === right.taskName &&
+		left.cwd === right.cwd &&
+		left.callerCwd === right.callerCwd &&
 		left.creationOrder === right.creationOrder &&
 		invocationMetadataEqual(
 			left.invocationMetadata,
