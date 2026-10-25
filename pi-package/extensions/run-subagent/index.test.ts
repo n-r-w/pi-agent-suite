@@ -8,6 +8,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	type AgentToolCallOutcome,
+	runToolCall,
+} from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	AssistantMessage,
@@ -20,11 +24,13 @@ import {
 	createEventBus,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ExtensionRunner,
 	initTheme,
 	SessionManager,
 	type SessionStartEvent,
 	type Theme,
 	type ToolDefinition,
+	wrapRegisteredTool,
 } from "@earendil-works/pi-coding-agent";
 import {
 	KeybindingsManager,
@@ -305,6 +311,53 @@ function getTool(
 	return tool;
 }
 
+/** Runs the registered start tool through Pi's real preparation, validation, and execution path. */
+async function runRegisteredStartTool(
+	pi: ReturnType<typeof createPiFake>,
+	ctx: ExtensionContext,
+	params: Parameters<typeof runToolCall>[0]["arguments"],
+): Promise<AgentToolCallOutcome> {
+	const tool = wrapRegisteredTool(
+		{
+			definition: getTool(pi, "subagent_start") as ToolDefinition,
+			sourceInfo: {
+				path: "<inline:cwd-fixture>",
+				source: "inline",
+				scope: "temporary",
+				origin: "top-level",
+			},
+		},
+		{ createToolContext: () => ctx } as unknown as ExtensionRunner,
+	);
+	const call = {
+		type: "toolCall" as const,
+		id: "cwd-validation",
+		name: "subagent_start",
+		arguments: params,
+	};
+	return runToolCall(call, {
+		tools: [tool],
+		context: { messages: [], tools: [tool] },
+		assistantMessage: {
+			role: "assistant",
+			content: [call],
+			api: TEST_MODEL.api,
+			provider: TEST_MODEL.provider,
+			model: TEST_MODEL.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 1,
+		},
+	});
+}
+
 let suiteDir = "";
 let previousSuiteDir: string | undefined;
 let previousDepth: string | undefined;
@@ -335,6 +388,112 @@ afterEach(() => {
 });
 
 describe("subagents entry", () => {
+	test.each(
+		[null, 42, true, false, [], {}].map((cwd) => ({
+			cwd,
+			label: JSON.stringify(cwd),
+		})),
+	)("rejects raw cwd $label before Pi can remove or coerce it", async ({
+		cwd,
+	}) => {
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ntype: subagent\ndescription: Worker\n---\nInstructions",
+		);
+		let spawnCalls = 0;
+		let authCalls = 0;
+		const spawn = spyOn(
+			await import("./invocation-process"),
+			"defaultSpawnProcess",
+		).mockImplementation(() => {
+			spawnCalls += 1;
+			throw new Error("fixture process startup intercepted");
+		});
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, [], {
+			model: TEST_MODEL,
+			authenticated: true,
+			onAuthRequest: () => {
+				authCalls += 1;
+			},
+		});
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const outcome = await runRegisteredStartTool(pi, ctx, {
+				agentId: "Worker",
+				taskName: "Inspect files",
+				prompt: "work",
+				cwd,
+			});
+			expect(outcome.isError).toBe(true);
+			expect(outcome.result.content).toContainEqual(
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("[invalid_request]"),
+				}),
+			);
+			expect(spawnCalls).toBe(0);
+			expect(authCalls).toBe(0);
+		} finally {
+			spawn.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
+
+	test.each([
+		"omitted",
+		"absolute",
+		"relative",
+		"numeric-string",
+	] as const)("preserves valid %s cwd through Pi's tool pipeline", async (kind) => {
+		writeFileSync(
+			join(suiteDir, "agent-selection", "agents", "Worker.md"),
+			"---\ntype: subagent\ndescription: Worker\n---\nInstructions",
+		);
+		mkdirSync(join(suiteDir, "42"));
+		const directories: string[] = [];
+		const spawn = spyOn(
+			await import("./invocation-process"),
+			"defaultSpawnProcess",
+		).mockImplementation((_command, _args, options) => {
+			directories.push(options.cwd);
+			throw new Error("fixture process startup intercepted");
+		});
+		const pi = createPiFake();
+		const ctx = createContext(suiteDir, [], {
+			model: TEST_MODEL,
+			authenticated: true,
+		});
+		const cwd = {
+			omitted: undefined,
+			absolute: suiteDir,
+			relative: ".",
+			"numeric-string": "42",
+		}[kind];
+		try {
+			await subagents(pi);
+			await pi.emit("session_start", { type: "session_start" }, ctx);
+			const outcome = await runRegisteredStartTool(pi, ctx, {
+				agentId: "Worker",
+				taskName: "Inspect files",
+				prompt: "work",
+				...(cwd === undefined ? {} : { cwd }),
+			});
+			expect(outcome.result.content).toContainEqual(
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("fixture process startup intercepted"),
+				}),
+			);
+			expect(directories).toEqual([
+				kind === "numeric-string" ? join(suiteDir, "42") : suiteDir,
+			]);
+		} finally {
+			spawn.mockRestore();
+			await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		}
+	});
 	test("retains the root registry snapshot for nested callers using another path to the same directory", async () => {
 		const alias = join(suiteDir, "root-alias");
 		symlinkSync(suiteDir, alias, "dir");

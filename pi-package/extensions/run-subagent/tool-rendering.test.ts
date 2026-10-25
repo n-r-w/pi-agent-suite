@@ -286,7 +286,9 @@ describe("Subagents semantic rendering", () => {
 					PLAIN_THEME,
 					context,
 				).render(100);
-				expect(lines.some((line) => line.includes("cwd:"))).toBe(false);
+				expect(lines.some((line) => line.toLowerCase().includes("cwd:"))).toBe(
+					false,
+				);
 			}
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
@@ -309,7 +311,7 @@ describe("Subagents semantic rendering", () => {
 					result: result({ ...acceptedDetails(), cwd, callerCwd }),
 					expanded,
 				});
-				expect(rendered.call.some((line) => line.includes("cwd:"))).toBe(shown);
+				expect(rendered.call.some((line) => line.includes("Cwd:"))).toBe(shown);
 				if (shown) {
 					expect(rendered.call.join("\n")).toContain(cwd);
 				}

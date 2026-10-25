@@ -95,6 +95,26 @@ function deepRepeatedIdHierarchy(): readonly ProjectionNode[] {
 }
 
 describe("management hierarchy", () => {
+	test("renders the entire cwd row muted without bold styling", () => {
+		const selected = {
+			...node("nested", "parent", 1, null, "Worker", 1),
+			cwd: "/work/other",
+			callerCwd: "/work/main",
+		};
+		const theme = {
+			...MARKED_THEME,
+			bold: (text: string) => `<bold>${text}</bold>`,
+		} as Theme;
+		const header = renderSelectedSessionHeader({
+			nodes: [selected],
+			selectedStableKey: selected.stableKey,
+			width: 40,
+			theme,
+		});
+		expect(header.find((line) => line.includes("cwd:"))).toBe(
+			"<muted>cwd: /work/other</muted>",
+		);
+	});
 	test("shows a bounded directory row only for a different immediate caller directory", () => {
 		for (const [cwd, callerCwd, shown] of [
 			["/work/other", "/work/main", true],

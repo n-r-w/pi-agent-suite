@@ -93,7 +93,7 @@ export function renderSubagentStartCall(
 			context.cwd,
 		);
 		if (cwd !== undefined) {
-			lines.push(renderClippedTextRow("cwd:", cwd, width, theme));
+			lines.push(renderClippedTextRow("Cwd:", cwd, width, theme));
 		}
 		if (taskName !== undefined) {
 			lines.push(...renderName(taskName, width, theme, context.expanded));

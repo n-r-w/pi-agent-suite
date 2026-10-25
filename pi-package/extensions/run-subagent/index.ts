@@ -454,6 +454,7 @@ function registerStartTool(
 		label: "Start subagent",
 		description: START_DESCRIPTION,
 		parameters: SubagentStartParameters,
+		prepareArguments: parseSubagentStartRequest,
 		renderCall: renderSubagentStartCall,
 		renderResult: renderSubagentStartResult,
 		execute: async (...args) => {

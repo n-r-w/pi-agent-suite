@@ -9,11 +9,7 @@ import type { ScrollMetrics } from "../../../shared/tui/scroll-indicator";
 import { formatUsageTokenCount } from "../../../shared/usage-format";
 import { getDisplayedWorkingDirectory } from "../domain";
 import type { ProjectionNode } from "../projection";
-import {
-	formatDuration,
-	renderClippedTextRow,
-	renderContext,
-} from "../semantic-layout";
+import { formatDuration, renderContext } from "../semantic-layout";
 import type { WorkflowStatus } from "../workflow-status";
 import { AGENT_STATUS_ICONS, countAgentStatuses } from "./status-summary";
 
@@ -490,7 +486,16 @@ export function renderSelectedSessionHeader(
 	const directory =
 		cwd === undefined
 			? []
-			: [renderClippedTextRow("cwd:", cwd, options.width, options.theme)];
+			: [
+					options.theme.fg(
+						"muted",
+						truncateToWidth(
+							`cwd: ${normalizeTerminalDisplayText(cwd)}`,
+							options.width,
+							"…",
+						),
+					),
+				];
 	return [chain, prompt, ...directory, metadata, ...workflow];
 }
 
