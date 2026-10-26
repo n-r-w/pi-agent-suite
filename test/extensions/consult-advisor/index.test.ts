@@ -1695,7 +1695,8 @@ describe("consult-advisor", () => {
 			if (advisorReplacement?.type !== "text") {
 				throw new Error("expected advisor text replacement");
 			}
-			expect(summaryCompletion.calls).toHaveLength(1);
+			// The batch sends one task request, then one summary request.
+			expect(summaryCompletion.calls).toHaveLength(2);
 			expect(advisorReplacement.text).toContain(
 				'<tool_result full_result="omitted" content="summary">',
 			);

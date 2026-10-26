@@ -3,5 +3,5 @@
 </task>
 
 <output_reminder>
-  Return only the structured summary body using `<section_rules>` and `<output_format>` guidelines from the system prompt.
+  Return only the summary in the format of `<output_format>` from the system prompt.
 </output_reminder>

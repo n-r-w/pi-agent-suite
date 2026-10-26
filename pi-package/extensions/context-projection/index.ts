@@ -33,6 +33,10 @@ import {
 	setPendingProjectionSavings,
 } from "../../shared/context-projection";
 import { CONTEXT_PROJECTION_STATUS_KEY } from "../../shared/context-projection-status";
+import {
+	formatProjectionTasksFailure,
+	requestProjectionTasks,
+} from "../../shared/projection-tasks";
 import { createToolResultProjectionSummaries } from "../../shared/tool-result-projection";
 import {
 	collectToolResultSummaryCandidates,
@@ -129,6 +133,7 @@ interface ProjectionProgressReporter {
 	processed: number;
 	advance(): void;
 	notifyCurrent(): void;
+	notifyTasksRequest(): void;
 	notifyRetry(nextAttempt: number, totalAttempts: number): void;
 	notifySummaryUnavailable(): void;
 	notifySummaryNotSmaller(): void;
@@ -142,6 +147,8 @@ interface SummaryReplacementOptions {
 	readonly ctx: ExtensionContext;
 	readonly config: ContextProjectionConfig;
 	readonly mappedContext: readonly MappedContextEntry[];
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
+	readonly loadedSkillRoots: readonly string[];
 	readonly newProjectedEntries: readonly ProjectedEntryState[];
 	readonly completeSimple: CompleteSimple;
 	readonly progress: ProjectionProgressReporter;
@@ -430,6 +437,8 @@ async function createProjectionDecision({
 			ctx,
 			config,
 			mappedContext,
+			projectedReplacementsByEntryId,
+			loadedSkillRoots,
 			newProjectedEntries: decision.newProjectedEntries,
 			completeSimple,
 			progress,
@@ -468,6 +477,9 @@ function createProjectionProgressReporter(
 		notifyCurrent(): void {
 			notifyProjectionProgress(ctx, progress);
 		},
+		notifyTasksRequest(): void {
+			notifyProjectionTasksRequest(ctx, progress);
+		},
 		notifyRetry(nextAttempt: number, totalAttempts: number): void {
 			notifyProjectionSummaryRetry(ctx, nextAttempt, totalAttempts);
 		},
@@ -497,6 +509,21 @@ function notifyProjectionProgress(
 
 	ctx.ui.notify(
 		`Projecting context: ${progress.activeProjectionLevel.label}, ${progress.processed}/${progress.total} tool results processed`,
+		"info",
+	);
+}
+
+/** Shows that the task request of a projection batch has started, so the wait before the summaries is visible. */
+function notifyProjectionTasksRequest(
+	ctx: ExtensionContext,
+	progress: ProjectionProgressReporter,
+): void {
+	if (!ctx.hasUI || progress.activeProjectionLevel === undefined) {
+		return;
+	}
+
+	ctx.ui.notify(
+		`Projecting context: ${progress.activeProjectionLevel.label}, requesting current tasks`,
 		"info",
 	);
 }
@@ -563,6 +590,8 @@ async function createSummaryReplacementsByEntryId({
 	ctx,
 	config,
 	mappedContext,
+	projectedReplacementsByEntryId,
+	loadedSkillRoots,
 	newProjectedEntries,
 	completeSimple,
 	progress,
@@ -603,9 +632,22 @@ async function createSummaryReplacementsByEntryId({
 		"context-projection",
 		runtimeConfig.model,
 	);
+	progress.notifyTasksRequest();
+	const currentTasks = await requestCurrentTasks({
+		pi,
+		ctx,
+		config,
+		mappedContext,
+		projectedReplacementsByEntryId,
+		loadedSkillRoots,
+		completeSimple,
+	});
 	return createToolResultProjectionSummaries({
 		candidates,
-		runtimeConfig,
+		runtimeConfig:
+			currentTasks === undefined
+				? runtimeConfig
+				: { ...runtimeConfig, currentTasks },
 		completeSimple,
 		config: config.summary,
 		summaryNotice: config.summaryNotice,
@@ -632,6 +674,63 @@ async function createSummaryReplacementsByEntryId({
 			},
 		},
 	});
+}
+
+/** Asks the task model once per batch for the current tasks; returns undefined when summaries must go without them. */
+async function requestCurrentTasks({
+	pi,
+	ctx,
+	config,
+	mappedContext,
+	projectedReplacementsByEntryId,
+	loadedSkillRoots,
+	completeSimple,
+}: {
+	readonly pi: SummaryReplacementOptions["pi"];
+	readonly ctx: ExtensionContext;
+	readonly config: ContextProjectionConfig;
+	readonly mappedContext: readonly MappedContextEntry[];
+	readonly projectedReplacementsByEntryId: ReadonlyMap<string, string>;
+	readonly loadedSkillRoots: readonly string[];
+	readonly completeSimple: CompleteSimple;
+}): Promise<string | undefined> {
+	// The session as the main agent sees it: earlier projections applied, current batch still full.
+	const { messages } = projectContextMessages({
+		mappedContext,
+		projectedReplacementsByEntryId,
+		config,
+		loadedSkillRoots,
+		cwd: ctx.cwd,
+		activeProjectionLevel: undefined,
+	});
+	const result = await requestProjectionTasks({
+		messages,
+		modelContext: ctx,
+		config: config.summary,
+		currentThinking: pi.getThinkingLevel(),
+		signal: ctx.signal,
+		completeSimple,
+		recordCost: (message) => {
+			publishUsageEvent(pi, "projection-tasks", message);
+		},
+	});
+	if (result.kind === "failure") {
+		reportProjectionTasksFailure(ctx, result.issue);
+	}
+	return result.kind === "success" ? result.text : undefined;
+}
+
+/** Shows one error for a failed task request through the UI, or stderr when Pi has no UI. */
+function reportProjectionTasksFailure(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+	issue: string,
+): void {
+	const message = `Context projection: ${formatProjectionTasksFailure(issue)}`;
+	if (ctx.hasUI) {
+		ctx.ui.notify(message, "error");
+		return;
+	}
+	process.stderr.write(`${message}\n`);
 }
 
 /** Collects summary candidates for new projections and advances progress for entries skipped before provider calls. */

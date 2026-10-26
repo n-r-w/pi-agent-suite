@@ -159,6 +159,10 @@ After retries are exhausted, the extension shows the completed-work counts, exac
 
 `context-projection` reduces ordinary provider requests but does not rewrite persisted history. Adaptive compaction replays the effective main and retained contexts, then reuses generated projection summaries for tool results in Pi's prepared discarded range. When `projectCompactionSource` is enabled, it first generates missing summaries for results that reach `minToolResultTokensL3`. Results without a usable summary retain Pi's standard serialization.
 
+Before the forced summaries, the extension sends one task request when at least one summary is missing and the summary runtime resolves. No request is sent when `projectCompactionSource` or `summary.enabled` is `false`, or when every summary already exists. The request carries the effective main context with earlier projections applied and no system messages. Its answer goes into each forced summary request as the `<agent_tasks>` block. The request uses the same model selection, prompts, and retries as `context-projection`: `summary.tasks` and `summary` in `context-projection` settings, with the current thinking level as fallback. See the "Current tasks in summaries" section of `docs/extensions/context-projection.md`. The `projection-tasks` usage source records its cost. The UI shows a message when the task request starts.
+
+When the task request fails, the extension shows one error through the compaction progress reporter, or writes it to stderr when Pi has no UI. The forced summaries are then generated without the block, and compaction continues. A user abort shows no error.
+
 Forced source projection is best effort and ephemeral. A failed candidate falls back independently, and successful compaction removes the summarized source entries. The fixed retained suffix continues to use replayed provider-visible projection only for request budgeting.
 
 Enabled `context-projection` requires a valid custom-compaction configuration that is not explicitly disabled. It never enables custom compaction automatically. See `docs/extensions/context-projection.md`.

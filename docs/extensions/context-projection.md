@@ -40,6 +40,14 @@ Full config example:
     "maxConcurrency": 1,
     "retryCount": 1,
     "retryDelayMs": 5000,
+    "tasks": {
+      "model": {
+        "id": "summary",
+        "thinking": "low"
+      },
+      "systemPromptFile": null,
+      "userPromptFile": null
+    },
     "systemPromptFile": null,
     "userPromptFile": null
   }
@@ -115,6 +123,12 @@ A usable response is a visible assistant response with positive usage that is ne
 | `summary.model` | No | Object | Current main model and thinking level | Configures the model used to generate summaries. |
 | `summary.model.id` | No | Non-empty string | Current main model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
 | `summary.model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current thinking level | Thinking level used for summary requests. |
+| `summary.tasks` | No | Object | Bundled task request settings | Configures the current-task request that feeds summaries. |
+| `summary.tasks.model` | No | Object | `summary.model` | Replaces `summary.model` as a whole for the task request. Omitted fields fall back to the current main model and thinking level. |
+| `summary.tasks.model.id` | No | Non-empty string | Current main model | Accepts either `provider/model` or an alias from `model-aliases/config.json`. |
+| `summary.tasks.model.thinking` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Current thinking level | Thinking level used for the task request. |
+| `summary.tasks.systemPromptFile` | No | `null`, absolute path, or home-prefixed path | Bundled task system prompt | Custom system prompt file for the task request. `null` has the same effect as omitting the parameter. |
+| `summary.tasks.userPromptFile` | No | `null`, absolute path, or home-prefixed path | Bundled task user prompt | Custom user prompt file appended after the session messages. `null` has the same effect as omitting the parameter. |
 | `summary.maxConcurrency` | No | Positive integer | `1` | Maximum number of summary requests that can run at the same time. |
 | `summary.retryCount` | No | Non-negative integer | `1` | Number of retry attempts after the first summary request fails. |
 | `summary.retryDelayMs` | No | Non-negative integer | `5000` | Delay between summary retry attempts, in milliseconds. |
@@ -127,9 +141,35 @@ When `summary.enabled` is omitted or set to `false`, other summary values are ig
 
 Each tool-result summary candidate uses a Pi-compatible UUIDv7 provider session ID separate from the main agent session and other candidates. Retries for one candidate reuse that ID.
 
+### Current tasks in summaries
+
+When projection at L1, L2, or L3 has at least one summary candidate and the summary runtime resolves, the extension first sends one task request to a model. The request carries the session as the main agent sees it: tool results that earlier projections replaced appear with their replacement text, and tool results of the current batch are still full. It carries no tools, no system prompt of the main agent, no project context, and no knowledge. The model returns the goal and the current unfinished tasks of the agent. The UI shows a message when the task request starts.
+
+The extension inserts this text as a separate `<agent_tasks>` block into the user message of each summary request of the batch. The bundled summary system prompt asks the summary model to keep the facts of the tool result that these tasks need. The text is not persisted and not reused by later batches. Batches without summary candidates, and runs with `summary.enabled` set to `false`, send no task request.
+
+The task request uses `summary.tasks.model` when it is set. It replaces `summary.model` as a whole, and its omitted fields fall back to the current main model and thinking level. When `summary.tasks.model` is not set, the task request uses `summary.model`, then the current main model and thinking level. For example, with `summary.model` set to `{"id": "openai/gpt-mini", "thinking": "low"}` and `summary.tasks.model` set to `{"thinking": "high"}`, the task request uses the current main model with `high` thinking, and summary requests keep `openai/gpt-mini`. It uses a provider session ID separate from the main agent session, and the `projection-tasks` usage source records its cost. The request reads the whole session, so it can be as large as the context of the main agent and adds its latency to each projection batch, because Pi waits for the `context` handler. The user can abort it with Esc, as with summary requests.
+
+When the task request fails, the extension shows one error per batch and writes the summaries of the batch without the `<agent_tasks>` block. Projection and the agent continue. These failures count:
+
+- the task model, its alias, or its authentication does not resolve;
+- the session does not fit into the context window of the task model;
+- the provider returns an error after all retries;
+- the answer has no text after all retries;
+- the request throws after all retries.
+
+The error names the failure and says that summaries are written without current tasks. With a UI it appears as an `error` notification. Without a UI, for example in `pi -p`, it goes to stderr. A user abort, for example with Esc, stops the task request and shows no error.
+
+The task request retries a provider error, an empty answer, and a thrown error with `summary.retryCount` and `summary.retryDelayMs`. An unresolved model and a session that does not fit are not retried. A task model whose context window is smaller than the session fails every batch with this error. Select a task model with a larger window through `summary.tasks.model`. The extension writes no session diagnostic entry for task request failures.
+
+A task prompt file in `summary.tasks.systemPromptFile` or `summary.tasks.userPromptFile` replaces the bundled task prompt. A configured file that cannot be read or is empty fails the task request with the error above. Relative prompt paths stop startup, as for `summary.systemPromptFile`. The values inside `summary.tasks` are ignored while `summary.enabled` is `false`.
+
+A custom `summary.systemPromptFile` does not describe the `<agent_tasks>` block. Add this description to the custom prompt: the optional block holds the goal and the unfinished tasks of the agent, and the summary keeps the facts of the tool result that these tasks depend on. Without it, the summary model can ignore the block.
+
 ## Compaction source projection
 
 When `projectCompactionSource` and `summary.enabled` are both `true`, custom compaction reuses existing projection summaries and generates missing summaries for every successful text tool result in `messagesToSummarize` and `turnPrefixMessages` whose size reaches `minToolResultTokensL3`.
+
+Forced summaries also get the current tasks: `custom-compaction` sends one task request before generating them and passes the answer as the `<agent_tasks>` block, with the settings described in "Current tasks in summaries". See `docs/extensions/custom-compaction.md`.
 
 This forced pass does not apply ordinary remaining-token triggers, recent-turn protection, loaded-skill protection, or ignored-tool protection. Pi has already selected these entries for removal, so the alternative is Pi's 2,000-character summary serialization rather than continued full visibility.
 

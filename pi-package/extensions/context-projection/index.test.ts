@@ -49,9 +49,16 @@ interface AppendEntryCall {
 	readonly data: unknown;
 }
 
+/** Captures a published usage event for assertions. */
+interface UsageEventCall {
+	readonly channel: string;
+	readonly payload: { readonly source?: string };
+}
+
 interface ExtensionApiFake extends ExtensionAPI {
 	readonly handlers: RegisteredHandler[];
 	readonly appendEntryCalls: AppendEntryCall[];
+	readonly usageEventCalls: UsageEventCall[];
 }
 
 interface ContextUsageFake {
@@ -71,7 +78,12 @@ interface CompletionCall {
 }
 
 interface CompletionFake {
+	/** Summary requests only. */
 	readonly calls: CompletionCall[];
+	/** Current-task requests only. */
+	readonly taskCalls: CompletionCall[];
+	/** Every request in the order the extension sent it. */
+	readonly allCalls: CompletionCall[];
 	readonly completeSimple: <TApi extends Api>(
 		model: Model<TApi>,
 		context: Context,
@@ -109,10 +121,20 @@ interface ContextFake {
 function createExtensionApiFake(): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
 	const appendEntryCalls: AppendEntryCall[] = [];
+	const usageEventCalls: UsageEventCall[] = [];
 
 	return {
 		handlers,
 		appendEntryCalls,
+		usageEventCalls,
+		events: {
+			emit(channel: string, payload: unknown): void {
+				usageEventCalls.push({
+					channel,
+					payload: payload as UsageEventCall["payload"],
+				});
+			},
+		},
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
 		},
@@ -375,24 +397,59 @@ function createModel(provider: string, id: string): Model<Api> {
 	} as Model<Api>;
 }
 
-/** Creates a completion fake that records summary requests and returns one text block. */
+/** Describes how the completion fake answers the current-task request. */
+interface TaskResponseFake {
+	readonly text?: string;
+	readonly stopReason?: "stop" | "error";
+	/** Makes the task request throw an ordinary error or an abort error instead of answering. */
+	readonly throws?: "error" | "abort";
+}
+
+/** Tells the current-task request from a summary request: a summary request holds exactly one message. */
+function isTaskRequestContext(context: Context): boolean {
+	return context.messages.length > 1;
+}
+
+/** Creates a completion fake that records task and summary requests and returns one text block each. */
 function createCompletionFake(
 	text = "Summary: important projected result.",
 	cost = 0,
+	task: TaskResponseFake = {},
 ): CompletionFake {
 	const calls: CompletionCall[] = [];
+	const taskCalls: CompletionCall[] = [];
+	const allCalls: CompletionCall[] = [];
 
 	return {
 		calls,
+		taskCalls,
+		allCalls,
 		async completeSimple<TApi extends Api>(
 			model: Model<TApi>,
 			context: Context,
 			options?: SimpleStreamOptions,
 		): Promise<LlmAssistantMessage> {
-			calls.push({ model: model as Model<Api>, context, options });
+			const call = { model: model as Model<Api>, context, options };
+			const isTask = isTaskRequestContext(context);
+			allCalls.push(call);
+			(isTask ? taskCalls : calls).push(call);
+			if (isTask && task.throws === "abort") {
+				throw new DOMException("aborted", "AbortError");
+			}
+			if (isTask && task.throws === "error") {
+				throw new Error("task request exploded");
+			}
+			const stopReason = isTask ? (task.stopReason ?? "stop") : "stop";
 			return {
 				role: "assistant",
-				content: [{ type: "text", text }],
+				content: [
+					{
+						type: "text",
+						text: isTask
+							? (task.text ?? "Current task: finish the work.")
+							: text,
+					},
+				],
 				api: "openai-responses",
 				provider: model.provider,
 				model: model.id,
@@ -410,7 +467,10 @@ function createCompletionFake(
 						total: cost,
 					},
 				},
-				stopReason: "stop",
+				stopReason,
+				...(stopReason === "error"
+					? { errorMessage: "task provider failed" }
+					: {}),
 				timestamp: 1,
 			};
 		},
@@ -567,6 +627,94 @@ function messagesFromBranch(
 	return branchEntries.flatMap((entry) =>
 		entry.type === "message" ? [entry.message] : [],
 	);
+}
+
+/** Context window that holds one summary request of the big-result fixture but not its whole session. */
+const TASK_FIT_WINDOW = 6_000;
+
+/** Returns the error notifications that the extension showed. */
+function taskErrorNotifications(context: ContextFake): UiCall[] {
+	return context.uiCalls.filter(
+		(call) => call.method === "notify" && call.args[1] === "error",
+	);
+}
+
+/** Returns the notifications that announce the start of the task request. */
+function taskRequestNotifications(context: ContextFake): UiCall[] {
+	return context.uiCalls.filter(
+		(call) =>
+			call.method === "notify" &&
+			String(call.args[0]).includes("requesting current tasks"),
+	);
+}
+
+/** Checks that one batch showed one task request error and still wrote its summary. */
+function expectOneTaskErrorAndSummary(
+	context: ContextFake,
+	completion: CompletionFake,
+	pi: ExtensionApiFake,
+): void {
+	expect(taskErrorNotifications(context)).toHaveLength(1);
+	expect(completion.calls.length).toBeGreaterThan(0);
+	expect(JSON.stringify(pi.appendEntryCalls[0]?.data)).toContain(
+		"Summary: written.",
+	);
+}
+
+/** Runs one projection batch with a configurable task response and returns what it observed. */
+async function runTaskFailureBatch(
+	agentDir: string,
+	options: {
+		readonly retryCount: number;
+		readonly task?: TaskResponseFake;
+		readonly bigResults?: boolean;
+		readonly summaryExtras?: Record<string, unknown>;
+		readonly prepareContext?: (ctx: ContextFake["ctx"]) => ContextFake["ctx"];
+	},
+): Promise<{
+	readonly completion: CompletionFake;
+	readonly context: ContextFake;
+	readonly pi: ExtensionApiFake;
+}> {
+	await writeCustomConfig(
+		agentDir,
+		createValidConfig({
+			keepRecentTurns: 0,
+			summary: {
+				enabled: true,
+				maxConcurrency: 1,
+				retryCount: options.retryCount,
+				retryDelayMs: 0,
+				...options.summaryExtras,
+			},
+		}),
+	);
+	const completion = createCompletionFake(
+		"Summary: written.",
+		0,
+		options.task ?? {},
+	);
+	const { pi, contextHandler } = installContextProjectionTestHarness({
+		completeSimple: completion.completeSimple,
+	});
+	const resultText = options.bigResults
+		? "word ".repeat(3_000)
+		: "one ".repeat(200);
+	const branchEntries = [
+		messageEntry("01", userMessage(), null),
+		messageEntry("02", assistantMessage("call-1"), "01"),
+		messageEntry("03", toolResultMessage("call-1", resultText), "02"),
+		messageEntry("04", assistantMessage("call-2"), "03"),
+		messageEntry("05", toolResultMessage("call-2", resultText), "04"),
+	];
+	const context = createContextFake(branchEntries);
+	const ctx = options.prepareContext?.(context.ctx) ?? context.ctx;
+
+	await contextHandler(
+		{ type: "context", messages: messagesFromBranch(branchEntries) },
+		ctx,
+	);
+	return { completion, context, pi };
 }
 
 describe("context-projection", () => {
@@ -2447,6 +2595,9 @@ describe("context-projection", () => {
 				context,
 				options,
 			) => {
+				if (isTaskRequestContext(context)) {
+					return completion.completeSimple(model, context, options);
+				}
 				callCount += 1;
 				requestSessionIds.push(options?.sessionId);
 				if (callCount <= 2) {
@@ -2519,6 +2670,10 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
+					args: ["Projecting context: L1, requesting current tasks", "info"],
+				},
+				{
+					method: "notify",
 					args: ["Retrying context projection summary: attempt 2/3", "info"],
 				},
 				{
@@ -2573,8 +2728,16 @@ describe("context-projection", () => {
 					},
 				}),
 			);
+			const completion = createCompletionFake();
 			let callCount = 0;
-			const completeSimple: CompletionFake["completeSimple"] = async () => {
+			const completeSimple: CompletionFake["completeSimple"] = async (
+				model,
+				context,
+				options,
+			) => {
+				if (isTaskRequestContext(context)) {
+					return completion.completeSimple(model, context, options);
+				}
 				callCount += 1;
 				throw new DOMException("aborted", "AbortError");
 			};
@@ -2604,6 +2767,10 @@ describe("context-projection", () => {
 				{
 					method: "notify",
 					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: L1, requesting current tasks", "info"],
 				},
 				{
 					method: "notify",
@@ -2769,45 +2936,30 @@ describe("context-projection", () => {
 			let activeCalls = 0;
 			let maxActiveCalls = 0;
 			let nextSummary = 0;
+			const baseCompletion = createCompletionFake();
 			const completion: CompletionFake = {
-				calls: [],
+				...baseCompletion,
 				async completeSimple<TApi extends Api>(
 					model: Model<TApi>,
 					context: Context,
 					options?: SimpleStreamOptions,
 				): Promise<LlmAssistantMessage> {
-					completion.calls.push({
-						model: model as Model<Api>,
+					const response = await baseCompletion.completeSimple(
+						model,
 						context,
 						options,
-					});
+					);
+					if (isTaskRequestContext(context)) {
+						return response;
+					}
 					activeCalls += 1;
 					maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
 					await new Promise((resolve) => setTimeout(resolve, 5));
 					activeCalls -= 1;
 					nextSummary += 1;
 					return {
-						role: "assistant",
+						...response,
 						content: [{ type: "text", text: `Summary ${nextSummary}` }],
-						api: "openai-responses",
-						provider: model.provider,
-						model: model.id,
-						usage: {
-							input: 1,
-							output: 1,
-							cacheRead: 0,
-							cacheWrite: 0,
-							totalTokens: 2,
-							cost: {
-								input: 0,
-								output: 0,
-								cacheRead: 0,
-								cacheWrite: 0,
-								total: 0,
-							},
-						},
-						stopReason: "stop",
-						timestamp: 1,
 					};
 				},
 			};
@@ -2873,6 +3025,10 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
+					args: ["Projecting context: L1, requesting current tasks", "info"],
+				},
+				{
+					method: "notify",
 					args: ["Projecting context: L1, 1/3 tool results processed", "info"],
 				},
 				{
@@ -2888,6 +3044,617 @@ describe("context-projection", () => {
 					args: ["Context projected: L1, ~465 saved", "info"],
 				},
 			]);
+		});
+	});
+
+	test("sends one current-task request before the summary requests of a batch", async () => {
+		// Purpose: summaries need the tasks of the agent, so one tool-less task request reads the session before any summary request.
+		// Input and expected output: one earlier projected result and two new candidates produce one task request that carries the replacement text of the earlier result and the full text of both new results.
+		// Edge case: the task request must see the session as the main agent sees it, not the post-projection state of the current batch.
+		// Dependencies: isolated config, fake completion function, fake model registry, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: { enabled: true, maxConcurrency: 1 },
+				}),
+			);
+			const completion = createCompletionFake();
+			const { contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const earlierText = "earlier full output ".repeat(100);
+			const firstText = "first batch output ".repeat(100);
+			const secondText = "second batch output ".repeat(100);
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-earlier"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-earlier", earlierText),
+					"02",
+				),
+				projectionStateEntry(
+					"04",
+					[{ entryId: "03", replacementText: "EARLIER-REPLACEMENT" }],
+					"03",
+					"L1",
+				),
+				messageEntry("05", assistantMessage("call-1"), "04"),
+				messageEntry("06", toolResultMessage("call-1", firstText), "05"),
+				messageEntry("07", assistantMessage("call-2"), "06"),
+				messageEntry("08", toolResultMessage("call-2", secondText), "07"),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(completion.taskCalls).toHaveLength(1);
+			expect(completion.calls).toHaveLength(2);
+			expect(completion.allCalls[0]).toBe(completion.taskCalls[0]);
+			const taskContext = completion.taskCalls[0]?.context;
+			expect(taskContext?.tools).toEqual([]);
+			expect(taskContext?.messages.at(-1)?.role).toBe("user");
+			expect(taskContext?.messages.length).toBe(8);
+			const sessionToolResultTexts = (taskContext?.messages ?? []).flatMap(
+				(message) =>
+					message.role === "toolResult"
+						? message.content.map((block) =>
+								block.type === "text" ? block.text : "",
+							)
+						: [],
+			);
+			expect(sessionToolResultTexts).toEqual([
+				"EARLIER-REPLACEMENT",
+				firstText,
+				secondText,
+			]);
+			expect(completion.taskCalls[0]?.options?.sessionId).toMatch(
+				AUXILIARY_SESSION_ID_PATTERN,
+			);
+		});
+	});
+
+	test("shows one info notification before the task request of a batch starts", async () => {
+		// Purpose: the task request is slow, so the user must see that it has started before any request of the batch.
+		// Input and expected output: a batch with two candidates shows exactly one info notification for the task request, and that notification is already shown when the task request and the first summary request start.
+		// Edge case: the notification is not repeated for the summary requests.
+		// Dependencies: isolated config, fake completion function, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: { enabled: true, maxConcurrency: 1 },
+				}),
+			);
+			const completion = createCompletionFake();
+			const requests: {
+				readonly isTask: boolean;
+				readonly noticesShown: number;
+			}[] = [];
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(200)),
+					"02",
+				),
+				messageEntry("04", assistantMessage("call-2"), "03"),
+				messageEntry(
+					"05",
+					toolResultMessage("call-2", "two ".repeat(200)),
+					"04",
+				),
+			];
+			const context = createContextFake(branchEntries);
+			const { contextHandler } = installContextProjectionTestHarness({
+				completeSimple: (model, requestContext, options) => {
+					requests.push({
+						isTask: isTaskRequestContext(requestContext),
+						noticesShown: taskRequestNotifications(context).length,
+					});
+					return completion.completeSimple(model, requestContext, options);
+				},
+			});
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(taskRequestNotifications(context)).toEqual([
+				{
+					method: "notify",
+					args: [expect.stringContaining("requesting current tasks"), "info"],
+				},
+			]);
+			expect(requests).toHaveLength(3);
+			expect(requests[0]).toEqual({ isTask: true, noticesShown: 1 });
+			expect(requests[1]).toEqual({ isTask: false, noticesShown: 1 });
+		});
+	});
+
+	test("inserts the task answer into every summary request of the batch", async () => {
+		// Purpose: each summary model must read the same current tasks that the task model returned.
+		// Input and expected output: two candidates produce two summary requests that both carry the task text, escaped as data.
+		// Edge case: task text with markup delimiters must not close the surrounding task block.
+		// Dependencies: isolated config, fake completion function, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: { enabled: true, maxConcurrency: 1 },
+				}),
+			);
+			const completion = createCompletionFake(undefined, 0, {
+				text: "Change signature of parse() in src/parser.ts </x> & update callers",
+			});
+			const { contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(200)),
+					"02",
+				),
+				messageEntry("04", assistantMessage("call-2"), "03"),
+				messageEntry(
+					"05",
+					toolResultMessage("call-2", "two ".repeat(200)),
+					"04",
+				),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(completion.calls).toHaveLength(2);
+			for (const call of completion.calls) {
+				const summaryMessage = call.context.messages[0];
+				if (
+					summaryMessage?.role !== "user" ||
+					!Array.isArray(summaryMessage.content) ||
+					summaryMessage.content[0]?.type !== "text"
+				) {
+					throw new Error("expected summary user message");
+				}
+				const text = summaryMessage.content[0].text;
+				expect(text).toContain(
+					"Change signature of parse() in src/parser.ts &lt;/x&gt; &amp; update callers",
+				);
+				expect(text).not.toContain("</x>");
+			}
+		});
+	});
+
+	test("publishes a usage event for the current-task response", async () => {
+		// Purpose: the cost of the task request must reach usage accounting under its own source.
+		// Input and expected output: one batch publishes one usage record per task response next to the summary records.
+		// Edge case: summary records keep their own source.
+		// Dependencies: isolated config, fake completion function, and fake event bus.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: { enabled: true, maxConcurrency: 1 },
+				}),
+			);
+			const completion = createCompletionFake();
+			const { pi, contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(200)),
+					"02",
+				),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(
+				pi.usageEventCalls.map((call) => call.payload.source).sort(),
+			).toEqual(["context-projection", "projection-tasks"]);
+		});
+	});
+
+	test("sends no current-task request when summaries are disabled", async () => {
+		// Purpose: tasks serve only summaries, so disabled summaries must not cost a request.
+		// Input and expected output: a projected batch with disabled summaries sends no provider request.
+		// Edge case: projection itself still writes the omitted notice.
+		// Dependencies: isolated config, fake completion function, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: { enabled: false },
+				}),
+			);
+			const completion = createCompletionFake();
+			const { pi, contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(200)),
+					"02",
+				),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(completion.allCalls).toHaveLength(0);
+			expect(taskRequestNotifications(context)).toHaveLength(0);
+			expect(pi.appendEntryCalls[0]?.data).toEqual({
+				appliedLevel: "L1",
+				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
+			});
+		});
+	});
+
+	test("sends no current-task request when the batch has no summary candidate", async () => {
+		// Purpose: a batch without summary candidates must not read the whole session for nothing.
+		// Input and expected output: a tool result below the projection size limit leaves nothing to summarize and sends no request.
+		// Edge case: summaries are enabled and the summary runtime resolves.
+		// Dependencies: isolated config, fake completion function, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					minToolResultTokensL1: 100_000,
+					summary: { enabled: true, maxConcurrency: 1 },
+				}),
+			);
+			const completion = createCompletionFake();
+			const { contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(20)),
+					"02",
+				),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(completion.allCalls).toHaveLength(0);
+			expect(taskRequestNotifications(context)).toHaveLength(0);
+		});
+	});
+
+	test("writes summaries without the task block when the task request fails", async () => {
+		// Purpose: a failed task request must not stop summaries.
+		// Input and expected output: a provider error on the task request still yields summaries, and their requests carry no task text.
+		// Edge case: the failed task response text must not leak into the summary requests.
+		// Dependencies: isolated config, fake completion function that fails the task request, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: { enabled: true, maxConcurrency: 1, retryCount: 0 },
+				}),
+			);
+			const completion = createCompletionFake("Summary: written.", 0, {
+				text: "LEAKED-TASK-TEXT",
+				stopReason: "error",
+			});
+			const { pi, contextHandler } = installContextProjectionTestHarness({
+				completeSimple: completion.completeSimple,
+			});
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(200)),
+					"02",
+				),
+			];
+			const context = createContextFake(branchEntries);
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(completion.taskCalls).toHaveLength(1);
+			expect(completion.calls).toHaveLength(1);
+			expect(JSON.stringify(completion.calls[0]?.context)).not.toContain(
+				"LEAKED-TASK-TEXT",
+			);
+			expect(JSON.stringify(pi.appendEntryCalls[0]?.data)).toContain(
+				"Summary: written.",
+			);
+		});
+	});
+
+	test("shows one error and writes summaries without tasks when the task model does not resolve", async () => {
+		// Purpose: an unresolved task model must be visible to the user and must not stop summaries.
+		// Input and expected output: authentication works for the summary runtime and fails for the task runtime, so one error appears and the summary is written.
+		// Edge case: an unresolved model is not retried, even though retryCount is positive.
+		// Dependencies: isolated config, fake registry whose authentication fails from the second lookup, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion, context, pi } = await runTaskFailureBatch(agentDir, {
+				retryCount: 2,
+				prepareContext: (ctx) => {
+					let authLookups = 0;
+					return {
+						...ctx,
+						modelRegistry: {
+							...ctx.modelRegistry,
+							async getApiKeyAndHeaders() {
+								authLookups += 1;
+								return authLookups === 1
+									? ({ ok: true, apiKey: "summary-api-key" } as const)
+									: ({ ok: false, error: "no key" } as never);
+							},
+						},
+					};
+				},
+			});
+
+			expect(completion.taskCalls).toHaveLength(0);
+			expectOneTaskErrorAndSummary(context, completion, pi);
+		});
+	});
+
+	test("shows one error and writes summaries without tasks when the session does not fit the task model", async () => {
+		// Purpose: a session larger than the task model window must be reported before any task request.
+		// Input and expected output: the current model window holds one summary request but not the whole session, so no task request is sent and one error appears.
+		// Edge case: summary requests still fit the same window and are written.
+		// Dependencies: isolated config, fake model with a small context window, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion, context, pi } = await runTaskFailureBatch(agentDir, {
+				retryCount: 2,
+				bigResults: true,
+				prepareContext: (ctx) => ({
+					...ctx,
+					model: { ...ctx.model, contextWindow: TASK_FIT_WINDOW },
+				}),
+			});
+
+			expect(completion.taskCalls).toHaveLength(0);
+			expectOneTaskErrorAndSummary(context, completion, pi);
+		});
+	});
+
+	test("retries a provider error of the task request before it shows the error", async () => {
+		// Purpose: transient provider errors of the task request follow the summary retry settings.
+		// Input and expected output: retryCount 2 sends three task requests, then shows one error and writes summaries.
+		// Edge case: every response still reaches the usage record.
+		// Dependencies: isolated config, fake completion that fails task requests, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion, context, pi } = await runTaskFailureBatch(agentDir, {
+				retryCount: 2,
+				task: { stopReason: "error" },
+			});
+
+			expect(completion.taskCalls).toHaveLength(3);
+			expect(
+				pi.usageEventCalls.filter(
+					(call) => call.payload.source === "projection-tasks",
+				),
+			).toHaveLength(3);
+			expectOneTaskErrorAndSummary(context, completion, pi);
+		});
+	});
+
+	test("retries an empty task answer before it shows the error", async () => {
+		// Purpose: an answer without text counts as a failed task request.
+		// Input and expected output: retryCount 1 sends two task requests, then shows one error and writes summaries.
+		// Edge case: whitespace-only text is empty.
+		// Dependencies: isolated config, fake completion that answers task requests with blank text, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion, context, pi } = await runTaskFailureBatch(agentDir, {
+				retryCount: 1,
+				task: { text: "   " },
+			});
+
+			expect(completion.taskCalls).toHaveLength(2);
+			expectOneTaskErrorAndSummary(context, completion, pi);
+		});
+	});
+
+	test("retries a thrown task request before it shows the error", async () => {
+		// Purpose: a thrown task request follows the same retry and error path as a provider error.
+		// Input and expected output: retryCount 1 sends two task requests, then shows one error and writes summaries.
+		// Edge case: the thrown error is not an abort.
+		// Dependencies: isolated config, fake completion that throws on task requests, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion, context, pi } = await runTaskFailureBatch(agentDir, {
+				retryCount: 1,
+				task: { throws: "error" },
+			});
+
+			expect(completion.taskCalls).toHaveLength(2);
+			expectOneTaskErrorAndSummary(context, completion, pi);
+		});
+	});
+
+	test("writes the task request error to stderr when Pi has no UI", async () => {
+		// Purpose: print mode has no UI, so the error must reach the user through stderr.
+		// Input and expected output: one failed batch writes one newline-terminated line to stderr and no UI notification.
+		// Edge case: stderr is restored after the run.
+		// Dependencies: isolated config, fake completion that fails task requests, captured process.stderr.write, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const written: string[] = [];
+			const originalWrite = process.stderr.write;
+			process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+				written.push(String(chunk));
+				return true;
+			}) as typeof process.stderr.write;
+			try {
+				const { completion, context } = await runTaskFailureBatch(agentDir, {
+					retryCount: 0,
+					task: { stopReason: "error" },
+					prepareContext: (ctx) => ({ ...ctx, hasUI: false as never }),
+				});
+
+				expect(written).toHaveLength(1);
+				expect(written[0]).toEndWith("\n");
+				expect(written[0]).toContain("task provider failed");
+				expect(taskErrorNotifications(context)).toHaveLength(0);
+				expect(completion.calls).toHaveLength(2);
+			} finally {
+				process.stderr.write = originalWrite;
+			}
+		});
+	});
+
+	test("shows no error when the task request is aborted", async () => {
+		// Purpose: a user abort must stop the task request quietly.
+		// Input and expected output: an abort error sends one task request, no retry, and no error notification.
+		// Edge case: retryCount is positive.
+		// Dependencies: isolated config, fake completion that throws an abort error on task requests, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion, context } = await runTaskFailureBatch(agentDir, {
+				retryCount: 2,
+				task: { throws: "abort" },
+			});
+
+			expect(completion.taskCalls).toHaveLength(1);
+			expect(taskErrorNotifications(context)).toHaveLength(0);
+		});
+	});
+
+	test("sends the task request to summary.tasks.model and keeps summaries on summary.model", async () => {
+		// Purpose: summary.tasks.model must select the model of the task request only.
+		// Input and expected output: the task request goes to the task model and the summary requests go to the summary model.
+		// Edge case: both models are distinct configured ids.
+		// Dependencies: isolated config, fake registry that builds a model for each requested id, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion } = await runTaskFailureBatch(agentDir, {
+				retryCount: 0,
+				summaryExtras: {
+					model: { id: "openai/summary-model" },
+					tasks: { model: { id: "openai/task-model" } },
+				},
+			});
+
+			expect(completion.taskCalls[0]?.model.id).toBe("task-model");
+			expect(completion.calls[0]?.model.id).toBe("summary-model");
+		});
+	});
+
+	test("uses summary.model for the task request when summary.tasks.model is not set", async () => {
+		// Purpose: the task request follows the summary model unless a task model is configured.
+		// Input and expected output: both requests go to the summary model.
+		// Edge case: summary.tasks is an empty object.
+		// Dependencies: isolated config, fake registry, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion } = await runTaskFailureBatch(agentDir, {
+				retryCount: 0,
+				summaryExtras: {
+					model: { id: "openai/summary-model" },
+					tasks: {},
+				},
+			});
+
+			expect(completion.taskCalls[0]?.model.id).toBe("summary-model");
+		});
+	});
+
+	test("replaces summary.model as a whole by summary.tasks.model for the task request", async () => {
+		// Purpose: omitted fields of summary.tasks.model fall back to the current model and thinking, not to summary.model.
+		// Input and expected output: summary.model names a model with high thinking, summary.tasks.model sets only low thinking, and the task request uses the current model with low thinking.
+		// Edge case: the summary requests keep summary.model.
+		// Dependencies: isolated config, fake registry, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion } = await runTaskFailureBatch(agentDir, {
+				retryCount: 0,
+				summaryExtras: {
+					model: { id: "openai/summary-model", thinking: "high" },
+					tasks: { model: { thinking: "low" } },
+				},
+			});
+
+			expect(completion.taskCalls[0]?.model.id).toBe("current-model");
+			expect(completion.taskCalls[0]?.options?.reasoning).toBe("low");
+			expect(completion.calls[0]?.model.id).toBe("summary-model");
+			expect(completion.calls[0]?.options?.reasoning).toBe("high");
+		});
+	});
+
+	test("replaces the bundled task prompts with configured prompt files", async () => {
+		// Purpose: configured task prompt files must replace the bundled task prompts.
+		// Input and expected output: the task request carries the system and user prompt text written to temp files, trimmed.
+		// Edge case: the files have surrounding whitespace.
+		// Dependencies: isolated config, temp prompt files, fake completion, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const systemPromptFile = join(agentDir, "config", "tasks-system.md");
+			const userPromptFile = join(agentDir, "config", "tasks-user.md");
+			await mkdir(join(agentDir, "config"), { recursive: true });
+			await writeFile(systemPromptFile, "\nCUSTOM-TASK-SYSTEM\n");
+			await writeFile(userPromptFile, " CUSTOM-TASK-USER \n");
+
+			const { completion } = await runTaskFailureBatch(agentDir, {
+				retryCount: 0,
+				summaryExtras: { tasks: { systemPromptFile, userPromptFile } },
+			});
+
+			const taskContext = completion.taskCalls[0]?.context;
+			expect(taskContext?.systemPrompt).toBe("CUSTOM-TASK-SYSTEM");
+			expect(taskContext?.messages.at(-1)).toMatchObject({
+				role: "user",
+				content: "CUSTOM-TASK-USER",
+			});
+		});
+	});
+
+	test("shows one error and writes summaries without tasks when a configured task prompt file is unreadable", async () => {
+		// Purpose: an unreadable configured task prompt is a task request failure and must not stop summaries.
+		// Input and expected output: a missing prompt file sends no task request, shows one error, and writes summaries.
+		// Edge case: the path is absolute, so the configuration itself is valid.
+		// Dependencies: isolated config, fake completion, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			const { completion, context, pi } = await runTaskFailureBatch(agentDir, {
+				retryCount: 1,
+				summaryExtras: {
+					tasks: { userPromptFile: join(agentDir, "missing-user.md") },
+				},
+			});
+
+			expect(completion.taskCalls).toHaveLength(0);
+			expectOneTaskErrorAndSummary(context, completion, pi);
 		});
 	});
 
