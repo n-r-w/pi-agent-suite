@@ -27,6 +27,7 @@ import { publishUsageEvent } from "../../shared/usage-events";
 /** Progress emitted while missing projection summaries are prepared for compaction. */
 export type CompactionSourceProjectionProgressEvent =
 	| { readonly type: "source-projection-request" }
+	| { readonly type: "source-projection-tasks-request" }
 	| {
 			readonly type: "source-projection";
 			readonly completed: number;
@@ -144,6 +145,7 @@ async function requestCurrentTasks({
 		event: CompactionSourceProjectionProgressEvent,
 	) => void | Promise<void>;
 }): Promise<string | undefined> {
+	await onProgress?.({ type: "source-projection-tasks-request" });
 	const result = await requestProjectionTasks({
 		messages: currentProjectedMainMessages,
 		modelContext: ctx,

@@ -639,6 +639,15 @@ function taskErrorNotifications(context: ContextFake): UiCall[] {
 	);
 }
 
+/** Returns the notifications that announce the start of the task request. */
+function taskRequestNotifications(context: ContextFake): UiCall[] {
+	return context.uiCalls.filter(
+		(call) =>
+			call.method === "notify" &&
+			String(call.args[0]).includes("requesting current tasks"),
+	);
+}
+
 /** Checks that one batch showed one task request error and still wrote its summary. */
 function expectOneTaskErrorAndSummary(
 	context: ContextFake,
@@ -2661,6 +2670,10 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
+					args: ["Projecting context: L1, requesting current tasks", "info"],
+				},
+				{
+					method: "notify",
 					args: ["Retrying context projection summary: attempt 2/3", "info"],
 				},
 				{
@@ -2754,6 +2767,10 @@ describe("context-projection", () => {
 				{
 					method: "notify",
 					args: ["Projecting context: L1, 0/1 tool results processed", "info"],
+				},
+				{
+					method: "notify",
+					args: ["Projecting context: L1, requesting current tasks", "info"],
 				},
 				{
 					method: "notify",
@@ -3008,6 +3025,10 @@ describe("context-projection", () => {
 				},
 				{
 					method: "notify",
+					args: ["Projecting context: L1, requesting current tasks", "info"],
+				},
+				{
+					method: "notify",
 					args: ["Projecting context: L1, 1/3 tool results processed", "info"],
 				},
 				{
@@ -3095,6 +3116,67 @@ describe("context-projection", () => {
 			expect(completion.taskCalls[0]?.options?.sessionId).toMatch(
 				AUXILIARY_SESSION_ID_PATTERN,
 			);
+		});
+	});
+
+	test("shows one info notification before the task request of a batch starts", async () => {
+		// Purpose: the task request is slow, so the user must see that it has started before any request of the batch.
+		// Input and expected output: a batch with two candidates shows exactly one info notification for the task request, and that notification is already shown when the task request and the first summary request start.
+		// Edge case: the notification is not repeated for the summary requests.
+		// Dependencies: isolated config, fake completion function, and context hook.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeCustomConfig(
+				agentDir,
+				createValidConfig({
+					keepRecentTurns: 0,
+					summary: { enabled: true, maxConcurrency: 1 },
+				}),
+			);
+			const completion = createCompletionFake();
+			const requests: {
+				readonly isTask: boolean;
+				readonly noticesShown: number;
+			}[] = [];
+			const branchEntries = [
+				messageEntry("01", userMessage(), null),
+				messageEntry("02", assistantMessage("call-1"), "01"),
+				messageEntry(
+					"03",
+					toolResultMessage("call-1", "one ".repeat(200)),
+					"02",
+				),
+				messageEntry("04", assistantMessage("call-2"), "03"),
+				messageEntry(
+					"05",
+					toolResultMessage("call-2", "two ".repeat(200)),
+					"04",
+				),
+			];
+			const context = createContextFake(branchEntries);
+			const { contextHandler } = installContextProjectionTestHarness({
+				completeSimple: (model, requestContext, options) => {
+					requests.push({
+						isTask: isTaskRequestContext(requestContext),
+						noticesShown: taskRequestNotifications(context).length,
+					});
+					return completion.completeSimple(model, requestContext, options);
+				},
+			});
+
+			await contextHandler(
+				{ type: "context", messages: messagesFromBranch(branchEntries) },
+				context.ctx,
+			);
+
+			expect(taskRequestNotifications(context)).toEqual([
+				{
+					method: "notify",
+					args: [expect.stringContaining("requesting current tasks"), "info"],
+				},
+			]);
+			expect(requests).toHaveLength(3);
+			expect(requests[0]).toEqual({ isTask: true, noticesShown: 1 });
+			expect(requests[1]).toEqual({ isTask: false, noticesShown: 1 });
 		});
 	});
 
@@ -3231,6 +3313,7 @@ describe("context-projection", () => {
 			);
 
 			expect(completion.allCalls).toHaveLength(0);
+			expect(taskRequestNotifications(context)).toHaveLength(0);
 			expect(pi.appendEntryCalls[0]?.data).toEqual({
 				appliedLevel: "L1",
 				projectedEntries: [{ entryId: "03", replacementText: OMITTED_NOTICE }],
@@ -3273,6 +3356,7 @@ describe("context-projection", () => {
 			);
 
 			expect(completion.allCalls).toHaveLength(0);
+			expect(taskRequestNotifications(context)).toHaveLength(0);
 		});
 	});
 

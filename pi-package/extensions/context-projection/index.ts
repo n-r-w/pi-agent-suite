@@ -133,6 +133,7 @@ interface ProjectionProgressReporter {
 	processed: number;
 	advance(): void;
 	notifyCurrent(): void;
+	notifyTasksRequest(): void;
 	notifyRetry(nextAttempt: number, totalAttempts: number): void;
 	notifySummaryUnavailable(): void;
 	notifySummaryNotSmaller(): void;
@@ -476,6 +477,9 @@ function createProjectionProgressReporter(
 		notifyCurrent(): void {
 			notifyProjectionProgress(ctx, progress);
 		},
+		notifyTasksRequest(): void {
+			notifyProjectionTasksRequest(ctx, progress);
+		},
 		notifyRetry(nextAttempt: number, totalAttempts: number): void {
 			notifyProjectionSummaryRetry(ctx, nextAttempt, totalAttempts);
 		},
@@ -505,6 +509,21 @@ function notifyProjectionProgress(
 
 	ctx.ui.notify(
 		`Projecting context: ${progress.activeProjectionLevel.label}, ${progress.processed}/${progress.total} tool results processed`,
+		"info",
+	);
+}
+
+/** Shows that the task request of a projection batch has started, so the wait before the summaries is visible. */
+function notifyProjectionTasksRequest(
+	ctx: ExtensionContext,
+	progress: ProjectionProgressReporter,
+): void {
+	if (!ctx.hasUI || progress.activeProjectionLevel === undefined) {
+		return;
+	}
+
+	ctx.ui.notify(
+		`Projecting context: ${progress.activeProjectionLevel.label}, requesting current tasks`,
 		"info",
 	);
 }
@@ -613,6 +632,7 @@ async function createSummaryReplacementsByEntryId({
 		"context-projection",
 		runtimeConfig.model,
 	);
+	progress.notifyTasksRequest();
 	const currentTasks = await requestCurrentTasks({
 		pi,
 		ctx,

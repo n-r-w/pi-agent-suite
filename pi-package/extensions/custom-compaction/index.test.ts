@@ -652,6 +652,49 @@ describe("custom-compaction", () => {
 		});
 	});
 
+	test("shows one info notification before the task request of the compaction source", async () => {
+		// Purpose: the task request is slow, so the user must see that it has started before the forced summary requests.
+		// Input and expected output: forced summary generation shows exactly one info notification for the task request, and that notification is shown before the first model request.
+		// Edge case: the notification is not repeated for the summary requests.
+		// Dependencies: isolated projection config, fake session, and ordered completion responses.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, enabledProjectionConfig());
+			completeSimpleMock
+				.mockResolvedValueOnce(createAssistantResponse("current tasks"))
+				.mockResolvedValueOnce(createAssistantResponse("projection summary"))
+				.mockResolvedValueOnce(createAssistantResponse("adaptive summary"));
+			const pi = createExtensionApiFake();
+			const requestCountsAtTaskNotice: number[] = [];
+			const session = createSessionFake({
+				onNotify: (notification) => {
+					if (notification.message.includes("requesting current tasks")) {
+						requestCountsAtTaskNotice.push(
+							completeSimpleMock.mock.calls.length,
+						);
+					}
+				},
+			});
+			customCompaction(pi);
+
+			await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(
+				session.notifications.filter((notification) =>
+					notification.message.includes("requesting current tasks"),
+				),
+			).toEqual([
+				{
+					message: expect.stringContaining("requesting current tasks"),
+					type: "info",
+				},
+			]);
+			expect(requestCountsAtTaskNotice).toEqual([0]);
+		});
+	});
+
 	test("sends no task request when no forced summary will be generated", async () => {
 		// Purpose: compaction must not read the whole session when no summary request follows.
 		// Input and expected output: disabled summaries, disabled source projection, and no missing candidate each leave only the direct compaction request.
@@ -682,6 +725,11 @@ describe("custom-compaction", () => {
 				);
 
 				expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+				expect(
+					session.notifications.filter((notification) =>
+						notification.message.includes("requesting current tasks"),
+					),
+				).toHaveLength(0);
 			});
 		}
 	});
@@ -720,6 +768,11 @@ describe("custom-compaction", () => {
 			await getCompactionHandler(pi)(event, session.ctx);
 
 			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+			expect(
+				session.notifications.filter((notification) =>
+					notification.message.includes("requesting current tasks"),
+				),
+			).toHaveLength(0);
 		});
 	});
 

@@ -143,7 +143,7 @@ Each tool-result summary candidate uses a Pi-compatible UUIDv7 provider session 
 
 ### Current tasks in summaries
 
-When projection at L1, L2, or L3 has at least one summary candidate and the summary runtime resolves, the extension first sends one task request to a model. The request carries the session as the main agent sees it: tool results that earlier projections replaced appear with their replacement text, and tool results of the current batch are still full. It carries no tools, no system prompt of the main agent, no project context, and no knowledge. The model returns the goal and the current unfinished tasks of the agent.
+When projection at L1, L2, or L3 has at least one summary candidate and the summary runtime resolves, the extension first sends one task request to a model. The request carries the session as the main agent sees it: tool results that earlier projections replaced appear with their replacement text, and tool results of the current batch are still full. It carries no tools, no system prompt of the main agent, no project context, and no knowledge. The model returns the goal and the current unfinished tasks of the agent. The UI shows a message when the task request starts.
 
 The extension inserts this text as a separate `<agent_tasks>` block into the user message of each summary request of the batch. The bundled summary system prompt asks the summary model to keep the facts of the tool result that these tasks need. The text is not persisted and not reused by later batches. Batches without summary candidates, and runs with `summary.enabled` set to `false`, send no task request.
 

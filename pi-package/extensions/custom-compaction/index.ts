@@ -727,10 +727,11 @@ async function reportProgress(
 	if (
 		event.type === "start" ||
 		event.type === "planning" ||
+		event.type === "source-projection-tasks-request" ||
 		event.type === "complete" ||
 		(event.type === "source-projection" && event.completed === 0)
 	) {
-		// Pi repaints start, planning, and outcome states before the next work phase or lifecycle completion replaces them.
+		// Pi repaints start, planning, task request, and outcome states before the next work phase or lifecycle completion replaces them.
 		await yieldToEventLoop();
 	}
 }
@@ -758,6 +759,8 @@ function formatProgressMessage(
 			return formatProjectionTasksFailure(event.issue);
 		case "source-projection-request":
 			return "creating compaction-source projection";
+		case "source-projection-tasks-request":
+			return "requesting current tasks for compaction-source projection";
 		case "source-projection":
 			if (event.projected !== undefined) {
 				return `compaction-source projection completed: ${event.projected}/${event.total} tool results projected`;
