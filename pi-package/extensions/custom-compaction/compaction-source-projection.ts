@@ -9,6 +9,7 @@ import {
 	type ContextProjectionConfig,
 	readContextProjectionConfig,
 } from "../../shared/context-projection";
+import { requestProjectionTasks } from "../../shared/projection-tasks";
 import {
 	createToolResultProjectionSummaries,
 	isToolResultProjectionSummary,
@@ -36,6 +37,10 @@ export type CompactionSourceProjectionProgressEvent =
 			readonly type: "source-projection-retry";
 			readonly nextAttempt: number;
 			readonly totalAttempts: number;
+	  }
+	| {
+			readonly type: "source-projection-tasks-failure";
+			readonly issue: string;
 	  };
 
 /** Dependencies and fixed Pi preparation used by forced source projection. */
@@ -93,15 +98,70 @@ export async function projectCompactionSource({
 		return existingSummaries;
 	}
 
+	const currentTasks = await requestCurrentTasks({
+		pi,
+		event,
+		ctx,
+		currentProjectedMainMessages,
+		currentThinking,
+		config: configResult.config,
+		completeSimple,
+		...(onProgress === undefined ? {} : { onProgress }),
+	});
 	return generateMissingProjectionSummaries({
 		pi,
 		candidates,
 		existingSummaries,
 		config: configResult.config,
-		runtimeConfig,
+		runtimeConfig:
+			currentTasks === undefined
+				? runtimeConfig
+				: { ...runtimeConfig, currentTasks },
 		completeSimple,
 		...(onProgress === undefined ? {} : { onProgress }),
 	});
+}
+
+/** Asks the task model once for the current tasks; reports a failure as progress and returns undefined when summaries must go without them. */
+async function requestCurrentTasks({
+	pi,
+	event,
+	ctx,
+	currentProjectedMainMessages,
+	currentThinking,
+	config,
+	completeSimple,
+	onProgress,
+}: {
+	readonly pi: ExtensionAPI;
+	readonly event: SessionBeforeCompactEvent;
+	readonly ctx: ExtensionContext;
+	readonly currentProjectedMainMessages: readonly AgentMessage[];
+	readonly currentThinking: string | undefined;
+	readonly config: ContextProjectionConfig;
+	readonly completeSimple: ToolResultSummaryCompleteSimple;
+	readonly onProgress?: (
+		event: CompactionSourceProjectionProgressEvent,
+	) => void | Promise<void>;
+}): Promise<string | undefined> {
+	const result = await requestProjectionTasks({
+		messages: currentProjectedMainMessages,
+		modelContext: ctx,
+		config: config.summary,
+		currentThinking,
+		signal: event.signal,
+		completeSimple,
+		recordCost: (message) => {
+			publishUsageEvent(pi, "projection-tasks", message);
+		},
+	});
+	if (result.kind === "failure") {
+		await onProgress?.({
+			type: "source-projection-tasks-failure",
+			issue: result.issue,
+		});
+	}
+	return result.kind === "success" ? result.text : undefined;
 }
 
 interface GenerateMissingProjectionSummariesOptions {

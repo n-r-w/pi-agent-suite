@@ -22,7 +22,7 @@ The module sends the task request only when summaries are enabled, the summary r
 
 ### M4. Model and prompt settings (FRQ-04, FRQ-05)
 - The task settings live in a nested object inside `summary` of the `context-projection` configuration. Both extensions already read `summary`, and the tasks serve only summaries. The object configures the task model, its thinking level, and the system and user prompt files. It follows the validation of `summary`: prompt paths are absolute or home-prefixed, and an unknown key makes the configuration invalid.
-- The extension selects the task model in this order: the task model of the configuration, then `summary.model`, then the current model of the agent. Aliases and thinking levels resolve in the same way as for `summary.model`.
+- The extension selects the task model as follows. When `summary.tasks.model` is set, it replaces `summary.model` as a whole, and its omitted fields fall back to the current model and the current thinking level of the agent, exactly as omitted fields of `summary.model` do. When `summary.tasks.model` is not set, the task request uses `summary.model`, then the current model and thinking level. Example: with `summary.model` set to `{"id": "openai/gpt-mini", "thinking": "low"}` and `summary.tasks.model` set to `{"thinking": "high"}`, the task request uses the current model of the agent with `high` thinking. Aliases and thinking levels resolve in the same way as for `summary.model`.
 - The bundled default prompts live in `shared/prompts`.
 - Retries of the task request use `summary.retryCount` and `summary.retryDelayMs`.
 - Rejected option: a separate top-level key. It would allow task settings while summaries are disabled, and without summaries nothing uses the tasks.
@@ -36,13 +36,15 @@ The module sends the task request only when summaries are enabled, the summary r
 ### M6. Usage records
 The extension passes each response of the task model to `publishUsageEvent` with its own source name, as it does for summary responses. Without this record, `usage` does not count the cost of the task request.
 
+The implementation adds the new source name to the source list of `shared/usage-events.ts` and to the list of included requests in `docs/extensions/usage.md`.
+
 ### Trade-offs
 - R1. Latency. Pi awaits the `context` handler before the provider request of the main agent. At each projection level and before compaction, the agent therefore also waits for the task request, which reads 200,000 to 250,000 tokens. Summary requests have no timeout, and the task request has none either. The user can abort it with Esc.
 - R2. Context window. When the context window of the task model is smaller than the session, each batch ends with the error of M5. The user selects a task model with a larger window (FRQ-05).
 - R3. Custom summary prompts. A summary system prompt that the user set through `summary.systemPromptFile` does not describe the task block. The user adds this description, and the documentation states it.
 - R4. Older package versions. An older package version that reads a configuration with the new key treats the configuration as invalid and shows `CP!`.
 
-The implementation updates `docs/extensions/context-projection.md` and `docs/extensions/custom-compaction.md`.
+The implementation updates `docs/extensions/context-projection.md`, `docs/extensions/custom-compaction.md`, and `docs/extensions/usage.md`.
 
 ## Overengineering and Overspecification Considerations
 - The shared module has two users: `context-projection` and `custom-compaction`.

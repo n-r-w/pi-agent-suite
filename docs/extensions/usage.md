@@ -53,6 +53,7 @@ Agent consumption includes regular assistant responses, Pi usage entries such as
 
 - `consult-advisor`;
 - `context-projection`;
+- `projection-tasks`;
 - `convene-council`;
 - `custom-compaction`;
 - `subagent-query`;

@@ -12,6 +12,7 @@ export const USAGE_EVENT_RECORD_VERSION = 1 as const;
 export const AUXILIARY_USAGE_SOURCES = [
 	"consult-advisor",
 	"context-projection",
+	"projection-tasks",
 	"convene-council",
 	"custom-compaction",
 	"subagent-query",

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -335,6 +335,129 @@ describe("context projection config", () => {
 				});
 			});
 		}
+	});
+
+	test("accepts summary.tasks with model and prompt files", async () => {
+		// Purpose: the task request settings live in the nested summary.tasks object.
+		// Input and expected output: an absolute prompt path stays as written, a home-prefixed path expands, and null paths count as omitted.
+		// Edge case: the model object keeps both optional fields.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				summary: {
+					enabled: true,
+					tasks: {
+						model: { id: "openai/task-model", thinking: "high" },
+						systemPromptFile: "/abs/tasks-system.md",
+						userPromptFile: "~/tasks-user.md",
+					},
+				},
+			});
+
+			const config = await readContextProjectionConfig();
+
+			expect(config.kind).toBe("valid");
+			if (config.kind !== "valid") {
+				throw new Error("expected valid projection config");
+			}
+			expect(config.config.summary.tasks).toEqual({
+				model: { id: "openai/task-model", thinking: "high" },
+				systemPromptFile: "/abs/tasks-system.md",
+				userPromptFile: join(homedir(), "tasks-user.md"),
+			});
+
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				summary: {
+					enabled: true,
+					tasks: { systemPromptFile: null, userPromptFile: null },
+				},
+			});
+			const nullConfig = await readContextProjectionConfig();
+			expect(
+				nullConfig.kind === "valid" && nullConfig.config.summary.tasks,
+			).toEqual({});
+		});
+	});
+
+	test("rejects invalid summary.tasks values as an invalid configuration", async () => {
+		// Purpose: an invalid task setting must show the invalid configuration state instead of being ignored.
+		// Input and expected output: unknown nested key, non-object tasks, invalid model, and non-string prompt paths each return a non-fatal invalid result.
+		// Edge case: each case is otherwise a valid enabled summary configuration.
+		// Dependencies: isolated config file and shared config reader.
+		for (const tasks of [
+			{ unknown: true },
+			"tasks",
+			[],
+			{ model: "task-model" },
+			{ model: { thinking: "extreme" } },
+			{ model: { id: "a/b", extra: 1 } },
+			{ systemPromptFile: 1 },
+			{ userPromptFile: "" },
+		]) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, {
+					enabled: true,
+					summary: { enabled: true, tasks },
+				});
+
+				expect(await readContextProjectionConfig()).toEqual({
+					kind: "invalid",
+				});
+			});
+		}
+	});
+
+	test("reports a relative summary.tasks prompt path as fatal", async () => {
+		// Purpose: a relative task prompt path must stop startup with a message that names the setting, like summary prompt paths.
+		// Input and expected output: each relative path returns a fatal issue that starts with summary.tasks.
+		// Edge case: both prompt keys are checked separately.
+		// Dependencies: isolated config file and shared config reader.
+		for (const key of ["systemPromptFile", "userPromptFile"]) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, {
+					enabled: true,
+					summary: { enabled: true, tasks: { [key]: "relative.md" } },
+				});
+
+				const config = await readContextProjectionConfig();
+
+				expect(config).toMatchObject({ kind: "invalid", fatal: true });
+				expect(
+					config.kind === "invalid" ? config.issue : undefined,
+				).toStartWith(`summary.tasks.${key}`);
+			});
+		}
+	});
+
+	test("ignores summary.tasks values while summaries are disabled", async () => {
+		// Purpose: disabled summaries must not validate or use task settings, like other summary values.
+		// Input and expected output: invalid task values are ignored and the configuration stays valid with no tasks.
+		// Edge case: an unsupported key at the summary level still makes the configuration invalid.
+		// Dependencies: isolated config file and shared config reader.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				summary: {
+					enabled: false,
+					tasks: { unknown: true, systemPromptFile: "relative.md" },
+				},
+			});
+
+			const config = await readContextProjectionConfig();
+
+			expect(config.kind).toBe("valid");
+			expect(config.kind === "valid" && config.config.summary.tasks).toBe(
+				undefined,
+			);
+
+			await writeProjectionConfig(agentDir, {
+				enabled: true,
+				summary: { enabled: false, unknownKey: true },
+			});
+			expect(await readContextProjectionConfig()).toEqual({ kind: "invalid" });
+		});
 	});
 
 	test("reports removed placeholder config as fatal with migration guidance", async () => {
