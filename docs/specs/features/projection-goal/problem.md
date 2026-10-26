@@ -1,8 +1,7 @@
 # Problem Statement
 
 ## Key definitions and abbreviations
-- Projection: `context-projection` replaces old large tool results in the provider context of the main agent with shorter text. The session file keeps the full results.
-- Projection summary: the text that a separate summary model writes for one tool result. The main agent sees it in place of the full result after projection, and the compaction model reads it in place of the full result during compaction.
+See [Terms](terms.md).
 
 ## Context
 In a long session, `context-projection` frees context before Pi compacts the whole conversation. It acts at three levels, when the remaining context reaches 70,000, 50,000, and 30,000 tokens by default. At each level, it replaces old successful text tool results larger than a level threshold with projection summaries. With a 272,000-token context window, the first level starts at 202,000 tokens of context.
@@ -11,7 +10,7 @@ In a long session, `context-projection` frees context before Pi compacts the who
 The summary model writes each projection summary without knowing what the main agent is working on. It keeps the facts that it considers important in general. When the main agent later needs a fact that the summary dropped, the agent either runs the tool again or continues without the fact.
 
 ## Affected Audience
-- The main agent of a Pi session in which projection with summaries is enabled.
+- The main agent of a Pi session in which projection with summaries is enabled, including a subagent session.
 - The developer who works with this agent and receives its results.
 
 ## Evidence
@@ -28,17 +27,20 @@ The summary model writes each projection summary without knowing what the main a
 Both impacts grow with the number of projections. With the 272,000-token window, the replay gives about 3.5 times more projections than with the 372,000-token window.
 
 ## Current State
-Before each provider request, `context-projection` computes the remaining context. When the remaining context first crosses a level threshold after the latest compaction, the extension selects candidates for that level. A candidate is an old successful text tool result above the size threshold of the level, outside the newest tool-use turns that the configuration protects. For each candidate, the extension sends one request to the summary model in a separate provider session. The summary replaces the result in the provider context, under a notice that tells the main agent to run the tool again for the full result.
+Before each provider request, `context-projection` computes the remaining context. When the remaining context first crosses a level threshold after the latest compaction, the extension selects candidates for that level. A candidate is an old successful text tool result above the size threshold of the level, outside the newest tool-use turns that the configuration protects. For each candidate, the extension sends one request to the summary model in a separate provider session. The summary replaces the result in the provider context, under a notice that tells the main agent to run the tool again for the full result and not to rely on the summary for critical decisions.
 
 Before compaction, `custom-compaction` prepares the part of the conversation that compaction discards. When `projectCompactionSource` and `summary.enabled` are both `true`, it reuses existing projection summaries in this part. For each other successful text tool result of at least `minToolResultTokensL3` tokens, it generates a projection summary with the same request. The compaction model then reads these summaries in place of the full results.
 
+`run-subagent` starts each subagent as a child `pi` process that loads the same package and inherits the environment of the parent, so the child reads the same `context-projection` configuration. Projection and its summaries work in a subagent session in the same way as in the parent session.
+
 ## Desired State
-Each projection summary keeps the facts of its tool result that the main agent needs for its current tasks. After projection, the main agent continues these tasks without running tools again to recover dropped facts.
+After projection, the main agent finds in projection summaries the facts that its current tasks need, and continues these tasks without running tools again to recover these facts. The developer receives complete results, for example a signature change in which the agent updated every call site.
 
 ## Problem Boundary
 - In scope: projection summaries that `context-projection` writes at levels L1, L2, and L3 for the main agent.
 - In scope: projection summaries that `custom-compaction` generates for tool results in the part of the conversation that compaction discards.
 - In scope: sessions with projection summaries enabled, with any main model and any summary model.
+- In scope: subagent sessions, because a child `pi` process runs the same projection.
 - Out of scope: the summary that the compaction model writes for the whole conversation. The compaction model reads the conversation and therefore sees the tasks of the agent.
 - Out of scope: tool results that projection replaces with the omitted notice only, without a summary.
 
