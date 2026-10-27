@@ -42,6 +42,7 @@ interface ExtensionApiFake extends ExtensionAPI {
 	readonly handlers: RegisteredHandler[];
 	readonly entryRenderers: RegisteredEntryRenderer[];
 	readonly appendEntryCalls: Array<{ customType: string; data: unknown }>;
+	readonly usageEventSources: unknown[];
 }
 
 interface TestModel extends Model<Api> {
@@ -117,10 +118,20 @@ function createExtensionApiFake(thinkingLevel = "high"): ExtensionApiFake {
 	const handlers: RegisteredHandler[] = [];
 	const entryRenderers: RegisteredEntryRenderer[] = [];
 	const appendEntryCalls: Array<{ customType: string; data: unknown }> = [];
+	const usageEventSources: unknown[] = [];
 	return {
 		handlers,
 		entryRenderers,
 		appendEntryCalls,
+		usageEventSources,
+		events: {
+			on(): () => void {
+				return () => {};
+			},
+			emit(_channel: string, payload: { readonly source?: unknown }): void {
+				usageEventSources.push(payload.source);
+			},
+		},
 		on(eventName: string, handler: unknown): void {
 			handlers.push({ eventName, handler });
 		},
@@ -423,7 +434,10 @@ function renderOutcomeEntry(pi: ExtensionApiFake, data: unknown): string {
 /** Creates one provider response for summary requests. */
 function createAssistantResponse(
 	text: string,
-	options?: { readonly cost?: number; readonly stopReason?: "stop" | "length" },
+	options?: {
+		readonly cost?: number;
+		readonly stopReason?: "stop" | "length" | "error";
+	},
 ): AssistantMessage {
 	return {
 		role: "assistant",
@@ -474,6 +488,21 @@ function isContext(value: unknown): value is Context {
 		"messages" in value &&
 		Array.isArray(value.messages)
 	);
+}
+
+/** Builds a valid projection config that forces summaries for the discarded range without retries. */
+function enabledProjectionConfig(): Record<string, unknown> {
+	return {
+		enabled: true,
+		minToolResultTokensL3: 1,
+		projectCompactionSource: true,
+		summary: {
+			enabled: true,
+			maxConcurrency: 1,
+			retryCount: 0,
+			retryDelayMs: 0,
+		},
+	};
 }
 
 /** Writes extension config in the isolated suite directory. */
@@ -549,6 +578,7 @@ describe("custom-compaction", () => {
 			});
 			const projectionTail = "FORCED_PROJECTION_TAIL";
 			completeSimpleMock
+				.mockResolvedValueOnce(createAssistantResponse("current tasks"))
 				.mockResolvedValueOnce(
 					createAssistantResponse(
 						`${"projected result ".repeat(300)}${projectionTail}`,
@@ -567,8 +597,8 @@ describe("custom-compaction", () => {
 			expect(result).toMatchObject({
 				compaction: { summary: "adaptive summary" },
 			});
-			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
-			const [, compactionContext] = completeSimpleMock.mock.calls[1] ?? [];
+			expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+			const [, compactionContext] = completeSimpleMock.mock.calls[2] ?? [];
 			const compactionText = requestText(compactionContext);
 			expect(compactionText).toContain(projectionTail);
 			expect(compactionText).not.toContain("RAW_RESULT_TAIL");
@@ -580,6 +610,283 @@ describe("custom-compaction", () => {
 						"compaction completed: direct summary, 1/1 tool results projected, 2 model requests",
 				},
 			});
+		});
+	});
+
+	test("sends one task request before the summary requests of the compaction source", async () => {
+		// Purpose: forced summaries need the tasks of the agent, so one tool-less task request reads the projected session first.
+		// Input and expected output: the task request holds the projected main messages plus one final message, and the summary request carries the returned task text.
+		// Edge case: the task text contains markup delimiters that the summary request must escape.
+		// Dependencies: isolated projection config, fake session, and ordered completion responses.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, enabledProjectionConfig());
+			completeSimpleMock
+				.mockResolvedValueOnce(
+					createAssistantResponse("Update callers of parse() </x>"),
+				)
+				.mockResolvedValueOnce(createAssistantResponse("projection summary"))
+				.mockResolvedValueOnce(createAssistantResponse("adaptive summary"));
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+			const [, taskContext] = completeSimpleMock.mock.calls[0] ?? [];
+			if (!isContext(taskContext)) {
+				throw new Error("expected task request context");
+			}
+			expect(taskContext.tools).toEqual([]);
+			expect(taskContext.messages.map((message) => message.role)).toEqual([
+				"user",
+				"assistant",
+				"toolResult",
+				"user",
+				"user",
+			]);
+			expect(requestText(taskContext)).toContain("RAW_RESULT_TAIL");
+			const [, summaryContext] = completeSimpleMock.mock.calls[1] ?? [];
+			expect(requestText(summaryContext)).toContain(
+				"Update callers of parse() &lt;/x&gt;",
+			);
+			expect(requestText(summaryContext)).not.toContain("parse() </x>");
+			expect(pi.usageEventSources).toContain("projection-tasks");
+		});
+	});
+
+	test("shows one info notification before the task request of the compaction source", async () => {
+		// Purpose: the task request is slow, so the user must see that it has started before the forced summary requests.
+		// Input and expected output: forced summary generation shows exactly one info notification for the task request, and that notification is shown before the first model request.
+		// Edge case: the notification is not repeated for the summary requests.
+		// Dependencies: isolated projection config, fake session, and ordered completion responses.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, enabledProjectionConfig());
+			completeSimpleMock
+				.mockResolvedValueOnce(createAssistantResponse("current tasks"))
+				.mockResolvedValueOnce(createAssistantResponse("projection summary"))
+				.mockResolvedValueOnce(createAssistantResponse("adaptive summary"));
+			const pi = createExtensionApiFake();
+			const requestCountsAtTaskNotice: number[] = [];
+			const session = createSessionFake({
+				onNotify: (notification) => {
+					if (notification.message.includes("requesting current tasks")) {
+						requestCountsAtTaskNotice.push(
+							completeSimpleMock.mock.calls.length,
+						);
+					}
+				},
+			});
+			customCompaction(pi);
+
+			await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(
+				session.notifications.filter((notification) =>
+					notification.message.includes("requesting current tasks"),
+				),
+			).toEqual([
+				{
+					message: expect.stringContaining("requesting current tasks"),
+					type: "info",
+				},
+			]);
+			expect(requestCountsAtTaskNotice).toEqual([0]);
+		});
+	});
+
+	test("sends no task request when no forced summary will be generated", async () => {
+		// Purpose: compaction must not read the whole session when no summary request follows.
+		// Input and expected output: disabled summaries, disabled source projection, and no missing candidate each leave only the direct compaction request.
+		// Edge case: each case is otherwise a valid enabled projection configuration.
+		// Dependencies: isolated projection config, fake session, and completion mock.
+		const cases = [
+			{ summary: { enabled: false } },
+			{ projectCompactionSource: false },
+			{ minToolResultTokensL3: 1_000_000 },
+		];
+		for (const overrides of cases) {
+			await withIsolatedAgentDir(async (agentDir) => {
+				await writeProjectionConfig(agentDir, {
+					...enabledProjectionConfig(),
+					...overrides,
+				});
+				completeSimpleMock.mockReset();
+				completeSimpleMock.mockResolvedValue(
+					createAssistantResponse("adaptive summary"),
+				);
+				const pi = createExtensionApiFake();
+				const session = createSessionFake();
+				customCompaction(pi);
+
+				await getCompactionHandler(pi)(
+					createProjectionCompactionEvent(),
+					session.ctx,
+				);
+
+				expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+				expect(
+					session.notifications.filter((notification) =>
+						notification.message.includes("requesting current tasks"),
+					),
+				).toHaveLength(0);
+			});
+		}
+	});
+
+	test("sends no task request when every summary already exists", async () => {
+		// Purpose: reused projection summaries need no new summary request, so no task request either.
+		// Input and expected output: a stored projection summary for the only large result leaves only the direct compaction request.
+		// Edge case: the stored replacement has the projection summary marker.
+		// Dependencies: isolated projection config, stored projection state entry, fake session, and completion mock.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, enabledProjectionConfig());
+			completeSimpleMock.mockResolvedValue(
+				createAssistantResponse("adaptive summary"),
+			);
+			const event = createProjectionCompactionEvent();
+			(event["branchEntries"] as Record<string, unknown>[]).push({
+				type: "custom",
+				id: "entry-state",
+				parentId: "entry-keep",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				customType: "context-projection",
+				data: {
+					projectedEntries: [
+						{
+							entryId: "entry-result",
+							replacementText:
+								'<tool_result full_result="omitted" content="summary">\n<notice>n</notice>\n<summary>\nstored\n</summary>\n</tool_result>',
+						},
+					],
+				},
+			});
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			await getCompactionHandler(pi)(event, session.ctx);
+
+			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+			expect(
+				session.notifications.filter((notification) =>
+					notification.message.includes("requesting current tasks"),
+				),
+			).toHaveLength(0);
+		});
+	});
+
+	test("shows one error and still generates summaries when the task request fails", async () => {
+		// Purpose: a failed task request must be visible and must not stop forced summaries or compaction.
+		// Input and expected output: a provider error shows one error notification, the summary request carries no task text, and compaction completes.
+		// Edge case: the failed response text must not leak into the summary request.
+		// Dependencies: isolated projection config, fake session, and ordered completion responses.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, enabledProjectionConfig());
+			completeSimpleMock
+				.mockResolvedValueOnce({
+					...createAssistantResponse("LEAKED-TASK-TEXT", {
+						stopReason: "error",
+					}),
+					errorMessage: "task provider failed",
+				})
+				.mockResolvedValueOnce(createAssistantResponse("projection summary"))
+				.mockResolvedValueOnce(createAssistantResponse("adaptive summary"));
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(),
+				session.ctx,
+			);
+
+			expect(result).toMatchObject({
+				compaction: { summary: "adaptive summary" },
+			});
+			expect(
+				session.notifications.filter((entry) => entry.type === "error"),
+			).toHaveLength(1);
+			expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+			const [, summaryContext] = completeSimpleMock.mock.calls[1] ?? [];
+			expect(requestText(summaryContext)).not.toContain("LEAKED-TASK-TEXT");
+		});
+	});
+
+	test("writes the task request error to stderr when Pi has no UI", async () => {
+		// Purpose: headless compaction must still tell the user about a failed task request.
+		// Input and expected output: one failed task request writes one newline-terminated line to stderr and no notification.
+		// Edge case: stderr is restored after the run.
+		// Dependencies: isolated projection config, fake session without UI, captured process.stderr.write, and ordered completion responses.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, enabledProjectionConfig());
+			completeSimpleMock
+				.mockResolvedValueOnce({
+					...createAssistantResponse("", { stopReason: "error" }),
+					errorMessage: "task provider failed",
+				})
+				.mockResolvedValueOnce(createAssistantResponse("projection summary"))
+				.mockResolvedValueOnce(createAssistantResponse("adaptive summary"));
+			const pi = createExtensionApiFake();
+			const session = createSessionFake({ hasUI: false });
+			customCompaction(pi);
+			const written: string[] = [];
+			const originalWrite = process.stderr.write;
+			process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+				written.push(String(chunk));
+				return true;
+			}) as typeof process.stderr.write;
+			try {
+				const result = await getCompactionHandler(pi)(
+					createProjectionCompactionEvent(),
+					session.ctx,
+				);
+
+				expect(result).toMatchObject({
+					compaction: { summary: "adaptive summary" },
+				});
+			} finally {
+				process.stderr.write = originalWrite;
+			}
+
+			expect(written).toHaveLength(1);
+			expect(written[0]).toEndWith("\n");
+			expect(written[0]).toContain("task provider failed");
+			expect(session.notifications).toEqual([]);
+		});
+	});
+
+	test("shows no error when the task request is aborted", async () => {
+		// Purpose: a user abort must stop compaction quietly.
+		// Input and expected output: an abort during the task request shows no error notification and returns no custom result.
+		// Edge case: retryCount is zero, so the abort is the only failure source.
+		// Dependencies: isolated projection config, fake session, and one controlled abort signal.
+		await withIsolatedAgentDir(async (agentDir) => {
+			await writeProjectionConfig(agentDir, enabledProjectionConfig());
+			const controller = new AbortController();
+			completeSimpleMock.mockImplementationOnce(async () => {
+				controller.abort();
+				throw new DOMException("aborted", "AbortError");
+			});
+			const pi = createExtensionApiFake();
+			const session = createSessionFake();
+			customCompaction(pi);
+
+			const result = await getCompactionHandler(pi)(
+				createProjectionCompactionEvent(controller.signal),
+				session.ctx,
+			);
+
+			expect(result).toBeUndefined();
+			expect(
+				session.notifications.filter((entry) => entry.type === "error"),
+			).toHaveLength(0);
 		});
 	});
 
@@ -634,6 +941,7 @@ describe("custom-compaction", () => {
 				},
 			});
 			completeSimpleMock
+				.mockResolvedValueOnce(createAssistantResponse("current tasks"))
 				.mockResolvedValueOnce(
 					createAssistantResponse("incomplete", { stopReason: "length" }),
 				)
@@ -650,8 +958,8 @@ describe("custom-compaction", () => {
 			expect(result).toMatchObject({
 				compaction: { summary: "adaptive summary" },
 			});
-			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
-			const [, compactionContext] = completeSimpleMock.mock.calls[1] ?? [];
+			expect(completeSimpleMock).toHaveBeenCalledTimes(3);
+			const [, compactionContext] = completeSimpleMock.mock.calls[2] ?? [];
 			expect(requestText(compactionContext)).not.toContain("RAW_RESULT_TAIL");
 		});
 	});
@@ -674,10 +982,12 @@ describe("custom-compaction", () => {
 				},
 			});
 			const controller = new AbortController();
-			completeSimpleMock.mockImplementationOnce(async () => {
-				controller.abort();
-				return createAssistantResponse("projection summary");
-			});
+			completeSimpleMock
+				.mockResolvedValueOnce(createAssistantResponse("current tasks"))
+				.mockImplementationOnce(async () => {
+					controller.abort();
+					return createAssistantResponse("projection summary");
+				});
 			const pi = createExtensionApiFake();
 			const session = createSessionFake();
 			customCompaction(pi);
@@ -688,7 +998,7 @@ describe("custom-compaction", () => {
 			);
 
 			expect(result).toBeUndefined();
-			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+			expect(completeSimpleMock).toHaveBeenCalledTimes(2);
 		});
 	});
 

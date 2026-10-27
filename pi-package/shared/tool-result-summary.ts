@@ -53,6 +53,9 @@ const DEFAULT_SUMMARY_USER_PROMPT_FILE = join(
 /** Config key that enables summary generation. */
 const SUMMARY_ENABLED_CONFIG_KEY = "enabled";
 
+/** Config key for the nested settings of the current-task request. */
+const SUMMARY_TASKS_CONFIG_KEY = "tasks";
+
 /** Config key for the model used by summary generation. */
 const SUMMARY_MODEL_CONFIG_KEY = "model";
 
@@ -103,6 +106,7 @@ const SUMMARY_EMPTY_RESPONSE_ERROR = "summary response did not contain text";
 const TOOL_RESULT_SUMMARY_CONFIG_KEYS = [
 	SUMMARY_ENABLED_CONFIG_KEY,
 	SUMMARY_MODEL_CONFIG_KEY,
+	SUMMARY_TASKS_CONFIG_KEY,
 	SUMMARY_MAX_CONCURRENCY_CONFIG_KEY,
 	SUMMARY_RETRY_COUNT_CONFIG_KEY,
 	SUMMARY_RETRY_DELAY_MS_CONFIG_KEY,
@@ -113,10 +117,25 @@ const TOOL_RESULT_SUMMARY_CONFIG_KEYS = [
 /** Runtime thinking values accepted by shared tool-result summarization. */
 export type ToolResultSummaryThinking = ReasoningLevel;
 
+/** Config keys accepted by the nested summary.tasks object. */
+const SUMMARY_TASKS_CONFIG_KEYS = [
+	SUMMARY_MODEL_CONFIG_KEY,
+	SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY,
+	SUMMARY_USER_PROMPT_FILE_CONFIG_KEY,
+] as const;
+
+/** Settings of the current-task request that feeds summaries. */
+export interface ToolResultSummaryTasksConfig {
+	readonly model?: ModelSettings;
+	readonly systemPromptFile?: string;
+	readonly userPromptFile?: string;
+}
+
 /** Configuration shared by context-projection and custom-compaction helper summaries. */
 export interface ToolResultSummaryConfig {
 	readonly enabled: boolean;
 	readonly model?: ModelSettings;
+	readonly tasks?: ToolResultSummaryTasksConfig;
 	readonly maxConcurrency: number;
 	readonly retryCount: number;
 	readonly retryDelayMs: number;
@@ -130,6 +149,7 @@ interface EnabledSummaryConfigValues {
 	readonly retryCount: number;
 	readonly retryDelayMs: number;
 	readonly model?: ModelSettings;
+	readonly tasks?: ToolResultSummaryTasksConfig;
 	readonly systemPromptFile?: string;
 	readonly userPromptFile?: string;
 }
@@ -154,6 +174,8 @@ export interface ToolResultSummaryRuntimeConfig {
 	readonly systemPrompt: string;
 	readonly userPrompt: string;
 	readonly options: SimpleStreamOptions;
+	/** Current tasks of the agent, inserted as a separate block of each summary request. */
+	readonly currentTasks?: string;
 }
 
 /** Source message paired with a stable identifier for deterministic replacement. */
@@ -240,6 +262,10 @@ export function parseToolResultSummaryConfig(
 	} catch {
 		return undefined;
 	}
+	const tasks = parseSummaryTasksConfig(config[SUMMARY_TASKS_CONFIG_KEY]);
+	if (tasks === undefined) {
+		return undefined;
+	}
 	const maxConcurrency =
 		config[SUMMARY_MAX_CONCURRENCY_CONFIG_KEY] ??
 		DEFAULT_SUMMARY_MAX_CONCURRENCY;
@@ -251,6 +277,7 @@ export function parseToolResultSummaryConfig(
 	const userPromptFile = config[SUMMARY_USER_PROMPT_FILE_CONFIG_KEY];
 	const values = parseEnabledSummaryConfigValues({
 		model,
+		tasks: tasks.value,
 		maxConcurrency,
 		retryCount,
 		retryDelayMs,
@@ -511,6 +538,7 @@ export async function mapWithConcurrency<T, R>(
 /** Parses enabled summary fields after defaults are applied. */
 function parseEnabledSummaryConfigValues({
 	model,
+	tasks,
 	maxConcurrency,
 	retryCount,
 	retryDelayMs,
@@ -518,6 +546,7 @@ function parseEnabledSummaryConfigValues({
 	userPromptFile,
 }: {
 	readonly model: ModelSettings | undefined;
+	readonly tasks: ToolResultSummaryTasksConfig | undefined;
 	readonly maxConcurrency: unknown;
 	readonly retryCount: unknown;
 	readonly retryDelayMs: unknown;
@@ -527,23 +556,16 @@ function parseEnabledSummaryConfigValues({
 	if (
 		!isPositiveInteger(maxConcurrency) ||
 		!isNonNegativeInteger(retryCount) ||
-		!isNonNegativeInteger(retryDelayMs) ||
-		!isOptionalNonEmptyString(systemPromptFile) ||
-		!isOptionalNonEmptyString(userPromptFile)
+		!isNonNegativeInteger(retryDelayMs)
 	) {
 		return undefined;
 	}
-	if (
-		typeof systemPromptFile === "string" &&
-		!isAbsolute(expandHomePath(systemPromptFile))
-	) {
-		throw new Error("summary.systemPromptFile must be an absolute path");
-	}
-	if (
-		typeof userPromptFile === "string" &&
-		!isAbsolute(expandHomePath(userPromptFile))
-	) {
-		throw new Error("summary.userPromptFile must be an absolute path");
+	const promptFiles = parsePromptFileSettings(
+		{ systemPromptFile, userPromptFile },
+		"summary",
+	);
+	if (promptFiles === undefined) {
+		return undefined;
 	}
 
 	return {
@@ -551,13 +573,83 @@ function parseEnabledSummaryConfigValues({
 		retryCount,
 		retryDelayMs,
 		...(model === undefined ? {} : { model }),
-		...(typeof systemPromptFile === "string"
-			? { systemPromptFile: expandHomePath(systemPromptFile) }
-			: {}),
-		...(typeof userPromptFile === "string"
-			? { userPromptFile: expandHomePath(userPromptFile) }
-			: {}),
+		...(tasks === undefined ? {} : { tasks }),
+		...promptFiles,
 	};
+}
+
+/** Parses the optional summary.tasks object; the result is undefined when the object is invalid. */
+function parseSummaryTasksConfig(
+	value: unknown,
+): { readonly value: ToolResultSummaryTasksConfig | undefined } | undefined {
+	if (value === undefined) {
+		return { value: undefined };
+	}
+	if (
+		!isRecord(value) ||
+		Object.keys(value).some(
+			(key) =>
+				!SUMMARY_TASKS_CONFIG_KEYS.includes(
+					key as (typeof SUMMARY_TASKS_CONFIG_KEYS)[number],
+				),
+		)
+	) {
+		return undefined;
+	}
+
+	let model: ModelSettings | undefined;
+	try {
+		model = parseModelSettings(
+			value[SUMMARY_MODEL_CONFIG_KEY],
+			"summary.tasks.model",
+		);
+	} catch {
+		return undefined;
+	}
+	const promptFiles = parsePromptFileSettings(
+		{
+			systemPromptFile: value[SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY],
+			userPromptFile: value[SUMMARY_USER_PROMPT_FILE_CONFIG_KEY],
+		},
+		"summary.tasks",
+	);
+	if (promptFiles === undefined) {
+		return undefined;
+	}
+
+	return {
+		value: { ...(model === undefined ? {} : { model }), ...promptFiles },
+	};
+}
+
+/** Validates and expands the prompt file paths of one config object; undefined means invalid, a relative path throws. */
+function parsePromptFileSettings(
+	files: {
+		readonly systemPromptFile: unknown;
+		readonly userPromptFile: unknown;
+	},
+	fieldPath: string,
+): { systemPromptFile?: string; userPromptFile?: string } | undefined {
+	const entries = [
+		[SUMMARY_SYSTEM_PROMPT_FILE_CONFIG_KEY, files.systemPromptFile],
+		[SUMMARY_USER_PROMPT_FILE_CONFIG_KEY, files.userPromptFile],
+	] as const;
+	if (!entries.every(([, path]) => isOptionalNonEmptyString(path))) {
+		return undefined;
+	}
+
+	const parsed: { systemPromptFile?: string; userPromptFile?: string } = {};
+	for (const [key, path] of entries) {
+		if (typeof path !== "string") {
+			continue;
+		}
+		const expanded = expandHomePath(path);
+		if (!isAbsolute(expanded)) {
+			throw new Error(`${fieldPath}.${key} must be an absolute path`);
+		}
+		parsed[key] = expanded;
+	}
+	return parsed;
 }
 
 /** Selects the configured summary model, or the active model when omitted. */
@@ -593,7 +685,9 @@ async function readSummaryPrompts(
 }
 
 /** Reads one prompt file and rejects empty content. */
-async function readPromptFile(path: string): Promise<string | undefined> {
+export async function readPromptFile(
+	path: string,
+): Promise<string | undefined> {
 	try {
 		const prompt = (await readFile(path, "utf8")).trim();
 		return prompt.length === 0 ? undefined : prompt;
@@ -750,6 +844,15 @@ function buildSummaryContext(
 				toolCallId: candidate.message.toolCallId,
 			}),
 	);
+	const currentTasksBlock =
+		runtimeConfig.currentTasks === undefined
+			? []
+			: [
+					"<agent_tasks>",
+					escapeUTF8(runtimeConfig.currentTasks),
+					"</agent_tasks>",
+					"",
+				];
 	return {
 		systemPrompt: runtimeConfig.systemPrompt,
 		messages: [
@@ -759,6 +862,7 @@ function buildSummaryContext(
 					{
 						type: "text",
 						text: [
+							...currentTasksBlock,
 							"<tool_call>",
 							toolCallContext,
 							"</tool_call>",

@@ -33,6 +33,7 @@ import {
 	splitModelId,
 } from "../../shared/model-settings";
 import { expandHomePath } from "../../shared/path-expansion";
+import { formatProjectionTasksFailure } from "../../shared/projection-tasks";
 import { getPromptComposition } from "../../shared/prompt-composition";
 import {
 	isReasoningLevel,
@@ -671,6 +672,9 @@ function recordProgress(
 		stats.retries += 1;
 		return;
 	}
+	if (event.type === "source-projection-tasks-failure") {
+		return;
+	}
 	if (event.type === "split") {
 		stats.adaptive = true;
 		stats.oversizedBlocks += 1;
@@ -712,6 +716,10 @@ async function reportProgress(
 	event: CompactionProgressEvent,
 	stats: CompactionProgressStats,
 ): Promise<void> {
+	if (event.type === "source-projection-tasks-failure") {
+		reportProjectionTasksFailure(session, event.issue);
+		return;
+	}
 	if (session.hasUI === false || event.type === "source-projection-request") {
 		return;
 	}
@@ -720,12 +728,26 @@ async function reportProgress(
 	if (
 		event.type === "start" ||
 		event.type === "planning" ||
+		event.type === "source-projection-tasks-request" ||
 		event.type === "complete" ||
 		(event.type === "source-projection" && event.completed === 0)
 	) {
-		// Pi repaints start, planning, and outcome states before the next work phase or lifecycle completion replaces them.
+		// Pi repaints start, planning, task request, and outcome states before the next work phase or lifecycle completion replaces them.
 		await yieldToEventLoop();
 	}
+}
+
+/** Shows a failed task request as an error, or on stderr when Pi has no UI. */
+function reportProjectionTasksFailure(
+	session: CustomCompactionSession,
+	issue: string,
+): void {
+	const message = `${ISSUE_PREFIX} ${formatProjectionTasksFailure(issue)}`;
+	if (session.hasUI === false) {
+		process.stderr.write(`${message}\n`);
+		return;
+	}
+	session.ui.notify(message, "error");
 }
 
 /** Formats one progress event without exposing conversation or provider content. */
@@ -734,8 +756,12 @@ function formatProgressMessage(
 	stats: CompactionProgressStats,
 ): string {
 	switch (event.type) {
+		case "source-projection-tasks-failure":
+			return formatProjectionTasksFailure(event.issue);
 		case "source-projection-request":
 			return "creating compaction-source projection";
+		case "source-projection-tasks-request":
+			return "requesting current tasks for compaction-source projection";
 		case "source-projection":
 			if (event.projected !== undefined) {
 				return `compaction-source projection completed: ${event.projected}/${event.total} tool results projected`;
