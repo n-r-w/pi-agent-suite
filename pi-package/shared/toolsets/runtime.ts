@@ -146,7 +146,6 @@ class ToolsetRuntimeImpl implements ToolsetRuntime {
 		candidateToolNames: readonly string[],
 	): readonly VisibleToolset[] {
 		return this.allToolsets()
-			.filter((toolset) => !this.activeToolsets.has(toolset.name))
 			.map((toolset) => ({
 				name: toolset.name,
 				description: toolset.description,
@@ -240,7 +239,9 @@ class ToolsetRuntimeImpl implements ToolsetRuntime {
 	): readonly string[] {
 		// Eligibility uses the unmodified candidates; activation-tool visibility additionally requires its name to survive upstream filters.
 		this.preDeferredToolNames = [...candidates];
-		const eligibleToolsets = this.resolveVisibleToolsets(candidates);
+		const eligibleToolsets = this.resolveVisibleToolsets(candidates).filter(
+			(toolset) => !this.activeToolsets.has(toolset.name),
+		);
 		const deferredToolNames = new Set(
 			this.allToolsets()
 				.filter((toolset) => !this.activeToolsets.has(toolset.name))

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type * as RuntimeCompositionModule from "../../pi-package/shared/agent-runtime-composition";
+import { adaptPromptHandler } from "../support/prompt-handlers";
 
 interface HandlerRecord {
 	readonly event: "before_agent_start";
@@ -23,7 +24,10 @@ function createCompositionApiFake(
 	const pi = {
 		events,
 		on(event: "before_agent_start", handler: HandlerRecord["handler"]) {
-			handlers.push({ event, handler });
+			handlers.push({
+				event,
+				handler: adaptPromptHandler(event, handler) as HandlerRecord["handler"],
+			});
 		},
 		getActiveTools() {
 			return [];

@@ -29,6 +29,7 @@ import {
 	registerKnowledgeContextRuntime,
 	registerKnowledgeRootRuntime,
 } from "../../shared/knowledge-runtime";
+import { getPromptComposition } from "../../shared/prompt-composition";
 import { isReasoningLevel } from "../../shared/reasoning-levels";
 import { publishUsageEvent } from "../../shared/usage-events";
 import {
@@ -160,12 +161,14 @@ export default function knowledgeExtension(
 	);
 	registerKnowledgeTriggerRoles(pi, runtime, disposers);
 
+	const promptComposition = getPromptComposition(pi);
 	pi.on("before_agent_start", async (event, ctx) => {
+		const basePrompt = promptComposition.read(event);
 		loadedSkillRoots = collectLoadedSkillRoots(event);
 		const block = await readBlock(ctx);
-		return block === null
-			? undefined
-			: { systemPrompt: appendKnowledgeBlock(event.systemPrompt, block) };
+		if (block !== null) {
+			promptComposition.publish(event, appendKnowledgeBlock(basePrompt, block));
+		}
 	});
 	pi.on("session_shutdown", () => {
 		coordinator?.shutdown();

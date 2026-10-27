@@ -15,6 +15,7 @@ import mcpWrapper from "../../pi-package/extensions/mcp-wrapper/index";
 import projectRules from "../../pi-package/extensions/project-rules/index";
 import systemPrompt from "../../pi-package/extensions/system-prompt/index";
 import { getAgentRuntimeComposition } from "../../pi-package/shared/agent-runtime-composition";
+import { runPromptHandlers } from "../support/prompt-handlers";
 
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const previousSuiteDir = process.env[AGENT_SUITE_DIR_ENV];
@@ -134,38 +135,31 @@ async function runBeforeAgentStart(
 	pi: ExtensionApiFake,
 	cwd = "/tmp/project",
 ): Promise<string> {
-	let currentPrompt = "Original prompt";
-	for (const item of pi.handlers.filter(
-		(handler) => handler.eventName === "before_agent_start",
-	)) {
-		const result = await item.handler(
-			{
-				type: "before_agent_start",
-				prompt: "work",
-				images: [],
-				systemPrompt: currentPrompt,
-				systemPromptOptions: {
-					cwd,
-					selectedTools: [],
-					toolSnippets: {},
-					promptGuidelines: [],
-					contextFiles: [],
-					skills: [],
+	const handlers = pi.handlers
+		.filter((handler) => handler.eventName === "before_agent_start")
+		.map((item) => item.handler);
+	return (
+		(
+			await runPromptHandlers(
+				handlers,
+				{
+					type: "before_agent_start",
+					prompt: "work",
+					images: [],
+					systemPrompt: "Original prompt",
+					systemPromptOptions: {
+						cwd,
+						selectedTools: [],
+						toolSnippets: {},
+						promptGuidelines: [],
+						contextFiles: [],
+						skills: [],
+					},
 				},
-			},
-			{} as ExtensionContext,
-		);
-		if (
-			typeof result === "object" &&
-			result !== null &&
-			"systemPrompt" in result &&
-			typeof result.systemPrompt === "string"
-		) {
-			currentPrompt = result.systemPrompt;
-		}
-	}
-
-	return currentPrompt;
+				{} as ExtensionContext,
+			)
+		)?.systemPrompt ?? "Original prompt"
+	);
 }
 
 afterEach(() => {

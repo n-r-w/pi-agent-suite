@@ -12,6 +12,7 @@ import {
 	isFileNotFoundError,
 } from "../../shared/agent-suite-storage";
 import { expandHomePath } from "../../shared/path-expansion";
+import { getPromptComposition } from "../../shared/prompt-composition";
 import type { VisibleToolset } from "../../shared/toolsets/contracts";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../run-subagent/contracts";
@@ -76,6 +77,7 @@ interface BeforeAgentStartEventLike {
 }
 
 export default function systemPrompt(pi: ExtensionAPI): void {
+	const promptComposition = getPromptComposition(pi);
 	const hasChildMarker = isSystemPromptChildProcess();
 	let templateState: TemplateState = { kind: "invalid" };
 
@@ -87,7 +89,7 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (event) => {
-		const incomingPrompt = (event as BeforeAgentStartEventLike).systemPrompt;
+		const incomingPrompt = promptComposition.read(event);
 		writeRuntimeDiagnostic("system-prompt.before-agent-start.started", {
 			templateState: templateState.kind,
 			incomingPromptLength: incomingPrompt.length,
@@ -129,7 +131,7 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 				incomingPrompt.includes(AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG) &&
 				!systemPrompt.includes(AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG),
 		});
-		return { systemPrompt };
+		promptComposition.publish(event, systemPrompt);
 	});
 }
 

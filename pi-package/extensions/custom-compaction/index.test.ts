@@ -188,6 +188,9 @@ function createSessionFake(options?: {
 			getSystemPrompt(): string {
 				return "main system prompt";
 			},
+			sessionManager: {
+				buildSessionProjection: () => ({ messages: [] }),
+			},
 		},
 		notifications,
 		requestedModels,

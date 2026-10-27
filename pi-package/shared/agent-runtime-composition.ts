@@ -1,6 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { writeRuntimeDiagnostic } from "./agent-runtime-diagnostics";
 import type { ModelSettings } from "./model-settings";
+import {
+	getPromptComposition,
+	markPromptCompositionStale,
+} from "./prompt-composition";
 
 export interface SelectedAgentRuntimeInfo {
 	readonly id: string;
@@ -163,6 +167,7 @@ export function getAgentRuntimeComposition(
 
 /** Marks the current runtime composition stale after pi starts replacing the extension runtime. */
 export function markAgentRuntimeCompositionStale(pi: ExtensionAPI): void {
+	markPromptCompositionStale(pi);
 	const holder = holderByPi.get(pi);
 	if (holder === undefined) {
 		return;
@@ -194,8 +199,10 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 	private readonly restrictiveToolFilters = new Map<string, ActiveToolFilter>();
 
 	public constructor(private readonly pi: ExtensionAPI) {
+		const promptComposition = getPromptComposition(pi);
 		writeRuntimeDiagnostic("runtime-composition.before-agent-start.registered");
 		this.pi.on("before_agent_start", async (event, ctx) => {
+			const basePrompt = promptComposition.read(event);
 			writeRuntimeDiagnostic("runtime-composition.before-agent-start.started", {
 				mainAgentId: this.selectedAgentContribution?.agent?.id ?? null,
 				mainPromptLength: this.selectedAgentContribution?.prompt.length ?? 0,
@@ -243,7 +250,6 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 				return undefined;
 			}
 
-			const basePrompt = (event as BeforeAgentStartEventLike).systemPrompt;
 			const systemPrompt = [basePrompt, ...contributionPrompts]
 				.filter(Boolean)
 				.join("\n\n");
@@ -251,7 +257,7 @@ class AgentRuntimeCompositionImpl implements AgentRuntimeComposition {
 				mainAgentId: this.selectedAgentContribution?.agent?.id ?? null,
 				finalPromptLength: systemPrompt.length,
 			});
-			return { systemPrompt };
+			promptComposition.publish(event, systemPrompt);
 		});
 	}
 

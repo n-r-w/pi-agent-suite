@@ -8,6 +8,16 @@ If Pi supplies a nonempty custom prompt, the extension preserves the prompt that
 
 Before preserving a custom prompt, the ready-template handler still reconciles active tools. Runtime composition still appends the selected-agent prompt and eligible tool prompt contributions. Tool availability and these contributions remain subject to runtime policy.
 
+## Prompt history and tool activation
+
+The package records its completed rendering in a native pi prompt section. The shared composition boundary presents that rendering without its storage wrapper and excludes automatic native sections already replaced by the template. A template that omits `{{skills}}`, for example, keeps the automatic skills block out of the outgoing prompt. Pi retains loaded-skill metadata for other extensions.
+
+The template catalog retains each eligible toolset after activation. When the agent activates the last eligible inactive group, the runtime removes `activate_toolset` from the active tools while retaining the catalog. Pi adds the activated tools' declarations at their recorded conversation positions, and the model calls those tools directly by name.
+
+On OpenAI models with conversation-local tool support, including `openai/gpt-6.1-sol` and `openai-codex/gpt-6.1-sol`, activation and restored tool ordering preserve earlier serialized request items and leading fields. Pi records later prompt changes in history. Other providers and models retain tool functionality but may rebuild the request prefix. After compaction, pi establishes a new cacheable context. Provider cache expiration and cache-billing behavior remain outside this guarantee.
+
+Custom compaction and skill restoration use the same effective prompt for request-budget estimates. Skill restoration also retains current tool declarations in its estimate.
+
 ## Configuration
 
 Default config file: `~/.pi/agent/agent-suite/system-prompt/config.json`.
@@ -50,7 +60,7 @@ Supported variables:
 | `{{contextFiles}}` | Loaded context files inside `<project_specific_instructions>` XML-style blocks. |
 | `{{skills}}` | Loaded skills as `<available_skills>` XML when the `read` tool is active, one `<skill>` with `<name>`, `<description>`, and `<location>` per entry. Skills with `disable-model-invocation` are omitted. It is empty when no skill remains. Values XML-escape `&`, `<`, `>`, `"`, and `'`. |
 
-Unsupported variables are removed from the rendered prompt. `{{toolsets}}` is expanded only where the template contains it: a custom template that omits it receives no trigger catalog. Before values are built, active tools are reconciled; the catalog contains only loaded, still-deferred toolsets with at least one tool allowed for the current agent. Registered tools activated by other extensions after startup remain available on later turns unless a current agent or toolset policy excludes them. Observed external deactivation is respected. Deactivation of a tool already hidden by policy cannot be observed through Pi's active-tool list; an explicit owner replacement can still retire that tool.
+Unsupported variables are removed from the rendered prompt. `{{toolsets}}` is expanded only where the template contains it: a custom template that omits it receives no trigger catalog. Before values are built, active tools are reconciled; the catalog contains every loaded toolset with at least one tool allowed for the current agent, including activated toolsets. Registered tools activated by other extensions after startup remain available on later turns unless a current agent or toolset policy excludes them. Observed external deactivation is respected. Deactivation of a tool already hidden by policy cannot be observed through Pi's active-tool list; an explicit owner replacement can still retire that tool.
 
 For `{{toolGuidelines}}`, the formatter reads each active tool's contributions from `options.toolGuidelines` in the order returned by `pi.getActiveTools()` after runtime policy reconciliation. It excludes names in `options.hiddenTools`, then appends global `options.promptGuidelines` independently of tool selection. It trims each contribution, removes empty results, and retains the first occurrence of each normalized value. Contributions from inactive or hidden tools are excluded even when Pi retains their metadata.
 

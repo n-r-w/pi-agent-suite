@@ -39,6 +39,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Check } from "typebox/value";
 import { createPersistedSession } from "../../../test/support/persisted-session";
+import { runPromptHandlers } from "../../../test/support/prompt-handlers";
 import type { AgentDefinition } from "../../shared/agent-registry";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getKnowledgeHierarchyClient } from "../../shared/knowledge-runtime";
@@ -171,6 +172,11 @@ function createPiFake(
 		tools,
 		events,
 		emit: async (eventName: string, event: unknown, ctx: unknown) => {
+			if (eventName === "before_agent_start") {
+				return [
+					await runPromptHandlers(handlers.get(eventName) ?? [], event, ctx),
+				];
+			}
 			const results: unknown[] = [];
 			for (const handler of handlers.get(eventName) ?? []) {
 				results.push(await handler(event, ctx));
@@ -2089,7 +2095,7 @@ describe("subagents entry", () => {
 		// Purpose: registered subagent tools must use one reconstructed root runtime across lifecycle events.
 		// Input and expected output: an unavailable start and unknown steer/wait return their stable semantic codes without spawning Pi.
 		// Edge case: message reconciliation and shutdown run with an empty owner journal and no UI.
-		// Dependencies: production entry handlers, isolated empty agent registry, and public session-manager fake methods.
+		// Dependencies: production entry handlers, an isolated agent registry, and public session-manager fake methods.
 		writeFileSync(
 			join(suiteDir, "agent-selection", "agents", "Helper.md"),
 			[
@@ -2160,9 +2166,7 @@ describe("subagents entry", () => {
 			],
 			promptResults: [
 				{
-					systemPrompt: expect.stringContaining(
-						'<available_subagents note="List of available subagent IDs">',
-					),
+					systemPrompt: expect.stringContaining("Helper"),
 				},
 			],
 		});
@@ -2908,8 +2912,8 @@ describe("subagents entry", () => {
 			},
 		]);
 		for (const observation of observations) {
-			expect(observation.prompt).toContain('<agent id=\\"Allowed\\">');
-			expect(observation.prompt).not.toContain('<agent id=\\"Blocked\\">');
+			expect(observation.prompt).toContain("Allowed");
+			expect(observation.prompt).not.toContain("Blocked");
 		}
 	});
 

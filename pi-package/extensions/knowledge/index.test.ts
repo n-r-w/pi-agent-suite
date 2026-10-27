@@ -8,6 +8,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { adaptPromptHandler } from "../../../test/support/prompt-handlers";
 import {
 	getTriggerAlgorithm,
 	getTriggerAlgorithms,
@@ -146,7 +147,10 @@ function createPi() {
 	const pi = {
 		events: new EventEmitter(),
 		on: (event: string, handler: (...args: unknown[]) => unknown) => {
-			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			handlers.set(event, [
+				...(handlers.get(event) ?? []),
+				adaptPromptHandler(event, handler) as typeof handler,
+			]);
 		},
 		getThinkingLevel: () => "high",
 		registerMessageRenderer: () => {},

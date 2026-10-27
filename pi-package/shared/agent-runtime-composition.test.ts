@@ -3,6 +3,7 @@ import {
 	createEventBus,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { adaptPromptHandler } from "../../test/support/prompt-handlers";
 import { getAgentRuntimeComposition } from "./agent-runtime-composition.ts";
 
 interface Handler {
@@ -20,7 +21,10 @@ function createPi(
 		handlers,
 		events: createEventBus(),
 		on(name: string, run: Handler["run"]): void {
-			handlers.push({ name, run });
+			handlers.push({
+				name,
+				run: adaptPromptHandler(name, run) as Handler["run"],
+			});
 		},
 		getActiveTools(): readonly string[] {
 			return activeTools;

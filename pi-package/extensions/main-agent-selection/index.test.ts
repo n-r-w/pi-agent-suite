@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { adaptPromptHandler } from "../../../test/support/prompt-handlers";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { SUBAGENT_AGENT_ID_ENV } from "../../shared/subagent-environment";
 import { publishWorkflowCatalogPolicy } from "../../shared/workflow-policy";
@@ -224,7 +225,10 @@ function createExtensionApiFake(
 			},
 		},
 		on(eventName: string, handler: unknown): void {
-			handlers.push({ eventName, handler });
+			handlers.push({
+				eventName,
+				handler: adaptPromptHandler(eventName, handler),
+			});
 		},
 		registerCommand(
 			name: string,
@@ -570,11 +574,22 @@ function getShortcut(
 	return registeredShortcut;
 }
 
-/** Returns one registered event handler from the fake API. */
+/** Returns a registered handler and preserves shutdown delivery to all extensions. */
 function getHandler(
 	pi: ExtensionApiFake,
 	eventName: string,
 ): (event: unknown, ctx: unknown) => unknown {
+	if (eventName === "session_shutdown") {
+		return async (event, ctx) => {
+			for (const item of pi.handlers.filter(
+				(item) => item.eventName === eventName,
+			)) {
+				if (typeof item.handler === "function") {
+					await item.handler(event, ctx);
+				}
+			}
+		};
+	}
 	const handler = pi.handlers.find(
 		(item) => item.eventName === eventName,
 	)?.handler;

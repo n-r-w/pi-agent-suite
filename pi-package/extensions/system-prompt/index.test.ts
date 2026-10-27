@@ -7,6 +7,7 @@ import {
 	createEventBus,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { runPromptHandlers } from "../../../test/support/prompt-handlers";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import systemPrompt from "./index";
@@ -160,32 +161,16 @@ async function runBeforeAgentStartHandlers(
 	event: BeforeAgentStartEventFake,
 	ctx: ContextFake["ctx"],
 ): Promise<string> {
-	let currentEvent = event;
-	for (const item of pi.handlers.filter(
-		(handler) => handler.eventName === "before_agent_start",
-	)) {
-		if (typeof item.handler !== "function") {
-			continue;
-		}
-
-		const result = await item.handler(currentEvent, ctx);
-		if (isPromptResult(result)) {
-			currentEvent = { ...currentEvent, systemPrompt: result.systemPrompt };
-		}
-	}
-
-	return currentEvent.systemPrompt;
-}
-
-/** Detects before_agent_start results that replace the chained system prompt. */
-function isPromptResult(
-	value: unknown,
-): value is { readonly systemPrompt: string } {
+	const handlers = pi.handlers
+		.filter((item) => item.eventName === "before_agent_start")
+		.map((item) => item.handler)
+		.filter(
+			(handler): handler is (event: unknown, ctx: unknown) => unknown =>
+				typeof handler === "function",
+		);
 	return (
-		typeof value === "object" &&
-		value !== null &&
-		"systemPrompt" in value &&
-		typeof value.systemPrompt === "string"
+		(await runPromptHandlers(handlers, event, ctx))?.systemPrompt ??
+		event.systemPrompt
 	);
 }
 
@@ -199,6 +184,7 @@ function createBeforeAgentStartEvent(
 		images: [],
 		systemPrompt: "Original pi prompt",
 		systemPromptOptions: {
+			sections: {},
 			cwd: "/tmp/project",
 			selectedTools: ["read", "bash", "hidden"],
 			toolSnippets: {
@@ -735,7 +721,7 @@ describe("system-prompt", () => {
 		});
 	});
 
-	test("removes the trigger after activation and restores it after history rewind", async () => {
+	test("preserves catalog rendering while activation availability follows branch state", async () => {
 		// Purpose: prompt discovery must follow the runtime's active branch state.
 		// Input and expected output: one eligible toolset activates, then an empty history branch restores it.
 		// Edge case: activate_toolset is removed with the final trigger and restored on rewind.
@@ -762,7 +748,7 @@ describe("system-prompt", () => {
 				context.ctx,
 			);
 
-			await runBeforeAgentStartHandlers(
+			const initial = await runBeforeAgentStartHandlers(
 				pi,
 				createBeforeAgentStartEvent(),
 				context.ctx,
@@ -775,7 +761,7 @@ describe("system-prompt", () => {
 					createBeforeAgentStartEvent(),
 					context.ctx,
 				),
-			).toBe("");
+			).toBe(initial);
 			expect(pi.getActiveTools()).not.toContain("activate_toolset");
 
 			await getRegisteredHandler(pi, "session_tree")(
@@ -791,9 +777,7 @@ describe("system-prompt", () => {
 					createBeforeAgentStartEvent(),
 					context.ctx,
 				),
-			).toBe(
-				'<toolsets>\n<toolset name="files" description="Read files"/>\n</toolsets>',
-			);
+			).toBe(initial);
 			expect(pi.getActiveTools()).toContain("activate_toolset");
 		});
 	});
@@ -940,14 +924,14 @@ describe("system-prompt", () => {
 		});
 	});
 
-	test("ignores legacy config and validates the bundled default template", async () => {
-		// Purpose: system-prompt must use only the suite-owned config path and still be enabled when config is missing.
-		// Input and expected output: a legacy config points to a custom template, but missing suite config uses the bundled Markdown template.
-		// Edge case: the bundled prompt path is internal, so the test checks behavior rather than repository layout.
+	test("ignores legacy config and publishes the bundled default template", async () => {
+		// Purpose: missing suite config must enable the bundled template independently of legacy config.
+		// Input and expected output: an invalid legacy template is ignored and the default rendering is published as a native section.
+		// Edge case: default template wording and placeholders can change without changing config precedence.
 		// Dependencies: this test uses isolated agent/suite directories and in-memory pi lifecycle fakes.
 		await withIsolatedAgentDir(async ({ agentDir, suiteDir }) => {
 			const legacyTemplateFile = join(agentDir, "legacy-template.md");
-			await writeFile(legacyTemplateFile, "Legacy prompt");
+			await writeFile(legacyTemplateFile, "{{#legacyOnly}}");
 			await writeLegacyConfig(agentDir, { templateFile: legacyTemplateFile });
 			const pi = createExtensionApiFake();
 			const context = createContextFake();
@@ -957,15 +941,12 @@ describe("system-prompt", () => {
 				{ type: "session_start", reason: "startup" },
 				context.ctx,
 			);
-			const prompt = await runBeforeAgentStartHandlers(
-				pi,
-				createBeforeAgentStartEvent({ cwd: suiteDir }),
-				context.ctx,
-			);
+			const event = createBeforeAgentStartEvent({ cwd: suiteDir });
+			await runBeforeAgentStartHandlers(pi, event, context.ctx);
 
-			expect(prompt).not.toBe("Legacy prompt");
-			expect(prompt).not.toBe("Original pi prompt");
-			expect(prompt).toContain(suiteDir.replace(/\\/g, "/"));
+			expect(
+				Object.keys(event.systemPromptOptions.sections ?? {}),
+			).toHaveLength(1);
 			expect(context.notifications).toEqual([]);
 		});
 	});

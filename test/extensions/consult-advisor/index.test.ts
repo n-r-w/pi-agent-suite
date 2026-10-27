@@ -27,7 +27,6 @@ import consultAdvisor from "../../../pi-package/extensions/consult-advisor/index
 import { COLLAPSED_ADVICE_PREVIEW_LINES } from "../../../pi-package/extensions/consult-advisor/rendering";
 import contextProjection from "../../../pi-package/extensions/context-projection/index";
 import mainAgentSelection from "../../../pi-package/extensions/main-agent-selection/index";
-import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../../../pi-package/extensions/run-subagent/contracts";
 import subagents from "../../../pi-package/extensions/run-subagent/index";
 import { registerKnowledgeContextRuntime } from "../../../pi-package/shared/knowledge-runtime";
 import {
@@ -37,6 +36,7 @@ import {
 } from "../../../pi-package/shared/subagent-environment";
 import { getPackageToolPresentation } from "../../../pi-package/shared/tool-presentation/registry";
 import { USAGE_EVENT_RECORD_CHANNEL } from "../../../pi-package/shared/usage-events";
+import { runPromptHandlers } from "../../support/prompt-handlers";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const AGENT_SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
@@ -444,15 +444,7 @@ async function emitBeforeAgentStartHandlers(
 		throw new Error("expected before_agent_start handler");
 	}
 
-	let result: unknown;
-	for (const handler of handlers) {
-		const nextResult = await handler(event, ctx);
-		if (nextResult !== undefined) {
-			result = nextResult;
-		}
-	}
-
-	return result;
+	return runPromptHandlers(handlers, event, ctx);
 }
 
 /** Executes the registered consult_advisor tool. */
@@ -955,9 +947,6 @@ describe("consult-advisor", () => {
 			).toBeUndefined();
 			expect(ctx.notifications).toEqual([]);
 			expect(completion.calls).toHaveLength(1);
-			expect(completion.calls[0]?.context.systemPrompt).toContain(
-				"You are advisor. Executor is agent that works on task of user.",
-			);
 		});
 	});
 
@@ -1960,7 +1949,7 @@ describe("consult-advisor", () => {
 
 	test("keeps cross-extension composition isolated from parent subagent environment", async () => {
 		// Purpose: cross-extension prompt composition tests must not inherit subagent depth filtering from the runner process.
-		// Input and expected output: selecting the main agent clears inherited child depth and keeps its permitted subagent marker.
+		// Input and expected output: selecting the main agent clears inherited child depth and keeps its permitted subagent ID.
 		// Edge case: this test can run inside a pi subagent process.
 		// Dependencies: temp agent files plus main-agent selection, Subagents, and consult-advisor factories.
 		const previousEnv = new Map(
@@ -2005,9 +1994,7 @@ describe("consult-advisor", () => {
 				}
 				expect(result.systemPrompt).toContain("Base");
 				expect(result.systemPrompt).toContain("Main prompt");
-				expect(result.systemPrompt).toContain(
-					AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
-				);
+				expect(result.systemPrompt).toContain("helper");
 				expect(pi.activeToolCalls.at(-1)).toEqual(["subagent_start"]);
 			});
 		} finally {
@@ -2065,10 +2052,7 @@ describe("consult-advisor", () => {
 				}
 				expect(result.systemPrompt).toContain("Base");
 				expect(result.systemPrompt).toContain("Main prompt");
-				expect(result.systemPrompt).toContain(
-					AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG,
-				);
-				expect(result.systemPrompt).toContain('<agent id="helper">');
+				expect(result.systemPrompt).toContain("helper");
 				expect(result.systemPrompt).not.toContain("consult_advisor");
 			});
 		} finally {

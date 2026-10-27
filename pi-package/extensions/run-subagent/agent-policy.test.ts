@@ -298,7 +298,7 @@ describe("effective callable-agent policy", () => {
 				throw new Error("runtime composition handler was not registered");
 			}
 			const result = (await beforeAgentStart(
-				{ systemPrompt: "Base" },
+				{ systemPrompt: "Base", systemPromptOptions: { sections: {} } },
 				{ cwd: "/tmp" },
 			)) as { readonly systemPrompt?: string } | undefined;
 			expect({ activeTools, result }).toEqual({
@@ -361,7 +361,10 @@ describe("effective callable-agent policy", () => {
 			if (beforeAgentStart === undefined) {
 				throw new Error("runtime composition handler was not registered");
 			}
-			await beforeAgentStart({ systemPrompt: "Base" }, { cwd: "/tmp" });
+			await beforeAgentStart(
+				{ systemPrompt: "Base", systemPromptOptions: { sections: {} } },
+				{ cwd: "/tmp" },
+			);
 
 			expect(activeTools).toEqual(expectedTools);
 		} finally {
@@ -463,7 +466,10 @@ describe("effective callable-agent policy", () => {
 				throw new Error("runtime composition handler was not registered");
 			}
 			expect(
-				await beforeAgentStart({ systemPrompt: "Base" }, { cwd: "/tmp" }),
+				await beforeAgentStart(
+					{ systemPrompt: "Base", systemPromptOptions: { sections: {} } },
+					{ cwd: "/tmp" },
+				),
 			).toBeUndefined();
 		} finally {
 			if (previousAgentId === undefined) {

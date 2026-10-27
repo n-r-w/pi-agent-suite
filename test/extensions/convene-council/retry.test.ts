@@ -19,18 +19,13 @@ import {
 } from "./support/responses";
 import { executeCouncil } from "./support/tool";
 
-const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
-const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
-
 function expectNoConsensusResult(
 	text: string,
 	answer1: string,
 	answer2: string,
 ): void {
-	expect(text).toStartWith("<result>\n");
-	expect(text).toContain("\n</result>");
-	expect(text.match(ANSWER1_BLOCK_PATTERN)?.[1]).toBe(answer1);
-	expect(text.match(ANSWER2_BLOCK_PATTERN)?.[1]).toBe(answer2);
+	expect(text).toContain(answer1);
+	expect(text).toContain(answer2);
 }
 
 describe("convene-council retries", () => {

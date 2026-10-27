@@ -44,7 +44,13 @@ Skill restoration retains the replayed current tool declarations when estimating
 
 Using the raw native prompt for these estimates could count excluded text and change which skill files fit after compaction. That accounting method is rejected because it changes a downstream behavior that the representation change must preserve. Reusing the shared effective-prompt view addresses this consumer dependency without another prompt store or a different estimation policy.
 
-The intentional change is the representation of updates: pi records and announces later section updates and removals in history. The boundary derives each outgoing prompt update from the recorded state at that position. It must not replace the initial prompt with the latest rendered text on every request. The package preserves the instruction bodies and the decisions about which bodies apply. An implementation has not yet been tested for behavioral equivalence.
+The intentional change is the representation of updates: pi records and announces later section updates and removals in history. The boundary derives each outgoing prompt update from the recorded state at that position. It must not replace the initial prompt with the latest rendered text on every request.
+
+The package preserves the instruction bodies and the decisions about which bodies apply. The implementation uses `pi-package/shared/prompt-composition.ts` for shared publication, historical presentation, and effective-prompt accounting. Unit tests cover native-section publication, historical positions, section removal, empty renderings, and extension-runtime replacement.
+
+The `runSession` helper in `test/integration/toolset-cache-invalidation.test.ts` starts real `AgentSession` instances with all four contributors above. Each main-agent and child-agent scenario activates a deferred group, executes its tools, and continues with another user turn. When a separate process reopens the saved native session, the fixture extension registers the same tools in reverse order. The restored agent executes a tool without reactivation. The tests intercept both target serializers before transport. For every consecutive request pair, they compare the previously submitted ordered `input` prefix and all remaining request fields, including Codex `instructions`. Fixture extensions supply scripted model responses and tool results.
+
+The package-loading integration tests inspect the effective outgoing prompt through the real pi CLI in main-agent and child-agent modes. Provider cache-billing measurements are outside these checks.
 
 ### Conversation-local tool declarations
 Keep the activation and permission logic in `ToolsetRuntimeImpl.activate`. The runtime changes actual tool availability through the existing composition and `pi.setActiveTools()` path. Pi records the corresponding tool declarations in history.

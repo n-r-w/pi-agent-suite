@@ -220,6 +220,9 @@ describe("toolset runtime", () => {
 		);
 
 		expect(providerActivated).toBe(true);
+		expect(runtime.getVisibleToolsets().map((toolset) => toolset.name)).toEqual(
+			["files"],
+		);
 		expect(activeTools).toEqual(["read", "files_read"]);
 		expect(result?.content).toEqual([
 			{
@@ -462,7 +465,7 @@ describe("toolset runtime", () => {
 		getAgentRuntimeComposition(first.pi).reconcileActiveTools();
 		getAgentRuntimeComposition(second.pi).reconcileActiveTools();
 		await firstRuntime.activate("files");
-		expect(firstRuntime.getVisibleToolsets()).toEqual([]);
+		expect(firstRuntime.getVisibleToolsets()).toHaveLength(1);
 		expect(secondRuntime.getVisibleToolsets()).toHaveLength(1);
 	});
 
@@ -479,7 +482,7 @@ describe("toolset runtime", () => {
 
 		runtime.restoreFromBranch(branch, ctx);
 		expect(controls.activeTools).toEqual(["files_read"]);
-		expect(runtime.getVisibleToolsets()).toEqual([]);
+		expect(runtime.getVisibleToolsets()).toHaveLength(1);
 
 		branch = [];
 		await controls.emit("session_tree", { type: "session_tree" }, ctx);
