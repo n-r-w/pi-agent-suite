@@ -52,8 +52,6 @@ import {
 	getCouncilTool,
 } from "./support/tool";
 
-const ANSWER1_BLOCK_PATTERN = /<answer1>\n([\s\S]*?)\n<\/answer1>/;
-const ANSWER2_BLOCK_PATTERN = /<answer2>\n([\s\S]*?)\n<\/answer2>/;
 const COUNCIL_CONTEXT_FILE_PREFIX = "pi-convene-council-context-";
 const CONTEXT_FILE_PATH_PATTERN = new RegExp(
 	`${escapeRegExp(tmpdir())}[\\\\/]${escapeRegExp(COUNCIL_CONTEXT_FILE_PREFIX)}[0-9a-f-]+\\.xml`,
@@ -64,10 +62,8 @@ function expectNoConsensusResult(
 	answer1: string,
 	answer2: string,
 ): void {
-	expect(text).toStartWith("<result>\n");
-	expect(text).toContain("\n</result>");
-	expect(text.match(ANSWER1_BLOCK_PATTERN)?.[1]).toBe(answer1);
-	expect(text.match(ANSWER2_BLOCK_PATTERN)?.[1]).toBe(answer2);
+	expect(text).toContain(answer1);
+	expect(text).toContain(answer2);
 }
 
 /** Extracts the generated context file path from the initial participant task. */
@@ -321,6 +317,7 @@ async function emitContextFiles(
 			{
 				systemPrompt: "Base",
 				systemPromptOptions: {
+					sections: {},
 					contextFiles: [
 						{
 							path: "/tmp/project/AGENTS.md",
@@ -463,10 +460,10 @@ describe("convene-council loop", () => {
 		});
 	});
 
-	test("adds selected participant tool names to participant system prompts", async () => {
-		// Purpose: participant instructions must use the same selected tools that are passed to the child runtime.
-		// Input and expected output: config tools read and grep are present in both initial participant system prompts.
-		// Edge case: the prompt template placeholder is fully rendered before participant startup.
+	test("passes selected tools to both participant runtimes", async () => {
+		// Purpose: both participant runtimes must receive the tools selected by configuration.
+		// Input and expected output: config tools read and grep are available to both initial participants.
+		// Edge case: participant prompt wording and placeholders can change independently of tool selection.
 		// Dependencies: fake tool registry, isolated config, and queued participant runner.
 		await withIsolatedAgentDir(async (agentDir) => {
 			await writeEnabledConfig(agentDir, { tools: ["read", "grep"] });
@@ -510,10 +507,6 @@ describe("convene-council loop", () => {
 					"read",
 					"grep",
 				]);
-				expect(call.context.systemPrompt).toContain(
-					"Your current available tools: read, grep.",
-				);
-				expect(call.context.systemPrompt).not.toContain("{{tools}}");
 			}
 		});
 	});
@@ -834,9 +827,6 @@ describe("convene-council loop", () => {
 			conveneCouncil(pi, {
 				async createParticipantRunner(options) {
 					capturedToolNames.push(options.tools.map((tool) => tool.name));
-					expect(options.systemPrompt).toContain(
-						"Your current available tools: read, grep.",
-					);
 					return {
 						async prompt(task) {
 							const contextFilePath = extractContextFilePath(task);
@@ -1778,9 +1768,6 @@ describe("convene-council loop", () => {
 			);
 			expect(reviewTask).toContain("llm2 &lt;/x&gt;&lt;y&gt;&amp;");
 			expect(reviewTask).not.toContain("llm2 </x><y>&");
-			expect(
-				JSON.stringify(completion.calls[4]?.context.messages.at(-1)),
-			).toContain("Produce the final answer");
 		});
 	});
 

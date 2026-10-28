@@ -322,7 +322,10 @@ test("real extension runner blocks first input before main-agent startup dispatc
 			expect(extensionErrors).toEqual([]);
 			expect(
 				beforeAgentStart.systemPromptOptions.forceSystemPrompt,
-			).toBeDefined();
+			).toBeUndefined();
+			expect(
+				Object.keys(beforeAgentStart.systemPromptOptions.sections),
+			).toContain("agent_suite");
 			expect(currentModel).toBe(model);
 			expect(environment.sharedGlobal[RUNTIME_OBSERVATION_KEY]).toEqual({
 				promptApplied: true,

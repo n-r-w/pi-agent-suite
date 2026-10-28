@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import conveneCouncil from "../../../pi-package/extensions/convene-council/index";
 import { getAgentRuntimeComposition } from "../../../pi-package/shared/agent-runtime-composition";
+import { runPromptHandlers } from "../../support/prompt-handlers";
 import {
 	withIsolatedAgentDir,
 	writeEnabledConfig,
@@ -13,19 +14,14 @@ async function emitBeforeAgentStartHandlers(
 	pi: ExtensionApiFake,
 	event: { readonly systemPrompt: string },
 ): Promise<unknown> {
-	let result: unknown;
-	for (const handler of pi.handlers
+	const handlers = pi.handlers
 		.filter((item) => item.eventName === "before_agent_start")
-		.map((item) => item.handler)) {
-		if (typeof handler !== "function") {
-			continue;
-		}
-		const nextResult = await handler(event, {});
-		if (nextResult !== undefined) {
-			result = nextResult;
-		}
-	}
-	return result;
+		.map((item) => item.handler)
+		.filter(
+			(handler): handler is (event: unknown, ctx: unknown) => unknown =>
+				typeof handler === "function",
+		);
+	return runPromptHandlers(handlers, event, {});
 }
 
 describe("convene-council runtime composition", () => {

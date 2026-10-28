@@ -5,6 +5,7 @@ import type {
 	BuildSystemPromptOptions,
 	ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { getPromptComposition } from "../../shared/prompt-composition";
 import { readProjectRulesConfig } from "./config";
 import {
 	createProjectRulesPathPolicy,
@@ -38,7 +39,9 @@ type ProjectRulesReadResult =
 
 /** Appends project-local Markdown rules after the base system prompt is assembled. */
 export default function projectRules(pi: ExtensionAPI): void {
+	const composition = getPromptComposition(pi);
 	pi.on("before_agent_start", async (event, ctx) => {
+		const basePrompt = composition.read(event);
 		const configResult = readProjectRulesConfig();
 		if (configResult.kind === "invalid") {
 			reportIssue(ctx as SessionContextLike, configResult.issue);
@@ -63,9 +66,10 @@ export default function projectRules(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
-		return {
-			systemPrompt: `${typedEvent.systemPrompt}\n\n${renderProjectRules(rulesResult.rules)}`,
-		};
+		composition.publish(
+			event,
+			`${basePrompt}\n\n${renderProjectRules(rulesResult.rules)}`,
+		);
 	});
 }
 

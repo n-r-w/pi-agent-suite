@@ -11,6 +11,7 @@ import type {
 import { Text } from "@earendil-works/pi-tui";
 import { estimateTextTokens } from "../../shared/context-size";
 import { readNativeCompactionSettings } from "../../shared/native-compaction-settings";
+import { getPromptComposition } from "../../shared/prompt-composition";
 import { readRestorationConfig } from "./config";
 import {
 	findBranchRestoration,
@@ -131,6 +132,7 @@ export default function skillRestoration(pi: ExtensionAPI): void {
 				messages: event.messages,
 				timestamp,
 				systemHead: getRequestSystemHead(
+					pi,
 					ctx,
 					runPromptOptions?.forceSystemPrompt,
 				),
@@ -149,11 +151,14 @@ export default function skillRestoration(pi: ExtensionAPI): void {
 
 /** Selects the native or forced system head for the request estimate. */
 function getRequestSystemHead(
+	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	forcedPrompt: string | undefined,
 ): SystemMessage | undefined {
 	const current = getCurrentSystemMessage(
-		ctx.sessionManager.buildSessionProjection().messages,
+		getPromptComposition(pi).present(
+			ctx.sessionManager.buildSessionProjection().messages,
+		),
 	);
 	if (forcedPrompt === undefined) {
 		return current;

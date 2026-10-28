@@ -121,6 +121,16 @@ function prepareFixture(root: string, mode: string) {
 	const model =
 		mode === "prompt-budget" ? { ...MODEL, contextWindow: 50000 } : MODEL;
 	if (mode === "prompt-budget") {
+		const promptDir = join(root, "suite", "system-prompt");
+		const templateFile = join(root, "budget-template.md");
+		mkdirSync(promptDir, { recursive: true });
+		// The fixture head makes the skill exceed the request budget independently of bundled template edits.
+		const headWordCount = 4000;
+		writeFileSync(templateFile, "head ".repeat(headWordCount));
+		writeFileSync(
+			join(promptDir, "config.json"),
+			JSON.stringify({ templateFile }),
+		);
 		const repeats = 47000;
 		writeFileSync(
 			skill,

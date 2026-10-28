@@ -125,6 +125,9 @@ function createExtensionApiFake(thinkingLevel = "high"): ExtensionApiFake {
 		appendEntryCalls,
 		usageEventSources,
 		events: {
+			on(): () => void {
+				return () => {};
+			},
 			emit(_channel: string, payload: { readonly source?: unknown }): void {
 				usageEventSources.push(payload.source);
 			},
@@ -195,6 +198,9 @@ function createSessionFake(options?: {
 			},
 			getSystemPrompt(): string {
 				return "main system prompt";
+			},
+			sessionManager: {
+				buildSessionProjection: () => ({ messages: [] }),
 			},
 		},
 		notifications,

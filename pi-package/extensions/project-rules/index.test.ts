@@ -6,6 +6,7 @@ import type {
 	BuildSystemPromptOptions,
 	ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { runPromptHandlers } from "../../../test/support/prompt-handlers";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage";
 import projectRules from "./index";
 
@@ -350,31 +351,16 @@ async function runBeforeAgentStartHandlers(
 	event: BeforeAgentStartEventFake,
 	ctx: ContextFake["ctx"],
 ): Promise<string> {
-	let currentEvent = event;
-	for (const item of pi.handlers.filter(
-		(handler) => handler.eventName === "before_agent_start",
-	)) {
-		if (typeof item.handler !== "function") {
-			continue;
-		}
-
-		const result = await item.handler(currentEvent, ctx);
-		if (isPromptResult(result)) {
-			currentEvent = { ...currentEvent, systemPrompt: result.systemPrompt };
-		}
-	}
-
-	return currentEvent.systemPrompt;
-}
-
-function isPromptResult(
-	value: unknown,
-): value is { readonly systemPrompt: string } {
+	const handlers = pi.handlers
+		.filter((item) => item.eventName === "before_agent_start")
+		.map((item) => item.handler)
+		.filter(
+			(handler): handler is (event: unknown, ctx: unknown) => unknown =>
+				typeof handler === "function",
+		);
 	return (
-		typeof value === "object" &&
-		value !== null &&
-		"systemPrompt" in value &&
-		typeof value.systemPrompt === "string"
+		(await runPromptHandlers(handlers, event, ctx))?.systemPrompt ??
+		event.systemPrompt
 	);
 }
 

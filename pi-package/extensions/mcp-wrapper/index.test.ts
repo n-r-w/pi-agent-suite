@@ -14,6 +14,7 @@ import {
 	createEventBus,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { adaptPromptHandler } from "../../../test/support/prompt-handlers";
 import { getAgentRuntimeComposition } from "../../shared/agent-runtime-composition.ts";
 import { AGENT_SUITE_DIR_ENV } from "../../shared/agent-suite-storage.ts";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime.ts";
@@ -133,7 +134,10 @@ function createExtensionApiFake(
 		tools,
 		events,
 		on(eventName: string, handler: RegisteredHandler["handler"]): void {
-			handlers.push({ eventName, handler });
+			handlers.push({
+				eventName,
+				handler: adaptPromptHandler(eventName, handler) as typeof handler,
+			});
 		},
 		registerTool(tool: ToolDefinition): void {
 			tools.push(tool);
@@ -739,7 +743,7 @@ describe("mcp-wrapper extension", () => {
 		await runSessionStart(pi, notifications, [], sessionManager);
 
 		expect(pi.getActiveTools()).toEqual(["deferred_search"]);
-		expect(getToolsetRuntime(pi).getVisibleToolsets()).toEqual([]);
+		expect(getToolsetRuntime(pi).getVisibleToolsets()).toHaveLength(1);
 		expect(pi.messages[0]?.content).toContain("Use deferred search carefully.");
 		expect(await runBeforeAgentStart(pi)).toBe("Base prompt");
 		expect(

@@ -34,6 +34,7 @@ import {
 } from "../../shared/model-settings";
 import { expandHomePath } from "../../shared/path-expansion";
 import { formatProjectionTasksFailure } from "../../shared/projection-tasks";
+import { getPromptComposition } from "../../shared/prompt-composition";
 import {
 	isReasoningLevel,
 	type ReasoningLevel,
@@ -266,7 +267,7 @@ async function handleSessionBeforeCompact(
 			summarizationModel: resolved.runtime.model,
 			mainModel: ctx.model,
 			...projectedContexts,
-			mainSystemPrompt: ctx.getSystemPrompt(),
+			mainSystemPrompt: getPromptComposition(pi).getEffectivePrompt(ctx),
 			activeTools: buildActiveToolDefinitions(pi),
 			mainModelReserveTokens: event.preparation.settings.reserveTokens,
 			safetyMarginTokens: ADAPTIVE_SAFETY_MARGIN_TOKENS,

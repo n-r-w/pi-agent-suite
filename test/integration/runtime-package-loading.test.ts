@@ -154,12 +154,13 @@ function writePromptDumpExtension(directory: string): string {
 		[
 			'import { writeFileSync } from "node:fs";',
 			"",
+			'import { getCurrentSystemMessage, getSystemMessageText } from "@earendil-works/pi-ai";',
 			"export default function dumpPrompt(pi) {",
 			...RUNTIME_TEST_PROVIDER_LINES,
-			'\tpi.on("before_agent_start", (event) => {',
+			'\tpi.on("context_with_system", (event) => {',
 			"\t\tconst dumpFile = process.env.PI_PROMPT_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_PROMPT_DUMP_FILE is required");',
-			"\t\twriteFileSync(dumpFile, event.systemPrompt);",
+			"\t\twriteFileSync(dumpFile, getSystemMessageText(getCurrentSystemMessage(event.messages)));",
 			"\t\tprocess.exit(23);",
 			"\t});",
 			"}",
@@ -314,6 +315,7 @@ function writeWorkflowRuntimeDumpExtension(
 						`import { getAgentRuntimeComposition } from ${JSON.stringify(mainContributionReset.runtimeCompositionUrl)};`,
 					]),
 			"",
+			'import { getCurrentSystemMessage, getSystemMessageText } from "@earendil-works/pi-ai";',
 			"export default function dumpWorkflowRuntime(pi) {",
 			...RUNTIME_TEST_PROVIDER_LINES,
 			...(mainContributionReset === undefined
@@ -323,11 +325,8 @@ function writeWorkflowRuntimeDumpExtension(
 						`\t\tgetAgentRuntimeComposition(pi).setSelectedAgentContribution({ prompt: "Runtime reset", tools: ${JSON.stringify(mainContributionReset.tools)} });`,
 						"\t});",
 					]),
-			'\tlet systemPrompt = "";',
-			'\tpi.on("before_agent_start", (event) => {',
-			"\t\tsystemPrompt = event.systemPrompt;",
-			"\t});",
-			'\tpi.on("context", (event) => {',
+			'\tpi.on("context_with_system", (event) => {',
+			"\t\tconst systemPrompt = getSystemMessageText(getCurrentSystemMessage(event.messages));",
 			"\t\tconst dumpFile = process.env.PI_WORKFLOW_RUNTIME_DUMP_FILE;",
 			'\t\tif (dumpFile === undefined) throw new Error("PI_WORKFLOW_RUNTIME_DUMP_FILE is required");',
 			"\t\tconst activeTools = pi.getActiveTools();",
@@ -335,7 +334,7 @@ function writeWorkflowRuntimeDumpExtension(
 			"\t\twriteFileSync(dumpFile, JSON.stringify({",
 			"\t\t\tactiveTools,",
 			"\t\t\tactiveToolDescriptions: Object.fromEntries(activeTools.map((name) => [name, descriptions[name]])),",
-			"\t\t\tcontextMessages: event.messages,",
+			"\t\t\tcontextMessages: event.messages.filter(message => message.role !== 'system'),",
 			"\t\t\tsystemPrompt,",
 			"\t\t}, null, 2));",
 			"\t\tprocess.exit(23);",
@@ -427,17 +426,10 @@ test("runtime package loading keeps selected-agent allowlist across split entrie
 		expect(result.status).toBe(23);
 		const prompt = readFileSync(promptDumpFile, "utf8");
 		expect(prompt).toContain("Test agent prompt");
-		expect(prompt).toContain(
-			[
-				'<available_subagents note="List of available subagent IDs">',
-				'<agent id="SubAgentExtractor">',
-				"Extractor &amp; verifier &lt;safe&gt;",
-				"</agent>",
-				"</available_subagents>",
-			].join("\n"),
-		);
-		expect(prompt).not.toContain('<agent id="SubAgentCoder">');
-		expect(prompt).not.toContain('<agent id="TestAgent">');
+		expect(prompt).toContain("SubAgentExtractor");
+		expect(prompt).toContain("Extractor &amp; verifier &lt;safe&gt;");
+		expect(prompt).not.toContain("SubAgentCoder");
+		expect(prompt).not.toContain("TestAgent");
 	} finally {
 		if (previousSuiteDir === undefined) {
 			delete process.env[AGENT_SUITE_DIR_ENV];
@@ -532,8 +524,9 @@ test("runtime child loading removes subagent context at maxDepth", () => {
 		expect(runtime.systemPrompt).toContain("PROJECT_AGENT_BODY");
 		expect(runtime.systemPrompt).not.toContain("Extractor prompt");
 		expect(runtime.systemPrompt).not.toContain("child extension");
-		expect(runtime.systemPrompt).not.toContain("<subagent_tools_guidelines>");
-		expect(runtime.systemPrompt).not.toContain("<available_subagents");
+		expect(runtime.systemPrompt).not.toContain("Project extractor");
+		expect(runtime.systemPrompt).not.toContain("SubAgentCoder");
+		expect(runtime.systemPrompt).not.toContain("TestAgent");
 		expect(runtime.tools).toContain("bash");
 		expect(runtime.activeTools).toEqual(["read"]);
 	} finally {
@@ -635,7 +628,7 @@ test("loads the complete package in isolated main and run-subagent child modes",
 
 test("exposes subagent runtime tools and available-agent context", () => {
 	// Purpose: real Pi must expose only subagent tools and compose the selected-agent policy before its first model turn.
-	// Input and expected output: controlled TestAgent and SubAgentExtractor definitions produce the active tools and structured available-agent section.
+	// Input and expected output: controlled TestAgent and SubAgentExtractor definitions produce the active tools and eligible-agent context.
 	// Edge case: the debug extension exits from before_agent_start after selecting the isolated model, before any network or authentication request.
 	// Dependencies: local Pi CLI, isolated package state, production runtime composition, and the provider-registering runtime dump extension.
 	const repositoryDir = process.cwd();
@@ -717,17 +710,12 @@ test("exposes subagent runtime tools and available-agent context", () => {
 			"subagent_query",
 		]);
 		expect(runtime.systemPrompt).toContain("Test agent prompt");
+		expect(runtime.systemPrompt).toContain("SubAgentExtractor");
 		expect(runtime.systemPrompt).toContain(
-			[
-				'<available_subagents note="List of available subagent IDs">',
-				'<agent id="SubAgentExtractor">',
-				"Extractor &amp; verifier &lt;safe&gt;",
-				"</agent>",
-				"</available_subagents>",
-			].join("\n"),
+			"Extractor &amp; verifier &lt;safe&gt;",
 		);
-		expect(runtime.systemPrompt).not.toContain('<agent id="SubAgentCoder">');
-		expect(runtime.systemPrompt).not.toContain('<agent id="TestAgent">');
+		expect(runtime.systemPrompt).not.toContain("SubAgentCoder");
+		expect(runtime.systemPrompt).not.toContain("TestAgent");
 	} finally {
 		if (agentDir !== undefined) {
 			rmSync(agentDir, { recursive: true, force: true });
@@ -1011,7 +999,6 @@ test.each([
 		expect(requests.map(({ order }) => order)).toEqual([1, 2, 3]);
 		expect(requests.map(({ roles }) => roles)).toEqual([
 			["system", "user", "user"],
-			["system", "user", "user", "assistant", "toolResult", "user", "user"],
 			[
 				"system",
 				"user",
@@ -1019,6 +1006,17 @@ test.each([
 				"assistant",
 				"toolResult",
 				"user",
+				"system",
+				"user",
+			],
+			[
+				"system",
+				"user",
+				"user",
+				"assistant",
+				"toolResult",
+				"user",
+				"system",
 				"user",
 				"assistant",
 				"toolResult",
@@ -1343,6 +1341,14 @@ function verifyWorkflowPolicyCases(cases: readonly WorkflowPolicyCase[]): void {
 		const activatePromptFile = join(scratchDir, "activate.md");
 		const transitionPromptFile = join(scratchDir, "transition.md");
 		const extensionPromptFile = join(scratchDir, "extension.md");
+		const systemTemplateFile = join(scratchDir, "system.md");
+		const systemPromptDir = join(suiteDir, "system-prompt");
+		mkdirSync(systemPromptDir, { recursive: true });
+		writeFileSync(systemTemplateFile, "{{toolGuidelines}}");
+		writeFileSync(
+			join(systemPromptDir, "config.json"),
+			JSON.stringify({ templateFile: systemTemplateFile }),
+		);
 		mkdirSync(workflowsDir, { recursive: true });
 		const workflowYaml =
 			"stages:\n  - id: start\n    description: Start\n    prompt: Start work\n    initial: true\n  - id: done\n    description: Done\n    prompt: Finish work\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n";
