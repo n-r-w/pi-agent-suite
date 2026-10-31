@@ -39,20 +39,20 @@ Out of scope: the `openai-codex` provider, other providers, HTTP proxies, and th
   - Feasibility: Confirmed. Pi sends the same model request over HTTP today.
   - Example: a firewall blocks the WebSocket handshake; the agent receives its response over HTTP, and the user sees a warning that WebSocket mode is unavailable.
 - [X] FRQ-03: The user can return model requests of `openai` to HTTP without removing the package.
-  - Origin: formulated. The user compares the providers to verify NRQ-01 and needs a way back if the endpoint changes its behavior.
+  - Origin: formulated. The user compares HTTP and WebSocket mode to verify NRQ-01 and needs a way back if the endpoint changes its behavior.
   - Goal: keep the change reversible.
   - Goal achievement: Partial. The requirement supports verification and rollback.
   - Feasibility: Confirmed. Pi has the setting `transport` with the value `sse`, which the package can honor.
   - Example: the user sets `transport` to `sse`, and the next model request goes over HTTP.
 
 ### Non-Functional Requirements
-- [X] NRQ-01: For model requests to `gpt-6.1-sol` with thinking `high`, a context of 50 to 200 thousand tokens, and an answer of up to 400 tokens, the average duration through `openai` exceeds the average duration through `openai-codex`, measured within the same hour, by at most 15%.
-  - Origin: formulated. The desired state in [problem.md](problem.md): a model request takes about as long as through `openai-codex`.
+- [X] NRQ-01: For model requests to `gpt-6.1-sol` with thinking `high`, a context of 50 to 200 thousand tokens, and an answer of up to 150 output tokens, the average duration through `openai` in WebSocket mode is at least 2 s shorter than the average duration through `openai` over HTTP on the same day.
+  - Origin: formulated. The desired state in [problem.md](problem.md): a model request takes about as long as through `openai-codex`. The transport sets only the delay of sending a request. The duration of longer answers depends on the generation speed of the endpoint, which varies between days on both endpoints ([measurements.md](measurements.md)).
   - Goal: shorten agent runs by removing the extra delay of each model request.
-  - Goal achievement: Full for the delay that comes from the way requests are sent.
-  - Feasibility: Confirmed. The endpoint accepts the token of pi and incremental requests, as the probe of 2026-10-31 showed. On pi 1.4.0, the `openai-codex` provider in WebSocket mode answers the same model requests in 5.9 to 7.3 s, and pi issue #11618 measured the same task 1.86 times faster through it than through `openai`.
-  - Verification: the same agent task runs several times, alternating the two providers in one hour, and the session logs give the duration of each model request.
-  - Example: if `openai-codex` averages 7.0 s in the hour of the check, `openai` averages at most 8.05 s.
+  - Goal achievement: Partial. The requirement covers the delay that comes from the way requests are sent; the generation of long answers is out of scope.
+  - Feasibility: Confirmed. On 2026-10-31, such requests took 4.99 s on average over 171 WebSocket requests and 7.93 s over 178 HTTP requests of the same day ([measurements.md](measurements.md)).
+  - Verification: pi session logs of one day give the duration of each model request over HTTP and in WebSocket mode. Requests of sessions with `transport` set to `sse` or with the extension disabled go over HTTP.
+  - Example: if requests over HTTP average 7.9 s on the day of the check, requests in WebSocket mode average at most 5.9 s.
 - [X] NRQ-02: In sessions through `openai`, the cache hit share of model requests with a context of at least 20 thousand tokens, without the first request of a session, is at least 94%.
   - Origin: formulated. The aliases stay on `openai` because its cache hit share is 94.6 to 95.2% over HTTP, which saves the subscription quota.
   - Goal: keep the subscription quota use as it is now.
