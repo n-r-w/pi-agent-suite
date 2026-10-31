@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server as NetServer } from "node:net";
+import { join } from "node:path";
 import type {
 	Api,
 	AssistantMessage,
@@ -29,6 +31,7 @@ import {
 	toolCallResponseEvents,
 } from "../../../test/support/fake-responses-websocket-server";
 import { sseResponse } from "../../../test/support/sse-response";
+import { createTempDir } from "../../../test/support/temp-dir";
 import openAIWebSocket, { createOpenAIWebSocketExtension } from "./index";
 
 type Handler = (...args: unknown[]) => unknown;
@@ -57,14 +60,36 @@ const READ_TOOL = {
 };
 
 const SESSION_ID = "session-1";
+const SUITE_DIR_ENV = "PI_AGENT_SUITE_DIR";
 const servers: FakeResponsesWebSocketServer[] = [];
 const httpRequests: Record<string, unknown>[] = [];
+let suiteDir: { path: string; remove: () => void } | undefined;
+let previousSuiteDir: string | undefined;
+
+beforeEach(() => {
+	// Keeps the extension away from the configuration of the user.
+	suiteDir = createTempDir("openai-websocket-");
+	previousSuiteDir = process.env[SUITE_DIR_ENV];
+	process.env[SUITE_DIR_ENV] = suiteDir.path;
+});
 
 afterEach(async () => {
 	jest.useRealTimers();
 	httpRequests.length = 0;
 	await Promise.all(servers.splice(0).map((server) => server.stop()));
+	if (previousSuiteDir === undefined) {
+		delete process.env[SUITE_DIR_ENV];
+	} else {
+		process.env[SUITE_DIR_ENV] = previousSuiteDir;
+	}
+	suiteDir?.remove();
 });
+
+function writeConfig(content: string): void {
+	const directory = join(suiteDir?.path ?? "", "openai-websocket");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(join(directory, "config.json"), content);
+}
 
 function startServer(
 	reply: (request: Record<string, unknown>, index: number) => FakeServerReply,
@@ -98,12 +123,16 @@ function createModel(baseUrl: string): Model<Api> {
 	return { ...model, baseUrl, contextWindow: 1_000_000 };
 }
 
-function loadExtension(
-	baseUrl: string,
-	extension: (pi: ExtensionAPI) => void = openAIWebSocket,
-): ExtensionHarness {
+/** Fake pi API that records the provider registration and the event handlers of the extension. */
+interface PiFake {
+	readonly provider: ProviderConfig | undefined;
+	readonly notifications: { message: string; type: unknown }[];
+	emit(eventName: string): Promise<void>;
+}
+
+function runExtension(extension: (pi: ExtensionAPI) => void): PiFake {
 	const handlers: { eventName: string; handler: Handler }[] = [];
-	const warnings: string[] = [];
+	const notifications: { message: string; type: unknown }[] = [];
 	let provider: ProviderConfig | undefined;
 	const pi = {
 		on: ((eventName: string, handler: Handler) => {
@@ -115,23 +144,40 @@ function loadExtension(
 		}) as ExtensionAPI["registerProvider"],
 	} as ExtensionAPI;
 	extension(pi);
-	if (provider === undefined) {
-		throw new Error("extension registered no provider");
-	}
-	const registered = provider;
 	const ctx = {
 		hasUI: true,
-		ui: { notify: (message: string) => warnings.push(message) },
+		ui: {
+			notify: (message: string, type: unknown) =>
+				notifications.push({ message, type }),
+		},
 	};
-	const model = createModel(baseUrl);
 	return {
-		provider: registered,
-		warnings,
+		provider,
+		notifications,
 		emit: async (eventName) => {
 			for (const entry of handlers.filter((h) => h.eventName === eventName)) {
 				await entry.handler({ type: eventName }, ctx);
 			}
 		},
+	};
+}
+
+function loadExtension(
+	baseUrl: string,
+	extension: (pi: ExtensionAPI) => void = openAIWebSocket,
+): ExtensionHarness {
+	const fake = runExtension(extension);
+	if (fake.provider === undefined) {
+		throw new Error("extension registered no provider");
+	}
+	const registered = fake.provider;
+	const model = createModel(baseUrl);
+	return {
+		provider: registered,
+		get warnings() {
+			return fake.notifications.map((notification) => notification.message);
+		},
+		emit: fake.emit,
 		request: (context, options = {}) => {
 			if (registered.streamSimple === undefined) {
 				throw new Error("extension registered no stream function");
@@ -577,6 +623,37 @@ describe("openai-websocket failures", () => {
 		expect(server.requests[1]?.message).not.toHaveProperty(
 			"previous_response_id",
 		);
+	});
+});
+
+describe("openai-websocket configuration", () => {
+	test("registers no provider when the configuration disables the extension", () => {
+		writeConfig('{"enabled": false}');
+
+		const fake = runExtension(openAIWebSocket);
+
+		expect(fake.provider).toBeUndefined();
+	});
+
+	test("registers the provider when the configuration enables the extension", () => {
+		writeConfig('{"enabled": true}');
+
+		const fake = runExtension(openAIWebSocket);
+
+		expect(fake.provider?.streamSimple).toBeDefined();
+	});
+
+	test("registers no provider and reports one error for an invalid configuration", async () => {
+		writeConfig('{"enabled": true, "unexpected": 1}');
+
+		const fake = runExtension(openAIWebSocket);
+		await fake.emit("session_start");
+		await fake.emit("session_start");
+
+		expect(fake.provider).toBeUndefined();
+		expect(fake.notifications).toEqual([
+			expect.objectContaining({ type: "error" }),
+		]);
 	});
 });
 

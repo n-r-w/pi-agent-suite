@@ -68,7 +68,8 @@ A request field that pi computes from the context size changes the request, so t
 - A new pi process starts with an empty pool, so the first model request of a resumed session is full. This serves SCN-08.
 
 ### Fallback and switching off
-- With `transport: "sse"`, the extension calls pi's implementation without its `fetch`, and requests go over HTTP. This serves FRQ-03.
+- With `"enabled": false` in `openai-websocket/config.json` of the agent suite directory, the extension registers no stream function, and pi sends `openai` requests over HTTP. Other providers keep their transport. A missing file enables the extension; an invalid file disables it and pi reports one error at session start. This serves FRQ-03.
+- With `transport: "sse"`, the extension calls pi's implementation without its `fetch`, and requests go over HTTP. This pi setting also moves the `openai-codex` provider to HTTP.
 - With `transport: "websocket"`, each model request opens its own connection and sends a full request, as the pi setting describes.
 - When the handshake fails, or the connection closes before the first event, the extension passes the same request to the original `fetch` and marks the session as HTTP. The user sees one warning per session through the pi interface, or on stderr without an interface. This serves FRQ-02.
 - When the connection fails after the response started, the stream ends with an error, pi retries under its retry settings, and the session moves to HTTP. A user abort and an API error do not move the session.
@@ -90,7 +91,7 @@ If a pi update stops passing `options.fetch` to the SDK, the extension's `fetch`
 | SCN-08 resumed session | empty pool, first request full |
 | SCN-09 history changes | the prefix check fails, full request |
 | SCN-10 session longer than one hour | 55-minute limit, retry on a new connection |
-| SCN-11 return to HTTP | `transport: "sse"` |
+| SCN-11 return to HTTP | `"enabled": false` in the extension configuration, or `transport: "sse"` |
 
 ### Verification
 - Unit tests next to the extension use a fake WebSocket server and fake `fetch`, as the testing rules of the project require. They cover the choice between full and incremental requests, the baseline capture, the fallback cases, abort, `previous_response_not_found`, the connection limit, pool expiry, and the case where pi does not call the injected `fetch`.
@@ -121,6 +122,7 @@ Each element has a reason:
 - HTTP sessions and the warning: FRQ-02.
 - Retry after `previous_response_not_found`: the server keeps only the last response of a connection, and pi's `openai-codex` provider handles the same error.
 - Retry after the connection limit: OpenAI closes connections after 60 minutes, and agent sessions last longer.
+- Configuration file with `enabled`: the user chose a switch that returns `openai` to HTTP and keeps the transport of `openai-codex`.
 - Check of the injected `fetch`: pi releases change internal behavior, and without the check a lost WebSocket mode would look like a slow provider.
 
 The solution leaves out: a statistics command, removal of parameters that a relay rejects, proxy support, the `OpenAI-Beta` header, prewarming with `generate: false`, and a setting with a list of providers. No requirement or observed case needs them.

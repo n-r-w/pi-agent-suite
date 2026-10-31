@@ -8,13 +8,27 @@ Pi still builds each request and processes each response. Request fields, usage,
 
 ## Configuration
 
-The extension has no configuration file. It follows the pi setting `transport`:
+The optional configuration file is `~/.pi/agent/agent-suite/openai-websocket/config.json`. `PI_AGENT_SUITE_DIR` replaces `~/.pi/agent/agent-suite` when set.
+
+```json
+{
+  "enabled": true
+}
+```
+
+| Name | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | Boolean | `true` | `false` returns model requests of the `openai` provider to pi's own HTTP transport. Other providers keep their transport. |
+
+A missing file enables the extension. Unknown fields, malformed JSON, and a non-Boolean `enabled` disable the extension; pi reports one error at session start, and model requests go over HTTP. The extension reads the file when it loads. Restart pi after changing the file.
+
+The extension also follows the pi setting `transport`:
 
 | `transport` | Behavior |
 | --- | --- |
 | `auto` (pi default), `websocket-cached` | A session reuses its connection and sends incremental requests. |
 | `websocket` | Each model request opens its own connection, sends the whole context, and closes the connection. |
-| `sse` | Model requests go over HTTP, as without the extension. |
+| `sse` | Model requests go over HTTP, as without the extension. The setting also moves the `openai-codex` provider of pi to HTTP. |
 
 Pi settings `websocketConnectTimeoutMs` and `httpIdleTimeoutMs` set the handshake timeout and the longest wait between two events of a response. Without `websocketConnectTimeoutMs`, the handshake timeout is 15 seconds.
 
