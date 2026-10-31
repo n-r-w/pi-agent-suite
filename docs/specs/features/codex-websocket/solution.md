@@ -18,7 +18,7 @@ So pi keeps request construction, the fields that Sign in with ChatGPT rejects, 
 - Continuation record, one for each connection: the last request in its full form, the ID of its response, the items of that response in the form that pi will send them in the next request, and a flag that these items are ready.
 - HTTP sessions: the session IDs that moved to HTTP after a failure of WebSocket mode.
 
-One connection serves one model request at a time. When a second model request of the same session starts while the connection is busy, for example an `ask_llm` call during an agent turn, the extension opens another connection for it. The data needs no locks: all requests of a pi process run on one JavaScript thread, and each subagent runs in its own pi process with its own pool.
+One connection serves one model request at a time. When a second model request of the same session starts while the connection is busy, the extension opens another connection for it. The data needs no locks: all requests of a pi process run on one JavaScript thread, and each subagent runs in its own pi process with its own pool.
 
 ### Sending a model request
 The `fetch` of the extension takes only a `POST` to a path that ends with `/responses` and carries a JSON body without `background: true`. It passes every other request to the original `fetch` unchanged.
@@ -51,11 +51,13 @@ The extension loader of pi maps only the pi-ai entry points `compat`, `models`, 
 1. a context with only the finished assistant message and the session's tool declarations;
 2. a context with only the same tool declarations.
 
-In each run, the extension's `onPayload` receives the finished body, saves its `input`, and throws, which stops the run before the client sends anything. The first `input` without the prefix from the second one gives the response items. The prefix exists because pi 1.4.0 can place tool declarations in `input` for models that support conversation-local declarations. This method follows `pi-openai-websocket` by angribot.
+In each run, the extension's `onPayload` receives the finished body, saves its `input`, and throws, which stops the run before the client sends anything. The first `input` without the prefix from the second one gives the response items. The prefix exists because pi 1.4.0 can place tool declarations in `input` for models that support conversation-local declarations. Pi adds a placeholder `function_call_output` for each tool call without a result, so the extension drops tool outputs from the response items, as pi's `openai-codex` provider does. This method follows `pi-openai-websocket` by angribot.
 
 The capture runs with the extension's own `onPayload`, so the `before_provider_request` hooks of the package, for example the response timer of `model-response-timeout`, do not run for it. Real model requests still pass through pi's `onPayload` and these hooks.
 
-Until the response items are ready, the record is incomplete, and a request that starts earlier is full. A response that ends with an error or an abort clears the record.
+The capture starts when pi finishes the response, and the next request on the connection waits for it. The capture takes milliseconds, and without the wait a fast tool would make the next request full. A response that ends with an error or an abort clears the record.
+
+A request field that pi computes from the context size changes the request, so the request is full. For example, pi lowers `max_output_tokens` when the context approaches the context window. Sign in with ChatGPT omits this field.
 
 ### Connection lifecycle
 - The extension closes a connection after 5 minutes without use or 55 minutes after its handshake. OpenAI closes connections after 60 minutes. A timer checks the pool once a minute while the pool has connections.
@@ -68,9 +70,10 @@ Until the response items are ready, the record is incomplete, and a request that
 ### Fallback and switching off
 - With `transport: "sse"`, the extension calls pi's implementation without its `fetch`, and requests go over HTTP. This serves FRQ-03.
 - With `transport: "websocket"`, each model request opens its own connection and sends a full request, as the pi setting describes.
-- When the handshake fails, or the connection closes before the first event, the extension passes the same request to the original `fetch` and marks the session as HTTP. The user sees one warning per process through the pi interface, or on the console without an interface. This serves FRQ-02.
+- When the handshake fails, or the connection closes before the first event, the extension passes the same request to the original `fetch` and marks the session as HTTP. The user sees one warning per session through the pi interface, or on stderr without an interface. This serves FRQ-02.
 - When the connection fails after the response started, the stream ends with an error, pi retries under its retry settings, and the session moves to HTTP. A user abort and an API error do not move the session.
-- A model call without a session ID, for example from `ask_llm`, opens its own connection, sends a full request, and closes the connection after the response.
+- A model call without a session ID opens its own connection, sends a full request, and closes the connection after the response.
+- Package extensions such as `ask_llm`, `consult_advisor`, and custom compaction call the model through `completeSimple` of `@earendil-works/pi-ai/compat`. That function uses pi's built-in provider without the extension's stream function, so these calls stay on HTTP and keep their current result.
 
 If a pi update stops passing `options.fetch` to the SDK, the extension's `fetch` receives no call. After such a response, the extension marks the session as HTTP and shows the same warning, so the user learns that WebSocket mode is lost.
 
@@ -79,7 +82,7 @@ If a pi update stops passing `options.fetch` to the SDK, the extension's `fetch`
 |---|---|
 | SCN-01 agent turn with tool calls | integration point, pooled connection, incremental requests |
 | SCN-02 subagent run | the same mechanisms in the child pi process, which loads the package |
-| SCN-03 call outside the agent loop | connection without a session, full request |
+| SCN-03 call outside the agent loop | `completeSimple` of package extensions uses pi's built-in provider over HTTP |
 | SCN-04 WebSocket unavailable | fallback to the original `fetch`, HTTP session, warning |
 | SCN-05 connection lost during a response | stream error, pi retry, HTTP session |
 | SCN-06 server lost the previous response | full request once on the same connection |
