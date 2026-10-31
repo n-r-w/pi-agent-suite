@@ -28,7 +28,7 @@ For a Responses request, the extension:
 - opens the connection with the request headers, without the headers that describe an HTTP body, such as `content-type` and `content-length`;
 - sends the body as one `response.create` message without the field `stream`, the shape that the probe of 2026-10-31 used;
 - returns to the SDK a response with status 200 whose body repeats each received event in server-sent event format, so the SDK decoder and pi's event processing read it as over HTTP;
-- turns an error event with an HTTP status before the first response event into an HTTP error response, so pi formats and retries it as over HTTP.
+- turns an error event with an HTTP status before the first response event into an HTTP error response with the status and the response headers of the event (`error.headers`, such as `retry-after` and `x-should-retry`), so pi formats and retries it as over HTTP.
 
 The connect timeout is the pi setting `websocketConnectTimeoutMs`, and the timeout between events is `httpIdleTimeoutMs`.
 
@@ -39,7 +39,8 @@ The extension sends an incremental request only when all of these hold:
 - the setting `transport` is `auto` or `websocket-cached`, and the request has a session ID;
 - the connection holds a continuation record whose response items are ready;
 - all fields of the new request except `input` equal the fields of the recorded request;
-- the new `input` begins with the recorded `input` followed by the recorded response items.
+- the new `input` begins with the recorded `input` followed by the recorded response items;
+- pi parsed the arguments of each tool call in the recorded response. Pi replaces arguments that it cannot parse with `{}` and sets `argumentsError`, while the server keeps the original text, so only a full request gives the model the same context as over HTTP.
 
 Then the message carries `previous_response_id` and only the remaining input items. In any other case the extension sends a full request on the connection. A full request is always correct and only slower.
 
@@ -63,7 +64,7 @@ A request field that pi computes from the context size changes the request, so t
 - The extension closes a connection after 5 minutes without use or 55 minutes after its handshake. OpenAI closes connections after 60 minutes. A timer checks the pool once a minute while the pool has connections.
 - When the server rejects an incremental request with `previous_response_not_found`, the extension forgets the record and sends the full request once on the same connection. This serves SCN-06.
 - When the server reports `websocket_connection_limit_reached` before the response starts, the extension opens a new connection and retries once. This serves SCN-10.
-- After an aborted or failed response, the state of the server is unknown, so the extension closes that connection.
+- After an aborted or failed response, the state of the server is unknown, so the extension closes that connection. This includes a response that the server completed while pi ended it with an abort or an error, for example when the user aborts during the processing of `response.completed`; the extension then closes the connection unless a later request already took it over: the connection is busy, or it holds the record of a later response.
 - On `session_shutdown`, and through `registerSessionResourceCleanup` of pi-ai for modes without session teardown, the extension closes all connections.
 - A new pi process starts with an empty pool, so the first model request of a resumed session is full. This serves SCN-08.
 
@@ -71,7 +72,7 @@ A request field that pi computes from the context size changes the request, so t
 - With `"enabled": false` in `openai-websocket/config.json` of the agent suite directory, the extension registers no stream function, and pi sends `openai` requests over HTTP. Other providers keep their transport. A missing file enables the extension; an invalid file disables it and pi reports one error at session start. This serves FRQ-03.
 - With `transport: "sse"`, the extension calls pi's implementation without its `fetch`, and requests go over HTTP. This pi setting also moves the `openai-codex` provider to HTTP.
 - With `transport: "websocket"`, each model request opens its own connection and sends a full request, as the pi setting describes.
-- When the handshake fails, or the connection closes before the first event, the extension passes the same request to the original `fetch` and marks the session as HTTP. The user sees one warning per session through the pi interface, or on stderr without an interface. This serves FRQ-02.
+- When the handshake fails, or the connection closes before the first event, the extension passes the same request to the original `fetch` and marks the session as HTTP. pi-ai repeats a failed request through the same `fetch`, so the repeats of that request also go to the original `fetch`. The user sees one warning per session through the pi interface, or on stderr without an interface. This serves FRQ-02.
 - When the connection fails after the response started, the stream ends with an error, pi retries under its retry settings, and the session moves to HTTP. A user abort and an API error do not move the session.
 - A model call without a session ID opens its own connection, sends a full request, and closes the connection after the response.
 - Package extensions such as `ask_llm`, `consult_advisor`, and custom compaction call the model through `completeSimple` of `@earendil-works/pi-ai/compat`. That function uses pi's built-in provider without the extension's stream function, so these calls stay on HTTP and keep their current result.
@@ -96,7 +97,7 @@ If a pi update stops passing `options.fetch` to the SDK, the extension's `fetch`
 ### Verification
 - Unit tests next to the extension use a fake WebSocket server and fake `fetch`, as the testing rules of the project require. They cover the choice between full and incremental requests, the baseline capture, the fallback cases, abort, `previous_response_not_found`, the connection limit, pool expiry, and the case where pi does not call the injected `fetch`.
 - `pi --no-session -p -e ./pi-package/extensions/openai-websocket/index.ts` checks that the extension loads.
-- NRQ-01 and NRQ-02 need live model requests, so the user measures them by the method in the PRD.
+- NRQ-01 and NRQ-02 need live model requests, so the user measures them by the method in the PRD. First results: [measurements.md](measurements.md).
 
 ### Documentation
 The change adds `docs/extensions/openai-websocket.md`, a line in `README.md`, and the extension entry in `pi-package/package.json`.

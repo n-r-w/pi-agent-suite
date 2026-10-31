@@ -301,6 +301,22 @@ describe("openai-websocket incremental requests", () => {
 		expect(httpRequests).toHaveLength(0);
 	});
 
+	test("sends a full request after a tool call whose arguments pi could not parse", async () => {
+		const server = startServer((request, index) =>
+			index === 0
+				? {
+						kind: "events",
+						events: toolCallResponseEvents("resp_1", "read", '{"path":"a.ts"'),
+					}
+				: toolTurnReplies(request, index),
+		);
+		const harness = loadExtension(server.baseUrl);
+
+		const { secondAnswer } = await runToolTurn(harness);
+
+		expect(textOf(secondAnswer)).toBe("full");
+	});
+
 	test("sends a full request when the history no longer continues the previous response", async () => {
 		const server = startServer(toolTurnReplies);
 		const harness = loadExtension(server.baseUrl);
@@ -580,6 +596,57 @@ describe("openai-websocket failures", () => {
 		expect(httpRequests).toHaveLength(0);
 	});
 
+	test("follows the retry headers of an API error that arrives before the response", async () => {
+		const server = startServer((_request, index) =>
+			index === 0
+				? {
+						kind: "events",
+						events: [
+							errorEvent(429, "rate_limit_exceeded", "Rate limit reached.", {
+								"x-should-retry": "false",
+							}),
+						],
+					}
+				: { kind: "events", events: textResponseEvents("resp_2", "retried") },
+		);
+		const harness = loadExtension(server.baseUrl);
+
+		const answer = await harness.request(normalizeContext(userContext("hi")), {
+			maxRetries: 1,
+			maxRetryDelayMs: 1,
+		});
+
+		expect(answer.stopReason).toBe("error");
+		expect(server.requests).toHaveLength(1);
+	});
+
+	test("sends the retries of a request over HTTP after the request moved to HTTP", async () => {
+		const server = startServer(() => ({ kind: "close" }));
+		const harness = loadExtension(server.baseUrl);
+		let httpAttempts = 0;
+		const rateLimitedOnce: typeof fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				httpAttempts++;
+				return httpAttempts === 1
+					? Response.json(
+							{ error: { message: "Rate limit reached." } },
+							{ status: 429 },
+						)
+					: httpFetch(input, init);
+			},
+			{ preconnect: fetch.preconnect },
+		);
+
+		const answer = await harness.request(normalizeContext(userContext("hi")), {
+			fetch: rateLimitedOnce,
+			maxRetries: 1,
+			maxRetryDelayMs: 1,
+		});
+
+		expect(textOf(answer)).toBe("over http");
+		expect(server.handshakes).toHaveLength(1);
+	});
+
 	test("reports an API error that arrives before the response and keeps the session on WebSocket", async () => {
 		const server = startServer((_request, index) =>
 			index === 0
@@ -623,6 +690,31 @@ describe("openai-websocket failures", () => {
 		expect(server.requests[1]?.message).not.toHaveProperty(
 			"previous_response_id",
 		);
+	});
+});
+
+describe("openai-websocket late abort", () => {
+	test("closes the connection when the user aborts while pi processes the completed response", async () => {
+		const controller = new AbortController();
+		const server = startServer((_request, index) => ({
+			kind: "events",
+			events: textResponseEvents(`resp_${index + 1}`, "ok"),
+		}));
+		const harness = loadExtension(server.baseUrl);
+
+		const aborted = await harness.request(normalizeContext(userContext("hi")), {
+			signal: controller.signal,
+			onProviderStreamEvent: (event) => {
+				if ((event as { type?: string }).type === "response.completed") {
+					controller.abort();
+				}
+			},
+		});
+		const next = await harness.request(normalizeContext(userContext("again")));
+
+		expect(aborted.stopReason).toBe("aborted");
+		expect(textOf(next)).toBe("ok");
+		expect(server.handshakes).toHaveLength(2);
 	});
 });
 

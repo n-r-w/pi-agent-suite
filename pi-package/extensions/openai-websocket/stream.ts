@@ -1,3 +1,4 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ApiStreamSimpleFunction } from "@earendil-works/pi-ai/compat";
 import type { ConnectionPool } from "./connection-pool";
 import { captureResponseItems } from "./response-items";
@@ -55,6 +56,7 @@ export function createStreamFunction(
 		const stream = responsesStreamSimple(model, context, { ...options, fetch });
 		stream.result().then((message) => {
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
+				closeCompletedConnection(state, trace);
 				return;
 			}
 			if (!trace.fetchCalled) {
@@ -62,8 +64,12 @@ export function createStreamFunction(
 				return;
 			}
 			// The next request on the connection waits for this capture.
-			const record = trace.completed;
-			if (record !== undefined && record.responseId === message.responseId) {
+			const record = trace.completed?.record;
+			if (
+				record !== undefined &&
+				record.responseId === message.responseId &&
+				!hasUnparsedToolArguments(message)
+			) {
 				record.responseItems = captureResponseItems({
 					streamSimple: responsesStreamSimple,
 					model,
@@ -75,4 +81,32 @@ export function createStreamFunction(
 		});
 		return stream;
 	};
+}
+
+/**
+ * Closes the connection of a response that the server completed but pi ended with an abort or an error,
+ * unless another request already uses the connection.
+ */
+function closeCompletedConnection(
+	state: TransportState,
+	trace: RequestTrace,
+): void {
+	const completed = trace.completed;
+	if (
+		completed !== undefined &&
+		!completed.connection.busy &&
+		completed.connection.continuation === completed.record
+	) {
+		state.pool.release(completed.connection, false);
+	}
+}
+
+/**
+ * Returns true when pi replaced tool arguments that it could not parse with `{}`. The server keeps the
+ * original text, so only a full request gives the model the same context as over HTTP.
+ */
+function hasUnparsedToolArguments(message: AssistantMessage): boolean {
+	return message.content.some(
+		(block) => block.type === "toolCall" && block.argumentsError !== undefined,
+	);
 }

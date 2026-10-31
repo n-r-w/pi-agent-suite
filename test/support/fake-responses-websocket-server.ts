@@ -126,18 +126,21 @@ export function textResponseEvents(
 	return completedResponseEvents(responseId, item, usage);
 }
 
-/** Events of a response that calls one tool. */
+/** Events of a response that calls one tool; a string gives the raw arguments text, such as malformed JSON. */
 export function toolCallResponseEvents(
 	responseId: string,
 	toolName: string,
-	toolArguments: Record<string, unknown>,
+	toolArguments: Record<string, unknown> | string,
 ): object[] {
 	const item = {
 		type: "function_call",
 		id: `fc_${responseId}`,
 		call_id: `call_${responseId}`,
 		name: toolName,
-		arguments: JSON.stringify(toolArguments),
+		arguments:
+			typeof toolArguments === "string"
+				? toolArguments
+				: JSON.stringify(toolArguments),
 		status: "completed",
 	};
 	return completedResponseEvents(responseId, item, responseUsage(10, 0));
@@ -162,15 +165,16 @@ function completedResponseEvents(
 	];
 }
 
-/** Error event that the Responses API sends instead of a response. */
+/** Error event that the Responses API sends instead of a response, with optional HTTP response headers. */
 export function errorEvent(
 	status: number,
 	code: string,
 	message: string,
+	headers?: Record<string, string>,
 ): object {
 	return {
 		type: "error",
 		status,
-		error: { type: "invalid_request_error", code, message },
+		error: { type: "invalid_request_error", code, message, headers },
 	};
 }

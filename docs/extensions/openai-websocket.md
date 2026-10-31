@@ -39,7 +39,8 @@ The extension sends an incremental request only when all of these hold:
 - the request has a session ID, and `transport` is `auto` or `websocket-cached`;
 - the previous response on the connection completed;
 - all request fields except `input` equal the fields of the previous request;
-- the new `input` starts with the previous `input` followed by the items of the previous response.
+- the new `input` starts with the previous `input` followed by the items of the previous response;
+- pi parsed the arguments of each tool call in the previous response. When pi cannot parse them, it sends `{}` instead, while the server keeps the original text.
 
 For example, an agent request carries 120 input items, and the model answers with a reasoning item and a `read` call. The next request carries the same 120 items, the two items of the answer, and the `read` result. The extension sends only the `read` result and the ID of the answer.
 
@@ -53,14 +54,14 @@ After a response completes, the extension builds pi's request body twice without
 - The extension closes a connection after 5 minutes without use, or before its next request when the connection is 55 minutes old. OpenAI closes connections after 60 minutes.
 - When the server no longer holds the previous response (`previous_response_not_found`), the extension sends the whole context once on the same connection.
 - When the server reports `websocket_connection_limit_reached` before the response starts, the extension opens a new connection and sends the request once more.
-- After an aborted or failed response, the extension closes the connection.
+- After an aborted or failed response, the extension closes the connection. When a later request of the session already took over the connection, the extension keeps it for that request.
 - On `session_shutdown`, the extension closes all connections.
 
 ## Fallback to HTTP
 
-When the handshake fails, or the connection closes before the first event of a response, the extension sends the same request over HTTP. Later requests of the session also go over HTTP. Pi shows one warning per session; without the pi interface, the warning goes to stderr.
+When the handshake fails, or the connection closes before the first event of a response, the extension sends the same request over HTTP. Retries of that request and later requests of the session also go over HTTP. Pi shows one warning per session; without the pi interface, the warning goes to stderr.
 
-When the connection fails or stays silent past `httpIdleTimeoutMs` after the response started, the response ends with an error, pi retries it under its `retry` settings, and the session moves to HTTP. An API error and a user abort keep the session in WebSocket mode.
+When the connection fails or stays silent past `httpIdleTimeoutMs` after the response started, the response ends with an error, pi retries it under its `retry` settings, and the session moves to HTTP. An API error and a user abort keep the session in WebSocket mode. An API error that arrives before the response reaches pi with its HTTP status and response headers, such as `retry-after`, so pi retries it as over HTTP.
 
 If a pi update stops passing the request transport of the extension to the OpenAI SDK, the extension shows the same warning and moves the session to HTTP.
 

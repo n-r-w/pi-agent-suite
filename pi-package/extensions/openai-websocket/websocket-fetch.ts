@@ -39,11 +39,16 @@ const HTTP_BODY_HEADERS = new Set(["accept", "content-type", "content-length"]);
 /** Matches a request path of the Responses API create endpoint. */
 const RESPONSES_PATH_PATTERN = /\/responses$/;
 
+/** A response that completed on a pooled connection, with the record that waits for its response items. */
+export interface CompletedResponse {
+	readonly record: ContinuationRecord;
+	readonly connection: Connection;
+}
+
 /** What the extension learns about one model request while its fetch runs. */
 export interface RequestTrace {
 	fetchCalled: boolean;
-	/** Record of the completed response on a pooled connection, which waits for its response items. */
-	completed: ContinuationRecord | undefined;
+	completed: CompletedResponse | undefined;
 }
 
 /** Settings and state that one model request gives its WebSocket fetch. */
@@ -71,16 +76,25 @@ interface ResponsesRequest {
 export function createWebSocketFetch(
 	context: WebSocketFetchContext,
 ): FetchFunction {
+	// pi-ai repeats a failed request through the same fetch, so the move to HTTP must cover the repeats.
+	let movedToHttp = false;
+	const exchangeContext: WebSocketFetchContext = {
+		...context,
+		onWebSocketUnavailable: (reason) => {
+			movedToHttp = true;
+			context.onWebSocketUnavailable(reason);
+		},
+	};
 	const webSocketFetch = async (
 		input: RequestInfo | URL,
 		init?: RequestInit,
 	): Promise<Response> => {
 		context.trace.fetchCalled = true;
 		const request = parseResponsesRequest(input, init);
-		if (request === undefined) {
+		if (request === undefined || movedToHttp) {
 			return context.originalFetch(input, init);
 		}
-		return new WebSocketExchange(context, request, () =>
+		return new WebSocketExchange(exchangeContext, request, () =>
 			context.originalFetch(input, init),
 		).run(init?.signal ?? undefined);
 	};
@@ -264,7 +278,11 @@ class WebSocketExchange {
 		if (first.event.type === "error" && typeof status === "number") {
 			reader.dispose();
 			pool.release(connection, false);
-			return Response.json({ error: first.event["error"] }, { status });
+			const error = first.event["error"];
+			return Response.json(
+				{ error },
+				{ status, headers: readErrorHeaders(error) },
+			);
 		}
 		return new Response(
 			new EventStreamBody(
@@ -342,7 +360,7 @@ class EventStreamBody {
 				responseItems: undefined,
 			};
 			this.#connection.continuation = record;
-			this.#context.trace.completed = record;
+			this.#context.trace.completed = { record, connection: this.#connection };
 		}
 		this.#finish(continuable);
 		controller.close();
@@ -357,6 +375,22 @@ class EventStreamBody {
 		this.#reader.dispose();
 		this.#context.pool.release(this.#connection, completed);
 	}
+}
+
+/**
+ * Returns the HTTP headers that the server sent with an `error` event, such as `retry-after`; pi decides
+ * whether and when to retry by these headers.
+ */
+function readErrorHeaders(error: unknown): Record<string, string> {
+	const headers = (error as { headers?: unknown } | undefined)?.headers;
+	if (typeof headers !== "object" || headers === null) {
+		return {};
+	}
+	return Object.fromEntries(
+		Object.entries(headers).filter(
+			(entry): entry is [string, string] => typeof entry[1] === "string",
+		),
+	);
 }
 
 /** Returns the error code of an `error` event, such as `previous_response_not_found`. */
