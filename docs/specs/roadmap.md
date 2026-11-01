@@ -14,3 +14,4 @@ This roadmap lists specifications and issues whose implementation is not complet
 - [ ] [Subagent feedback is not reconciled](issues/subagent-feedback-not-reconciled/)
 - [ ] [Workflow format version 2](features/workflow-format-v2/)
 - [ ] [WebSocket mode for the OpenAI provider](features/codex-websocket/)
+- [ ] [Workflow checkpoint omits the stage graph](issues/workflow-checkpoint-omits-graph/)
