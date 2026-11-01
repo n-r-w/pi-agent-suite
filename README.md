@@ -192,7 +192,7 @@ Use format version 2 for new workflows. It separates stage goals, stage tasks, a
 
 - Base prompt. It remains in the context and applies to all workflow stages.
 - Stages. One initial stage and any number of intermediate and final stages are allowed.
-- Stage goal. The state that must hold when the stage ends.
+- Stage goal. The state that must hold when the stage is complete.
 - Stage prompt. The actions and instructions for reaching the goal. It remains in the context only during that stage.
 - Transition type between stages. It can be either `advance` (move forward) or `rework` (return for revision).
 - Transition ground. A declared condition that the agent evaluates before selecting the transition.
