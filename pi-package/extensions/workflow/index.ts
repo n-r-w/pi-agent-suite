@@ -141,7 +141,7 @@ const WORKFLOW_STAGE_SCHEMA = Type.Object(
 		}),
 		goal: Type.String({
 			description:
-				"The stage goal is the state that must hold when the stage ends. The stage task consists of the actions that reach this state. Example goal: The reviewer has approved the delivery.",
+				"The stage goal is the state that must hold when the stage is complete. The stage task consists of the actions that reach this state. Example goal: The reviewer has approved the delivery.",
 			minLength: 1,
 			maxLength: 8192,
 		}),

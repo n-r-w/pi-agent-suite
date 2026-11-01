@@ -38,6 +38,7 @@
 			"./extensions/skill-restoration/index.ts",
 			"./extensions/compaction-trigger/index.ts",
 			"./extensions/model-response-timeout/index.ts",
+			"./extensions/openai-websocket/index.ts",
 			"./extensions/completion-sound/index.ts",
 			"./extensions/cmux/index.ts",
 			"./extensions/main-agent-selection/index.ts",

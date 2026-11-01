@@ -53,7 +53,7 @@ transitions:
         when: The reviewer identifies missing implementation evidence
 ```
 
-Each stage requires a non-empty string in `goal`: the stage goal, or state that must hold when the stage ends. Put the actions for reaching that state in `prompt`. A transition can declare a `grounds` list. Each transition ground contains only a technical `id` and a non-empty string in `when` that describes its condition. Ground IDs follow the stage-ID rules and must be unique within their transition. Different transitions can reuse an ID.
+Each stage requires a non-empty string in `goal`: the stage goal, or state that must hold when the stage is complete. Put the actions for reaching that state in `prompt`. A transition can declare a `grounds` list. Each transition ground contains only a technical `id` and a non-empty string in `when` that describes its condition. Ground IDs follow the stage-ID rules and must be unique within their transition. Different transitions can reuse an ID.
 
 Each `rework` transition requires at least one ground. If a stage has multiple outgoing `advance` transitions, each requires at least one ground. If a stage has only one outgoing `advance` transition, that transition can omit `grounds` or use an empty list; the transition is then unconditional.
 
@@ -194,7 +194,7 @@ A final-stage agent run remains active until `agent_settled`. The settlement res
 }
 ```
 
-Each stage requires a `goal` describing the state that must hold when the stage ends. The stage task consists of the actions that reach this state. The agent must achieve this state to complete the stage. Put actions and instructions in `prompt`, and transition conditions in `grounds`. The required-grounds rules are the same as for format-2 catalog workflows.
+Each stage requires a `goal` describing the state that must hold when the stage is complete. The stage task consists of the actions that reach this state. The agent must achieve this state to complete the stage. Put actions and instructions in `prompt`, and transition conditions in `grounds`. The required-grounds rules are the same as for format-2 catalog workflows.
 
 On a successful call, the extension validates the whole graph, stores one format-2 `created` snapshot including goals and grounds, and immediately activates the initial stage. The initial stage activation record includes its goal. See [Session snapshots](#session-snapshots) for restoration of format-2 workflows and older unversioned definitions.
 

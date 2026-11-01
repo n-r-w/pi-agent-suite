@@ -192,7 +192,7 @@ Use format version 2 for new workflows. It separates stage goals, stage tasks, a
 
 - Base prompt. It remains in the context and applies to all workflow stages.
 - Stages. One initial stage and any number of intermediate and final stages are allowed.
-- Stage goal. The state that must hold when the stage ends.
+- Stage goal. The state that must hold when the stage is complete.
 - Stage prompt. The actions and instructions for reaching the goal. It remains in the context only during that stage.
 - Transition type between stages. It can be either `advance` (move forward) or `rework` (return for revision).
 - Transition ground. A declared condition that the agent evaluates before selecting the transition.
@@ -507,6 +507,7 @@ Parameters:
 | `skill-restoration` | Enabled | Restores skill files after native or custom compaction: selects whole files once per compaction, saves them in the session, and inserts them in every request with an absent-file list. | `skill-restoration/config.json`: `enabled`. | [docs/extensions/skill-restoration.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/skill-restoration.md) |
 | `compaction-trigger` | Enabled | Blocks model requests at Pi's automatic compaction threshold, runs configured compaction after the interrupted run settles, and continues after success. | `compaction-trigger/config.json`: `enabled`, `tolerancePercent`; native Pi setting: `compaction.reserveTokens`. | [docs/extensions/compaction-trigger.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/compaction-trigger.md) |
 | `model-response-timeout` | Enabled | Limits each provider response, removes incomplete assistant content after timeout, and delegates retries to Pi. | `model-response-timeout/config.json`: `enabled`, `timeoutSeconds`; Pi settings: `retry`. | [docs/extensions/model-response-timeout.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/model-response-timeout.md) |
+| `openai-websocket` | Enabled | Sends model requests of the `openai` provider in WebSocket mode: one connection per session, only new input items after the first request, HTTP when WebSocket mode fails. | `openai-websocket/config.json`: `enabled`; pi setting `transport`. | [docs/extensions/openai-websocket.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/openai-websocket.md) |
 | `knowledge` | Enabled | Supplies bounded global and branch-local project knowledge across sessions and accumulates it through workflow triggers. | Optional `knowledge/config.json`; data defaults to `knowledge/data`. | [docs/extensions/knowledge.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/knowledge.md) |
 | `algorithms` | Enabled | Runs registered algorithms manually via `--trigger <type>` and `/trigger:<type>` slash commands. | No configuration. | [docs/extensions/algorithms.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/algorithms.md) |
 | `vision` | Disabled | Adds the `describe_image` tool so a text-only model can delegate single-image analysis to a configured vision model. | `vision/config.json`: `enabled`, `model`, `compression`, `retry`. | [docs/extensions/vision.md](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/vision.md) |
