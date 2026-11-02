@@ -7,6 +7,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	ProjectedSessionEntry,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
@@ -481,6 +482,10 @@ async function runLifecycle(
 	event: "session_start" | "session_tree" | "session_shutdown",
 	branch: readonly unknown[] = [],
 	mode: ExtensionContext["mode"] = "tui",
+	projectedEntries = branch.map((sourceEntry) => ({
+		sourceEntry,
+		messages: [{}],
+	})) as ProjectedSessionEntry[],
 ): Promise<void> {
 	const handler = fake.handlers.get(event);
 	if (handler === undefined) {
@@ -494,7 +499,10 @@ async function runLifecycle(
 			ui: fake.ui,
 			model: fake.model,
 			modelRegistry: fake.modelRegistry,
-			sessionManager: { getBranch: () => branch },
+			sessionManager: {
+				getBranch: () => branch,
+				buildSessionProjection: () => ({ entries: projectedEntries }),
+			},
 			shutdown: () => {
 				fake.shutdownCalls++;
 			},
@@ -539,12 +547,24 @@ async function runTurn(
 }
 
 /** Invokes the post-compaction lifecycle handler. */
-async function runSessionCompact(fake: FakePi, idle = true): Promise<void> {
+async function runSessionCompact(
+	fake: FakePi,
+	idle = true,
+	projectedEntries: readonly ProjectedSessionEntry[] = [],
+): Promise<void> {
 	const handler = fake.handlers.get("session_compact");
 	if (handler === undefined) {
 		throw new Error("missing session_compact handler");
 	}
-	await handler({ type: "session_compact" }, { isIdle: () => idle });
+	await handler(
+		{ type: "session_compact" },
+		{
+			isIdle: () => idle,
+			sessionManager: {
+				buildSessionProjection: () => ({ entries: projectedEntries }),
+			},
+		},
+	);
 }
 
 /** Invokes the session-level settlement handler without providing a UI context. */
@@ -2562,6 +2582,61 @@ describe("workflow extension lifecycle", () => {
 			workflowId: "delivery",
 			stageId: "start",
 		});
+	});
+
+	/** Verifies graph restoration decisions through the extension lifecycle. */
+	test("restores a missing graph once and preserves visible graphs across compactions", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		const activation = fake.messages.find(({ details }) =>
+			isWorkflowLifecycleDetails(details),
+		);
+		const visible = (message: unknown) =>
+			[
+				{
+					sourceEntry: { type: "custom_message", ...(message as object) },
+					messages: [{}],
+				},
+			] as ProjectedSessionEntry[];
+
+		await runSessionCompact(fake, true, visible(activation));
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "checkpoint",
+			includesGraph: false,
+		});
+		await runSessionCompact(fake);
+		const restored = fake.messages.at(-1);
+		expect(restored?.details).toMatchObject({
+			kind: "checkpoint",
+			includesGraph: true,
+		});
+		await runSessionCompact(fake, true, visible(restored));
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			includesGraph: false,
+		});
+
+		const oldCheckpoint = {
+			type: "custom_message",
+			...restored,
+			details: { ...(restored?.details as object), includesGraph: undefined },
+		};
+		const branch = [activatedEntry(), { type: "compaction" }, oldCheckpoint];
+		const beforeRepair = fake.messages.length;
+		await runLifecycle(fake, "session_tree", branch);
+		expect(fake.messages).toHaveLength(beforeRepair + 1);
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			includesGraph: true,
+		});
+		const repairedBranch = [
+			...branch,
+			{ type: "custom_message", ...fake.messages.at(-1) },
+		];
+		await runLifecycle(fake, "session_start", repairedBranch);
+		expect(fake.messages).toHaveLength(beforeRepair + 1);
 	});
 
 	/** Proves restored journal records prevent duplicate legacy-repair checkpoints. */

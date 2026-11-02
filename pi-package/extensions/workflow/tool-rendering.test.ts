@@ -147,7 +147,10 @@ async function createFixture(
 						: undefined;
 				},
 			},
-			sessionManager: { getBranch: () => branch },
+			sessionManager: {
+				getBranch: () => branch,
+				buildSessionProjection: () => ({ entries: [] }),
+			},
 			shutdown: () => {},
 		} as never);
 	}

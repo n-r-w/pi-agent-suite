@@ -49,7 +49,7 @@ import {
 	type WorkflowConfiguration,
 	type WorkflowPrompts,
 } from "./config";
-import { WorkflowJournal } from "./context";
+import { hasVisibleWorkflowGraph, WorkflowJournal } from "./context";
 import { readWorkflowPolicyEnvironment } from "./environment";
 import {
 	applyWorkflowModelRestoration,
@@ -751,7 +751,10 @@ interface WorkflowSynchronizationContext {
 	readonly ui: ExtensionContext["ui"];
 	readonly model: ExtensionContext["model"];
 	readonly modelRegistry: ExtensionContext["modelRegistry"];
-	readonly sessionManager: { getBranch(): readonly unknown[] };
+	readonly sessionManager: Pick<
+		ExtensionContext["sessionManager"],
+		"getBranch" | "buildSessionProjection"
+	>;
 }
 
 /** Creates the shared session-start and branch-navigation synchronization operation. */
@@ -786,11 +789,14 @@ function createWorkflowSynchronizer(
 			});
 			await synchronizeWorkflowModelRuntime(pi, runtime, branch, previousState);
 			runtime.journal.restore(branch);
-			if (
-				runtime.state !== undefined &&
-				!runtime.journal.isCurrent(runtime.state)
-			) {
-				runtime.journal.checkpoint(runtime.state);
+			if (runtime.state !== undefined) {
+				const { entries } = ctx.sessionManager.buildSessionProjection();
+				if (
+					!runtime.journal.isCurrent(runtime.state) ||
+					!hasVisibleWorkflowGraph(runtime.state, entries)
+				) {
+					runtime.journal.checkpoint(runtime.state, entries);
+				}
 			}
 			runtime.journalReady = true;
 		} finally {
@@ -826,7 +832,11 @@ function registerWorkflowCompaction(
 	pi.on("session_compact", (_event, ctx) => {
 		runtime.journal.startContextSegment();
 		if (runtime.state !== undefined) {
-			runtime.journal.checkpoint(runtime.state, false);
+			runtime.journal.checkpoint(
+				runtime.state,
+				ctx.sessionManager.buildSessionProjection().entries,
+				false,
+			);
 		}
 		// Automatic compaction must establish availability for the continuing run.
 		// Manual compaction while idle leaves publication to before_agent_start.

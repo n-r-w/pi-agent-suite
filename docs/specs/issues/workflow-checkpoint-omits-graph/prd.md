@@ -61,6 +61,7 @@ Out of scope:
   - Requirements: FRQ-01, active workflow; FRQ-02; NRQ-01
   - Level: external. The result is visible in the request to the model provider.
   - Area: workflow extension, Pi compaction, request to the model provider
+  - Known limitation: first-request delivery remains blocked by unresolved Pi #9051; see [the delivery limitation](solution.md#known-unresolved-delivery-limitation).
   - Flow: An agent works by a workflow. Pi compacts the session, and the activation record falls into the summarized part. The workflow extension restores the workflow state. The next model request holds the workflow graph exactly once. The system prompt and all messages before the new workflow records match what Pi built from the summary and the kept entries.
 - SCN-02: Compaction after a workflow has completed
   - Requirements: FRQ-01, completed workflow

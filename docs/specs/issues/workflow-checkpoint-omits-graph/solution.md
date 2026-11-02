@@ -38,7 +38,7 @@ In sessions that the new version compacts, the second condition does not hold, b
 
 Serves NRQ-01.
 
-The checkpoint with the graph is published as before: as a new session entry at the end of the session. The extension changes no system prompt and uses no `context` event for the graph.
+The extension submits the checkpoint through the existing append-only publication path. Pi appends the checkpoint as a new session entry. The extension changes no system prompt and uses no `context` event for the graph. During an active run, Pi can defer that append, as described under Known Unresolved Delivery Limitation.
 
 ### Rejected methods
 
@@ -50,6 +50,27 @@ The checkpoint with the graph is published as before: as a new session entry at 
 ### Trade-off
 
 In a session that the previous version compacted without the graph, SOL-03 repeats the goal and the guidelines of the active stage once on the first resume, although the old checkpoint already holds them. The graph itself appears once.
+
+### Known Unresolved Delivery Limitation
+
+Status: unresolved in the installed Pi 1.5.0. Pi issue [#9051](https://github.com/earendil-works/pi/issues/9051), documented in [the saved issue](../../../pi-issues/session-compact-message-misses-overflow-retry/issue.md), concerns passive custom messages published from `session_compact`. It affects delivery of the whole checkpoint, including its graph.
+
+For example, during threshold compaction between tool-loop responses, Pi executes the following sequence:
+
+1. Pi completes the previous turn and persists its tool results.
+2. Pi compacts the session and emits `session_compact`.
+3. The workflow extension submits a checkpoint with `triggerTurn: false`.
+4. While the run remains active, Pi queues the checkpoint in `_pendingCustomMessages`.
+5. Pi dispatches the next model request from persisted projection, before appending the queued checkpoint.
+6. At the following `turn_end`, Pi appends the checkpoint, making it available to a later request.
+
+If compaction removed every earlier graph record, the first request in step 5 has no workflow graph. Review reproduced this sequence with a real `AgentSession`, isolated state, and a fake provider. The saved Pi issue also describes delayed restoration on the immediate retry after context overflow.
+
+This implementation restores graph content when Pi delivers the checkpoint. Timely delivery in the first request remains an external limitation, so the next-request results below describe the required outcome and are subject to this unresolved dependency. Requirements remain unchanged. Correcting Pi's delivery order is outside this implementation.
+
+Passive publication remains intentional. The package adopted `triggerTurn: false` to prevent an extra assistant response after end-of-run compaction, as described in [Passive Post-Compaction Context Restoration](../compaction-post-turn-resume/technical-solution.md). Changing to steering requires checking both timely delivery and absence of that extra response.
+
+The new extension tests cover graph metadata, retained records, restoration, and deduplication. They do not establish delivery through a running `AgentSession` before the first continuing provider request. After a Pi delivery fix, verification must observe the graph-bearing checkpoint in that request, preserve completed tool-call/result ordering, and confirm that restoration causes no extra assistant response. The existing overflow-restoration regression remains skipped under the saved Pi issue.
 
 ### Critical scenarios
 
