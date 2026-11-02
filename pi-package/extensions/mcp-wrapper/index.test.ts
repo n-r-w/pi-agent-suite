@@ -12,6 +12,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
 	createEventBus,
+	keyHint,
+	keyText,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { adaptPromptHandler } from "../../../test/support/prompt-handlers";
@@ -45,6 +47,8 @@ type RenderResultContext = Parameters<
 	NonNullable<ToolDefinition["renderResult"]>
 >[3];
 const RESULT_RENDER_CONTEXT: RenderResultContext = {
+	keyHint,
+	keyText,
 	args: {},
 	toolCallId: "call-1",
 	invalidate(): void {},

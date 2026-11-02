@@ -30,6 +30,10 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 6. Keep extension documentation in `docs/extensions/*` up to date.
 7. `README.md` files should be concise. All details in `docs/extensions/*`.
 
+## Changelog
+1. Record user-visible changes and required user actions in English in `pi-package/CHANGELOG.md` under `## [Unreleased]`.
+2. Before an approved release, move these entries to `## [<target version>] - YYYY-MM-DD`. Keep an empty `Unreleased` section and preserve published entries.
+
 ## Testing rules
 1. Use RED-GREEN-REFACTOR for behavior changes:
     1) RED: add or update a failing behavior test.

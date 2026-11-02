@@ -12,6 +12,8 @@ import type {
 import {
 	createEventBus,
 	initTheme,
+	keyHint,
+	keyText,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -469,7 +471,7 @@ describe("Subagents semantic rendering", () => {
 					details: evidence.feedback,
 					timestamp: 1,
 				},
-				{ expanded: false, outputPad: 1 },
+				{ expanded: false, outputPad: 1, keyHint, keyText },
 				MARKED_THEME,
 			);
 			if (component === undefined) {
@@ -523,7 +525,7 @@ describe("Subagents semantic rendering", () => {
 					details: feedbackEvidence.feedback,
 					timestamp: 1,
 				},
-				{ expanded: false, outputPad: 1 },
+				{ expanded: false, outputPad: 1, keyHint, keyText },
 				MARKED_THEME,
 			)
 				?.render(300)
@@ -597,7 +599,7 @@ describe("Subagents semantic rendering", () => {
 					details: evidence.feedback,
 					timestamp: 1,
 				},
-				{ expanded: false, outputPad: 1 },
+				{ expanded: false, outputPad: 1, keyHint, keyText },
 				MARKED_THEME,
 			)
 				?.render(300)
