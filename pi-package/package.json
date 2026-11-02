@@ -1,6 +1,6 @@
 {
 	"name": "pi-agent-suite",
-	"version": "2.21.0",
+	"version": "2.21.1",
 	"description": "Adds a configurable multi-agent layer to pi, with context management, Codex quota status, a custom footer, and more.",
 	"type": "module",
 	"keywords": [
@@ -20,6 +20,7 @@
 	"files": [
 		"extensions",
 		"shared",
+		"CHANGELOG.md",
 		"README.md",
 		"package.json"
 	],
@@ -56,10 +57,10 @@
 		]
 	},
 	"peerDependencies": {
-		"@earendil-works/pi-agent-core": "1.4.0",
-		"@earendil-works/pi-ai": "1.4.0",
-		"@earendil-works/pi-coding-agent": "1.4.0",
-		"@earendil-works/pi-tui": "1.4.0",
+		"@earendil-works/pi-agent-core": "1.5.0",
+		"@earendil-works/pi-ai": "1.5.0",
+		"@earendil-works/pi-coding-agent": "1.5.0",
+		"@earendil-works/pi-tui": "1.5.0",
 		"typebox": "*"
 	},
 	"dependencies": {

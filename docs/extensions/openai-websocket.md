@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`openai-websocket` sends model requests of the pi provider `openai` in WebSocket mode of the OpenAI Responses API. Pi 1.4.0 sends each such request over HTTP with the whole context. In WebSocket mode, the extension keeps one connection per session and model. After the first request, it sends only the input items that the conversation added since the previous response, together with the ID of that response.
+`openai-websocket` sends model requests of the pi provider `openai` in WebSocket mode of the OpenAI Responses API. Pi 1.5.0 sends each such request over HTTP with the whole context. In WebSocket mode, the extension keeps one connection per session and model. After the first request, it sends only the input items that the conversation added since the previous response, together with the ID of that response.
 
 Pi still builds each request and processes each response. Request fields, usage, retries, abort, and the `before_provider_request` hooks of other extensions work as over HTTP.
 
@@ -70,4 +70,4 @@ If a pi update stops passing the request transport of the extension to the OpenA
 - Model calls that other extensions make through `completeSimple` of `@earendil-works/pi-ai/compat`, for example `ask_llm`, `consult_advisor`, and custom compaction, use pi's built-in provider and stay on HTTP.
 - The handshake does not use an HTTP proxy.
 - When pi exits with an open connection, the process waits until the server confirms the close of the connection. In a check on 2026-10-31, `pi -p` exited 2.1 seconds after the end of the session; without the extension, it exited at once.
-- The extension supports pi 1.4.0. It relies on pi behavior that pi does not document: pi-ai passes the per-request `fetch` to the OpenAI SDK, and pi calls `onPayload` before the request leaves the process.
+- The extension supports pi 1.5.0. It relies on pi behavior that pi does not document: pi-ai passes the per-request `fetch` to the OpenAI SDK, and pi calls `onPayload` before the request leaves the process.

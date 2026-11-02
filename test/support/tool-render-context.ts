@@ -1,4 +1,8 @@
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	keyHint,
+	keyText,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 
 type ToolRenderContext = Parameters<
 	NonNullable<ToolDefinition["renderCall"]>
@@ -11,6 +15,8 @@ export function createToolRenderContext(options: {
 	readonly isError: boolean;
 }): ToolRenderContext {
 	return {
+		keyHint,
+		keyText,
 		args: options.args,
 		toolCallId: "tool-call-1",
 		invalidate(): void {},

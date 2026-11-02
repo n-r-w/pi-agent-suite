@@ -53,7 +53,17 @@ pi --version
 
 Restart running Pi processes after updating the global installation.
 
+## Package changelog
+
+Maintain user-facing changes in `pi-package/CHANGELOG.md` under `## [Unreleased]` as part of each task. Describe the effect on users and any required configuration or migration steps.
+
+Pi 1.5.0 reads `CHANGELOG.md` from the installed package root. The package manifest includes it in `files`, so npm publishes it. Pi records the installed version on first discovery and shows newer version sections under "Extension Updates" on a later fresh interactive launch. Resumed sessions skip these notices. Users can condense them with Pi's `collapseChangelog` setting.
+
+GitHub Release notes remain an additional channel. The release commands do not copy GitHub notes into the package changelog or promote the unreleased section automatically.
+
 ## Release flow
+
+Before running a release command, move the entries from `## [Unreleased]` to a heading with the target version and release date. For example, with package version `2.21.0`, `make release-patch` requires `## [2.21.1] - 2026-11-02` and a nonempty description for a release on `2026-11-02`. Leave an empty `## [Unreleased]` section above it and retain older released sections.
 
 Choose the release type:
 
@@ -68,7 +78,13 @@ make release-minor
 make release-major
 ```
 
-The command installs locked dependencies in the repository root and in `pi-package/`, then runs validation, repository audit, and both consumer installation checks before changing the version. Only after all checks pass does it run `npm version` in `pi-package/`. A failed check leaves the version unchanged. Package staging and archives stay in system temporary directories; release checks do not write `pi-package/README.md`.
+Each of `make release-patch`, `make release-minor`, and `make release-major` first requires a changelog section for its target version with a nonempty description. A missing file, missing version, or section containing only headings or empty bullets stops the command before dependency installation, tests, audit, or consumer checks. The command leaves the changelog unchanged.
+
+After the changelog check passes, the command installs locked dependencies in the repository root and in `pi-package/`, then runs validation, repository audit, and both consumer installation checks. Only after those checks pass does it run `npm version`.
+
+Package staging and archives stay in system temporary directories; release checks do not write `pi-package/README.md`. `make release-check` performs validation without a version change and does not require an entry for a future version.
+
+Before committing or publishing, inspect `npm pack --dry-run` from `pi-package/` and confirm that `CHANGELOG.md` is included. Confirm that the newest released changelog heading matches the package version.
 
 Print the remaining manual steps:
 
@@ -80,7 +96,7 @@ Commit release files:
 
 ```bash
 VERSION=$(node -p "require('./pi-package/package.json').version")
-git add package.json pi-package/package.json README.md .github/workflows/npm-publish.yml Makefile docs/PUBLISHING.md
+git add package.json pi-package/package.json pi-package/CHANGELOG.md README.md .github/workflows/npm-publish.yml Makefile docs/PUBLISHING.md
 git commit -m "Release v$VERSION"
 ```
 
