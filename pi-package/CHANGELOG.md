@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking changes
+
+- For all workflow formats, keep workflows active on final stages after an agent run settles, including their settings, reminders, and rework transitions. Finish stage work and call `workflow_exit` explicitly with a nonempty `basis`. Update custom workflow guidance that describes automatic completion.
+- If an agent's explicit `tools` allowlist names only the older workflow tools, add `workflow_exit` so it can leave a workflow or resume its parent. A `workflow_*` pattern already includes it.
+- Require a nonempty free-text `basis` in every `workflow_transition` call, for all workflow formats. Update callers to state the facts that justify the transition; declared `ground` requirements remain unchanged. Invalid basis leaves workflow state unchanged. Basis stays in tool-call arguments and is omitted from saved workflow-state entries.
+- If you downgrade to an earlier package, the earlier extension cannot restore workflow state from entries written with `journalVersion: 2`.
+
+### Added
+
+- Support workflow format 3 with optional `nested: true` in catalog files and `workflow_create`. Nested starts preserve waiting parents and return to their same stage on exit, including in child agents. Reload, branch navigation, and compaction preserve the whole chain.
+- Add optional ordered workflow kinds in `workflow/kinds.yaml` and optional format-3 `kind` in catalog definitions and `workflow_create`. Activation options group allowed, non-running workflows by kind with descriptions and a separate unclassified group. Unknown kinds are rejected at creation/load boundaries; saved kinds survive catalog changes. Kinds change presentation only and appear in shared streamed-create YAML.
+- Add sequential `workflow_exit` with a required nonempty free-text `basis`, saved exit operations, shared main/subagent tool presentation, and `exitDescriptionPromptFile` configuration support.
+
+### Changed
+
+- Make `workflow_create` produce format 3. Formats 1 and 2 retain their schema and use ordinary replacement. Reject IDs already anywhere in the running chain.
+- Mark nested workflows in activation options before the first start. Update custom create, activate, exit, and shared guidance overrides to explain nested return and ordinary replacement of the entire chain.
+- Append chain-aware context and recovery checkpoints without rewriting earlier provider-visible messages. Resume a parent without rerunning its stage-entry triggers, and restore its effective model settings. Ordinary replacement restores the original root baseline before capturing new settings.
+- On a nested exit, reapply the resumed parent's effective stage settings. On the last exit, restore the original pre-workflow model and thinking snapshot. Before an ordinary replacement captures its snapshot, restore that original snapshot. Roll back model changes when workflow persistence fails.
+- Keep workflow-owned tools offered after they first become applicable in the session, subject to agent tool policy. Inapplicable registered calls return explicit errors; applicable calls after a nested exit operate on the resumed parent.
+- Write journal version 2 and replay mixed sessions with version-1 roots and their unversioned operations. Legacy completion restores an empty workflow state unless an already-saved historical rework follows it.
+
+### Fixed
+
+- Correct README descriptions of omitted, empty, and explicit `workflows` settings. Runtime policy is unchanged.
+
 ## [2.21.2] - 2026-11-02
 
 ### Fixed

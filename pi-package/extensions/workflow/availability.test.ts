@@ -1,256 +1,138 @@
 import { describe, expect, test } from "bun:test";
-import {
-	resolveWorkflowAvailability,
-	WORKFLOW_ACTIVATE_TOOL,
-	WORKFLOW_CREATE_TOOL,
-	WORKFLOW_EDIT_STAGE_TOOL,
-	WORKFLOW_GET_STAGE_TOOL,
-	WORKFLOW_TRANSITION_TOOL,
-} from "./availability";
+import { resolveWorkflowAvailability } from "./availability";
 import {
 	activateWorkflow,
-	completeWorkflow,
 	createWorkflow,
 	validateWorkflowDefinition,
-	type WorkflowDefinition,
 } from "./workflow";
 
-/** Builds one valid workflow for availability inputs without bypassing graph validation. */
-function workflow(id: string): WorkflowDefinition {
+/** Builds a single-stage final workflow for capability checks. */
+function workflow(id: string) {
 	return validateWorkflowDefinition(
 		id,
 		{
-			description: `${id} workflow`,
+			description: id,
 			stages: [
 				{
 					id: "only",
-					description: "Only stage",
-					prompt: "Complete the workflow.",
+					description: "Only",
+					prompt: "Work",
 					initial: true,
 					final: true,
 				},
 			],
 			transitions: [],
 		},
-		`${id}.yaml`,
+		"fixture",
 	);
 }
 
-/** Converts the finite tool-name set into a stable assertion shape. */
-function toolNames(
-	result: ReturnType<typeof resolveWorkflowAvailability>,
-): string[] {
+/** Sorts capability names independently of registration order. */
+function names(result: ReturnType<typeof resolveWorkflowAvailability>) {
 	return [...result.availableToolNames].sort();
 }
 
 describe("workflow availability", () => {
-	/**
-	 * Proves a valid empty catalog enables creation without exposing unusable activation or transition tools.
-	 * Input and expected output: empty catalog, resolved unrestricted policy, and no state produce create only.
-	 * Edge case: no activation options and no projected state are returned.
-	 * Dependencies: the pure availability resolver only.
-	 */
-	test("keeps creation available for an empty catalog", () => {
+	test("offers creation alone before a workflow exists in an empty catalog", () => {
 		const result = resolveWorkflowAvailability({
 			catalog: [],
 			catalogValid: true,
 			policy: { kind: "resolved", policy: undefined },
-			state: undefined,
+			chain: [],
 		});
-
-		expect(toolNames(result)).toEqual([WORKFLOW_CREATE_TOOL]);
-		expect(result.activationOptions).toEqual([]);
+		expect(names(result)).toEqual(["workflow_create"]);
 		expect(result.projectedState).toBeUndefined();
 	});
 
-	/**
-	 * Proves stage inspection and editing exist only while the current workflow is active.
-	 * Input and expected output: one active dynamic workflow exposes get and edit; completing it removes both.
-	 * Edge case: the completed snapshot remains projected for rework while stage tools stay unavailable.
-	 * Dependencies: pure availability resolution and workflow completion state.
-	 */
-	test("exposes stage tools only for an active workflow", () => {
-		const active = createWorkflow(workflow("dynamic"));
-		const activeResult = resolveWorkflowAvailability({
+	test("offers dynamic stage tools on a final stage until exit", () => {
+		const state = createWorkflow(workflow("dynamic"));
+		const input = {
 			catalog: [],
 			catalogValid: true,
-			policy: { kind: "resolved", policy: undefined },
-			state: active,
-		});
-		const completedResult = resolveWorkflowAvailability({
-			catalog: [],
-			catalogValid: true,
-			policy: { kind: "resolved", policy: undefined },
-			state: completeWorkflow(active),
-		});
-		const catalogWorkflow = workflow("catalog");
-		const catalogResult = resolveWorkflowAvailability({
-			catalog: [catalogWorkflow],
-			catalogValid: true,
-			policy: { kind: "resolved", policy: undefined },
-			state: activateWorkflow(catalogWorkflow),
-		});
-
-		expect(toolNames(activeResult)).toEqual([
+			policy: { kind: "resolved" as const, policy: undefined },
+			chain: [state],
+		};
+		expect(names(resolveWorkflowAvailability(input))).toEqual([
 			"workflow_create",
 			"workflow_edit_stage",
+			"workflow_exit",
 			"workflow_get_stage",
 			"workflow_transition",
 		]);
-		expect(toolNames(completedResult)).toEqual([
-			"workflow_create",
-			"workflow_transition",
-		]);
-		expect(toolNames(catalogResult)).toEqual([
-			"workflow_create",
-			"workflow_transition",
-		]);
-		expect(completedResult.projectedState?.status).toBe("completed");
+		expect(names(resolveWorkflowAvailability({ ...input, chain: [] }))).toEqual(
+			["workflow_create"],
+		);
 	});
 
-	/**
-	 * Proves ready-made workflows provide activation and transition sources before activation.
-	 * Input and expected output: two allowed catalog definitions produce all three tools and both options.
-	 * Edge case: transition is available without state because an allowed ready-made workflow can be activated.
-	 * Dependencies: catalog policy membership and the pure availability resolver.
-	 */
-	test("exposes all tools for allowed catalog workflows", () => {
-		const catalog = [workflow("delivery"), workflow("review")];
+	test("offers exit and transition before activation when an allowed catalog workflow exists", () => {
+		const result = resolveWorkflowAvailability({
+			catalog: [workflow("delivery")],
+			catalogValid: true,
+			policy: { kind: "resolved", policy: undefined },
+			chain: [],
+		});
+		expect(names(result)).toEqual([
+			"workflow_activate",
+			"workflow_create",
+			"workflow_exit",
+			"workflow_transition",
+		]);
+		expect(result.activationOptions.map(({ id }) => id)).toEqual(["delivery"]);
+	});
+
+	test("excludes every running identity without folding case", () => {
+		const delivery = workflow("delivery");
+		const review = workflow("review");
+		const catalog = [delivery, workflow("DELIVERY"), review];
+		const chain = [activateWorkflow(delivery), activateWorkflow(review)];
 		const result = resolveWorkflowAvailability({
 			catalog,
 			catalogValid: true,
 			policy: { kind: "resolved", policy: undefined },
-			state: undefined,
+			chain,
 		});
-
-		expect(toolNames(result)).toEqual([
-			WORKFLOW_ACTIVATE_TOOL,
-			WORKFLOW_CREATE_TOOL,
-			WORKFLOW_TRANSITION_TOOL,
-		]);
-		expect(result.activationOptions.map(({ id }) => id)).toEqual([
-			"delivery",
-			"review",
-		]);
+		expect(result.activationOptions.map(({ id }) => id)).toEqual(["DELIVERY"]);
+		expect(result.projectedState).toBe(chain[1]);
 	});
 
-	/**
-	 * Proves the active catalog workflow is removed from options and disables activation when no alternative remains.
-	 * Input and expected output: one allowed workflow already active produces create and transition only.
-	 * Edge case: the active state remains projectable even though activation options are empty.
-	 * Dependencies: catalog activation and the pure availability resolver.
-	 */
-	test("disables activation without an alternative catalog workflow", () => {
-		const delivery = workflow("delivery");
-		const state = activateWorkflow(delivery);
+	test("keeps saved workflows independent from the catalog allowlist", () => {
+		const state = activateWorkflow(workflow("saved"));
 		const result = resolveWorkflowAvailability({
-			catalog: [delivery],
-			catalogValid: true,
-			policy: { kind: "resolved", policy: ["delivery"] },
-			state,
-		});
-
-		expect(toolNames(result)).toEqual([
-			WORKFLOW_CREATE_TOOL,
-			WORKFLOW_TRANSITION_TOOL,
-		]);
-		expect(result.activationOptions).toEqual([]);
-		expect(result.projectedState).toBe(state);
-	});
-
-	/**
-	 * Proves case variants remain separate activation identities without hiding active state.
-	 * Input and expected output: policy delivery preserves active DELIVERY and exposes catalog delivery for activation.
-	 * Edge case: the active case variant does not exclude the allowed catalog identity.
-	 * Dependencies: exact NFC workflow identity and the pure availability resolver.
-	 */
-	test("keeps case variants as separate workflow identities", () => {
-		const state = activateWorkflow(workflow("DELIVERY"));
-		const delivery = workflow("delivery");
-		const result = resolveWorkflowAvailability({
-			catalog: [delivery],
-			catalogValid: true,
-			policy: { kind: "resolved", policy: ["delivery"] },
-			state,
-		});
-
-		expect(result.projectedState).toBe(state);
-		expect(result.activationOptions).toEqual([delivery]);
-		expect(toolNames(result)).toEqual([
-			WORKFLOW_ACTIVATE_TOOL,
-			WORKFLOW_CREATE_TOOL,
-			WORKFLOW_TRANSITION_TOOL,
-		]);
-	});
-
-	/**
-	 * Proves the workflows allowlist restricts new activation but never active state.
-	 * Input and expected output: policy review preserves active delivery and exposes only review for activation.
-	 * Edge case: dynamic state remains projectable when the policy allows no catalog workflow.
-	 * Dependencies: state-source assignment, catalog membership, and activation filtering.
-	 */
-	test("keeps active state independent from the catalog allowlist", () => {
-		const delivery = workflow("delivery");
-		const review = workflow("review");
-		const catalogState = activateWorkflow(delivery);
-		const catalogResult = resolveWorkflowAvailability({
-			catalog: [delivery, review],
-			catalogValid: true,
-			policy: { kind: "resolved", policy: ["review"] },
-			state: catalogState,
-		});
-		const dynamicState = createWorkflow({ ...delivery, id: "dynamic" });
-		const dynamicResult = resolveWorkflowAvailability({
-			catalog: [delivery],
+			catalog: [workflow("delivery")],
 			catalogValid: true,
 			policy: { kind: "resolved", policy: [] },
-			state: dynamicState,
+			chain: [state],
 		});
-
-		expect(catalogResult.projectedState).toBe(catalogState);
-		expect(catalogResult.activationOptions).toEqual([review]);
-		expect(toolNames(catalogResult)).toEqual([
-			WORKFLOW_ACTIVATE_TOOL,
-			WORKFLOW_CREATE_TOOL,
-			WORKFLOW_TRANSITION_TOOL,
-		]);
-		expect(dynamicResult.projectedState).toBe(dynamicState);
-		expect(toolNames(dynamicResult)).toEqual([
-			WORKFLOW_CREATE_TOOL,
-			WORKFLOW_EDIT_STAGE_TOOL,
-			WORKFLOW_GET_STAGE_TOOL,
-			WORKFLOW_TRANSITION_TOOL,
+		expect(result.projectedState).toBe(state);
+		expect(result.activationOptions).toEqual([]);
+		expect(names(result)).toEqual([
+			"workflow_create",
+			"workflow_exit",
+			"workflow_transition",
 		]);
 	});
 
-	/**
-	 * Proves catalog and policy errors disable only capabilities that cannot be evaluated safely.
-	 * Input and expected output: an invalid catalog with dynamic state keeps transition; a policy error exposes nothing.
-	 * Edge case: dynamic state survives catalog failure but cannot authorize creation.
-	 * Dependencies: source-specific projection and the pure availability resolver.
-	 */
-	test("separates catalog failure from policy failure", () => {
-		const dynamicState = createWorkflow(workflow("dynamic"));
-		const catalogFailure = resolveWorkflowAvailability({
-			catalog: [],
-			catalogValid: false,
-			policy: { kind: "resolved", policy: undefined },
-			state: dynamicState,
-		});
-		const policyFailure = resolveWorkflowAvailability({
-			catalog: [],
-			catalogValid: true,
-			policy: { kind: "error", issue: "invalid workflow policy" },
-			state: dynamicState,
-		});
-
-		expect(toolNames(catalogFailure)).toEqual([
-			WORKFLOW_EDIT_STAGE_TOOL,
-			WORKFLOW_GET_STAGE_TOOL,
-			WORKFLOW_TRANSITION_TOOL,
+	test("separates catalog failure from malformed policy", () => {
+		const state = createWorkflow(workflow("saved"));
+		const input = { catalog: [], catalogValid: false, chain: [state] };
+		expect(
+			names(
+				resolveWorkflowAvailability({
+					...input,
+					policy: { kind: "resolved", policy: undefined },
+				}),
+			),
+		).toEqual([
+			"workflow_edit_stage",
+			"workflow_exit",
+			"workflow_get_stage",
+			"workflow_transition",
 		]);
-		expect(catalogFailure.projectedState).toBe(dynamicState);
-		expect(toolNames(policyFailure)).toEqual([]);
-		expect(policyFailure.projectedState).toBeUndefined();
+		const denied = resolveWorkflowAvailability({
+			...input,
+			policy: { kind: "error", issue: "invalid policy" },
+		});
+		expect(names(denied)).toEqual([]);
+		expect(denied.projectedState).toBeUndefined();
 	});
 });

@@ -1,7 +1,12 @@
 import { readdir, readFile } from "node:fs/promises";
-import { isAbsolute, join, parse as parsePath } from "node:path";
+import { dirname, isAbsolute, join, parse as parsePath } from "node:path";
 import { parse } from "yaml";
 import { expandHomePath } from "../../shared/path-expansion";
+import {
+	requireKnownWorkflowKind,
+	validateWorkflowKinds,
+	type WorkflowKind,
+} from "./kinds";
 import {
 	validateWorkflowDefinition,
 	type WorkflowDefinition,
@@ -9,6 +14,7 @@ import {
 
 /** Catalog result that separates directory-wide errors from skipped workflow warnings. */
 export interface WorkflowCatalogResult {
+	readonly kinds?: readonly WorkflowKind[];
 	readonly workflows: readonly WorkflowDefinition[];
 	readonly warnings?: readonly Error[];
 	readonly error?: Error;
@@ -22,6 +28,7 @@ export interface WorkflowPrompts {
 	readonly getStageDescription: string;
 	readonly editStageDescription: string;
 	readonly transitionDescription: string;
+	readonly exitDescription: string;
 }
 
 export interface WorkflowConfiguration extends WorkflowPrompts {
@@ -35,6 +42,7 @@ const CONFIG_KEYS = new Set([
 	"extensionDescriptionPromptFile",
 	"createDescriptionPromptFile",
 	"activateDescriptionPromptFile",
+	"exitDescriptionPromptFile",
 	"getStageDescriptionPromptFile",
 	"editStageDescriptionPromptFile",
 	"transitionDescriptionPromptFile",
@@ -59,13 +67,15 @@ export async function loadWorkflowCatalog(
 	directory: string,
 ): Promise<WorkflowCatalogResult> {
 	let entries: string[];
+	let kinds: readonly WorkflowKind[] = [];
 	try {
+		kinds = await loadWorkflowKinds(join(dirname(directory), "kinds.yaml"));
 		entries = (await readdir(directory))
 			.filter((name) => name.endsWith(".yaml"))
 			.sort((left, right) => left.localeCompare(right));
 	} catch (error) {
 		if (isFileNotFound(error)) {
-			return { workflows: [] };
+			return { workflows: [], ...(kinds.length === 0 ? {} : { kinds }) };
 		}
 		return {
 			workflows: [],
@@ -81,17 +91,7 @@ export async function loadWorkflowCatalog(
 	const warnings: Error[] = [];
 	for (const file of files) {
 		try {
-			if (file.kind === "error") {
-				throw file.error;
-			}
-			const value: unknown = parse(file.content);
-			workflows.push(
-				validateWorkflowDefinition(
-					parsePath(file.fileName).name,
-					value,
-					file.filePath,
-				),
-			);
+			workflows.push(validateCatalogFile(file, kinds));
 		} catch (error) {
 			// A file-level failure disables only that workflow so valid siblings remain usable.
 			const message = errorMessage(error);
@@ -104,10 +104,49 @@ export async function loadWorkflowCatalog(
 			);
 		}
 	}
-	if (warnings.length === 0) {
-		return { workflows };
+	return {
+		workflows,
+		...(warnings.length === 0 ? {} : { warnings }),
+		...(kinds.length === 0 ? {} : { kinds }),
+	};
+}
+
+/** Converts a catalog read into a definition under the installed kinds catalog. */
+function validateCatalogFile(
+	file: CatalogFileRead,
+	kinds: readonly WorkflowKind[],
+): WorkflowDefinition {
+	if (file.kind === "error") {
+		throw file.error;
 	}
-	return { workflows, warnings };
+	const value: unknown = parse(file.content);
+	const workflow = validateWorkflowDefinition(
+		parsePath(file.fileName).name,
+		value,
+		file.filePath,
+	);
+	requireKnownWorkflowKind(workflow.kind, kinds);
+	return workflow;
+}
+
+/** Loads the optional kinds file without weakening validation of present files. */
+async function loadWorkflowKinds(
+	path: string,
+): Promise<readonly WorkflowKind[]> {
+	let content: string;
+	try {
+		content = await readFile(path, "utf8");
+	} catch (error) {
+		if (isFileNotFound(error)) {
+			return [];
+		}
+		throw new Error(`${path}: ${errorMessage(error)}`);
+	}
+	try {
+		return validateWorkflowKinds(parse(content));
+	} catch (error) {
+		throw new Error(`${path}: ${errorMessage(error)}`);
+	}
 }
 
 /** Reads one catalog file while preserving its lexical identity for later validation. */
@@ -161,6 +200,11 @@ export async function loadWorkflowConfiguration(
 				config.promptFiles["editStageDescriptionPromptFile"] ??
 					join(bundledDirectory, "edit-stage-description.md"),
 				"editStageDescriptionPromptFile",
+			),
+			exitDescription: await readPrompt(
+				config.promptFiles["exitDescriptionPromptFile"] ??
+					join(bundledDirectory, "exit-description.md"),
+				"exitDescriptionPromptFile",
 			),
 			transitionDescription: await readPrompt(
 				config.promptFiles["transitionDescriptionPromptFile"] ??

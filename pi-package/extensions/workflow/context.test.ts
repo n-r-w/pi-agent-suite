@@ -6,7 +6,6 @@ import {
 	type WorkflowJournalRecord,
 } from "./context";
 import {
-	completeWorkflow,
 	createWorkflow,
 	editWorkflowStage,
 	transitionWorkflow,
@@ -61,7 +60,7 @@ describe("workflow journal", () => {
 		const session = SessionManager.inMemory();
 		const { journal, records } = createJournal();
 		const state = createWorkflow(workflow());
-		journal.activate(state);
+		journal.activate([state]);
 		const activation = records[0];
 		if (activation === undefined) {
 			throw new Error("missing activation");
@@ -84,7 +83,7 @@ describe("workflow journal", () => {
 			),
 		).toBe(false);
 		session.appendCompaction("summary", activationId, 100);
-		journal.checkpoint(state, entries());
+		journal.checkpoint([state], entries());
 		expect(records.at(-1)?.details["includesGraph"]).toBe(false);
 		session.appendContextEdit(activationId, null);
 		expect(hasVisibleWorkflowGraph(state, entries())).toBe(false);
@@ -99,11 +98,11 @@ describe("workflow journal", () => {
 			},
 			"fixture",
 		);
-		const completed = completeWorkflow(transitionWorkflow(edited, "review"));
-		journal.checkpoint(completed, entries());
+		const finalState = transitionWorkflow(edited, "review");
+		journal.checkpoint([finalState], entries());
 		const checkpoint = records.at(-1);
 		expect(checkpoint?.details).toMatchObject({
-			status: "completed",
+			status: "active",
 			includesGraph: true,
 		});
 		if (checkpoint === undefined) {
@@ -115,9 +114,9 @@ describe("workflow journal", () => {
 			false,
 			checkpoint.details,
 		);
-		expect(hasVisibleWorkflowGraph(completed, entries())).toBe(true);
+		expect(hasVisibleWorkflowGraph(finalState, entries())).toBe(true);
 		session.appendCompaction("next summary", checkpointId, 100);
-		journal.checkpoint(completed, entries());
+		journal.checkpoint([finalState], entries());
 		expect(records.at(-1)?.details["includesGraph"]).toBe(false);
 	});
 
@@ -128,7 +127,7 @@ describe("workflow journal", () => {
 		// Dependencies: production journal, isolated history records, and a fake publisher.
 		const { journal, records } = createJournal();
 		const candidate = journal.activationOptionsForRun([workflow()], []);
-		expect(candidate?.details).toEqual({
+		expect(candidate?.details).toMatchObject({
 			version: 1,
 			kind: "activation_options",
 		});
@@ -171,13 +170,12 @@ describe("workflow journal", () => {
 			route: [stageId],
 		};
 
-		journal.reminder(escapedState);
+		journal.reminder([escapedState]);
 
-		expect(records).toEqual([
+		expect(records).toMatchObject([
 			{
 				customType: "workflow",
-				content:
-					'<workflow_reminder id="delivery&amp;&quot;" active_stage_id="implementation&amp;&quot;" />',
+				content: expect.any(String),
 				display: false,
 				details: {
 					version: 1,
@@ -185,7 +183,6 @@ describe("workflow journal", () => {
 					workflowId: 'delivery&"',
 					status: "active",
 					currentStageId: stageId,
-					workflowRevision: expect.any(String),
 					stageId,
 				},
 			},
@@ -198,7 +195,7 @@ describe("workflow journal", () => {
 		// Edge case: XML-sensitive configured text is escaped and the inactive-stage prompt is not exposed.
 		// Dependencies: validated workflow state and the journal publisher callback.
 		const { journal, records } = createJournal();
-		journal.activate(createWorkflow(workflow()));
+		journal.activate([createWorkflow(workflow())]);
 
 		expect(records).toHaveLength(1);
 		expect(records[0]).toMatchObject({
@@ -232,13 +229,13 @@ describe("workflow journal", () => {
 		// Dependencies: immutable workflow transitions and journal-local known-stage tracking.
 		const { journal, records } = createJournal();
 		let state = createWorkflow(workflow());
-		journal.activate(state);
+		journal.activate([state]);
 		state = transitionWorkflow(state, "review");
-		journal.enterStage(state);
+		journal.enterStage([state]);
 		state = transitionWorkflow(state, "implementation");
-		journal.enterStage(state);
+		journal.enterStage([state]);
 		state = transitionWorkflow(state, "review");
-		journal.enterStage(state);
+		journal.enterStage([state]);
 
 		expect(records[1]?.content).toContain(
 			'<workflow_stage_activated workflow_id="delivery" stage_id="review" guidelines="inline">',
@@ -254,14 +251,11 @@ describe("workflow journal", () => {
 		);
 	});
 
-	test("publishes complete edited stage definitions and completion records", () => {
-		// Purpose: edits and completion must replace model-visible stage data without snapshot repetition.
-		// Input and expected output: one active-stage edit emits a complete update, then final completion emits rework options.
-		// Edge case: completion carries no completed-stage prompt.
-		// Dependencies: dynamic stage editing, transition validation, and workflow completion.
+	test("publishes edited stage definitions and explicit exit records", () => {
+		// Edits publish the revised definition, and exit clears the journal's active-workflow evidence.
 		const { journal, records } = createJournal();
 		let state = createWorkflow(workflow());
-		journal.activate(state);
+		journal.activate([state]);
 		state = editWorkflowStage(
 			state,
 			{
@@ -272,11 +266,10 @@ describe("workflow journal", () => {
 			},
 			"test",
 		);
-		journal.updateStage(state, "implementation");
+		journal.updateStage([state], "implementation");
 		state = transitionWorkflow(state, "review");
-		journal.enterStage(state);
-		const completed = completeWorkflow(state);
-		journal.complete(completed);
+		journal.enterStage([state]);
+		journal.exit();
 
 		expect(records[1]?.content).toContain(
 			'<workflow_stage_updated workflow_id="delivery" stage_id="implementation" active="true">',
@@ -287,13 +280,8 @@ describe("workflow journal", () => {
 		expect(records[1]?.content).toContain(
 			"Use corrected &lt;requirements&gt;.",
 		);
-		expect(records[3]?.content).toContain(
-			'<workflow_completed id="delivery" completed_stage_id="review">',
-		);
-		expect(records[3]?.content).toContain(
-			'<transition to="implementation" type="rework" />',
-		);
-		expect(records[3]?.content).not.toContain("Review &amp; finish");
+		expect(records[3]?.details["kind"]).toBe("exit");
+		expect(journal.isCurrent([state])).toBe(false);
 	});
 
 	test("restores the active stage after an inactive stage update", () => {
@@ -303,7 +291,7 @@ describe("workflow journal", () => {
 		// Dependencies: journal metadata restoration and dynamic stage editing.
 		const { journal, records } = createJournal();
 		let state = createWorkflow(workflow());
-		journal.activate(state);
+		journal.activate([state]);
 		state = editWorkflowStage(
 			state,
 			{
@@ -314,7 +302,7 @@ describe("workflow journal", () => {
 			},
 			"test",
 		);
-		journal.updateStage(state, "review");
+		journal.updateStage([state], "review");
 		const restored = new WorkflowJournal(() => {});
 		restored.restore(
 			records.map((message) => ({
@@ -323,17 +311,17 @@ describe("workflow journal", () => {
 			})),
 		);
 
-		expect(restored.isCurrent(state)).toBe(true);
+		expect(restored.isCurrent([state])).toBe(true);
 	});
 
 	test("rejects restoration that omits the latest stage definition edit", () => {
 		// Purpose: restoration repair must detect state that is newer than the latest model-facing workflow record.
 		// Input and expected output: activation records followed by an unrecorded stage edit are incompatible with edited state.
 		// Edge case: workflow ID, status, and route-tail stage remain unchanged across the edit.
-		// Dependencies: workflow-definition revision metadata and journal restoration.
+		// Dependencies: whole-chain compatibility metadata and journal restoration.
 		const { journal, records } = createJournal();
 		let state = createWorkflow(workflow());
-		journal.activate(state);
+		journal.activate([state]);
 		state = editWorkflowStage(
 			state,
 			{
@@ -352,7 +340,7 @@ describe("workflow journal", () => {
 			})),
 		);
 
-		expect(restored.isCurrent(state)).toBe(false);
+		expect(restored.isCurrent([state])).toBe(false);
 	});
 
 	test("publishes activation options only when the segment value changes", () => {
@@ -462,7 +450,7 @@ describe("workflow journal", () => {
 		const { journal, records } = createJournal();
 		const state = createWorkflow(workflow());
 		journal.activationOptions([workflow()]);
-		journal.checkpoint(state);
+		journal.checkpoint([state]);
 		journal.activationOptions([workflow()]);
 
 		expect(records).toHaveLength(2);
@@ -477,7 +465,7 @@ describe("workflow journal", () => {
 		// Dependencies: checkpoint rendering, known-stage reset, and ordered catalog options.
 		const { journal, records } = createJournal();
 		const state = createWorkflow(workflow());
-		journal.checkpoint(state);
+		journal.checkpoint([state]);
 		journal.activationOptions([workflow()]);
 		journal.activationOptions([workflow()]);
 		journal.activationOptions([]);

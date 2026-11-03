@@ -45,6 +45,8 @@ interface WorkflowPresentationReference {
 
 /** Contains the fields represented by one catalog workflow YAML file. */
 interface WorkflowContent {
+	readonly kind?: string;
+	readonly nested?: boolean;
 	readonly description?: string;
 	readonly prompt?: string;
 	readonly stages?: readonly unknown[];
@@ -70,10 +72,10 @@ interface WorkflowCreatePresentation {
 	readonly stage?: WorkflowPresentationReference;
 }
 
-/** Persists activation identity for replayed tool rows. */
-interface WorkflowActivatePresentation {
+/** Preserves the workflow identity for activation and exit rows across replay. */
+interface WorkflowReferencePresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
-	readonly toolName: "workflow_activate";
+	readonly toolName: "workflow_activate" | "workflow_exit";
 	readonly workflow: WorkflowPresentationReference;
 }
 
@@ -97,7 +99,7 @@ interface WorkflowStagePresentation {
 
 export type WorkflowToolPresentationDetails =
 	| WorkflowCreatePresentation
-	| WorkflowActivatePresentation
+	| WorkflowReferencePresentation
 	| WorkflowTransitionPresentation
 	| WorkflowStagePresentation;
 
@@ -134,6 +136,18 @@ export function createWorkflowPresentationDetails(
 	if (toolName === "workflow_activate") {
 		return createWorkflowActivatePresentation(args, catalog, state);
 	}
+	if (toolName === "workflow_exit") {
+		return state === undefined
+			? undefined
+			: {
+					presentationKind: PRESENTATION_KIND,
+					toolName,
+					workflow: createReference(
+						state.workflow.id,
+						state.workflow.description,
+					),
+				};
+	}
 	if (toolName === "workflow_transition") {
 		return createWorkflowTransitionPresentation(args, state);
 	}
@@ -165,7 +179,7 @@ function createWorkflowActivatePresentation(
 	args: unknown,
 	catalog: readonly WorkflowDefinition[],
 	state: WorkflowState | undefined,
-): WorkflowActivatePresentation | undefined {
+): WorkflowReferencePresentation | undefined {
 	const workflowId = readInputString(args, "workflowId");
 	if (workflowId === undefined) {
 		return undefined;
@@ -336,11 +350,34 @@ export function renderWorkflowActivateCall(
 	});
 }
 
-/** Shares bounded workflow-reference rows between create and activate calls. */
+/** Renders the exited workflow from presentation evidence shared by both screens. */
+export function renderWorkflowExitCall(
+	_args: unknown,
+	theme: Theme,
+	context: WorkflowToolRenderContext,
+): Component {
+	return new WorkflowRows((width) => {
+		const presentation = (context.state as WorkflowRenderState).presentation;
+		const workflow =
+			presentation?.toolName === "workflow_exit"
+				? presentation.workflow
+				: undefined;
+		return renderWorkflowReferenceCall({
+			toolName: "workflow_exit",
+			workflow,
+			stage: undefined,
+			theme,
+			context,
+		}).render(width);
+	});
+}
+
+/** Shares bounded workflow-reference rows between workflow lifecycle calls. */
 function renderWorkflowReferenceCall(options: {
 	readonly toolName:
 		| "workflow_create"
 		| "workflow_activate"
+		| "workflow_exit"
 		| "workflow_get_stage"
 		| "workflow_edit_stage";
 	readonly workflow: WorkflowPresentationReference | undefined;
@@ -487,8 +524,11 @@ function parseWorkflowPresentationDetails(
 	if (value["toolName"] === "workflow_create") {
 		return parseWorkflowReferencePresentation(value, "workflow_create");
 	}
-	if (value["toolName"] === "workflow_activate") {
-		return parseWorkflowReferencePresentation(value, "workflow_activate");
+	if (
+		value["toolName"] === "workflow_activate" ||
+		value["toolName"] === "workflow_exit"
+	) {
+		return parseWorkflowReferencePresentation(value, value["toolName"]);
 	}
 	if (
 		value["toolName"] === "workflow_get_stage" ||
@@ -501,11 +541,11 @@ function parseWorkflowPresentationDetails(
 		: undefined;
 }
 
-/** Parses persisted create or activate evidence with one shared workflow reference. */
+/** Parses persisted lifecycle evidence with a workflow reference and optional initial stage. */
 function parseWorkflowReferencePresentation(
 	value: Record<string, unknown>,
-	toolName: "workflow_create" | "workflow_activate",
-): WorkflowCreatePresentation | WorkflowActivatePresentation | undefined {
+	toolName: "workflow_create" | "workflow_activate" | "workflow_exit",
+): WorkflowCreatePresentation | WorkflowReferencePresentation | undefined {
 	const workflow = parseReference(value["workflow"]);
 	if (workflow === undefined) {
 		return undefined;
@@ -624,7 +664,7 @@ function readCreatePresentation(
 /** Reads activation evidence from the shared row state. */
 function readActivatePresentation(
 	context: WorkflowToolRenderContext,
-): WorkflowActivatePresentation | undefined {
+): WorkflowReferencePresentation | undefined {
 	const presentation = (context.state as WorkflowRenderState).presentation;
 	return presentation?.toolName === "workflow_activate"
 		? presentation
@@ -982,6 +1022,8 @@ function createWorkflowContent(args: unknown): WorkflowContent | undefined {
 	}
 	// Streaming parsers expose fields independently, so select each compatible value.
 	const content: WorkflowContent = {
+		...(typeof args["kind"] === "string" ? { kind: args["kind"] } : {}),
+		...(typeof args["nested"] === "boolean" ? { nested: args["nested"] } : {}),
 		...(typeof args["description"] === "string"
 			? { description: args["description"] }
 			: {}),

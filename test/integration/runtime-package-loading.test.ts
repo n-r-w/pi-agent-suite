@@ -999,6 +999,7 @@ test.each([
 		expect(requests.map(({ order }) => order)).toEqual([1, 2, 3]);
 		expect(requests.map(({ roles }) => roles)).toEqual([
 			["system", "user", "user"],
+			["system", "user", "user", "assistant", "toolResult", "user", "user"],
 			[
 				"system",
 				"user",
@@ -1006,17 +1007,6 @@ test.each([
 				"assistant",
 				"toolResult",
 				"user",
-				"system",
-				"user",
-			],
-			[
-				"system",
-				"user",
-				"user",
-				"assistant",
-				"toolResult",
-				"user",
-				"system",
 				"user",
 				"assistant",
 				"toolResult",
@@ -1036,7 +1026,7 @@ test.each([
 			currentStageId: "start",
 		});
 		expect(requests[0]?.tools).toContain("workflow_activate");
-		expect(requests[1]?.tools).not.toContain("workflow_activate");
+		expect(requests[1]?.tools).toContain("workflow_activate");
 		expect(requests[1]?.tools).toContain("workflow_transition");
 		expect(requests[1]?.tools).toContain("reminder_tick");
 		expect(requests[2]?.tools).toEqual(requests[1]?.tools);

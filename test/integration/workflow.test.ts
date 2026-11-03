@@ -124,6 +124,7 @@ test("workflow entry activates a configured workflow and projects its initial st
 		"workflow_get_stage",
 		"workflow_edit_stage",
 		"workflow_transition",
+		"workflow_exit",
 		"workflow_create",
 	]);
 	const activate = tools[0];

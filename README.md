@@ -105,10 +105,12 @@ Agent file location: `~/.pi/agent/agent-suite/agent-selection/agents/<agent_name
     - Access to `subagent_*` tools is required.
     - If the agents field is omitted, the agent will not be able to call any other agents with the `subagent` or `both` type.
     - If `agents: []` is set, subagents will be unavailable.
-- `workflows` (optional) - the list of workflows the agent can use to solve a task.
-    - Access to `workflow_*` tools is required.
-    - If the workflows field is omitted, the agent will not be able to use any workflows.
-    - If `workflows: []` is set, workflows will be unavailable.
+- `workflows` (optional) - the policy for new catalog workflow activations.
+    - Each workflow tool requires independent permission in `tools`.
+    - If `workflows` is omitted, the agent may activate every catalog workflow.
+    - If `workflows: []` is set, no new catalog workflow activation is allowed.
+    - A valid nonempty list allows only the listed catalog IDs. For example, with `workflows: ["CodeReview"]`, the agent may activate only the `CodeReview` catalog workflow.
+    - With a valid policy, the agent may still create dynamic workflows and continue a saved active workflow, subject to tool permissions.
 
 Example agent configuration file (Markdown):
 
@@ -178,29 +180,35 @@ Full config example:
 
 Solution: the ability to create workflows represented by a graph of stages, each of which can be completed by a subagent.
 
-Use format version 2 for new workflows. It separates stage goals, stage tasks, and transition grounds.
+Use format version 3 for new workflows. It separates stage goals, stage tasks, and transition grounds, and supports optional `nested: true` to return to a waiting parent after exit. Without that flag, a start replaces the running chain, as in the example below.
 
 ![Workflow TUI](https://raw.githubusercontent.com/n-r-w/pi-agent-suite/main/docs/images/tui-compact.png)
 
 #### Available tools
 
-- `workflow_activate` - activates an available workflow and places it in the model context.
-- `workflow_transition` - transitions between stages of the active workflow.
-- `workflow_create` - creates and immediately activates a format-2 workflow for the current session. The extension saves it in session state.
+- `workflow_create` - creates and immediately activates a format-3 workflow saved in session state.
+- `workflow_activate` - activates an available catalog workflow.
+- `workflow_get_stage` - inspects a stage of the current dynamic workflow.
+- `workflow_edit_stage` - edits a stage of the current dynamic workflow.
+- `workflow_transition` - takes an available transition of the active workflow.
+- `workflow_exit` - leaves the active workflow and resumes its parent, or leaves no workflow when no parent remains.
+
+Every transition and exit requires a nonempty free-text `basis` stating the facts that justify it. A final stage stays active until explicit exit or replacement; finish its work before calling `workflow_exit`. If an agent's explicit tool allowlist names only the older workflow tools, add `workflow_exit`; `workflow_*` already includes it.
 
 #### Workflow structure
 
+For example, workflow definitions separate these concepts:
 - Base prompt. It remains in the context and applies to all workflow stages.
-- Stages. One initial stage and any number of intermediate and final stages are allowed.
+- Stages. One initial stage and at least one final stage are required.
 - Stage goal. The state that must hold when the stage is complete.
-- Stage prompt. The actions and instructions for reaching the goal. It remains in the context only during that stage.
+- Stage prompt. The actions and instructions for reaching the goal.
 - Transition type between stages. It can be either `advance` (move forward) or `rework` (return for revision).
 - Transition ground. A declared condition that the agent evaluates before selecting the transition.
 
 ### Example workflow configuration file (YAML)
 
 ```yaml
-version: 2
+version: 3
 description: Use for read-only inspection of code and technical artifacts
 prompt: |-
   1. Do not modify inspected files.
@@ -277,34 +285,24 @@ transitions:
         when: The user changes the permitted inspection scope
 ```
 
-A format-2 workflow requires:
-- one initial stage and at least one final stage
-- non-empty stage IDs without spaces, tabs, line breaks, or other Unicode whitespace
-- single-line workflow and stage descriptions
-- a non-empty `goal` and `prompt` for every stage
-- an optional root `prompt` for guidance that applies to every stage
-- unique stage IDs and valid transition endpoints
-- an acyclic `advance` graph in which every stage is reachable
-- no outgoing `advance` from final stages
-- at least one outgoing `advance` from non-final stages
-- `rework` transitions only to strict `advance` ancestors
-- at least one ground for every `rework` transition and every branch when a stage has multiple outgoing `advance` transitions
+Format 3 requires one initial stage, at least one final stage, unique stage IDs without whitespace, single-line descriptions, and a nonempty `goal` and `prompt` for each stage. The `advance` graph must be acyclic and reach every stage. Non-final stages require an outgoing `advance`; final stages prohibit outgoing `advance` but may have `rework` transitions. Every `rework` targets a strict `advance` ancestor and requires grounds. When a stage has multiple outgoing `advance` transitions, each requires grounds.
 
-See the [workflow documentation](docs/extensions/workflow.md) for the full configuration and tool contracts.
+See the [workflow documentation](docs/extensions/workflow.md) for full validation, configuration, nesting, and tool contracts.
 
-#### Legacy format 1
+#### Compatibility with formats 1 and 2
 
-Format 1 remains supported for existing catalog files and saved sessions. Omitting `version` selects format 1; explicitly declaring `version: 1` has the same behavior. See [legacy compatibility](docs/extensions/workflow.md#legacy-compatibility-format-1) for its restrictions.
+Existing format-1 and format-2 catalog files and saved sessions remain supported. Both formats use ordinary replacement and reject format-3 `nested` and `kind` fields. Format 2 retains stage goals and transition grounds. Omitting `version` selects format 1; declaring `version: 1` is equivalent. See [legacy compatibility](docs/extensions/workflow.md#legacy-compatibility-format-1) for format-1 restrictions. All formats require explicit exit and a basis for transitions and exits.
 
 #### Workflow system configuration (optional)
 
-Allows the system prompts for `workflow_*` tools to be replaced with custom prompts.
+For example, these settings replace shared workflow guidance and selected tool descriptions. Update custom guidance to explain nested return, ordinary replacement, and explicit exit with a basis; see [workflow configuration](docs/extensions/workflow.md#workflow-configuration).
 ```json
 {
   "extensionDescriptionPromptFile": "/absolute/path/extension-description.md",
   "createDescriptionPromptFile": "/absolute/path/create-description.md",
   "activateDescriptionPromptFile": "/absolute/path/activate-description.md",
-  "transitionDescriptionPromptFile": "/absolute/path/transition-description.md"
+  "transitionDescriptionPromptFile": "/absolute/path/transition-description.md",
+  "exitDescriptionPromptFile": "/absolute/path/exit-description.md"
 }
 ```
 

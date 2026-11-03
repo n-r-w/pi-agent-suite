@@ -3,27 +3,35 @@ import {
 	toWorkflowMatchKey,
 	type WorkflowPolicyResolution,
 } from "../../shared/workflow-policy.ts";
-import type { WorkflowDefinition, WorkflowState } from "./workflow.ts";
+import {
+	getTopWorkflow,
+	type WorkflowChain,
+	type WorkflowDefinition,
+	type WorkflowState,
+} from "./workflow.ts";
 
 export const WORKFLOW_CREATE_TOOL = "workflow_create";
 export const WORKFLOW_ACTIVATE_TOOL = "workflow_activate";
 export const WORKFLOW_GET_STAGE_TOOL = "workflow_get_stage";
 export const WORKFLOW_EDIT_STAGE_TOOL = "workflow_edit_stage";
 export const WORKFLOW_TRANSITION_TOOL = "workflow_transition";
+/** Identifies the explicit workflow lifecycle tool. */
+export const WORKFLOW_EXIT_TOOL = "workflow_exit";
 
 export type WorkflowToolName =
 	| typeof WORKFLOW_CREATE_TOOL
 	| typeof WORKFLOW_ACTIVATE_TOOL
 	| typeof WORKFLOW_GET_STAGE_TOOL
 	| typeof WORKFLOW_EDIT_STAGE_TOOL
-	| typeof WORKFLOW_TRANSITION_TOOL;
+	| typeof WORKFLOW_TRANSITION_TOOL
+	| typeof WORKFLOW_EXIT_TOOL;
 
 /** Inputs required to resolve workflow capabilities without using Pi runtime state. */
 export interface WorkflowAvailabilityInput {
 	readonly catalog: readonly WorkflowDefinition[];
 	readonly catalogValid: boolean;
 	readonly policy: WorkflowPolicyResolution;
-	readonly state: WorkflowState | undefined;
+	readonly chain: WorkflowChain;
 }
 
 /** One internally consistent view of workflow tools and provider-context data. */
@@ -53,15 +61,14 @@ export function resolveWorkflowAvailability(
 		: [];
 
 	// A resolved workflow policy restricts new catalog activation, not the saved active state.
-	const projectedState = input.state;
+	const projectedState = getTopWorkflow(input.chain);
 
 	// Only the exact NFC workflow identity is excluded from activation options.
-	const activeWorkflowKey =
-		projectedState === undefined
-			? undefined
-			: toWorkflowMatchKey(projectedState.workflow.id);
+	const runningIds = new Set(
+		input.chain.map(({ workflow }) => toWorkflowMatchKey(workflow.id)),
+	);
 	const activationOptions = allowedCatalog.filter(
-		({ id }) => toWorkflowMatchKey(id) !== activeWorkflowKey,
+		({ id }) => !runningIds.has(toWorkflowMatchKey(id)),
 	);
 	const availableToolNames = new Set<WorkflowToolName>();
 	if (input.catalogValid) {
@@ -70,15 +77,13 @@ export function resolveWorkflowAvailability(
 	if (activationOptions.length > 0) {
 		availableToolNames.add(WORKFLOW_ACTIVATE_TOOL);
 	}
-	if (
-		projectedState?.source === "dynamic" &&
-		projectedState.status === "active"
-	) {
+	if (projectedState?.source === "dynamic") {
 		availableToolNames.add(WORKFLOW_GET_STAGE_TOOL);
 		availableToolNames.add(WORKFLOW_EDIT_STAGE_TOOL);
 	}
 	if (projectedState !== undefined || allowedCatalog.length > 0) {
 		availableToolNames.add(WORKFLOW_TRANSITION_TOOL);
+		availableToolNames.add(WORKFLOW_EXIT_TOOL);
 	}
 
 	return { activationOptions, projectedState, availableToolNames };

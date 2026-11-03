@@ -1,10 +1,21 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	getTopWorkflow,
+	isSupportedWorkflowOperationVersion,
+	type WorkflowChain,
+} from "../workflow/workflow";
 
 /** Custom entry type persisted by the workflow extension on every state change. */
 const WORKFLOW_STATE_CUSTOM_TYPE = "workflow-state";
 
-/** Identifies one of the three workflow state change kinds. */
-type WorkflowStateKind = "created" | "activated" | "transitioned";
+/** Identifies supported workflow journal operations, including legacy completion. */
+type WorkflowStateKind =
+	| "created"
+	| "activated"
+	| "transitioned"
+	| "stage_edited"
+	| "completed"
+	| "exited";
 
 /** Workflow ID and active stage description extracted from session entries. */
 export interface WorkflowStatus {
@@ -43,7 +54,14 @@ function readKind(
 	data: Record<string, unknown>,
 ): WorkflowStateKind | undefined {
 	const kind = data["kind"];
-	if (kind === "created" || kind === "activated" || kind === "transitioned") {
+	if (
+		kind === "created" ||
+		kind === "activated" ||
+		kind === "transitioned" ||
+		kind === "stage_edited" ||
+		kind === "completed" ||
+		kind === "exited"
+	) {
 		return kind;
 	}
 	return undefined;
@@ -104,8 +122,12 @@ function readWorkflowDefinition(
 
 /** Tracks the latest workflow definition and route across iterated entries. */
 interface WorkflowStateTracking {
-	definition: TrackedWorkflowDefinition | undefined;
-	route: readonly string[] | undefined;
+	chain: WorkflowChain<{
+		readonly definition: TrackedWorkflowDefinition;
+		readonly route: readonly string[];
+	}>;
+	journalVersion: number | undefined;
+	legacyCompleted: WorkflowStateTracking["chain"][number] | undefined;
 }
 
 /** Updates tracked workflow definition and route from one workflow-state entry. */
@@ -122,25 +144,105 @@ function applyWorkflowStateEntry(
 	}
 	const kind = readKind(data);
 	if (kind === "created" || kind === "activated") {
-		const candidate = readWorkflowDefinition(data);
-		if (candidate !== undefined) {
-			tracking.definition = candidate;
+		restoreWorkflowRoot(data, tracking);
+		return;
+	}
+	applyWorkflowStatusOperation(data, tracking, kind);
+}
+
+/** Projects supported route, edit, and exit operations without rejecting an entire status history. */
+function applyWorkflowStatusOperation(
+	data: Record<string, unknown>,
+	tracking: WorkflowStateTracking,
+	kind: WorkflowStateKind | undefined,
+): void {
+	if (!isSupportedWorkflowOperationVersion(data, tracking.journalVersion)) {
+		return;
+	}
+	const historical =
+		kind === "transitioned" &&
+		tracking.journalVersion === 1 &&
+		data["journalVersion"] === undefined
+			? tracking.legacyCompleted
+			: undefined;
+	const top = getTopWorkflow(tracking.chain) ?? historical;
+	if (top === undefined) {
+		return;
+	}
+	switch (kind) {
+		case "completed":
+		case "exited":
+			tracking.legacyCompleted = kind === "completed" ? top : undefined;
+			tracking.chain = tracking.chain.slice(0, -1);
+			return;
+		case "stage_edited":
+			tracking.chain = [
+				...tracking.chain.slice(0, -1),
+				applyStageDescription(top, data),
+			];
+			return;
+		case "transitioned": {
+			const route = readStringArray(data, "route");
+			if (route !== undefined) {
+				tracking.chain = [...tracking.chain.slice(0, -1), { ...top, route }];
+				tracking.legacyCompleted = undefined;
+			}
 		}
 	}
-	const candidateRoute = readStringArray(data, "route");
-	if (candidateRoute !== undefined) {
-		tracking.route = candidateRoute;
+}
+
+/** Accepts supported root snapshots while ignoring malformed definitions. */
+function restoreWorkflowRoot(
+	data: Record<string, unknown>,
+	tracking: WorkflowStateTracking,
+): void {
+	tracking.legacyCompleted = undefined;
+	const version = data["journalVersion"];
+	if (version !== 1 && version !== 2) {
+		tracking.chain = [];
+		tracking.journalVersion = undefined;
+		return;
 	}
+	const definition = readWorkflowDefinition(data);
+	const route = readStringArray(data, "route");
+	if (definition !== undefined && route !== undefined) {
+		const state = { definition, route };
+		tracking.chain =
+			version === 2 && data["mode"] === "push"
+				? [...tracking.chain, state]
+				: [state];
+		tracking.journalVersion = version;
+	}
+}
+
+/** Projects only a valid edit to a known stage description. */
+function applyStageDescription(
+	top: WorkflowStateTracking["chain"][number],
+	data: Record<string, unknown>,
+): WorkflowStateTracking["chain"][number] {
+	const stageId = data["stageId"];
+	const description = data["description"];
+	if (
+		typeof stageId !== "string" ||
+		typeof description !== "string" ||
+		!top.definition.stages.has(stageId)
+	) {
+		return top;
+	}
+	const stages = new Map(top.definition.stages);
+	stages.set(stageId, description);
+	return { ...top, definition: { ...top.definition, stages } };
 }
 
 /** Maps the latest tracked definition and route to a displayable status. */
 function resolveWorkflowStatus(
 	tracking: WorkflowStateTracking,
 ): WorkflowStatus | undefined {
-	const { definition, route } = tracking;
-	if (definition === undefined || route === undefined) {
+	const top = getTopWorkflow(tracking.chain);
+	if (top === undefined) {
 		return undefined;
 	}
+	const { definition, route } = top;
 	const activeStageId = route[route.length - 1];
 	if (activeStageId === undefined) {
 		return undefined;
@@ -155,7 +257,7 @@ function resolveWorkflowStatus(
  * Extracts the current workflow status from session entries.
  *
  * Iterates entries in append order, tracking the latest workflow definition
- * (from created/activated entries) and route (from any entry). Returns the
+ * (from created/activated entries) and route updates through explicit exits. Returns the
  * workflow ID and active stage description, or undefined when no workflow
  * state is available.
  */
@@ -163,8 +265,9 @@ export function extractWorkflowStatus(
 	entries: readonly SessionEntry[],
 ): WorkflowStatus | undefined {
 	const tracking: WorkflowStateTracking = {
-		definition: undefined,
-		route: undefined,
+		chain: [],
+		journalVersion: undefined,
+		legacyCompleted: undefined,
 	};
 	for (const entry of entries) {
 		applyWorkflowStateEntry(entry, tracking);

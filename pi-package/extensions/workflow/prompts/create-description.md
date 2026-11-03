@@ -1,10 +1,10 @@
 **DESCRIPTION**:
 1. Create and immediately activate a task-specific workflow when no ready-made workflow fits user's task.
-2. A workflow created through workflow_create cannot be reactivated after another workflow replaces it.
-3. Creation replaces current workflow state.
+2. Creation produces format 3. Set nested=true to start on top of the running chain and return to its current stage on exit. A nested workflow can start with no parent.
+3. Without nested=true, creation replaces the entire chain. A replaced or exited dynamic workflow cannot be reactivated.
 
 **RULES**:
-1. Submit complete workflow definition in one call. Use an ID that differs from each ready-made workflow ID, also when letter case is ignored.
+1. Submit a complete workflow definition in one call. Use an ID that differs from every catalog ID and every ID in the running chain after NFC normalization. Identity is case-sensitive.
 2. Define exactly one initial stage and at least one final stage.
 3. Each stage is reachable through an acyclic `advance` graph.
 4. A final stage has no outgoing `advance` transition, and each other stage has at least one.

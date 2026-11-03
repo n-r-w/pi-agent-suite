@@ -1,19 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
 import {
 	activateWorkflow,
-	completeWorkflow,
 	createWorkflow,
 	editWorkflowStage,
+	exitWorkflow,
 	getAvailableTransitions,
 	getStageStatuses,
-	replayWorkflowState,
+	getTopWorkflow,
+	replayWorkflowChain,
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
 	validateWorkflowDefinition,
-	WORKFLOW_STATE_JOURNAL_VERSION,
 } from "./workflow";
+
+/** Identifies the historical snapshots used by compatibility fixtures. */
+const WORKFLOW_STATE_JOURNAL_VERSION = 1;
+
+/** Reads the active workflow from replay for domain assertions. */
+function replayWorkflowState(entries: readonly unknown[]) {
+	return getTopWorkflow(replayWorkflowChain(entries).chain);
+}
 
 const SOURCE = "/tmp/workflow.yaml";
 
@@ -176,7 +183,7 @@ describe("workflow definition validation", () => {
 			"workflow_create",
 		);
 		expect(created.id).toBe("delivery");
-		expect(created.version).toBe(2);
+		expect(created.version).toBe(3);
 		expect(created.stages[0]?.goal).toBe("Outcome a holds.");
 		expect(created.transitions[0]?.grounds).toEqual([
 			{ id: "ready", when: "The condition holds." },
@@ -689,21 +696,7 @@ describe("workflow state", () => {
 				data: { kind: "completed", route: finalRoute },
 			},
 		]);
-		expect(completedReplay?.status).toBe("completed");
-		expect(completedReplay?.restoration).toEqual({
-			modelId: "openai/current-model",
-			thinking: "medium",
-		});
-		expect(
-			getStageStatuses(
-				completedReplay as NonNullable<typeof completedReplay>,
-			).get("f"),
-		).toBe("completed");
-		expect(
-			getAvailableTransitions(
-				completedReplay as NonNullable<typeof completedReplay>,
-			).map(({ to }) => to),
-		).toEqual(["b"]);
+		expect(completedReplay).toBeUndefined();
 		expect(() =>
 			replayWorkflowState([
 				...entries,
@@ -783,7 +776,6 @@ describe("workflow state", () => {
 		expect(replayed).toMatchObject({
 			source: "dynamic",
 			route: ["a"],
-			status: "active",
 			restoration: {
 				modelId: "openai/current-model",
 				thinking: "medium",
@@ -989,7 +981,7 @@ function createLegacyDefinition() {
 }
 
 describe("workflow format boundaries", () => {
-	test("normalizes explicit version 1 without changing JSON, revision, or records", () => {
+	test("normalizes explicit version 1 without changing JSON or records", () => {
 		const raw = createLegacyDefinition();
 		const legacy = validateWorkflowDefinition("delivery", raw, "catalog");
 		const explicit = validateWorkflowDefinition(
@@ -1000,16 +992,13 @@ describe("workflow format boundaries", () => {
 		expect(JSON.stringify(explicit)).toBe(JSON.stringify(legacy));
 		const records: WorkflowJournalRecord[] = [];
 		const journal = new WorkflowJournal((record) => records.push(record));
-		journal.activate(activateWorkflow(legacy));
-		journal.activate(activateWorkflow(explicit));
+		journal.activate([activateWorkflow(legacy)]);
+		journal.activate([activateWorkflow(explicit)]);
 		expect(records[1]).toEqual(records[0]);
-		expect(records[0]?.details["workflowRevision"]).toBe(
-			createHash("sha256").update(JSON.stringify(legacy)).digest("hex"),
-		);
 	});
 
 	test.each(
-		[3, "future", null, false, [2], { requested: 3 }].map((version) => ({
+		[4, "future", null, false, [2], { requested: 3 }].map((version) => ({
 			version,
 		})),
 	)("rejects unknown version %j by value", ({ version }) => {
@@ -1138,12 +1127,11 @@ describe("workflow format boundaries", () => {
 			const advanced = transitionWorkflow(state, "left", ground);
 			expect(advanced.route).toEqual(["start", "left"]);
 			expect(state).toEqual(before);
-			const completed = completeWorkflow(advanced);
-			expect(() => transitionWorkflow(completed, "start")).toThrow("retry");
-			const reworked = transitionWorkflow(completed, "start", "retry");
+			expect(() => transitionWorkflow(advanced, "start")).toThrow("retry");
+			const reworked = transitionWorkflow(advanced, "start", "retry");
 			expect(reworked).toEqual(state);
-			expect(completed.status).toBe("completed");
-			expect(completed.route).toEqual(["start", "left"]);
+			expect(advanced.route).toEqual(["start", "left"]);
+			expect(exitWorkflow([advanced])).toEqual([]);
 		}
 	});
 
@@ -1181,15 +1169,15 @@ describe("workflow format boundaries", () => {
 		const records: WorkflowJournalRecord[] = [];
 		const journal = new WorkflowJournal((record) => records.push(record));
 		let state = activateWorkflow(workflow);
-		journal.activate(state);
+		journal.activate([state]);
 		state = transitionWorkflow(state, "left", "ready");
-		journal.enterStage(state);
+		journal.enterStage([state]);
 		state = transitionWorkflow(state, "start", "retry");
-		journal.enterStage(state);
-		journal.checkpoint(state);
-		journal.updateStage(state, "start");
+		journal.enterStage([state]);
+		journal.checkpoint([state]);
+		journal.updateStage([state], "start");
 		state = transitionWorkflow(state, "left", "ready");
-		journal.complete(completeWorkflow(state));
+		journal.exit();
 
 		for (const index of [0, 1, 2, 3, 4]) {
 			const content = requireFixtureItem(records, index).content;
@@ -1211,7 +1199,7 @@ describe("workflow format boundaries", () => {
 			);
 			expect(content).toContain('<ground id="ready">Right ready</ground>');
 		}
-		for (const index of [1, 5]) {
+		for (const index of [1]) {
 			expect(requireFixtureItem(records, index).content).toContain(
 				'<ground id="retry">Revision needed</ground>',
 			);
@@ -1283,7 +1271,7 @@ describe("stage goal replacement", () => {
 		"",
 		"   ",
 		42,
-	])("rejects invalid format2 goal %j atomically", (goal) => {
+	])("rejects invalid format-3 goal %j atomically", (goal) => {
 		const state = createWorkflow(
 			validateCreatedWorkflowDefinition(
 				{ id: "goal-edit", ...validCreatedValue() },
@@ -1305,7 +1293,7 @@ describe("stage goal replacement", () => {
 	test.each([
 		"a",
 		"b",
-	])("replaces and replays format2 goal for stage %s", (stageId) => {
+	])("replaces and replays format-3 goal for stage %s", (stageId) => {
 		const state = {
 			...createWorkflow(
 				validateCreatedWorkflowDefinition(
@@ -1357,7 +1345,6 @@ describe("stage goal replacement", () => {
 			route: state.route,
 			source: state.source,
 			restoration: state.restoration,
-			status: state.status,
 		});
 		expect(next.workflow.transitions).toEqual(state.workflow.transitions);
 	});

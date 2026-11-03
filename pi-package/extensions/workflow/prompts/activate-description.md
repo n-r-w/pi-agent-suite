@@ -1,2 +1,2 @@
 Activate a ready-made workflow listed in `<workflow_activation_options>` only when it applies to the user's task.
-Activation replaces current workflow state.
+A workflow marked nested="true" starts on top of the running chain and returns to its parent's same stage on workflow_exit. It can also start without a parent. An unmarked workflow replaces the entire chain. IDs already anywhere in the chain are unavailable. Agent workflow allowlists apply to every activation.

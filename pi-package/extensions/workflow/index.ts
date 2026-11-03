@@ -38,6 +38,7 @@ import {
 	WORKFLOW_ACTIVATE_TOOL,
 	WORKFLOW_CREATE_TOOL,
 	WORKFLOW_EDIT_STAGE_TOOL,
+	WORKFLOW_EXIT_TOOL,
 	WORKFLOW_GET_STAGE_TOOL,
 	WORKFLOW_TRANSITION_TOOL,
 	type WorkflowAvailability,
@@ -51,6 +52,7 @@ import {
 } from "./config";
 import { hasVisibleWorkflowGraph, WorkflowJournal } from "./context";
 import { readWorkflowPolicyEnvironment } from "./environment";
+import { requireKnownWorkflowKind, type WorkflowKind } from "./kinds";
 import {
 	applyWorkflowModelRestoration,
 	applyWorkflowModelSettings,
@@ -68,6 +70,7 @@ import {
 	primeWorkflowRenderState,
 	renderWorkflowActivateCall,
 	renderWorkflowCreateCall,
+	renderWorkflowExitCall,
 	renderWorkflowResult,
 	renderWorkflowStageCall,
 	renderWorkflowTransitionCall,
@@ -75,13 +78,16 @@ import {
 } from "./tool-rendering.ts";
 import {
 	activateWorkflow,
-	completeWorkflow,
+	addWorkflow,
 	createWorkflow,
 	editWorkflowStage,
-	replayWorkflowStateWithWarnings,
+	exitWorkflow,
+	getTopWorkflow,
+	replayWorkflowChain,
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
 	WORKFLOW_STATE_JOURNAL_VERSION,
+	type WorkflowChain,
 	type WorkflowDefinition,
 	type WorkflowRestorationSettings,
 	type WorkflowState,
@@ -96,6 +102,7 @@ const WORKFLOW_TOOL_NAMES: ReadonlySet<string> = new Set([
 	WORKFLOW_GET_STAGE_TOOL,
 	WORKFLOW_EDIT_STAGE_TOOL,
 	WORKFLOW_TRANSITION_TOOL,
+	WORKFLOW_EXIT_TOOL,
 ]);
 const SUCCESS_RESULT = {
 	content: [{ type: "text" as const, text: '{"success":true}' }],
@@ -216,7 +223,7 @@ const WORKFLOW_EDIT_STAGE_SCHEMA = Type.Object(
 		goal: Type.Optional(
 			Type.String({
 				description:
-					"Replacement stage goal, required for format 2 and unavailable for format 1",
+					"Replacement stage goal, required for formats 2 and 3 and unavailable for format 1",
 				minLength: 1,
 				maxLength: 8192,
 			}),
@@ -273,9 +280,17 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 	{ additionalProperties: false },
 );
 
+/** Requires a factual statement for each route transition or workflow exit. */
+const WORKFLOW_BASIS_SCHEMA = Type.String({
+	description: "Facts that justify the transition or exit",
+	minLength: 1,
+	pattern: "\\S",
+});
+
 /** Closed workflow_transition input with an optional declared ground ID. */
 const WORKFLOW_TRANSITION_ARGUMENTS_SCHEMA = Type.Object(
 	{
+		basis: WORKFLOW_BASIS_SCHEMA,
 		stageId: technicalIdentifierSchema({
 			description: "Target stage ID listed in <available_transitions>",
 			minLength: 1,
@@ -294,6 +309,18 @@ const WORKFLOW_TRANSITION_ARGUMENTS_SCHEMA = Type.Object(
 /** Complete workflow_create boundary shape; graph invariants remain domain validation. */
 const WORKFLOW_CREATE_SCHEMA = Type.Object(
 	{
+		kind: Type.Optional(
+			Type.String({
+				description: "ID from the workflow kinds catalog",
+				minLength: 1,
+			}),
+		),
+		nested: Type.Optional(
+			Type.Boolean({
+				description:
+					"Start on top of the running chain and return to its current stage on exit",
+			}),
+		),
 		id: Type.String({
 			description:
 				"Unique workflow ID. Must not match any other workflow ID after NFC normalization",
@@ -337,9 +364,6 @@ interface WorkflowEventBus {
 	): () => void;
 }
 
-/** Distinguishes ordinary branch reconciliation from an explicit policy reset. */
-type ReconciliationTrigger = "lifecycle" | "policy-reset";
-
 /** Supplies the mutable workflow state boundaries used by registered tools. */
 interface RegisterWorkflowToolsOptions {
 	readonly pi: ExtensionAPI;
@@ -347,26 +371,30 @@ interface RegisterWorkflowToolsOptions {
 	readonly runtime: WorkflowRuntime;
 	readonly getCatalog: () => readonly WorkflowDefinition[];
 	readonly getCatalogError: () => Error | undefined;
-	readonly getState: () => WorkflowState | undefined;
 	readonly getPolicy: () => WorkflowPolicyResolution;
 	readonly resolveAvailability: () => WorkflowAvailability;
-	readonly setState: (state: WorkflowState) => void;
+	readonly setChain: (chain: WorkflowChain) => void;
 }
 
 interface WorkflowRuntime {
+	readonly kinds: readonly WorkflowKind[];
 	catalog: readonly WorkflowDefinition[];
 	catalogError: Error | undefined;
 	configurationError: Error | undefined;
-	state: WorkflowState | undefined;
+	chain: WorkflowChain;
+	/** Retains the last root snapshot independently of overrides on an empty branch. */
+	emptyRestoration: WorkflowRestorationSettings | undefined;
 	replayWarnings: readonly string[];
 	currentModel: ExtensionContext["model"];
 	modelRegistry: ExtensionContext["modelRegistry"] | undefined;
-	lastTurnFailed: boolean;
-	readonly selfSuppressedNames: Set<string>;
+	readonly offeredToolNames: Set<WorkflowToolName>;
 	readonly journal: WorkflowJournal;
 	readonly reminderScheduler: WorkflowReminderScheduler;
 	journalReady: boolean;
 }
+
+/** Distinguishes lifecycle publication from policy-only reconciliation. */
+type ReconciliationTrigger = "lifecycle" | "policy-reset";
 
 /** Groups runtime registration dependencies without widening the tool boundary. */
 interface RegisterWorkflowRuntimeOptions {
@@ -449,14 +477,17 @@ async function runTriggerAt(
 }
 
 /** Updates active memory before awaiting the entered stage's triggers. */
-async function setEnteredWorkflowState(
+async function setEnteredWorkflowChain(
 	pi: ExtensionAPI,
-	setState: (state: WorkflowState) => void,
-	state: WorkflowState,
+	setChain: (chain: WorkflowChain) => void,
+	chain: WorkflowChain,
 	invocation: TriggerInvocation,
 ): Promise<void> {
-	setState(state);
-	await runEnteredStageTriggers(pi, state, invocation);
+	setChain(chain);
+	const state = getTopWorkflow(chain);
+	if (state !== undefined) {
+		await runEnteredStageTriggers(pi, state, invocation);
+	}
 }
 
 /** Creates the initial mutable workflow state from catalog-wide and configuration loading results. */
@@ -470,15 +501,16 @@ function createWorkflowRuntimeState(
 		reminderToolCallInterval,
 	);
 	return {
+		kinds: catalogResult.kinds ?? [],
 		catalog: catalogResult.error === undefined ? catalogResult.workflows : [],
 		catalogError: catalogResult.error,
 		configurationError,
-		state: undefined,
+		chain: [],
+		emptyRestoration: undefined,
 		replayWarnings: [],
 		currentModel: undefined,
 		modelRegistry: undefined,
-		lastTurnFailed: false,
-		selfSuppressedNames: new Set<string>(),
+		offeredToolNames: new Set<WorkflowToolName>(),
 		journal: new WorkflowJournal((record, delivery, triggerTurn) => {
 			pi.sendMessage(record, {
 				deliverAs: delivery,
@@ -487,7 +519,7 @@ function createWorkflowRuntimeState(
 			if (recordCarriesCurrentWorkflowState(record.details)) {
 				reminderScheduler.workflowStatePublished();
 			}
-		}),
+		}, catalogResult.kinds ?? []),
 		reminderScheduler,
 		journalReady: false,
 	};
@@ -512,7 +544,7 @@ function publishWorkflowStatus(
 	indicator: WorkflowStatusIndicator | undefined,
 	runtime: WorkflowRuntime,
 ): void {
-	indicator?.publish(runtime.state);
+	indicator?.publish(getTopWorkflow(runtime.chain));
 }
 
 /** Publishes the current model-visible catalog subset after active-tool reconciliation. */
@@ -609,8 +641,7 @@ export default async function workflowExtension(
 		reconcileTools(
 			pi,
 			availability.availableToolNames,
-			runtime.selfSuppressedNames,
-			trigger,
+			runtime.offeredToolNames,
 		);
 		publishWorkflowStatus(statusHolder.indicator, runtime);
 		if (runtime.journalReady && trigger !== "policy-reset") {
@@ -639,70 +670,13 @@ export default async function workflowExtension(
 	});
 }
 
-/** Completes a final-stage workflow after Pi reports the agent run as settled. */
-async function completeSettledWorkflow(
-	pi: ExtensionAPI,
-	runtime: WorkflowRuntime,
-	refreshTools: (trigger: ReconciliationTrigger) => void,
-): Promise<void> {
-	const state = runtime.state;
-	const activeStageId = state?.route.at(-1);
-	if (
-		state === undefined ||
-		state.status === "completed" ||
-		activeStageId === undefined
-	) {
-		return;
-	}
-	const activeStage = state.workflow.stages.find(
-		({ id }) => id === activeStageId,
-	);
-	if (activeStage === undefined || !activeStage.final) {
-		return;
-	}
-	let restorationApplication:
-		| Awaited<ReturnType<typeof applyWorkflowModelRestoration>>
-		| undefined;
-	if (state.restoration !== undefined) {
-		restorationApplication = await applyWorkflowModelRestoration(
-			pi,
-			runtime.modelRegistry,
-			runtime.currentModel,
-			state.restoration,
-		);
-		runtime.currentModel = restorationApplication.currentModel;
-	}
-	try {
-		pi.appendEntry(WORKFLOW_STATE_ENTRY, {
-			kind: "completed",
-			route: state.route,
-		});
-	} catch (error) {
-		if (restorationApplication !== undefined) {
-			try {
-				await rollbackWorkflowModelSettings(pi, restorationApplication);
-				runtime.currentModel = restorationApplication.previousModel;
-			} catch (rollbackError) {
-				throw new Error(
-					`${formatError(error)}; final-stage model could not be restored: ${formatError(rollbackError)}`,
-				);
-			}
-		}
-		throw error;
-	}
-	const completed = completeWorkflow(state);
-	runtime.journal.complete(completed);
-	runtime.state = completed;
-	refreshTools("lifecycle");
-}
-
 /** Registers session and model lifecycle synchronization without reapplying manual model changes. */
 function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 	const { pi, runtime, getPolicy, refreshTools, statusHolder, warnings } =
 		options;
 	let reportedReplayWarningKey: string | undefined;
 	const synchronize = createWorkflowSynchronizer(options);
-	registerWorkflowRunLifecycle(pi, runtime, refreshTools);
+	registerWorkflowRunLifecycle(pi, runtime);
 	registerWorkflowCompaction(pi, runtime, getPolicy);
 	pi.on("before_agent_start", (_event, ctx) => {
 		const availability = resolveRuntimeAvailability(runtime, getPolicy());
@@ -775,7 +749,8 @@ function createWorkflowSynchronizer(
 		}
 		try {
 			const branch = ctx.sessionManager.getBranch();
-			const previousState = runtime.state;
+			const previousRestoration =
+				runtime.chain[0]?.restoration ?? runtime.emptyRestoration;
 			runtime.journalReady = false;
 			synchronizeWorkflowRuntime({
 				pi,
@@ -787,16 +762,24 @@ function createWorkflowSynchronizer(
 				model: ctx.model,
 				modelRegistry: ctx.modelRegistry,
 			});
-			await synchronizeWorkflowModelRuntime(pi, runtime, branch, previousState);
+			await synchronizeWorkflowModelRuntime(
+				pi,
+				runtime,
+				branch,
+				previousRestoration,
+			);
 			runtime.journal.restore(branch);
-			if (runtime.state !== undefined) {
+			const state = getTopWorkflow(runtime.chain);
+			if (state !== undefined) {
 				const { entries } = ctx.sessionManager.buildSessionProjection();
 				if (
-					!runtime.journal.isCurrent(runtime.state) ||
-					!hasVisibleWorkflowGraph(runtime.state, entries)
+					!runtime.journal.isCurrent(runtime.chain) ||
+					runtime.chain.some((item) => !hasVisibleWorkflowGraph(item, entries))
 				) {
-					runtime.journal.checkpoint(runtime.state, entries);
+					runtime.journal.checkpoint(runtime.chain, entries);
 				}
+			} else if (runtime.emptyRestoration !== undefined) {
+				runtime.journal.exit();
 			}
 			runtime.journalReady = true;
 		} finally {
@@ -805,21 +788,13 @@ function createWorkflowSynchronizer(
 	};
 }
 
-/** Registers model selection and final-stage settlement handlers. */
+/** Tracks model selections without treating settlement as a workflow operation. */
 function registerWorkflowRunLifecycle(
 	pi: ExtensionAPI,
 	runtime: WorkflowRuntime,
-	refreshTools: (trigger: ReconciliationTrigger) => void,
 ): void {
 	pi.on("model_select", (event) => {
 		runtime.currentModel = event.model;
-	});
-	pi.on("agent_settled", async () => {
-		const settledRunFailed = runtime.lastTurnFailed;
-		runtime.lastTurnFailed = false;
-		if (!settledRunFailed) {
-			await completeSettledWorkflow(pi, runtime, refreshTools);
-		}
 	});
 }
 
@@ -831,12 +806,15 @@ function registerWorkflowCompaction(
 ): void {
 	pi.on("session_compact", (_event, ctx) => {
 		runtime.journal.startContextSegment();
-		if (runtime.state !== undefined) {
+		const state = getTopWorkflow(runtime.chain);
+		if (state !== undefined) {
 			runtime.journal.checkpoint(
-				runtime.state,
+				runtime.chain,
 				ctx.sessionManager.buildSessionProjection().entries,
 				false,
 			);
+		} else if (runtime.emptyRestoration !== undefined) {
+			runtime.journal.exit();
 		}
 		// Automatic compaction must establish availability for the continuing run.
 		// Manual compaction while idle leaves publication to before_agent_start.
@@ -884,11 +862,10 @@ function registerWorkflowRuntime(
 		runtime,
 		getCatalog: () => runtime.catalog,
 		getCatalogError: () => runtime.catalogError,
-		getState: () => runtime.state,
 		getPolicy,
 		resolveAvailability,
-		setState: (state) => {
-			runtime.state = state;
+		setChain: (chain) => {
+			runtime.chain = chain;
 			refreshTools("lifecycle");
 		},
 	});
@@ -916,11 +893,7 @@ function registerWorkflowReminderRuntime(
 		}
 	});
 	pi.on("turn_end", (event) => {
-		runtime.lastTurnFailed =
-			event.message.role === "assistant" &&
-			(event.message.stopReason === "aborted" ||
-				event.message.stopReason === "error");
-		const state = runtime.state;
+		const state = getTopWorkflow(runtime.chain);
 		const toolResultCount = event.toolResults.length;
 		const hasReasoning =
 			event.message.role === "assistant" &&
@@ -940,13 +913,13 @@ function registerWorkflowReminderRuntime(
 			runtime.reminderScheduler.completeTurn(
 				toolResultCount,
 				hasReasoning,
-				state?.status === "active",
+				state !== undefined,
 				allToolResultsTerminate,
 			) &&
 			state !== undefined
 		) {
 			runtime.journal.reminder(
-				state,
+				runtime.chain,
 				toolResultCount === 0 ? "nextTurn" : "steer",
 			);
 		}
@@ -967,7 +940,7 @@ function registerWorkflowPresentationRuntime(
 			event.toolName,
 			event.args,
 			runtime.catalog,
-			runtime.state,
+			getTopWorkflow(runtime.chain),
 		);
 		if (presentation !== undefined) {
 			pending.set(event.toolCallId, presentation);
@@ -1004,7 +977,7 @@ function resolveRuntimeAvailability(
 		catalog: runtime.catalog,
 		catalogValid: runtime.catalogError === undefined,
 		policy,
-		state: runtime.state,
+		chain: runtime.chain,
 	});
 }
 
@@ -1025,16 +998,18 @@ function synchronizeWorkflowRuntime(
 	runtime.currentModel = model;
 	runtime.modelRegistry = modelRegistry;
 	try {
-		const replay = replayWorkflowStateWithWarnings(branch);
-		runtime.state = replay.state;
+		const replay = replayWorkflowChain(branch);
+		runtime.chain = replay.chain;
+		runtime.emptyRestoration = replay.restoration;
 		runtime.replayWarnings = replay.warnings;
 	} catch (error) {
-		runtime.state = undefined;
+		runtime.chain = [];
+		runtime.emptyRestoration = undefined;
 		runtime.replayWarnings = [];
 		runtime.catalog = [];
 		runtime.catalogError =
 			error instanceof Error ? error : new Error(String(error));
-		reconcileTools(pi, new Set(), runtime.selfSuppressedNames, "lifecycle");
+		reconcileTools(pi, new Set(), runtime.offeredToolNames);
 		throw error;
 	}
 	runtime.catalog =
@@ -1043,22 +1018,21 @@ function synchronizeWorkflowRuntime(
 	runtime.configurationError = configurationError;
 	const policy = getPolicy();
 	const availability = resolveRuntimeAvailability(runtime, policy);
-	reconcileTools(
-		pi,
-		availability.availableToolNames,
-		runtime.selfSuppressedNames,
-		"lifecycle",
-	);
+	reconcileTools(pi, availability.availableToolNames, runtime.offeredToolNames);
 	if (policy.kind === "error") {
 		throw new Error(policy.issue);
 	}
 	if (
 		configurationError !== undefined &&
-		(catalogResult.error === undefined || runtime.state !== undefined)
+		(catalogResult.error === undefined ||
+			getTopWorkflow(runtime.chain) !== undefined)
 	) {
 		throw configurationError;
 	}
-	if (catalogResult.error !== undefined && runtime.state === undefined) {
+	if (
+		catalogResult.error !== undefined &&
+		getTopWorkflow(runtime.chain) === undefined
+	) {
 		throw catalogResult.error;
 	}
 }
@@ -1120,17 +1094,32 @@ function resolveBranchRestoration(
 		: undefined;
 }
 
+/** Reconciles the target branch without allowing workflow or sibling-branch settings to leak. */
 async function synchronizeWorkflowModelRuntime(
 	pi: ExtensionAPI,
 	runtime: WorkflowRuntime,
 	branch: readonly unknown[],
-	previousState: WorkflowState | undefined,
+	previousRestoration: WorkflowRestorationSettings | undefined,
 ): Promise<void> {
-	const state = runtime.state;
-	if (state === undefined || state.status === "completed") {
-		const restoration =
-			state?.restoration ??
-			resolveBranchRestoration(branch, previousState?.restoration);
+	const state = getTopWorkflow(runtime.chain);
+	if (state === undefined) {
+		const reverseBoundary =
+			runtime.emptyRestoration === undefined
+				? -1
+				: [...branch]
+						.reverse()
+						.findIndex(
+							(entry) =>
+								typeof entry === "object" &&
+								entry !== null &&
+								Reflect.get(entry, "customType") === WORKFLOW_STATE_ENTRY,
+						);
+		const boundary =
+			reverseBoundary < 0 ? -1 : branch.length - reverseBoundary - 1;
+		const restoration = resolveBranchRestoration(
+			branch.slice(boundary + 1),
+			runtime.emptyRestoration ?? previousRestoration,
+		);
 		if (restoration !== undefined) {
 			const application = await applyWorkflowModelRestoration(
 				pi,
@@ -1139,28 +1128,13 @@ async function synchronizeWorkflowModelRuntime(
 				restoration,
 			);
 			runtime.currentModel = application.currentModel;
+			if (runtime.emptyRestoration === undefined) {
+				runtime.emptyRestoration = previousRestoration;
+			}
 		}
 		return;
 	}
-	const stageId = state.route.at(-1);
-	if (stageId === undefined) {
-		return;
-	}
-	const resolution = resolveWorkflowModelSettings({
-		workflow: state.workflow,
-		stageId,
-		agentSettings:
-			getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.model,
-		currentThinking: pi.getThinkingLevel(),
-		restoration: state.restoration,
-	});
-	const application = await applyWorkflowModelSettings(
-		pi,
-		runtime.modelRegistry,
-		runtime.currentModel,
-		resolution,
-	);
-	runtime.currentModel = application.currentModel;
+	await applyActiveWorkflowModel(pi, runtime, state);
 }
 
 /** Applies runtime settings and persists one activation or transition atomically. */
@@ -1170,10 +1144,26 @@ async function commitWorkflowStateChange(
 	candidate: WorkflowState,
 	data: Record<string, unknown>,
 ): Promise<WorkflowState> {
-	const kind = data["kind"];
-	const persistedCandidate =
-		(kind === "activated" || kind === "created") &&
-		candidate.restoration === undefined
+	const starts = data["kind"] === "activated" || data["kind"] === "created";
+	if (starts) {
+		addWorkflow(runtime.chain, candidate);
+	}
+	return transactWorkflowModels(pi, runtime, async () => {
+		const rootSnapshot = runtime.chain[0]?.restoration;
+		if (
+			starts &&
+			candidate.workflow.nested !== true &&
+			rootSnapshot !== undefined
+		) {
+			const restored = await applyWorkflowModelRestoration(
+				pi,
+				runtime.modelRegistry,
+				runtime.currentModel,
+				rootSnapshot,
+			);
+			runtime.currentModel = restored.currentModel;
+		}
+		const persisted = starts
 			? withWorkflowRestoration(
 					candidate,
 					captureWorkflowModelRestoration(
@@ -1182,41 +1172,67 @@ async function commitWorkflowStateChange(
 					),
 				)
 			: candidate;
-	const stageId = persistedCandidate.route.at(-1);
+		await applyActiveWorkflowModel(pi, runtime, persisted);
+		pi.appendEntry(WORKFLOW_STATE_ENTRY, {
+			...data,
+			journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+			...(starts
+				? {
+						mode: persisted.workflow.nested === true ? "push" : "replace",
+						restoration: persisted.restoration,
+					}
+				: {}),
+		});
+		runtime.emptyRestoration = undefined;
+		return persisted;
+	});
+}
+
+/** Applies the active stage through the shared workflow and agent precedence rules. */
+async function applyActiveWorkflowModel(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+	state: WorkflowState,
+): Promise<void> {
+	const stageId = state.route.at(-1);
 	if (stageId === undefined) {
 		throw new Error("workflow candidate has no active stage");
 	}
-	const resolution = resolveWorkflowModelSettings({
-		workflow: persistedCandidate.workflow,
-		stageId,
-		agentSettings:
-			getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.model,
-		currentThinking: pi.getThinkingLevel(),
-		restoration: persistedCandidate.restoration,
-	});
 	const application = await applyWorkflowModelSettings(
 		pi,
 		runtime.modelRegistry,
 		runtime.currentModel,
-		resolution,
+		resolveWorkflowModelSettings({
+			workflow: state.workflow,
+			stageId,
+			agentSettings:
+				getAgentRuntimeComposition(pi).getSelectedAgentContribution()?.model,
+			currentThinking: pi.getThinkingLevel(),
+			restoration: state.restoration,
+		}),
 	);
 	runtime.currentModel = application.currentModel;
-	const persistedData =
-		kind === "activated" || kind === "created"
-			? {
-					...data,
-					...(persistedCandidate.restoration === undefined
-						? {}
-						: { restoration: persistedCandidate.restoration }),
-					journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
-				}
-			: data;
+}
+
+/** Rolls back all model changes when any part of a persisted operation fails. */
+async function transactWorkflowModels<T>(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+	operation: () => Promise<T>,
+): Promise<T> {
+	const previousModel = runtime.currentModel;
+	const previousThinking = pi.getThinkingLevel() as ReasoningLevel;
 	try {
-		pi.appendEntry(WORKFLOW_STATE_ENTRY, persistedData);
+		return await operation();
 	} catch (error) {
 		try {
-			await rollbackWorkflowModelSettings(pi, application);
-			runtime.currentModel = application.previousModel;
+			await rollbackWorkflowModelSettings(pi, {
+				previousModel,
+				previousThinking,
+				currentModel: runtime.currentModel,
+				modelChanged: runtime.currentModel !== previousModel,
+			});
+			runtime.currentModel = previousModel;
 		} catch (rollbackError) {
 			throw new Error(
 				`${formatError(error)}; previous model could not be restored: ${formatError(rollbackError)}`,
@@ -1224,7 +1240,6 @@ async function commitWorkflowStateChange(
 		}
 		throw error;
 	}
-	return persistedCandidate;
 }
 
 /** Converts unknown failures into stable operation messages. */
@@ -1262,6 +1277,7 @@ function registerWorkflowTools(options: RegisterWorkflowToolsOptions): void {
 	registerWorkflowGetStageTool(options);
 	registerWorkflowEditStageTool(options);
 	registerWorkflowTransitionTool(options);
+	registerWorkflowExitTool(options);
 	registerWorkflowCreateTool(options);
 }
 
@@ -1277,15 +1293,15 @@ async function executeWorkflowCreate(
 		runtime,
 		getCatalog,
 		getCatalogError,
-		getState,
 		getPolicy,
 		resolveAvailability,
-		setState,
+		setChain,
 	} = options;
 	const workflow = validateCreatedWorkflowDefinition(
 		params,
 		WORKFLOW_CREATE_TOOL,
 	);
+	requireKnownWorkflowKind(workflow.kind, runtime.kinds);
 	const policy = getPolicy();
 	if (policy.kind === "error") {
 		throw new Error(policy.issue);
@@ -1302,21 +1318,15 @@ async function executeWorkflowCreate(
 			`workflow ${workflow.id} conflicts with catalog workflow ${catalogMatch.id}`,
 		);
 	}
-	const current = getState();
-	if (
-		current?.source === "dynamic" &&
-		toWorkflowMatchKey(current.workflow.id) === workflowKey
-	) {
-		throw new Error(`workflow ${workflow.id} is already active`);
-	}
 	const candidate = createWorkflow(workflow);
 	const persisted = await commitWorkflowStateChange(pi, runtime, candidate, {
 		kind: "created",
 		workflow: candidate.workflow,
 		route: candidate.route,
 	});
-	runtime.journal.activate(persisted);
-	await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
+	const chain = addWorkflow(runtime.chain, persisted);
+	runtime.journal.activate(chain);
+	await setEnteredWorkflowChain(pi, setChain, chain, { ctx, signal });
 	return SUCCESS_RESULT;
 }
 
@@ -1324,7 +1334,7 @@ async function executeWorkflowCreate(
 function registerWorkflowCreateTool(
 	options: RegisterWorkflowToolsOptions,
 ): void {
-	const { pi, prompts, getCatalog, getState } = options;
+	const { pi, prompts, getCatalog, runtime } = options;
 	registerPackageTool(pi, {
 		name: WORKFLOW_CREATE_TOOL,
 		label: "Create workflow",
@@ -1339,7 +1349,7 @@ function registerWorkflowCreateTool(
 					WORKFLOW_CREATE_TOOL,
 					args,
 					getCatalog(),
-					getState(),
+					getTopWorkflow(runtime.chain),
 				),
 			);
 			return renderWorkflowCreateCall(args, theme, context);
@@ -1360,10 +1370,9 @@ function registerWorkflowActivateTool(
 		prompts,
 		runtime,
 		getCatalog,
-		getState,
 		getPolicy,
 		resolveAvailability,
-		setState,
+		setChain,
 	} = options;
 	registerPackageTool(pi, {
 		name: WORKFLOW_ACTIVATE_TOOL,
@@ -1387,7 +1396,7 @@ function registerWorkflowActivateTool(
 					WORKFLOW_ACTIVATE_TOOL,
 					args,
 					getCatalog(),
-					getState(),
+					getTopWorkflow(runtime.chain),
 				),
 			);
 			return renderWorkflowActivateCall(args, theme, context);
@@ -1416,8 +1425,9 @@ function registerWorkflowActivateTool(
 					route: candidate.route,
 				},
 			);
-			runtime.journal.activate(persisted);
-			await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
+			const chain = addWorkflow(runtime.chain, persisted);
+			runtime.journal.activate(chain);
+			await setEnteredWorkflowChain(pi, setChain, chain, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});
@@ -1427,7 +1437,7 @@ function registerWorkflowActivateTool(
 function registerWorkflowGetStageTool(
 	options: RegisterWorkflowToolsOptions,
 ): void {
-	const { pi, prompts, getCatalog, getState } = options;
+	const { pi, prompts, getCatalog, runtime } = options;
 	registerPackageTool(pi, {
 		name: WORKFLOW_GET_STAGE_TOOL,
 		label: "Get workflow stage",
@@ -1451,7 +1461,7 @@ function registerWorkflowGetStageTool(
 					WORKFLOW_GET_STAGE_TOOL,
 					args,
 					getCatalog(),
-					getState(),
+					getTopWorkflow(runtime.chain),
 				),
 			);
 			return renderWorkflowStageCall(
@@ -1494,7 +1504,7 @@ function registerWorkflowGetStageTool(
 function registerWorkflowEditStageTool(
 	options: RegisterWorkflowToolsOptions,
 ): void {
-	const { pi, prompts, runtime, getCatalog, getState, setState } = options;
+	const { pi, prompts, runtime, getCatalog, setChain } = options;
 	registerPackageTool(pi, {
 		name: WORKFLOW_EDIT_STAGE_TOOL,
 		label: "Edit workflow stage",
@@ -1509,7 +1519,7 @@ function registerWorkflowEditStageTool(
 					WORKFLOW_EDIT_STAGE_TOOL,
 					args,
 					getCatalog(),
-					getState(),
+					getTopWorkflow(runtime.chain),
 				),
 			);
 			return renderWorkflowStageCall(
@@ -1537,6 +1547,7 @@ function registerWorkflowEditStageTool(
 				throw new Error(`stage ${stageId} does not exist in active workflow`);
 			}
 			const data = {
+				journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
 				kind: "stage_edited",
 				stageId,
 				description: stage.description,
@@ -1544,19 +1555,14 @@ function registerWorkflowEditStageTool(
 				prompt: stage.prompt,
 				model: { thinking },
 			};
-			let persisted = candidate;
 			if (current.route.at(-1) === stageId) {
-				persisted = await commitWorkflowStateChange(
-					pi,
-					runtime,
-					candidate,
-					data,
-				);
+				await commitWorkflowStateChange(pi, runtime, candidate, data);
 			} else {
 				pi.appendEntry(WORKFLOW_STATE_ENTRY, data);
 			}
-			runtime.journal.updateStage(persisted, stageId);
-			setState(persisted);
+			const chain = [...runtime.chain.slice(0, -1), candidate];
+			runtime.journal.updateStage(chain, stageId);
+			setChain(chain);
 			return SUCCESS_RESULT;
 		},
 	});
@@ -1567,8 +1573,8 @@ function requireEditableWorkflow(
 	options: RegisterWorkflowToolsOptions,
 	toolName: typeof WORKFLOW_GET_STAGE_TOOL | typeof WORKFLOW_EDIT_STAGE_TOOL,
 ): WorkflowState {
-	const current = options.getState();
-	if (current === undefined || current.status !== "active") {
+	const current = getTopWorkflow(options.runtime.chain);
+	if (current === undefined) {
 		throw new Error("no workflow is active");
 	}
 	if (current.source !== "dynamic") {
@@ -1602,6 +1608,14 @@ function readStringArgumentField(value: unknown, key: string): string {
 	return candidate;
 }
 
+/** Validates the free-text statement before workflow or model state can change. */
+function requireWorkflowBasis(params: unknown): void {
+	const basis = readStringArgumentField(params, "basis");
+	if (basis.trim().length === 0) {
+		throw new Error("basis must contain non-whitespace text");
+	}
+}
+
 /** Registers transition behavior and its source-to-target presentation. */
 function registerWorkflowTransitionTool(
 	options: RegisterWorkflowToolsOptions,
@@ -1611,10 +1625,9 @@ function registerWorkflowTransitionTool(
 		prompts,
 		runtime,
 		getCatalog,
-		getState,
 		getPolicy,
 		resolveAvailability,
-		setState,
+		setChain,
 	} = options;
 	registerPackageTool(pi, {
 		name: WORKFLOW_TRANSITION_TOOL,
@@ -1630,19 +1643,23 @@ function registerWorkflowTransitionTool(
 					WORKFLOW_TRANSITION_TOOL,
 					args,
 					getCatalog(),
-					getState(),
+					getTopWorkflow(runtime.chain),
 				),
 			);
 			return renderWorkflowTransitionCall(args, theme, context);
 		},
 		renderResult: renderWorkflowResult,
 		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
-			const stageId = readExactStringArgument(params, "stageId", ["ground"]);
+			const stageId = readExactStringArgument(params, "stageId", [
+				"ground",
+				"basis",
+			]);
+			requireWorkflowBasis(params);
 			const ground =
 				Reflect.get(params as object, "ground") === undefined
 					? undefined
 					: readStringArgumentField(params, "ground");
-			const current = getState();
+			const current = getTopWorkflow(runtime.chain);
 			if (current === undefined) {
 				throw new Error("no workflow is active");
 			}
@@ -1663,11 +1680,98 @@ function registerWorkflowTransitionTool(
 					route: candidate.route,
 				},
 			);
-			runtime.journal.enterStage(persisted);
-			await setEnteredWorkflowState(pi, setState, persisted, { ctx, signal });
+			const chain = [...runtime.chain.slice(0, -1), persisted];
+			runtime.journal.enterStage(chain);
+			await setEnteredWorkflowChain(pi, setChain, chain, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});
+}
+
+/** Registers explicit workflow exit with validation before runtime side effects. */
+function registerWorkflowExitTool(options: RegisterWorkflowToolsOptions): void {
+	const { pi, prompts, runtime } = options;
+	registerPackageTool(pi, {
+		name: WORKFLOW_EXIT_TOOL,
+		label: "Exit workflow",
+		description: prompts.exitDescription,
+		promptGuidelines: [prompts.extensionDescription],
+		parameters: Type.Object(
+			{
+				basis: WORKFLOW_BASIS_SCHEMA,
+			},
+			{ additionalProperties: false },
+		),
+		executionMode: "sequential",
+		renderCall(args, theme, context) {
+			primeWorkflowRenderState(
+				context,
+				createWorkflowPresentationDetails(
+					WORKFLOW_EXIT_TOOL,
+					args,
+					runtime.catalog,
+					getTopWorkflow(runtime.chain),
+				),
+			);
+			return renderWorkflowExitCall(args, theme, context);
+		},
+		renderResult: renderWorkflowResult,
+		async execute(...[_toolCallId, params]) {
+			return executeWorkflowExit(options, params);
+		},
+	});
+}
+
+/** Persists explicit exit after restoring the remaining chain or root snapshot. */
+async function executeWorkflowExit(
+	options: RegisterWorkflowToolsOptions,
+	params: unknown,
+): Promise<typeof SUCCESS_RESULT> {
+	const { pi, runtime, resolveAvailability, setChain } = options;
+	if (
+		params === null ||
+		typeof params !== "object" ||
+		Array.isArray(params) ||
+		Object.keys(params).some((key) => key !== "basis")
+	) {
+		throw new Error("exit requires only basis");
+	}
+	requireWorkflowBasis(params);
+	const current = getTopWorkflow(runtime.chain);
+	if (current === undefined) {
+		throw new Error("no workflow is active");
+	}
+	if (resolveAvailability().projectedState !== current) {
+		throw new Error(`workflow ${current.workflow.id} is not available`);
+	}
+	const remaining = exitWorkflow(runtime.chain);
+	const parent = getTopWorkflow(remaining);
+	const snapshot = runtime.chain[0]?.restoration;
+	await transactWorkflowModels(pi, runtime, async () => {
+		if (parent !== undefined) {
+			await applyActiveWorkflowModel(pi, runtime, parent);
+		} else if (snapshot !== undefined) {
+			const application = await applyWorkflowModelRestoration(
+				pi,
+				runtime.modelRegistry,
+				runtime.currentModel,
+				snapshot,
+			);
+			runtime.currentModel = application.currentModel;
+		}
+		pi.appendEntry(WORKFLOW_STATE_ENTRY, {
+			kind: "exited",
+			journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+		});
+	});
+	runtime.emptyRestoration = parent === undefined ? snapshot : undefined;
+	setChain(remaining);
+	if (parent === undefined) {
+		runtime.journal.exit();
+	} else {
+		runtime.journal.enterStage(remaining);
+	}
+	return SUCCESS_RESULT;
 }
 
 /** Rejects invalid or disallowed policy before any workflow state side effect. */
@@ -1711,38 +1815,20 @@ function readExactStringArgument(
 	return candidate;
 }
 
-/** Reconciles workflow-owned suppression without overriding agent policy. */
+/** Adds newly applicable workflow tools without overriding agent policy. */
 function reconcileTools(
 	pi: ExtensionAPI,
 	availableToolNames: ReadonlySet<WorkflowToolName>,
-	selfSuppressedNames: Set<string>,
-	trigger: ReconciliationTrigger,
+	offeredToolNames: Set<WorkflowToolName>,
 ): void {
-	const activeNames = pi.getActiveTools();
-	// A policy reset replaces the agent-owned tool set, so prior suppression ownership is stale.
-	if (trigger === "policy-reset") {
-		selfSuppressedNames.clear();
+	for (const name of availableToolNames) {
+		offeredToolNames.add(name);
 	}
-
-	// Suppression ownership remains separate from final list ownership for branch restoration.
-	for (const name of activeNames.filter(isWorkflowToolName)) {
-		if (!availableToolNames.has(name)) {
-			selfSuppressedNames.add(name);
-		}
-	}
-	if (trigger === "lifecycle") {
-		for (const name of selfSuppressedNames) {
-			if (isWorkflowToolName(name) && availableToolNames.has(name)) {
-				selfSuppressedNames.delete(name);
-			}
-		}
-	}
-
 	getAgentRuntimeComposition(pi).setRestrictiveToolFilter(
 		"workflow-availability",
 		(candidates) =>
 			candidates.filter(
-				(name) => !isWorkflowToolName(name) || availableToolNames.has(name),
+				(name) => !isWorkflowToolName(name) || offeredToolNames.has(name),
 			),
 	);
 }

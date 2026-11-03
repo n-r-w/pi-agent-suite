@@ -183,7 +183,8 @@ async function executeTool(
 		| "workflow_get_stage"
 		| "workflow_edit_stage"
 		| "workflow_transition"
-		| "workflow_create",
+		| "workflow_create"
+		| "workflow_exit",
 	args: Record<string, unknown>,
 ): Promise<ExecutedTool> {
 	const definition = fixture.tools.find((candidate) => candidate.name === name);
@@ -239,7 +240,8 @@ function resolveSessionDefinition(
 		| "workflow_get_stage"
 		| "workflow_edit_stage"
 		| "workflow_transition"
-		| "workflow_create",
+		| "workflow_create"
+		| "workflow_exit",
 ): ToolDefinition {
 	const resolution = createToolPresentationRegistry(
 		"/tmp",
@@ -348,6 +350,83 @@ afterEach(async () => {
 });
 
 describe("workflow semantic tool rendering", () => {
+	test("renders streamed kind YAML consistently on both screens and expansion modes", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const main = fixture.tools.find(({ name }) => name === "workflow_create");
+		const child = resolveSessionDefinition(fixture, "workflow_create");
+		if (!main?.renderCall || !child.renderCall) {
+			throw new Error("missing create renderer");
+		}
+		for (const expanded of [false, true]) {
+			const args = { id: "kind-stream", kind: "review<&>" };
+			const lines = main
+				.renderCall(
+					args,
+					PLAIN_THEME,
+					createToolRenderContext({ args, expanded, isError: false }),
+				)
+				.render(100)
+				.map((line) => line.trimEnd());
+			expect(
+				child
+					.renderCall(
+						args,
+						PLAIN_THEME,
+						createToolRenderContext({ args, expanded, isError: false }),
+					)
+					.render(100)
+					.map((line) => line.trimEnd()),
+			).toEqual(lines);
+			const marker = expanded ? "--- Content ---" : "Content:";
+			expect(
+				parse(lines.slice(lines.indexOf(marker) + 1).join("\n")).kind,
+			).toBe(args.kind);
+		}
+	});
+	test.each([
+		true,
+		false,
+	])("renders streamed nested=%s as YAML on both screens", async (nested) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const active = fixture.tools.find(({ name }) => name === "workflow_create");
+		if (!active?.renderCall) {
+			throw new Error("missing create renderer");
+		}
+		const child = resolveSessionDefinition(fixture, "workflow_create");
+		if (!child.renderCall) {
+			throw new Error("missing child create renderer");
+		}
+		for (const expanded of [false, true]) {
+			const args = { id: "nested-stream", nested };
+			const context = createToolRenderContext({
+				args,
+				expanded,
+				isError: false,
+			});
+			const mainCall = active.renderCall(args, PLAIN_THEME, context);
+			const childCall = child.renderCall(
+				args,
+				PLAIN_THEME,
+				createToolRenderContext({ args, expanded, isError: false }),
+			);
+			const lines = mainCall.render(100).map((line) => line.trimEnd());
+			expect(childCall.render(100).map((line) => line.trimEnd())).toEqual(
+				lines,
+			);
+			const marker = expanded ? "--- Content ---" : "Content:";
+			const parsed = parse(lines.slice(lines.indexOf(marker) + 1).join("\n"));
+			expect(parsed.nested).toBe(nested);
+			for (const width of [18, 40]) {
+				const shell = new Box(1, 1);
+				shell.addChild(mainCall);
+				for (const line of shell.render(width)) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				}
+			}
+		}
+	});
 	/** Keeps unconditional and legacy evidence limited to transition endpoints. */
 	test.each(
 		[false, true].flatMap((legacy) =>
@@ -395,6 +474,7 @@ describe("workflow semantic tool rendering", () => {
 			await executeTool(fixture, "workflow_create", workflow);
 		}
 		const transition = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "review",
 		});
 		expect(transition.isError).toBe(false);
@@ -476,10 +556,15 @@ describe("workflow semantic tool rendering", () => {
 		];
 		await executeTool(fixture, "workflow_create", workflow);
 		await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "review",
 			ground: "other",
 		});
-		const args = { stageId: "implementation", ground: selected.id };
+		const args = {
+			basis: "The selected condition holds.",
+			stageId: "implementation",
+			ground: selected.id,
+		};
 		const tool = fixture.tools.find(
 			({ name }) => name === "workflow_transition",
 		);
@@ -571,6 +656,55 @@ describe("workflow semantic tool rendering", () => {
 			to: { id: "implementation" },
 			ground: selected,
 		});
+	});
+
+	test("renders explicit exit identically in main and subagent screens after state removal", async () => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		await executeTool(fixture, "workflow_activate", { workflowId: "delivery" });
+		const execution = await executeTool(fixture, "workflow_exit", {
+			basis: "The task is complete.",
+		});
+		const active = renderCompletedTool(execution.definition, execution);
+		const child = renderCompletedTool(
+			resolveSessionDefinition(fixture, "workflow_exit"),
+			execution,
+		);
+		expect(active.call.join("\n")).toContain("delivery");
+		expect(active.result).toEqual([]);
+		expect(child).toEqual(active);
+		expect(execution.result.details).toMatchObject({
+			toolName: "workflow_exit",
+			workflow: { id: "delivery" },
+		});
+		for (const expanded of [false, true]) {
+			for (const width of [12, 40]) {
+				const context = createToolRenderContext({
+					args: execution.args,
+					expanded,
+					isError: false,
+				});
+				execution.definition.renderResult?.(
+					execution.result,
+					{ expanded, isPartial: false },
+					PLAIN_THEME,
+					context,
+				);
+				const call = execution.definition.renderCall?.(
+					execution.args,
+					PLAIN_THEME,
+					context,
+				);
+				if (call === undefined) {
+					throw new Error("missing exit renderer");
+				}
+				const shell = new Box(1, 1);
+				shell.addChild(call);
+				for (const line of shell.render(width)) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+				}
+			}
+		}
 	});
 
 	/** Proves activation is semantic and its internal success payload stays hidden. */
@@ -815,6 +949,7 @@ describe("workflow semantic tool rendering", () => {
 			createArguments("styled-delivery", "Styled delivery process"),
 		);
 		const transition = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "review",
 		});
 		const renderedCreation = renderCompletedTool(
@@ -1700,6 +1835,7 @@ describe("workflow semantic tool rendering", () => {
 		const fixture = await createFixture();
 		await executeTool(fixture, "workflow_activate", { workflowId: "delivery" });
 		const execution = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "review",
 		});
 		const active = renderCompletedTool(execution.definition, execution);
@@ -1760,6 +1896,7 @@ describe("workflow semantic tool rendering", () => {
 			workflowId: "delivery",
 		});
 		const transition = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "review",
 		});
 		const activeActivation = renderCompletedTool(
@@ -1813,6 +1950,7 @@ describe("workflow semantic tool rendering", () => {
 			workflowId: "delivery",
 		});
 		const transition = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "review",
 		});
 		const activeActivation = renderCompletedTool(
@@ -1872,10 +2010,14 @@ describe("workflow semantic tool rendering", () => {
 		const fixture = await createFixture();
 		await executeTool(fixture, "workflow_activate", { workflowId: "delivery" });
 		const execution = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "implementation",
 		});
 		// Advance live state so the failed row can only retain its source through persisted details.
-		await executeTool(fixture, "workflow_transition", { stageId: "review" });
+		await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
+			stageId: "review",
+		});
 		const sessionDefinition = resolveSessionDefinition(
 			fixture,
 			"workflow_transition",
@@ -1902,6 +2044,7 @@ describe("workflow semantic tool rendering", () => {
 		const fixture = await createFixture();
 		await executeTool(fixture, "workflow_activate", { workflowId: "delivery" });
 		const execution = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
 			stageId: "review",
 		});
 		const definition = resolveSessionDefinition(fixture, "workflow_transition");
