@@ -18,7 +18,7 @@ Use format version 3 for new workflows. Declare `version: 3` in catalog files. `
 
 Format 3 adds optional `nested`, a boolean that defaults to false. With `nested: true`, a start appends the workflow to the running chain. Each parent waits at its current stage, and only the top accepts transitions, inspection, or edits. An ordinary exit of the top resumes its parent in the same agent run without running stage-entry triggers. A nested workflow can start without a parent. Without the flag, a start replaces the entire chain. An ID already anywhere in the chain is rejected before state or model changes. Workflow IDs use NFC-normalized, case-sensitive identity.
 
-Before the first start, `<workflow_activation_options>` marks nested entries with `nested="true"`. The default shared guidance explains return, replacement, and explicit exit. Agent workflow allowlists apply to nested catalog activation too.
+Before the first start, `<workflow_activation_options>` marks nested entries with `nested="true"`. The default shared guidance explains nested return and ordinary replacement. The `workflow_exit` description and a hint on entry into a final stage explain explicit exit. Agent workflow allowlists apply to nested catalog activation too.
 
 ### Transition-bound workflows
 
@@ -187,9 +187,9 @@ Workflow settings and optional prompt overrides belong in `~/.pi/agent/agent-sui
 
 `extensionDescriptionPromptFile` supplies one `promptGuidelines` contribution on each workflow tool. The system prompt formatter normalizes duplicate contributions, so the guidance appears once while any workflow tool is active. The other files replace the Pi tool description for the corresponding tool.
 
-With the default shared guidance, the agent completes a stage only when its goal state holds. When every available transition has grounds and none of their conditions holds, the agent takes no transition and describes the situation in its reply. Transitions without grounds remain unconditional.
+With the default shared guidance, the agent completes a stage only when its goal state holds and each completion condition that its stage guidelines state holds. The default transition description tells the agent to take `advance` only after each check that the stage guidelines require before leaving the stage allows the move, and to run no such check on `rework`. When every available transition has grounds and none of their conditions holds, the agent takes no transition and describes the situation in its reply. Transitions without grounds remain unconditional.
 
-If you set `extensionDescriptionPromptFile`, the extension uses your file in place of the entire default shared guidance. Include the goal, task, transition, nested-return, ordinary-replacement, explicit-exit, and bound-exit permission guidance in your file. In particular, tell the agent to finish the final stage's work and call `workflow_exit` with a nonempty basis. Update overrides that describe automatic completion or forbid nested starts before a final stage. If you override `transitionDescriptionPromptFile` or `exitDescriptionPromptFile`, explain that a bound transition starts its check first and that its exit requires boolean `allow` to decide the pending transition.
+If you set `extensionDescriptionPromptFile`, the extension uses your file in place of the entire default shared guidance. Include the goal, task, stage-completion, active-stage, nested-return, and ordinary-replacement guidance in your file. Update overrides that describe automatic completion or forbid nested starts before a final stage. A transition or exit description override replaces only the description of that tool. The description of parameter `allow` explains the exit of a bound check, and the hint on entry into a final stage tells the agent to call `workflow_exit`.
 
 ## Tools
 

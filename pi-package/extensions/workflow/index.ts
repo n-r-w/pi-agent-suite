@@ -185,14 +185,12 @@ Completion criteria:
 		model: WORKFLOW_CREATE_MODEL_SCHEMA,
 		initial: Type.Optional(
 			Type.Boolean({
-				description:
-					"Whether this is workflow's only initial stage. Exactly one stage must be true",
+				description: "Whether this is the initial stage",
 			}),
 		),
 		final: Type.Optional(
 			Type.Boolean({
-				description:
-					"Whether this stage may complete workflow. At least one stage must be true",
+				description: "Whether this stage is final",
 			}),
 		),
 	},
@@ -261,7 +259,7 @@ const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 		}),
 		type: StringEnum(["advance", "rework"] as const, {
 			description:
-				"Transition direction: advance for forward progress; rework for return to a strict advance ancestor.",
+				"Transition direction: advance for forward progress, rework for a return",
 		}),
 		grounds: Type.Optional(
 			Type.Array(
@@ -325,13 +323,11 @@ const WORKFLOW_CREATE_SCHEMA = Type.Object(
 		),
 		nested: Type.Optional(
 			Type.Boolean({
-				description:
-					"Start on top of the running chain and return to its current stage on exit",
+				description: "Whether the workflow is nested",
 			}),
 		),
 		id: Type.String({
-			description:
-				"Unique workflow ID. Must not match any other workflow ID after NFC normalization",
+			description: "Unique workflow ID",
 			minLength: 6,
 			maxLength: 32,
 		}),
@@ -349,14 +345,12 @@ const WORKFLOW_CREATE_SCHEMA = Type.Object(
 			}),
 		),
 		stages: Type.Array(WORKFLOW_STAGE_SCHEMA, {
-			description:
-				"Complete list of workflow stages. Exactly one stage must be initial and at least one must be final",
+			description: "Complete list of workflow stages",
 			minItems: 2,
 			maxItems: 64,
 		}),
 		transitions: Type.Array(WORKFLOW_TRANSITION_SCHEMA, {
-			description:
-				"Directed stage transitions. Use advance for forward progress and rework only toward an advance ancestor",
+			description: "Directed stage transitions",
 			minItems: 1,
 			maxItems: 256,
 		}),
@@ -1747,7 +1741,7 @@ function registerWorkflowExitTool(options: RegisterWorkflowToolsOptions): void {
 				allow: Type.Optional(
 					Type.Boolean({
 						description:
-							"Whether the pending parent transition may continue; required for a bound workflow exit",
+							"Required when `<workflow_chain>` shows `<pending_transition>` for the active workflow: true lets the waiting workflow move to the requested stage, false keeps it at its stage",
 					}),
 				),
 			},

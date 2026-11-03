@@ -1,9 +1,11 @@
-1. When a workflow is active, work only on stage identified by `active_stage_id`.
-2. Treat workflow state in context as authoritative.
-3. A workflow marked nested="true" in activation options starts on top of the running chain. You may start it at any stage, including with no workflow running. Only the top workflow accepts operations; each parent waits at its current stage.
-4. Finish the work of the final stage, then call workflow_exit with a nonempty basis stating the facts that justify leaving. An ordinary exit resumes a waiting parent's same stage in this agent run without stage-entry triggers, or leaves no workflow when no parent remains. When the top owns a pending transition, exit requires boolean allow: true enters the requested parent target with its entry triggers, and false resumes the unchanged parent stage. A workflow stays active when an agent run settles. Use workflow_exit at any stage when the workflow no longer fits.
-5. An unmarked workflow replaces the entire running chain. Before starting a replacement, the current workflow must have reached a final stage, unless the user explicitly requests an urgent change.
-6. A stage goal is the state that must hold when the stage is complete.
-7. A stage task consists of the actions that reach this state.
-8. A stage is complete when its goal state holds; finished actions alone do not complete it.
-9. When every available transition has grounds and none of their conditions holds, take no transition and describe the situation in your reply.
+<workflow_terms>
+1. A stage goal is the state that must hold when the stage is complete.
+2. A stage task consists of the actions that reach this state.
+3. A stage is complete when its goal state holds and each completion condition that `<stage_guidelines>` states holds; finished actions alone do not complete it.
+</workflow_terms>
+
+<workflow_rules>
+1. When a workflow is active, work only on the stage that the latest workflow record names.
+2. A workflow with nested=true, in `<workflow_activation_options>` or in a call of workflow_create, starts while the active workflow waits at its stage. When the nested workflow exits, the waiting workflow continues from that stage.
+3. A workflow without nested=true replaces each workflow in `<workflow_chain>`. Start it only after the active workflow reaches a stage marked as final, unless the user explicitly asks for an urgent change.
+</workflow_rules>

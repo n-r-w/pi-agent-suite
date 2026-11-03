@@ -18,9 +18,10 @@
 
 ### Changed
 
-- Update custom shared guidance, transition, and exit description overrides to explain bound starts and required boolean `allow` on pending exits. Ordinary exits ignore a supplied boolean `allow`.
+- Rewrite the default shared guidance and the descriptions of workflow tools and their parameters so that each rule stands once, in terms of records that the agent sees. Stage completion also requires the completion conditions of stage guidelines, and the active stage is the one that the latest workflow record names. `advance` requires the checks that stage guidelines name before leaving a stage, and `rework` runs none. The exit, activation, and parameter descriptions omit implementation details.
+- Describe the required boolean `allow` of a pending exit in the `workflow_exit` parameter schema, so description overrides need no guidance on bound checks. Ordinary exits ignore a supplied boolean `allow`.
 - Make `workflow_create` produce format 3. Formats 1 and 2 retain their schema and use ordinary replacement. Reject IDs already anywhere in the running chain.
-- Mark nested workflows in activation options before the first start. Update custom create, activate, exit, and shared guidance overrides to explain nested return and ordinary replacement of the entire chain.
+- Mark nested workflows in activation options before the first start. Update custom shared guidance overrides to explain nested return and ordinary replacement of the entire chain.
 - Append chain-aware context and recovery checkpoints without rewriting earlier provider-visible messages. Resume an unchanged parent without rerunning its stage-entry triggers, and restore its effective model settings. Ordinary replacement restores the original root baseline before capturing new settings.
 - On a nested exit, reapply the resumed parent's effective stage settings. On the last exit, restore the original pre-workflow model and thinking snapshot. Before an ordinary replacement captures its snapshot, restore that original snapshot. Roll back model changes when workflow persistence fails.
 - Keep workflow-owned tools offered after they first become applicable in the session, subject to agent tool policy. Inapplicable registered calls return explicit errors; applicable calls after a nested exit operate on the resumed parent.
