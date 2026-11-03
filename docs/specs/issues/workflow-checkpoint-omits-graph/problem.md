@@ -1,45 +1,65 @@
 # Problem Statement
 
+## Key definitions and abbreviations
+
+Terms of this issue are defined in [terms.md](terms.md).
+
 ## Context
 
-The workflow extension publishes model-facing workflow records into the conversation. On activation, `<workflow_activated>` holds the root guidance, every stage with its description and `initial` or `final` flag, and every transition with its endpoints and type. Each stage activation then holds the stage goal, the stage guidelines, and `<available_transitions>`, which lists only the transitions out of the active stage.
+The workflow extension publishes hidden records for the model. The activation record holds the root guidance, the workflow graph, and the entry into the initial stage. Each later stage activation holds the stage goal, the stage guidelines, and `<available_transitions>`, which lists only the transitions out of the active stage, with their grounds.
 
-After `session_compact`, the records published before the compaction are outside the provider-visible context. The extension appends one `<workflow_checkpoint>` to restore the workflow state for the model.
+During a compaction, Pi passes the summarized part, hidden workflow records included, to a summarizer model. After the compaction, the model sees the summary, the kept entries, and the entries appended later.
+
+The extension appends a checkpoint after `session_compact`. It also appends a checkpoint on session start and on branch navigation when the entries after the latest compaction or branch summary hold no workflow record that matches the saved workflow state.
 
 ## Observed Problem
 
-The checkpoint holds the root guidance, the goal and guidelines of the active stage, and `<available_transitions>`. It holds no `<stages>` and no `<transitions>`. After a compaction, the model therefore sees only the transitions out of the active stage and no longer sees the later stages of the workflow, their descriptions, or the paths between them. A completed checkpoint holds only the rework transitions, with the same loss.
+A checkpoint holds the root guidance, the goal and guidelines of the active stage, and `<available_transitions>`. It holds no workflow graph. When the activation record is in the summarized part, the model sees only the stages that the active stage leads to. The other stages, their descriptions, and the paths between them are visible only as far as the summary retells them. A checkpoint of a completed workflow holds only the rework transitions, with the same loss.
 
 ## Affected Audience
 
-Agents that work by a workflow in a session long enough to be compacted are affected, and so are the users of these agents. The harm is largest when the guidelines of a stage refer to stages beyond its outgoing transitions, for example a planning stage that must name the later stages that check the whole result.
+Main agents and subagents that work by a workflow in a session long enough to be compacted, and the users of these agents.
 
 ## Evidence
 
-- `pi-package/extensions/workflow/context.ts:renderWorkflowActivation` renders `<stages>` and `<transitions>`; `renderWorkflowCheckpoint` renders neither.
-- `docs/extensions/workflow.md`, section "Provider context", states that activation appends the complete transition graph and that an active checkpoint holds the stage goal, the active stage guidelines, and the available transitions.
-- Section SOL-06 of `docs/specs/issues/tool-prompt-cache-duplication/technical-solution.md` lists the content of the checkpoint and gives no reason to leave the graph out. The problem that this solution addressed, PRB-03, was a full snapshot repeated before every model request; a checkpoint is appended once per compaction.
+- Code: in `pi-package/extensions/workflow/context.ts`, `renderWorkflowActivation` renders `<stages>` and `<transitions>`, and `renderWorkflowCheckpoint` renders neither. Both publication paths, `registerWorkflowCompaction` and the synchronizer of `session_start` and `session_tree` in `index.ts`, call `WorkflowJournal.checkpoint`.
+- Rendered output: for a workflow with the stages `plan`, `implement`, and `review`, the activation record lists the three stages and the three transitions. The checkpoint at `plan` lists only the transition `plan -> implement`.
+- Session history: a scan of local Pi session files from September and October 2026 found 134 checkpoints that the extension appended right after a compaction. None of them holds the workflow graph.
+  - In 127 checkpoints, the activation record was in the summarized part, and at least one stage was invisible in the checkpoint. These checkpoints come from 54 sessions, 33 of main agents and 21 of subagents, and from 18 workflows. For example, at stage `implement_plan` of `ComplexCoding`, the checkpoint shows 4 of 13 stages.
+  - In 68 of these 127 cases, the compaction summary names none of the invisible stages. In 19 cases, it names all of them. A stage name in the summary does not show that its transitions are known.
+  - In 2 checkpoints, the activation record was among the kept entries.
+- Tools: no workflow tool returns the workflow graph. `workflow_get_stage` returns one stage by its ID, without transitions, and is available only for an active dynamic workflow (`availability.ts`, `resolveWorkflowAvailability`).
+- Documentation: section "Provider context" of `docs/extensions/workflow.md` and SOL-06 of `docs/specs/issues/tool-prompt-cache-duplication/technical-solution.md` list the content of the checkpoint without the workflow graph. SOL-06 gives no reason to leave the graph out. Per PRB-03 of the same issue, the extension previously repeated the full transition graph before every model request.
 
 ## Impact
 
-After a compaction, an agent chooses its next steps without the structure of the workflow. A stage whose guidelines need the later stages, such as a plan that names the stages that will check its result, can produce a result that omits them.
+After a compaction, an agent chooses its next steps without the structure of the workflow. A stage whose guidelines refer to later stages, such as a plan that names the stages that will check its result, can produce a result that omits them. Level: HIGH. The outcome of the task can change, and a repeated run of the stage removes the damage.
 
 ## Current State
 
-The checkpoint restores the active stage and its outgoing transitions, and the rest of the graph is lost from the model context until a new activation.
+- Active workflow, activation record in the summarized part: the model sees the root guidance, the goal and guidelines of the active stage, and the transitions out of it. It sees other stages only through the summary text.
+- Completed workflow, activation record in the summarized part: the model sees the root guidance and the rework transitions.
+- Catalog workflow: the model has no tool that shows other stages. Active dynamic workflow: the model can read one stage through `workflow_get_stage` when it knows the stage ID.
+- The workflow graph returns to the model context only with a new activation record.
 
 ## Desired State
 
-After a compaction, the model sees the whole workflow graph, as it does after activation.
+After a compaction, an agent that works by a workflow knows all stages of the workflow and the paths between them, as it does right after activation.
 
 ## Problem Boundary
 
-The problem covers the content of `<workflow_checkpoint>` after `session_compact` for active and completed workflows. It does not cover the activation, stage, reminder, or completion records.
+The problem covers each checkpoint that the model receives while the activation record is in the summarized part, for active and completed workflows, from both publication paths.
+
+The following similar cases are outside the problem:
+
+- A compaction that keeps the activation record among the kept entries: the model still sees the workflow graph.
+- The activation, stage activation, stage update, reminder, and completion records.
+- Guidelines of stages other than the active one: the activation record does not hold them either, and the model receives the guidelines of a stage when it enters this stage.
 
 ## Assumptions
 
-- A compaction summary does not reliably keep the graph from the activation record. The behavior was found by reading the code and the documentation, and it was not reproduced in a live session.
+- The loss of the workflow graph changes the results of agents. The session history shows the loss itself, and a keyword search over it found no agent result that the loss changed.
 
 ## Open Questions
 
-None at the problem-definition level. Requirements and a technical solution have not yet been defined.
+None.

@@ -26,7 +26,7 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
     2) `terms.md` - feature specific terms
     3) `prd.md` - critical requirements
     4) `solution.md` - technical solution
-5. Roadmap: `docs/specs/roadmap.md`
+5. Roadmap: `docs/specs/roadmap.md`. Keep up to date.
 6. Keep extension documentation in `docs/extensions/*` up to date.
 7. `README.md` files should be concise. All details in `docs/extensions/*`.
 

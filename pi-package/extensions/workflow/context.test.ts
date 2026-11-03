@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	hasVisibleWorkflowGraph,
+	WorkflowJournal,
+	type WorkflowJournalRecord,
+} from "./context";
 import {
 	completeWorkflow,
 	createWorkflow,
@@ -51,6 +56,71 @@ function createJournal(): {
 }
 
 describe("workflow journal", () => {
+	/** Checks graph visibility against Pi's real compaction and context-edit projection. */
+	test("recognizes only model-visible graph records of the same workflow", () => {
+		const session = SessionManager.inMemory();
+		const { journal, records } = createJournal();
+		const state = createWorkflow(workflow());
+		journal.activate(state);
+		const activation = records[0];
+		if (activation === undefined) {
+			throw new Error("missing activation");
+		}
+		const activationId = session.appendCustomMessageEntry(
+			activation.customType,
+			activation.content,
+			false,
+			activation.details,
+		);
+		const entries = () => session.buildSessionProjection().entries;
+		expect(hasVisibleWorkflowGraph(state, entries())).toBe(true);
+		expect(
+			hasVisibleWorkflowGraph(
+				{
+					...state,
+					workflow: { ...state.workflow, id: "other" },
+				},
+				entries(),
+			),
+		).toBe(false);
+		session.appendCompaction("summary", activationId, 100);
+		journal.checkpoint(state, entries());
+		expect(records.at(-1)?.details["includesGraph"]).toBe(false);
+		session.appendContextEdit(activationId, null);
+		expect(hasVisibleWorkflowGraph(state, entries())).toBe(false);
+
+		const edited = editWorkflowStage(
+			state,
+			{
+				stageId: "review",
+				description: "Edited review",
+				prompt: "Edited guidance",
+				model: { thinking: "medium" },
+			},
+			"fixture",
+		);
+		const completed = completeWorkflow(transitionWorkflow(edited, "review"));
+		journal.checkpoint(completed, entries());
+		const checkpoint = records.at(-1);
+		expect(checkpoint?.details).toMatchObject({
+			status: "completed",
+			includesGraph: true,
+		});
+		if (checkpoint === undefined) {
+			throw new Error("missing checkpoint");
+		}
+		const checkpointId = session.appendCustomMessageEntry(
+			checkpoint.customType,
+			checkpoint.content,
+			false,
+			checkpoint.details,
+		);
+		expect(hasVisibleWorkflowGraph(completed, entries())).toBe(true);
+		session.appendCompaction("next summary", checkpointId, 100);
+		journal.checkpoint(completed, entries());
+		expect(records.at(-1)?.details["includesGraph"]).toBe(false);
+	});
+
 	test("retries an unpersisted run message and deduplicates only against branch evidence", () => {
 		// Purpose: preparing an initial message must not make a cancelled run look persisted.
 		// Input/output: two preparations on empty history return records; recorded history suppresses the third.

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	getAvailableTransitions,
 	type WorkflowDefinition,
@@ -116,19 +117,25 @@ export class WorkflowJournal {
 		);
 	}
 
-	public checkpoint(state: WorkflowState, triggerTurn?: boolean): void {
+	public checkpoint(
+		state: WorkflowState,
+		projectedEntries: readonly ProjectedSessionEntry[] = [],
+		triggerTurn?: boolean,
+	): void {
 		const stage = requireCurrentStage(state);
+		const includesGraph = !hasVisibleWorkflowGraph(state, projectedEntries);
 		this.knownStages.clear();
 		if (state.status === "active") {
 			this.knownStages.add(stage.id);
 		}
 		this.setCurrentState(state);
 		this.publishRecord(
-			renderWorkflowCheckpoint(state, stage),
+			renderWorkflowCheckpoint(state, stage, includesGraph),
 			"checkpoint",
 			state,
 			{
 				stageId: stage.id,
+				includesGraph,
 				...(triggerTurn === undefined ? {} : { triggerTurn }),
 			},
 		);
@@ -303,6 +310,18 @@ function renderWorkflowActivation(
 	stage: WorkflowStage,
 ): string {
 	const workflow = state.workflow;
+	return [
+		`<workflow_activated id="${escapeXml(workflow.id)}" source="${state.source}">`,
+		...renderOptionalGuidelines(workflow.prompt, "guidelines", "  "),
+		...renderWorkflowGraph(workflow),
+		"</workflow_activated>",
+		"",
+		renderStageActivation(state, stage, "inline"),
+	].join("\n");
+}
+
+/** Renders the stage descriptions and transition graph shared by activation and restoration. */
+function renderWorkflowGraph(workflow: WorkflowDefinition): readonly string[] {
 	const stages = workflow.stages.map((item) => {
 		const flags = `${item.initial ? ' initial="true"' : ""}${item.final ? ' final="true"' : ""}`;
 		return `    <stage id="${escapeXml(item.id)}" description="${escapeXml(item.description)}"${flags} />`;
@@ -312,18 +331,13 @@ function renderWorkflowActivation(
 			`    <transition from="${escapeXml(edge.from)}" to="${escapeXml(edge.to)}" type="${edge.type}" />`,
 	);
 	return [
-		`<workflow_activated id="${escapeXml(workflow.id)}" source="${state.source}">`,
-		...renderOptionalGuidelines(workflow.prompt, "guidelines", "  "),
 		"  <stages>",
 		...stages,
 		"  </stages>",
 		"  <transitions>",
 		...transitions,
 		"  </transitions>",
-		"</workflow_activated>",
-		"",
-		renderStageActivation(state, stage, "inline"),
-	].join("\n");
+	];
 }
 
 function renderStageActivation(
@@ -379,12 +393,14 @@ function renderWorkflowCompletion(
 function renderWorkflowCheckpoint(
 	state: WorkflowState,
 	stage: WorkflowStage,
+	includesGraph: boolean,
 ): string {
 	const stageAttribute =
 		state.status === "active" ? "active_stage_id" : "completed_stage_id";
 	return [
 		`<workflow_checkpoint id="${escapeXml(state.workflow.id)}" status="${state.status}" ${stageAttribute}="${escapeXml(stage.id)}">`,
 		...renderOptionalGuidelines(state.workflow.prompt, "guidelines", "  "),
+		...(includesGraph ? renderWorkflowGraph(state.workflow) : []),
 		...(state.status === "active"
 			? [
 					...renderOptionalGuidelines(stage.goal, "stage_goal", "  "),
@@ -488,6 +504,24 @@ function readWorkflowMessage(entry: unknown):
 		return undefined;
 	}
 	return { content: entry["content"], details: entry["details"] };
+}
+
+/** Reports whether Pi will send a graph record for the saved workflow to the model. */
+export function hasVisibleWorkflowGraph(
+	state: WorkflowState,
+	entries: readonly ProjectedSessionEntry[],
+): boolean {
+	return entries.some(({ sourceEntry, messages }) => {
+		const message = readWorkflowMessage(sourceEntry);
+		return (
+			messages.length > 0 &&
+			message?.details["version"] === 1 &&
+			message.details["workflowId"] === state.workflow.id &&
+			(message.details["kind"] === "activation" ||
+				(message.details["kind"] === "checkpoint" &&
+					message.details["includesGraph"] === true))
+		);
+	});
 }
 
 function getWorkflowRevision(workflow: WorkflowDefinition): string {
