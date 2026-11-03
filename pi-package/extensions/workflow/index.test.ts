@@ -12,6 +12,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Check } from "typebox/value";
+import { stringify } from "yaml";
 import {
 	getAgentRuntimeComposition,
 	SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
@@ -637,11 +638,6 @@ afterEach(async () => {
 });
 
 describe("nested workflow execution", () => {
-	/** Reads persisted operations through the public replay boundary. */
-	function savedBranch(fake: FakePi) {
-		return fake.appended.map((entry) => ({ type: "custom", ...entry }));
-	}
-
 	for (const role of ["main", "child"] as const) {
 		test(`${role} nested catalog authorization rejects atomically and allows a compatible policy`, async () => {
 			const suite = await createSuite(modelYaml());
@@ -3960,3 +3956,438 @@ test.each([
 		route: ["start", "done"],
 	});
 });
+
+/** Projects fake journal writes into isolated session entries. */
+function savedBranch(fake: FakePi) {
+	return fake.appended.map((entry) => ({ type: "custom", ...entry }));
+}
+
+/** Captures publication metadata without inspecting model-facing text. */
+function captureMessageMetadata(fake: FakePi) {
+	return fake.messages.map(({ details, options }) => ({ details, options }));
+}
+
+/** Installs bound catalog graphs and returns matching dynamic-parent arguments. */
+async function createBoundSuite() {
+	const args = triggeredCreateArguments();
+	const transitions = args["transitions"] as Record<string, unknown>[];
+	args["transitions"] = transitions.map((edge) => ({
+		...edge,
+		workflow: "check",
+	}));
+	const suite = await createSuite();
+	await writeFile(
+		join(suite, "workflow/workflows/delivery.yaml"),
+		stringify({ ...args, id: undefined, version: 3 }),
+	);
+	await writeFile(
+		join(suite, "workflow/workflows/check.yaml"),
+		stringify({
+			...createArguments(),
+			id: undefined,
+			version: 3,
+			nested: true,
+			stages: [
+				...(createArguments()["stages"] as Record<string, unknown>[]),
+				{
+					id: "middle",
+					description: "Middle",
+					goal: "Reviewed",
+					prompt: "Review",
+					model: { thinking: "low" },
+				},
+			],
+			transitions: [
+				{ from: "start", to: "middle", type: "advance" },
+				{ from: "middle", to: "done", type: "advance" },
+				{
+					from: "done",
+					to: "start",
+					type: "rework",
+					grounds: [{ id: "retry", when: "Revision" }],
+				},
+			],
+		}),
+	);
+	return { suite, args };
+}
+
+for (const role of ["main", "child"] as const) {
+	for (const source of ["catalog", "created"] as const) {
+		test(`bound transitions ${role} ${source} allow, refuse, repeat and rework at any check stage`, async () => {
+			const { args } = await createBoundSuite();
+			if (role === "child") {
+				process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
+			}
+			const fake = await createFakePi();
+			if (role === "main") {
+				setMainWorkflowPolicy(fake, ["delivery", "check"]);
+			}
+			await runLifecycle(fake, "session_start");
+			const triggers = captureTriggers(fake);
+			expect(
+				Check(requireTool(fake, "workflow_create").parameters as never, args),
+			).toBe(true);
+			expect(
+				Check(requireTool(fake, "workflow_exit").parameters as never, {
+					basis: "Ready",
+					allow: true,
+				}),
+			).toBe(true);
+			await requireTool(
+				fake,
+				source === "catalog" ? "workflow_activate" : "workflow_create",
+			).execute(
+				"start",
+				source === "catalog" ? { workflowId: "delivery" } : args,
+			);
+			const parent = replayWorkflowChain(savedBranch(fake)).chain[0];
+			if (parent === undefined) {
+				throw new Error("missing parent fixture");
+			}
+			const move = requireTool(fake, "workflow_transition");
+			const exit = requireTool(fake, "workflow_exit");
+			const request = { stageId: "done", basis: "Ready for checking" };
+			await move.execute("request", request);
+			const pending = replayWorkflowChain(savedBranch(fake)).chain;
+			expect(pending[0]).toEqual(parent);
+			expect(pending[1]?.workflow.id).toBe("check");
+			expect(pending[1]?.pendingTransition).toEqual({ stageId: "done" });
+			const before = {
+				entries: [...fake.appended],
+				messages: captureMessageMetadata(fake),
+				calls: [...fake.modelSetCalls],
+				thinking: fake.thinkingLevel,
+			};
+			for (const allow of [undefined, null, "true", 1, {}]) {
+				await expect(
+					exit.execute("bad", {
+						basis: "Check decision",
+						...(allow === undefined ? {} : { allow }),
+					}),
+				).rejects.toThrow("allow");
+			}
+			expect(fake.appended).toEqual(before.entries);
+			expect(captureMessageMetadata(fake)).toEqual(before.messages);
+			expect(fake.modelSetCalls).toEqual(before.calls);
+			expect(fake.thinkingLevel).toBe(before.thinking);
+			await move.execute("middle-check", {
+				stageId: "middle",
+				basis: "Initial check finished",
+			});
+			const triggerCount = triggers.length;
+			await exit.execute("refuse", { basis: "More work needed", allow: false });
+			expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual([parent]);
+			expect(triggers).toHaveLength(triggerCount);
+			expect(
+				(fake.messages.at(-1)?.details as Record<string, unknown>)[
+					"refusedTransition"
+				],
+			).toEqual({ stageId: "done" });
+			await move.execute("repeat", request);
+			await move.execute("middle-again", {
+				stageId: "middle",
+				basis: "Initial check finished",
+			});
+			await move.execute("finish-check", {
+				stageId: "done",
+				basis: "Check complete",
+			});
+			const count = fake.appended.length;
+			await exit.execute(
+				"allow",
+				{ basis: "Ready", allow: true },
+				undefined,
+				undefined,
+				{},
+			);
+			expect(fake.appended).toHaveLength(count + 1);
+			expect(fake.appended.at(-1)?.data).toEqual({
+				kind: "exited",
+				journalVersion: 2,
+				allow: true,
+			});
+			expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+				"start",
+				"done",
+			]);
+			expect(triggers).toHaveLength(triggerCount + 1);
+			await move.execute("rework", {
+				stageId: "start",
+				ground: "revise",
+				basis: "Revision",
+			});
+			expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+				"start",
+				"done",
+			]);
+			await exit.execute(
+				"skip-check",
+				{ basis: "User permits early return", allow: true },
+				undefined,
+				undefined,
+				{},
+			);
+			expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+				"start",
+			]);
+			expect(triggers).toHaveLength(triggerCount + 4);
+			await exit.execute("ordinary", { basis: "Stop", allow: true });
+			expect(fake.appended.at(-1)?.data).toEqual({
+				kind: "exited",
+				journalVersion: 2,
+			});
+		});
+	}
+
+	test(`bound transitions ${role} reject policy and running IDs without side effects`, async () => {
+		await createBoundSuite();
+		if (role === "child") {
+			process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery"]';
+		}
+		const fake = await createFakePi();
+		if (role === "main") {
+			setMainWorkflowPolicy(fake, ["delivery"]);
+		}
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("parent", {
+			workflowId: "delivery",
+		});
+		const before = {
+			entries: [...fake.appended],
+			messages: captureMessageMetadata(fake),
+			calls: [...fake.modelSetCalls],
+			tools: [...fake.activeTools],
+			widgets: [...fake.widgetUpdates],
+			thinking: fake.thinkingLevel,
+		};
+		await expect(
+			requireTool(fake, "workflow_transition").execute("denied", {
+				stageId: "done",
+				basis: "Ready",
+			}),
+		).rejects.toThrow("not allowed");
+		expect(fake.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(fake)).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.calls);
+		expect(fake.activeTools).toEqual(before.tools);
+		expect(fake.widgetUpdates).toEqual(before.widgets);
+		expect(fake.thinkingLevel).toBe(before.thinking);
+		const branch = savedBranch(fake);
+		if (role === "child") {
+			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
+		}
+		const allowed = await createFakePi();
+		if (role === "main") {
+			setMainWorkflowPolicy(allowed, ["delivery", "check"]);
+		}
+		await runLifecycle(allowed, "session_start", branch);
+		await requireTool(allowed, "workflow_activate").execute("waiting", {
+			workflowId: "check",
+		});
+		const dynamic = createArguments("duplicate-parent");
+		dynamic["nested"] = true;
+		dynamic["transitions"] = (
+			dynamic["transitions"] as Record<string, unknown>[]
+		).map((edge) => ({ ...edge, workflow: "check" }));
+		await requireTool(allowed, "workflow_create").execute("dynamic", dynamic);
+		const entries = [...allowed.appended];
+		const messages = captureMessageMetadata(allowed);
+		const calls = [...allowed.modelSetCalls];
+		await expect(
+			requireTool(allowed, "workflow_transition").execute("duplicate", {
+				stageId: "done",
+				basis: "Ready",
+			}),
+		).rejects.toThrow("already active");
+		expect(allowed.appended).toEqual(entries);
+		expect(captureMessageMetadata(allowed)).toEqual(messages);
+		expect(allowed.modelSetCalls).toEqual(calls);
+	});
+}
+
+test("bound creation validates catalog bindings before any side effect", async () => {
+	await createBoundSuite();
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	const create = requireTool(fake, "workflow_create");
+	for (const workflow of ["absent", "delivery"]) {
+		const args = createArguments();
+		args["transitions"] = (
+			args["transitions"] as Record<string, unknown>[]
+		).map((edge) => ({ ...edge, workflow }));
+		const before = {
+			entries: [...fake.appended],
+			messages: captureMessageMetadata(fake),
+			calls: [...fake.modelSetCalls],
+			thinking: fake.thinkingLevel,
+		};
+		await expect(create.execute("invalid", args)).rejects.toThrow(
+			workflow === "absent"
+				? "does not exist in the catalog"
+				: "must have nested: true",
+		);
+		expect(fake.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(fake)).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.calls);
+		expect(fake.thinkingLevel).toBe(before.thinking);
+	}
+});
+
+test("bound start and permission persistence failures roll models back and apply only the resolved target", async () => {
+	const { suite } = await createBoundSuite();
+	await writeFile(
+		join(suite, "workflow/workflows/delivery.yaml"),
+		groundedYaml()
+			.replace(
+				"version: 2",
+				"version: 3\nmodel:\n  id: openai/current-model\n  thinking: medium",
+			)
+			.replace("    type: advance", "    type: advance\n    workflow: check"),
+	);
+	await writeFile(
+		join(suite, "workflow/workflows/check.yaml"),
+		groundedYaml().replace(
+			"version: 2",
+			"version: 3\nnested: true\nmodel:\n  id: openai/workflow-model\n  thinking: low",
+		),
+	);
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	await requireTool(fake, "workflow_activate").execute("parent", {
+		workflowId: "delivery",
+	});
+	const move = requireTool(fake, "workflow_transition");
+	const exit = requireTool(fake, "workflow_exit");
+	const request = { stageId: "done", ground: "ready", basis: "Ready" };
+	const parent = replayWorkflowChain(savedBranch(fake)).chain;
+	if (fake.api === undefined) {
+		throw new Error("missing API fixture");
+	}
+	const setModel = fake.api.setModel;
+	fake.api.setModel = async () => false;
+	await expect(move.execute("failed-model", request)).rejects.toThrow();
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(parent);
+	expect(fake.model?.id).toBe("current-model");
+	expect(fake.thinkingLevel).toBe("medium");
+	fake.api.setModel = setModel;
+	fake.appendError = new Error("write failed");
+	await expect(move.execute("failed-start", request)).rejects.toThrow(
+		"write failed",
+	);
+	expect(fake.model?.id).toBe("current-model");
+	expect(fake.thinkingLevel).toBe("medium");
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(parent);
+	fake.appendError = undefined;
+	await move.execute("start", request);
+	const pending = replayWorkflowChain(savedBranch(fake)).chain;
+	const messages = captureMessageMetadata(fake);
+	const findModel = fake.modelRegistry.find;
+	fake.modelRegistry.find = () => undefined;
+	await expect(
+		exit.execute("unknown-target-model", { basis: "Ready", allow: true }),
+	).rejects.toThrow("was not found");
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(pending);
+	expect(captureMessageMetadata(fake)).toEqual(messages);
+	expect(fake.model?.id).toBe("workflow-model");
+	expect(fake.thinkingLevel).toBe("low");
+	fake.modelRegistry.find = findModel;
+	fake.appendError = new Error("write failed");
+	await expect(
+		exit.execute("failed-exit", { basis: "Ready", allow: true }),
+	).rejects.toThrow("write failed");
+	expect(fake.model?.id).toBe("workflow-model");
+	expect(fake.thinkingLevel).toBe("low");
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(pending);
+	expect(captureMessageMetadata(fake)).toEqual(messages);
+	fake.appendError = undefined;
+	const calls = fake.modelSetCalls.length;
+	await exit.execute("permit", { basis: "Ready", allow: true });
+	expect(fake.modelSetCalls.slice(calls).map(({ id }) => id)).toEqual([]);
+	expect(fake.thinkingLevel).toBe("high");
+	expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+		"start",
+		"done",
+	]);
+});
+
+test("saved bound requests report missing catalog checks without changing state", async () => {
+	const { suite } = await createBoundSuite();
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	await requireTool(fake, "workflow_activate").execute("parent", {
+		workflowId: "delivery",
+	});
+	const branch = savedBranch(fake);
+	await rm(join(suite, "workflow/workflows/check.yaml"));
+	const restored = await createFakePi();
+	await runLifecycle(restored, "session_start", branch);
+	const before = {
+		entries: [...restored.appended],
+		messages: captureMessageMetadata(restored),
+		calls: [...restored.modelSetCalls],
+		thinking: restored.thinkingLevel,
+	};
+	await expect(
+		requireTool(restored, "workflow_transition").execute("missing", {
+			stageId: "done",
+			basis: "Ready",
+		}),
+	).rejects.toThrow("does not exist in the catalog");
+	expect(restored.appended).toEqual(before.entries);
+	expect(captureMessageMetadata(restored)).toEqual(before.messages);
+	expect(restored.modelSetCalls).toEqual(before.calls);
+	expect(restored.thinkingLevel).toBe(before.thinking);
+});
+
+for (const role of ["main", "child"] as const) {
+	test(`pending transitions ${role} survive reload navigation and compaction with append-only metadata`, async () => {
+		await createBoundSuite();
+		if (role === "child") {
+			process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
+		}
+		const fake = await createFakePi();
+		if (role === "main") {
+			setMainWorkflowPolicy(fake, ["delivery", "check"]);
+		}
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("parent", {
+			workflowId: "delivery",
+		});
+		const parentBranch = savedBranch(fake);
+		await requireTool(fake, "workflow_transition").execute("request", {
+			stageId: "done",
+			basis: "Ready",
+		});
+		const pendingBranch = savedBranch(fake);
+		const pending = replayWorkflowChain(pendingBranch).chain;
+		const restored = await createFakePi();
+		await runLifecycle(restored, "session_start", pendingBranch);
+		const records = structuredClone(captureMessageMetadata(restored));
+		await runLifecycle(restored, "session_tree", parentBranch);
+		await runLifecycle(restored, "session_tree", pendingBranch);
+		await runSessionCompact(restored);
+		expect(captureMessageMetadata(restored).slice(0, records.length)).toEqual(
+			records,
+		);
+		expect(
+			(restored.messages.at(-1)?.details as Record<string, unknown>)[
+				"pendingTransitions"
+			],
+		).toEqual([
+			{ workflowId: "check", parentWorkflowId: "delivery", stageId: "done" },
+		]);
+		await requireTool(restored, "workflow_exit").execute("allow", {
+			basis: "Ready",
+			allow: true,
+		});
+		expect(
+			replayWorkflowChain([...pendingBranch, ...savedBranch(restored)]).chain[0]
+				?.route,
+		).toEqual(["start", "done"]);
+		expect(pending[0]?.route).toEqual(["start"]);
+	});
+}

@@ -5,6 +5,7 @@ import type { WorkflowKind } from "./kinds";
 import {
 	getAvailableTransitions,
 	getTopWorkflow,
+	type PendingWorkflowTransition,
 	type WorkflowChain,
 	type WorkflowDefinition,
 	type WorkflowStage,
@@ -61,7 +62,10 @@ export class WorkflowJournal {
 		);
 	}
 
-	public enterStage(chain: WorkflowChain): void {
+	public enterStage(
+		chain: WorkflowChain,
+		refusedTransition?: PendingWorkflowTransition,
+	): void {
 		const state = requireTopWorkflow(chain);
 		const stage = requireCurrentStage(state);
 		const key = getStageKey(state, stage);
@@ -69,10 +73,21 @@ export class WorkflowJournal {
 		this.knownStages.add(key);
 		this.setCurrentState(chain);
 		this.publishRecord(
-			renderStageActivation(state, stage, guidelines),
+			[
+				renderStageActivation(state, stage, guidelines),
+				...(refusedTransition === undefined
+					? []
+					: [
+							`<workflow_transition_refused stage_id="${escapeXml(refusedTransition.stageId)}">The requested transition did not happen; continue this stage.</workflow_transition_refused>`,
+						]),
+			].join("\n"),
 			"stage_activation",
 			chain,
-			{ stageId: stage.id, guidelines },
+			{
+				stageId: stage.id,
+				guidelines,
+				...(refusedTransition === undefined ? {} : { refusedTransition }),
+			},
 		);
 	}
 
@@ -284,7 +299,21 @@ export class WorkflowJournal {
 		const chainView = chain.map((item) => ({
 			workflowId: item.workflow.id,
 			stageId: item.route.at(-1) ?? "",
+			...(item.pendingTransition === undefined
+				? {}
+				: { pendingTransition: item.pendingTransition }),
 		}));
+		const pendingTransitions = chain.flatMap((item, index) =>
+			item.pendingTransition === undefined
+				? []
+				: [
+						{
+							workflowId: item.workflow.id,
+							parentWorkflowId: chain[index - 1]?.workflow.id,
+							...item.pendingTransition,
+						},
+					],
+		);
 		this.publish(
 			{
 				customType: "workflow",
@@ -298,6 +327,7 @@ export class WorkflowJournal {
 					currentStageId: state.route.at(-1),
 					chainRevision: getChainRevision(chain),
 					knownStageKeys: [...this.knownStages],
+					...(pendingTransitions.length === 0 ? {} : { pendingTransitions }),
 					...metadata,
 				},
 			},
@@ -549,14 +579,22 @@ function renderWaitingWorkflow(state: WorkflowState): string {
 
 /** Describes active and waiting workflow identities after each appended record. */
 function renderWorkflowChain(
-	chain: readonly { readonly workflowId: string; readonly stageId: string }[],
+	chain: readonly {
+		readonly workflowId: string;
+		readonly stageId: string;
+		readonly pendingTransition?: PendingWorkflowTransition;
+	}[],
 ): string {
 	return [
 		"<workflow_chain>",
-		...chain.map(
-			(state, index) =>
-				`  <workflow id="${escapeXml(state.workflowId)}" stage_id="${escapeXml(state.stageId)}" state="${index === chain.length - 1 ? "active" : "waiting"}" />`,
-		),
+		...chain.flatMap((state, index) => [
+			`  <workflow id="${escapeXml(state.workflowId)}" stage_id="${escapeXml(state.stageId)}" state="${index === chain.length - 1 ? "active" : "waiting"}" />`,
+			...(state.pendingTransition === undefined
+				? []
+				: [
+						`  <pending_transition workflow_id="${escapeXml(state.workflowId)}" parent_workflow_id="${escapeXml(chain[index - 1]?.workflowId ?? "")}" stage_id="${escapeXml(state.pendingTransition.stageId)}"${state.pendingTransition.ground === undefined ? "" : ` ground="${escapeXml(state.pendingTransition.ground)}"`} />`,
+					]),
+		]),
 		"</workflow_chain>",
 	].join("\n");
 }

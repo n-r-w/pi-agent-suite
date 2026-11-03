@@ -16,9 +16,28 @@ When `PI_AGENT_SUITE_DIR` is set, the extension uses `<PI_AGENT_SUITE_DIR>/workf
 
 Use format version 3 for new workflows. Declare `version: 3` in catalog files. `workflow_create` always creates format-3 workflows without a caller-supplied version selector. Formats 1 and 2 retain their schemas and always replace the running chain. Existing unversioned files follow the [legacy format-1 rules](#legacy-compatibility-format-1).
 
-Format 3 adds optional `nested`, a boolean that defaults to false. With `nested: true`, a start appends the workflow to the running chain. Each parent waits at its current stage, and only the top accepts transitions, inspection, or edits. Exiting the top resumes its parent in the same agent run without running stage-entry triggers. A nested workflow can start without a parent. Without the flag, a start replaces the entire chain. An ID already anywhere in the chain is rejected before state or model changes. Workflow IDs use NFC-normalized, case-sensitive identity.
+Format 3 adds optional `nested`, a boolean that defaults to false. With `nested: true`, a start appends the workflow to the running chain. Each parent waits at its current stage, and only the top accepts transitions, inspection, or edits. An ordinary exit of the top resumes its parent in the same agent run without running stage-entry triggers. A nested workflow can start without a parent. Without the flag, a start replaces the entire chain. An ID already anywhere in the chain is rejected before state or model changes. Workflow IDs use NFC-normalized, case-sensitive identity.
 
 Before the first start, `<workflow_activation_options>` marks nested entries with `nested="true"`. The default shared guidance explains return, replacement, and explicit exit. Agent workflow allowlists apply to nested catalog activation too.
+
+### Transition-bound workflows
+
+A format-3 transition can name a catalog workflow in `workflow`. The named workflow must declare `nested: true`. Both `advance` and `rework` transitions support this binding, in catalog definitions and `workflow_create`:
+
+```yaml
+- from: implementation
+  to: review
+  type: advance
+  workflow: stage-check
+```
+
+When the agent requests this transition, the extension validates the target, basis, and ground before starting `stage-check`. The parent stays on `implementation` while the check becomes the top workflow. The check owns a pending transition until it exits. Agent workflow policy must allow the check, and its ID must be absent from the whole running chain. A rejected start leaves the route, models, journal, and context unchanged and reports the reason.
+
+At any stage of the check, `workflow_exit` requires boolean `allow`. With `{"basis":"The stage is ready","allow":true}`, exit removes the check and enters `review` in the same call, applying only the target stage's effective settings and running its entry triggers. With `allow: false`, exit resumes `implementation` without entry triggers and reports that the transition did not happen. Requesting the same transition again starts a new check. Missing or non-boolean permission rejects the pending exit. For ordinary workflows, exit ignores a supplied boolean `allow`.
+
+The catalog loader validates bindings after validating individual files. For each declared binding, the catalog loader skips the workflow and emits a warning if the named catalog workflow is absent or does not declare `nested: true`. It also skips workflows that bind a skipped workflow, until no invalid bindings remain. Valid siblings remain available. `workflow_create` checks bindings against the loaded catalog before changing state. Formats 1 and 2 reject transition `workflow` fields. Mutually bound nested definitions can load; the runtime rejects an attempt to start an ID already running.
+
+A check can start further nested workflows, including bound checks. An ordinary nested return preserves the pending transition of the waiting check. Starting a non-nested replacement drops the old chain and all its pending transitions. Reload, branch navigation, compaction, and child-status projection preserve the pending requests and resolve permitted exits consistently.
 
 ### Workflow kinds
 
@@ -81,7 +100,7 @@ Each stage requires a non-empty string in `goal`: the stage goal, or state that 
 
 Each `rework` transition requires at least one ground. If a stage has multiple outgoing `advance` transitions, each requires at least one ground. If a stage has only one outgoing `advance` transition, that transition can omit `grounds` or use an empty list; the transition is then unconditional.
 
-The catalog loader accepts only versions 1, 2, and 3. The loader rejects `nested` and `kind` in formats 1 and 2. For any other version value, it rejects the file with an error naming the value.
+The catalog loader accepts only versions 1, 2, and 3. The loader rejects root `nested` and `kind`, and transition `workflow`, in formats 1 and 2. For any other version value, it rejects the file with an error naming the value.
 
 For goal and condition text, the validator removes surrounding whitespace and preserves internal line structure, as it does for stage prompts. When a goal is invalid, the validator names the stage in the error. When required grounds are missing or grounds are invalid, the validator names the source and target stages. The validator applies shared graph rules to all formats.
 
@@ -170,13 +189,13 @@ Workflow settings and optional prompt overrides belong in `~/.pi/agent/agent-sui
 
 With the default shared guidance, the agent completes a stage only when its goal state holds. When every available transition has grounds and none of their conditions holds, the agent takes no transition and describes the situation in its reply. Transitions without grounds remain unconditional.
 
-If you set `extensionDescriptionPromptFile`, the extension uses your file in place of the entire default shared guidance. Include the goal, task, transition, nested-return, ordinary-replacement, and explicit-exit guidance in your file. In particular, tell the agent to finish the final stage's work and call `workflow_exit` with a nonempty basis. Update overrides that describe automatic completion or forbid nested starts before a final stage.
+If you set `extensionDescriptionPromptFile`, the extension uses your file in place of the entire default shared guidance. Include the goal, task, transition, nested-return, ordinary-replacement, explicit-exit, and bound-exit permission guidance in your file. In particular, tell the agent to finish the final stage's work and call `workflow_exit` with a nonempty basis. Update overrides that describe automatic completion or forbid nested starts before a final stage. If you override `transitionDescriptionPromptFile` or `exitDescriptionPromptFile`, explain that a bound transition starts its check first and that its exit requires boolean `allow` to decide the pending transition.
 
 ## Tools
 
 All workflow tools run sequentially. Mutating tools return model-visible success content `{"success":true}`. `workflow_get_stage` returns the requested stage as JSON.
 
-After creation, activation, advance, or rework persists the entered stage, its triggers run sequentially in listed order. Duplicate triggers are preserved. A reported or thrown trigger failure stops the remaining stage triggers but does not change workflow success. Restoring an active stage during session start or branch reconstruction runs no triggers. Returning to a waiting parent also runs no triggers.
+After creation, activation, advance, or rework persists the entered stage, its triggers run sequentially in listed order. Duplicate triggers are preserved. A reported or thrown trigger failure stops the remaining stage triggers but does not change workflow success. Restoring an active stage during session start or branch reconstruction runs no triggers. Returning to an unchanged waiting parent also runs no triggers. A bound exit with `allow: true` enters the pending target and runs that target's triggers.
 
 A final stage stays active after `agent_settled`, regardless of the run's outcome. Its model settings, instructions, reminders, and route-dependent rework transitions remain active until an explicit exit or replacement.
 
@@ -269,7 +288,7 @@ When you edit the active stage, the extension applies its thinking level immedia
 
 ### `workflow_transition`
 
-`workflow_transition` enters the target stage named by `stageId` in `<available_transitions>`. Permission for `workflow_create` does not grant transition permission.
+`workflow_transition` requests the target stage named by `stageId` in `<available_transitions>`. An unbound transition enters it immediately; a bound transition starts its check first, as described in [Transition-bound workflows](#transition-bound-workflows). Permission for `workflow_create` does not grant transition permission.
 
 Every call requires a free-text `basis` stating the facts that justify the transition, for every workflow format. The runtime rejects an absent, non-string, empty, or whitespace-only basis before changing or persisting state. The extension checks that the statement contains non-whitespace text; the agent evaluates its content. Surrounding whitespace and line breaks are accepted. For example, `{"stageId":"review","basis":"Implementation is complete and all tests passed."}` can take an available transition without grounds.
 
@@ -283,7 +302,9 @@ Every tool rechecks its input and current state before reading or appending sess
 
 `workflow_exit` is the explicit way to finish the active workflow at any stage. Call it with a nonempty free-text `basis`, for example `{"basis":"The final report was delivered and no stage work remains."}`. The runtime rejects absent, non-string, empty, or whitespace-only basis before changing the route, publishing messages, or applying model settings. Multiline text and surrounding whitespace are accepted. The agent evaluates the basis; the extension checks only that it contains non-whitespace text.
 
-On success, exit removes only the top and persists the exit. When a parent waits, the extension reapplies its effective stage settings and appends a return record with that stage's requirements and transitions. The agent continues the parent's same stage in the current loop. When no parent remains, exit restores the original root model and thinking snapshot and publishes an empty chain. A persistence failure rolls back model changes and preserves the active workflow. When the chain is empty, calls that require an active workflow return `no workflow is active`, including calls to previously offered transition or stage tools. Exit presentation uses the same saved workflow reference in compact and expanded views on both main and subagent screens.
+For an ordinary workflow, exit ignores a supplied boolean `allow`. For a bound workflow, the runtime requires `allow` and resolves the pending transition as described in [Transition-bound workflows](#transition-bound-workflows).
+
+On success, exit removes the top and persists the exit. When an unchanged parent resumes, the extension reapplies its effective stage settings and appends a return record with that stage's requirements and transitions. The agent continues the parent's same stage in the current loop. When no parent remains, exit restores the original root model and thinking snapshot and publishes an empty chain. A persistence failure rolls back model changes and preserves the active workflow. When the chain is empty, calls that require an active workflow return `no workflow is active`, including calls to previously offered transition or stage tools. Exit presentation uses the same saved workflow reference in compact and expanded views on both main and subagent screens.
 
 ## Compact session status panel
 
@@ -465,7 +486,7 @@ Catalog activation options are filtered through `workflows`. A resolved agent po
 
 ## Session snapshots
 
-Every new entry contains `journalVersion: 2`. Catalog activation stores an `activated` snapshot with `mode: "push"` for a nested start or `mode: "replace"` otherwise, the validated definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Stage edits store the stage ID and normalized replacement fields. Transitions store `kind: "transitioned"` and the updated `route`. Exit stores `kind: "exited"` and removes the active workflow from the chain. The runtime has no completed workflow status. Saved state omits ground and basis; tool-call arguments retain both. Replay preserves stage triggers without running them.
+Every new entry contains `journalVersion: 2`. Catalog activation stores an `activated` snapshot with `mode: "push"` for a nested start or `mode: "replace"` otherwise, the validated definition, route, and pre-workflow restoration settings. Dynamic creation stores the same data in a `created` snapshot. Stage edits store the stage ID and normalized replacement fields. Transitions store `kind: "transitioned"` and the updated `route`. A bound catalog start also stores `pendingTransition` with `stageId` and optional `ground`. Exit stores `kind: "exited"` and removes the active workflow from the chain. The runtime has no completed workflow status. Ordinary transition entries omit ground and basis; tool-call arguments retain both. Bound start entries retain the selected ground in their pending request so replay can resolve permission. Replay preserves stage triggers without running them.
 
 For supported journal versions 1 and 2, the validator applies the format-version rules to saved catalog and dynamic definitions. For format-2 and format-3 definitions, the extension restores the version, stage goals, transition grounds, and saved route. Format-3 snapshots also retain the nested flag and kind. Replay validates the saved kind's format without requiring membership in the currently installed kinds catalog. It also restores legacy format-1 definitions and their routes, treating an omitted version as format 1. The workflow format version is independent of `journalVersion`.
 
@@ -473,14 +494,16 @@ The active branch reconstructs state on session start and branch changes:
 - `activated` and `created` append or replace according to the saved start mode, preserving every waiting workflow's definition, route, edits, and restoration snapshot;
 - for a format-2 or format-3 `stage_edited` entry, the extension replaces `description`, `goal`, `prompt`, and `model.thinking` in the preceding active dynamic snapshot. Legacy format-1 edits omit `goal`;
 - `transitioned` updates the route of the preceding snapshot;
-- `exited` requires `journalVersion: 2`, removes the top, and reapplies the remaining parent's effective stage settings, or the original root snapshot when no parent remains;
+- `exited` requires `journalVersion: 2` and removes the top. For a pending transition, the same entry requires boolean `allow`; true also changes the parent's route to the pending target, while false preserves its route. The extension applies the resulting stage's effective settings, or the original root snapshot when no parent remains;
 - unversioned `completed` entries following a supported version-1 root also remove the workflow and restore its snapshot. If an old unversioned rework transition already follows that completion in saved data, replay restores the resulting active route and stage settings. This compatibility applies only to historical replay; new exits cannot be reworked.
 
 On session start and branch navigation, replay handles mixed version-1 and version-2 operations in order. When no workflow remains, the extension restores the snapshot from the exit or legacy completion. Later branch model and thinking entries override that snapshot independently. When navigating to a branch without workflow history, its model and thinking entries override the abandoned workflow's restoration snapshot. Branch overrides leave the original restoration snapshot unchanged, so visiting a sibling branch does not change the fallback for branches without settings. This restoration also works after the runtime chain has become empty.
 
 An earlier package version cannot read journal version 2. If you downgrade, the earlier extension reports an unsupported journal version and cannot restore workflow state from the new entries. Workflow definition formats 1, 2, and 3 are supported.
 
-The latest valid active snapshot remains available under every resolved policy after its catalog file is removed or the catalog becomes invalid. An invalid catalog prevents new creation and activation but does not block transitions of that saved active workflow. Earlier replaced dynamic workflows do not appear in activation options and cannot be reactivated.
+Bound starts and checkpoints name pending transitions alongside their owning workflows. Their structured metadata includes `pendingTransitions`; refusal return records include `refusedTransition`. Records are appended without changing earlier messages. One journal2 exit entry stores permission and the resulting transition atomically. Replay validates closed entry keys and restores the target without requiring a second transition entry. The child-status reader shows the resulting top stage.
+
+The latest valid active snapshot remains available under every resolved policy after its catalog file is removed or the catalog becomes invalid. An invalid catalog prevents new creation and activation but does not block unbound transitions of that saved active workflow. A bound transition still requires its check in the loaded catalog. An already-running bound check resolves from saved definitions even if catalog files have changed. Earlier replaced dynamic workflows do not appear in activation options and cannot be reactivated.
 
 ## CLI flags
 

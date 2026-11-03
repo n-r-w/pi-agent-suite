@@ -82,10 +82,12 @@ import {
 	createWorkflow,
 	editWorkflowStage,
 	exitWorkflow,
+	getAvailableTransitions,
 	getTopWorkflow,
 	replayWorkflowChain,
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
+	validateWorkflowBindings,
 	WORKFLOW_STATE_JOURNAL_VERSION,
 	type WorkflowChain,
 	type WorkflowDefinition,
@@ -241,6 +243,12 @@ const WORKFLOW_EDIT_STAGE_SCHEMA = Type.Object(
 /** Closed workflow_create transition shape exposed to Pi tool validation. */
 const WORKFLOW_TRANSITION_SCHEMA = Type.Object(
 	{
+		workflow: Type.Optional(
+			Type.String({
+				description: "Catalog nested workflow that checks this transition",
+				minLength: 1,
+			}),
+		),
 		from: Type.String({
 			description: "Source stage ID",
 			minLength: 1,
@@ -1302,6 +1310,7 @@ async function executeWorkflowCreate(
 		WORKFLOW_CREATE_TOOL,
 	);
 	requireKnownWorkflowKind(workflow.kind, runtime.kinds);
+	validateWorkflowBindings(workflow, getCatalog());
 	const policy = getPolicy();
 	if (policy.kind === "error") {
 		throw new Error(policy.issue);
@@ -1620,15 +1629,7 @@ function requireWorkflowBasis(params: unknown): void {
 function registerWorkflowTransitionTool(
 	options: RegisterWorkflowToolsOptions,
 ): void {
-	const {
-		pi,
-		prompts,
-		runtime,
-		getCatalog,
-		getPolicy,
-		resolveAvailability,
-		setChain,
-	} = options;
+	const { pi, prompts, runtime, getCatalog } = options;
 	registerPackageTool(pi, {
 		name: WORKFLOW_TRANSITION_TOOL,
 		label: "Transition workflow",
@@ -1650,42 +1651,86 @@ function registerWorkflowTransitionTool(
 		},
 		renderResult: renderWorkflowResult,
 		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
-			const stageId = readExactStringArgument(params, "stageId", [
-				"ground",
-				"basis",
-			]);
-			requireWorkflowBasis(params);
-			const ground =
-				Reflect.get(params as object, "ground") === undefined
-					? undefined
-					: readStringArgumentField(params, "ground");
-			const current = getTopWorkflow(runtime.chain);
-			if (current === undefined) {
-				throw new Error("no workflow is active");
-			}
-			const policy = getPolicy();
-			if (policy.kind === "error") {
-				throw new Error(policy.issue);
-			}
-			if (resolveAvailability().projectedState !== current) {
-				throw new Error(`workflow ${current.workflow.id} is not available`);
-			}
-			const candidate = transitionWorkflow(current, stageId, ground);
-			const persisted = await commitWorkflowStateChange(
-				pi,
-				runtime,
-				candidate,
-				{
-					kind: "transitioned",
-					route: candidate.route,
-				},
-			);
-			const chain = [...runtime.chain.slice(0, -1), persisted];
-			runtime.journal.enterStage(chain);
-			await setEnteredWorkflowChain(pi, setChain, chain, { ctx, signal });
-			return SUCCESS_RESULT;
+			return executeWorkflowTransition(options, params, { ctx, signal });
 		},
 	});
+}
+
+/** Validates a requested move before committing its route or starting its bound check. */
+async function executeWorkflowTransition(
+	options: RegisterWorkflowToolsOptions,
+	params: unknown,
+	invocation: TriggerInvocation,
+): Promise<typeof SUCCESS_RESULT> {
+	const { pi, runtime, getPolicy, resolveAvailability, setChain } = options;
+	const stageId = readExactStringArgument(params, "stageId", [
+		"ground",
+		"basis",
+	]);
+	requireWorkflowBasis(params);
+	const ground =
+		Reflect.get(params as object, "ground") === undefined
+			? undefined
+			: readStringArgumentField(params, "ground");
+	const current = getTopWorkflow(runtime.chain);
+	if (current === undefined) {
+		throw new Error("no workflow is active");
+	}
+	const policy = getPolicy();
+	if (policy.kind === "error") {
+		throw new Error(policy.issue);
+	}
+	if (resolveAvailability().projectedState !== current) {
+		throw new Error(`workflow ${current.workflow.id} is not available`);
+	}
+	const candidate = transitionWorkflow(current, stageId, ground);
+	const binding = getAvailableTransitions(current).find(
+		({ to }) => to === stageId,
+	)?.workflow;
+	if (binding !== undefined) {
+		await startBoundWorkflow(
+			options,
+			binding,
+			{ stageId, ...(ground === undefined ? {} : { ground }) },
+			invocation,
+		);
+		return SUCCESS_RESULT;
+	}
+	const persisted = await commitWorkflowStateChange(pi, runtime, candidate, {
+		kind: "transitioned",
+		route: candidate.route,
+	});
+	const chain = [...runtime.chain.slice(0, -1), persisted];
+	runtime.journal.enterStage(chain);
+	await setEnteredWorkflowChain(pi, setChain, chain, invocation);
+	return SUCCESS_RESULT;
+}
+
+/** Starts a catalog check only after authorization and chain validation. */
+async function startBoundWorkflow(
+	options: RegisterWorkflowToolsOptions,
+	binding: string,
+	pendingTransition: NonNullable<WorkflowState["pendingTransition"]>,
+	invocation: TriggerInvocation,
+): Promise<void> {
+	const { pi, runtime, getCatalog, setChain } = options;
+	const workflow = getCatalog().find(
+		({ id }) => toWorkflowMatchKey(id) === toWorkflowMatchKey(binding),
+	);
+	if (workflow === undefined) {
+		throw new Error(`bound workflow ${binding} does not exist in the catalog`);
+	}
+	requireWorkflowAllowed(options.getPolicy(), workflow.id);
+	const bound = { ...activateWorkflow(workflow), pendingTransition };
+	const persisted = await commitWorkflowStateChange(pi, runtime, bound, {
+		kind: "activated",
+		workflow: bound.workflow,
+		route: bound.route,
+		pendingTransition,
+	});
+	const chain = addWorkflow(runtime.chain, persisted);
+	runtime.journal.activate(chain);
+	await setEnteredWorkflowChain(pi, setChain, chain, invocation);
 }
 
 /** Registers explicit workflow exit with validation before runtime side effects. */
@@ -1699,6 +1744,12 @@ function registerWorkflowExitTool(options: RegisterWorkflowToolsOptions): void {
 		parameters: Type.Object(
 			{
 				basis: WORKFLOW_BASIS_SCHEMA,
+				allow: Type.Optional(
+					Type.Boolean({
+						description:
+							"Whether the pending parent transition may continue; required for a bound workflow exit",
+					}),
+				),
 			},
 			{ additionalProperties: false },
 		),
@@ -1716,8 +1767,8 @@ function registerWorkflowExitTool(options: RegisterWorkflowToolsOptions): void {
 			return renderWorkflowExitCall(args, theme, context);
 		},
 		renderResult: renderWorkflowResult,
-		async execute(...[_toolCallId, params]) {
-			return executeWorkflowExit(options, params);
+		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
+			return executeWorkflowExit(options, params, { ctx, signal });
 		},
 	});
 }
@@ -1726,17 +1777,22 @@ function registerWorkflowExitTool(options: RegisterWorkflowToolsOptions): void {
 async function executeWorkflowExit(
 	options: RegisterWorkflowToolsOptions,
 	params: unknown,
+	invocation: TriggerInvocation,
 ): Promise<typeof SUCCESS_RESULT> {
 	const { pi, runtime, resolveAvailability, setChain } = options;
 	if (
 		params === null ||
 		typeof params !== "object" ||
 		Array.isArray(params) ||
-		Object.keys(params).some((key) => key !== "basis")
+		Object.keys(params).some((key) => key !== "basis" && key !== "allow")
 	) {
-		throw new Error("exit requires only basis");
+		throw new Error("exit requires basis and optional boolean allow");
 	}
 	requireWorkflowBasis(params);
+	const allow = Reflect.get(params, "allow");
+	if ("allow" in params && typeof allow !== "boolean") {
+		throw new Error("allow must be a boolean");
+	}
 	const current = getTopWorkflow(runtime.chain);
 	if (current === undefined) {
 		throw new Error("no workflow is active");
@@ -1744,7 +1800,7 @@ async function executeWorkflowExit(
 	if (resolveAvailability().projectedState !== current) {
 		throw new Error(`workflow ${current.workflow.id} is not available`);
 	}
-	const remaining = exitWorkflow(runtime.chain);
+	const remaining = exitWorkflow(runtime.chain, allow);
 	const parent = getTopWorkflow(remaining);
 	const snapshot = runtime.chain[0]?.restoration;
 	await transactWorkflowModels(pi, runtime, async () => {
@@ -1762,6 +1818,7 @@ async function executeWorkflowExit(
 		pi.appendEntry(WORKFLOW_STATE_ENTRY, {
 			kind: "exited",
 			journalVersion: WORKFLOW_STATE_JOURNAL_VERSION,
+			...(current.pendingTransition === undefined ? {} : { allow }),
 		});
 	});
 	runtime.emptyRestoration = parent === undefined ? snapshot : undefined;
@@ -1769,7 +1826,13 @@ async function executeWorkflowExit(
 	if (parent === undefined) {
 		runtime.journal.exit();
 	} else {
-		runtime.journal.enterStage(remaining);
+		runtime.journal.enterStage(
+			remaining,
+			allow === false ? current.pendingTransition : undefined,
+		);
+		if (current.pendingTransition !== undefined && allow === true) {
+			await runEnteredStageTriggers(pi, parent, invocation);
+		}
 	}
 	return SUCCESS_RESULT;
 }

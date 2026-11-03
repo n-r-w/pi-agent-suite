@@ -8,6 +8,7 @@ import {
 	type WorkflowKind,
 } from "./kinds";
 import {
+	validateWorkflowBindings,
 	validateWorkflowDefinition,
 	type WorkflowDefinition,
 } from "./workflow";
@@ -105,10 +106,38 @@ export async function loadWorkflowCatalog(
 		}
 	}
 	return {
-		workflows,
+		workflows: filterWorkflowBindings(workflows, directory, warnings),
 		...(warnings.length === 0 ? {} : { warnings }),
 		...(kinds.length === 0 ? {} : { kinds }),
 	};
+}
+
+/** Removes invalid bindings to a fixed point while retaining mutually bound nested workflows. */
+function filterWorkflowBindings(
+	workflows: readonly WorkflowDefinition[],
+	directory: string,
+	warnings: Error[],
+): readonly WorkflowDefinition[] {
+	let accepted = workflows;
+	for (;;) {
+		const valid = accepted.filter((workflow) => {
+			try {
+				validateWorkflowBindings(workflow, accepted);
+				return true;
+			} catch (error) {
+				warnings.push(
+					new Error(
+						`${join(directory, `${workflow.id}.yaml`)}: ${errorMessage(error)}`,
+					),
+				);
+				return false;
+			}
+		});
+		if (valid.length === accepted.length) {
+			return valid;
+		}
+		accepted = valid;
+	}
 }
 
 /** Converts a catalog read into a definition under the installed kinds catalog. */

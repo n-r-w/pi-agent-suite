@@ -66,6 +66,67 @@ const SAMPLE_WORKFLOW_B = {
 };
 
 describe("extractWorkflowStatus", () => {
+	test("resolves pending advance and rework only on boolean permission", () => {
+		const parent = workflowStateEntry({
+			kind: "activated",
+			journalVersion: 2,
+			workflow: SAMPLE_WORKFLOW,
+			route: ["define_target"],
+			mode: "replace",
+		});
+		const child = workflowStateEntry({
+			kind: "activated",
+			journalVersion: 2,
+			workflow: SAMPLE_WORKFLOW_B,
+			route: ["a_stage"],
+			mode: "push",
+			pendingTransition: { stageId: "identify_sources" },
+		});
+		const starts = [parent, child];
+		for (const allow of [undefined, null, "true", 1]) {
+			expect(
+				extractWorkflowStatus([
+					...starts,
+					workflowStateEntry({ kind: "exited", journalVersion: 2, allow }),
+				]),
+			).toEqual({ workflowId: "Analysis", stageDescription: "A Stage" });
+		}
+		expect(
+			extractWorkflowStatus([
+				...starts,
+				workflowStateEntry({ kind: "exited", journalVersion: 2, allow: false }),
+			]),
+		).toEqual({
+			workflowId: "InformationExtraction",
+			stageDescription: "Define requested extraction result",
+		});
+		const allowed = [
+			...starts,
+			workflowStateEntry({ kind: "exited", journalVersion: 2, allow: true }),
+		];
+		expect(extractWorkflowStatus(allowed)).toEqual({
+			workflowId: "InformationExtraction",
+			stageDescription: "Identify relevant source locations",
+		});
+		const rework = workflowStateEntry({
+			kind: "activated",
+			journalVersion: 2,
+			workflow: SAMPLE_WORKFLOW_B,
+			route: ["a_stage"],
+			mode: "push",
+			pendingTransition: { stageId: "define_target", ground: "retry" },
+		});
+		expect(
+			extractWorkflowStatus([
+				...allowed,
+				rework,
+				workflowStateEntry({ kind: "exited", journalVersion: 2, allow: true }),
+			]),
+		).toEqual({
+			workflowId: "InformationExtraction",
+			stageDescription: "Define requested extraction result",
+		});
+	});
 	test("projects nested top edits, returns to waiting parents, and replaces the whole chain", () => {
 		const parent = workflowStateEntry({
 			kind: "activated",

@@ -125,6 +125,7 @@ interface WorkflowStateTracking {
 	chain: WorkflowChain<{
 		readonly definition: TrackedWorkflowDefinition;
 		readonly route: readonly string[];
+		readonly pendingTransition?: { readonly stageId: string };
 	}>;
 	journalVersion: number | undefined;
 	legacyCompleted: WorkflowStateTracking["chain"][number] | undefined;
@@ -171,10 +172,17 @@ function applyWorkflowStatusOperation(
 	}
 	switch (kind) {
 		case "completed":
-		case "exited":
-			tracking.legacyCompleted = kind === "completed" ? top : undefined;
-			tracking.chain = tracking.chain.slice(0, -1);
+		case "exited": {
+			const remaining = resolveWorkflowStatusExit(
+				tracking.chain,
+				data["allow"],
+			);
+			if (remaining !== undefined) {
+				tracking.legacyCompleted = kind === "completed" ? top : undefined;
+				tracking.chain = remaining;
+			}
 			return;
+		}
 		case "stage_edited":
 			tracking.chain = [
 				...tracking.chain.slice(0, -1),
@@ -189,6 +197,35 @@ function applyWorkflowStatusOperation(
 			}
 		}
 	}
+}
+
+/** Projects one exit and its permitted route change without exposing an intermediate parent stage. */
+function resolveWorkflowStatusExit(
+	chain: WorkflowStateTracking["chain"],
+	allow: unknown,
+): WorkflowStateTracking["chain"] | undefined {
+	const top = getTopWorkflow(chain);
+	const pending = top?.pendingTransition;
+	const remaining = chain.slice(0, -1);
+	if (pending === undefined) {
+		return remaining;
+	}
+	const parent = getTopWorkflow(remaining);
+	if (typeof allow !== "boolean" || parent === undefined) {
+		return undefined;
+	}
+	if (!allow) {
+		return remaining;
+	}
+	if (!parent.definition.stages.has(pending.stageId)) {
+		return undefined;
+	}
+	const index = parent.route.lastIndexOf(pending.stageId);
+	const route =
+		index < 0
+			? [...parent.route, pending.stageId]
+			: parent.route.slice(0, index + 1);
+	return [...remaining.slice(0, -1), { ...parent, route }];
 }
 
 /** Accepts supported root snapshots while ignoring malformed definitions. */
@@ -206,7 +243,28 @@ function restoreWorkflowRoot(
 	const definition = readWorkflowDefinition(data);
 	const route = readStringArray(data, "route");
 	if (definition !== undefined && route !== undefined) {
-		const state = { definition, route };
+		const pending = data["pendingTransition"];
+		if (
+			pending !== undefined &&
+			(version !== 2 ||
+				data["mode"] !== "push" ||
+				pending === null ||
+				typeof pending !== "object" ||
+				typeof Reflect.get(pending, "stageId") !== "string")
+		) {
+			return;
+		}
+		const state = {
+			definition,
+			route,
+			...(pending === undefined
+				? {}
+				: {
+						pendingTransition: {
+							stageId: Reflect.get(pending as object, "stageId") as string,
+						},
+					}),
+		};
 		tracking.chain =
 			version === 2 && data["mode"] === "push"
 				? [...tracking.chain, state]
