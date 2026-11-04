@@ -658,6 +658,80 @@ describe("workflow semantic tool rendering", () => {
 		});
 	});
 
+	/**
+	 * Proves that the rows of a bound transition and of its exit show the nested workflow and the outcome.
+	 * Input and expected output: review is bound to check; the request shows check, and exits show allowed or refused.
+	 * Edge case: the same rows appear in compact and expanded mode from saved evidence.
+	 */
+	test("renders the nested workflow of a bound transition and the outcome of its exit", async () => {
+		await createWorkflowSuite();
+		const directory = join(
+			process.env["PI_AGENT_SUITE_DIR"] ?? "",
+			"workflow",
+			"workflows",
+		);
+		await writeFile(
+			join(directory, "bound.yaml"),
+			"version: 3\ndescription: Bound process\nprompt: Follow bound rules\nstages:\n  - id: implementation\n    description: Implementation stage\n    goal: Implemented\n    prompt: Implement\n    initial: true\n  - id: review\n    description: Review stage\n    goal: Reviewed\n    prompt: Review\n    final: true\ntransitions:\n  - from: implementation\n    to: review\n    type: advance\n    workflow: check\n",
+		);
+		await writeFile(
+			join(directory, "check.yaml"),
+			"version: 3\nnested: true\ndescription: Check process\nprompt: Follow check rules\nstages:\n  - id: start\n    description: Start stage\n    goal: Started\n    prompt: Start\n    initial: true\n  - id: done\n    description: Done stage\n    goal: Done\n    prompt: Finish\n    final: true\ntransitions:\n  - from: start\n    to: done\n    type: advance\n",
+		);
+		const fixture = await createFixture();
+		await executeTool(fixture, "workflow_activate", { workflowId: "bound" });
+		const render = (execution: ExecutedTool, expanded: boolean) =>
+			renderCompletedTool(
+				execution.definition,
+				execution,
+				PLAIN_THEME,
+				120,
+				expanded,
+			).call.filter(Boolean);
+		const request = { basis: "Implemented.", stageId: "review" };
+		const transition = await executeTool(
+			fixture,
+			"workflow_transition",
+			request,
+		);
+		expect(render(transition, false)).toEqual([
+			"workflow_transition",
+			"From: implementation · Implementation stage",
+			"To: review · Review stage",
+			"Nested workflow: check · Check process",
+		]);
+		expect(render(transition, true)).toEqual([
+			"workflow_transition",
+			"--- From ---",
+			"implementation · Implementation stage",
+			"--- To ---",
+			"review · Review stage",
+			"--- Nested workflow ---",
+			"check · Check process",
+		]);
+		const refusal = await executeTool(fixture, "workflow_exit", {
+			basis: "Not ready.",
+			allow: false,
+		});
+		expect(render(refusal, false)).toEqual([
+			"workflow_exit",
+			"Workflow: check · Check process",
+			"Transition: review · refused",
+		]);
+		await executeTool(fixture, "workflow_transition", request);
+		const permission = await executeTool(fixture, "workflow_exit", {
+			basis: "Ready.",
+			allow: true,
+		});
+		expect(render(permission, true)).toEqual([
+			"workflow_exit",
+			"--- Workflow ---",
+			"check · Check process",
+			"--- Transition ---",
+			"review · allowed",
+		]);
+	});
+
 	test("renders explicit exit identically in main and subagent screens after state removal", async () => {
 		await createWorkflowSuite();
 		const fixture = await createFixture();

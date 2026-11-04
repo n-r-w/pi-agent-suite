@@ -1714,7 +1714,7 @@ async function startBoundWorkflow(
 	if (workflow === undefined) {
 		throw new Error(`bound workflow ${binding} does not exist in the catalog`);
 	}
-	requireWorkflowAllowed(options.getPolicy(), workflow.id);
+	// The author of the running workflow chose this check, so agent policy, which limits workflows that the agent starts itself, does not apply.
 	const bound = { ...activateWorkflow(workflow), pendingTransition };
 	const persisted = await commitWorkflowStateChange(pi, runtime, bound, {
 		kind: "activated",

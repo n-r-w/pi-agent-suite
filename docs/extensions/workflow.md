@@ -31,7 +31,7 @@ A format-3 transition can name a catalog workflow in `workflow`. The named workf
   workflow: stage-check
 ```
 
-When the agent requests this transition, the extension validates the target, basis, and ground before starting `stage-check`. The parent stays on `implementation` while the check becomes the top workflow. The check owns a pending transition until it exits. Agent workflow policy must allow the check, and its ID must be absent from the whole running chain. A rejected start leaves the route, models, journal, and context unchanged and reports the reason.
+When the agent requests this transition, the extension validates the target, basis, and ground before starting `stage-check`. The parent stays on `implementation` while the check becomes the top workflow. The check owns a pending transition until it exits. Agent workflow policy does not apply to the check, because the author of the running workflow bound it; the check's ID must be absent from the whole running chain. `<available_transitions>` names the check in attribute `workflow` of the transition, for example `<transition to="review" type="advance" workflow="stage-check" />`, and the default `workflow_transition` description explains that such a transition starts the named workflow first. A rejected start leaves the route, models, journal, and context unchanged and reports the reason.
 
 At any stage of the check, `workflow_exit` requires boolean `allow`. With `{"basis":"The stage is ready","allow":true}`, exit removes the check and enters `review` in the same call, applying only the target stage's effective settings and running its entry triggers. With `allow: false`, exit resumes `implementation` without entry triggers and reports that the transition did not happen. Requesting the same transition again starts a new check. Missing or non-boolean permission rejects the pending exit. For ordinary workflows, exit ignores a supplied boolean `allow`.
 
@@ -159,6 +159,7 @@ workflows: [delivery, review]
 - Use `workflows: []` to allow no catalog workflow activation.
 - Use a non-empty list to allow activation of only exact catalog IDs after NFC normalization. Runtime metadata uses the catalog's spelling.
 - A resolved policy does not hide or block the current active workflow. Each workflow tool still requires its own tool permission.
+- A policy does not limit a workflow that a bound transition starts, so a check that only transitions start can stay out of the list and out of activation options.
 
 If your main-agent or subagent `tools` allowlist explicitly names only the older workflow tools, add `workflow_exit` so the agent can leave a workflow or resume its parent. A `workflow_*` pattern already includes it. The extension does not grant tools excluded by the agent's policy.
 
@@ -436,7 +437,21 @@ For `Ground`, the shared reference renderer normalizes source line breaks to spa
 
 The renderer shows at most four visual lines for `Ground`, independently of the `From` and `To` budgets. It excludes the tool title and hidden-line hint from this budget. When more lines exist, the hint reports the hidden and total line counts. Expanded mode preserves source line breaks and uses Pi's `Text` wrapping at the content width, with no line-count limit.
 
-Compact `Workflow:`, `Stage:`, `From:`, `To:`, `Ground:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and applies the collapsed attribute budget described above. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
+For a transition bound to a nested workflow, the extension appends `Nested workflow` with the ID and description of this workflow. The exit of such a workflow appends `Transition` with the requested stage and the outcome:
+
+```text
+workflow_transition
+From: implementation · Implementation stage
+To: review · Review stage
+Nested workflow: stage-check · Check the stage result
+workflow_exit
+Workflow: stage-check · Check the stage result
+Transition: review · allowed
+```
+
+With `allow: false`, the last row reads `Transition: review · refused`.
+
+Compact `Workflow:`, `Stage:`, `From:`, `To:`, `Ground:`, `Nested workflow:`, `Transition:`, and `Content:` labels use Pi's bold `toolTitle` color. Reference values and YAML use `toolOutput`. Each stage attribute starts a separate semantic row. Collapsed mode normalizes source line breaks inside each attribute to spaces, wraps its value to the available width, and applies the collapsed attribute budget described above. Expanded mode renders every displayed attribute as a `--- Name ---` section and preserves source line breaks. An expanded `workflow_edit_stage` section contains the old value, a separate `->` row, and the new value. The edit tool shows only changed attributes; an edit with equal values shows `No changes.`. Collapsed attribute labels also use Pi's bold `toolTitle` color, expanded section headers use `muted`, and change arrows use `success`. A failed call keeps the identity captured before execution and adds `Error: <message>`. Workflow and stage presentation data is stored in result `details`. Expanded creation YAML is reconstructed from the stored tool-call arguments. These stored sources keep the active screen and subagent session screen consistent.
 
 ## Provider context
 

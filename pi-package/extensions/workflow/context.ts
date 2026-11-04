@@ -490,7 +490,11 @@ function renderAvailableTransitions(
 	return [
 		`${indent}<available_transitions>`,
 		...transitions.flatMap((edge) => {
-			const opening = `${indent}  <transition to="${escapeXml(edge.to)}" type="${edge.type}"`;
+			const binding =
+				edge.workflow === undefined
+					? ""
+					: ` workflow="${escapeXml(edge.workflow)}"`;
+			const opening = `${indent}  <transition to="${escapeXml(edge.to)}" type="${edge.type}"${binding}`;
 			return edge.grounds?.length
 				? [
 						`${opening}>`,

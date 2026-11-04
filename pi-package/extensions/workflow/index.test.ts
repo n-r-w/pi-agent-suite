@@ -4141,7 +4141,9 @@ for (const role of ["main", "child"] as const) {
 		});
 	}
 
-	test(`bound transitions ${role} reject policy and running IDs without side effects`, async () => {
+	test(`bound transitions ${role} start checks outside activation policy and reject running IDs without side effects`, async () => {
+		// Purpose: the agent policy limits only workflows that the agent starts itself.
+		// Input and expected output: policy [delivery] rejects manual check activation and starts check on the bound transition.
 		await createBoundSuite();
 		if (role === "child") {
 			process.env[CHILD_AGENT_PROCESS_ENV] = "1";
@@ -4155,6 +4157,9 @@ for (const role of ["main", "child"] as const) {
 		await requireTool(fake, "workflow_activate").execute("parent", {
 			workflowId: "delivery",
 		});
+		expect(latestWorkflowContent(fake)).toContain(
+			'<transition to="done" type="advance" workflow="check" />',
+		);
 		const before = {
 			entries: [...fake.appended],
 			messages: captureMessageMetadata(fake),
@@ -4164,9 +4169,8 @@ for (const role of ["main", "child"] as const) {
 			thinking: fake.thinkingLevel,
 		};
 		await expect(
-			requireTool(fake, "workflow_transition").execute("denied", {
-				stageId: "done",
-				basis: "Ready",
+			requireTool(fake, "workflow_activate").execute("denied", {
+				workflowId: "check",
 			}),
 		).rejects.toThrow("not allowed");
 		expect(fake.appended).toEqual(before.entries);
@@ -4176,6 +4180,13 @@ for (const role of ["main", "child"] as const) {
 		expect(fake.widgetUpdates).toEqual(before.widgets);
 		expect(fake.thinkingLevel).toBe(before.thinking);
 		const branch = savedBranch(fake);
+		await requireTool(fake, "workflow_transition").execute("bound", {
+			stageId: "done",
+			basis: "Ready",
+		});
+		const pending = replayWorkflowChain(savedBranch(fake)).chain;
+		expect(pending[1]?.workflow.id).toBe("check");
+		expect(pending[1]?.pendingTransition).toEqual({ stageId: "done" });
 		if (role === "child") {
 			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
 		}

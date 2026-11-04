@@ -21,9 +21,9 @@ The extension checks a binding where a definition enters, as the format-3 soluti
 Rejected method: a check of the binding only at the request of the transition. A broken binding would then show only when an agent reaches the transition, and every request of it would fail.
 
 ### Request of a bound transition
-`workflow_transition` validates the request as now: the basis, the target stage, and the ground. For a bound transition, the extension then starts the bound workflow by the checks of an activation: the policy of the agent definition, and the rejection of an ID that is already in the chain. Each check runs before any change of state, and a failed check rejects the transition with its own reason, for example that the agent policy does not allow the workflow, so the agent stays on its stage and learns why (FRQ-06). When the start succeeds, the extension appends the bound workflow with its pending transition, takes its snapshot of model settings, and applies the settings of its initial stage, as at any nested start. The parent stays on its stage (FRQ-01).
+`workflow_transition` validates the request as now: the basis, the target stage, and the ground. For a bound transition, the extension then starts the bound workflow after the rejection of an ID that is already in the chain. The `workflows` policy of the agent definition does not apply: it limits the workflows that the agent starts itself, and the author of the running workflow chose the bound one. Each check runs before any change of state, and a failed check rejects the transition with its own reason, for example that the workflow is already active, so the agent stays on its stage and learns why (FRQ-06). When the start succeeds, the extension appends the bound workflow with its pending transition, takes its snapshot of model settings, and applies the settings of its initial stage, as at any nested start. The parent stays on its stage (FRQ-01).
 
-The extension resolves the bound workflow in the catalog directly, without the activation options. The activation options also filter by policy and by the chain, and a lookup through them would give one reason, "not available", for every failed check.
+The extension resolves the bound workflow in the catalog directly, without the activation options. The activation options filter by policy, which does not apply to the bound start, and by the chain. A lookup through them would also give one reason, "not available", for every failed check.
 
 ### Exit and permission to continue
 `workflow_exit` gets an optional boolean field `allow`. The tool schema stays fixed during a session, as all workflow tool schemas are now, and the extension decides at the call what the field means (FRQ-02):
@@ -62,7 +62,7 @@ The records follow the channel of format 3: hidden custom messages that `pi.send
 | SCN-01 | Bound start at the request of an `advance` transition, exit with `allow` true on the last stage, entry into the target stage |
 | SCN-02 | Exit with `allow` false on a middle stage, return record that states the transition did not happen, second bound start at a repeated request |
 | SCN-03 | Bound start at the request of a `rework` transition, exit with `allow` true on the initial stage |
-| SCN-04 | Policy check of the bound start before any change of state, rejection of the transition with the reason |
+| SCN-04 | Check of the running chain at the bound start before any change of state, rejection of the transition with the reason |
 
 ## Overengineering and Overspecification Considerations
 - Pending transition in the element of the bound workflow: FRQ-01 and FRQ-02 need a transition that waits for the exit; a replacement drops it with the element.

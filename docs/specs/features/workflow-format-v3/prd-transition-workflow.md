@@ -39,7 +39,7 @@ Out of scope:
   - Goal: the transition happens only after the check ends with its permission.
   - Goal achievement: Full.
   - Feasibility: Confirmed. Format 3 already returns the agent to the calling stage when a nested workflow ends ([prd.md](prd.md), FRQ-03), and the harness already performs transitions.
-- [X] FRQ-06: When the check that a transition names cannot start, for example because the definition of the agent does not allow it, the transition does not happen, and the agent learns why.
+- [X] FRQ-06: When the check that a transition names cannot start, for example because its ID is already in the running chain, the transition does not happen, and the agent learns why.
   - Origin: formulated. A check that cannot start would otherwise leave the transition without its check.
   - Goal: no transition that requires a check happens without the start of this check.
   - Goal achievement: Full.
@@ -67,10 +67,10 @@ In each scenario, the nested workflow is the workflow that the author named on t
   - Area: the workflow extension, the workflow catalog, and the context that the agent receives
   - Flow: the user tells the agent to skip the check; the agent requests a `rework` transition that names a nested workflow, and the harness starts it; on its first stage, the agent leaves it and allows the transition; the agent works on the earlier stage that the transition leads to.
 - SCN-04: Nested workflow that cannot start
-  - Requirements: FRQ-06 (nested workflow not allowed by the agent definition)
+  - Requirements: FRQ-06 (nested workflow already in the running chain)
   - Level: external. The agent sees the rejection.
-  - Area: the workflow extension, the workflow catalog, and the agent definition
-  - Flow: an agent whose definition does not allow the nested workflow that a transition names requests this transition; the harness does not start the nested workflow and does not perform the transition, and the agent stays on its stage and learns why.
+  - Area: the workflow extension and the workflow catalog
+  - Flow: an agent whose running chain already holds the nested workflow that a transition names requests this transition; the harness does not start the nested workflow and does not perform the transition, and the agent stays on its stage and learns why.
 
 ## Open Questions
 No open questions.

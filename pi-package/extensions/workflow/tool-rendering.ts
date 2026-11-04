@@ -77,6 +77,13 @@ interface WorkflowReferencePresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
 	readonly toolName: "workflow_activate" | "workflow_exit";
 	readonly workflow: WorkflowPresentationReference;
+	readonly transition?: WorkflowTransitionOutcome;
+}
+
+/** Records how the exit of a workflow that a transition started resolved this transition. */
+interface WorkflowTransitionOutcome {
+	readonly stage: WorkflowPresentationReference;
+	readonly allowed: boolean;
 }
 
 /** Preserves transition endpoints and the selected ground for tool presentation. */
@@ -86,6 +93,7 @@ interface WorkflowTransitionPresentation {
 	readonly from?: WorkflowPresentationReference;
 	readonly to: WorkflowPresentationReference;
 	readonly ground?: WorkflowGround;
+	readonly workflow?: WorkflowPresentationReference;
 }
 
 /** Persists one stage and the values needed to render reads or edits. */
@@ -139,17 +147,10 @@ export function createWorkflowPresentationDetails(
 	if (toolName === "workflow_exit") {
 		return state === undefined
 			? undefined
-			: {
-					presentationKind: PRESENTATION_KIND,
-					toolName,
-					workflow: createReference(
-						state.workflow.id,
-						state.workflow.description,
-					),
-				};
+			: createWorkflowExitPresentation(args, state);
 	}
 	if (toolName === "workflow_transition") {
-		return createWorkflowTransitionPresentation(args, state);
+		return createWorkflowTransitionPresentation(args, state, catalog);
 	}
 	if (toolName === "workflow_get_stage" || toolName === "workflow_edit_stage") {
 		return createWorkflowStagePresentation(toolName, args, state);
@@ -194,10 +195,33 @@ function createWorkflowActivatePresentation(
 	};
 }
 
-/** Captures transition endpoints before route mutation removes the source stage. */
+/** Captures the exited workflow and, for a pending transition, whether the exit allows it. */
+function createWorkflowExitPresentation(
+	args: unknown,
+	state: WorkflowState,
+): WorkflowReferencePresentation {
+	const allow = isRecord(args) ? args["allow"] : undefined;
+	const pending = state.pendingTransition;
+	return {
+		presentationKind: PRESENTATION_KIND,
+		toolName: "workflow_exit",
+		workflow: createReference(state.workflow.id, state.workflow.description),
+		...(pending === undefined || typeof allow !== "boolean"
+			? {}
+			: {
+					transition: {
+						stage: createReference(pending.stageId, undefined),
+						allowed: allow,
+					},
+				}),
+	};
+}
+
+/** Captures transition endpoints and the bound workflow before route mutation removes the source stage. */
 function createWorkflowTransitionPresentation(
 	args: unknown,
 	state: WorkflowState | undefined,
+	catalog: readonly WorkflowDefinition[],
 ): WorkflowTransitionPresentation | undefined {
 	const stageId = readInputString(args, "stageId");
 	if (stageId === undefined) {
@@ -205,11 +229,21 @@ function createWorkflowTransitionPresentation(
 	}
 	const fromId = state?.route.at(-1);
 	const groundId = readInputString(args, "ground");
-	const ground = state?.workflow.transitions
-		.find(({ from, to }) => from === fromId && to === stageId)
-		?.grounds?.find(({ id }) => id === groundId);
+	const edge = state?.workflow.transitions.find(
+		({ from, to }) => from === fromId && to === stageId,
+	);
+	const ground = edge?.grounds?.find(({ id }) => id === groundId);
+	const binding = edge?.workflow;
 	return {
 		...(ground === undefined ? {} : { ground: { ...ground } }),
+		...(binding === undefined
+			? {}
+			: {
+					workflow: createReference(
+						binding,
+						catalog.find(({ id }) => id === binding)?.description,
+					),
+				}),
 		presentationKind: PRESENTATION_KIND,
 		toolName: "workflow_transition",
 		...(fromId === undefined || state === undefined
@@ -362,13 +396,31 @@ export function renderWorkflowExitCall(
 			presentation?.toolName === "workflow_exit"
 				? presentation.workflow
 				: undefined;
-		return renderWorkflowReferenceCall({
-			toolName: "workflow_exit",
-			workflow,
-			stage: undefined,
-			theme,
-			context,
-		}).render(width);
+		const transition =
+			presentation?.toolName === "workflow_exit"
+				? presentation.transition
+				: undefined;
+		return [
+			...renderWorkflowReferenceCall({
+				toolName: "workflow_exit",
+				workflow,
+				stage: undefined,
+				theme,
+				context,
+			}).render(width),
+			...(transition === undefined
+				? []
+				: renderReference({
+						label: "Transition",
+						reference: createReference(
+							transition.stage.id,
+							transition.allowed ? "allowed" : "refused",
+						),
+						expanded: context.expanded,
+						width,
+						theme,
+					})),
+		];
 	});
 }
 
@@ -457,6 +509,15 @@ export function renderWorkflowTransitionCall(
 							presentation.ground.when,
 						),
 						compactText: presentation.ground.when,
+						expanded: context.expanded,
+						width,
+						theme,
+					})),
+			...(presentation?.workflow === undefined
+				? []
+				: renderReference({
+						label: "Nested workflow",
+						reference: presentation.workflow,
 						expanded: context.expanded,
 						width,
 						theme,
@@ -559,7 +620,25 @@ function parseWorkflowReferencePresentation(
 		};
 		return stage === undefined ? presentation : { ...presentation, stage };
 	}
-	return { presentationKind: PRESENTATION_KIND, toolName, workflow };
+	const saved = value["transition"];
+	if (saved === undefined) {
+		return { presentationKind: PRESENTATION_KIND, toolName, workflow };
+	}
+	const stage = isRecord(saved) ? parseReference(saved["stage"]) : undefined;
+	const allowed = isRecord(saved) ? saved["allowed"] : undefined;
+	if (
+		toolName !== "workflow_exit" ||
+		stage === undefined ||
+		typeof allowed !== "boolean"
+	) {
+		return undefined;
+	}
+	return {
+		presentationKind: PRESENTATION_KIND,
+		toolName,
+		workflow,
+		transition: { stage, allowed },
+	};
 }
 
 /** Parses persisted transition evidence and rejects a malformed optional source. */
@@ -581,7 +660,15 @@ function parseTransitionPresentation(
 		}
 		ground = { id: savedGround["id"], when: savedGround["when"] };
 	}
-	if ((value["from"] !== undefined && from === undefined) || to === undefined) {
+	const workflow =
+		value["workflow"] === undefined
+			? undefined
+			: parseReference(value["workflow"]);
+	if (
+		(value["from"] !== undefined && from === undefined) ||
+		to === undefined ||
+		(value["workflow"] !== undefined && workflow === undefined)
+	) {
 		return undefined;
 	}
 	return {
@@ -590,6 +677,7 @@ function parseTransitionPresentation(
 		...(from === undefined ? {} : { from }),
 		to,
 		...(ground === undefined ? {} : { ground }),
+		...(workflow === undefined ? {} : { workflow }),
 	};
 }
 
@@ -874,7 +962,14 @@ function renderWorkflowContent(options: {
 
 /** Selects the complete section or Pi's standard bounded collapsed preview. */
 function renderReference(options: {
-	readonly label: "Workflow" | "Stage" | "From" | "To" | "Ground";
+	readonly label:
+		| "Workflow"
+		| "Stage"
+		| "From"
+		| "To"
+		| "Ground"
+		| "Nested workflow"
+		| "Transition";
 	readonly reference: WorkflowPresentationReference;
 	readonly compactText?: string;
 	readonly expanded: boolean;
