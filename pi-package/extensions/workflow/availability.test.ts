@@ -80,7 +80,7 @@ describe("workflow availability", () => {
 		expect(result.activationOptions.map(({ id }) => id)).toEqual(["delivery"]);
 	});
 
-	test("excludes every running identity without folding case", () => {
+	test("keeps running workflows in activation options", () => {
 		const delivery = workflow("delivery");
 		const review = workflow("review");
 		const catalog = [delivery, workflow("DELIVERY"), review];
@@ -91,7 +91,11 @@ describe("workflow availability", () => {
 			policy: { kind: "resolved", policy: undefined },
 			chain,
 		});
-		expect(result.activationOptions.map(({ id }) => id)).toEqual(["DELIVERY"]);
+		expect(result.activationOptions.map(({ id }) => id)).toEqual([
+			"delivery",
+			"DELIVERY",
+			"review",
+		]);
 		expect(result.projectedState).toBe(chain[1]);
 	});
 

@@ -20,7 +20,7 @@ Operations on the chain:
 - an exit removes the top; when the chain becomes empty, the agent has no workflow (FRQ-03, FRQ-08);
 - a transition changes the route of the top only (FRQ-02).
 
-A start of a workflow whose ID is in the chain is rejected (FRQ-05). The activation options exclude each workflow of the chain, as they exclude the saved workflow now. A dynamic workflow follows the same rules.
+A start of a workflow whose ID is in the chain is rejected (FRQ-05), and the error names the reason. The activation options keep each workflow of the chain, so the list changes only with the catalog or the policy, and the agent receives it once per context segment instead of at each start and exit. A dynamic workflow follows the same rules.
 
 A typed chain replaces the single state in each place that now assumes one state: the runtime, replay, availability, the context journal, the status indicator, and tool presentation. A chain with an explicit top keeps these places from deciding by their own conditions which state is current.
 

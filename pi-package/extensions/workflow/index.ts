@@ -1408,7 +1408,7 @@ function registerWorkflowActivateTool(
 		async execute(...[_toolCallId, params, signal, _onUpdate, ctx]) {
 			const workflowId = readExactStringArgument(params, "workflowId");
 			requireWorkflowAllowed(getPolicy(), workflowId);
-			// Availability excludes the active workflow and every policy-denied catalog entry.
+			// Availability excludes every policy-denied catalog entry; the chain rejects a running ID.
 			const workflow = resolveAvailability().activationOptions.find(
 				({ id }) => id === workflowId,
 			);

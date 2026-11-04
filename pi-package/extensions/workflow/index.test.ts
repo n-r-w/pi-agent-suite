@@ -2318,7 +2318,7 @@ describe("workflow extension lifecycle", () => {
 		const entriesBeforeDuplicate = [...fake.appended];
 		await expect(
 			create.execute("create", createArguments("new-delivery")),
-		).rejects.toThrow("already active");
+		).rejects.toThrow("already runs in the chain");
 		expect(fake.appended).toEqual(entriesBeforeDuplicate);
 		const replaced = latestWorkflowContent(fake);
 		expect(replaced).toContain(
@@ -2862,7 +2862,7 @@ describe("workflow extension lifecycle", () => {
 
 		await expect(
 			activate.execute("call", { workflowId: "delivery" }),
-		).rejects.toThrow("not available for activation");
+		).rejects.toThrow("already runs in the chain");
 
 		expect(fake.appended).toEqual(entriesBeforeReactivation);
 		const transitionedEntry = entriesBeforeReactivation[1];
@@ -3202,7 +3202,7 @@ describe("workflow extension lifecycle", () => {
 		expect(activation?.options).toEqual({ deliverAs: "steer" });
 	});
 
-	test("publishes activation options without requesting another provider turn", async () => {
+	test("does not publish activation options again at an activation", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -3213,17 +3213,9 @@ describe("workflow extension lifecycle", () => {
 			workflowId: "delivery",
 		});
 
-		const options = fake.messages.filter(
-			({ details }) =>
-				typeof details === "object" &&
-				details !== null &&
-				Reflect.get(details, "kind") === "activation_options",
-		);
-		expect(options).toHaveLength(1);
-		expect(options[0]?.options).toEqual({
-			deliverAs: "steer",
-			triggerTurn: false,
-		});
+		expect(
+			fake.messages.some(({ details }) => !isWorkflowLifecycleDetails(details)),
+		).toBe(false);
 	});
 
 	/** Proves automatic compaction restores availability for the continuing run. */
@@ -3254,7 +3246,7 @@ describe("workflow extension lifecycle", () => {
 	test("checkpoints after compaction and inlines the first later stage entry", async () => {
 		// Purpose: post-compaction history must restore exact active instructions without trusting the summary.
 		// Input and expected output: review compaction emits one checkpoint, then rework inlines implementation guidance again.
-		// Edge case: compaction publishes no empty activation-options record when no options remain.
+		// Edge case: idle compaction leaves the activation options to the next tool call, which publishes them without another provider turn.
 		// Dependencies: session_compact wiring, checkpoint rendering, and known-stage reset.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
@@ -3285,10 +3277,21 @@ describe("workflow extension lifecycle", () => {
 			basis: "Stage checks passed.",
 			stageId: "start",
 		});
-		expect(fake.messages.at(-1)?.details).toMatchObject({
+		const afterRework = fake.messages.slice(beforeCompaction + 1);
+		expect(
+			afterRework.find(({ details }) => isWorkflowLifecycleDetails(details))
+				?.details,
+		).toMatchObject({
 			kind: "stage_activation",
 			workflowId: "delivery",
 			stageId: "start",
+		});
+		expect(
+			afterRework.find(({ details }) => !isWorkflowLifecycleDetails(details))
+				?.options,
+		).toEqual({
+			deliverAs: "steer",
+			triggerTurn: false,
 		});
 	});
 
@@ -4213,7 +4216,7 @@ for (const role of ["main", "child"] as const) {
 				stageId: "done",
 				basis: "Ready",
 			}),
-		).rejects.toThrow("already active");
+		).rejects.toThrow("already runs in the chain");
 		expect(allowed.appended).toEqual(entries);
 		expect(captureMessageMetadata(allowed)).toEqual(messages);
 		expect(allowed.modelSetCalls).toEqual(calls);

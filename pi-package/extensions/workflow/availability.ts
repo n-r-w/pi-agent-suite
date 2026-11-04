@@ -1,6 +1,5 @@
 import {
 	isWorkflowAllowed,
-	toWorkflowMatchKey,
 	type WorkflowPolicyResolution,
 } from "../../shared/workflow-policy.ts";
 import {
@@ -63,18 +62,11 @@ export function resolveWorkflowAvailability(
 	// A resolved workflow policy restricts new catalog activation, not the saved active state.
 	const projectedState = getTopWorkflow(input.chain);
 
-	// Only the exact NFC workflow identity is excluded from activation options.
-	const runningIds = new Set(
-		input.chain.map(({ workflow }) => toWorkflowMatchKey(workflow.id)),
-	);
-	const activationOptions = allowedCatalog.filter(
-		({ id }) => !runningIds.has(toWorkflowMatchKey(id)),
-	);
 	const availableToolNames = new Set<WorkflowToolName>();
 	if (input.catalogValid) {
 		availableToolNames.add(WORKFLOW_CREATE_TOOL);
 	}
-	if (activationOptions.length > 0) {
+	if (allowedCatalog.length > 0) {
 		availableToolNames.add(WORKFLOW_ACTIVATE_TOOL);
 	}
 	if (projectedState?.source === "dynamic") {
@@ -86,5 +78,10 @@ export function resolveWorkflowAvailability(
 		availableToolNames.add(WORKFLOW_EXIT_TOOL);
 	}
 
-	return { activationOptions, projectedState, availableToolNames };
+	// Running workflows stay in the options, so a start or an exit leaves the published list unchanged; the chain rejects a running ID.
+	return {
+		activationOptions: allowedCatalog,
+		projectedState,
+		availableToolNames,
+	};
 }

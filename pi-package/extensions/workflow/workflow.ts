@@ -99,7 +99,7 @@ export function addWorkflow(
 				toWorkflowMatchKey(state.workflow.id),
 		)
 	) {
-		throw new Error(`workflow ${state.workflow.id} is already active`);
+		throw new Error(`workflow ${state.workflow.id} already runs in the chain`);
 	}
 	if (state.pendingTransition !== undefined) {
 		const parent = getTopWorkflow(chain);

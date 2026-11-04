@@ -999,14 +999,13 @@ test.each([
 		expect(requests.map(({ order }) => order)).toEqual([1, 2, 3]);
 		expect(requests.map(({ roles }) => roles)).toEqual([
 			["system", "user", "user"],
-			["system", "user", "user", "assistant", "toolResult", "user", "user"],
+			["system", "user", "user", "assistant", "toolResult", "user"],
 			[
 				"system",
 				"user",
 				"user",
 				"assistant",
 				"toolResult",
-				"user",
 				"user",
 				"assistant",
 				"toolResult",

@@ -7,7 +7,7 @@ export interface WorkflowActivationGroup {
 	readonly workflows: readonly WorkflowDefinition[];
 }
 
-/** Groups already allowed, non-running workflows without changing their relative order. */
+/** Groups already allowed workflows without changing their relative order. */
 export function groupWorkflowActivationOptions(
 	workflows: readonly WorkflowDefinition[],
 	kinds: readonly WorkflowKind[],
