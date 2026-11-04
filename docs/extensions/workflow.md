@@ -335,7 +335,11 @@ In interactive TUI mode, the active workflow saved in the current session publis
 Workflow: TuiBrainstorming · Generate and discuss TUI concepts
 ```
 
-The row contains the workflow ID and active stage description. It never includes stage IDs or transitions. The shared separator and the complete Workflow row use Pi's dim color. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed. The row is clipped to the terminal width and ends with `…` when content is hidden.
+Both the main session panel and the selected subagent header show workflow IDs from the outermost workflow to the current one, separated by `➡`, followed by the current workflow's active stage description. For example, a nested check appears as `Workflow: ComplexCoding➡QualityCheck · Collect the facts for each criterion`. A single workflow keeps the format shown above. The row never includes stage IDs or transitions.
+
+The shared separator and the complete Workflow row use Pi's dim color. Repeated spaces and terminal layout whitespace, including tabs and line breaks, collapse to one space before display. A trailing `.` is removed.
+
+When the row exceeds the available width, both renderers remove outermost parents first and mark the hidden ancestors with `…➡`, for example `Workflow: …➡QualityCheck · Collect the facts for each criterion`. If the row still exceeds the width, they shorten the stage description on the right with `…`. They omit the hidden-ancestor marker when it would prevent the current workflow name from fitting. They shorten the current workflow name only when the `Workflow: ` label and that name alone exceed the available width. Resizing recomputes the row from the full chain.
 
 A final stage remains visible while its workflow runs. After `workflow_exit`, both the main session panel and the subagent status reader show the resumed parent, or no active workflow when the chain is empty.
 

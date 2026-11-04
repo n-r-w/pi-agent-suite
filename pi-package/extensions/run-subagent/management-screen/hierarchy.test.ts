@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ProjectionNode } from "../projection";
@@ -673,6 +674,37 @@ describe("management hierarchy", () => {
 			"✓ Prompt without line breaks",
 			"9s · openai-codex/gpt-5.6-sol/low · ~10/15.1k/372k",
 		]);
+	});
+
+	test("preserves the current workflow when the selected header shrinks", () => {
+		const selected = node(
+			"workflow-header",
+			"root-owner",
+			2,
+			null,
+			"SubAgentAnalyst",
+			1,
+		);
+		for (const expected of [
+			"Workflow: …➡QualityCheck · Active stage",
+			"Workflow: …➡QualityCheck · Act…",
+			"Workflow: QualityCheck",
+		]) {
+			const width = visibleWidth(expected);
+			const header = renderSelectedSessionHeader({
+				nodes: [selected],
+				selectedStableKey: selected.stableKey,
+				workflowStatus: {
+					workflowId: "SubagentAnalysis➡QualityCheck",
+					stageDescription: "Active stage",
+				},
+				width,
+				theme: THEME,
+			});
+			const row = stripVTControlCharacters(header.at(-1) ?? "");
+			expect(row).toBe(expected);
+			expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+		}
 	});
 
 	test("shows cumulative session cost and processed tokens before context usage", () => {

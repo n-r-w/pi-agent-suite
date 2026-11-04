@@ -153,14 +153,15 @@ for (const child of [false, true]) {
 			).toEqual([true, false, true, true, undefined]);
 			for (let end = 1; end <= observed.branch.length; end++) {
 				const history = observed.branch.slice(0, end);
-				const top = replayWorkflowChain(history).chain.at(-1);
+				const chain = replayWorkflowChain(history).chain;
+				const top = chain.at(-1);
 				const stage = top?.workflow.stages.find(
 					({ id }) => id === top.route.at(-1),
 				);
 				expect(extractWorkflowStatus(history)).toEqual(
 					top && stage
 						? {
-								workflowId: top.workflow.id,
+								workflowId: chain.map(({ workflow }) => workflow.id).join("➡"),
 								stageDescription: stage.description,
 							}
 						: undefined,

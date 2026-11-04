@@ -105,9 +105,9 @@ describe("workflow session status indicator", () => {
 		// Dependencies: workflow route identity, terminal display normalization, and shared panel truncation.
 		const fake = createIndicatorFake();
 		const indicator = installWorkflowStatusIndicator(fake.pi, fake.ui);
-		indicator.publish(
+		indicator.publish([
 			workflowState("  Generate   and\t discuss\r\nTUI\u2028concepts.  "),
-		);
+		]);
 
 		const fullRows = renderLatest(fake.updates, 120).map((row) =>
 			stripVTControlCharacters(row),
@@ -129,26 +129,68 @@ describe("workflow session status indicator", () => {
 		expect(visibleWidth(narrowRows[1] ?? "")).toBe(36);
 	});
 
+	test("preserves the current workflow when shrinking and restores ancestors when growing", () => {
+		const fake = createIndicatorFake();
+		const indicator = installWorkflowStatusIndicator(fake.pi, fake.ui);
+		const parent = workflowState("Parent stage");
+		const child = workflowState("Active stage");
+		indicator.publish([
+			parent,
+			{ ...child, workflow: { ...child.workflow, id: "QualityCheck" } },
+		]);
+
+		for (const expected of [
+			"Workflow: …➡QualityCheck · Active stage",
+			"Workflow: …➡QualityCheck · Act…",
+			"Workflow: QualityCheck",
+		]) {
+			const width = visibleWidth(expected);
+			const row = stripVTControlCharacters(
+				renderLatest(fake.updates, width)[1] ?? "",
+			);
+			expect(row).toBe(expected);
+			expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+		}
+		expect(renderLatest(fake.updates, 120)[1]).toBe(
+			"Workflow: TuiBrainstorming➡QualityCheck · Active stage",
+		);
+		indicator.dispose();
+	});
+
 	test("replaces the active stage and clears absent workflow state", () => {
 		// Purpose: the row must follow the last route stage and disappear when no workflow is effective.
-		// Inputs and expected output: a transitioned route replaces ideation with synthesis, then undefined clears the widget.
+		// Inputs and expected output: a nested chain shows the child's active stage, a return shows the parent, and an empty chain clears the widget.
 		// Edge case: clearing Workflow must not require a transition target or graph rendering.
 		// Dependencies: validated route ordering and independent shared-row ownership.
 		const fake = createIndicatorFake();
 		const indicator = installWorkflowStatusIndicator(fake.pi, fake.ui);
-		indicator.publish(workflowState("Generate concepts"));
-		indicator.publish(
-			workflowState("Generate concepts", ["ideation", "synthesis"]),
+		const parent = workflowState("Generate concepts");
+		const childState = workflowState("Generate concepts", [
+			"ideation",
+			"synthesis",
+		]);
+		const child = {
+			...childState,
+			workflow: { ...childState.workflow, id: "QualityCheck" },
+		};
+		indicator.publish([parent, child]);
+		expect(renderLatest(fake.updates, 120)[1]).toBe(
+			"Workflow: TuiBrainstorming➡QualityCheck · Summarize the strongest concepts",
 		);
+		indicator.publish([parent]);
+		expect(renderLatest(fake.updates, 120)[1]).toBe(
+			"Workflow: TuiBrainstorming · Generate concepts",
+		);
+		indicator.publish([parent, child]);
 		const rows = renderLatest(fake.updates, 120).map((row) =>
 			stripVTControlCharacters(row),
 		);
-		indicator.publish(undefined);
+		indicator.publish([]);
 		const cleared = fake.updates.at(-1)?.content;
 		indicator.dispose();
 
 		expect(rows[1]).toBe(
-			"Workflow: TuiBrainstorming · Summarize the strongest concepts",
+			"Workflow: TuiBrainstorming➡QualityCheck · Summarize the strongest concepts",
 		);
 		expect(cleared).toBeUndefined();
 	});

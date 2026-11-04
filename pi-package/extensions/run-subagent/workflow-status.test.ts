@@ -89,7 +89,10 @@ describe("extractWorkflowStatus", () => {
 					...starts,
 					workflowStateEntry({ kind: "exited", journalVersion: 2, allow }),
 				]),
-			).toEqual({ workflowId: "Analysis", stageDescription: "A Stage" });
+			).toEqual({
+				workflowId: "InformationExtraction➡Analysis",
+				stageDescription: "A Stage",
+			});
 		}
 		expect(
 			extractWorkflowStatus([
@@ -148,7 +151,7 @@ describe("extractWorkflowStatus", () => {
 		});
 		const exited = workflowStateEntry({ kind: "exited", journalVersion: 2 });
 		expect(extractWorkflowStatus([parent, child, edited])).toEqual({
-			workflowId: "child",
+			workflowId: `${SAMPLE_WORKFLOW.id}➡child`,
 			stageDescription: "Edited child",
 		});
 		expect(extractWorkflowStatus([parent, child, edited, exited])).toEqual({

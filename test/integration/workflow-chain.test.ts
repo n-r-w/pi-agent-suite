@@ -135,7 +135,8 @@ for (const provider of ["openai", "openai-codex"] as const) {
 				expect(extractWorkflowStatus(observed.branch)).toBeUndefined();
 				for (let end = 1; end <= observed.branch.length; end++) {
 					const history = observed.branch.slice(0, end);
-					const top = replayWorkflowChain(history).chain.at(-1);
+					const chain = replayWorkflowChain(history).chain;
+					const top = chain.at(-1);
 					if (top?.source === "dynamic") {
 						expect(top.workflow.kind).toBe("review");
 					}
@@ -145,7 +146,9 @@ for (const provider of ["openai", "openai-codex"] as const) {
 					expect(extractWorkflowStatus(history)).toEqual(
 						top && stage
 							? {
-									workflowId: top.workflow.id,
+									workflowId: chain
+										.map(({ workflow }) => workflow.id)
+										.join("➡"),
 									stageDescription: stage.description,
 								}
 							: undefined,

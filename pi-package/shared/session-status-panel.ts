@@ -12,8 +12,8 @@ const CONTROLLER_REQUEST_CHANNEL = "pi-harness:session-status-panel:request";
 /** Identifies the single widget owned by the shared session-status panel. */
 const PANEL_WIDGET_KEY = "session-status-panel";
 
-/** Produces one themed single-line status value for the shared session panel. */
-export type SessionStatusRowRenderer = (theme: Theme) => string;
+/** Produces one themed single-line status value for the current panel width. */
+export type SessionStatusRowRenderer = (theme: Theme, width: number) => string;
 
 /** Identifies and orders one independently owned session-status row. */
 export interface SessionStatusRowRegistration {
@@ -69,7 +69,9 @@ class SessionStatusPanelComponent implements Component {
 		}
 		return [
 			this.theme.fg("dim", "─".repeat(width)),
-			...this.rows.map((row) => truncateToWidth(row(this.theme), width, "…")),
+			...this.rows.map((row) =>
+				truncateToWidth(row(this.theme, width), width, "…"),
+			),
 		];
 	}
 

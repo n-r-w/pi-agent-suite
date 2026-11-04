@@ -751,6 +751,9 @@ describe("nested workflow execution", () => {
 		expect(fake.thinkingLevel).toBe("xhigh");
 		fake.appendError = undefined;
 		await activate.execute("child", { workflowId: "check" });
+		expect(renderLatestStatus(fake, 120)[1]).toBe(
+			"Workflow: delivery➡check · Start",
+		);
 		const chain = replayWorkflowChain(savedBranch(fake)).chain;
 		expect(chain).toHaveLength(2);
 		expect(chain[0]).toEqual(parent);

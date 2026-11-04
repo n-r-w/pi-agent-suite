@@ -7,6 +7,7 @@ import {
 import { normalizeTerminalDisplayText } from "../../../shared/terminal-display-text";
 import type { ScrollMetrics } from "../../../shared/tui/scroll-indicator";
 import { formatUsageTokenCount } from "../../../shared/usage-format";
+import { renderWorkflowStatusText } from "../../../shared/workflow-status-text";
 import { getDisplayedWorkingDirectory } from "../domain";
 import type { ProjectionNode } from "../projection";
 import { formatDuration, renderContext } from "../semantic-layout";
@@ -19,8 +20,6 @@ const PREFERRED_AGENT_IDENTITY_WIDTH = 7;
 const PREFERRED_TASK_TEXT_WIDTH = 8;
 /** Separates only selected-detail fields that survive availability and width allocation. */
 const SELECTED_DETAIL_SEPARATOR = " · ";
-/** Removes one optional trailing period from a workflow status row for cosmetic consistency. */
-const TRAILING_PERIOD_PATTERN = /\.$/u;
 
 interface TreePrefixes {
 	readonly identity: string;
@@ -572,10 +571,16 @@ function renderSelectedWorkflowStatus(
 	if (status === undefined || width <= 0) {
 		return [];
 	}
-	const text = normalizeTerminalDisplayText(
-		`Workflow: ${status.workflowId} · ${status.stageDescription}`,
-	).replace(TRAILING_PERIOD_PATTERN, "");
-	return [theme.fg("dim", truncateToWidth(text, width, "…"))];
+	return [
+		theme.fg(
+			"dim",
+			renderWorkflowStatusText(
+				status.workflowId,
+				status.stageDescription,
+				width,
+			),
+		),
+	];
 }
 
 /** Groups siblings in the projection's creation order. */

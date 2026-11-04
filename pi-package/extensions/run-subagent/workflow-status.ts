@@ -17,8 +17,9 @@ type WorkflowStateKind =
 	| "completed"
 	| "exited";
 
-/** Workflow ID and active stage description extracted from session entries. */
+/** Workflow chain label and current stage description extracted from session entries. */
 export interface WorkflowStatus {
+	/** Lists workflow IDs from the outermost workflow to the current one, separated by ➡. */
 	readonly workflowId: string;
 	readonly stageDescription: string;
 }
@@ -308,7 +309,12 @@ function resolveWorkflowStatus(
 	const stageDescription = definition.stages.get(activeStageId);
 	return stageDescription === undefined
 		? undefined
-		: { workflowId: definition.id, stageDescription };
+		: {
+				workflowId: tracking.chain
+					.map(({ definition }) => definition.id)
+					.join("➡"),
+				stageDescription,
+			};
 }
 
 /**

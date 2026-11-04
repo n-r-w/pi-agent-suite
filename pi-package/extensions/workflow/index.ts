@@ -549,7 +549,7 @@ function publishWorkflowStatus(
 	indicator: WorkflowStatusIndicator | undefined,
 	runtime: WorkflowRuntime,
 ): void {
-	indicator?.publish(getTopWorkflow(runtime.chain));
+	indicator?.publish(runtime.chain);
 }
 
 /** Publishes the current model-visible catalog subset after active-tool reconciliation. */
