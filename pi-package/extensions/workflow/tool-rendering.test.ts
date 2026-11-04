@@ -658,6 +658,42 @@ describe("workflow semantic tool rendering", () => {
 		});
 	});
 
+	/** Shows the sole ground of a transition whose call names no ground. */
+	test.each([
+		false,
+		true,
+	])("renders the sole transition ground when the call omits it, expanded %p", async (expanded) => {
+		await createWorkflowSuite();
+		const fixture = await createFixture();
+		const workflow = createArguments("sole-ground", "Sole ground");
+		const sole = { id: "ready", when: "The implementation is ready." };
+		workflow["transitions"] = [
+			{
+				from: "implementation",
+				to: "review",
+				type: "advance",
+				grounds: [sole],
+			},
+		];
+		await executeTool(fixture, "workflow_create", workflow);
+		const transition = await executeTool(fixture, "workflow_transition", {
+			basis: "Stage checks passed.",
+			stageId: "review",
+		});
+		expect(transition.isError).toBe(false);
+		expect(transition.result.details).toMatchObject({ ground: sole });
+		const hooked = renderCompletedTool(
+			transition.definition,
+			transition,
+			PLAIN_THEME,
+			120,
+			expanded,
+		);
+		expect(hooked.call).toContain(
+			expanded ? `${sole.id} · ${sole.when}` : `Ground: ${sole.when}`,
+		);
+	});
+
 	/**
 	 * Proves that the rows of a bound transition and of its exit show the nested workflow and the outcome.
 	 * Input and expected output: review is bound to check; the request shows check, and exits show allowed or refused.

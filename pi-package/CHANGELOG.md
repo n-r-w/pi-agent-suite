@@ -22,6 +22,7 @@
 - Rewrite the default shared guidance and the workflow tool descriptions. Review custom description overrides.
 - Create format-3 workflows with `workflow_create`.
 - Keep workflow tools offered after they first become applicable in the session, within the agent tool policy.
+- Accept a `workflow_transition` call without `ground` when the selected transition declares exactly one ground, in formats 2 and 3. A rejected ground lists each declared ground with its condition.
 
 ### Fixed
 

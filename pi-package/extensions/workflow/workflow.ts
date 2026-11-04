@@ -312,6 +312,18 @@ export function withWorkflowRestoration(
 	return { ...state, restoration };
 }
 
+/** Returns the ground that a transition call selects: the named ground, or the sole ground when the call names none. */
+export function findSelectedGround(
+	transition: WorkflowTransition,
+	groundId: string | undefined,
+): WorkflowGround | undefined {
+	const grounds = transition.grounds ?? [];
+	if (groundId === undefined) {
+		return grounds.length === 1 ? grounds[0] : undefined;
+	}
+	return grounds.find(({ id }) => id === groundId);
+}
+
 /** Applies one currently available transition without mutating the prior state. */
 export function transitionWorkflow(
 	state: WorkflowState,
@@ -329,11 +341,12 @@ export function transitionWorkflow(
 			`transition to ${stageId} is not allowed; available transitions: ${available.length === 0 ? "none" : available.join(", ")}`,
 		);
 	}
-	const allowedGrounds = transition.grounds?.map(({ id }) => id) ?? [];
-	if (allowedGrounds.length > 0) {
-		if (ground === undefined || !allowedGrounds.includes(ground)) {
+	const grounds = transition.grounds ?? [];
+	if (grounds.length > 0) {
+		if (findSelectedGround(transition, ground) === undefined) {
+			const allowed = grounds.map(({ id, when }) => `- ${id}: ${when}`);
 			throw new Error(
-				`transition to ${stageId} requires a declared ground; allowed grounds: ${allowedGrounds.join(", ")}`,
+				`transition to ${stageId} requires a declared ground; allowed grounds:\n${allowed.join("\n")}`,
 			);
 		}
 	} else if (ground !== undefined) {

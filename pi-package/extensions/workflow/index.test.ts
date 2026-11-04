@@ -769,6 +769,7 @@ describe("nested workflow execution", () => {
 		await expect(
 			requireTool(fake, "workflow_transition").execute("parent-move", {
 				stageId: "done",
+				ground: "missing",
 				basis: "Parent work complete",
 			}),
 		).rejects.toThrow("ground");
@@ -1473,6 +1474,7 @@ describe("workflow extension lifecycle", () => {
 			requireTool(fake, "workflow_transition").execute("invalid", {
 				basis: "Stage checks passed.",
 				stageId: "start",
+				ground: "missing",
 			}),
 		).rejects.toThrow("revise");
 		await requireTool(fake, "workflow_transition").execute("rework", {
@@ -3841,7 +3843,6 @@ test.each([
 	const model = fake.model;
 	const thinking = fake.thinkingLevel;
 	for (const params of [
-		{ basis: "Stage checks passed.", stageId: "done" },
 		{ basis: "Stage checks passed.", stageId: "done", ground: "missing" },
 		{ basis: "Stage checks passed.", stageId: "done", ground: "retry" },
 	]) {

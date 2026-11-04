@@ -304,7 +304,7 @@ const WORKFLOW_TRANSITION_ARGUMENTS_SCHEMA = Type.Object(
 		ground: Type.Optional(
 			technicalIdentifierSchema({
 				description:
-					"Ground ID declared by the selected transition, when it has grounds",
+					"Ground ID declared by the selected transition; required when the transition has more than one ground",
 				minLength: 1,
 			}),
 		),

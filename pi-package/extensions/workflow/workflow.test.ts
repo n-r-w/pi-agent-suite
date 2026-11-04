@@ -1116,7 +1116,10 @@ describe("workflow format boundaries", () => {
 		);
 		const before = structuredClone(state);
 		for (const ground of [undefined, "missing", "retry"]) {
-			for (const allowed of ["ready", "approved"]) {
+			for (const allowed of [
+				"ready: Left <&> ready",
+				"approved: Review approved",
+			]) {
 				expect(() => transitionWorkflow(state, "left", ground)).toThrow(
 					allowed,
 				);
@@ -1127,12 +1130,31 @@ describe("workflow format boundaries", () => {
 			const advanced = transitionWorkflow(state, "left", ground);
 			expect(advanced.route).toEqual(["start", "left"]);
 			expect(state).toEqual(before);
-			expect(() => transitionWorkflow(advanced, "start")).toThrow("retry");
+			expect(() => transitionWorkflow(advanced, "start", "missing")).toThrow(
+				"retry: Revision needed",
+			);
 			const reworked = transitionWorkflow(advanced, "start", "retry");
 			expect(reworked).toEqual(state);
 			expect(advanced.route).toEqual(["start", "left"]);
 			expect(exitWorkflow([advanced])).toEqual([]);
 		}
+	});
+
+	/** Lets a call omit the ground of a transition that declares only one. */
+	test("takes the sole ground of a transition when the call names none", () => {
+		const state = activateWorkflow(
+			validateWorkflowDefinition(
+				"delivery",
+				createVersionedDefinition(),
+				"catalog",
+			),
+		);
+		const advanced = transitionWorkflow(state, "left");
+		expect(advanced.route).toEqual(["start", "left"]);
+		expect(transitionWorkflow(advanced, "start")).toEqual(state);
+		expect(() => transitionWorkflow(state, "left", "missing")).toThrow(
+			"ready: Left <&> ready",
+		);
 	});
 
 	/** Keeps both forms of unconditional format-2 transitions compatible with format 1. */

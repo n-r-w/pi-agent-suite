@@ -18,10 +18,11 @@ import {
 	BoundedToolResult,
 	getToolResultText,
 } from "../../shared/tool-presentation/bounded.ts";
-import type {
-	WorkflowDefinition,
-	WorkflowGround,
-	WorkflowState,
+import {
+	findSelectedGround,
+	type WorkflowDefinition,
+	type WorkflowGround,
+	type WorkflowState,
 } from "./workflow.ts";
 
 const PRESENTATION_KIND = "workflow-tool";
@@ -232,7 +233,8 @@ function createWorkflowTransitionPresentation(
 	const edge = state?.workflow.transitions.find(
 		({ from, to }) => from === fromId && to === stageId,
 	);
-	const ground = edge?.grounds?.find(({ id }) => id === groundId);
+	const ground =
+		edge === undefined ? undefined : findSelectedGround(edge, groundId);
 	const binding = edge?.workflow;
 	return {
 		...(ground === undefined ? {} : { ground: { ...ground } }),
