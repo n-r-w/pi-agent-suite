@@ -82,11 +82,14 @@ import {
 	createWorkflow,
 	editWorkflowStage,
 	exitWorkflow,
+	findBoundWorkflow,
+	findStageWorkflow,
 	getAvailableTransitions,
 	getTopWorkflow,
 	replayWorkflowChain,
 	transitionWorkflow,
 	validateCreatedWorkflowDefinition,
+	validateStageWorkflowStarts,
 	validateWorkflowBindings,
 	WORKFLOW_STATE_JOURNAL_VERSION,
 	type WorkflowChain,
@@ -1421,6 +1424,10 @@ function registerWorkflowActivateTool(
 				);
 			}
 			const candidate = activateWorkflow(workflow);
+			validateStageWorkflowStarts(
+				addWorkflow(runtime.chain, candidate),
+				getCatalog(),
+			);
 			const persisted = await commitWorkflowStateChange(
 				pi,
 				runtime,
@@ -1434,6 +1441,7 @@ function registerWorkflowActivateTool(
 			const chain = addWorkflow(runtime.chain, persisted);
 			runtime.journal.activate(chain);
 			await setEnteredWorkflowChain(pi, setChain, chain, { ctx, signal });
+			await startStageWorkflow(options, { ctx, signal });
 			return SUCCESS_RESULT;
 		},
 	});
@@ -1681,6 +1689,10 @@ async function executeWorkflowTransition(
 		throw new Error(`workflow ${current.workflow.id} is not available`);
 	}
 	const candidate = transitionWorkflow(current, stageId, ground);
+	validateStageWorkflowStarts(
+		[...runtime.chain.slice(0, -1), candidate],
+		options.getCatalog(),
+	);
 	const binding = getAvailableTransitions(current).find(
 		({ to }) => to === stageId,
 	)?.workflow;
@@ -1700,6 +1712,7 @@ async function executeWorkflowTransition(
 	const chain = [...runtime.chain.slice(0, -1), persisted];
 	runtime.journal.enterStage(chain);
 	await setEnteredWorkflowChain(pi, setChain, chain, invocation);
+	await startStageWorkflow(options, invocation);
 	return SUCCESS_RESULT;
 }
 
@@ -1710,24 +1723,53 @@ async function startBoundWorkflow(
 	pendingTransition: NonNullable<WorkflowState["pendingTransition"]>,
 	invocation: TriggerInvocation,
 ): Promise<void> {
-	const { pi, runtime, getCatalog, setChain } = options;
-	const workflow = getCatalog().find(
-		({ id }) => toWorkflowMatchKey(id) === toWorkflowMatchKey(binding),
-	);
-	if (workflow === undefined) {
-		throw new Error(`bound workflow ${binding} does not exist in the catalog`);
-	}
-	// The author of the running workflow chose this check, so agent policy, which limits workflows that the agent starts itself, does not apply.
-	const bound = { ...activateWorkflow(workflow), pendingTransition };
-	const persisted = await commitWorkflowStateChange(pi, runtime, bound, {
-		kind: "activated",
-		workflow: bound.workflow,
-		route: bound.route,
+	await startNamedCatalogWorkflow(
+		options,
+		findBoundWorkflow(binding, options.getCatalog()),
+		invocation,
 		pendingTransition,
+	);
+}
+
+/** Starts the workflow that the active stage of the top workflow names, when it names one. */
+async function startStageWorkflow(
+	options: RegisterWorkflowToolsOptions,
+	invocation: TriggerInvocation,
+): Promise<void> {
+	const workflow = findStageWorkflow(
+		options.runtime.chain,
+		options.getCatalog(),
+	);
+	if (workflow !== undefined) {
+		await startNamedCatalogWorkflow(options, workflow, invocation);
+	}
+}
+
+/** Starts a catalog workflow that the running workflow names, and then the workflow of the stage that this start enters. */
+async function startNamedCatalogWorkflow(
+	options: RegisterWorkflowToolsOptions,
+	workflow: WorkflowDefinition,
+	invocation: TriggerInvocation,
+	pendingTransition?: NonNullable<WorkflowState["pendingTransition"]>,
+): Promise<void> {
+	const { pi, runtime, getCatalog, setChain } = options;
+	// The author of the running workflow chose this workflow, so agent policy, which limits workflows that the agent starts itself, does not apply.
+	const pending = pendingTransition === undefined ? {} : { pendingTransition };
+	const started = { ...activateWorkflow(workflow), ...pending };
+	validateStageWorkflowStarts(
+		addWorkflow(runtime.chain, started),
+		getCatalog(),
+	);
+	const persisted = await commitWorkflowStateChange(pi, runtime, started, {
+		kind: "activated",
+		workflow: started.workflow,
+		route: started.route,
+		...pending,
 	});
 	const chain = addWorkflow(runtime.chain, persisted);
 	runtime.journal.activate(chain);
 	await setEnteredWorkflowChain(pi, setChain, chain, invocation);
+	await startStageWorkflow(options, invocation);
 }
 
 /** Registers explicit workflow exit with validation before runtime side effects. */
@@ -1798,6 +1840,10 @@ async function executeWorkflowExit(
 		throw new Error(`workflow ${current.workflow.id} is not available`);
 	}
 	const remaining = exitWorkflow(runtime.chain, allow);
+	const entersStage = current.pendingTransition !== undefined && allow === true;
+	if (entersStage) {
+		validateStageWorkflowStarts(remaining, options.getCatalog());
+	}
 	const parent = getTopWorkflow(remaining);
 	const snapshot = runtime.chain[0]?.restoration;
 	await transactWorkflowModels(pi, runtime, async () => {
@@ -1827,8 +1873,9 @@ async function executeWorkflowExit(
 			remaining,
 			allow === false ? current.pendingTransition : undefined,
 		);
-		if (current.pendingTransition !== undefined && allow === true) {
+		if (entersStage) {
 			await runEnteredStageTriggers(pi, parent, invocation);
+			await startStageWorkflow(options, invocation);
 		}
 	}
 	return SUCCESS_RESULT;

@@ -13,6 +13,7 @@
 - Workflow format 3:
   - `nested: true`: the workflow starts on top of the active one, which continues at its stage after the nested workflow exits;
   - `workflow` on a transition: the request starts this nested check, and `allow` of `workflow_exit` permits or refuses the transition; the check starts regardless of the agent's `workflows` list;
+  - `workflow` on a stage of a catalog workflow: each entry into the stage starts this nested workflow after the stage record, regardless of the agent's `workflows` list;
   - `kind`: activation options are grouped by the kinds of `workflow/kinds.yaml`.
 - `workflow_exit` tool, configurable by `exitDescriptionPromptFile`.
 - File references `{{path}}` in strings of catalog workflows: the extension substitutes the file text, and a missing file excludes the workflow.

@@ -39,6 +39,23 @@ The catalog loader validates bindings after validating individual files. For eac
 
 A check can start further nested workflows, including bound checks. An ordinary nested return preserves the pending transition of the waiting check. Starting a non-nested replacement drops the old chain and all its pending transitions. Reload, branch navigation, compaction, and child-status projection preserve the pending requests and resolve permitted exits consistently.
 
+### Stage workflows
+
+A stage of a format-3 catalog workflow can name a catalog workflow in `workflow`. The named workflow must declare `nested: true`. Each entry into the stage starts it: activation at the initial stage, an `advance` or `rework` transition, and a bound exit with `allow: true`:
+
+```yaml
+- id: collect_facts
+  description: Collect facts about current behavior
+  goal: Facts about current behavior are collected for each condition of the task.
+  prompt: |-
+    Actions: Take the conditions from the task. These conditions are what workflow `Research` studies.
+  workflow: Research
+```
+
+The extension first publishes the record of the entered stage and runs its triggers, and then starts `Research` and publishes its activation record, so the agent reads the stage prompt before the nested workflow. When the entered initial stage of `Research` names a workflow too, that workflow starts next. An ordinary exit of `Research` resumes `collect_facts` without a new start. Agent workflow policy does not apply to a stage workflow, because the author of the running workflow named it.
+
+Before any change of state, the extension rejects an entry whose stage workflow already runs in the chain or is absent from the catalog, and reports the reason; the route, models, journal, and context stay unchanged. For a bound transition, the check covers the target stage before the check workflow starts. The catalog loader validates stage workflows by the rules of transition bindings. Formats 1 and 2 and `workflow_create` reject the stage field `workflow`.
+
 ### Workflow kinds
 
 Authors can define kinds separately in `<suite root>/workflow/kinds.yaml`. The suite root is `PI_AGENT_SUITE_DIR`, or `~/.pi/agent/agent-suite` by default. The file is an ordered YAML sequence:
@@ -100,7 +117,7 @@ Each stage requires a non-empty string in `goal`: the stage goal, or state that 
 
 Each `rework` transition requires at least one ground. If a stage has multiple outgoing `advance` transitions, each requires at least one ground. If a stage has only one outgoing `advance` transition, that transition can omit `grounds` or use an empty list; the transition is then unconditional.
 
-The catalog loader accepts only versions 1, 2, and 3. The loader rejects root `nested` and `kind`, and transition `workflow`, in formats 1 and 2. For any other version value, it rejects the file with an error naming the value.
+The catalog loader accepts only versions 1, 2, and 3. The loader rejects root `nested` and `kind`, and transition and stage `workflow`, in formats 1 and 2. For any other version value, it rejects the file with an error naming the value.
 
 For goal and condition text, the validator removes surrounding whitespace and preserves internal line structure, as it does for stage prompts. When a goal is invalid, the validator names the stage in the error. When required grounds are missing or grounds are invalid, the validator names the source and target stages. The validator applies shared graph rules to all formats.
 
@@ -115,6 +132,7 @@ Additional validation rules for catalog definitions and newly created workflows:
 - a non-empty `prompt` for every stage;
 - an optional root `prompt` for guidance that applies to every stage;
 - an optional ordered `triggers` list containing only closed trigger objects;
+- an optional stage `workflow` in format-3 catalog YAML;
 - supported trigger types `local_knowledge_accumulation` and `global_knowledge_accumulation`;
 - optional root and stage `model` objects in catalog YAML;
 - a required `model` object on every `workflow_create` stage with one required `thinking` field set to `low`, `medium`, or `high`;
@@ -198,7 +216,7 @@ If you set `extensionDescriptionPromptFile`, the extension uses your file in pla
 
 All workflow tools run sequentially. Mutating tools return model-visible success content `{"success":true}`. `workflow_get_stage` returns the requested stage as JSON.
 
-After creation, activation, advance, or rework persists the entered stage, its triggers run sequentially in listed order. Duplicate triggers are preserved. A reported or thrown trigger failure stops the remaining stage triggers but does not change workflow success. Restoring an active stage during session start or branch reconstruction runs no triggers. Returning to an unchanged waiting parent also runs no triggers. A bound exit with `allow: true` enters the pending target and runs that target's triggers.
+After creation, activation, advance, or rework persists the entered stage, its triggers run sequentially in listed order. Duplicate triggers are preserved. A reported or thrown trigger failure stops the remaining stage triggers but does not change workflow success. Restoring an active stage during session start or branch reconstruction runs no triggers. Returning to an unchanged waiting parent also runs no triggers. A bound exit with `allow: true` enters the pending target and runs that target's triggers. After the triggers of an entered stage, its [stage workflow](#stage-workflows) starts.
 
 A final stage stays active after `agent_settled`, regardless of the run's outcome. Its model settings, instructions, reminders, and route-dependent rework transitions remain active until an explicit exit or replacement.
 

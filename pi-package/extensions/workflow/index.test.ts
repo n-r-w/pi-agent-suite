@@ -4473,3 +4473,261 @@ for (const role of ["main", "child"] as const) {
 		expect(pending[0]?.route).toEqual(["start"]);
 	});
 }
+
+/** Builds one format-3 catalog graph with optional stage workflows and transition bindings. */
+function stageWorkflowYaml(options: {
+	readonly nested?: boolean;
+	readonly initialWorkflow?: string;
+	readonly finalWorkflow?: string;
+	readonly finalBinding?: string;
+}): string {
+	return stringify({
+		version: 3,
+		...(options.nested === true ? { nested: true } : {}),
+		description: "Fixture",
+		stages: [
+			{
+				id: "start",
+				description: "Start",
+				goal: "Ready",
+				prompt: "Work",
+				initial: true,
+				...(options.initialWorkflow === undefined
+					? {}
+					: { workflow: options.initialWorkflow }),
+			},
+			{
+				id: "middle",
+				description: "Middle",
+				goal: "Planned",
+				prompt: "Plan",
+			},
+			{
+				id: "done",
+				description: "Done",
+				goal: "Delivered",
+				prompt: "Report",
+				final: true,
+				...(options.finalWorkflow === undefined
+					? {}
+					: { workflow: options.finalWorkflow }),
+			},
+		],
+		transitions: [
+			{ from: "start", to: "middle", type: "advance" },
+			{
+				from: "middle",
+				to: "done",
+				type: "advance",
+				...(options.finalBinding === undefined
+					? {}
+					: { workflow: options.finalBinding }),
+			},
+			{
+				from: "middle",
+				to: "start",
+				type: "rework",
+				grounds: [{ id: "retry", when: "Revision" }],
+			},
+			{
+				from: "done",
+				to: "middle",
+				type: "rework",
+				grounds: [{ id: "replan", when: "Replanning" }],
+			},
+		],
+	});
+}
+
+/** Lists each running workflow with its active stage from the saved branch. */
+function savedChainView(fake: FakePi): string[] {
+	return replayWorkflowChain(savedBranch(fake)).chain.map(
+		({ workflow, route }) => `${workflow.id}@${route.at(-1)}`,
+	);
+}
+
+/** Lists the kind, workflow, and stage of each workflow record after an index. */
+function recordViews(fake: FakePi, from: number): string[] {
+	return fake.messages.slice(from).flatMap(({ details }) => {
+		const record = details as Record<string, unknown>;
+		return record["kind"] === "activation" ||
+			record["kind"] === "stage_activation"
+			? [
+					`${record["kind"]}:${record["workflowId"]}@${record["currentStageId"]}`,
+				]
+			: [];
+	});
+}
+
+describe("stage workflows", () => {
+	test("each entry into a stage starts its workflow after the stage record, outside agent policy, and a return starts none", async () => {
+		const suite = await createSuite();
+		const files = {
+			delivery: stageWorkflowYaml({
+				initialWorkflow: "research",
+				finalWorkflow: "research",
+				finalBinding: "check",
+			}),
+			check: stageWorkflowYaml({ nested: true, initialWorkflow: "research" }),
+			research: stageWorkflowYaml({ nested: true }),
+		};
+		for (const [id, yaml] of Object.entries(files)) {
+			await writeFile(join(suite, `workflow/workflows/${id}.yaml`), yaml);
+		}
+		const fake = await createFakePi();
+		setMainWorkflowPolicy(fake, ["delivery"]);
+		await runLifecycle(fake, "session_start");
+		const move = requireTool(fake, "workflow_transition");
+		const exit = requireTool(fake, "workflow_exit");
+
+		let index = fake.messages.length;
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		expect(savedChainView(fake)).toEqual(["delivery@start", "research@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"activation:delivery@start",
+			"activation:research@start",
+		]);
+
+		index = fake.messages.length;
+		await exit.execute("return", { basis: "Researched" });
+		expect(savedChainView(fake)).toEqual(["delivery@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"stage_activation:delivery@start",
+		]);
+
+		await move.execute("plan", { stageId: "middle", basis: "Ready" });
+		expect(savedChainView(fake)).toEqual(["delivery@middle"]);
+
+		index = fake.messages.length;
+		await move.execute("rework", {
+			stageId: "start",
+			ground: "retry",
+			basis: "Revision",
+		});
+		expect(savedChainView(fake)).toEqual(["delivery@start", "research@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"stage_activation:delivery@start",
+			"activation:research@start",
+		]);
+		await exit.execute("return-again", { basis: "Researched" });
+		await move.execute("plan-again", { stageId: "middle", basis: "Ready" });
+
+		await move.execute("bound", { stageId: "done", basis: "Planned" });
+		expect(savedChainView(fake)).toEqual([
+			"delivery@middle",
+			"check@start",
+			"research@start",
+		]);
+		await exit.execute("check-research", { basis: "Researched" });
+		expect(savedChainView(fake)).toEqual(["delivery@middle", "check@start"]);
+
+		index = fake.messages.length;
+		await exit.execute("permit", { basis: "Checked", allow: true });
+		expect(savedChainView(fake)).toEqual(["delivery@done", "research@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"stage_activation:delivery@done",
+			"activation:research@start",
+		]);
+	});
+
+	test("an entry whose stage workflow already runs is rejected without side effects", async () => {
+		const suite = await createSuite();
+		const files = {
+			check: stageWorkflowYaml({ nested: true, initialWorkflow: "research" }),
+			delivery: stageWorkflowYaml({ nested: true, finalWorkflow: "research" }),
+			bound: stageWorkflowYaml({ nested: true, finalBinding: "check" }),
+			research: stageWorkflowYaml({ nested: true }),
+		};
+		for (const [id, yaml] of Object.entries(files)) {
+			await writeFile(join(suite, `workflow/workflows/${id}.yaml`), yaml);
+		}
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("research", { workflowId: "research" });
+		await activate.execute("delivery", { workflowId: "delivery" });
+		await requireTool(fake, "workflow_transition").execute("plan", {
+			stageId: "middle",
+			basis: "Ready",
+		});
+		const before = {
+			entries: [...fake.appended],
+			messages: captureMessageMetadata(fake),
+			calls: [...fake.modelSetCalls],
+			thinking: fake.thinkingLevel,
+		};
+		await expect(
+			activate.execute("check", { workflowId: "check" }),
+		).rejects.toThrow("already runs in the chain");
+		await expect(
+			requireTool(fake, "workflow_transition").execute("done", {
+				stageId: "done",
+				basis: "Planned",
+			}),
+		).rejects.toThrow("already runs in the chain");
+		expect(fake.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(fake)).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.calls);
+		expect(fake.thinkingLevel).toBe(before.thinking);
+		await activate.execute("bound", { workflowId: "bound" });
+		await requireTool(fake, "workflow_transition").execute("bound-plan", {
+			stageId: "middle",
+			basis: "Ready",
+		});
+		const entries = [...fake.appended];
+		const messages = captureMessageMetadata(fake);
+		await expect(
+			requireTool(fake, "workflow_transition").execute("bound-done", {
+				stageId: "done",
+				basis: "Planned",
+			}),
+		).rejects.toThrow("already runs in the chain");
+		expect(fake.appended).toEqual(entries);
+		expect(captureMessageMetadata(fake)).toEqual(messages);
+	});
+
+	test("a permitted exit into a stage whose workflow left the catalog is rejected without side effects", async () => {
+		const suite = await createSuite();
+		const files = {
+			delivery: stageWorkflowYaml({
+				finalWorkflow: "research",
+				finalBinding: "check",
+			}),
+			check: stageWorkflowYaml({ nested: true }),
+			research: stageWorkflowYaml({ nested: true }),
+		};
+		for (const [id, yaml] of Object.entries(files)) {
+			await writeFile(join(suite, `workflow/workflows/${id}.yaml`), yaml);
+		}
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		const move = requireTool(fake, "workflow_transition");
+		await move.execute("plan", { stageId: "middle", basis: "Ready" });
+		await move.execute("bound", { stageId: "done", basis: "Planned" });
+		const branch = savedBranch(fake);
+		await rm(join(suite, "workflow/workflows/research.yaml"));
+		const restored = await createFakePi();
+		await runLifecycle(restored, "session_start", branch);
+		const before = {
+			entries: [...restored.appended],
+			messages: captureMessageMetadata(restored),
+			calls: [...restored.modelSetCalls],
+			thinking: restored.thinkingLevel,
+		};
+		await expect(
+			requireTool(restored, "workflow_exit").execute("permit", {
+				basis: "Checked",
+				allow: true,
+			}),
+		).rejects.toThrow("does not exist in the catalog");
+		expect(restored.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(restored)).toEqual(before.messages);
+		expect(restored.modelSetCalls).toEqual(before.calls);
+		expect(restored.thinkingLevel).toBe(before.thinking);
+	});
+});

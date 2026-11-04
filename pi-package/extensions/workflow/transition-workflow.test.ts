@@ -54,6 +54,19 @@ function createDefinition(binding?: string) {
 	};
 }
 
+/** Names a nested workflow on the initial stage of a fixture definition. */
+function withStageWorkflow<T extends ReturnType<typeof createDefinition>>(
+	definition: T,
+	workflow: unknown,
+) {
+	return {
+		...definition,
+		stages: definition.stages.map((stage) =>
+			stage.initial === true ? { ...stage, workflow } : stage,
+		),
+	};
+}
+
 /** Wraps a journal2 operation without real session state. */
 function createEntry(data: Record<string, unknown>) {
 	return {
@@ -158,6 +171,59 @@ test("transition bindings are format3-only and created definitions preserve norm
 	}
 });
 
+test("stage workflows are format3 catalog-only and keep normalized IDs", () => {
+	const workflow = validateWorkflowDefinition(
+		"parent",
+		withStageWorkflow(createDefinition(), "café"),
+		"fixture",
+	);
+	expect(workflow.stages.map((stage) => stage.workflow)).toEqual([
+		"café",
+		undefined,
+	]);
+	for (const version of [1, 2]) {
+		const plain = createDefinition();
+		const compatible =
+			version === 1
+				? {
+						...plain,
+						stages: plain.stages.map(({ goal: _goal, ...stage }) => stage),
+						transitions: plain.transitions.map(({ from, to, type }) => ({
+							from,
+							to,
+							type,
+						})),
+					}
+				: plain;
+		expect(() =>
+			validateWorkflowDefinition(
+				"parent",
+				{
+					...withStageWorkflow(compatible as typeof plain, "check"),
+					version,
+				},
+				"fixture",
+			),
+		).toThrow("unsupported key");
+	}
+	const { version: _version, ...created } = withStageWorkflow(
+		createDefinition(),
+		"check",
+	);
+	expect(() =>
+		validateCreatedWorkflowDefinition({ ...created, id: "dynamic" }, "fixture"),
+	).toThrow("unsupported key");
+	for (const value of [null, false, 1, "", "bad\nname", [], {}]) {
+		expect(() =>
+			validateWorkflowDefinition(
+				"parent",
+				withStageWorkflow(createDefinition(), value),
+				"fixture",
+			),
+		).toThrow();
+	}
+});
+
 test("catalog rejects broken and transitively skipped bindings while retaining nested cycles and siblings", async () => {
 	const temporary = createTempDir("pi-bound-catalog-");
 	try {
@@ -168,6 +234,13 @@ test("catalog rejects broken and transitively skipped bindings while retaining n
 			notnested: createDefinition("good"),
 			cycleA: { ...createDefinition("cycleB"), nested: true },
 			cycleB: { ...createDefinition("cycleA"), nested: true },
+			stageMissing: withStageWorkflow(createDefinition(), "absent"),
+			stageNotNested: withStageWorkflow(createDefinition(), "good"),
+			stageCascade: withStageWorkflow(
+				{ ...createDefinition(), nested: true },
+				"missing",
+			),
+			stageValid: withStageWorkflow(createDefinition(), "cycleA"),
 		};
 		for (const [id, value] of Object.entries(files)) {
 			writeFileSync(join(temporary.path, `${id}.yaml`), stringify(value));
@@ -178,9 +251,17 @@ test("catalog rejects broken and transitively skipped bindings while retaining n
 			"cycleA",
 			"cycleB",
 			"good",
+			"stageValid",
 		]);
-		expect(loaded.warnings).toHaveLength(3);
-		for (const id of ["missing", "cascade", "notnested"]) {
+		expect(loaded.warnings).toHaveLength(6);
+		for (const id of [
+			"missing",
+			"cascade",
+			"notnested",
+			"stageMissing",
+			"stageNotNested",
+			"stageCascade",
+		]) {
 			expect(
 				loaded.warnings?.some(({ message }) => message.includes(`${id}.yaml`)),
 			).toBe(true);

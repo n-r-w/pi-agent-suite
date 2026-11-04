@@ -31,6 +31,7 @@ export interface WorkflowStage {
 	readonly prompt: string;
 	readonly goal?: string;
 	readonly triggers: readonly WorkflowTrigger[];
+	readonly workflow?: string;
 	readonly initial: boolean;
 	readonly final: boolean;
 	readonly model?: ModelSettings;
@@ -154,27 +155,64 @@ export function exitWorkflow(
 	];
 }
 
-/** Requires every bound catalog identity to name a workflow intended for nested execution. */
+/** Requires every catalog identity bound to a transition or a stage to name a workflow intended for nested execution. */
 export function validateWorkflowBindings(
 	workflow: WorkflowDefinition,
 	catalog: readonly WorkflowDefinition[],
 ): void {
-	for (const edge of workflow.transitions) {
-		const binding = edge.workflow;
-		if (binding === undefined) {
-			continue;
+	for (const binding of [
+		...workflow.transitions.map((edge) => edge.workflow),
+		...workflow.stages.map((stage) => stage.workflow),
+	]) {
+		if (binding !== undefined) {
+			const bound = findBoundWorkflow(binding, catalog);
+			if (bound.nested !== true) {
+				throw new Error(`bound workflow ${binding} must have nested: true`);
+			}
 		}
-		const bound = catalog.find(
-			({ id }) => toWorkflowMatchKey(id) === toWorkflowMatchKey(binding),
-		);
-		if (bound === undefined) {
-			throw new Error(
-				`bound workflow ${binding} does not exist in the catalog`,
-			);
-		}
-		if (bound.nested !== true) {
-			throw new Error(`bound workflow ${binding} must have nested: true`);
-		}
+	}
+}
+
+/** Returns the catalog workflow that a binding names, and rejects a binding whose workflow is absent from the catalog. */
+export function findBoundWorkflow(
+	binding: string,
+	catalog: readonly WorkflowDefinition[],
+): WorkflowDefinition {
+	const bound = catalog.find(
+		({ id }) => toWorkflowMatchKey(id) === toWorkflowMatchKey(binding),
+	);
+	if (bound === undefined) {
+		throw new Error(`bound workflow ${binding} does not exist in the catalog`);
+	}
+	return bound;
+}
+
+/** Returns the catalog workflow that the active stage of the top workflow starts on entry, if the stage names one. */
+export function findStageWorkflow(
+	chain: WorkflowChain,
+	catalog: readonly WorkflowDefinition[],
+): WorkflowDefinition | undefined {
+	const top = getTopWorkflow(chain);
+	const binding = top?.workflow.stages.find(
+		({ id }) => id === top.route.at(-1),
+	)?.workflow;
+	return binding === undefined
+		? undefined
+		: findBoundWorkflow(binding, catalog);
+}
+
+/** Rejects a chain whose entered stages would start a missing workflow or one that already runs in the chain. */
+export function validateStageWorkflowStarts(
+	chain: WorkflowChain,
+	catalog: readonly WorkflowDefinition[],
+): void {
+	let current = chain;
+	for (
+		let workflow = findStageWorkflow(current, catalog);
+		workflow !== undefined;
+		workflow = findStageWorkflow(current, catalog)
+	) {
+		current = addWorkflow(current, activateWorkflow(workflow));
 	}
 }
 
@@ -1034,12 +1072,16 @@ function parseStage(
 	modelSettingsSource: "catalog" | "created" | "saved-created",
 	format: WorkflowFormatRules,
 ): WorkflowStage {
+	const allowWorkflow =
+		modelSettingsSource === "catalog" &&
+		format.definitionFields.version === WORKFLOW_NESTED_FORMAT_VERSION;
 	const stage = requireObject(
 		value,
 		`stages[${index}]`,
 		new Set([
 			...(modelSettingsSource === "catalog" ? STAGE_KEYS : CREATED_STAGE_KEYS),
 			"goal",
+			...(allowWorkflow ? ["workflow"] : []),
 		]),
 	);
 	const model =
@@ -1059,6 +1101,9 @@ function parseStage(
 		description: readSingleLineText(stage, "description"),
 		prompt: readPromptText(stage, "prompt"),
 		triggers: parseTriggers(Reflect.get(stage, "triggers"), index),
+		...("workflow" in stage
+			? { workflow: readSingleLineText(stage, "workflow").normalize("NFC") }
+			: {}),
 		initial: readOptionalBoolean(stage, "initial"),
 		final: readOptionalBoolean(stage, "final"),
 		...(model === undefined ? {} : { model }),
