@@ -15,6 +15,7 @@
   - `workflow` on a transition: the request starts this nested check, and `allow` of `workflow_exit` permits or refuses the transition; the check starts regardless of the agent's `workflows` list;
   - `kind`: activation options are grouped by the kinds of `workflow/kinds.yaml`.
 - `workflow_exit` tool, configurable by `exitDescriptionPromptFile`.
+- File references `{{path}}` in strings of catalog workflows: the extension substitutes the file text, and a missing file excludes the workflow.
 
 ### Changed
 

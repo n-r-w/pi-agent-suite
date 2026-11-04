@@ -181,6 +181,56 @@ describe("workflow catalog configuration", () => {
 			warning.message.replace(unreadablePath, "").trim().length,
 		).toBeGreaterThan(0);
 	});
+
+	/**
+	 * Proves that a file reference in any workflow string is replaced with the trimmed text of the file.
+	 * Inputs and expected output: references in the workflow prompt and in a stage prompt, with paths relative to the workflow directory, return the file texts in their places.
+	 * Edge case: a reference inside text keeps the text around it.
+	 * Dependencies: isolated filesystem entries and catalog file reading.
+	 */
+	test("substitutes referenced files into workflow strings", async () => {
+		const root = await createTemporaryDirectory();
+		await mkdir(join(root, "rules"));
+		await writeFile(join(root, "rules", "shared.md"), "1. Shared rule.\n");
+		await writeFile(join(root, "inline.md"), "carefully\n");
+		const yaml = workflowYaml("Included")
+			.replace(
+				"description: Included\n",
+				'description: Included\nprompt: "Rules:\\n{{rules/shared.md}}"\n',
+			)
+			.replace("prompt: Start work", "prompt: Start {{ inline.md }} now");
+		await writeFile(join(root, "included.yaml"), yaml);
+		const result = await loadWorkflowCatalog(root);
+		expect(result.warnings).toBeUndefined();
+		const workflow = result.workflows[0];
+		expect(workflow?.prompt).toBe("Rules:\n1. Shared rule.");
+		expect(workflow?.stages[0]?.prompt).toBe("Start carefully now");
+	});
+
+	/**
+	 * Proves that a reference to a missing file disables only the referencing workflow.
+	 * Inputs and expected output: a valid sibling and a workflow that references a missing file return the sibling plus one warning that names the missing file.
+	 * Edge case: the reference stands in a stage prompt, not in the workflow prompt.
+	 * Dependencies: isolated filesystem entries and catalog file reading.
+	 */
+	test("skips a workflow that references a missing file", async () => {
+		const root = await createTemporaryDirectory();
+		await writeFile(join(root, "good.yaml"), workflowYaml("Good"));
+		await writeFile(
+			join(root, "broken.yaml"),
+			workflowYaml("Broken").replace(
+				"prompt: Start work",
+				"prompt: Start {{rules/missing.md}}",
+			),
+		);
+		const result = await loadWorkflowCatalog(root);
+		expect(result.workflows.map(({ id }) => id)).toEqual(["good"]);
+		expect(result.warnings).toHaveLength(1);
+		expect(result.warnings?.[0]?.message).toContain(join(root, "broken.yaml"));
+		expect(result.warnings?.[0]?.message).toContain(
+			join(root, "rules", "missing.md"),
+		);
+	});
 });
 
 describe("workflow configuration", () => {

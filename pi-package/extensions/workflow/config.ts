@@ -1,5 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, parse as parsePath } from "node:path";
+import {
+	dirname,
+	isAbsolute,
+	join,
+	parse as parsePath,
+	resolve,
+} from "node:path";
 import { parse } from "yaml";
 import { expandHomePath } from "../../shared/path-expansion";
 import {
@@ -88,21 +94,16 @@ export async function loadWorkflowCatalog(
 	const files = await Promise.all(
 		entries.map((fileName) => readCatalogFile(directory, fileName)),
 	);
+	const outcomes = await Promise.all(
+		files.map((file) => loadCatalogFile(file, kinds, directory)),
+	);
 	const workflows: WorkflowDefinition[] = [];
 	const warnings: Error[] = [];
-	for (const file of files) {
-		try {
-			workflows.push(validateCatalogFile(file, kinds));
-		} catch (error) {
-			// A file-level failure disables only that workflow so valid siblings remain usable.
-			const message = errorMessage(error);
-			warnings.push(
-				new Error(
-					message.includes(file.filePath)
-						? message
-						: `${file.filePath}: ${message}`,
-				),
-			);
+	for (const outcome of outcomes) {
+		if (outcome instanceof Error) {
+			warnings.push(outcome);
+		} else {
+			workflows.push(outcome);
 		}
 	}
 	return {
@@ -140,15 +141,35 @@ function filterWorkflowBindings(
 	}
 }
 
-/** Converts a catalog read into a definition under the installed kinds catalog. */
-function validateCatalogFile(
+/** Returns the definition of one catalog file, or its failure as a warning that names the file. */
+async function loadCatalogFile(
 	file: CatalogFileRead,
 	kinds: readonly WorkflowKind[],
-): WorkflowDefinition {
+	directory: string,
+): Promise<WorkflowDefinition | Error> {
+	try {
+		return await validateCatalogFile(file, kinds, directory);
+	} catch (error) {
+		// A file-level failure disables only that workflow so valid siblings remain usable.
+		const message = errorMessage(error);
+		return new Error(
+			message.includes(file.filePath)
+				? message
+				: `${file.filePath}: ${message}`,
+		);
+	}
+}
+
+/** Converts a catalog read into a definition under the installed kinds catalog. */
+async function validateCatalogFile(
+	file: CatalogFileRead,
+	kinds: readonly WorkflowKind[],
+	directory: string,
+): Promise<WorkflowDefinition> {
 	if (file.kind === "error") {
 		throw file.error;
 	}
-	const value: unknown = parse(file.content);
+	const value = await substituteFileReferences(parse(file.content), directory);
 	const workflow = validateWorkflowDefinition(
 		parsePath(file.fileName).name,
 		value,
@@ -156,6 +177,52 @@ function validateCatalogFile(
 	);
 	requireKnownWorkflowKind(workflow.kind, kinds);
 	return workflow;
+}
+
+/** Matches a reference `{{path}}` whose file text replaces it in a catalog workflow. */
+const FILE_REFERENCE = /\{\{([^{}]*)\}\}/g;
+
+/** Replaces each file reference in the strings of a parsed workflow with the trimmed file text, resolving paths against the workflow directory. */
+async function substituteFileReferences(
+	value: unknown,
+	directory: string,
+): Promise<unknown> {
+	if (typeof value === "string") {
+		const texts = await Promise.all(
+			Array.from(value.matchAll(FILE_REFERENCE), (match) =>
+				readReferencedFile(resolve(directory, (match[1] ?? "").trim())),
+			),
+		);
+		let index = 0;
+		return value.replace(FILE_REFERENCE, () => texts[index++] ?? "");
+	}
+	if (Array.isArray(value)) {
+		return Promise.all(
+			value.map((item) => substituteFileReferences(item, directory)),
+		);
+	}
+	if (typeof value === "object" && value !== null) {
+		return Object.fromEntries(
+			await Promise.all(
+				Object.entries(value).map(async ([key, item]) => [
+					key,
+					await substituteFileReferences(item, directory),
+				]),
+			),
+		);
+	}
+	return value;
+}
+
+/** Reads the trimmed text of a referenced file and names the file in a read failure. */
+async function readReferencedFile(path: string): Promise<string> {
+	try {
+		return (await readFile(path, "utf8")).trim();
+	} catch (error) {
+		throw new Error(
+			`could not read referenced file ${path}: ${errorMessage(error)}`,
+		);
+	}
 }
 
 /** Loads the optional kinds file without weakening validation of present files. */
