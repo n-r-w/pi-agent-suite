@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/n-r-w/pi-agent-suite/main/docs/images/gallery-preview.svg" width="480" alt="Pi Agent Suite logo: a robot sits in a ring of toy-block agents"></p>
+
 # Pi Agent Suite
 
 Extensions for the [Pi coding agent](https://pi.dev/) that turn one agent into a team. A workflow controls each agent stage by stage, the main agent delegates work to subagents, any agent can ask for an independent check of its work, and context projection keeps long sessions inside the context window.

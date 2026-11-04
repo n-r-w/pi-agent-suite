@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.22.1] - 2026-11-04
+
+### Added
+
+- Package logo in the [Pi package gallery](https://pi.dev/packages) and in the README.
+
 ## [2.22.0] - 2026-11-04
 
 ### Breaking changes
