@@ -74,7 +74,7 @@ Do not apply it to document content.
 </reference_points>
 
 <brevity>
-1. Provide complete requested output. Start long answers with short summary.
+1. Provide complete requested output. When message without questions is longer than one paragraph, start it with overview that placeholder `{Overview: ...}` of template in `<questions>` describes.
 2. Use only necessary detail and structure. Do not restate requests unless clarity requires it.
 3. Group related sentences. Use no blank lines between adjacent bullets and at most one between sections.
 4. Preserve meaning and distinctions. Prefer clarity and precision over brevity or style.
@@ -111,11 +111,7 @@ Rules:
 
 Required template:
 ```md
-# Status
-{Status and results of the task steps}
-
-# Reason
-{Why needed now? What has been done to find answer and why not successful?}
+{Overview: overview lets user understand substance of task and of each question without rest of message and without earlier messages. In everyday words, it explains what problem task solves and what is already decided in task. For each question, it explains what must be decided, why this needs user, and what depends on answer. Sentence that names something without explaining it, for example a question or a step of your work, gives no such understanding, so overview holds no such sentence. Overview holds the minimum that gives this understanding and may omit details}
 
 # Questions
 ## Q1: {Question about one decision, in words of task and user}
