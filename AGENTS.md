@@ -19,8 +19,8 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 
 ## Project Documentation
 1. Put documentation for new features in `docs/specs/features/{feature-name}/*`
-2. Put documentation for bugs in `docs/specs/issues/{issue-name}/*`
-3. Each new feature/bug must have a separate directory
+2. Put documentation for bugs of a released version in `docs/specs/issues/{issue-name}/*`. Each feature and each such bug has its own directory.
+3. A fix of a defect that no released version has is part of the work of the branch and gets no directory of its own in `docs/specs/`.
 4. Feature/issue structure:
     1) `problem.md` - problem to solve
     2) `terms.md` - feature specific terms
@@ -31,7 +31,7 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
 7. `README.md` files should be concise. All details in `docs/extensions/*`.
 
 ## Changelog
-1. Record user-visible changes and required user actions in English in `pi-package/CHANGELOG.md` under `## [Unreleased]`.
+1. Record user-visible changes and required user actions in English in `pi-package/CHANGELOG.md` under `## [Unreleased]`. `## [Unreleased]` describes the changes of the branch against the last released version. A fix of a defect that no released version has gets no entry of its own.
 2. Before an approved release, move these entries to `## [<target version>] - YYYY-MM-DD`. Keep an empty `Unreleased` section and preserve published entries.
 
 ## Testing rules

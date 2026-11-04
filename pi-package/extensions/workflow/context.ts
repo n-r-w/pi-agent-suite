@@ -612,9 +612,22 @@ function requireTopWorkflow(chain: WorkflowChain): WorkflowState {
 	return state;
 }
 
-/** Identifies all saved workflow definitions, routes, and restoration settings. */
+/** Identifies all saved workflow definitions, routes, and restoration settings, whatever order of fields built them. */
 function getChainRevision(chain: WorkflowChain): string {
-	return createHash("sha256").update(JSON.stringify(chain)).digest("hex");
+	return createHash("sha256")
+		.update(JSON.stringify(chain, sortObjectKeys))
+		.digest("hex");
+}
+
+/** Gives `JSON.stringify` each plain object with its keys in code-point order, so that equal objects serialize equally. */
+function sortObjectKeys(_key: string, value: unknown): unknown {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		return value;
+	}
+	return Object.fromEntries(
+		// Keys of one object are distinct, so no comparison returns equality.
+		Object.entries(value).sort(([left], [right]) => (left < right ? -1 : 1)),
+	);
 }
 
 /** Keys stage knowledge by workflow identity and the exact stage definition. */

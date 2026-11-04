@@ -126,3 +126,17 @@ test("activation options deliver nested markers before first start and deduplica
 	]);
 	expect(records).toHaveLength(1);
 });
+
+test("journal recognizes a restored chain whose items hold the same fields in another order", () => {
+	const { journal } = capture();
+	const restoration = { modelId: "openai/gpt-5", thinking: "medium" } as const;
+	const pendingTransition = { stageId: "review" };
+	const parent = { ...state("parent"), restoration };
+	const child = state("child", true);
+	// A bound start builds the item with its pending transition before the restoration snapshot.
+	const live = { ...child, pendingTransition, restoration };
+	// Replay of the saved start builds the same item with the restoration snapshot first.
+	const replayed = { ...child, restoration, pendingTransition };
+	journal.activate([parent, live]);
+	expect(journal.isCurrent([parent, replayed])).toBe(true);
+});
