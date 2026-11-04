@@ -204,6 +204,8 @@ For example, workflow definitions separate these concepts:
 - Stage prompt. The actions and instructions for reaching the goal.
 - Transition type between stages. It can be either `advance` (move forward) or `rework` (return for revision).
 - Transition ground. A declared condition that the agent evaluates before selecting the transition.
+- Stage workflow. A nested catalog workflow that the extension starts on each entry into the stage, after the stage record; the stage prompt states what it works on.
+- Transition workflow. A nested catalog check that the transition request starts; the transition happens only when the agent leaves the check with `allow: true`.
 
 ### Example workflow configuration file (YAML)
 
@@ -234,9 +236,11 @@ stages:
     description: Inspect code and technical artifacts
     goal: Permitted artifacts are inspected and candidate findings are recorded
     prompt: |-
-      1. Inspect permitted scope systematically.
+      1. The permitted scope is what workflow `TraceBehavior` traces.
       2. Include configuration, build scripts, and other technical artifacts when allowed by scope rules.
       3. Record evidence and source locations for candidate findings.
+    # Starts nested workflow `TraceBehavior` on each entry into this stage.
+    workflow: TraceBehavior
   - id: verify_findings
     description: Verify findings are valid and material
     goal: Every remaining finding is supported by evidence and permitted by the inspection rules
@@ -265,6 +269,8 @@ transitions:
   - from: verify_findings
     to: report_findings
     type: advance
+    # Starts nested check `CheckFindings`; the move happens when it exits with `allow: true`.
+    workflow: CheckFindings
   - from: verify_findings
     to: inspect_artifacts
     type: rework
@@ -285,13 +291,13 @@ transitions:
         when: The user changes the permitted inspection scope
 ```
 
-Format 3 requires one initial stage, at least one final stage, unique stage IDs without whitespace, single-line descriptions, and a nonempty `goal` and `prompt` for each stage. The `advance` graph must be acyclic and reach every stage. Non-final stages require an outgoing `advance`; final stages prohibit outgoing `advance` but may have `rework` transitions. Every `rework` targets a strict `advance` ancestor and requires grounds. When a stage has multiple outgoing `advance` transitions, each requires grounds.
+Format 3 requires one initial stage, at least one final stage, unique stage IDs without whitespace, single-line descriptions, and a nonempty `goal` and `prompt` for each stage. The `advance` graph must be acyclic and reach every stage. Non-final stages require an outgoing `advance`; final stages prohibit outgoing `advance` but may have `rework` transitions. Every `rework` targets a strict `advance` ancestor and requires grounds. When a stage has multiple outgoing `advance` transitions, each requires grounds. A workflow named by a stage or a transition must be a catalog workflow with `nested: true`, such as `TraceBehavior` and `CheckFindings` in the example.
 
 See the [workflow documentation](docs/extensions/workflow.md) for full validation, configuration, nesting, and tool contracts.
 
 #### Compatibility with formats 1 and 2
 
-Existing format-1 and format-2 catalog files and saved sessions remain supported. Both formats use ordinary replacement and reject format-3 `nested` and `kind` fields. Format 2 retains stage goals and transition grounds. Omitting `version` selects format 1; declaring `version: 1` is equivalent. See [legacy compatibility](docs/extensions/workflow.md#legacy-compatibility-format-1) for format-1 restrictions. All formats require explicit exit and a basis for transitions and exits.
+Existing format-1 and format-2 catalog files and saved sessions remain supported. Both formats use ordinary replacement and reject format-3 `nested` and `kind` fields and the `workflow` field of stages and transitions. Format 2 retains stage goals and transition grounds. Omitting `version` selects format 1; declaring `version: 1` is equivalent. See [legacy compatibility](docs/extensions/workflow.md#legacy-compatibility-format-1) for format-1 restrictions. All formats require explicit exit and a basis for transitions and exits.
 
 #### Workflow system configuration (optional)
 
