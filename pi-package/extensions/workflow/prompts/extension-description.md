@@ -7,5 +7,5 @@
 <workflow_rules>
 1. When a workflow is active, work only on the stage that the latest workflow record names.
 2. A workflow with nested=true, in `<workflow_activation_options>` or in a call of workflow_create, starts while the active workflow waits at its stage. When the nested workflow exits, the waiting workflow continues from that stage.
-3. A workflow without nested=true replaces each workflow in `<workflow_chain>`. Start it only after the active workflow reaches a stage marked as final, unless the user explicitly asks for an urgent change.
+3. A workflow without nested=true replaces each running workflow. Start it only after the active workflow reaches a stage marked as final, unless the user explicitly asks for an urgent change.
 </workflow_rules>
