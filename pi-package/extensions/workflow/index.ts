@@ -687,7 +687,7 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 			: [];
 		const message = runtime.journal.activationOptionsForRun(
 			workflows,
-			ctx.sessionManager.getBranch(),
+			ctx.sessionManager.buildSessionProjection().entries,
 		);
 		return message === undefined ? undefined : { message };
 	});
@@ -770,17 +770,20 @@ function createWorkflowSynchronizer(
 				branch,
 				previousRestoration,
 			);
-			runtime.journal.restore(branch);
+			const { entries } = ctx.sessionManager.buildSessionProjection();
+			runtime.journal.restore(entries);
 			const state = getTopWorkflow(runtime.chain);
 			if (state !== undefined) {
-				const { entries } = ctx.sessionManager.buildSessionProjection();
 				if (
 					!runtime.journal.isCurrent(runtime.chain) ||
 					runtime.chain.some((item) => !hasVisibleWorkflowGraph(item, entries))
 				) {
 					runtime.journal.checkpoint(runtime.chain, entries);
 				}
-			} else if (runtime.emptyRestoration !== undefined) {
+			} else if (
+				runtime.emptyRestoration !== undefined &&
+				!runtime.journal.showsExit()
+			) {
 				runtime.journal.exit();
 			}
 			runtime.journalReady = true;
@@ -807,15 +810,15 @@ function registerWorkflowCompaction(
 	getPolicy: () => WorkflowPolicyResolution,
 ): void {
 	pi.on("session_compact", (_event, ctx) => {
-		runtime.journal.startContextSegment();
+		const { entries } = ctx.sessionManager.buildSessionProjection();
+		runtime.journal.restore(entries);
 		const state = getTopWorkflow(runtime.chain);
 		if (state !== undefined) {
-			runtime.journal.checkpoint(
-				runtime.chain,
-				ctx.sessionManager.buildSessionProjection().entries,
-				false,
-			);
-		} else if (runtime.emptyRestoration !== undefined) {
+			runtime.journal.checkpoint(runtime.chain, entries, false);
+		} else if (
+			runtime.emptyRestoration !== undefined &&
+			!runtime.journal.showsExit()
+		) {
 			runtime.journal.exit();
 		}
 		// Automatic compaction must establish availability for the continuing run.

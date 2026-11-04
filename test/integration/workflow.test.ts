@@ -115,7 +115,10 @@ test("workflow entry activates a configured workflow and projects its initial st
 					: undefined;
 			},
 		},
-		sessionManager: { getBranch: () => [] },
+		sessionManager: {
+			getBranch: () => [],
+			buildSessionProjection: () => ({ entries: [] }),
+		},
 	};
 	await lifecycle({ type: "session_start" }, context);
 	await lifecycle({ type: "session_start" }, context);

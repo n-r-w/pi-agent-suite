@@ -13,6 +13,7 @@ import type {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Check } from "typebox/value";
 import { stringify } from "yaml";
+import { projectBranch } from "../../../test/support/session-projection";
 import {
 	getAgentRuntimeComposition,
 	SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
@@ -467,7 +468,11 @@ async function runBeforeAgentStart(
 	}
 	const result = (await handler(
 		{ type: "before_agent_start" },
-		{ sessionManager: { getBranch: () => branch } },
+		{
+			sessionManager: {
+				buildSessionProjection: () => ({ entries: projectBranch(branch) }),
+			},
+		},
 	)) as
 		| {
 				message?: {
@@ -1150,6 +1155,41 @@ describe("workflow extension lifecycle", () => {
 		}
 	});
 
+	test("publishes no-workflow state again only when no visible record shows it", async () => {
+		// Purpose: a restart or a compaction that keeps the exit record must not repeat it.
+		// Input and expected output: an exited workflow, then a restart and a compaction that keep the exit record: no new record; a compaction that summarizes it: one exit record.
+		// Dependencies: replay of saved state, session projection, and journal restoration.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "No more work.",
+		});
+		const history = [
+			...fake.appended.map(({ data }) => ({
+				type: "custom",
+				customType: "workflow-state",
+				data,
+			})),
+			...fake.messages.map((message) => ({
+				type: "custom_message",
+				...message,
+			})),
+		];
+		const count = fake.messages.length;
+		await runLifecycle(fake, "session_start", history);
+		await runSessionCompact(fake, true, projectBranch(history));
+		expect(fake.messages).toHaveLength(count);
+		await runSessionCompact(fake);
+		expect(fake.messages).toHaveLength(count + 1);
+		expect((fake.messages.at(-1)?.details as { kind: string }).kind).toBe(
+			"exit",
+		);
+	});
+
 	test("publishes no-workflow state after compaction of an exited workflow", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
@@ -1167,6 +1207,33 @@ describe("workflow extension lifecycle", () => {
 			"exit",
 		);
 		expect(fake.widgetUpdates.at(-1)?.content).toBeUndefined();
+	});
+
+	test("reuses stages of a workflow that runs again until a compaction", async () => {
+		// Purpose: a second run reuses the stages that the context holds, and a compaction makes them unknown.
+		// Input and expected output: run, exit, run gives reuse; exit, compaction, run gives inline.
+		// Dependencies: session_compact wiring and journal-local known-stage tracking.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const run = async () => {
+			await requireTool(fake, "workflow_activate").execute("activate", {
+				workflowId: "delivery",
+			});
+			const activation = fake.messages
+				.filter(
+					({ details }) => (details as { kind?: string }).kind === "activation",
+				)
+				.at(-1);
+			await requireTool(fake, "workflow_exit").execute("exit", {
+				basis: "No more work.",
+			});
+			return (activation?.details as { guidelines?: string }).guidelines;
+		};
+		expect(await run()).toBe("inline");
+		expect(await run()).toBe("reuse");
+		await runSessionCompact(fake);
+		expect(await run()).toBe("inline");
 	});
 
 	test("synchronizes empty branches after exit and respects later manual settings", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { projectBranch } from "../../../test/support/session-projection";
 import {
 	hasVisibleWorkflowGraph,
 	WorkflowJournal,
@@ -54,7 +55,111 @@ function createJournal(): {
 	};
 }
 
+/** Returns the item of a test array at an index that the test knows to exist. */
+function requireItem<T>(items: readonly T[], index: number): T {
+	const item = items[index];
+	if (item === undefined) {
+		throw new Error(`missing item ${index}`);
+	}
+	return item;
+}
+
+/** Creates a journal that appends each record to a real Pi session, so that tests can compact the session. */
+function createSessionJournal() {
+	const session = SessionManager.inMemory();
+	const records: WorkflowJournalRecord[] = [];
+	const ids: string[] = [];
+	const journal = new WorkflowJournal((record) => {
+		records.push(record);
+		ids.push(
+			session.appendCustomMessageEntry(
+				record.customType,
+				record.content,
+				false,
+				record.details,
+			),
+		);
+	});
+	const visible = () => session.buildSessionProjection().entries;
+	return { session, journal, records, ids, visible };
+}
+
 describe("workflow journal", () => {
+	test("after compactions reuses only stage rules that the kept entries show", () => {
+		// Purpose: a compaction keeps recent entries, and the journal must not repeat stage rules that they show.
+		// Input and expected output: the first compaction keeps the review rules only; the second keeps entries from before the first compaction entry on.
+		// Edge case: a kept reuse record shows no rules, so it makes no stage known.
+		// Dependencies: Pi session projection with compaction and journal restoration.
+		const { session, journal, records, ids, visible } = createSessionJournal();
+		let state = createWorkflow(workflow());
+		journal.activate([state]);
+		state = transitionWorkflow(state, "review");
+		journal.enterStage([state]);
+		session.appendCompaction("first", requireItem(ids, 1), 100);
+		journal.restore(visible());
+		state = transitionWorkflow(state, "implementation");
+		journal.enterStage([state]);
+		state = transitionWorkflow(state, "review");
+		journal.enterStage([state]);
+		session.appendCompaction("second", requireItem(ids, 1), 100);
+		journal.restore(visible());
+		state = transitionWorkflow(state, "implementation");
+		journal.enterStage([state]);
+
+		expect(records.map(({ details }) => details["guidelines"])).toEqual([
+			"inline",
+			"inline",
+			"inline",
+			"reuse",
+			"reuse",
+		]);
+	});
+
+	test("omits rules from a checkpoint while the kept entries show them", () => {
+		// Purpose: a checkpoint after a compaction repeats only the rules that the kept entries lack.
+		// Input and expected output: with the activation kept, the checkpoint has no shared rules, graph, or stage rules; with only this checkpoint kept, the next one has all of them.
+		// Dependencies: Pi session projection, graph visibility, and journal restoration.
+		const { session, journal, records, ids, visible } = createSessionJournal();
+		const state = createWorkflow(workflow());
+		journal.activate([state]);
+		session.appendCompaction("first", requireItem(ids, 0), 100);
+		journal.restore(visible());
+		journal.checkpoint([state], visible());
+		session.appendCompaction("second", requireItem(ids, 1), 100);
+		journal.restore(visible());
+		journal.checkpoint([state], visible());
+
+		const [, reused, inlined] = records;
+		expect(reused?.content).toContain('guidelines="reuse"');
+		expect(reused?.content).not.toContain("Follow &lt;global&gt;");
+		expect(reused?.content).not.toContain("<stages>");
+		expect(reused?.content).not.toContain("<active_stage_guidelines>");
+		expect(inlined?.content).toContain('guidelines="inline"');
+		expect(inlined?.content).toContain("Follow &lt;global&gt;");
+		expect(inlined?.content).toContain("<stages>");
+		expect(inlined?.content).toContain("Implement &lt;carefully&gt;");
+	});
+
+	test("does not publish activation options again while the kept entries show them", () => {
+		// Purpose: a compaction that keeps the options record must not make the journal publish the same options.
+		// Input and expected output: options, a compaction that keeps them, the same options again: one record; a compaction that summarizes them: a second record.
+		// Dependencies: Pi session projection and options deduplication.
+		const { session, journal, records, ids, visible } = createSessionJournal();
+		journal.activationOptions([workflow()]);
+		session.appendCompaction("first", requireItem(ids, 0), 100);
+		journal.restore(visible());
+		journal.activationOptions([workflow()]);
+		expect(
+			journal.activationOptionsForRun([workflow()], visible()),
+		).toBeUndefined();
+		const marker = session.appendCustomMessageEntry("note", "later", false, {});
+		session.appendCompaction("second", marker, 100);
+		journal.restore(visible());
+		journal.activationOptions([workflow()]);
+
+		expect(records).toHaveLength(2);
+	});
+
 	/** Checks graph visibility against Pi's real compaction and context-edit projection. */
 	test("recognizes only model-visible graph records of the same workflow", () => {
 		const session = SessionManager.inMemory();
@@ -137,12 +242,12 @@ describe("workflow journal", () => {
 		expect(records).toHaveLength(0);
 		const branch = [{ type: "custom_message", ...candidate }];
 		expect(
-			journal.activationOptionsForRun([workflow()], branch),
+			journal.activationOptionsForRun([workflow()], projectBranch(branch)),
 		).toBeUndefined();
 		expect(
 			journal.activationOptionsForRun(
 				[workflow()],
-				[...branch, { type: "branch_summary" }],
+				projectBranch([...branch, { type: "branch_summary" }]),
 			)?.details,
 		).toEqual(candidate?.details);
 		expect(journal.activationOptionsForRun([], [])).toBeUndefined();
@@ -251,6 +356,41 @@ describe("workflow journal", () => {
 		);
 	});
 
+	test("reuses known stage definitions in a later run of the same workflow", () => {
+		// Purpose: a workflow that runs again in the same context segment must not repeat stage prompts that the context holds.
+		// Input and expected output: a run through both stages and its exit, then a second run; each stage of the second run reuses its definition.
+		// Edge case: the second activation still carries the root guidance and the graph, and a journal restored from the records keeps the knowledge.
+		// Dependencies: journal-local known-stage tracking and journal restoration.
+		const { journal, records } = createJournal();
+		let state = createWorkflow(workflow());
+		journal.activate([state]);
+		journal.enterStage([transitionWorkflow(state, "review")]);
+		journal.exit();
+		const restored = new WorkflowJournal((record) => records.push(record));
+		restored.restore(
+			projectBranch(
+				records.map((message) => ({ type: "custom_message", ...message })),
+			),
+		);
+
+		for (const current of [journal, restored]) {
+			const start = records.length;
+			state = createWorkflow(workflow());
+			current.activate([state]);
+			current.enterStage([transitionWorkflow(state, "review")]);
+			const [activation, review] = records.slice(start);
+			expect(activation?.content).toContain(
+				"Follow &lt;global&gt; &amp; stay safe.",
+			);
+			expect(activation?.content).toContain(
+				'stage_id="implementation" guidelines="reuse"',
+			);
+			expect(activation?.content).not.toContain("Implement &lt;carefully&gt;");
+			expect(activation?.details["guidelines"]).toBe("reuse");
+			expect(review?.content).toContain('stage_id="review" guidelines="reuse"');
+		}
+	});
+
 	test("publishes edited stage definitions and explicit exit records", () => {
 		// Edits publish the revised definition, and exit clears the journal's active-workflow evidence.
 		const { journal, records } = createJournal();
@@ -305,10 +445,9 @@ describe("workflow journal", () => {
 		journal.updateStage([state], "review");
 		const restored = new WorkflowJournal(() => {});
 		restored.restore(
-			records.map((message) => ({
-				type: "custom_message",
-				...message,
-			})),
+			projectBranch(
+				records.map((message) => ({ type: "custom_message", ...message })),
+			),
 		);
 
 		expect(restored.isCurrent([state])).toBe(true);
@@ -334,10 +473,9 @@ describe("workflow journal", () => {
 		);
 		const restored = new WorkflowJournal(() => {});
 		restored.restore(
-			records.map((message) => ({
-				type: "custom_message",
-				...message,
-			})),
+			projectBranch(
+				records.map((message) => ({ type: "custom_message", ...message })),
+			),
 		);
 
 		expect(restored.isCurrent([state])).toBe(false);
@@ -406,10 +544,12 @@ describe("workflow journal", () => {
 					source.journal.activationOptions([workflow()]);
 					const restored = createJournal();
 					restored.journal.restore(
-						source.records.map((record) => ({
-							type: "custom_message",
-							...record,
-						})),
+						projectBranch(
+							source.records.map((record) => ({
+								type: "custom_message",
+								...record,
+							})),
+						),
 					);
 					restored.journal.activationOptions([workflow()]);
 					return restored.records;
@@ -458,11 +598,11 @@ describe("workflow journal", () => {
 		expect(records[1]?.content).toContain("<workflow_checkpoint");
 	});
 
-	test("resets known stages at checkpoints and deduplicates activation options", () => {
-		// Purpose: compaction repair must inline current instructions and availability must change only when its rendered value changes.
+	test("inlines unseen stage rules at checkpoints and deduplicates activation options", () => {
+		// Purpose: a checkpoint must inline current instructions that the context lacks, and availability must change only when its rendered value changes.
 		// Input and expected output: one active checkpoint is followed by one options record despite two equivalent publications.
 		// Edge case: an empty options list emits the explicit self-closing replacement record.
-		// Dependencies: checkpoint rendering, known-stage reset, and ordered catalog options.
+		// Dependencies: checkpoint rendering, known-stage tracking, and ordered catalog options.
 		const { journal, records } = createJournal();
 		const state = createWorkflow(workflow());
 		journal.checkpoint([state]);
@@ -471,7 +611,7 @@ describe("workflow journal", () => {
 		journal.activationOptions([]);
 
 		expect(records[0]?.content).toContain(
-			'<workflow_checkpoint id="delivery" status="active" active_stage_id="implementation">',
+			'<workflow_checkpoint id="delivery" status="active" active_stage_id="implementation" guidelines="inline">',
 		);
 		expect(records[0]?.content).toContain("<active_stage_guidelines>");
 		expect(records[1]?.content).toContain(

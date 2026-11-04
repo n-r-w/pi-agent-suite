@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
+import { projectBranch } from "../../../test/support/session-projection";
 import { createTempDir } from "../../../test/support/temp-dir";
 import { loadWorkflowCatalog } from "./config";
 import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
@@ -343,7 +344,7 @@ test("context appends pending metadata at start and checkpoint and refusal metad
 	const journal = new WorkflowJournal((record) => records.push(record));
 	journal.activate(chain);
 	const previous = structuredClone(records.map(({ details }) => details));
-	journal.startContextSegment();
+	journal.restore([]);
 	journal.checkpoint(chain);
 	journal.enterStage(chain.slice(0, 1), { stageId: "done" });
 	expect(records[0]?.details).toEqual(previous[0]);
@@ -356,7 +357,9 @@ test("context appends pending metadata at start and checkpoint and refusal metad
 	expect(records[2]?.details["currentStageId"]).toBe("start");
 	const restored = new WorkflowJournal(() => {});
 	restored.restore(
-		records.map((record) => ({ type: "custom_message", ...record })),
+		projectBranch(
+			records.map((record) => ({ type: "custom_message", ...record })),
+		),
 	);
 	expect(restored.isCurrent(chain.slice(0, 1))).toBe(true);
 });

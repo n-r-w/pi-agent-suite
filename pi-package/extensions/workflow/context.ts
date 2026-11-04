@@ -31,11 +31,13 @@ type WorkflowJournalKind =
 	| "reminder"
 	| "activation_options";
 
-/** Publishes append-only hidden workflow records and tracks definitions known in the current context segment. */
+/** Publishes append-only hidden workflow records and tracks which of them the model context holds. */
 export class WorkflowJournal {
 	private readonly knownStages = new Set<string>();
 	private currentChainRevision: string | undefined;
 	private activationOptionsContent: string | undefined;
+	// Whether the latest model-visible lifecycle record says that no workflow is active.
+	private exitShown = false;
 
 	public constructor(
 		private readonly publish: (
@@ -49,16 +51,15 @@ export class WorkflowJournal {
 	public activate(chain: WorkflowChain): void {
 		const state = requireTopWorkflow(chain);
 		const stage = requireCurrentStage(state);
-		if (chain.length === 1) {
-			this.knownStages.clear();
-		}
-		this.knownStages.add(getStageKey(state, stage));
+		const key = getStageKey(state, stage);
+		const guidelines = this.knownStages.has(key) ? "reuse" : "inline";
+		this.knownStages.add(key);
 		this.setCurrentState(chain);
 		this.publishRecord(
-			renderWorkflowActivation(state, stage),
+			renderWorkflowActivation(state, stage, guidelines),
 			"activation",
 			chain,
-			{ stageId: stage.id, guidelines: "inline" },
+			{ stageId: stage.id, ...describeStageRules(key, guidelines) },
 		);
 	}
 
@@ -85,7 +86,7 @@ export class WorkflowJournal {
 			chain,
 			{
 				stageId: stage.id,
-				guidelines,
+				...describeStageRules(key, guidelines),
 				...(refusedTransition === undefined ? {} : { refusedTransition }),
 			},
 		);
@@ -97,11 +98,13 @@ export class WorkflowJournal {
 		if (stage === undefined) {
 			throw new Error(`workflow stage does not exist: ${stageId}`);
 		}
-		this.knownStages.add(getStageKey(state, stage));
+		const key = getStageKey(state, stage);
+		this.knownStages.add(key);
 		this.setCurrentState(chain);
 		this.publishRecord(renderStageUpdate(state, stage), "stage_update", chain, {
 			stageId,
 			active: state.route.at(-1) === stageId,
+			stageKey: key,
 		});
 	}
 
@@ -126,8 +129,8 @@ export class WorkflowJournal {
 
 	/** Publishes the absence of a workflow after an explicit exit or restoration. */
 	public exit(): void {
-		this.knownStages.clear();
 		this.currentChainRevision = undefined;
+		this.exitShown = true;
 		this.publish(
 			{
 				customType: "workflow",
@@ -152,20 +155,22 @@ export class WorkflowJournal {
 			(item) => !hasVisibleWorkflowGraph(item, projectedEntries),
 		);
 		const includesGraph = missingGraphs.includes(state);
-		this.knownStages.clear();
-		this.knownStages.add(getStageKey(state, stage));
+		const key = getStageKey(state, stage);
+		const guidelines = this.knownStages.has(key) ? "reuse" : "inline";
+		this.knownStages.add(key);
 		this.setCurrentState(chain);
 		this.publishRecord(
 			[
 				...missingGraphs
 					.filter((item) => item !== state)
 					.map(renderWaitingWorkflow),
-				renderWorkflowCheckpoint(state, stage, includesGraph),
+				renderWorkflowCheckpoint(state, stage, includesGraph, guidelines),
 			].join("\n"),
 			"checkpoint",
 			chain,
 			{
 				stageId: stage.id,
+				...describeStageRules(key, guidelines),
 				includesGraph,
 				graphWorkflowIds: missingGraphs.map(({ workflow }) => workflow.id),
 				...(triggerTurn === undefined ? {} : { triggerTurn }),
@@ -183,16 +188,15 @@ export class WorkflowJournal {
 		}
 	}
 
-	/** Restores publication evidence before Pi appends the next run's initial message. */
+	/** Restores publication evidence from the model-visible entries before Pi appends the next run's initial message. */
 	public activationOptionsForRun(
 		workflows: readonly WorkflowDefinition[],
-		branch: readonly unknown[],
+		entries: readonly ProjectedSessionEntry[],
 	): WorkflowJournalRecord | undefined {
 		this.activationOptionsContent = undefined;
-		for (const entry of branch.slice(findCurrentContextSegmentStart(branch))) {
-			const message = readWorkflowMessage(entry);
+		for (const message of readVisibleWorkflowMessages(entries)) {
 			if (
-				message?.details["version"] === 1 &&
+				message.details["version"] === 1 &&
 				message.details["kind"] === "activation_options"
 			) {
 				this.activationOptionsContent = message.content;
@@ -201,7 +205,7 @@ export class WorkflowJournal {
 		return this.prepareActivationOptions(workflows);
 	}
 
-	/** Deduplicates one candidate against the current context segment. */
+	/** Deduplicates one candidate against the options that the model context holds. */
 	private prepareActivationOptions(
 		workflows: readonly WorkflowDefinition[],
 	): WorkflowJournalRecord | undefined {
@@ -209,7 +213,7 @@ export class WorkflowJournal {
 		if (content === this.activationOptionsContent) {
 			return;
 		}
-		// An empty value is useful only when it replaces options published in this context segment.
+		// An empty value is useful only when it replaces options that the model context holds.
 		if (this.activationOptionsContent === undefined && workflows.length === 0) {
 			return;
 		}
@@ -222,27 +226,23 @@ export class WorkflowJournal {
 		};
 	}
 
-	/** Clears journal-local state when Pi starts a new provider-visible context segment. */
-	public startContextSegment(): void {
+	/** Rebuilds journal-local deduplication state from the entries that Pi sends to the model, including those that a compaction kept. */
+	public restore(entries: readonly ProjectedSessionEntry[]): void {
 		this.knownStages.clear();
 		this.currentChainRevision = undefined;
 		this.activationOptionsContent = undefined;
-	}
-
-	/** Rebuilds journal-local deduplication state from the current post-compaction branch segment. */
-	public restore(branch: readonly unknown[]): void {
-		this.startContextSegment();
-		const start = findCurrentContextSegmentStart(branch);
-		for (const entry of branch.slice(start)) {
-			const message = readWorkflowMessage(entry);
-			if (message === undefined) {
-				continue;
-			}
+		this.exitShown = false;
+		for (const message of readVisibleWorkflowMessages(entries)) {
 			this.restoreRecord(message.details, message.content);
 		}
 	}
 
-	/** Returns whether the current context segment already contains a compatible lifecycle record. */
+	/** Returns whether the latest model-visible lifecycle record already says that no workflow is active. */
+	public showsExit(): boolean {
+		return this.exitShown;
+	}
+
+	/** Returns whether the model context already contains a compatible lifecycle record. */
 	public isCurrent(chain: WorkflowChain): boolean {
 		return this.currentChainRevision === getChainRevision(chain);
 	}
@@ -260,21 +260,17 @@ export class WorkflowJournal {
 			return;
 		}
 		if (kind === "exit" || kind === "completion") {
-			this.knownStages.clear();
 			this.currentChainRevision = undefined;
+			this.exitShown = true;
 			return;
 		}
 		const revision = details["chainRevision"];
-		const keys = details["knownStageKeys"];
-		if (
-			typeof revision !== "string" ||
-			!Array.isArray(keys) ||
-			!keys.every((key) => typeof key === "string")
-		) {
+		if (typeof revision !== "string") {
 			return;
 		}
-		this.knownStages.clear();
-		for (const key of keys) {
+		this.exitShown = false;
+		const key = details["stageKey"];
+		if (typeof key === "string") {
 			this.knownStages.add(key);
 		}
 		this.currentChainRevision = revision;
@@ -282,6 +278,7 @@ export class WorkflowJournal {
 
 	private setCurrentState(chain: WorkflowChain): void {
 		this.currentChainRevision = getChainRevision(chain);
+		this.exitShown = false;
 	}
 
 	private publishRecord(
@@ -326,7 +323,6 @@ export class WorkflowJournal {
 					status: "active",
 					currentStageId: state.route.at(-1),
 					chainRevision: getChainRevision(chain),
-					knownStageKeys: [...this.knownStages],
 					...(pendingTransitions.length === 0 ? {} : { pendingTransitions }),
 					...metadata,
 				},
@@ -340,6 +336,7 @@ export class WorkflowJournal {
 function renderWorkflowActivation(
 	state: WorkflowState,
 	stage: WorkflowStage,
+	guidelines: "inline" | "reuse",
 ): string {
 	const workflow = state.workflow;
 	return [
@@ -348,7 +345,7 @@ function renderWorkflowActivation(
 		...renderWorkflowGraph(workflow),
 		"</workflow_activated>",
 		"",
-		renderStageActivation(state, stage, "inline"),
+		renderStageActivation(state, stage, guidelines),
 	].join("\n");
 }
 
@@ -412,19 +409,33 @@ function renderWorkflowReminder(state: WorkflowState, stageId: string): string {
 	return `<workflow_reminder id="${escapeXml(state.workflow.id)}" active_stage_id="${escapeXml(stageId)}" />`;
 }
 
+/** Renders the active state with the shared rules and the graph only when the context lacks them, and the stage rules only when it lacks them. */
 function renderWorkflowCheckpoint(
 	state: WorkflowState,
 	stage: WorkflowStage,
 	includesGraph: boolean,
+	guidelines: "inline" | "reuse",
 ): string {
 	return [
-		`<workflow_checkpoint id="${escapeXml(state.workflow.id)}" status="active" active_stage_id="${escapeXml(stage.id)}">`,
-		...renderOptionalGuidelines(state.workflow.prompt, "guidelines", "  "),
-		...(includesGraph ? renderWorkflowGraph(state.workflow) : []),
+		`<workflow_checkpoint id="${escapeXml(state.workflow.id)}" status="active" active_stage_id="${escapeXml(stage.id)}" guidelines="${guidelines}">`,
+		...(includesGraph
+			? [
+					...renderOptionalGuidelines(
+						state.workflow.prompt,
+						"guidelines",
+						"  ",
+					),
+					...renderWorkflowGraph(state.workflow),
+				]
+			: []),
 		...renderOptionalGuidelines(stage.goal, "stage_goal", "  "),
-		"  <active_stage_guidelines>",
-		escapeXml(stage.prompt),
-		"  </active_stage_guidelines>",
+		...(guidelines === "inline"
+			? [
+					"  <active_stage_guidelines>",
+					escapeXml(stage.prompt),
+					"  </active_stage_guidelines>",
+				]
+			: []),
 		...renderAvailableTransitions(getAvailableTransitions(state), "  "),
 		...renderFinalStageGuidance(stage),
 		"</workflow_checkpoint>",
@@ -519,17 +530,24 @@ function requireCurrentStage(state: WorkflowState): WorkflowStage {
 	return stage;
 }
 
-function findCurrentContextSegmentStart(branch: readonly unknown[]): number {
-	for (let index = branch.length - 1; index >= 0; index -= 1) {
-		const entry = branch[index];
-		if (
-			isRecord(entry) &&
-			(entry["type"] === "compaction" || entry["type"] === "branch_summary")
-		) {
-			return index + 1;
-		}
-	}
-	return 0;
+/** Returns the workflow records that Pi sends to the model, in their order. */
+function readVisibleWorkflowMessages(
+	entries: readonly ProjectedSessionEntry[],
+): readonly NonNullable<ReturnType<typeof readWorkflowMessage>>[] {
+	return entries.flatMap(({ sourceEntry, messages }) => {
+		const message = readWorkflowMessage(sourceEntry);
+		return messages.length > 0 && message !== undefined ? [message] : [];
+	});
+}
+
+/** Returns the record metadata that says whether the record shows the stage rules, with their key when it does. */
+function describeStageRules(
+	key: string,
+	guidelines: "inline" | "reuse",
+): Readonly<Record<string, string>> {
+	return guidelines === "inline"
+		? { guidelines, stageKey: key }
+		: { guidelines };
 }
 
 function readWorkflowMessage(entry: unknown):

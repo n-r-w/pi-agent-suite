@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { projectBranch } from "../../../test/support/session-projection";
 import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
 import {
 	createWorkflow,
@@ -72,7 +73,7 @@ test("chain revision detects waiting parent edits and checkpoints retain all def
 		...record,
 	}));
 	const restored = capture();
-	restored.journal.restore(history);
+	restored.journal.restore(projectBranch(history));
 	expect(restored.journal.isCurrent([parent, child])).toBe(true);
 	const changed = editWorkflowStage(
 		parent,
@@ -86,7 +87,7 @@ test("chain revision detects waiting parent edits and checkpoints retain all def
 		"fixture",
 	);
 	expect(restored.journal.isCurrent([changed, child])).toBe(false);
-	restored.journal.startContextSegment();
+	restored.journal.restore([]);
 	restored.journal.checkpoint([changed, child]);
 	expect(restored.records.at(-1)?.details).toMatchObject({
 		kind: "checkpoint",

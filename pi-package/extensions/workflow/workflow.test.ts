@@ -990,10 +990,14 @@ describe("workflow format boundaries", () => {
 			"catalog",
 		);
 		expect(JSON.stringify(explicit)).toBe(JSON.stringify(legacy));
-		const records: WorkflowJournalRecord[] = [];
-		const journal = new WorkflowJournal((record) => records.push(record));
-		journal.activate([activateWorkflow(legacy)]);
-		journal.activate([activateWorkflow(explicit)]);
+		// Each definition gets its own journal, because a second activation in one journal reuses the known initial stage.
+		const records = [legacy, explicit].map((definition) => {
+			const published: WorkflowJournalRecord[] = [];
+			new WorkflowJournal((record) => published.push(record)).activate([
+				activateWorkflow(definition),
+			]);
+			return published[0];
+		});
 		expect(records[1]).toEqual(records[0]);
 	});
 
@@ -1207,7 +1211,8 @@ describe("workflow format boundaries", () => {
 			const instructions = content.indexOf(
 				index === 3 ? "<active_stage_guidelines>" : "<stage_guidelines>",
 			);
-			if (index === 2) {
+			// The re-entry and the checkpoint come after records that show the rules of stage `start`.
+			if (index === 2 || index === 3) {
 				expect(instructions).toBe(-1);
 				expect(content).toContain('guidelines="reuse"');
 			} else {
