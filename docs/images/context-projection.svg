@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Context projection: as fewer tokens remain in the context window, smaller old tool results are replaced with a notice or a summary</title>
+  <rect x="1" y="1" width="1198" height="418" rx="24" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+
+  <text x="60" y="48" font-size="21" font-weight="700" fill="#0f172a">Context projection: the fuller the context window, the smaller the tool results it hides</text>
+  <text x="60" y="76" font-size="16" fill="#475569">Default thresholds. The bar is not to scale.</text>
+
+  <!-- Threshold labels -->
+  <g font-size="14" font-weight="700" fill="#334155" text-anchor="middle">
+    <text x="640" y="108">70k tokens left</text>
+    <text x="820" y="108">50k left</text>
+    <text x="980" y="108">30k left</text>
+    <text x="1140" y="108">limit</text>
+  </g>
+
+  <!-- Context window bar -->
+  <rect x="60" y="120" width="580" height="56" rx="10" fill="#e2e8f0"/>
+  <rect x="640" y="120" width="180" height="56" fill="#fde68a"/>
+  <rect x="820" y="120" width="160" height="56" fill="#fbbf24"/>
+  <rect x="980" y="120" width="160" height="56" rx="10" fill="#d97706"/>
+  <rect x="980" y="120" width="20" height="56" fill="#d97706"/>
+  <text x="80" y="154" font-size="16" fill="#334155">Context window: the session grows to the right →</text>
+  <g stroke="#0f172a" stroke-width="2">
+    <line x1="640" y1="114" x2="640" y2="182"/>
+    <line x1="820" y1="114" x2="820" y2="182"/>
+    <line x1="980" y1="114" x2="980" y2="182"/>
+    <line x1="1140" y1="114" x2="1140" y2="182"/>
+  </g>
+
+  <!-- Levels -->
+  <text x="350" y="214" text-anchor="middle" font-size="15" fill="#475569">tool results stay as they are</text>
+  <g text-anchor="middle">
+    <text x="730" y="214" font-size="18" font-weight="700" fill="#b45309">L1</text>
+    <text x="730" y="238" font-size="14" fill="#334155">hides old results</text>
+    <text x="730" y="258" font-size="14" fill="#334155">from 4,000 tokens</text>
+    <text x="900" y="214" font-size="18" font-weight="700" fill="#b45309">L2</text>
+    <text x="900" y="238" font-size="14" fill="#334155">hides old results</text>
+    <text x="900" y="258" font-size="14" fill="#334155">from 2,000 tokens</text>
+    <text x="1060" y="214" font-size="18" font-weight="700" fill="#b45309">L3</text>
+    <text x="1060" y="238" font-size="14" fill="#334155">hides old results</text>
+    <text x="1060" y="258" font-size="14" fill="#334155">from 1,000 tokens</text>
+  </g>
+
+  <!-- Notes -->
+  <rect x="60" y="292" width="530" height="96" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="82" y="322" font-size="13" font-weight="700" letter-spacing="2" fill="#b45309">A HIDDEN RESULT BECOMES</text>
+  <text x="82" y="350" font-size="14" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">Result omitted. Run tool again for full result.</text>
+  <text x="82" y="374" font-size="14" fill="#475569">or a generated summary, when summaries are enabled</text>
+
+  <rect x="610" y="292" width="530" height="96" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="632" y="322" font-size="13" font-weight="700" letter-spacing="2" fill="#334155">ALWAYS STAYS VISIBLE</text>
+  <text x="632" y="350" font-size="14" fill="#0f172a">the newest 10 tool-use turns, or the newest 20% if that is more</text>
+  <text x="632" y="374" font-size="14" fill="#0f172a">results of <tspan font-family="ui-monospace, Menlo, Consolas, monospace">consult_advisor</tspan> and <tspan font-family="ui-monospace, Menlo, Consolas, monospace">convene_council</tspan></text>
+</svg>

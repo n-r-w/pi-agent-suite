@@ -1,0 +1,24 @@
+version: 3
+nested: true
+description: Use to check the results of a stage before the move to the next stage
+prompt: The checked results are the results of the stage that the requested transition leaves, for example the approved plan before implementation.
+stages:
+  - id: check
+    description: Compare each result with its stage goal and the user request
+    goal: Each checked result is compared with the goal of its stage, the user request, and the decisions of the user, and each gap is found.
+    prompt: |-
+      1. Compare each checked result with the goal of its stage and with the user request.
+      2. When the workflow that requested the transition requires approval of the user, check that each decision of the result has this approval.
+      3. Find each gap with its place and the fact that shows it.
+    initial: true
+  - id: decide
+    description: Allow or block the move
+    goal: The check result is stated with each gap that blocks the move.
+    prompt: |-
+      1. State the check result in one or two sentences, and name each gap that blocks the move.
+      2. When no gap remains, leave this workflow with `allow: true`. Otherwise, leave it with `allow: false`, so that the work stays in its stage.
+    final: true
+transitions:
+  - from: check
+    to: decide
+    type: advance

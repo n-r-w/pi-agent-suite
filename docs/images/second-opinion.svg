@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Independent check: consult_advisor sends the full context to a separate model call; convene_council lets two participants discuss until they agree</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="398" rx="24" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+
+  <!-- Advisor panel -->
+  <rect x="30" y="30" width="555" height="340" rx="18" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="56" y="70" font-size="20" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0369a1">consult_advisor</text>
+  <text x="56" y="96" font-size="15" fill="#475569">A second opinion on one question</text>
+
+  <rect x="56" y="150" width="150" height="110" rx="14" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="131" y="200" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">Main</text>
+  <text x="131" y="222" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">agent</text>
+
+  <rect x="400" y="150" width="160" height="110" rx="14" fill="#f0f9ff" stroke="#0369a1" stroke-width="2"/>
+  <text x="480" y="192" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">Advisor</text>
+  <text x="480" y="216" text-anchor="middle" font-size="14" fill="#475569">separate model call,</text>
+  <text x="480" y="236" text-anchor="middle" font-size="14" fill="#475569">own prompt, no tools</text>
+
+  <line x1="208" y1="180" x2="396" y2="180" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="302" y="166" text-anchor="middle" font-size="14" fill="#334155">question + full context</text>
+  <line x1="398" y1="232" x2="210" y2="232" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="302" y="256" text-anchor="middle" font-size="14" fill="#334155">independent opinion</text>
+
+  <text x="56" y="320" font-size="14" fill="#475569">Useful before a risky step or to check</text>
+  <text x="56" y="342" font-size="14" fill="#475569">a finished result.</text>
+
+  <!-- Council panel -->
+  <rect x="615" y="30" width="555" height="340" rx="18" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="641" y="70" font-size="20" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0369a1">convene_council</text>
+  <text x="641" y="96" font-size="15" fill="#475569">Two participants discuss a hard problem</text>
+
+  <rect x="641" y="170" width="150" height="110" rx="14" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="716" y="220" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">Main</text>
+  <text x="716" y="242" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">agent</text>
+
+  <rect x="985" y="122" width="160" height="64" rx="14" fill="#f0f9ff" stroke="#0369a1" stroke-width="2"/>
+  <text x="1065" y="160" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">Participant 1</text>
+  <rect x="985" y="262" width="160" height="64" rx="14" fill="#f0f9ff" stroke="#0369a1" stroke-width="2"/>
+  <text x="1065" y="300" text-anchor="middle" font-size="17" font-weight="700" fill="#0f172a">Participant 2</text>
+
+  <line x1="1045" y1="190" x2="1045" y2="256" stroke="#0369a1" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="1085" y1="258" x2="1085" y2="192" stroke="#0369a1" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="1065" y="352" text-anchor="middle" font-size="13" fill="#475569">up to 3 rounds, can read files</text>
+
+  <path d="M793,200 C870,200 900,154 981,154" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="868" y="132" text-anchor="middle" font-size="14" fill="#334155">question +</text>
+  <text x="868" y="150" text-anchor="middle" font-size="14" fill="#334155">session context</text>
+  <path d="M981,294 C900,294 870,250 797,250" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="878" y="300" text-anchor="middle" font-size="14" fill="#334155">agreed answer</text>
+</svg>
