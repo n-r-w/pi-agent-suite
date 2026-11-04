@@ -16,6 +16,8 @@ The main agent starts subagents in the background and can run several of them at
 
 ![Subagent management screen](https://raw.githubusercontent.com/n-r-w/pi-agent-suite/main/docs/images/subagents-tui.png)
 
+*A real session with a custom set of agents: the analyst subagent #11 has started its own verifier subagent.*
+
 Details: [agent selection](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/main-agent-selection.md), [subagents](https://github.com/n-r-w/pi-agent-suite/blob/main/docs/extensions/run-subagent.md).
 
 ### Workflows: the process as one graph
