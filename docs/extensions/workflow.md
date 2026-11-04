@@ -255,7 +255,7 @@ The `workflow_create` TypeBox schema adds LLM-facing length and collection-size 
 
 ### `workflow_activate`
 
-`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. A nested activation appends to the chain; an ordinary activation replaces the entire chain. Every running workflow ID after NFC normalization is excluded from options. The extension first offers the tool when at least one activation option exists. Once offered, the tool remains offered in the session unless the agent's tool policy excludes it. When no activation options remain, a call fails because the requested workflow cannot be activated.
+`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. A nested activation appends to the chain; an ordinary activation replaces the entire chain. Running workflows stay in the options, and an activation of a workflow whose ID runs in the chain fails with "workflow <id> already runs in the chain". The extension first offers the tool when at least one activation option exists. Once offered, the tool remains offered in the session unless the agent's tool policy excludes it. When no activation options remain, a call fails because the requested workflow cannot be activated.
 
 ### `workflow_get_stage`
 
