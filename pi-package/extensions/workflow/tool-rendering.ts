@@ -91,6 +91,8 @@ interface WorkflowTransitionOutcome {
 interface WorkflowTransitionPresentation {
 	readonly presentationKind: typeof PRESENTATION_KIND;
 	readonly toolName: "workflow_transition";
+	/** Identifies the workflow that owns the transition before execution changes state. */
+	readonly workflowId?: string;
 	readonly from?: WorkflowPresentationReference;
 	readonly to: WorkflowPresentationReference;
 	readonly ground?: WorkflowGround;
@@ -237,6 +239,7 @@ function createWorkflowTransitionPresentation(
 		edge === undefined ? undefined : findSelectedGround(edge, groundId);
 	const binding = edge?.workflow;
 	return {
+		...(state === undefined ? {} : { workflowId: state.workflow.id }),
 		...(ground === undefined ? {} : { ground: { ...ground } }),
 		...(binding === undefined
 			? {}
@@ -440,35 +443,54 @@ function renderWorkflowReferenceCall(options: {
 	readonly theme: Theme;
 	readonly context: WorkflowToolRenderContext;
 }): Component {
-	return new WorkflowRows((width) => [
-		renderToolName(options.toolName, width, options.theme),
-		...(options.workflow === undefined
-			? []
-			: renderReference({
-					label: "Workflow",
-					reference: options.workflow,
-					expanded: options.context.expanded,
-					width,
-					theme: options.theme,
-				})),
-		...(options.stage === undefined
-			? []
-			: renderReference({
-					label: "Stage",
-					reference: options.stage,
-					expanded: options.context.expanded,
-					width,
-					theme: options.theme,
-				})),
-		...(options.content === undefined
-			? []
-			: renderWorkflowContent({
-					content: options.content,
-					expanded: options.context.expanded,
-					width,
-					theme: options.theme,
-				})),
-	]);
+	const workflowInTitle =
+		options.toolName === "workflow_activate" ||
+		options.toolName === "workflow_exit";
+	return new WorkflowRows((width) => {
+		let workflowRows: readonly string[] = [];
+		if (options.workflow !== undefined) {
+			workflowRows = workflowInTitle
+				? renderWorkflowDescription(
+						options.workflow.description,
+						options.context.expanded,
+						width,
+						options.theme,
+					)
+				: renderReference({
+						label: "Workflow",
+						reference: options.workflow,
+						expanded: options.context.expanded,
+						width,
+						theme: options.theme,
+					});
+		}
+		return [
+			renderToolName(
+				options.toolName,
+				width,
+				options.theme,
+				workflowInTitle ? options.workflow?.id : undefined,
+			),
+			...workflowRows,
+			...(options.stage === undefined
+				? []
+				: renderReference({
+						label: "Stage",
+						reference: options.stage,
+						expanded: options.context.expanded,
+						width,
+						theme: options.theme,
+					})),
+			...(options.content === undefined
+				? []
+				: renderWorkflowContent({
+						content: options.content,
+						expanded: options.context.expanded,
+						width,
+						theme: options.theme,
+					})),
+		];
+	});
 }
 
 /** Renders one workflow transition with bounded or complete endpoint sections. */
@@ -483,7 +505,12 @@ export function renderWorkflowTransitionCall(
 			presentation?.to ??
 			createOptionalReference(readInputString(args, "stageId"));
 		return [
-			renderToolName("workflow_transition", width, theme),
+			renderToolName(
+				"workflow_transition",
+				width,
+				theme,
+				presentation?.workflowId,
+			),
 			...(presentation?.from === undefined
 				? []
 				: renderReference({
@@ -647,6 +674,7 @@ function parseWorkflowReferencePresentation(
 function parseTransitionPresentation(
 	value: Record<string, unknown>,
 ): WorkflowTransitionPresentation | undefined {
+	const workflowId = value["workflowId"];
 	const from =
 		value["from"] === undefined ? undefined : parseReference(value["from"]);
 	const to = parseReference(value["to"]);
@@ -667,6 +695,7 @@ function parseTransitionPresentation(
 			? undefined
 			: parseReference(value["workflow"]);
 	if (
+		(workflowId !== undefined && !isNonEmptyString(workflowId)) ||
 		(value["from"] !== undefined && from === undefined) ||
 		to === undefined ||
 		(value["workflow"] !== undefined && workflow === undefined)
@@ -676,6 +705,7 @@ function parseTransitionPresentation(
 	return {
 		presentationKind: PRESENTATION_KIND,
 		toolName: "workflow_transition",
+		...(workflowId === undefined ? {} : { workflowId }),
 		...(from === undefined ? {} : { from }),
 		to,
 		...(ground === undefined ? {} : { ground }),
@@ -780,9 +810,40 @@ function readStagePresentation(
 	return presentation?.toolName === toolName ? presentation : undefined;
 }
 
-/** Renders one standalone bright workflow tool name. */
-function renderToolName(toolName: string, width: number, theme: Theme): string {
-	return theme.fg("toolTitle", theme.bold(sliceTextByWidth(toolName, width)));
+/** Renders a width-bounded bright tool title with an optional workflow ID. */
+function renderToolName(
+	toolName: string,
+	width: number,
+	theme: Theme,
+	workflowId?: string,
+): string {
+	const title =
+		workflowId === undefined ? toolName : `${toolName} · ${workflowId}`;
+	return theme.fg("toolTitle", theme.bold(sliceTextByWidth(title, width)));
+}
+
+/** Renders the workflow description below an identity-bearing tool title. */
+function renderWorkflowDescription(
+	description: string | undefined,
+	expanded: boolean,
+	width: number,
+	theme: Theme,
+): readonly string[] {
+	if (description === undefined) {
+		return [];
+	}
+	if (expanded) {
+		return new Text(theme.fg("toolOutput", description), 0, 0).render(width);
+	}
+	return new BoundedToolResult({
+		text: description,
+		theme,
+		isError: false,
+		expanded: false,
+		collapsedContentLineLimit: COLLAPSED_REFERENCE_CONTENT_LINE_LIMIT,
+		showHiddenLineHint: true,
+		showExpandedErrorLabel: false,
+	}).render(width);
 }
 
 interface StageAttributeRow {

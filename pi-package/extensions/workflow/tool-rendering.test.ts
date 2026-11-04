@@ -504,14 +504,14 @@ describe("workflow semantic tool rendering", () => {
 		expect(lines).toEqual(
 			expanded
 				? [
-						"workflow_transition",
+						"workflow_transition · unconditional",
 						"--- From ---",
 						"implementation · Implementation stage",
 						"--- To ---",
 						"review · Review stage",
 					]
 				: [
-						"workflow_transition",
+						"workflow_transition · unconditional",
 						"From: implementation · Implementation stage",
 						"To: review · Review stage",
 					],
@@ -636,7 +636,7 @@ describe("workflow semantic tool rendering", () => {
 		expect(lines).toEqual(
 			expanded
 				? [
-						"workflow_transition",
+						"workflow_transition · ground-choice",
 						"--- From ---",
 						"review · Review stage",
 						"--- To ---",
@@ -645,7 +645,7 @@ describe("workflow semantic tool rendering", () => {
 						`${selected.id} · ${selected.when}`,
 					]
 				: [
-						"workflow_transition",
+						"workflow_transition · ground-choice",
 						"From: review · Review stage",
 						"To: implementation · Implementation stage",
 						`Ground: ${selected.when}`,
@@ -731,13 +731,13 @@ describe("workflow semantic tool rendering", () => {
 			request,
 		);
 		expect(render(transition, false)).toEqual([
-			"workflow_transition",
+			"workflow_transition · bound",
 			"From: implementation · Implementation stage",
 			"To: review · Review stage",
 			"Nested workflow: check · Check process",
 		]);
 		expect(render(transition, true)).toEqual([
-			"workflow_transition",
+			"workflow_transition · bound",
 			"--- From ---",
 			"implementation · Implementation stage",
 			"--- To ---",
@@ -750,8 +750,8 @@ describe("workflow semantic tool rendering", () => {
 			allow: false,
 		});
 		expect(render(refusal, false)).toEqual([
-			"workflow_exit",
-			"Workflow: check · Check process",
+			"workflow_exit · check",
+			"Check process",
 			"Transition: review · refused",
 		]);
 		await executeTool(fixture, "workflow_transition", request);
@@ -760,9 +760,8 @@ describe("workflow semantic tool rendering", () => {
 			allow: true,
 		});
 		expect(render(permission, true)).toEqual([
-			"workflow_exit",
-			"--- Workflow ---",
-			"check · Check process",
+			"workflow_exit · check",
+			"Check process",
 			"--- Transition ---",
 			"review · allowed",
 		]);
@@ -780,7 +779,10 @@ describe("workflow semantic tool rendering", () => {
 			resolveSessionDefinition(fixture, "workflow_exit"),
 			execution,
 		);
-		expect(active.call.join("\n")).toContain("delivery");
+		expect(active.call).toEqual([
+			"workflow_exit · delivery",
+			"Delivery process",
+		]);
 		expect(active.result).toEqual([]);
 		expect(child).toEqual(active);
 		expect(execution.result.details).toMatchObject({
@@ -831,7 +833,7 @@ describe("workflow semantic tool rendering", () => {
 		);
 
 		expect(active).toEqual({
-			call: ["workflow_activate", "Workflow: delivery · Delivery process"],
+			call: ["workflow_activate · delivery", "Delivery process"],
 			result: [],
 		});
 		expect(session).toEqual(active);
@@ -842,7 +844,7 @@ describe("workflow semantic tool rendering", () => {
 
 	/**
 	 * Proves streaming arguments cannot freeze an empty workflow reference in renderer state.
-	 * Input and expected output: an incomplete empty ID followed by complete Coding renders Workflow: Coding.
+	 * Input and expected output: an incomplete empty ID followed by complete Coding renders workflow_activate · Coding.
 	 * Edge case: both render calls reuse the same tool-row state, matching Pi streaming behavior.
 	 * Dependencies: Pi ToolRenderContext.argsComplete and the workflow activation renderer.
 	 */
@@ -871,7 +873,7 @@ describe("workflow semantic tool rendering", () => {
 			.renderCall({ workflowId: "Coding" }, PLAIN_THEME, context)
 			.render(80)
 			.map((line) => line.trimEnd());
-		expect(completed).toEqual(["workflow_activate", "Workflow: Coding"]);
+		expect(completed).toEqual(["workflow_activate · Coding"]);
 	});
 
 	/**
@@ -1088,7 +1090,7 @@ describe("workflow semantic tool rendering", () => {
 			"<toolOutput>description: Styled delivery process</toolOutput>",
 		]);
 		expect(renderedTransition.call).toEqual([
-			"<toolTitle><bold>workflow_transition</bold></toolTitle>",
+			"<toolTitle><bold>workflow_transition · styled-delivery</bold></toolTitle>",
 			"<toolTitle><bold>From:</bold></toolTitle><toolOutput> implementation · Implementation stage</toolOutput>",
 			"<toolTitle><bold>To:</bold></toolTitle><toolOutput> review · Review stage</toolOutput>",
 		]);
@@ -1956,7 +1958,7 @@ describe("workflow semantic tool rendering", () => {
 
 		expect(active).toEqual({
 			call: [
-				"workflow_transition",
+				"workflow_transition · delivery",
 				"From: implementation · Implementation stage",
 				"To: review · Review stage",
 			],
@@ -1980,7 +1982,7 @@ describe("workflow semantic tool rendering", () => {
 		const componentText = stripVTControlCharacters(
 			component.render(100).join("\n"),
 		);
-		expect(componentText).toContain("workflow_transition");
+		expect(componentText).toContain("workflow_transition · delivery");
 		expect(componentText).toContain(
 			"From: implementation · Implementation stage",
 		);
@@ -2037,13 +2039,11 @@ describe("workflow semantic tool rendering", () => {
 		expect(sessionActivation).toEqual(activeActivation);
 		expect(sessionTransition).toEqual(activeTransition);
 		expect(activeActivation.call).toHaveLength(6);
-		expect(activeActivation.call[0]).toBe("workflow_activate");
-		expect(activeActivation.call[1]).toStartWith(
-			"Workflow: delivery · Delivery",
-		);
+		expect(activeActivation.call[0]).toBe("workflow_activate · delivery");
+		expect(activeActivation.call[1]).toStartWith("Delivery");
 		expect(activeActivation.call[5]).toMatch(HIDDEN_LINE_HINT);
 		expect(activeTransition.call).toHaveLength(11);
-		expect(activeTransition.call[0]).toBe("workflow_transition");
+		expect(activeTransition.call[0]).toBe("workflow_transition · delivery");
 		expect(activeTransition.call[1]).toStartWith("From: implementation ·");
 		expect(activeTransition.call[5]).toMatch(HIDDEN_LINE_HINT);
 		expect(activeTransition.call[6]).toStartWith("To: review · Review stage");
@@ -2093,17 +2093,13 @@ describe("workflow semantic tool rendering", () => {
 		);
 
 		expect(activeActivation).toEqual({
-			call: [
-				"workflow_activate",
-				"--- Workflow ---",
-				"delivery · Delivery process",
-			],
+			call: ["workflow_activate · delivery", "Delivery process"],
 			result: [],
 		});
 		expect(sessionActivation).toEqual(activeActivation);
 		expect(activeTransition).toEqual({
 			call: [
-				"workflow_transition",
+				"workflow_transition · delivery",
 				"--- From ---",
 				"implementation · Implementation stage",
 				"--- To ---",
@@ -2139,7 +2135,7 @@ describe("workflow semantic tool rendering", () => {
 		);
 
 		expect(rendered.call).toEqual([
-			"<toolTitle><bold>workflow_transition</bold></toolTitle>",
+			"<toolTitle><bold>workflow_transition · delivery</bold></toolTitle>",
 			"<toolTitle><bold>From:</bold></toolTitle><toolOutput> implementation · Implementation stage</toolOutput>",
 			"<toolTitle><bold>To:</bold></toolTitle><toolOutput> implementation · Implementation stage</toolOutput>",
 		]);

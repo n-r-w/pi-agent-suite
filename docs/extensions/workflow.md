@@ -347,7 +347,11 @@ Creation, activation, stage editing, transition, session start, and branch chang
 
 ## Tool presentation
 
-The default Pi tool shell renders workflow references instead of displaying internal success JSON. While `workflow_create` arguments stream, each received type-compatible `kind`, `nested`, `description`, `prompt`, `stages`, or `transitions` field appears as YAML. The initial stage row appears as soon as its stage data arrives. Collapsed mode shows up to three visual YAML lines after the separate `Content:` label. When more YAML lines exist, the standard hint reports the hidden line count and the configured `app.tools.expand` binding:
+The default Pi tool shell renders workflow references instead of displaying internal success JSON.
+
+The `workflow_activate`, `workflow_transition`, and `workflow_exit` headers include the workflow ID, for example `workflow_transition · HandleDeviation`. Activation and exit show the workflow description below the header without repeating the ID or a `Workflow:` label. The transition header identifies the workflow whose stages contain the transition, even when that transition starts a nested workflow.
+
+While `workflow_create` arguments stream, each received type-compatible `kind`, `nested`, `description`, `prompt`, `stages`, or `transitions` field appears as YAML. The initial stage row appears as soon as its stage data arrives. Collapsed mode shows up to three visual YAML lines after the separate `Content:` label. When more YAML lines exist, the standard hint reports the hidden line count and the configured `app.tools.expand` binding:
 
 ```text
 workflow_create
@@ -359,8 +363,8 @@ prompt: Follow the approved scope.
 stages:
 ... (18 more lines, 21 total, ctrl+o to expand)
 
-workflow_activate
-Workflow: delivery · Software delivery
+workflow_activate · delivery
+Software delivery
 
 workflow_get_stage: implementation
 Description: Implement the approved change
@@ -375,7 +379,7 @@ Goal: The implementation passes the required checks -> The corrected implementat
 Prompt: Implement and test the change -> Follow the corrected requirements.
 Thinking: medium -> high
 
-workflow_transition
+workflow_transition · delivery
 From: implementation · Implement the approved change
 To: review · Review the implementation
 ```
@@ -453,7 +457,7 @@ Expanded mode shows the selected ID, ` · `, and condition:
 finding_needs_uncovered_units · A finding needs units that inspection did not cover.
 ```
 
-The extension captures the selected ID and validated `when` text from the matching source-to-target transition before execution changes the route; for a call without `ground` to a transition with one ground, it captures that ground. It saves this pair with the endpoints in tool-result `details`. During replay, the renderer reads these saved values on the first render, even when the source workflow is inactive or its definition has changed. Main and subagent screens use one shared renderer; neither screen has a separate copy of the transition rendering logic.
+The extension captures the selected ID and validated `when` text from the matching source-to-target transition before execution changes the route; for a call without `ground` to a transition with one ground, it captures that ground. It saves this pair, the endpoints, and the ID of the workflow that owns the transition in tool-result `details`. During replay, the renderer reads these saved values on the first render, even when the source workflow is inactive or its definition has changed. Main and subagent screens use one shared renderer; neither screen has a separate copy of the transition rendering logic.
 
 For unconditional transitions, including every format-1 transition, the renderer omits `Ground`. When saved presentation metadata has no ground, the renderer retains the saved `From` and `To` display. It neither reconstructs a ground from workflow history nor displays a ground ID without condition text. Each ground in a validated definition requires an ID and non-empty `when` text. Only the earlier tool-result presentation metadata omitted the selected ground. Workflow-state transition records remain separate: each contains `journalVersion: 2`, `kind: "transitioned"`, and the updated `route`.
 
@@ -464,12 +468,12 @@ The renderer shows at most four visual lines for `Ground`, independently of the 
 For a transition bound to a nested workflow, the extension appends `Nested workflow` with the ID and description of this workflow. The exit of such a workflow appends `Transition` with the requested stage and the outcome:
 
 ```text
-workflow_transition
+workflow_transition · delivery
 From: implementation · Implementation stage
 To: review · Review stage
 Nested workflow: stage-check · Check the stage result
-workflow_exit
-Workflow: stage-check · Check the stage result
+workflow_exit · stage-check
+Check the stage result
 Transition: review · allowed
 ```
 
