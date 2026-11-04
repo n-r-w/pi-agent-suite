@@ -155,15 +155,38 @@ export class WorkflowJournal {
 			(item) => !hasVisibleWorkflowGraph(item, projectedEntries),
 		);
 		const includesGraph = missingGraphs.includes(state);
+		const waiting = chain.slice(0, -1).flatMap((item) => {
+			const waitingStage = requireCurrentStage(item);
+			const stageKey = getStageKey(item, waitingStage);
+			const includesStage = !this.knownStages.has(stageKey);
+			const includesWaitingGraph = missingGraphs.includes(item);
+			return includesStage || includesWaitingGraph
+				? [
+						{
+							content: renderWaitingWorkflow(
+								item,
+								waitingStage,
+								includesWaitingGraph,
+								includesStage,
+							),
+							stageKey: includesStage ? stageKey : undefined,
+						},
+					]
+				: [];
+		});
+		const waitingStageKeys = waiting.flatMap(({ stageKey }) =>
+			stageKey === undefined ? [] : [stageKey],
+		);
+		for (const waitingKey of waitingStageKeys) {
+			this.knownStages.add(waitingKey);
+		}
 		const key = getStageKey(state, stage);
 		const guidelines = this.knownStages.has(key) ? "reuse" : "inline";
 		this.knownStages.add(key);
 		this.setCurrentState(chain);
 		this.publishRecord(
 			[
-				...missingGraphs
-					.filter((item) => item !== state)
-					.map(renderWaitingWorkflow),
+				...waiting.map(({ content }) => content),
 				renderWorkflowCheckpoint(state, stage, includesGraph, guidelines),
 			].join("\n"),
 			"checkpoint",
@@ -173,6 +196,7 @@ export class WorkflowJournal {
 				...describeStageRules(key, guidelines),
 				includesGraph,
 				graphWorkflowIds: missingGraphs.map(({ workflow }) => workflow.id),
+				...(waitingStageKeys.length === 0 ? {} : { waitingStageKeys }),
 				...(triggerTurn === undefined ? {} : { triggerTurn }),
 			},
 		);
@@ -272,6 +296,14 @@ export class WorkflowJournal {
 		const key = details["stageKey"];
 		if (typeof key === "string") {
 			this.knownStages.add(key);
+		}
+		const waitingKeys = details["waitingStageKeys"];
+		if (Array.isArray(waitingKeys)) {
+			for (const waitingKey of waitingKeys) {
+				if (typeof waitingKey === "string") {
+					this.knownStages.add(waitingKey);
+				}
+			}
 		}
 		this.currentChainRevision = revision;
 	}
@@ -589,12 +621,33 @@ export function hasVisibleWorkflowGraph(
 	});
 }
 
-/** Renders waiting definitions without making their stages active. */
-function renderWaitingWorkflow(state: WorkflowState): string {
+/** Renders a waiting workflow with the parts that no visible record shows: its shared rules and graph, and the goal and rules of the stage at which it waits. */
+function renderWaitingWorkflow(
+	state: WorkflowState,
+	stage: WorkflowStage,
+	includesGraph: boolean,
+	includesStage: boolean,
+): string {
 	return [
-		`<workflow_waiting id="${escapeXml(state.workflow.id)}" stage_id="${escapeXml(state.route.at(-1) ?? "")}">`,
-		...renderOptionalGuidelines(state.workflow.prompt, "guidelines", "  "),
-		...renderWorkflowGraph(state.workflow),
+		`<workflow_waiting id="${escapeXml(state.workflow.id)}" stage_id="${escapeXml(stage.id)}">`,
+		...(includesGraph
+			? [
+					...renderOptionalGuidelines(
+						state.workflow.prompt,
+						"guidelines",
+						"  ",
+					),
+					...renderWorkflowGraph(state.workflow),
+				]
+			: []),
+		...(includesStage
+			? [
+					...renderOptionalGuidelines(stage.goal, "stage_goal", "  "),
+					"  <waiting_stage_guidelines>",
+					escapeXml(stage.prompt),
+					"  </waiting_stage_guidelines>",
+				]
+			: []),
 		"</workflow_waiting>",
 	].join("\n");
 }

@@ -95,8 +95,34 @@ test("chain revision detects waiting parent edits and checkpoints retain all def
 		currentStageId: "start",
 		graphWorkflowIds: ["parent", "child"],
 	});
+	const resumed = capture();
+	resumed.journal.restore(
+		projectBranch(
+			restored.records.map((record) => ({ type: "custom_message", ...record })),
+		),
+	);
 	restored.journal.enterStage([changed]);
-	expect(restored.records.at(-1)?.details["guidelines"]).toBe("inline");
+	expect(restored.records.at(-1)?.details["guidelines"]).toBe("reuse");
+	resumed.journal.enterStage([changed]);
+	expect(resumed.records.at(-1)?.details["guidelines"]).toBe("reuse");
+});
+
+test("checkpoint shows the stage rules of a waiting workflow only when no visible record shows them", () => {
+	const { journal, records } = capture();
+	const parent = state("parent");
+	const child = state("child", true);
+	journal.activate([parent]);
+	journal.activate([parent, child]);
+	journal.checkpoint(
+		[parent, child],
+		projectBranch(
+			records.map((record) => ({ type: "custom_message", ...record })),
+		),
+	);
+	expect(records.at(-1)?.details["waitingStageKeys"]).toBeUndefined();
+	journal.restore([]);
+	journal.checkpoint([parent, child]);
+	expect(records.at(-1)?.details["waitingStageKeys"]).toHaveLength(1);
 });
 
 test("activation options deliver nested markers before first start and deduplicate unchanged options", () => {
