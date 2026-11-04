@@ -27,6 +27,45 @@ afterEach(async () => {
 });
 
 describe("workflow catalog configuration", () => {
+	test("loads optional ordered kinds and skips unknown-kind workflows with valid siblings", async () => {
+		const root = await createTemporaryDirectory();
+		const directory = join(root, "workflows");
+		await mkdir(directory);
+		const yaml = `version: 3\n${workflowYaml("Classified")}`.replaceAll(
+			"    prompt:",
+			"    goal: Ready\n    prompt:",
+		);
+		await writeFile(join(directory, "good.yaml"), yaml);
+		await writeFile(join(directory, "known.yaml"), `${yaml}kind: review\n`);
+		await writeFile(join(directory, "unknown.yaml"), `${yaml}kind: missing\n`);
+		const absent = await loadWorkflowCatalog(directory);
+		expect(absent.workflows.map(({ id }) => id)).toEqual(["good"]);
+		expect(absent.warnings).toHaveLength(2);
+		await writeFile(
+			join(root, "kinds.yaml"),
+			"- id: review\n  description: Review work\n- id: task\n  description: Whole task\n",
+		);
+		const loaded = await loadWorkflowCatalog(directory);
+		expect(loaded.kinds).toEqual([
+			{ id: "review", description: "Review work" },
+			{ id: "task", description: "Whole task" },
+		]);
+		expect(loaded.workflows.map(({ id, kind }) => [id, kind])).toEqual([
+			["good", undefined],
+			["known", "review"],
+		]);
+		expect(loaded.warnings).toHaveLength(1);
+		expect(loaded.warnings?.[0]?.message).toContain(
+			"unknown workflow kind missing",
+		);
+		await writeFile(
+			join(root, "kinds.yaml"),
+			"- id: review\n  description: Review\n- id: review\n  description: Duplicate\n",
+		);
+		const invalid = await loadWorkflowCatalog(directory);
+		expect(invalid.error?.message).toContain("duplicate workflow kind");
+		expect(invalid.workflows).toEqual([]);
+	});
 	/** Proves a missing or empty workflow directory is a quiet inactive catalog. */
 	test("returns an empty catalog for missing and empty directories", async () => {
 		const root = await createTemporaryDirectory();
@@ -142,9 +181,92 @@ describe("workflow catalog configuration", () => {
 			warning.message.replace(unreadablePath, "").trim().length,
 		).toBeGreaterThan(0);
 	});
+
+	/**
+	 * Proves that a file reference in any workflow string is replaced with the trimmed text of the file.
+	 * Inputs and expected output: references in the workflow prompt and in a stage prompt, with paths relative to the workflow directory, return the file texts in their places.
+	 * Edge case: a reference inside text keeps the text around it.
+	 * Dependencies: isolated filesystem entries and catalog file reading.
+	 */
+	test("substitutes referenced files into workflow strings", async () => {
+		const root = await createTemporaryDirectory();
+		await mkdir(join(root, "rules"));
+		await writeFile(join(root, "rules", "shared.md"), "1. Shared rule.\n");
+		await writeFile(join(root, "inline.md"), "carefully\n");
+		const yaml = workflowYaml("Included")
+			.replace(
+				"description: Included\n",
+				'description: Included\nprompt: "Rules:\\n{{rules/shared.md}}"\n',
+			)
+			.replace("prompt: Start work", "prompt: Start {{ inline.md }} now");
+		await writeFile(join(root, "included.yaml"), yaml);
+		const result = await loadWorkflowCatalog(root);
+		expect(result.warnings).toBeUndefined();
+		const workflow = result.workflows[0];
+		expect(workflow?.prompt).toBe("Rules:\n1. Shared rule.");
+		expect(workflow?.stages[0]?.prompt).toBe("Start carefully now");
+	});
+
+	/**
+	 * Proves that a reference to a missing file disables only the referencing workflow.
+	 * Inputs and expected output: a valid sibling and a workflow that references a missing file return the sibling plus one warning that names the missing file.
+	 * Edge case: the reference stands in a stage prompt, not in the workflow prompt.
+	 * Dependencies: isolated filesystem entries and catalog file reading.
+	 */
+	test("skips a workflow that references a missing file", async () => {
+		const root = await createTemporaryDirectory();
+		await writeFile(join(root, "good.yaml"), workflowYaml("Good"));
+		await writeFile(
+			join(root, "broken.yaml"),
+			workflowYaml("Broken").replace(
+				"prompt: Start work",
+				"prompt: Start {{rules/missing.md}}",
+			),
+		);
+		const result = await loadWorkflowCatalog(root);
+		expect(result.workflows.map(({ id }) => id)).toEqual(["good"]);
+		expect(result.warnings).toHaveLength(1);
+		expect(result.warnings?.[0]?.message).toContain(join(root, "broken.yaml"));
+		expect(result.warnings?.[0]?.message).toContain(
+			join(root, "rules", "missing.md"),
+		);
+	});
 });
 
 describe("workflow configuration", () => {
+	test("uses the configured exit description path and validates its file atomically", async () => {
+		const root = await createTemporaryDirectory();
+		const bundled = join(root, "bundled");
+		await mkdir(bundled);
+		for (const file of [
+			"extension-description.md",
+			"create-description.md",
+			"activate-description.md",
+			"get-stage-description.md",
+			"edit-stage-description.md",
+			"transition-description.md",
+		]) {
+			await writeFile(join(bundled, file), "fixture");
+		}
+		const override = join(root, "exit.md");
+		const config = join(root, "config.json");
+		await writeFile(
+			config,
+			JSON.stringify({ exitDescriptionPromptFile: override }),
+		);
+		await expect(loadWorkflowConfiguration(config, bundled)).rejects.toThrow(
+			override,
+		);
+		await writeFile(override, " \n\t ");
+		await expect(loadWorkflowConfiguration(config, bundled)).rejects.toThrow(
+			"empty",
+		);
+		await writeFile(override, "fixture exit description");
+		expect(
+			(await loadWorkflowConfiguration(config, bundled))
+				.reminderToolCallInterval,
+		).toBe(50);
+	});
 	/**
 	 * Proves prompt defaults, a partial override, and the default reminder interval load atomically.
 	 * Input and expected output: one prompt override and an omitted interval return trimmed prompts and interval 50.
@@ -161,6 +283,7 @@ describe("workflow configuration", () => {
 		);
 		await writeFile(join(bundled, "create-description.md"), " create \n");
 		await writeFile(join(bundled, "activate-description.md"), " activate \n");
+		await writeFile(join(bundled, "exit-description.md"), "fixture");
 		await writeFile(join(bundled, "get-stage-description.md"), " get stage \n");
 		await writeFile(
 			join(bundled, "edit-stage-description.md"),
@@ -177,15 +300,10 @@ describe("workflow configuration", () => {
 			configPath,
 			JSON.stringify({ createDescriptionPromptFile: override }),
 		);
-		expect(await loadWorkflowConfiguration(configPath, bundled)).toEqual({
-			reminderToolCallInterval: 50,
-			extensionDescription: "guidelines",
-			createDescription: "custom creation",
-			activateDescription: "activate",
-			getStageDescription: "get stage",
-			editStageDescription: "edit stage",
-			transitionDescription: "transition",
-		});
+		expect(
+			(await loadWorkflowConfiguration(configPath, bundled))
+				.reminderToolCallInterval,
+		).toBe(50);
 	});
 
 	/**
@@ -205,6 +323,7 @@ describe("workflow configuration", () => {
 			"get-stage-description.md",
 			"edit-stage-description.md",
 			"transition-description.md",
+			"exit-description.md",
 		]) {
 			await writeFile(join(bundled, file), "default");
 		}

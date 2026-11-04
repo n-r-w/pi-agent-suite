@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="590" viewBox="0 0 1200 590" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Pi Agent Suite overview: a workflow controls the agent from above, the task enters from the left, the result leaves to the right, and subagents, independent checks, and context projection support the agent from below</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="ctl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="588" rx="24" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+
+  <!-- Control: workflow -->
+  <rect x="400" y="24" width="400" height="100" rx="16" fill="#f0fdfa" stroke="#0f766e" stroke-width="2.5"/>
+  <text x="420" y="52" font-size="13" font-weight="700" letter-spacing="2" fill="#0f766e">WORKFLOW</text>
+  <text x="530" y="52" font-size="13" fill="#334155">a graph of stages, can nest</text>
+  <g font-size="12" text-anchor="middle">
+    <rect x="415" y="74" width="76" height="28" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/><text x="453" y="92" fill="#0f172a">Understand</text>
+    <rect x="513" y="74" width="76" height="28" rx="8" fill="#0f766e"/><text x="551" y="92" fill="#ffffff" font-weight="700">Plan</text>
+    <rect x="611" y="74" width="76" height="28" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/><text x="649" y="92" fill="#0f172a">Implement</text>
+    <rect x="709" y="74" width="76" height="28" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/><text x="747" y="92" fill="#0f172a">Verify</text>
+  </g>
+  <g stroke="#0f766e" stroke-width="1.5" marker-end="url(#ctl)">
+    <line x1="494" y1="88" x2="509" y2="88"/>
+    <line x1="592" y1="88" x2="607" y2="88"/>
+    <line x1="690" y1="88" x2="705" y2="88"/>
+  </g>
+  <line x1="600" y1="126" x2="600" y2="186" stroke="#0f766e" stroke-width="3" marker-end="url(#ctl)"/>
+  <text x="614" y="152" font-size="14" font-weight="700" fill="#0f766e">controls the agent:</text>
+  <text x="614" y="172" font-size="14" fill="#0f766e">the active stage sets its goal, rules, and model</text>
+
+  <!-- Agent -->
+  <rect x="430" y="190" width="340" height="100" rx="16" fill="#ffffff" stroke="#4f46e5" stroke-width="3"/>
+  <text x="450" y="218" font-size="13" font-weight="700" letter-spacing="2" fill="#4f46e5">MAIN AGENT</text>
+  <text x="450" y="250" font-size="22" font-weight="700" fill="#0f172a">Coder</text>
+  <text x="450" y="276" font-size="14" fill="#475569">or another main agent, picked with <tspan font-family="ui-monospace, Menlo, Consolas, monospace">/agent</tspan></text>
+
+  <!-- Input and output -->
+  <rect x="40" y="218" width="96" height="44" rx="22" fill="#0f172a"/>
+  <text x="88" y="246" text-anchor="middle" font-size="17" font-weight="700" fill="#ffffff">You</text>
+  <line x1="138" y1="240" x2="426" y2="240" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="282" y="228" text-anchor="middle" font-size="14" fill="#334155">task</text>
+  <line x1="772" y1="240" x2="1110" y2="240" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="940" y="228" text-anchor="middle" font-size="14" fill="#334155">result</text>
+
+  <!-- Mechanisms -->
+  <g fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M310,374 V336 H480 V294"/>
+    <path d="M680,374 V294"/>
+    <path d="M970,374 V336 H720 V294"/>
+  </g>
+  <text x="790" y="330" font-size="13" fill="#475569">used by the agent</text>
+
+  <rect x="120" y="376" width="380" height="110" rx="16" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="140" y="402" font-size="13" font-weight="700" letter-spacing="2" fill="#4f46e5">SUBAGENTS · IN PARALLEL</text>
+  <g fill="#ccfbf1" stroke="#0f766e" stroke-width="1">
+    <rect x="215" y="414" width="30" height="10" rx="3"/>
+    <rect x="375" y="414" width="30" height="10" rx="3"/>
+  </g>
+  <g stroke="#0f766e" stroke-width="1.5" marker-end="url(#ctl)">
+    <line x1="230" y1="425" x2="230" y2="436"/>
+    <line x1="390" y1="425" x2="390" y2="436"/>
+  </g>
+  <g font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">
+    <rect x="165" y="440" width="130" height="34" rx="9" fill="#ffffff" stroke="#4f46e5" stroke-width="1.5"/><text x="230" y="462">Analyst</text>
+    <rect x="325" y="440" width="130" height="34" rx="9" fill="#ffffff" stroke="#4f46e5" stroke-width="1.5"/><text x="390" y="462">Extractor</text>
+  </g>
+
+  <rect x="530" y="376" width="300" height="110" rx="16" fill="#f0f9ff" stroke="#0369a1" stroke-width="2"/>
+  <text x="550" y="402" font-size="13" font-weight="700" letter-spacing="2" fill="#0369a1">INDEPENDENT CHECK</text>
+  <g font-size="13" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a" text-anchor="middle">
+    <rect x="546" y="440" width="132" height="34" rx="9" fill="#ffffff" stroke="#0369a1" stroke-width="1.5"/><text x="612" y="462">consult_advisor</text>
+    <rect x="688" y="440" width="132" height="34" rx="9" fill="#ffffff" stroke="#0369a1" stroke-width="1.5"/><text x="754" y="462">convene_council</text>
+  </g>
+
+  <rect x="860" y="376" width="300" height="110" rx="16" fill="#fffbeb" stroke="#b45309" stroke-width="2"/>
+  <text x="880" y="402" font-size="13" font-weight="700" letter-spacing="2" fill="#b45309">CONTEXT PROJECTION</text>
+  <text x="880" y="440" font-size="14" fill="#0f172a">shrinks old large tool results</text>
+  <text x="880" y="462" font-size="14" fill="#0f172a">as the context window fills</text>
+
+  <!-- Recursion note -->
+  <text x="600" y="530" text-anchor="middle" font-size="15" fill="#0f172a">Each subagent has the same shape: its own workflow controls it, and it can call</text>
+  <text x="600" y="554" text-anchor="middle" font-size="15" fill="#0f172a">subagents and independent checks. Context projection works in its session too.</text>
+</svg>

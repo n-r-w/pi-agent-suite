@@ -559,7 +559,7 @@ describe("management screen", () => {
 			...fixture.source.getView(),
 			revision: fixture.source.getView().revision + 1,
 			selectedWorkflowStatus: {
-				workflowId: "TestWorkflow",
+				workflowId: "SubagentAnalysis➡QualityCheck",
 				stageDescription: "Active stage",
 			},
 		});
@@ -569,7 +569,9 @@ describe("management screen", () => {
 		const workflowRow = rows[4] ?? "";
 		const dividerRow = rows[5] ?? "";
 		expect({
-			workflowHasContent: workflowRow.includes("Workflow:"),
+			workflowHasContent: stripVTControlCharacters(workflowRow).includes(
+				"Workflow: SubagentAnalysis➡QualityCheck · Active stage",
+			),
 			workflowHasDividerBorder:
 				workflowRow.includes("├") || workflowRow.includes("─┤"),
 			dividerHasBorder: dividerRow.includes("├") && dividerRow.includes("─┤"),

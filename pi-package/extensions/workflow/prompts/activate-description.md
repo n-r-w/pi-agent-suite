@@ -1,2 +1,1 @@
-Activate a ready-made workflow listed in `<workflow_activation_options>` only when it applies to the user's task.
-Activation replaces current workflow state.
+Activate a workflow listed in `<workflow_activation_options>` only when it applies to the user's task. When you know at one moment several items that each match the description of one workflow, for example three claims that need a check, start this workflow once for all of them. A running workflow, active or waiting, does not start again until it ends, so add a new item that matches its description to its current run, or handle the item after the run ends.

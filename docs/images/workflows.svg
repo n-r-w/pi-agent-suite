@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>The Coding workflow of the demo configuration as one graph: Research starts on entry into Understand, ResultCheck checks the move from Plan to Implement, and rework edges lead back</title>
+  <defs>
+    <marker id="adv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+    <marker id="nest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+    <marker id="chk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+    <marker id="amb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="678" rx="24" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+
+  <text x="40" y="48" font-size="21" font-weight="700" fill="#0f172a">A workflow is one graph, and its levels of nesting set how complex the process is</text>
+  <text x="40" y="76" font-size="16" fill="#475569">The <tspan font-family="ui-monospace, Menlo, Consolas, monospace">Coding</tspan> workflow of the demo configuration. Stages hold the rules, transitions hold the conditions.</text>
+  <text x="40" y="100" font-size="16" fill="#475569">The agent works in one stage at a time. When a nested graph exits, the agent continues in the parent stage.</text>
+
+  <g font-size="13" font-weight="700" letter-spacing="2" fill="#64748b">
+    <text x="40" y="208">LEVEL 1</text>
+    <text x="40" y="380">LEVEL 2</text>
+  </g>
+
+  <!-- Level 1: Coding -->
+  <rect x="150" y="116" width="1010" height="172" rx="16" fill="#f0fdfa" stroke="#0f766e" stroke-width="2"/>
+  <text x="166" y="140" font-size="15" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f766e">Coding</text>
+  <g font-size="14" fill="#0f172a" text-anchor="middle">
+    <rect x="190" y="180" width="130" height="44" rx="12" fill="#ccfbf1" stroke="#0f766e" stroke-width="3"/>
+    <text x="255" y="207">Understand</text>
+    <rect x="420" y="180" width="130" height="44" rx="12" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+    <text x="485" y="207">Plan</text>
+    <rect x="650" y="180" width="130" height="44" rx="12" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+    <text x="715" y="207">Implement</text>
+    <rect x="880" y="180" width="130" height="44" rx="12" fill="#ffffff" stroke="#0f766e" stroke-width="3"/>
+    <text x="945" y="207">Verify</text>
+  </g>
+  <text x="1022" y="207" font-size="12" font-weight="700" fill="#64748b">final</text>
+  <text x="485" y="244" text-anchor="middle" font-size="12" fill="#475569">you approve the plan</text>
+
+  <line x1="321" y1="202" x2="416" y2="202" stroke="#0f766e" stroke-width="2" marker-end="url(#adv)"/>
+  <line x1="551" y1="202" x2="646" y2="202" stroke="#0f766e" stroke-width="3" marker-end="url(#chk)"/>
+  <line x1="781" y1="202" x2="876" y2="202" stroke="#0f766e" stroke-width="2" marker-end="url(#adv)"/>
+
+  <g fill="none" stroke="#0f766e" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#amb)">
+    <path d="M475,178 C475,146 265,146 265,176"/>
+    <path d="M705,178 C705,146 495,146 495,176"/>
+    <path d="M935,178 C935,146 725,146 725,176"/>
+  </g>
+  <g font-size="13" fill="#0f766e" text-anchor="middle">
+    <text x="370" y="144">task changed</text>
+    <text x="600" y="144">plan problem</text>
+    <text x="830" y="144">fixes needed</text>
+  </g>
+
+  <!-- Level 2: Research, stage workflow of Understand -->
+  <rect x="150" y="320" width="410" height="110" rx="16" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+  <text x="166" y="380" font-size="15" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f766e">Research</text>
+  <g font-size="13" fill="#0f172a" text-anchor="middle">
+    <rect x="252" y="358" width="88" height="36" rx="9" fill="#f0fdfa" stroke="#99f6e4" stroke-width="1.5"/><text x="296" y="381">List topics</text>
+    <rect x="370" y="358" width="66" height="36" rx="9" fill="#f0fdfa" stroke="#99f6e4" stroke-width="1.5"/><text x="403" y="381">Study</text>
+    <rect x="470" y="332" width="80" height="32" rx="9" fill="#f0fdfa" stroke="#99f6e4" stroke-width="1.5"/><text x="510" y="353">Answered</text>
+    <rect x="470" y="388" width="80" height="32" rx="9" fill="#f0fdfa" stroke="#99f6e4" stroke-width="1.5"/><text x="510" y="409">Ask user</text>
+  </g>
+  <g stroke="#0f766e" stroke-width="2" fill="none" marker-end="url(#nest)">
+    <line x1="342" y1="376" x2="366" y2="376"/>
+    <path d="M438,370 C452,370 452,348 466,348"/>
+    <path d="M438,382 C452,382 452,404 466,404"/>
+  </g>
+  <line x1="240" y1="226" x2="240" y2="316" stroke="#0f766e" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#nest)"/>
+  <line x1="270" y1="318" x2="270" y2="228" stroke="#0f766e" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#nest)"/>
+  <text x="284" y="306" font-size="13" fill="#0f766e">starts on entry into Understand</text>
+
+  <!-- Level 2: ResultCheck, check of the transition Plan -> Implement -->
+  <rect x="580" y="320" width="580" height="110" rx="16" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+  <text x="600" y="380" font-size="15" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f766e">ResultCheck</text>
+  <g font-size="13" fill="#0f172a" text-anchor="middle">
+    <rect x="780" y="358" width="120" height="36" rx="9" fill="#f0fdfa" stroke="#99f6e4" stroke-width="1.5"/><text x="840" y="381">Check</text>
+    <rect x="930" y="358" width="120" height="36" rx="9" fill="#f0fdfa" stroke="#99f6e4" stroke-width="1.5"/><text x="990" y="381">Decide</text>
+  </g>
+  <line x1="901" y1="376" x2="926" y2="376" stroke="#0f766e" stroke-width="2" marker-end="url(#chk)"/>
+  <line x1="592" y1="206" x2="592" y2="316" stroke="#0f766e" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#chk)"/>
+  <line x1="618" y1="318" x2="618" y2="210" stroke="#0f766e" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#chk)"/>
+  <text x="632" y="306" font-size="13" fill="#0f766e">the move to Implement happens only on exit with allow: true</text>
+
+  <text x="600" y="468" text-anchor="middle" font-size="15" fill="#334155">A nested workflow can start its own nested workflows, so a process can have more levels.</text>
+
+  <!-- Stage card -->
+  <rect x="40" y="500" width="550" height="146" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="64" y="530" font-size="13" font-weight="700" letter-spacing="2" fill="#0f766e">STAGE = NODE</text>
+  <g font-size="14">
+    <text x="64" y="558" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">goal</text>
+    <text x="170" y="558" fill="#334155">the state that must hold when the stage ends</text>
+    <text x="64" y="584" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">prompt</text>
+    <text x="170" y="584" fill="#334155">rules and instructions of this step</text>
+    <text x="64" y="610" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">model</text>
+    <text x="170" y="610" fill="#334155">its own model and thinking level</text>
+    <text x="64" y="636" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">workflow</text>
+    <text x="170" y="636" fill="#334155">a nested graph that starts on entry</text>
+  </g>
+
+  <!-- Transition card -->
+  <rect x="610" y="500" width="550" height="146" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="634" y="530" font-size="13" font-weight="700" letter-spacing="2" fill="#0f766e">TRANSITION = EDGE</text>
+  <g font-size="14">
+    <text x="634" y="558" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">type</text>
+    <text x="740" y="558" fill="#334155">advance, or rework back to a visited stage</text>
+    <text x="634" y="584" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">grounds</text>
+    <text x="740" y="584" fill="#334155">when the agent may take it, such as "fixes needed"</text>
+    <text x="634" y="610" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">basis</text>
+    <text x="740" y="610" fill="#334155">facts that the agent states when it moves</text>
+    <text x="634" y="636" font-weight="700" font-family="ui-monospace, Menlo, Consolas, monospace" fill="#0f172a">workflow</text>
+    <text x="740" y="636" fill="#334155">a nested check that must exit with allow: true</text>
+  </g>
+</svg>

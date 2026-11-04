@@ -1,0 +1,49 @@
+version: 3
+nested: true
+description: Use when a task or a question depends on facts that you have not collected yet, for example how the code works now or what a document requires
+prompt: |-
+  1. The research goal is what the caller needs the facts for: the result of the stage that started this workflow, or an answer to the user.
+  2. Collect each fact from its source, for example code, documentation, or configuration. Do not rely on memory for a fact that a source can confirm.
+  3. Name the source location of each fact.
+  4. When the facts span many files, give their collection to `Extractor`. When a fact needs judgment, for example how two modules interact, give its analysis to `Analyst`.
+stages:
+  - id: list_topics
+    description: List the topics that the research goal depends on
+    goal: Each topic without which the research goal fails is listed with its source.
+    prompt: |-
+      1. List the topics that the research goal depends on, down to topics whose source is clear.
+      2. For a change, include each part of the system that the change affects or that sets requirements for the change.
+    initial: true
+  - id: study
+    description: Study each topic in its source
+    goal: Each topic is studied in its source, and each gap is answered from the sources or named as an open question for the user.
+    prompt: |-
+      1. Study each topic in its source. When the study finds a topic that the list lacks, add it to the list and study it too.
+      2. Find each gap: a topic on which the sources say nothing, say too little, or contradict each other.
+      3. When the sources answer a gap, use this answer. Otherwise, name the gap as an open question for the user.
+  - id: answered
+    description: Return the facts to the caller
+    goal: The facts that the research goal needs are summarized with their sources, and no question is open for the user.
+    prompt: Summarize the facts with their sources for the caller.
+    final: true
+  - id: ask_user
+    description: Ask the user the open questions
+    goal: The user got each open question with the facts that it depends on.
+    prompt: Ask each open question with what you found, the options, and your recommendation.
+    final: true
+transitions:
+  - from: list_topics
+    to: study
+    type: advance
+  - from: study
+    to: answered
+    type: advance
+    grounds:
+      - id: no_open_questions
+        when: No question is open for the user.
+  - from: study
+    to: ask_user
+    type: advance
+    grounds:
+      - id: open_questions
+        when: A question is open for the user.

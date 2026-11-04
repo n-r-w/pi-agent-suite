@@ -11,12 +11,12 @@ import {
 	isSingleLineText,
 	isTechnicalIdentifier,
 } from "../../shared/text-contracts";
+import { toWorkflowMatchKey } from "../../shared/workflow-policy";
 import type { WorkflowTrigger } from "../../shared/workflow-trigger-runtime";
 
 export type WorkflowTransitionType = "advance" | "rework";
 export type WorkflowStageStatus = "not_started" | "in_progress" | "completed";
 export type WorkflowSource = "catalog" | "dynamic";
-export type WorkflowStatus = "active" | "completed";
 
 /** Captures the runtime values that must be restored when a workflow completes. */
 export interface WorkflowRestorationSettings {
@@ -31,6 +31,7 @@ export interface WorkflowStage {
 	readonly prompt: string;
 	readonly goal?: string;
 	readonly triggers: readonly WorkflowTrigger[];
+	readonly workflow?: string;
 	readonly initial: boolean;
 	readonly final: boolean;
 	readonly model?: ModelSettings;
@@ -48,11 +49,20 @@ export interface WorkflowTransition {
 	readonly to: string;
 	readonly type: WorkflowTransitionType;
 	readonly grounds?: readonly WorkflowGround[];
+	readonly workflow?: string;
+}
+
+/** Keeps the checked parent request with the bound workflow that owns its permission. */
+export interface PendingWorkflowTransition {
+	readonly stageId: string;
+	readonly ground?: string;
 }
 
 /** A complete workflow definition accepted at a runtime boundary. */
 export interface WorkflowDefinition {
-	readonly version?: 2;
+	readonly version?: 2 | 3;
+	readonly nested?: boolean;
+	readonly kind?: string;
 	readonly id: string;
 	readonly description: string;
 	readonly prompt?: string;
@@ -66,19 +76,158 @@ export interface WorkflowState {
 	readonly source: WorkflowSource;
 	readonly workflow: WorkflowDefinition;
 	readonly route: readonly string[];
-	readonly status: WorkflowStatus;
 	readonly restoration?: WorkflowRestorationSettings;
+	readonly pendingTransition?: PendingWorkflowTransition;
 }
 
-/** Result of replaying workflow entries, including non-blocking legacy warnings. */
-export interface WorkflowStateReplayResult {
-	readonly state: WorkflowState | undefined;
+/** Orders running workflows from the root to the active top. */
+export type WorkflowChain<T = WorkflowState> = readonly T[];
+
+/** Selects the active workflow through the shared chain boundary. */
+export function getTopWorkflow<T>(chain: WorkflowChain<T>): T | undefined {
+	return chain.at(-1);
+}
+
+/** Adds one new workflow by its declared nesting rule after rejecting running identities. */
+export function addWorkflow(
+	chain: WorkflowChain,
+	state: WorkflowState,
+): WorkflowChain {
+	if (
+		chain.some(
+			({ workflow }) =>
+				toWorkflowMatchKey(workflow.id) ===
+				toWorkflowMatchKey(state.workflow.id),
+		)
+	) {
+		throw new Error(`workflow ${state.workflow.id} already runs in the chain`);
+	}
+	if (state.pendingTransition !== undefined) {
+		const parent = getTopWorkflow(chain);
+		if (
+			state.source !== "catalog" ||
+			state.workflow.nested !== true ||
+			parent === undefined
+		) {
+			throw new Error(
+				"pending transition requires a catalog nested workflow and a waiting parent",
+			);
+		}
+		const { stageId, ground } = state.pendingTransition;
+		transitionWorkflow(parent, stageId, ground);
+		const edge = getAvailableTransitions(parent).find(
+			({ to }) => to === stageId,
+		);
+		if (edge?.workflow !== state.workflow.id) {
+			throw new Error("pending transition must bind the started workflow");
+		}
+	}
+	return state.workflow.nested === true ? [...chain, state] : [state];
+}
+
+/** Removes the top and resolves its pending parent transition when permission is given. */
+export function exitWorkflow(
+	chain: WorkflowChain,
+	allow?: boolean,
+): WorkflowChain {
+	const top = getTopWorkflow(chain);
+	if (top === undefined) {
+		throw new Error("no workflow is active");
+	}
+	const remaining = chain.slice(0, -1);
+	if (top.pendingTransition === undefined) {
+		return remaining;
+	}
+	if (typeof allow !== "boolean") {
+		throw new Error("allow must be a boolean for a pending transition");
+	}
+	if (!allow) {
+		return remaining;
+	}
+	const parent = getTopWorkflow(remaining);
+	if (parent === undefined) {
+		throw new Error("pending transition has no waiting parent");
+	}
+	const { stageId, ground } = top.pendingTransition;
+	return [
+		...remaining.slice(0, -1),
+		transitionWorkflow(parent, stageId, ground),
+	];
+}
+
+/** Requires every catalog identity bound to a transition or a stage to name a workflow intended for nested execution. */
+export function validateWorkflowBindings(
+	workflow: WorkflowDefinition,
+	catalog: readonly WorkflowDefinition[],
+): void {
+	for (const binding of [
+		...workflow.transitions.map((edge) => edge.workflow),
+		...workflow.stages.map((stage) => stage.workflow),
+	]) {
+		if (binding !== undefined) {
+			const bound = findBoundWorkflow(binding, catalog);
+			if (bound.nested !== true) {
+				throw new Error(`bound workflow ${binding} must have nested: true`);
+			}
+		}
+	}
+}
+
+/** Returns the catalog workflow that a binding names, and rejects a binding whose workflow is absent from the catalog. */
+export function findBoundWorkflow(
+	binding: string,
+	catalog: readonly WorkflowDefinition[],
+): WorkflowDefinition {
+	const bound = catalog.find(
+		({ id }) => toWorkflowMatchKey(id) === toWorkflowMatchKey(binding),
+	);
+	if (bound === undefined) {
+		throw new Error(`bound workflow ${binding} does not exist in the catalog`);
+	}
+	return bound;
+}
+
+/** Returns the catalog workflow that the active stage of the top workflow starts on entry, if the stage names one. */
+export function findStageWorkflow(
+	chain: WorkflowChain,
+	catalog: readonly WorkflowDefinition[],
+): WorkflowDefinition | undefined {
+	const top = getTopWorkflow(chain);
+	const binding = top?.workflow.stages.find(
+		({ id }) => id === top.route.at(-1),
+	)?.workflow;
+	return binding === undefined
+		? undefined
+		: findBoundWorkflow(binding, catalog);
+}
+
+/** Rejects a chain whose entered stages would start a missing workflow or one that already runs in the chain. */
+export function validateStageWorkflowStarts(
+	chain: WorkflowChain,
+	catalog: readonly WorkflowDefinition[],
+): void {
+	let current = chain;
+	for (
+		let workflow = findStageWorkflow(current, catalog);
+		workflow !== undefined;
+		workflow = findStageWorkflow(current, catalog)
+	) {
+		current = addWorkflow(current, activateWorkflow(workflow));
+	}
+}
+
+/** Result of replaying workflow operations and the last empty-chain restoration. */
+export interface WorkflowChainReplayResult {
+	readonly chain: WorkflowChain;
+	readonly restoration: WorkflowRestorationSettings | undefined;
 	readonly warnings: readonly string[];
 }
 
 /** Accepted root fields of a catalog definition. */
 const ROOT_KEYS = new Set([
+	"kind",
 	"version",
+	"nested",
 	"description",
 	"prompt",
 	"model",
@@ -86,7 +235,9 @@ const ROOT_KEYS = new Set([
 	"transitions",
 ]);
 const CREATED_ROOT_KEYS = new Set([
+	"kind",
 	"id",
+	"nested",
 	"description",
 	"prompt",
 	"stages",
@@ -126,8 +277,11 @@ const SAVED_WORKFLOW_KEYS = new Set(["id", ...ROOT_KEYS]);
 const SAVED_DYNAMIC_WORKFLOW_KEYS = new Set([...CREATED_ROOT_KEYS, "version"]);
 const RESTORATION_KEYS = new Set(["modelId", "thinking"]);
 
+/** Definition format that permits nested execution. */
+const WORKFLOW_NESTED_FORMAT_VERSION = 3;
+
 /** Journal contract required by persisted workflow root snapshots. */
-export const WORKFLOW_STATE_JOURNAL_VERSION = 1;
+export const WORKFLOW_STATE_JOURNAL_VERSION = 2;
 
 /** Warning emitted when a workflow snapshot predates the current persisted state contract. */
 export const WORKFLOW_LEGACY_STATE_WARNING =
@@ -157,7 +311,7 @@ export function validateCreatedWorkflowDefinition(
 	try {
 		const root = requireObject(value, "workflow", CREATED_ROOT_KEYS);
 		const id = readSingleLineText(root, "id").normalize("NFC");
-		return parseWorkflowDefinition(id, { ...root, version: 2 }, "created");
+		return parseWorkflowDefinition(id, { ...root, version: 3 }, "created");
 	} catch (error) {
 		throw new Error(`${source}: ${errorMessage(error)}`);
 	}
@@ -182,7 +336,7 @@ function startWorkflow(
 	if (initial === undefined) {
 		throw new Error("validated workflow has no initial stage");
 	}
-	return { source, workflow, route: [initial.id], status: "active" };
+	return { source, workflow, route: [initial.id] };
 }
 
 /** Attaches the pre-workflow runtime snapshot before the activation is persisted. */
@@ -196,19 +350,16 @@ export function withWorkflowRestoration(
 	return { ...state, restoration };
 }
 
-/** Marks a final-stage workflow complete after runtime restoration has succeeded. */
-export function completeWorkflow(state: WorkflowState): WorkflowState {
-	if (state.status !== "active") {
-		throw new Error("workflow is already completed");
+/** Returns the ground that a transition call selects: the named ground, or the sole ground when the call names none. */
+export function findSelectedGround(
+	transition: WorkflowTransition,
+	groundId: string | undefined,
+): WorkflowGround | undefined {
+	const grounds = transition.grounds ?? [];
+	if (groundId === undefined) {
+		return grounds.length === 1 ? grounds[0] : undefined;
 	}
-	const activeStageId = state.route.at(-1);
-	const activeStage = state.workflow.stages.find(
-		({ id }) => id === activeStageId,
-	);
-	if (activeStage === undefined || !activeStage.final) {
-		throw new Error("only a final workflow stage can complete the workflow");
-	}
-	return { ...state, status: "completed" };
+	return grounds.find(({ id }) => id === groundId);
 }
 
 /** Applies one currently available transition without mutating the prior state. */
@@ -228,11 +379,12 @@ export function transitionWorkflow(
 			`transition to ${stageId} is not allowed; available transitions: ${available.length === 0 ? "none" : available.join(", ")}`,
 		);
 	}
-	const allowedGrounds = transition.grounds?.map(({ id }) => id) ?? [];
-	if (allowedGrounds.length > 0) {
-		if (ground === undefined || !allowedGrounds.includes(ground)) {
+	const grounds = transition.grounds ?? [];
+	if (grounds.length > 0) {
+		if (findSelectedGround(transition, ground) === undefined) {
+			const allowed = grounds.map(({ id, when }) => `- ${id}: ${when}`);
 			throw new Error(
-				`transition to ${stageId} requires a declared ground; allowed grounds: ${allowedGrounds.join(", ")}`,
+				`transition to ${stageId} requires a declared ground; allowed grounds:\n${allowed.join("\n")}`,
 			);
 		}
 	} else if (ground !== undefined) {
@@ -241,14 +393,12 @@ export function transitionWorkflow(
 	if (transition.type === "advance") {
 		return {
 			...state,
-			status: "active",
 			route: [...state.route, transition.to],
 		};
 	}
 	const targetIndex = state.route.lastIndexOf(transition.to);
 	return {
 		...state,
-		status: "active",
 		route: state.route.slice(0, targetIndex + 1),
 	};
 }
@@ -259,9 +409,6 @@ export function editWorkflowStage(
 	value: unknown,
 	source: string,
 ): WorkflowState {
-	if (state.status !== "active") {
-		throw new Error("no workflow is active");
-	}
 	if (state.source !== "dynamic") {
 		throw new Error(
 			"only workflows created through workflow_create can be inspected or edited",
@@ -323,7 +470,7 @@ export function getStageStatuses(
 	return new Map(
 		state.workflow.stages.map((stage) => [
 			stage.id,
-			deriveStageStatus(stage.id, activeStageId, routeIds, state.status),
+			deriveStageStatus(stage.id, activeStageId, routeIds),
 		]),
 	);
 }
@@ -333,9 +480,8 @@ function deriveStageStatus(
 	stageId: string,
 	activeStageId: string | undefined,
 	routeIds: ReadonlySet<string>,
-	workflowStatus: WorkflowStatus,
 ): WorkflowStageStatus {
-	if (stageId === activeStageId && workflowStatus === "active") {
+	if (stageId === activeStageId) {
 		return "in_progress";
 	}
 	if (routeIds.has(stageId)) {
@@ -359,20 +505,18 @@ export function getAvailableTransitions(
 	);
 }
 
-/** Reconstructs state from validated matching entries on the active branch. */
-export function replayWorkflowState(
+/** Reconstructs running workflows and restoration settings from the active branch. */
+export function replayWorkflowChain(
 	entries: readonly unknown[],
-): WorkflowState | undefined {
-	return replayWorkflowStateWithWarnings(entries).state;
-}
-
-/** Reconstructs workflow state while ignoring complete chains from the old snapshot format. */
-export function replayWorkflowStateWithWarnings(
-	entries: readonly unknown[],
-): WorkflowStateReplayResult {
-	let state: WorkflowState | undefined;
-	let ignoringLegacyState = false;
-	const warnings: string[] = [];
+): WorkflowChainReplayResult {
+	const cursor: WorkflowReplayCursor = {
+		chain: [],
+		restoration: undefined,
+		journalVersion: undefined,
+		legacyCompleted: undefined,
+		ignoringLegacy: false,
+		warnings: [],
+	};
 	for (const entry of entries) {
 		if (!isWorkflowStateEntry(entry)) {
 			continue;
@@ -382,28 +526,139 @@ export function replayWorkflowStateWithWarnings(
 				Reflect.get(entry, "data"),
 				"workflow-state data",
 			);
-			const action = classifyWorkflowReplayAction(data, ignoringLegacyState);
+			const action = classifyWorkflowReplayAction(data, cursor.ignoringLegacy);
 			if (action === "ignore") {
 				continue;
 			}
 			if (action === "legacy") {
-				state = undefined;
-				ignoringLegacyState = true;
-				if (warnings.length === 0) {
-					warnings.push(WORKFLOW_LEGACY_STATE_WARNING);
-				}
+				cursor.chain = [];
+				cursor.restoration = undefined;
+				cursor.legacyCompleted = undefined;
+				cursor.ignoringLegacy = true;
+				cursor.warnings = [WORKFLOW_LEGACY_STATE_WARNING];
 				continue;
 			}
-			ignoringLegacyState = false;
-			if (warnings.length > 0) {
-				warnings.length = 0;
-			}
-			state = replayWorkflowStateEntry(state, entry);
+			cursor.ignoringLegacy = false;
+			cursor.warnings = [];
+			applyWorkflowReplayEntry(cursor, entry, data);
 		} catch (error) {
 			throw new Error(`invalid workflow-state entry: ${errorMessage(error)}`);
 		}
 	}
-	return { state, warnings };
+	return {
+		chain: cursor.chain,
+		restoration: cursor.restoration,
+		warnings: cursor.warnings,
+	};
+}
+
+/** Holds journal compatibility evidence alongside the running chain during replay. */
+interface WorkflowReplayCursor {
+	chain: WorkflowChain;
+	restoration: WorkflowRestorationSettings | undefined;
+	journalVersion: number | undefined;
+	legacyCompleted: WorkflowState | undefined;
+	ignoringLegacy: boolean;
+	warnings: string[];
+}
+
+/** Applies one supported operation to the replay cursor. */
+function applyWorkflowReplayEntry(
+	cursor: WorkflowReplayCursor,
+	entry: object,
+	data: Record<string, unknown>,
+): void {
+	if (Reflect.get(entry, "type") !== "custom") {
+		throw new Error("entry type must be custom");
+	}
+	const kind = data["kind"];
+	const starts = kind === "activated" || kind === "created";
+	if (starts) {
+		requireWorkflowJournalVersion(data);
+		cursor.journalVersion = data["journalVersion"] as number;
+		cursor.legacyCompleted = undefined;
+	} else if (
+		!isSupportedWorkflowOperationVersion(data, cursor.journalVersion)
+	) {
+		throw new Error(`journalVersion is unsupported for ${String(kind)} entry`);
+	}
+	if (kind === "exited" || kind === "completed") {
+		applyWorkflowReplayExit(cursor, data);
+		return;
+	}
+	const historical =
+		kind === "transitioned" &&
+		data["journalVersion"] === undefined &&
+		cursor.journalVersion === 1
+			? cursor.legacyCompleted
+			: undefined;
+	const next = replayWorkflowStateEntry(
+		getTopWorkflow(cursor.chain) ?? historical,
+		entry,
+	);
+	cursor.chain = starts
+		? addWorkflow(cursor.chain, next)
+		: [...cursor.chain.slice(0, -1), next];
+	cursor.restoration = undefined;
+	cursor.legacyCompleted = undefined;
+}
+
+/** Checks operation versions against the supported root's journal contract. */
+export function isSupportedWorkflowOperationVersion(
+	data: Readonly<Record<string, unknown>>,
+	rootJournalVersion: number | undefined,
+): boolean {
+	const version = data["journalVersion"];
+	const legacy = rootJournalVersion === 1 && version === undefined;
+	switch (data["kind"]) {
+		case "completed":
+			return legacy;
+		case "exited":
+			return version === 2;
+		default:
+			// Orphan shared operations reach their missing-snapshot validation.
+			return (
+				version === 2 || (version === undefined && rootJournalVersion !== 2)
+			);
+	}
+}
+
+/** Removes completed legacy workflows while retaining evidence for historical rework. */
+function applyWorkflowReplayExit(
+	cursor: WorkflowReplayCursor,
+	data: Record<string, unknown>,
+): void {
+	const kind = data["kind"];
+	assertExactKeys(
+		data,
+		new Set(
+			kind === "completed"
+				? ["kind", "route", "journalVersion"]
+				: ["kind", "journalVersion", "allow"],
+		),
+		`${kind} entry`,
+	);
+	const state = getTopWorkflow(cursor.chain);
+	if (state === undefined) {
+		throw new Error(`${kind} entry has no active snapshot`);
+	}
+	cursor.legacyCompleted = undefined;
+	if (kind === "completed") {
+		const route = validateRoute(state.workflow, data["route"]);
+		if (!state.workflow.stages.find(({ id }) => id === route.at(-1))?.final) {
+			throw new Error("only a final workflow stage can complete the workflow");
+		}
+		cursor.legacyCompleted = { ...state, route };
+	}
+	const restoration = cursor.chain[0]?.restoration;
+	if ("allow" in data && typeof data["allow"] !== "boolean") {
+		throw new Error("allow must be a boolean");
+	}
+	cursor.chain = exitWorkflow(
+		cursor.chain,
+		data["allow"] as boolean | undefined,
+	);
+	cursor.restoration = cursor.chain.length === 0 ? restoration : undefined;
 }
 
 /** Selects whether one persisted entry starts, continues, or ends a legacy chain. */
@@ -432,56 +687,92 @@ function replayWorkflowStateEntry(
 	const data = requireObject(Reflect.get(entry, "data"), "workflow-state data");
 	const kind = Reflect.get(data, "kind");
 	if (kind === "activated" || kind === "created") {
-		assertExactKeys(
-			data,
-			new Set(["kind", "workflow", "route", "restoration", "journalVersion"]),
-			`${kind} entry`,
-		);
-		requireWorkflowJournalVersion(data);
-		const workflow = validateSavedWorkflow(
-			Reflect.get(data, "workflow"),
-			kind === "activated",
-		);
-		const restoration = validateRestorationSettings(
-			Reflect.get(data, "restoration"),
-		);
-		return {
-			source: kind === "activated" ? "catalog" : "dynamic",
-			workflow,
-			route: validateRoute(workflow, Reflect.get(data, "route")),
-			status: "active",
-			...(restoration !== undefined ? { restoration } : {}),
-		};
+		return replayWorkflowStart(data, kind);
 	}
 	if (kind === "stage_edited") {
 		return replayWorkflowStageEdit(state, data);
 	}
 	if (kind === "transitioned") {
-		assertExactKeys(data, new Set(["kind", "route"]), "transitioned entry");
+		assertExactKeys(
+			data,
+			new Set(["kind", "route", "journalVersion"]),
+			"transitioned entry",
+		);
 		if (state === undefined) {
 			throw new Error("transitioned entry has no active snapshot");
 		}
 		return {
 			...state,
-			status: "active",
 			route: validateRoute(state.workflow, Reflect.get(data, "route")),
 		};
-	}
-	if (kind === "completed") {
-		assertExactKeys(data, new Set(["kind", "route"]), "completed entry");
-		if (state === undefined) {
-			throw new Error("completed entry has no active snapshot");
-		}
-		const completed = {
-			...state,
-			status: "active" as const,
-			route: validateRoute(state.workflow, Reflect.get(data, "route")),
-		};
-		return completeWorkflow(completed);
 	}
 	throw new Error(
-		"entry kind must be activated, created, stage_edited, transitioned, or completed",
+		"entry kind must be activated, created, stage_edited, transitioned, exited, or completed for legacy replay",
 	);
+}
+
+/** Validates a saved start before the shared chain rule applies it. */
+function replayWorkflowStart(
+	data: Record<string, unknown>,
+	kind: "activated" | "created",
+): WorkflowState {
+	assertExactKeys(
+		data,
+		new Set([
+			"kind",
+			"workflow",
+			"route",
+			"restoration",
+			"journalVersion",
+			"mode",
+			"pendingTransition",
+		]),
+		`${kind} entry`,
+	);
+	requireWorkflowJournalVersion(data);
+	const workflow = validateSavedWorkflow(
+		data["workflow"],
+		kind === "activated",
+	);
+	const mode = data["mode"] ?? "replace";
+	if (
+		mode !== (workflow.nested === true ? "push" : "replace") ||
+		(mode === "push" &&
+			data["journalVersion"] !== WORKFLOW_STATE_JOURNAL_VERSION)
+	) {
+		throw new Error(
+			"workflow start mode must match its nested definition and journal version",
+		);
+	}
+	const restoration = validateRestorationSettings(data["restoration"]);
+	const pending = data["pendingTransition"];
+	let pendingTransition: PendingWorkflowTransition | undefined;
+	if ("pendingTransition" in data) {
+		if (
+			kind !== "activated" ||
+			data["journalVersion"] !== WORKFLOW_STATE_JOURNAL_VERSION
+		) {
+			throw new Error("pending transition requires a journal2 catalog start");
+		}
+		const value = requireObject(
+			pending,
+			"pendingTransition",
+			new Set(["stageId", "ground"]),
+		);
+		pendingTransition = {
+			stageId: readTechnicalIdentifier(value, "stageId"),
+			...("ground" in value
+				? { ground: readTechnicalIdentifier(value, "ground") }
+				: {}),
+		};
+	}
+	return {
+		source: kind === "activated" ? "catalog" : "dynamic",
+		workflow,
+		route: validateRoute(workflow, data["route"]),
+		...(restoration !== undefined ? { restoration } : {}),
+		...(pendingTransition === undefined ? {} : { pendingTransition }),
+	};
 }
 
 /** Applies one persisted edit only to an active dynamic workflow snapshot. */
@@ -491,7 +782,7 @@ function replayWorkflowStageEdit(
 ): WorkflowState {
 	assertExactKeys(
 		data,
-		new Set(["kind", ...STAGE_EDIT_KEYS]),
+		new Set(["kind", "journalVersion", ...STAGE_EDIT_KEYS]),
 		"stage_edited entry",
 	);
 	if (state === undefined) {
@@ -514,8 +805,8 @@ function replayWorkflowStageEdit(
 function requireWorkflowJournalVersion(
 	data: Readonly<Record<string, unknown>>,
 ): void {
-	if (Reflect.get(data, "journalVersion") !== WORKFLOW_STATE_JOURNAL_VERSION) {
-		throw new Error(`journalVersion must be ${WORKFLOW_STATE_JOURNAL_VERSION}`);
+	if (data["journalVersion"] !== 1 && data["journalVersion"] !== 2) {
+		throw new Error("journalVersion must be 1 or 2");
 	}
 }
 
@@ -557,6 +848,8 @@ function validateSavedWorkflow(
 		id,
 		{
 			version: Reflect.get(saved, "version"),
+			...(Object.hasOwn(saved, "nested") ? { nested: saved["nested"] } : {}),
+			...(Object.hasOwn(saved, "kind") ? { kind: saved["kind"] } : {}),
 			description: Reflect.get(saved, "description"),
 			prompt: Reflect.get(saved, "prompt"),
 			model: Reflect.get(saved, "model"),
@@ -626,7 +919,7 @@ function validateRoute(
 
 /** Format-specific validation rules for catalog and saved definitions. */
 interface WorkflowFormatRules {
-	readonly definitionFields: { readonly version?: 2 };
+	readonly definitionFields: { readonly version?: 2 | 3 };
 	stageFields(stage: Record<string, unknown>): Pick<WorkflowStage, "goal">;
 	transitionFields(
 		transition: Record<string, unknown>,
@@ -707,6 +1000,9 @@ const GROUND_KEYS = new Set(["id", "when"]);
 
 /** Selects validation rules for a workflow format version. */
 function selectWorkflowFormat(version: unknown): WorkflowFormatRules {
+	if (version === WORKFLOW_NESTED_FORMAT_VERSION) {
+		return { ...selectWorkflowFormat(2), definitionFields: { version: 3 } };
+	}
 	const selected = version === undefined ? 1 : version;
 	const rules =
 		typeof selected === "number" ? WORKFLOW_FORMATS[selected] : undefined;
@@ -725,6 +1021,18 @@ function parseWorkflowDefinition(
 	modelSettingsSource: "catalog" | "created" | "saved-created" = "catalog",
 ): WorkflowDefinition {
 	const format = selectWorkflowFormat(Reflect.get(root, "version"));
+	if ("nested" in root && root["version"] !== WORKFLOW_NESTED_FORMAT_VERSION) {
+		throw new Error("nested requires workflow format version 3");
+	}
+	if ("kind" in root && root["version"] !== WORKFLOW_NESTED_FORMAT_VERSION) {
+		throw new Error("kind requires workflow format version 3");
+	}
+	const kind =
+		"kind" in root
+			? { kind: readSingleLineText(root, "kind").normalize("NFC") }
+			: {};
+	const nested =
+		"nested" in root ? { nested: readOptionalBoolean(root, "nested") } : {};
 	const description = readSingleLineText(root, "description");
 	const prompt = readOptionalPromptText(root, "prompt");
 	const model =
@@ -740,7 +1048,12 @@ function parseWorkflowDefinition(
 		parseStage(stage, index, modelSettingsSource, format),
 	);
 	const transitions = rawTransitions.map((transition, index) =>
-		parseTransition(transition, index, format),
+		parseTransition(
+			transition,
+			index,
+			format,
+			root["version"] === WORKFLOW_NESTED_FORMAT_VERSION,
+		),
 	);
 	const modelSettings = model === undefined ? {} : { model };
 	const workflow =
@@ -749,7 +1062,7 @@ function parseWorkflowDefinition(
 			: { id, description, prompt, ...modelSettings, stages, transitions };
 	validateGraph(workflow);
 	format.validateTransitions(transitions);
-	return { ...workflow, ...format.definitionFields };
+	return { ...workflow, ...format.definitionFields, ...nested, ...kind };
 }
 
 /** Parses one stage with closed keys and explicit defaults. */
@@ -759,12 +1072,16 @@ function parseStage(
 	modelSettingsSource: "catalog" | "created" | "saved-created",
 	format: WorkflowFormatRules,
 ): WorkflowStage {
+	const allowWorkflow =
+		modelSettingsSource === "catalog" &&
+		format.definitionFields.version === WORKFLOW_NESTED_FORMAT_VERSION;
 	const stage = requireObject(
 		value,
 		`stages[${index}]`,
 		new Set([
 			...(modelSettingsSource === "catalog" ? STAGE_KEYS : CREATED_STAGE_KEYS),
 			"goal",
+			...(allowWorkflow ? ["workflow"] : []),
 		]),
 	);
 	const model =
@@ -784,6 +1101,9 @@ function parseStage(
 		description: readSingleLineText(stage, "description"),
 		prompt: readPromptText(stage, "prompt"),
 		triggers: parseTriggers(Reflect.get(stage, "triggers"), index),
+		...("workflow" in stage
+			? { workflow: readSingleLineText(stage, "workflow").normalize("NFC") }
+			: {}),
 		initial: readOptionalBoolean(stage, "initial"),
 		final: readOptionalBoolean(stage, "final"),
 		...(model === undefined ? {} : { model }),
@@ -839,11 +1159,16 @@ function parseTransition(
 	value: unknown,
 	index: number,
 	format: WorkflowFormatRules,
+	allowBinding: boolean,
 ): WorkflowTransition {
 	const transition = requireObject(
 		value,
 		`transitions[${index}]`,
-		new Set([...TRANSITION_KEYS, "grounds"]),
+		new Set([
+			...TRANSITION_KEYS,
+			"grounds",
+			...(allowBinding ? ["workflow"] : []),
+		]),
 	);
 	const type = Reflect.get(transition, "type");
 	if (type !== "advance" && type !== "rework") {
@@ -851,6 +1176,11 @@ function parseTransition(
 	}
 	return {
 		...format.transitionFields(transition),
+		...("workflow" in transition
+			? {
+					workflow: readSingleLineText(transition, "workflow").normalize("NFC"),
+				}
+			: {}),
 		from: readTechnicalIdentifier(transition, "from"),
 		to: readTechnicalIdentifier(transition, "to"),
 		type,

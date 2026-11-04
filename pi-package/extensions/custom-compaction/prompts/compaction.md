@@ -66,7 +66,7 @@
   </blocked>
 
   <key_decisions>
-    - [Decision Description. Rationale for decision]
+    - [Decision Description. Who decided: user or agent. Rationale for decision]
     ...
   </key_decisions>
 

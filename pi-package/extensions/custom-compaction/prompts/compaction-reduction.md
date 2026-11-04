@@ -24,8 +24,9 @@
   4. Omit rejected approaches unless retaining them prevents harmful repetition.
   5. Preserve exact technical identifiers only when they pass retention test.
   6. Preserve uncertainty and distinguish facts, assumptions, open questions, and blockers.
-  7. Omit system instruction contents. For loaded skills, MUST NOT retain their contents; retain only exact file path of every loaded `SKILL.md` file.
-  8. Use compact prose or bullets, whichever is shorter without making meaning ambiguous.
-  9. Do not add a title, preamble, conclusion, empty section, or explanation of reduction.
-  10. Return a checkpoint smaller than its source.
+  7. Keep for each requirement and decision whether the user or the agent made it.
+  8. Omit system instruction contents. For loaded skills, MUST NOT retain their contents; retain only exact file path of every loaded `SKILL.md` file.
+  9. Use compact prose or bullets, whichever is shorter without making meaning ambiguous.
+  10. Do not add a title, preamble, conclusion, empty section, or explanation of reduction.
+  11. Return a checkpoint smaller than its source.
 </reduction_rules>

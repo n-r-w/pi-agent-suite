@@ -1,14 +1,27 @@
 import { readdir, readFile } from "node:fs/promises";
-import { isAbsolute, join, parse as parsePath } from "node:path";
+import {
+	dirname,
+	isAbsolute,
+	join,
+	parse as parsePath,
+	resolve,
+} from "node:path";
 import { parse } from "yaml";
 import { expandHomePath } from "../../shared/path-expansion";
 import {
+	requireKnownWorkflowKind,
+	validateWorkflowKinds,
+	type WorkflowKind,
+} from "./kinds";
+import {
+	validateWorkflowBindings,
 	validateWorkflowDefinition,
 	type WorkflowDefinition,
 } from "./workflow";
 
 /** Catalog result that separates directory-wide errors from skipped workflow warnings. */
 export interface WorkflowCatalogResult {
+	readonly kinds?: readonly WorkflowKind[];
 	readonly workflows: readonly WorkflowDefinition[];
 	readonly warnings?: readonly Error[];
 	readonly error?: Error;
@@ -22,6 +35,7 @@ export interface WorkflowPrompts {
 	readonly getStageDescription: string;
 	readonly editStageDescription: string;
 	readonly transitionDescription: string;
+	readonly exitDescription: string;
 }
 
 export interface WorkflowConfiguration extends WorkflowPrompts {
@@ -35,6 +49,7 @@ const CONFIG_KEYS = new Set([
 	"extensionDescriptionPromptFile",
 	"createDescriptionPromptFile",
 	"activateDescriptionPromptFile",
+	"exitDescriptionPromptFile",
 	"getStageDescriptionPromptFile",
 	"editStageDescriptionPromptFile",
 	"transitionDescriptionPromptFile",
@@ -59,13 +74,15 @@ export async function loadWorkflowCatalog(
 	directory: string,
 ): Promise<WorkflowCatalogResult> {
 	let entries: string[];
+	let kinds: readonly WorkflowKind[] = [];
 	try {
+		kinds = await loadWorkflowKinds(join(dirname(directory), "kinds.yaml"));
 		entries = (await readdir(directory))
 			.filter((name) => name.endsWith(".yaml"))
 			.sort((left, right) => left.localeCompare(right));
 	} catch (error) {
 		if (isFileNotFound(error)) {
-			return { workflows: [] };
+			return { workflows: [], ...(kinds.length === 0 ? {} : { kinds }) };
 		}
 		return {
 			workflows: [],
@@ -77,37 +94,155 @@ export async function loadWorkflowCatalog(
 	const files = await Promise.all(
 		entries.map((fileName) => readCatalogFile(directory, fileName)),
 	);
+	const outcomes = await Promise.all(
+		files.map((file) => loadCatalogFile(file, kinds, directory)),
+	);
 	const workflows: WorkflowDefinition[] = [];
 	const warnings: Error[] = [];
-	for (const file of files) {
-		try {
-			if (file.kind === "error") {
-				throw file.error;
-			}
-			const value: unknown = parse(file.content);
-			workflows.push(
-				validateWorkflowDefinition(
-					parsePath(file.fileName).name,
-					value,
-					file.filePath,
-				),
-			);
-		} catch (error) {
-			// A file-level failure disables only that workflow so valid siblings remain usable.
-			const message = errorMessage(error);
-			warnings.push(
-				new Error(
-					message.includes(file.filePath)
-						? message
-						: `${file.filePath}: ${message}`,
-				),
-			);
+	for (const outcome of outcomes) {
+		if (outcome instanceof Error) {
+			warnings.push(outcome);
+		} else {
+			workflows.push(outcome);
 		}
 	}
-	if (warnings.length === 0) {
-		return { workflows };
+	return {
+		workflows: filterWorkflowBindings(workflows, directory, warnings),
+		...(warnings.length === 0 ? {} : { warnings }),
+		...(kinds.length === 0 ? {} : { kinds }),
+	};
+}
+
+/** Removes invalid bindings to a fixed point while retaining mutually bound nested workflows. */
+function filterWorkflowBindings(
+	workflows: readonly WorkflowDefinition[],
+	directory: string,
+	warnings: Error[],
+): readonly WorkflowDefinition[] {
+	let accepted = workflows;
+	for (;;) {
+		const valid = accepted.filter((workflow) => {
+			try {
+				validateWorkflowBindings(workflow, accepted);
+				return true;
+			} catch (error) {
+				warnings.push(
+					new Error(
+						`${join(directory, `${workflow.id}.yaml`)}: ${errorMessage(error)}`,
+					),
+				);
+				return false;
+			}
+		});
+		if (valid.length === accepted.length) {
+			return valid;
+		}
+		accepted = valid;
 	}
-	return { workflows, warnings };
+}
+
+/** Returns the definition of one catalog file, or its failure as a warning that names the file. */
+async function loadCatalogFile(
+	file: CatalogFileRead,
+	kinds: readonly WorkflowKind[],
+	directory: string,
+): Promise<WorkflowDefinition | Error> {
+	try {
+		return await validateCatalogFile(file, kinds, directory);
+	} catch (error) {
+		// A file-level failure disables only that workflow so valid siblings remain usable.
+		const message = errorMessage(error);
+		return new Error(
+			message.includes(file.filePath)
+				? message
+				: `${file.filePath}: ${message}`,
+		);
+	}
+}
+
+/** Converts a catalog read into a definition under the installed kinds catalog. */
+async function validateCatalogFile(
+	file: CatalogFileRead,
+	kinds: readonly WorkflowKind[],
+	directory: string,
+): Promise<WorkflowDefinition> {
+	if (file.kind === "error") {
+		throw file.error;
+	}
+	const value = await substituteFileReferences(parse(file.content), directory);
+	const workflow = validateWorkflowDefinition(
+		parsePath(file.fileName).name,
+		value,
+		file.filePath,
+	);
+	requireKnownWorkflowKind(workflow.kind, kinds);
+	return workflow;
+}
+
+/** Matches a reference `{{path}}` whose file text replaces it in a catalog workflow. */
+const FILE_REFERENCE = /\{\{([^{}]*)\}\}/g;
+
+/** Replaces each file reference in the strings of a parsed workflow with the trimmed file text, resolving paths against the workflow directory. */
+async function substituteFileReferences(
+	value: unknown,
+	directory: string,
+): Promise<unknown> {
+	if (typeof value === "string") {
+		const texts = await Promise.all(
+			Array.from(value.matchAll(FILE_REFERENCE), (match) =>
+				readReferencedFile(resolve(directory, (match[1] ?? "").trim())),
+			),
+		);
+		let index = 0;
+		return value.replace(FILE_REFERENCE, () => texts[index++] ?? "");
+	}
+	if (Array.isArray(value)) {
+		return Promise.all(
+			value.map((item) => substituteFileReferences(item, directory)),
+		);
+	}
+	if (typeof value === "object" && value !== null) {
+		return Object.fromEntries(
+			await Promise.all(
+				Object.entries(value).map(async ([key, item]) => [
+					key,
+					await substituteFileReferences(item, directory),
+				]),
+			),
+		);
+	}
+	return value;
+}
+
+/** Reads the trimmed text of a referenced file and names the file in a read failure. */
+async function readReferencedFile(path: string): Promise<string> {
+	try {
+		return (await readFile(path, "utf8")).trim();
+	} catch (error) {
+		throw new Error(
+			`could not read referenced file ${path}: ${errorMessage(error)}`,
+		);
+	}
+}
+
+/** Loads the optional kinds file without weakening validation of present files. */
+async function loadWorkflowKinds(
+	path: string,
+): Promise<readonly WorkflowKind[]> {
+	let content: string;
+	try {
+		content = await readFile(path, "utf8");
+	} catch (error) {
+		if (isFileNotFound(error)) {
+			return [];
+		}
+		throw new Error(`${path}: ${errorMessage(error)}`);
+	}
+	try {
+		return validateWorkflowKinds(parse(content));
+	} catch (error) {
+		throw new Error(`${path}: ${errorMessage(error)}`);
+	}
 }
 
 /** Reads one catalog file while preserving its lexical identity for later validation. */
@@ -161,6 +296,11 @@ export async function loadWorkflowConfiguration(
 				config.promptFiles["editStageDescriptionPromptFile"] ??
 					join(bundledDirectory, "edit-stage-description.md"),
 				"editStageDescriptionPromptFile",
+			),
+			exitDescription: await readPrompt(
+				config.promptFiles["exitDescriptionPromptFile"] ??
+					join(bundledDirectory, "exit-description.md"),
+				"exitDescriptionPromptFile",
 			),
 			transitionDescription: await readPrompt(
 				config.promptFiles["transitionDescriptionPromptFile"] ??

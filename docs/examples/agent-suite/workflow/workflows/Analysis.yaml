@@ -1,0 +1,48 @@
+version: 3
+description: Use for an analysis task of a subagent that returns a report to its caller, for example a review, a research question, a design, or a plan
+prompt: |-
+  1. Change no code. Create or change a document only when the task asks for it.
+  2. Base each finding and recommendation on evidence, and name its source.
+stages:
+  - id: understand_task
+    description: Understand the task and its expected output
+    goal: The question of the task, its scope, and the expected output are known.
+    prompt: |-
+      1. Read the task and the materials that it names.
+      2. Name the question that the report answers, the scope of the analysis, and the form of the output.
+    initial: true
+  - id: analyze
+    description: Analyze the sources
+    goal: Each part of the question is analyzed from its sources, and each gap is named as an open question.
+    prompt: |-
+      1. Study the code, documents, and other sources that the question depends on.
+      2. For a review, check correctness, risks, tests, and fit with the patterns of the project.
+      3. For a design or a plan, compare the approaches that fit, and choose the simplest one that meets the task.
+      4. Name each gap in the evidence as an open question. Do not fill it with an assumption.
+  - id: verify
+    description: Verify the findings
+    goal: Each finding is checked against its source, and a second opinion is collected.
+    prompt: |-
+      1. Check each finding against its source.
+      2. Ask `consult_advisor` for a second opinion on the main conclusions.
+  - id: report
+    description: Deliver the report
+    goal: The caller has received the report.
+    prompt: Give the caller a short report with the findings and their sources, the recommendations, and the open questions.
+    final: true
+transitions:
+  - from: understand_task
+    to: analyze
+    type: advance
+  - from: analyze
+    to: verify
+    type: advance
+  - from: verify
+    to: report
+    type: advance
+  - from: verify
+    to: analyze
+    type: rework
+    grounds:
+      - id: finding_unsupported
+        when: A finding has no support in its source.

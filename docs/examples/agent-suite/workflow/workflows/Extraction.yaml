@@ -1,0 +1,28 @@
+version: 3
+description: Use to collect facts from sources exactly as they state them, without analysis or recommendations
+prompt: Return only facts that a source states, each with its source.
+stages:
+  - id: define_target
+    description: Define the requested facts
+    goal: The requested facts, their scope, and the form of the result are known.
+    prompt: Name the facts that the task requests, the scope of the search, and the form of the result.
+    initial: true
+  - id: collect
+    description: Collect the facts from their sources
+    goal: Each requested fact is collected with its source, or the places where it is absent are known.
+    prompt: |-
+      1. Find the sources that can hold the requested facts, for example files, command output, or web pages.
+      2. Collect each fact with its source, and quote code and values exactly.
+      3. When a source points to another source that holds the fact, follow it.
+  - id: report
+    description: Deliver the facts
+    goal: The caller has received the facts in the form that the task requests.
+    prompt: Give the caller the facts with their sources, and name each fact that you could not find.
+    final: true
+transitions:
+  - from: define_target
+    to: collect
+    type: advance
+  - from: collect
+    to: report
+    type: advance

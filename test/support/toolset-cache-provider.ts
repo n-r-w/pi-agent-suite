@@ -28,7 +28,7 @@ export interface CacheRequestSnapshot {
 type ModelAction = "activate_toolset" | "files_read" | "files_write" | "stop";
 
 /** Serializes the actual provider context while stopping before network access. */
-async function captureRequest(
+export async function captureRequest(
 	model: Model<Api>,
 	context: Context,
 	options: SimpleStreamOptions | undefined,

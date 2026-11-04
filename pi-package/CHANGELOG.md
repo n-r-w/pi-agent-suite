@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking changes
+
+- Keep a workflow active on its final stage after the agent run ends. Leave it with the new `workflow_exit` tool, and add `workflow_exit` to an explicit `tools` allowlist that names only the older workflow tools.
+- Require a nonempty `basis` in each `workflow_transition` call.
+- Earlier package versions cannot restore workflow state saved by this version.
+
+### Added
+
+- Workflow format 3:
+  - `nested: true`: the workflow starts on top of the active one, which continues at its stage after the nested workflow exits;
+  - `workflow` on a transition: the request starts this nested check, and `allow` of `workflow_exit` permits or refuses the transition; the check starts regardless of the agent's `workflows` list;
+  - `workflow` on a stage of a catalog workflow: each entry into the stage starts this nested workflow after the stage record, regardless of the agent's `workflows` list;
+  - `kind`: activation options are grouped by the kinds of `workflow/kinds.yaml`.
+- `workflow_exit` tool, configurable by `exitDescriptionPromptFile`.
+- File references `{{path}}` in strings of catalog workflows: the extension substitutes the file text, and a missing file excludes the workflow.
+
+### Changed
+
+- Rewrite the default shared guidance and the workflow tool descriptions. Review custom description overrides.
+- Create format-3 workflows with `workflow_create`.
+- Keep workflow tools offered after they first become applicable in the session, within the agent tool policy.
+- Accept a `workflow_transition` call without `ground` when the selected transition declares exactly one ground, in formats 2 and 3. A rejected ground lists each declared ground with its condition.
+
+### Fixed
+
+- Correct README descriptions of `workflows` settings.
+
 ## [2.21.2] - 2026-11-02
 
 ### Fixed

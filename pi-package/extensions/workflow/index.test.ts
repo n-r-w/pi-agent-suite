@@ -12,6 +12,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Check } from "typebox/value";
+import { stringify } from "yaml";
+import { projectBranch } from "../../../test/support/session-projection";
 import {
 	getAgentRuntimeComposition,
 	SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
@@ -26,10 +28,16 @@ import {
 import workflowExtension from "./index";
 import {
 	activateWorkflow,
-	replayWorkflowState,
+	getTopWorkflow,
+	replayWorkflowChain,
 	validateWorkflowDefinition,
 	WORKFLOW_STATE_JOURNAL_VERSION,
 } from "./workflow";
+
+/** Reads the top of a replayed chain for tool result assertions. */
+function replayWorkflowState(entries: readonly unknown[]) {
+	return getTopWorkflow(replayWorkflowChain(entries).chain);
+}
 
 type WidgetFactory = (tui: TUI, theme: Theme) => Component;
 type WidgetContent = string[] | WidgetFactory | undefined;
@@ -460,7 +468,11 @@ async function runBeforeAgentStart(
 	}
 	const result = (await handler(
 		{ type: "before_agent_start" },
-		{ sessionManager: { getBranch: () => branch } },
+		{
+			sessionManager: {
+				buildSessionProjection: () => ({ entries: projectBranch(branch) }),
+			},
+		},
 	)) as
 		| {
 				message?: {
@@ -570,10 +582,7 @@ async function runSessionCompact(
 /** Invokes the session-level settlement handler without providing a UI context. */
 async function runAgentSettled(fake: FakePi): Promise<void> {
 	const handler = fake.handlers.get("agent_settled");
-	if (handler === undefined) {
-		throw new Error("missing agent_settled handler");
-	}
-	await handler({ type: "agent_settled" });
+	await handler?.({ type: "agent_settled" });
 }
 
 /** Renders the latest shared status widget or fails with its missing state. */
@@ -633,7 +642,673 @@ afterEach(async () => {
 	);
 });
 
+describe("nested workflow execution", () => {
+	for (const role of ["main", "child"] as const) {
+		test(`${role} nested catalog authorization rejects atomically and allows a compatible policy`, async () => {
+			const suite = await createSuite(modelYaml());
+			await writeFile(
+				join(suite, "workflow/workflows/check.yaml"),
+				groundedYaml()
+					.replace(
+						"version: 2",
+						"version: 3\nnested: true\nmodel:\n  id: openai/current-model\n  thinking: low",
+					)
+					.replace(
+						"    initial: true",
+						"    initial: true\n    triggers:\n      - type: local_knowledge_accumulation",
+					),
+			);
+			if (role === "child") {
+				process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery"]';
+			}
+			const denied = await createFakePi();
+			if (role === "main") {
+				setMainWorkflowPolicy(denied, ["delivery"]);
+			}
+			await runLifecycle(denied, "session_start");
+			const triggers = captureTriggers(denied);
+			const activate = requireTool(denied, "workflow_activate");
+			await activate.execute("parent", { workflowId: "delivery" });
+			const branch = savedBranch(denied);
+			const parentChain = replayWorkflowChain(branch).chain;
+			expect(parentChain).toHaveLength(1);
+			expect(parentChain[0]?.route).toEqual(["start"]);
+			expect(denied.activeTools).toContain("workflow_activate");
+			const before = {
+				entries: [...denied.appended],
+				messages: [...denied.messages],
+				modelCalls: [...denied.modelSetCalls],
+				model: denied.model,
+				thinking: denied.thinkingLevel,
+				tools: [...denied.activeTools],
+				widgets: [...denied.widgetUpdates],
+				notifications: [...denied.notifications],
+				triggers: [...triggers],
+			};
+			await expect(
+				activate.execute("denied-nested", { workflowId: "check" }),
+			).rejects.toThrow("not allowed");
+			expect(denied.appended).toEqual(before.entries);
+			expect(replayWorkflowChain(savedBranch(denied)).chain).toEqual(
+				parentChain,
+			);
+			expect(denied.messages).toEqual(before.messages);
+			expect(denied.modelSetCalls).toEqual(before.modelCalls);
+			expect(denied.model).toBe(before.model);
+			expect(denied.thinkingLevel).toBe(before.thinking);
+			expect(denied.activeTools).toEqual(before.tools);
+			expect(denied.widgetUpdates).toEqual(before.widgets);
+			expect(denied.notifications).toEqual(before.notifications);
+			expect(triggers).toEqual(before.triggers);
+
+			if (role === "child") {
+				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
+			}
+			const allowed = await createFakePi();
+			if (role === "main") {
+				setMainWorkflowPolicy(allowed, ["delivery", "check"]);
+			}
+			await runLifecycle(allowed, "session_start", branch);
+			await requireTool(allowed, "workflow_activate").execute(
+				"allowed-nested",
+				{ workflowId: "check" },
+			);
+			const chain = replayWorkflowChain([
+				...branch,
+				...savedBranch(allowed),
+			]).chain;
+			expect(chain).toHaveLength(2);
+			expect(chain[0]).toEqual(parentChain[0]);
+			expect(chain[1]?.workflow.id).toBe("check");
+			expect(chain[1]?.route).toEqual(["start"]);
+		});
+	}
+
+	test("nested catalog starts preserve parents, restore effective models, and resume without triggers", async () => {
+		const suite = await createSuite(modelYaml());
+		await writeFile(
+			join(suite, "workflow/workflows/check.yaml"),
+			groundedYaml().replace(
+				"version: 2",
+				"version: 3\nnested: true\nmodel:\n  id: openai/current-model\n  thinking: low",
+			),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const triggers = captureTriggers(fake);
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("root", { workflowId: "delivery" });
+		const parent = replayWorkflowChain(savedBranch(fake)).chain[0];
+		if (!parent) {
+			throw new Error("missing parent");
+		}
+		fake.appendError = new Error("persistence failed");
+		await expect(
+			activate.execute("fail-child", { workflowId: "check" }),
+		).rejects.toThrow("persistence failed");
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		fake.appendError = undefined;
+		await activate.execute("child", { workflowId: "check" });
+		expect(renderLatestStatus(fake, 120)[1]).toBe(
+			"Workflow: delivery➡check · Start",
+		);
+		const chain = replayWorkflowChain(savedBranch(fake)).chain;
+		expect(chain).toHaveLength(2);
+		expect(chain[0]).toEqual(parent);
+		expect(chain[1]?.restoration).toEqual({
+			modelId: "openai/workflow-model",
+			thinking: "xhigh",
+		});
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("low");
+		const before = {
+			entries: [...fake.appended],
+			messages: [...fake.messages],
+			modelCalls: [...fake.modelSetCalls],
+		};
+		await expect(
+			activate.execute("duplicate", { workflowId: "delivery" }),
+		).rejects.toThrow();
+		expect(fake.appended).toEqual(before.entries);
+		expect(fake.messages).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.modelCalls);
+		await expect(
+			requireTool(fake, "workflow_transition").execute("parent-move", {
+				stageId: "done",
+				ground: "missing",
+				basis: "Parent work complete",
+			}),
+		).rejects.toThrow("ground");
+		const count = triggers.length;
+		fake.appendError = new Error("persistence failed");
+		await expect(
+			requireTool(fake, "workflow_exit").execute("fail-return", {
+				basis: "Check complete",
+			}),
+		).rejects.toThrow("persistence failed");
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("low");
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(chain);
+		fake.appendError = undefined;
+		await requireTool(fake, "workflow_exit").execute("return", {
+			basis: "Check complete",
+		});
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual([parent]);
+		expect(triggers).toHaveLength(count);
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Task complete",
+		});
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
+	test("dynamic kind validation is atomic and saved kinds survive catalog removal", async () => {
+		const suite = await createSuite(modelYaml());
+		await writeFile(
+			join(suite, "workflow/kinds.yaml"),
+			"- id: review\n  description: Review work\n",
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("parent", {
+			workflowId: "delivery",
+		});
+		const create = requireTool(fake, "workflow_create");
+		const args = {
+			...triggeredCreateArguments(),
+			nested: true,
+			kind: "review",
+		};
+		expect(Check(create.parameters as never, args)).toBe(true);
+		const before = {
+			entries: [...fake.appended],
+			messages: [...fake.messages],
+			calls: [...fake.modelSetCalls],
+			tools: [...fake.activeTools],
+			thinking: fake.thinkingLevel,
+		};
+		await expect(
+			create.execute("unknown", { ...args, kind: "missing" }),
+		).rejects.toThrow("unknown workflow kind");
+		expect(fake.appended).toEqual(before.entries);
+		expect(fake.messages).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.calls);
+		expect(fake.activeTools).toEqual(before.tools);
+		expect(fake.thinkingLevel).toBe(before.thinking);
+		await create.execute("known", args);
+		const branch = savedBranch(fake);
+		expect(replayWorkflowChain(branch).chain.at(-1)?.workflow.kind).toBe(
+			"review",
+		);
+		await rm(join(suite, "workflow/kinds.yaml"));
+		const restored = await createFakePi();
+		await runLifecycle(restored, "session_start", branch);
+		expect(replayWorkflowChain(branch).chain.at(-1)?.workflow.kind).toBe(
+			"review",
+		);
+		await expect(
+			requireTool(restored, "workflow_create").execute("removed", {
+				...args,
+				id: "other-kind",
+			}),
+		).rejects.toThrow("unknown workflow kind");
+		await requireTool(restored, "workflow_exit").execute("return", {
+			basis: "Done",
+		});
+	});
+
+	test("nested dynamic creation accepts schema, isolates same stage IDs, and rejects waiting IDs atomically", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const create = requireTool(fake, "workflow_create");
+		const args = { ...triggeredCreateArguments(), nested: true };
+		expect(Check(create.parameters as never, args)).toBe(true);
+		const triggers = captureTriggers(fake);
+		await create.execute("root", args);
+		const parent = replayWorkflowChain(savedBranch(fake)).chain[0];
+		if (!parent) {
+			throw new Error("missing parent");
+		}
+		await create.execute("child", {
+			...createArguments("dynamic-child"),
+			nested: true,
+		});
+		await requireTool(fake, "workflow_edit_stage").execute("edit", {
+			stageId: "start",
+			description: "Child changed",
+			goal: "Child ready",
+			prompt: "Child work",
+			model: { thinking: "low" },
+		});
+		const result = (await requireTool(fake, "workflow_get_stage").execute(
+			"read",
+			{ stageId: "start" },
+		)) as { content: { text: string }[] };
+		const content = result.content[0];
+		if (!content) {
+			throw new Error("missing stage result");
+		}
+		expect(JSON.parse(content.text).description).toBe("Child changed");
+		expect(replayWorkflowChain(savedBranch(fake)).chain[0]).toEqual(parent);
+		const entries = [...fake.appended];
+		await expect(
+			create.execute("duplicate", createArguments()),
+		).rejects.toThrow("already");
+		expect(fake.appended).toEqual(entries);
+		const count = triggers.length;
+		await requireTool(fake, "workflow_exit").execute("return", {
+			basis: "Child complete",
+		});
+		expect(triggers).toHaveLength(count);
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual([parent]);
+	});
+
+	test("nested catalog workflows run alone and leave an empty chain from their final stage", async () => {
+		const suite = await createSuite();
+		await writeFile(
+			join(suite, "workflow/workflows/check.yaml"),
+			groundedYaml().replace("version: 2", "version: 3\nnested: true"),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("standalone", {
+			workflowId: "check",
+		});
+		await requireTool(fake, "workflow_transition").execute("finish", {
+			stageId: "done",
+			ground: "ready",
+			basis: "Ready to deliver",
+		});
+		expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+			"start",
+			"done",
+		]);
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Delivered",
+		});
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual([]);
+		expect(fake.messages.at(-1)?.details).toMatchObject({ kind: "exit" });
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
+	test("reload branch navigation and compaction preserve edited waiting definitions routes and snapshots", async () => {
+		await createSuite();
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const create = requireTool(fake, "workflow_create");
+		await create.execute("parent", triggeredCreateArguments());
+		await requireTool(fake, "workflow_edit_stage").execute("edit-parent", {
+			stageId: "start",
+			description: "Edited parent",
+			goal: "Parent ready",
+			prompt: "Parent instructions",
+			model: { thinking: "high" },
+		});
+		const parentBranch = savedBranch(fake);
+		await create.execute("child", {
+			...createArguments("dynamic-child"),
+			nested: true,
+		});
+		await requireTool(fake, "workflow_transition").execute("advance-child", {
+			stageId: "done",
+			basis: "Child work ready",
+		});
+		await requireTool(fake, "workflow_edit_stage").execute("edit-child", {
+			stageId: "done",
+			description: "Edited child",
+			goal: "Child ready",
+			prompt: "Child instructions",
+			model: { thinking: "low" },
+		});
+		const branch = savedBranch(fake);
+		const saved = replayWorkflowChain(branch).chain;
+		await runLifecycle(fake, "session_start", branch);
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "checkpoint",
+			workflowId: "dynamic-child",
+			currentStageId: "done",
+			graphWorkflowIds: ["dynamic-delivery", "dynamic-child"],
+		});
+		expect(fake.thinkingLevel).toBe("low");
+		await runLifecycle(fake, "session_tree", parentBranch);
+		expect(fake.thinkingLevel).toBe("high");
+		await runLifecycle(fake, "session_tree", []);
+		expect(fake.thinkingLevel).toBe("medium");
+		await runLifecycle(fake, "session_tree", branch);
+		expect(fake.thinkingLevel).toBe("low");
+		await runSessionCompact(fake);
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "checkpoint",
+			graphWorkflowIds: ["dynamic-delivery", "dynamic-child"],
+		});
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(saved);
+		await requireTool(fake, "workflow_exit").execute("return", {
+			basis: "Child done",
+		});
+		expect(fake.thinkingLevel).toBe("high");
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(
+			saved.slice(0, 1),
+		);
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Parent done",
+		});
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
+	test("nested start and return persistence failures roll back settings and replacement uses root baseline", async () => {
+		const suite = await createSuite(modelYaml());
+		await writeFile(
+			join(suite, "workflow/workflows/check.yaml"),
+			groundedYaml().replace("version: 2", "version: 3\nnested: true"),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("root", {
+			workflowId: "delivery",
+		});
+		const create = requireTool(fake, "workflow_create");
+		fake.appendError = new Error("persistence failed");
+		await expect(
+			create.execute("fail-start", {
+				...createArguments("child-failed"),
+				nested: true,
+			}),
+		).rejects.toThrow("persistence failed");
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		fake.appendError = undefined;
+		await create.execute("child", {
+			...createArguments("child-success"),
+			nested: true,
+		});
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toHaveLength(2);
+		fake.appendError = new Error("persistence failed");
+		await expect(
+			requireTool(fake, "workflow_exit").execute("fail-return", {
+				basis: "Done",
+			}),
+		).rejects.toThrow("persistence failed");
+		expect(fake.thinkingLevel).toBe("medium");
+		expect(replayWorkflowChain(savedBranch(fake)).chain).toHaveLength(2);
+		await expect(
+			create.execute("fail-replace", createArguments("replace-failed")),
+		).rejects.toThrow("persistence failed");
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		fake.appendError = undefined;
+		await create.execute("replace", createArguments("replacement"));
+		const chain = replayWorkflowChain(savedBranch(fake)).chain;
+		expect(chain).toHaveLength(1);
+		expect(chain[0]?.restoration).toEqual({
+			modelId: "openai/current-model",
+			thinking: "medium",
+		});
+		expect(fake.model?.id).toBe("current-model");
+		await requireTool(fake, "workflow_exit").execute("exit", { basis: "Done" });
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+});
+
 describe("workflow extension lifecycle", () => {
+	test("validates exit basis before any side effect and rejects stale calls", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		const exit = requireTool(fake, "workflow_exit");
+		expect(exit.executionMode).toBe("sequential");
+		const saved = JSON.stringify(fake.appended);
+		const messages = JSON.stringify(fake.messages);
+		const calls = fake.modelSetCalls.length;
+		for (const basis of [undefined, null, 12, false, [], {}, "", " \n\t"]) {
+			const args = basis === undefined ? {} : { basis };
+			expect(Check(exit.parameters as never, args)).toBe(false);
+			await expect(exit.execute("bad", args)).rejects.toThrow("basis");
+			expect(JSON.stringify(fake.appended)).toBe(saved);
+			expect(JSON.stringify(fake.messages)).toBe(messages);
+			expect(fake.modelSetCalls).toHaveLength(calls);
+			expect(fake.thinkingLevel).toBe("xhigh");
+		}
+		await exit.execute("exit", {
+			basis: " \nTask no longer needs this process.\n ",
+		});
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		expect(fake.appended.at(-1)?.data).toEqual({
+			kind: "exited",
+			journalVersion: 2,
+		});
+		expect((fake.messages.at(-1)?.details as { kind: string }).kind).toBe(
+			"exit",
+		);
+		expect(fake.widgetUpdates.at(-1)?.content).toBeUndefined();
+		expect(fake.activeTools).toContain("workflow_exit");
+		await expect(
+			exit.execute("stale", { basis: "Already left." }),
+		).rejects.toThrow("no workflow is active");
+		await expect(
+			requireTool(fake, "workflow_transition").execute("stale", {
+				stageId: "done",
+				basis: "Already left.",
+			}),
+		).rejects.toThrow("no workflow is active");
+	});
+
+	test.each([
+		false,
+		true,
+	])("restores version1 completion settings with historical rework %s", async (rework) => {
+		await createSuite(modelYaml());
+		const source = await createFakePi();
+		await runLifecycle(source, "session_start");
+		await requireTool(source, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		const { mode: _mode, ...saved } = source.appended[0]?.data as Record<
+			string,
+			unknown
+		>;
+		const branch = [
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { ...saved, journalVersion: 1 },
+			},
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "transitioned", route: ["start", "done"] },
+			},
+			{ type: "model_change", provider: "openai", modelId: "workflow-model" },
+			{ type: "thinking_level_change", thinkingLevel: "high" },
+			{
+				type: "custom",
+				customType: "workflow-state",
+				data: { kind: "completed", route: ["start", "done"] },
+			},
+			...(rework
+				? [
+						{
+							type: "custom",
+							customType: "workflow-state",
+							data: { kind: "transitioned", route: ["start"] },
+						},
+					]
+				: []),
+		];
+		const restored = await createFakePi();
+		await runLifecycle(restored, "session_start", branch);
+		expect(restored.model?.id).toBe(
+			rework ? "workflow-model" : "current-model",
+		);
+		expect(restored.thinkingLevel).toBe(rework ? "xhigh" : "medium");
+		expect(replayWorkflowState(branch)?.route).toEqual(
+			rework ? ["start"] : undefined,
+		);
+		if (!rework) {
+			expect(restored.widgetUpdates.at(-1)?.content).toBeUndefined();
+		}
+	});
+
+	test("publishes no-workflow state again only when no visible record shows it", async () => {
+		// Purpose: a restart or a compaction that keeps the exit record must not repeat it.
+		// Input and expected output: an exited workflow, then a restart and a compaction that keep the exit record: no new record; a compaction that summarizes it: one exit record.
+		// Dependencies: replay of saved state, session projection, and journal restoration.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "No more work.",
+		});
+		const history = [
+			...fake.appended.map(({ data }) => ({
+				type: "custom",
+				customType: "workflow-state",
+				data,
+			})),
+			...fake.messages.map((message) => ({
+				type: "custom_message",
+				...message,
+			})),
+		];
+		const count = fake.messages.length;
+		await runLifecycle(fake, "session_start", history);
+		await runSessionCompact(fake, true, projectBranch(history));
+		expect(fake.messages).toHaveLength(count);
+		await runSessionCompact(fake);
+		expect(fake.messages).toHaveLength(count + 1);
+		expect((fake.messages.at(-1)?.details as { kind: string }).kind).toBe(
+			"exit",
+		);
+	});
+
+	test("publishes no-workflow state after compaction of an exited workflow", async () => {
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "No more work.",
+		});
+		const count = fake.messages.length;
+		await runSessionCompact(fake);
+		expect(fake.messages).toHaveLength(count + 1);
+		expect((fake.messages.at(-1)?.details as { kind: string }).kind).toBe(
+			"exit",
+		);
+		expect(fake.widgetUpdates.at(-1)?.content).toBeUndefined();
+	});
+
+	test("reuses stages of a workflow that runs again until a compaction", async () => {
+		// Purpose: a second run reuses the stages that the context holds, and a compaction makes them unknown.
+		// Input and expected output: run, exit, run gives reuse; exit, compaction, run gives inline.
+		// Dependencies: session_compact wiring and journal-local known-stage tracking.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const run = async () => {
+			await requireTool(fake, "workflow_activate").execute("activate", {
+				workflowId: "delivery",
+			});
+			const activation = fake.messages
+				.filter(
+					({ details }) => (details as { kind?: string }).kind === "activation",
+				)
+				.at(-1);
+			await requireTool(fake, "workflow_exit").execute("exit", {
+				basis: "No more work.",
+			});
+			return (activation?.details as { guidelines?: string }).guidelines;
+		};
+		expect(await run()).toBe("inline");
+		expect(await run()).toBe("reuse");
+		await runSessionCompact(fake);
+		expect(await run()).toBe("inline");
+	});
+
+	test("synchronizes empty branches after exit and respects later manual settings", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Done.",
+		});
+		const ended = fake.appended.map(({ data }) => ({
+			type: "custom",
+			customType: "workflow-state",
+			data,
+		}));
+		await runLifecycle(fake, "session_tree", [
+			...ended,
+			{ type: "model_change", provider: "openai", modelId: "workflow-model" },
+			{ type: "thinking_level_change", thinkingLevel: "low" },
+		]);
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("low");
+		await runLifecycle(fake, "session_tree", ended);
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		await runLifecycle(fake, "session_tree", [
+			{ type: "thinking_level_change", thinkingLevel: "high" },
+		]);
+		await runLifecycle(fake, "session_tree", [
+			{ type: "model_change", provider: "openai", modelId: "workflow-model" },
+		]);
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("medium");
+		await runLifecycle(fake, "session_tree", []);
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.thinkingLevel).toBe("medium");
+	});
+
+	test("replacement snapshots the original root settings and rolls back failed persistence", async () => {
+		await createSuite(modelYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		const create = requireTool(fake, "workflow_create");
+		fake.appendError = new Error("replacement failed");
+		await expect(create.execute("replace", createArguments())).rejects.toThrow(
+			"replacement failed",
+		);
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("xhigh");
+		expect(fake.appended).toHaveLength(1);
+		fake.appendError = undefined;
+		await create.execute("replace", createArguments());
+		expect(fake.model?.id).toBe("current-model");
+		expect(
+			(fake.appended.at(-1)?.data as { restoration: unknown }).restoration,
+		).toEqual({ modelId: "openai/current-model", thinking: "medium" });
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Done.",
+		});
+		expect(fake.model?.id).toBe("current-model");
+		expect(fake.activeTools).toContain("workflow_get_stage");
+		await expect(
+			requireTool(fake, "workflow_get_stage").execute("stale", {
+				stageId: "start",
+			}),
+		).rejects.toThrow("no workflow is active");
+	});
 	test("publishes only the final idle policy when work starts", async () => {
 		// Purpose: agent selection changes tools immediately but journals only the options used by work.
 		// Input/output: start and policy toggles publish nothing; before_agent_start publishes one options record.
@@ -646,7 +1321,7 @@ describe("workflow extension lifecycle", () => {
 		setMainWorkflowPolicy(fake, ["delivery"]);
 		expect(fake.messages).toHaveLength(0);
 		await runBeforeAgentStart(fake);
-		expect(fake.messages.map(({ details }) => details)).toEqual([
+		expect(fake.messages.map(({ details }) => details)).toMatchObject([
 			{ version: 1, kind: "activation_options" },
 		]);
 		const prefix = structuredClone(fake.messages);
@@ -686,7 +1361,7 @@ describe("workflow extension lifecycle", () => {
 	});
 
 	/** Proves configured definitions exist before lifecycle policy resolution. */
-	test("registers the five sequential workflow tools during initialization", async () => {
+	test("registers the six sequential workflow tools during initialization", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		expect(fake.tools.map(({ name }) => name)).toEqual([
@@ -694,6 +1369,7 @@ describe("workflow extension lifecycle", () => {
 			"workflow_get_stage",
 			"workflow_edit_stage",
 			"workflow_transition",
+			"workflow_exit",
 			"workflow_create",
 		]);
 		expect(
@@ -710,7 +1386,7 @@ describe("workflow extension lifecycle", () => {
 		).toBe(true);
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree");
-		expect(fake.tools).toHaveLength(5);
+		expect(fake.tools).toHaveLength(6);
 	});
 
 	/**
@@ -812,8 +1488,8 @@ describe("workflow extension lifecycle", () => {
 		expect(Check(schema, versioned)).toBe(false);
 	});
 
-	/** Checks format-2 creation and restoration through the registered tool. */
-	test("creates and restores format-2 goals grounds and routes", async () => {
+	/** Checks format-3 creation and restoration through the registered tool. */
+	test("creates and restores format-3 goals grounds and routes", async () => {
 		await createSuite();
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -826,7 +1502,7 @@ describe("workflow extension lifecycle", () => {
 			kind: "created",
 			route: ["start"],
 			workflow: {
-				version: 2,
+				version: 3,
 				stages: [
 					{ goal: "Initial evidence is ready" },
 					{ goal: "Delivery is approved" },
@@ -839,6 +1515,7 @@ describe("workflow extension lifecycle", () => {
 			initial.indexOf("<stage_guidelines>"),
 		);
 		await requireTool(fake, "workflow_transition").execute("done", {
+			basis: "Stage checks passed.",
 			stageId: "done",
 		});
 		const branch = JSON.parse(
@@ -852,7 +1529,7 @@ describe("workflow extension lifecycle", () => {
 		);
 		const restored = replayWorkflowState(branch);
 		expect(restored?.route).toEqual(["start", "done"]);
-		expect(restored?.workflow.version).toBe(2);
+		expect(restored?.workflow.version).toBe(3);
 		expect(
 			restored?.workflow.stages.map(({ id, goal }) => ({ id, goal })),
 		).toEqual([
@@ -865,10 +1542,13 @@ describe("workflow extension lifecycle", () => {
 		await runLifecycle(fake, "session_tree", branch);
 		await expect(
 			requireTool(fake, "workflow_transition").execute("invalid", {
+				basis: "Stage checks passed.",
 				stageId: "start",
+				ground: "missing",
 			}),
 		).rejects.toThrow("revise");
 		await requireTool(fake, "workflow_transition").execute("rework", {
+			basis: "Stage checks passed.",
 			stageId: "start",
 			ground: "revise",
 		});
@@ -1105,10 +1785,14 @@ describe("workflow extension lifecycle", () => {
 			"workflow_get_stage",
 			"workflow_edit_stage",
 			"workflow_transition",
+			"workflow_exit",
 			"workflow_create",
 		]);
 		expect(
-			await transition.execute("transition", { stageId: "done" }),
+			await transition.execute("transition", {
+				basis: "Stage checks passed.",
+				stageId: "done",
+			}),
 		).toMatchObject({
 			content: [{ type: "text", text: '{"success":true}' }],
 		});
@@ -1314,6 +1998,7 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.messages).toEqual(before);
 		await edit.execute("legacy", replacement);
 		expect(fake.appended.at(-1)?.data).toEqual({
+			journalVersion: 2,
 			kind: "stage_edited",
 			...replacement,
 		});
@@ -1380,7 +2065,10 @@ describe("workflow extension lifecycle", () => {
 			final: true,
 		});
 
-		await transition.execute("transition", { stageId: "done" });
+		await transition.execute("transition", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		expect(fake.thinkingLevel).toBe("high");
 		await edit.execute("edit-active", {
 			stageId: "done",
@@ -1398,13 +2086,8 @@ describe("workflow extension lifecycle", () => {
 		expect(content).toContain("Follow the corrected requirements now.");
 	});
 
-	/**
-	 * Proves stage edits survive session replay and are unavailable once the workflow is completed.
-	 * Input and expected output: replaying created and stage_edited entries returns revised stage content; settlement hides both tools.
-	 * Edge case: direct calls against a completed saved snapshot fail instead of reading or changing it.
-	 * Dependencies: session entry replay, agent settlement, and active-tool reconciliation.
-	 */
-	test("replays stage edits and hides stage tools after completion", async () => {
+	/** Verifies replayed stage edits remain readable until exit and stale offered calls fail afterward. */
+	test("replays stage edits and rejects stale stage calls after exit", async () => {
 		await createSuite();
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -1437,20 +2120,24 @@ describe("workflow extension lifecycle", () => {
 		});
 
 		await requireTool(fake, "workflow_transition").execute("done", {
+			basis: "Stage checks passed.",
 			stageId: "done",
 		});
 		await runAgentSettled(fake);
-		expect(fake.activeTools).not.toContain("workflow_get_stage");
-		expect(fake.activeTools).not.toContain("workflow_edit_stage");
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Stage work is complete.",
+		});
+		expect(fake.activeTools).toContain("workflow_get_stage");
+		expect(fake.activeTools).toContain("workflow_edit_stage");
 		await expect(
-			get.execute("completed-get", { stageId: "done" }),
+			get.execute("exited-get", { stageId: "done" }),
 		).rejects.toThrow("no workflow is active");
 		await expect(
-			edit.execute("completed-edit", {
+			edit.execute("exited-edit", {
 				stageId: "done",
 				goal: "Replacement outcome",
 				description: "Disallowed",
-				prompt: "Do not edit a completed workflow.",
+				prompt: "Do not edit an exited workflow.",
 				model: { thinking: "medium" },
 			}),
 		).rejects.toThrow("no workflow is active");
@@ -1523,8 +2210,15 @@ describe("workflow extension lifecycle", () => {
 		const transition = requireTool(fake, "workflow_transition");
 
 		await create.execute("create", triggeredCreateArguments());
-		await transition.execute("advance", { stageId: "done" });
-		await transition.execute("rework", { stageId: "start", ground: "revise" });
+		await transition.execute("advance", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
+		await transition.execute("rework", {
+			basis: "Stage checks passed.",
+			stageId: "start",
+			ground: "revise",
+		});
 
 		expect(calls.map(({ trigger }) => trigger.type)).toEqual([
 			"local_knowledge_accumulation",
@@ -1676,7 +2370,10 @@ describe("workflow extension lifecycle", () => {
 
 		await create.execute("create", createArguments("DELIVERY"));
 		await activate.execute("activate", { workflowId: "delivery" });
-		await transition.execute("transition", { stageId: "done" });
+		await transition.execute("transition", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		fake.appendError = new Error("append failed");
 		await expect(
 			create.execute("create", createArguments("new-delivery")),
@@ -1691,7 +2388,7 @@ describe("workflow extension lifecycle", () => {
 		const entriesBeforeDuplicate = [...fake.appended];
 		await expect(
 			create.execute("create", createArguments("new-delivery")),
-		).rejects.toThrow("already active");
+		).rejects.toThrow("already runs in the chain");
 		expect(fake.appended).toEqual(entriesBeforeDuplicate);
 		const replaced = latestWorkflowContent(fake);
 		expect(replaced).toContain(
@@ -1782,7 +2479,10 @@ describe("workflow extension lifecycle", () => {
 		});
 
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("call", { stageId: "done" });
+		await transition.execute("call", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		expect(
 			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
 		).toEqual(["openai/workflow-model"]);
@@ -1811,7 +2511,10 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.thinkingLevel).toBe("xhigh");
 
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("call", { stageId: "fallback" });
+		await transition.execute("call", {
+			basis: "Stage checks passed.",
+			stageId: "fallback",
+		});
 
 		expect(
 			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
@@ -1837,7 +2540,10 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.thinkingLevel).toBe("xhigh");
 
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("call", { stageId: "fallback" });
+		await transition.execute("call", {
+			basis: "Stage checks passed.",
+			stageId: "fallback",
+		});
 
 		expect(
 			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
@@ -1875,7 +2581,10 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.thinkingLevel).toBe("low");
 
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("call", { stageId: "implement" });
+		await transition.execute("call", {
+			basis: "Stage checks passed.",
+			stageId: "implement",
+		});
 
 		expect(
 			fake.modelSetCalls.map(({ provider, id }) => `${provider}/${id}`),
@@ -1933,39 +2642,42 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.appended).toEqual([]);
 	});
 
-	/**
-	 * Proves a settled final-stage run restores the runtime values captured before activation.
-	 * Inputs and expected outputs: activation and final transition apply workflow settings; settlement restores the original model and thinking level and persists completion.
-	 * Edge cases: the final stage omits model settings, so the final runtime values remain those from the preceding stage.
-	 * Dependencies: workflow model application, persisted state entries, and the agent_settled lifecycle event.
-	 */
-	test("restores runtime settings after a final stage settles", async () => {
+	/** Verifies final-stage settlement retains settings and reminders until explicit exit restores the snapshot. */
+	test("retains final-stage settings until explicit exit", async () => {
 		await createSuite(modelYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
 		const activate = requireTool(fake, "workflow_activate");
 		await activate.execute("activate", { workflowId: "delivery" });
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("transition", { stageId: "done" });
+		await transition.execute("transition", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 
 		expect(fake.model?.id).toBe("workflow-model");
 		expect(fake.thinkingLevel).toBe("high");
 
 		await runAgentSettled(fake);
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("high");
+		expect(fake.appended).toHaveLength(2);
+		await runTurn(fake, 50);
+		expect((fake.messages.at(-1)?.details as { kind: string }).kind).toBe(
+			"reminder",
+		);
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Work is delivered.",
+		});
 
 		expect(fake.model?.id).toBe("current-model");
 		expect(fake.thinkingLevel).toBe("medium");
 		expect(
 			fake.appended.map(({ data }) => (data as { kind: string }).kind),
-		).toEqual(["activated", "transitioned", "completed"]);
+		).toEqual(["activated", "transitioned", "exited"]);
 	});
 
-	/**
-	 * Proves an unsuccessful agent run cannot complete its active final workflow stage.
-	 * Inputs and expected outputs: each aborted or failed assistant outcome followed by agent_settled leaves the final stage active and keeps its runtime settings.
-	 * Edge cases: the unsuccessful outcome occurs after transition into the final stage but before its required action succeeds.
-	 * Dependencies: turn_end outcome tracking, agent_settled lifecycle handling, and final-stage completion persistence.
-	 */
+	/** Verifies aborted and failed runs retain the active final stage and its model settings. */
 	test.each([
 		"aborted",
 		"error",
@@ -1977,6 +2689,7 @@ describe("workflow extension lifecycle", () => {
 			workflowId: "delivery",
 		});
 		await requireTool(fake, "workflow_transition").execute("transition", {
+			basis: "Stage checks passed.",
 			stageId: "done",
 		});
 
@@ -2047,13 +2760,8 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.thinkingLevel).toBe("low");
 	});
 
-	/**
-	 * Proves replay of completed state does not reapply final-stage runtime settings.
-	 * Inputs and expected outputs: a completed branch is replayed into a fresh runtime and keeps the main model selected.
-	 * Edge cases: the branch contains activation, transition, and completion entries in chronological order.
-	 * Dependencies: workflow replay, completed-state synchronization, and model runtime setup.
-	 */
-	test("does not reapply workflow settings when replaying completion", async () => {
+	/** Verifies replay of an exit restores the root snapshot without reapplying final-stage settings. */
+	test("does not reapply workflow settings when replaying exit", async () => {
 		await createSuite(modelYaml());
 		const source = await createFakePi();
 		await runLifecycle(source, "session_start");
@@ -2061,9 +2769,12 @@ describe("workflow extension lifecycle", () => {
 			workflowId: "delivery",
 		});
 		await requireTool(source, "workflow_transition").execute("transition", {
+			basis: "Stage checks passed.",
 			stageId: "done",
 		});
-		await runAgentSettled(source);
+		await requireTool(source, "workflow_exit").execute("exit", {
+			basis: "Stage work is complete.",
+		});
 
 		const replayed = await createFakePi();
 		const branch = source.appended.map(({ data }) => ({
@@ -2094,54 +2805,63 @@ describe("workflow extension lifecycle", () => {
 		).toEqual(["activated"]);
 	});
 
-	/**
-	 * Proves completion removes active-stage instructions while retaining the rework route.
-	 * Inputs and expected outputs: a settled final stage projects completed state without active-stage guidance; rework restores active settings and context.
-	 * Edge cases: the completed state must remain available even though the final-stage model has been restored.
-	 * Dependencies: completion persistence, workflow journaling, and route transition application.
-	 */
-	test("projects completion and supports rework", async () => {
+	/** Verifies a settled final stage stays active and supports route-dependent rework before exit. */
+	test("retains final-stage context and supports rework before exit", async () => {
 		await createSuite(modelYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
 		const activate = requireTool(fake, "workflow_activate");
 		await activate.execute("activate", { workflowId: "delivery" });
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("transition", { stageId: "done" });
+		await transition.execute("transition", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		await runAgentSettled(fake);
 
-		const completedContext = latestWorkflowContent(fake);
-		expect(completedContext).toContain("<workflow_completed");
-		expect(completedContext).not.toContain("<stage_guidelines>");
+		expect((fake.messages.at(-1)?.details as { kind: string }).kind).toBe(
+			"stage_activation",
+		);
+		expect(fake.model?.id).toBe("workflow-model");
+		expect(fake.thinkingLevel).toBe("high");
 
-		await transition.execute("rework", { stageId: "start" });
+		await transition.execute("rework", {
+			basis: "Stage checks passed.",
+			stageId: "start",
+		});
 
 		expect(fake.model?.id).toBe("workflow-model");
 		expect(fake.thinkingLevel).toBe("xhigh");
-		const activeContext = latestWorkflowContent(fake);
-		expect(activeContext).toContain("<workflow_stage_activated");
-		expect(activeContext).toContain('guidelines="reuse"');
+		expect(
+			replayWorkflowState(
+				fake.appended.map(({ data }) => ({
+					type: "custom",
+					customType: "workflow-state",
+					data,
+				})),
+			)?.route,
+		).toEqual(["start"]);
 	});
 
-	/**
-	 * Proves completion persistence failure restores final-stage runtime values and keeps the workflow active.
-	 * Inputs and expected outputs: an append failure during settlement leaves the final model, thinking level, and active context unchanged.
-	 * Edge cases: runtime restoration succeeds before the persistence failure and therefore requires an explicit rollback.
-	 * Dependencies: completion transaction and workflow model rollback.
-	 */
-	test("rolls back final-stage restoration when completion persistence fails", async () => {
+	/** Verifies an exit persistence failure rolls model restoration back and preserves the active route. */
+	test("rolls back final-stage restoration when exit persistence fails", async () => {
 		await createSuite(modelYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
 		const activate = requireTool(fake, "workflow_activate");
 		await activate.execute("activate", { workflowId: "delivery" });
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("transition", { stageId: "done" });
-		fake.appendError = new Error("completion append failed");
+		await transition.execute("transition", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
+		fake.appendError = new Error("exit append failed");
 
-		await expect(runAgentSettled(fake)).rejects.toThrow(
-			"completion append failed",
-		);
+		await expect(
+			requireTool(fake, "workflow_exit").execute("exit", {
+				basis: "Stage work is complete.",
+			}),
+		).rejects.toThrow("exit append failed");
 
 		expect(fake.model?.id).toBe("workflow-model");
 		expect(fake.thinkingLevel).toBe("high");
@@ -2183,11 +2903,14 @@ describe("workflow extension lifecycle", () => {
 		).toMatchObject({
 			content: [{ type: "text", text: '{"success":true}' }],
 		});
-		expect(await transition.execute("call", { stageId: "done" })).toMatchObject(
-			{
-				content: [{ type: "text", text: '{"success":true}' }],
-			},
-		);
+		expect(
+			await transition.execute("call", {
+				basis: "Stage checks passed.",
+				stageId: "done",
+			}),
+		).toMatchObject({
+			content: [{ type: "text", text: '{"success":true}' }],
+		});
 		expect(
 			fake.appended.map(({ data }) => (data as { kind: string }).kind),
 		).toEqual(["activated", "transitioned"]);
@@ -2201,12 +2924,15 @@ describe("workflow extension lifecycle", () => {
 		const activate = requireTool(fake, "workflow_activate");
 		const transition = requireTool(fake, "workflow_transition");
 		await activate.execute("call", { workflowId: "delivery" });
-		await transition.execute("call", { stageId: "done" });
+		await transition.execute("call", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		const entriesBeforeReactivation = [...fake.appended];
 
 		await expect(
 			activate.execute("call", { workflowId: "delivery" }),
-		).rejects.toThrow("not available for activation");
+		).rejects.toThrow("already runs in the chain");
 
 		expect(fake.appended).toEqual(entriesBeforeReactivation);
 		const transitionedEntry = entriesBeforeReactivation[1];
@@ -2221,13 +2947,8 @@ describe("workflow extension lifecycle", () => {
 		expect(content).toContain('<transition to="start" type="rework" />');
 	});
 
-	/**
-	 * Proves system suppression does not erase active workflow guidance granted by agent policy.
-	 * Input and expected output: an activate-only agent activates its sole option, loses the unusable tool, and retains active context.
-	 * Edge case: activation options remain absent after the sole workflow becomes active.
-	 * Dependencies: extension-owned suppression, provider-context gating, and catalog activation.
-	 */
-	test("keeps active context after suppressing the sole activation tool", async () => {
+	/** Verifies activation and active context stay offered when the sole catalog option becomes active. */
+	test("keeps active context and the previously offered sole activation tool", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		setMainWorkflowPolicy(fake, ["delivery"], ["read", "workflow_activate"]);
@@ -2235,13 +2956,63 @@ describe("workflow extension lifecycle", () => {
 		const activate = requireTool(fake, "workflow_activate");
 
 		await activate.execute("activate", { workflowId: "delivery" });
-		expect(fake.activeTools).toEqual(["read"]);
+		expect(fake.activeTools).toEqual(["read", "workflow_activate"]);
 		const content = latestWorkflowContent(fake);
 		expect(content).toContain(
 			'<workflow_stage_activated workflow_id="delivery" stage_id="start"',
 		);
 		expect(content).toContain("<stage_guidelines>\nStart work");
 		expect(content).not.toContain("<workflow_activation_options");
+	});
+
+	/** Checks basis validation before any transition side effects for both catalog formats. */
+	test.each([
+		1, 2,
+	])("requires a nonempty runtime transition basis for format %s", async (version) => {
+		await createSuite(version === 1 ? validYaml() : groundedYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		const transition = requireTool(fake, "workflow_transition");
+		const ground = version === 2 ? { ground: "ready" } : {};
+		const schema = transition.parameters as Parameters<typeof Check>[0];
+		const entries = [...fake.appended];
+		const messages = [...fake.messages];
+		const model = fake.model;
+		const thinking = fake.thinkingLevel;
+		for (const invalid of [
+			{},
+			{ basis: undefined },
+			{ basis: null },
+			{ basis: 7 },
+			{ basis: false },
+			{ basis: [] },
+			{ basis: {} },
+			{ basis: "" },
+			{ basis: " \t\n" },
+		]) {
+			const params = { stageId: "done", ...ground, ...invalid };
+			expect(Check(schema, params)).toBe(false);
+			await expect(transition.execute("invalid", params)).rejects.toThrow(
+				"basis",
+			);
+			expect(fake.appended).toEqual(entries);
+			expect(fake.messages).toEqual(messages);
+			expect(fake.model).toBe(model);
+			expect(fake.thinkingLevel).toBe(thinking);
+		}
+		await transition.execute("valid", {
+			stageId: "done",
+			...ground,
+			basis: "  Checks passed.\nThe result is ready.  ",
+		});
+		expect(fake.appended.at(-1)?.data).toEqual({
+			journalVersion: 2,
+			kind: "transitioned",
+			route: ["start", "done"],
+		});
 	});
 
 	/** Proves invalid arguments and append failures preserve prior state. */
@@ -2301,7 +3072,7 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.messages).toHaveLength(1);
 		expect(fake.messages[0]).toMatchObject({
 			customType: "workflow",
-			content: '<workflow_reminder id="delivery" active_stage_id="start" />',
+			content: expect.any(String),
 			display: false,
 			details: { kind: "reminder" },
 			options: { deliverAs: "steer" },
@@ -2445,6 +3216,7 @@ describe("workflow extension lifecycle", () => {
 		}
 		await start({ type: "turn_start", turnIndex: 0, timestamp: Date.now() });
 		await requireTool(fake, "workflow_transition").execute("transition", {
+			basis: "Stage checks passed.",
 			stageId: "done",
 		});
 		await end({
@@ -2500,7 +3272,7 @@ describe("workflow extension lifecycle", () => {
 		expect(activation?.options).toEqual({ deliverAs: "steer" });
 	});
 
-	test("publishes activation options without requesting another provider turn", async () => {
+	test("does not publish activation options again at an activation", async () => {
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -2511,17 +3283,9 @@ describe("workflow extension lifecycle", () => {
 			workflowId: "delivery",
 		});
 
-		const options = fake.messages.filter(
-			({ details }) =>
-				typeof details === "object" &&
-				details !== null &&
-				Reflect.get(details, "kind") === "activation_options",
-		);
-		expect(options).toHaveLength(1);
-		expect(options[0]?.options).toEqual({
-			deliverAs: "steer",
-			triggerTurn: false,
-		});
+		expect(
+			fake.messages.some(({ details }) => !isWorkflowLifecycleDetails(details)),
+		).toBe(false);
 	});
 
 	/** Proves automatic compaction restores availability for the continuing run. */
@@ -2538,7 +3302,7 @@ describe("workflow extension lifecycle", () => {
 		await runSessionCompact(fake, false);
 
 		expect(fake.messages).toHaveLength(2);
-		expect(fake.messages.at(-1)?.details).toEqual({
+		expect(fake.messages.at(-1)?.details).toMatchObject({
 			version: 1,
 			kind: "activation_options",
 		});
@@ -2552,7 +3316,7 @@ describe("workflow extension lifecycle", () => {
 	test("checkpoints after compaction and inlines the first later stage entry", async () => {
 		// Purpose: post-compaction history must restore exact active instructions without trusting the summary.
 		// Input and expected output: review compaction emits one checkpoint, then rework inlines implementation guidance again.
-		// Edge case: compaction publishes no empty activation-options record when no options remain.
+		// Edge case: idle compaction leaves the activation options to the next tool call, which publishes them without another provider turn.
 		// Dependencies: session_compact wiring, checkpoint rendering, and known-stage reset.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
@@ -2561,7 +3325,10 @@ describe("workflow extension lifecycle", () => {
 			workflowId: "delivery",
 		});
 		const transition = requireTool(fake, "workflow_transition");
-		await transition.execute("advance", { stageId: "done" });
+		await transition.execute("advance", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		const beforeCompaction = fake.messages.length;
 
 		await runSessionCompact(fake);
@@ -2576,11 +3343,25 @@ describe("workflow extension lifecycle", () => {
 			triggerTurn: false,
 		});
 
-		await transition.execute("rework", { stageId: "start" });
-		expect(fake.messages.at(-1)?.details).toMatchObject({
+		await transition.execute("rework", {
+			basis: "Stage checks passed.",
+			stageId: "start",
+		});
+		const afterRework = fake.messages.slice(beforeCompaction + 1);
+		expect(
+			afterRework.find(({ details }) => isWorkflowLifecycleDetails(details))
+				?.details,
+		).toMatchObject({
 			kind: "stage_activation",
 			workflowId: "delivery",
 			stageId: "start",
+		});
+		expect(
+			afterRework.find(({ details }) => !isWorkflowLifecycleDetails(details))
+				?.options,
+		).toEqual({
+			deliverAs: "steer",
+			triggerTurn: false,
 		});
 	});
 
@@ -2622,7 +3403,11 @@ describe("workflow extension lifecycle", () => {
 		const oldCheckpoint = {
 			type: "custom_message",
 			...restored,
-			details: { ...(restored?.details as object), includesGraph: undefined },
+			details: {
+				...(restored?.details as object),
+				includesGraph: undefined,
+				graphWorkflowIds: undefined,
+			},
 		};
 		const branch = [activatedEntry(), { type: "compaction" }, oldCheckpoint];
 		const beforeRepair = fake.messages.length;
@@ -2684,6 +3469,7 @@ describe("workflow extension lifecycle", () => {
 		setMainWorkflowPolicy(fake, ["delivery"], ["read", "workflow_transition"]);
 		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
 		await requireTool(fake, "workflow_transition").execute("continue", {
+			basis: "Stage checks passed.",
 			stageId: "done",
 		});
 		expect(fake.appended.at(-1)?.data).toMatchObject({
@@ -2714,7 +3500,10 @@ describe("workflow extension lifecycle", () => {
 			activate.execute("reject-review", { workflowId: "review" }),
 		).rejects.toThrow("not allowed");
 		await activate.execute("activate-delivery", { workflowId: "delivery" });
-		await transition.execute("finish-delivery", { stageId: "done" });
+		await transition.execute("finish-delivery", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 
 		setMainWorkflowPolicy(fake, ["review"]);
 		expect(fake.messages.at(-1)?.details).toMatchObject({
@@ -2728,7 +3517,10 @@ describe("workflow extension lifecycle", () => {
 			kind: "activation_options",
 		});
 
-		await transition.execute("reopen-delivery", { stageId: "start" });
+		await transition.execute("reopen-delivery", {
+			basis: "Stage checks passed.",
+			stageId: "start",
+		});
 		await activate.execute("activate-review", { workflowId: "review" });
 		const replacedContent = latestWorkflowContent(fake);
 		expect(replacedContent).toContain(
@@ -2766,7 +3558,10 @@ describe("workflow extension lifecycle", () => {
 			kind: "activation_options",
 		});
 
-		await transition.execute("finish-delivery", { stageId: "done" });
+		await transition.execute("finish-delivery", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		await activate.execute("activate-review", { workflowId: "review" });
 		const replacedContent = latestWorkflowContent(fake);
 		expect(replacedContent).toContain(
@@ -2802,7 +3597,10 @@ describe("workflow extension lifecycle", () => {
 			throw new Error("transition tool missing");
 		}
 		await expect(
-			transition.execute("call", { stageId: "done" }),
+			transition.execute("call", {
+				basis: "Stage checks passed.",
+				stageId: "done",
+			}),
 		).rejects.toThrow(expectedIssue);
 		expect(fake.appended).toEqual([]);
 	});
@@ -2816,8 +3614,8 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.activeTools).toEqual(["read"]);
 	});
 
-	/** Proves ordinary suppression is retained and restored exactly once. */
-	test("restores only names suppressed by unusable lifecycle reconciliation", async () => {
+	/** Verifies upstream policy exclusions survive later workflow applicability. */
+	test("preserves upstream exclusions when workflow tools become applicable", async () => {
 		await createSuite();
 		const fake = await createFakePi();
 		fake.activeTools = ["read", "workflow_activate", "workflow_transition"];
@@ -2844,7 +3642,7 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.activeTools).toEqual(["read"]);
 	});
 
-	/** Proves a main-agent policy reset replaces stale suppression ownership. */
+	/** Verifies selected-agent policy changes still gate newly applicable workflow tools. */
 	test("reconciles inactive state after selected-agent contribution changes", async () => {
 		await createSuite();
 		const fake = await createFakePi();
@@ -2861,8 +3659,8 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.activeTools).toEqual(["read", "workflow_transition"]);
 	});
 
-	/** Proves usable policy resets clear stale ownership without changing active names. */
-	test("clears stale suppression after a usable main-agent policy change", async () => {
+	/** Verifies workflow replay cannot reoffer a tool excluded by the selected agent. */
+	test("preserves selected-agent exclusions across workflow branch changes", async () => {
 		await createSuite();
 		const fake = await createFakePi();
 		setMainWorkflowPolicy(fake, undefined, ["read", "workflow_transition"]);
@@ -2920,7 +3718,10 @@ describe("workflow extension lifecycle", () => {
 			'<workflow_checkpoint id="delivery" status="active" active_stage_id="start"',
 		);
 
-		await transition.execute("finish-delivery", { stageId: "done" });
+		await transition.execute("finish-delivery", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		expect(fake.appended).toHaveLength(1);
 		const transitionedContent = latestWorkflowContent(fake);
 		expect(transitionedContent).toContain('stage_id="done"');
@@ -2969,7 +3770,10 @@ describe("workflow extension lifecycle", () => {
 		await runLifecycle(fake, "session_start");
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
 		const resumedRows = renderLatestStatus(fake, 120);
-		await transition.execute("call", { stageId: "done" });
+		await transition.execute("call", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+		});
 		const transitionedRows = renderLatestStatus(fake, 120);
 		await runLifecycle(fake, "session_shutdown");
 		const cleared = fake.widgetUpdates.at(-1)?.content;
@@ -3034,7 +3838,7 @@ test("activates and restores a format-2 catalog workflow", async () => {
 		throw new Error("missing activation snapshot");
 	}
 	expect(snapshot.data).toMatchObject({
-		journalVersion: 1,
+		journalVersion: 2,
 		workflow: {
 			version: 2,
 			stages: [{ goal: "Ready <&> approved" }, { goal: "Delivery ready" }],
@@ -3084,19 +3888,24 @@ test.each([
 	const schema = tool.parameters as Parameters<typeof Check>[0];
 	expect(
 		Check(schema, {
+			basis: "Stage checks passed.",
 			stageId: "done",
 			ground: "ready",
 		}),
 	).toBe(true);
-	expect(Check(schema, { stageId: "done" })).toBe(true);
+	expect(
+		Check(schema, { basis: "Stage checks passed.", stageId: "done" }),
+	).toBe(true);
 	expect(
 		Check(schema, {
+			basis: "Stage checks passed.",
 			stageId: "done",
 			ground: 42,
 		}),
 	).toBe(false);
 	expect(
 		Check(schema, {
+			basis: "Stage checks passed.",
 			stageId: "done",
 			ground: "ready",
 			extra: true,
@@ -3107,18 +3916,22 @@ test.each([
 	const model = fake.model;
 	const thinking = fake.thinkingLevel;
 	for (const params of [
-		{ stageId: "done" },
-		{ stageId: "done", ground: "missing" },
-		{ stageId: "done", ground: "retry" },
+		{ basis: "Stage checks passed.", stageId: "done", ground: "missing" },
+		{ basis: "Stage checks passed.", stageId: "done", ground: "retry" },
 	]) {
 		await expect(tool.execute("invalid", params)).rejects.toThrow("ready");
 		expect(fake.appended).toEqual(entries);
 		expect(fake.messages).toEqual(messages);
 	}
 	for (const params of [
-		{ stageId: "done", ground: 42 },
-		{ stageId: "done", ground: null },
-		{ stageId: "done", ground: "ready", extra: true },
+		{ basis: "Stage checks passed.", stageId: "done", ground: 42 },
+		{ basis: "Stage checks passed.", stageId: "done", ground: null },
+		{
+			basis: "Stage checks passed.",
+			stageId: "done",
+			ground: "ready",
+			extra: true,
+		},
 	]) {
 		await expect(tool.execute("invalid", params)).rejects.toThrow();
 		expect(fake.appended).toEqual(entries);
@@ -3126,7 +3939,11 @@ test.each([
 	}
 	fake.appendError = new Error("append failed");
 	await expect(
-		tool.execute("failed", { stageId: "done", ground: "ready" }),
+		tool.execute("failed", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+			ground: "ready",
+		}),
 	).rejects.toThrow("append failed");
 	expect(fake.appended).toEqual(entries);
 	expect(fake.messages).toEqual(messages);
@@ -3134,10 +3951,15 @@ test.each([
 	expect(fake.thinkingLevel).toBe(thinking);
 	fake.appendError = undefined;
 	expect(
-		await tool.execute("advance", { stageId: "done", ground: "ready" }),
+		await tool.execute("advance", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+			ground: "ready",
+		}),
 	).toMatchObject({ content: [{ type: "text", text: '{"success":true}' }] });
 	expect(fake.appended.at(-1)?.data).toEqual({
 		kind: "transitioned",
+		journalVersion: 2,
 		route: ["start", "done"],
 	});
 	expect(latestWorkflowContent(fake)).toContain('stage_id="done"');
@@ -3146,11 +3968,18 @@ test.each([
 	expect(latestWorkflowContent(fake)).toContain('<ground id="retry">');
 	await runTurn(fake, 0);
 	await runAgentSettled(fake);
-	expect(latestWorkflowContent(fake)).toContain("<workflow_completed");
+	expect((fake.messages.at(-1)?.details as { kind: string }).kind).toBe(
+		"stage_activation",
+	);
 	expect(latestWorkflowContent(fake)).toContain('<ground id="retry">');
-	await tool.execute("rework", { stageId: "start", ground: "retry" });
+	await tool.execute("rework", {
+		basis: "Stage checks passed.",
+		stageId: "start",
+		ground: "retry",
+	});
 	expect(fake.appended.at(-1)?.data).toEqual({
 		kind: "transitioned",
+		journalVersion: 2,
 		route: ["start"],
 	});
 	const reuse = latestWorkflowContent(fake);
@@ -3183,13 +4012,725 @@ test.each([
 	const entries = structuredClone(fake.appended);
 	const messages = structuredClone(fake.messages);
 	await expect(
-		tool.execute("invalid", { stageId: "done", ground: "ready" }),
+		tool.execute("invalid", {
+			basis: "Stage checks passed.",
+			stageId: "done",
+			ground: "ready",
+		}),
 	).rejects.toThrow("ground");
 	expect(fake.appended).toEqual(entries);
 	expect(fake.messages).toEqual(messages);
-	await tool.execute("advance", { stageId: "done" });
+	await tool.execute("advance", {
+		basis: "Stage checks passed.",
+		stageId: "done",
+	});
 	expect(fake.appended.at(-1)?.data).toEqual({
 		kind: "transitioned",
+		journalVersion: 2,
 		route: ["start", "done"],
+	});
+});
+
+/** Projects fake journal writes into isolated session entries. */
+function savedBranch(fake: FakePi) {
+	return fake.appended.map((entry) => ({ type: "custom", ...entry }));
+}
+
+/** Captures publication metadata without inspecting model-facing text. */
+function captureMessageMetadata(fake: FakePi) {
+	return fake.messages.map(({ details, options }) => ({ details, options }));
+}
+
+/** Installs bound catalog graphs and returns matching dynamic-parent arguments. */
+async function createBoundSuite() {
+	const args = triggeredCreateArguments();
+	const transitions = args["transitions"] as Record<string, unknown>[];
+	args["transitions"] = transitions.map((edge) => ({
+		...edge,
+		workflow: "check",
+	}));
+	const suite = await createSuite();
+	await writeFile(
+		join(suite, "workflow/workflows/delivery.yaml"),
+		stringify({ ...args, id: undefined, version: 3 }),
+	);
+	await writeFile(
+		join(suite, "workflow/workflows/check.yaml"),
+		stringify({
+			...createArguments(),
+			id: undefined,
+			version: 3,
+			nested: true,
+			stages: [
+				...(createArguments()["stages"] as Record<string, unknown>[]),
+				{
+					id: "middle",
+					description: "Middle",
+					goal: "Reviewed",
+					prompt: "Review",
+					model: { thinking: "low" },
+				},
+			],
+			transitions: [
+				{ from: "start", to: "middle", type: "advance" },
+				{ from: "middle", to: "done", type: "advance" },
+				{
+					from: "done",
+					to: "start",
+					type: "rework",
+					grounds: [{ id: "retry", when: "Revision" }],
+				},
+			],
+		}),
+	);
+	return { suite, args };
+}
+
+for (const role of ["main", "child"] as const) {
+	for (const source of ["catalog", "created"] as const) {
+		test(`bound transitions ${role} ${source} allow, refuse, repeat and rework at any check stage`, async () => {
+			const { args } = await createBoundSuite();
+			if (role === "child") {
+				process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+				process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
+			}
+			const fake = await createFakePi();
+			if (role === "main") {
+				setMainWorkflowPolicy(fake, ["delivery", "check"]);
+			}
+			await runLifecycle(fake, "session_start");
+			const triggers = captureTriggers(fake);
+			expect(
+				Check(requireTool(fake, "workflow_create").parameters as never, args),
+			).toBe(true);
+			expect(
+				Check(requireTool(fake, "workflow_exit").parameters as never, {
+					basis: "Ready",
+					allow: true,
+				}),
+			).toBe(true);
+			await requireTool(
+				fake,
+				source === "catalog" ? "workflow_activate" : "workflow_create",
+			).execute(
+				"start",
+				source === "catalog" ? { workflowId: "delivery" } : args,
+			);
+			const parent = replayWorkflowChain(savedBranch(fake)).chain[0];
+			if (parent === undefined) {
+				throw new Error("missing parent fixture");
+			}
+			const move = requireTool(fake, "workflow_transition");
+			const exit = requireTool(fake, "workflow_exit");
+			const request = { stageId: "done", basis: "Ready for checking" };
+			await move.execute("request", request);
+			const pending = replayWorkflowChain(savedBranch(fake)).chain;
+			expect(pending[0]).toEqual(parent);
+			expect(pending[1]?.workflow.id).toBe("check");
+			expect(pending[1]?.pendingTransition).toEqual({ stageId: "done" });
+			const before = {
+				entries: [...fake.appended],
+				messages: captureMessageMetadata(fake),
+				calls: [...fake.modelSetCalls],
+				thinking: fake.thinkingLevel,
+			};
+			for (const allow of [undefined, null, "true", 1, {}]) {
+				await expect(
+					exit.execute("bad", {
+						basis: "Check decision",
+						...(allow === undefined ? {} : { allow }),
+					}),
+				).rejects.toThrow("allow");
+			}
+			expect(fake.appended).toEqual(before.entries);
+			expect(captureMessageMetadata(fake)).toEqual(before.messages);
+			expect(fake.modelSetCalls).toEqual(before.calls);
+			expect(fake.thinkingLevel).toBe(before.thinking);
+			await move.execute("middle-check", {
+				stageId: "middle",
+				basis: "Initial check finished",
+			});
+			const triggerCount = triggers.length;
+			await exit.execute("refuse", { basis: "More work needed", allow: false });
+			expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual([parent]);
+			expect(triggers).toHaveLength(triggerCount);
+			expect(
+				(fake.messages.at(-1)?.details as Record<string, unknown>)[
+					"refusedTransition"
+				],
+			).toEqual({ stageId: "done" });
+			await move.execute("repeat", request);
+			await move.execute("middle-again", {
+				stageId: "middle",
+				basis: "Initial check finished",
+			});
+			await move.execute("finish-check", {
+				stageId: "done",
+				basis: "Check complete",
+			});
+			const count = fake.appended.length;
+			await exit.execute(
+				"allow",
+				{ basis: "Ready", allow: true },
+				undefined,
+				undefined,
+				{},
+			);
+			expect(fake.appended).toHaveLength(count + 1);
+			expect(fake.appended.at(-1)?.data).toEqual({
+				kind: "exited",
+				journalVersion: 2,
+				allow: true,
+			});
+			expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+				"start",
+				"done",
+			]);
+			expect(triggers).toHaveLength(triggerCount + 1);
+			await move.execute("rework", {
+				stageId: "start",
+				ground: "revise",
+				basis: "Revision",
+			});
+			expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+				"start",
+				"done",
+			]);
+			await exit.execute(
+				"skip-check",
+				{ basis: "User permits early return", allow: true },
+				undefined,
+				undefined,
+				{},
+			);
+			expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+				"start",
+			]);
+			expect(triggers).toHaveLength(triggerCount + 4);
+			await exit.execute("ordinary", { basis: "Stop", allow: true });
+			expect(fake.appended.at(-1)?.data).toEqual({
+				kind: "exited",
+				journalVersion: 2,
+			});
+		});
+	}
+
+	test(`bound transitions ${role} start checks outside activation policy and reject running IDs without side effects`, async () => {
+		// Purpose: the agent policy limits only workflows that the agent starts itself.
+		// Input and expected output: policy [delivery] rejects manual check activation and starts check on the bound transition.
+		await createBoundSuite();
+		if (role === "child") {
+			process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery"]';
+		}
+		const fake = await createFakePi();
+		if (role === "main") {
+			setMainWorkflowPolicy(fake, ["delivery"]);
+		}
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("parent", {
+			workflowId: "delivery",
+		});
+		expect(latestWorkflowContent(fake)).toContain(
+			'<transition to="done" type="advance" workflow="check" />',
+		);
+		const before = {
+			entries: [...fake.appended],
+			messages: captureMessageMetadata(fake),
+			calls: [...fake.modelSetCalls],
+			tools: [...fake.activeTools],
+			widgets: [...fake.widgetUpdates],
+			thinking: fake.thinkingLevel,
+		};
+		await expect(
+			requireTool(fake, "workflow_activate").execute("denied", {
+				workflowId: "check",
+			}),
+		).rejects.toThrow("not allowed");
+		expect(fake.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(fake)).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.calls);
+		expect(fake.activeTools).toEqual(before.tools);
+		expect(fake.widgetUpdates).toEqual(before.widgets);
+		expect(fake.thinkingLevel).toBe(before.thinking);
+		const branch = savedBranch(fake);
+		await requireTool(fake, "workflow_transition").execute("bound", {
+			stageId: "done",
+			basis: "Ready",
+		});
+		const pending = replayWorkflowChain(savedBranch(fake)).chain;
+		expect(pending[1]?.workflow.id).toBe("check");
+		expect(pending[1]?.pendingTransition).toEqual({ stageId: "done" });
+		if (role === "child") {
+			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
+		}
+		const allowed = await createFakePi();
+		if (role === "main") {
+			setMainWorkflowPolicy(allowed, ["delivery", "check"]);
+		}
+		await runLifecycle(allowed, "session_start", branch);
+		await requireTool(allowed, "workflow_activate").execute("waiting", {
+			workflowId: "check",
+		});
+		const dynamic = createArguments("duplicate-parent");
+		dynamic["nested"] = true;
+		dynamic["transitions"] = (
+			dynamic["transitions"] as Record<string, unknown>[]
+		).map((edge) => ({ ...edge, workflow: "check" }));
+		await requireTool(allowed, "workflow_create").execute("dynamic", dynamic);
+		const entries = [...allowed.appended];
+		const messages = captureMessageMetadata(allowed);
+		const calls = [...allowed.modelSetCalls];
+		await expect(
+			requireTool(allowed, "workflow_transition").execute("duplicate", {
+				stageId: "done",
+				basis: "Ready",
+			}),
+		).rejects.toThrow("already runs in the chain");
+		expect(allowed.appended).toEqual(entries);
+		expect(captureMessageMetadata(allowed)).toEqual(messages);
+		expect(allowed.modelSetCalls).toEqual(calls);
+	});
+}
+
+test("bound creation validates catalog bindings before any side effect", async () => {
+	await createBoundSuite();
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	const create = requireTool(fake, "workflow_create");
+	for (const workflow of ["absent", "delivery"]) {
+		const args = createArguments();
+		args["transitions"] = (
+			args["transitions"] as Record<string, unknown>[]
+		).map((edge) => ({ ...edge, workflow }));
+		const before = {
+			entries: [...fake.appended],
+			messages: captureMessageMetadata(fake),
+			calls: [...fake.modelSetCalls],
+			thinking: fake.thinkingLevel,
+		};
+		await expect(create.execute("invalid", args)).rejects.toThrow(
+			workflow === "absent"
+				? "does not exist in the catalog"
+				: "must have nested: true",
+		);
+		expect(fake.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(fake)).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.calls);
+		expect(fake.thinkingLevel).toBe(before.thinking);
+	}
+});
+
+test("bound start and permission persistence failures roll models back and apply only the resolved target", async () => {
+	const { suite } = await createBoundSuite();
+	await writeFile(
+		join(suite, "workflow/workflows/delivery.yaml"),
+		groundedYaml()
+			.replace(
+				"version: 2",
+				"version: 3\nmodel:\n  id: openai/current-model\n  thinking: medium",
+			)
+			.replace("    type: advance", "    type: advance\n    workflow: check"),
+	);
+	await writeFile(
+		join(suite, "workflow/workflows/check.yaml"),
+		groundedYaml().replace(
+			"version: 2",
+			"version: 3\nnested: true\nmodel:\n  id: openai/workflow-model\n  thinking: low",
+		),
+	);
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	await requireTool(fake, "workflow_activate").execute("parent", {
+		workflowId: "delivery",
+	});
+	const move = requireTool(fake, "workflow_transition");
+	const exit = requireTool(fake, "workflow_exit");
+	const request = { stageId: "done", ground: "ready", basis: "Ready" };
+	const parent = replayWorkflowChain(savedBranch(fake)).chain;
+	if (fake.api === undefined) {
+		throw new Error("missing API fixture");
+	}
+	const setModel = fake.api.setModel;
+	fake.api.setModel = async () => false;
+	await expect(move.execute("failed-model", request)).rejects.toThrow();
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(parent);
+	expect(fake.model?.id).toBe("current-model");
+	expect(fake.thinkingLevel).toBe("medium");
+	fake.api.setModel = setModel;
+	fake.appendError = new Error("write failed");
+	await expect(move.execute("failed-start", request)).rejects.toThrow(
+		"write failed",
+	);
+	expect(fake.model?.id).toBe("current-model");
+	expect(fake.thinkingLevel).toBe("medium");
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(parent);
+	fake.appendError = undefined;
+	await move.execute("start", request);
+	const pending = replayWorkflowChain(savedBranch(fake)).chain;
+	const messages = captureMessageMetadata(fake);
+	const findModel = fake.modelRegistry.find;
+	fake.modelRegistry.find = () => undefined;
+	await expect(
+		exit.execute("unknown-target-model", { basis: "Ready", allow: true }),
+	).rejects.toThrow("was not found");
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(pending);
+	expect(captureMessageMetadata(fake)).toEqual(messages);
+	expect(fake.model?.id).toBe("workflow-model");
+	expect(fake.thinkingLevel).toBe("low");
+	fake.modelRegistry.find = findModel;
+	fake.appendError = new Error("write failed");
+	await expect(
+		exit.execute("failed-exit", { basis: "Ready", allow: true }),
+	).rejects.toThrow("write failed");
+	expect(fake.model?.id).toBe("workflow-model");
+	expect(fake.thinkingLevel).toBe("low");
+	expect(replayWorkflowChain(savedBranch(fake)).chain).toEqual(pending);
+	expect(captureMessageMetadata(fake)).toEqual(messages);
+	fake.appendError = undefined;
+	const calls = fake.modelSetCalls.length;
+	await exit.execute("permit", { basis: "Ready", allow: true });
+	expect(fake.modelSetCalls.slice(calls).map(({ id }) => id)).toEqual([]);
+	expect(fake.thinkingLevel).toBe("high");
+	expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
+		"start",
+		"done",
+	]);
+});
+
+test("saved bound requests report missing catalog checks without changing state", async () => {
+	const { suite } = await createBoundSuite();
+	const fake = await createFakePi();
+	await runLifecycle(fake, "session_start");
+	await requireTool(fake, "workflow_activate").execute("parent", {
+		workflowId: "delivery",
+	});
+	const branch = savedBranch(fake);
+	await rm(join(suite, "workflow/workflows/check.yaml"));
+	const restored = await createFakePi();
+	await runLifecycle(restored, "session_start", branch);
+	const before = {
+		entries: [...restored.appended],
+		messages: captureMessageMetadata(restored),
+		calls: [...restored.modelSetCalls],
+		thinking: restored.thinkingLevel,
+	};
+	await expect(
+		requireTool(restored, "workflow_transition").execute("missing", {
+			stageId: "done",
+			basis: "Ready",
+		}),
+	).rejects.toThrow("does not exist in the catalog");
+	expect(restored.appended).toEqual(before.entries);
+	expect(captureMessageMetadata(restored)).toEqual(before.messages);
+	expect(restored.modelSetCalls).toEqual(before.calls);
+	expect(restored.thinkingLevel).toBe(before.thinking);
+});
+
+for (const role of ["main", "child"] as const) {
+	test(`pending transitions ${role} survive reload navigation and compaction with append-only metadata`, async () => {
+		await createBoundSuite();
+		if (role === "child") {
+			process.env[CHILD_AGENT_PROCESS_ENV] = "1";
+			process.env[SUBAGENT_WORKFLOW_IDS_ENV] = '["delivery","check"]';
+		}
+		const fake = await createFakePi();
+		if (role === "main") {
+			setMainWorkflowPolicy(fake, ["delivery", "check"]);
+		}
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("parent", {
+			workflowId: "delivery",
+		});
+		const parentBranch = savedBranch(fake);
+		await requireTool(fake, "workflow_transition").execute("request", {
+			stageId: "done",
+			basis: "Ready",
+		});
+		const pendingBranch = savedBranch(fake);
+		const pending = replayWorkflowChain(pendingBranch).chain;
+		const restored = await createFakePi();
+		await runLifecycle(restored, "session_start", pendingBranch);
+		const records = structuredClone(captureMessageMetadata(restored));
+		await runLifecycle(restored, "session_tree", parentBranch);
+		await runLifecycle(restored, "session_tree", pendingBranch);
+		await runSessionCompact(restored);
+		expect(captureMessageMetadata(restored).slice(0, records.length)).toEqual(
+			records,
+		);
+		expect(
+			(restored.messages.at(-1)?.details as Record<string, unknown>)[
+				"pendingTransitions"
+			],
+		).toEqual([
+			{ workflowId: "check", parentWorkflowId: "delivery", stageId: "done" },
+		]);
+		await requireTool(restored, "workflow_exit").execute("allow", {
+			basis: "Ready",
+			allow: true,
+		});
+		expect(
+			replayWorkflowChain([...pendingBranch, ...savedBranch(restored)]).chain[0]
+				?.route,
+		).toEqual(["start", "done"]);
+		expect(pending[0]?.route).toEqual(["start"]);
+	});
+}
+
+/** Builds one format-3 catalog graph with optional stage workflows and transition bindings. */
+function stageWorkflowYaml(options: {
+	readonly nested?: boolean;
+	readonly initialWorkflow?: string;
+	readonly finalWorkflow?: string;
+	readonly finalBinding?: string;
+}): string {
+	return stringify({
+		version: 3,
+		...(options.nested === true ? { nested: true } : {}),
+		description: "Fixture",
+		stages: [
+			{
+				id: "start",
+				description: "Start",
+				goal: "Ready",
+				prompt: "Work",
+				initial: true,
+				...(options.initialWorkflow === undefined
+					? {}
+					: { workflow: options.initialWorkflow }),
+			},
+			{
+				id: "middle",
+				description: "Middle",
+				goal: "Planned",
+				prompt: "Plan",
+			},
+			{
+				id: "done",
+				description: "Done",
+				goal: "Delivered",
+				prompt: "Report",
+				final: true,
+				...(options.finalWorkflow === undefined
+					? {}
+					: { workflow: options.finalWorkflow }),
+			},
+		],
+		transitions: [
+			{ from: "start", to: "middle", type: "advance" },
+			{
+				from: "middle",
+				to: "done",
+				type: "advance",
+				...(options.finalBinding === undefined
+					? {}
+					: { workflow: options.finalBinding }),
+			},
+			{
+				from: "middle",
+				to: "start",
+				type: "rework",
+				grounds: [{ id: "retry", when: "Revision" }],
+			},
+			{
+				from: "done",
+				to: "middle",
+				type: "rework",
+				grounds: [{ id: "replan", when: "Replanning" }],
+			},
+		],
+	});
+}
+
+/** Lists each running workflow with its active stage from the saved branch. */
+function savedChainView(fake: FakePi): string[] {
+	return replayWorkflowChain(savedBranch(fake)).chain.map(
+		({ workflow, route }) => `${workflow.id}@${route.at(-1)}`,
+	);
+}
+
+/** Lists the kind, workflow, and stage of each workflow record after an index. */
+function recordViews(fake: FakePi, from: number): string[] {
+	return fake.messages.slice(from).flatMap(({ details }) => {
+		const record = details as Record<string, unknown>;
+		return record["kind"] === "activation" ||
+			record["kind"] === "stage_activation"
+			? [
+					`${record["kind"]}:${record["workflowId"]}@${record["currentStageId"]}`,
+				]
+			: [];
+	});
+}
+
+describe("stage workflows", () => {
+	test("each entry into a stage starts its workflow after the stage record, outside agent policy, and a return starts none", async () => {
+		const suite = await createSuite();
+		const files = {
+			delivery: stageWorkflowYaml({
+				initialWorkflow: "research",
+				finalWorkflow: "research",
+				finalBinding: "check",
+			}),
+			check: stageWorkflowYaml({ nested: true, initialWorkflow: "research" }),
+			research: stageWorkflowYaml({ nested: true }),
+		};
+		for (const [id, yaml] of Object.entries(files)) {
+			await writeFile(join(suite, `workflow/workflows/${id}.yaml`), yaml);
+		}
+		const fake = await createFakePi();
+		setMainWorkflowPolicy(fake, ["delivery"]);
+		await runLifecycle(fake, "session_start");
+		const move = requireTool(fake, "workflow_transition");
+		const exit = requireTool(fake, "workflow_exit");
+
+		let index = fake.messages.length;
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		expect(savedChainView(fake)).toEqual(["delivery@start", "research@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"activation:delivery@start",
+			"activation:research@start",
+		]);
+
+		index = fake.messages.length;
+		await exit.execute("return", { basis: "Researched" });
+		expect(savedChainView(fake)).toEqual(["delivery@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"stage_activation:delivery@start",
+		]);
+
+		await move.execute("plan", { stageId: "middle", basis: "Ready" });
+		expect(savedChainView(fake)).toEqual(["delivery@middle"]);
+
+		index = fake.messages.length;
+		await move.execute("rework", {
+			stageId: "start",
+			ground: "retry",
+			basis: "Revision",
+		});
+		expect(savedChainView(fake)).toEqual(["delivery@start", "research@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"stage_activation:delivery@start",
+			"activation:research@start",
+		]);
+		await exit.execute("return-again", { basis: "Researched" });
+		await move.execute("plan-again", { stageId: "middle", basis: "Ready" });
+
+		await move.execute("bound", { stageId: "done", basis: "Planned" });
+		expect(savedChainView(fake)).toEqual([
+			"delivery@middle",
+			"check@start",
+			"research@start",
+		]);
+		await exit.execute("check-research", { basis: "Researched" });
+		expect(savedChainView(fake)).toEqual(["delivery@middle", "check@start"]);
+
+		index = fake.messages.length;
+		await exit.execute("permit", { basis: "Checked", allow: true });
+		expect(savedChainView(fake)).toEqual(["delivery@done", "research@start"]);
+		expect(recordViews(fake, index)).toEqual([
+			"stage_activation:delivery@done",
+			"activation:research@start",
+		]);
+	});
+
+	test("an entry whose stage workflow already runs is rejected without side effects", async () => {
+		const suite = await createSuite();
+		const files = {
+			check: stageWorkflowYaml({ nested: true, initialWorkflow: "research" }),
+			delivery: stageWorkflowYaml({ nested: true, finalWorkflow: "research" }),
+			bound: stageWorkflowYaml({ nested: true, finalBinding: "check" }),
+			research: stageWorkflowYaml({ nested: true }),
+		};
+		for (const [id, yaml] of Object.entries(files)) {
+			await writeFile(join(suite, `workflow/workflows/${id}.yaml`), yaml);
+		}
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		await activate.execute("research", { workflowId: "research" });
+		await activate.execute("delivery", { workflowId: "delivery" });
+		await requireTool(fake, "workflow_transition").execute("plan", {
+			stageId: "middle",
+			basis: "Ready",
+		});
+		const before = {
+			entries: [...fake.appended],
+			messages: captureMessageMetadata(fake),
+			calls: [...fake.modelSetCalls],
+			thinking: fake.thinkingLevel,
+		};
+		await expect(
+			activate.execute("check", { workflowId: "check" }),
+		).rejects.toThrow("already runs in the chain");
+		await expect(
+			requireTool(fake, "workflow_transition").execute("done", {
+				stageId: "done",
+				basis: "Planned",
+			}),
+		).rejects.toThrow("already runs in the chain");
+		expect(fake.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(fake)).toEqual(before.messages);
+		expect(fake.modelSetCalls).toEqual(before.calls);
+		expect(fake.thinkingLevel).toBe(before.thinking);
+		await activate.execute("bound", { workflowId: "bound" });
+		await requireTool(fake, "workflow_transition").execute("bound-plan", {
+			stageId: "middle",
+			basis: "Ready",
+		});
+		const entries = [...fake.appended];
+		const messages = captureMessageMetadata(fake);
+		await expect(
+			requireTool(fake, "workflow_transition").execute("bound-done", {
+				stageId: "done",
+				basis: "Planned",
+			}),
+		).rejects.toThrow("already runs in the chain");
+		expect(fake.appended).toEqual(entries);
+		expect(captureMessageMetadata(fake)).toEqual(messages);
+	});
+
+	test("a permitted exit into a stage whose workflow left the catalog is rejected without side effects", async () => {
+		const suite = await createSuite();
+		const files = {
+			delivery: stageWorkflowYaml({
+				finalWorkflow: "research",
+				finalBinding: "check",
+			}),
+			check: stageWorkflowYaml({ nested: true }),
+			research: stageWorkflowYaml({ nested: true }),
+		};
+		for (const [id, yaml] of Object.entries(files)) {
+			await writeFile(join(suite, `workflow/workflows/${id}.yaml`), yaml);
+		}
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		const move = requireTool(fake, "workflow_transition");
+		await move.execute("plan", { stageId: "middle", basis: "Ready" });
+		await move.execute("bound", { stageId: "done", basis: "Planned" });
+		const branch = savedBranch(fake);
+		await rm(join(suite, "workflow/workflows/research.yaml"));
+		const restored = await createFakePi();
+		await runLifecycle(restored, "session_start", branch);
+		const before = {
+			entries: [...restored.appended],
+			messages: captureMessageMetadata(restored),
+			calls: [...restored.modelSetCalls],
+			thinking: restored.thinkingLevel,
+		};
+		await expect(
+			requireTool(restored, "workflow_exit").execute("permit", {
+				basis: "Checked",
+				allow: true,
+			}),
+		).rejects.toThrow("does not exist in the catalog");
+		expect(restored.appended).toEqual(before.entries);
+		expect(captureMessageMetadata(restored)).toEqual(before.messages);
+		expect(restored.modelSetCalls).toEqual(before.calls);
+		expect(restored.thinkingLevel).toBe(before.thinking);
 	});
 });

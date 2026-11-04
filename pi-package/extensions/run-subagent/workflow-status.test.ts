@@ -7,7 +7,13 @@ function workflowStateEntry(data: unknown, id: string = "entry"): SessionEntry {
 	return {
 		type: "custom",
 		customType: "workflow-state",
-		data,
+		data:
+			typeof data === "object" &&
+			data !== null &&
+			(Reflect.get(data, "kind") === "created" ||
+				Reflect.get(data, "kind") === "activated")
+				? { journalVersion: 1, ...data }
+				: data,
 		id,
 		parentId: null,
 		timestamp: "2024-01-01T00:00:00.000Z",
@@ -60,6 +66,243 @@ const SAMPLE_WORKFLOW_B = {
 };
 
 describe("extractWorkflowStatus", () => {
+	test("resolves pending advance and rework only on boolean permission", () => {
+		const parent = workflowStateEntry({
+			kind: "activated",
+			journalVersion: 2,
+			workflow: SAMPLE_WORKFLOW,
+			route: ["define_target"],
+			mode: "replace",
+		});
+		const child = workflowStateEntry({
+			kind: "activated",
+			journalVersion: 2,
+			workflow: SAMPLE_WORKFLOW_B,
+			route: ["a_stage"],
+			mode: "push",
+			pendingTransition: { stageId: "identify_sources" },
+		});
+		const starts = [parent, child];
+		for (const allow of [undefined, null, "true", 1]) {
+			expect(
+				extractWorkflowStatus([
+					...starts,
+					workflowStateEntry({ kind: "exited", journalVersion: 2, allow }),
+				]),
+			).toEqual({
+				workflowId: "InformationExtraction➡Analysis",
+				stageDescription: "A Stage",
+			});
+		}
+		expect(
+			extractWorkflowStatus([
+				...starts,
+				workflowStateEntry({ kind: "exited", journalVersion: 2, allow: false }),
+			]),
+		).toEqual({
+			workflowId: "InformationExtraction",
+			stageDescription: "Define requested extraction result",
+		});
+		const allowed = [
+			...starts,
+			workflowStateEntry({ kind: "exited", journalVersion: 2, allow: true }),
+		];
+		expect(extractWorkflowStatus(allowed)).toEqual({
+			workflowId: "InformationExtraction",
+			stageDescription: "Identify relevant source locations",
+		});
+		const rework = workflowStateEntry({
+			kind: "activated",
+			journalVersion: 2,
+			workflow: SAMPLE_WORKFLOW_B,
+			route: ["a_stage"],
+			mode: "push",
+			pendingTransition: { stageId: "define_target", ground: "retry" },
+		});
+		expect(
+			extractWorkflowStatus([
+				...allowed,
+				rework,
+				workflowStateEntry({ kind: "exited", journalVersion: 2, allow: true }),
+			]),
+		).toEqual({
+			workflowId: "InformationExtraction",
+			stageDescription: "Define requested extraction result",
+		});
+	});
+	test("projects nested top edits, returns to waiting parents, and replaces the whole chain", () => {
+		const parent = workflowStateEntry({
+			kind: "activated",
+			workflow: SAMPLE_WORKFLOW,
+			route: ["define_target", "identify_sources"],
+		});
+		const child = workflowStateEntry({
+			kind: "created",
+			journalVersion: 2,
+			mode: "push",
+			workflow: { ...SAMPLE_WORKFLOW, id: "child", version: 3, nested: true },
+			route: ["define_target"],
+		});
+		const edited = workflowStateEntry({
+			kind: "stage_edited",
+			journalVersion: 2,
+			stageId: "define_target",
+			description: "Edited child",
+		});
+		const exited = workflowStateEntry({ kind: "exited", journalVersion: 2 });
+		expect(extractWorkflowStatus([parent, child, edited])).toEqual({
+			workflowId: `${SAMPLE_WORKFLOW.id}➡child`,
+			stageDescription: "Edited child",
+		});
+		expect(extractWorkflowStatus([parent, child, edited, exited])).toEqual({
+			workflowId: SAMPLE_WORKFLOW.id,
+			stageDescription: "Identify relevant source locations",
+		});
+		expect(
+			extractWorkflowStatus([parent, child, edited, exited, exited]),
+		).toBeUndefined();
+		const replacement = workflowStateEntry({
+			kind: "activated",
+			journalVersion: 2,
+			mode: "replace",
+			workflow: SAMPLE_WORKFLOW_B,
+			route: ["a_stage"],
+		});
+		expect(
+			extractWorkflowStatus([parent, child, replacement, exited]),
+		).toBeUndefined();
+	});
+	test.each([
+		"exited",
+		"completed",
+	])("clears workflow after %s and ignores stale routes", (kind) => {
+		expect(
+			extractWorkflowStatus([
+				workflowStateEntry({
+					kind: "activated",
+					workflow: SAMPLE_WORKFLOW,
+					route: ["define_target"],
+				}),
+				workflowStateEntry({
+					kind,
+					...(kind === "exited"
+						? { journalVersion: 2 }
+						: { route: ["define_target", "generate_output"] }),
+				}),
+				workflowStateEntry({
+					kind: "transitioned",
+					journalVersion: 2,
+					route: ["define_target"],
+				}),
+			]),
+		).toBeUndefined();
+	});
+
+	test.each(
+		[1, 2].flatMap((rootVersion) =>
+			["completed", "exited"].flatMap((kind) =>
+				[undefined, 1, 2, 3]
+					.filter((operationVersion) =>
+						kind === "completed"
+							? rootVersion !== 1 || operationVersion !== undefined
+							: operationVersion !== 2,
+					)
+					.map((operationVersion) => ({ rootVersion, kind, operationVersion })),
+			),
+		),
+	)("retains prior status at unsupported exit boundary %j", ({
+		rootVersion,
+		kind,
+		operationVersion,
+	}) => {
+		const entries = [
+			workflowStateEntry({
+				kind: "activated",
+				journalVersion: rootVersion,
+				workflow: SAMPLE_WORKFLOW,
+				route: ["define_target"],
+			}),
+			workflowStateEntry({
+				kind: "transitioned",
+				journalVersion: 2,
+				route: ["define_target", "generate_output"],
+			}),
+		];
+		expect(
+			extractWorkflowStatus([
+				...entries,
+				workflowStateEntry({
+					kind,
+					...(operationVersion === undefined
+						? {}
+						: { journalVersion: operationVersion }),
+					...(kind === "completed"
+						? { route: ["define_target", "generate_output"] }
+						: {}),
+				}),
+			]),
+		).toEqual({
+			workflowId: SAMPLE_WORKFLOW.id,
+			stageDescription: "Generate output artifact",
+		});
+	});
+
+	test("restores the active stage after historical version1 completed rework", () => {
+		expect(
+			extractWorkflowStatus([
+				workflowStateEntry({
+					kind: "activated",
+					workflow: SAMPLE_WORKFLOW,
+					route: ["define_target"],
+				}),
+				workflowStateEntry({
+					kind: "completed",
+					route: ["define_target", "generate_output"],
+				}),
+				workflowStateEntry({ kind: "transitioned", route: ["define_target"] }),
+			]),
+		).toEqual({
+			workflowId: "InformationExtraction",
+			stageDescription: "Define requested extraction result",
+		});
+	});
+
+	test("ignores missing-version roots and resumes a mixed session", () => {
+		expect(
+			extractWorkflowStatus([
+				workflowStateEntry({
+					kind: "activated",
+					journalVersion: undefined,
+					workflow: SAMPLE_WORKFLOW,
+					route: ["define_target"],
+				}),
+			]),
+		).toBeUndefined();
+		expect(
+			extractWorkflowStatus([
+				workflowStateEntry({
+					kind: "activated",
+					workflow: SAMPLE_WORKFLOW,
+					route: ["define_target"],
+				}),
+				workflowStateEntry({
+					kind: "completed",
+					route: ["define_target", "generate_output"],
+				}),
+				workflowStateEntry({
+					kind: "activated",
+					journalVersion: 2,
+					workflow: SAMPLE_WORKFLOW_B,
+					route: ["a_stage"],
+				}),
+				workflowStateEntry({
+					kind: "transitioned",
+					journalVersion: 2,
+					route: ["a_stage", "b_stage"],
+				}),
+			]),
+		).toEqual({ workflowId: "Analysis", stageDescription: "B Stage" });
+	});
 	test("extracts workflow ID and initial stage from created entry", () => {
 		const result = extractWorkflowStatus([
 			workflowStateEntry({

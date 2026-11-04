@@ -23,7 +23,7 @@
   </goal>
 
   <constraints_and_preferences>
-    <!-- Preserve existing constraints and preferences. Add new ones discovered -->
+    <!-- Preserve existing constraints and preferences. Add new ones that the user stated -->
   </constraints_and_preferences>
 
   <progress>
@@ -67,7 +67,7 @@
   </blocked>
 
   <key_decisions> <!-- Actual decisions made, with brief rationale. Remove decisions that were reversed or are no longer relevant -->
-    - [Decision Description. Rationale for decision]
+    - [Decision Description. Who decided: user or agent. Rationale for decision]
     ...
   </key_decisions>
 
