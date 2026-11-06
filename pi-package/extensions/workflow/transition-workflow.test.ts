@@ -423,11 +423,11 @@ test("context appends pending metadata at start and checkpoint and refusal metad
 	const chain = replayWorkflowChain(createHistory()).chain;
 	const records: WorkflowJournalRecord[] = [];
 	const journal = new WorkflowJournal((record) => records.push(record));
-	journal.activate(chain);
+	journal.activate(chain, []);
 	const previous = structuredClone(records.map(({ details }) => details));
 	journal.restore([]);
-	journal.checkpoint(chain);
-	journal.enterStage(chain.slice(0, 1), { stageId: "done" });
+	journal.checkpoint(chain, []);
+	journal.enterStage(chain.slice(0, 1), [], { stageId: "done" });
 	expect(records[0]?.details).toEqual(previous[0]);
 	for (const record of records.slice(0, 2)) {
 		expect(record.details["pendingTransitions"]).toEqual([

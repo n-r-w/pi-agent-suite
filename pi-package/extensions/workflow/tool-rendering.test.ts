@@ -206,7 +206,9 @@ async function executeTool(
 			args,
 			undefined,
 			undefined,
-			{} as never,
+			{
+				sessionManager: { buildSessionProjection: () => ({ entries: [] }) },
+			} as never,
 		);
 	} catch (error) {
 		isError = true;

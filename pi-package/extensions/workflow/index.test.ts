@@ -13,7 +13,11 @@ import type {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Check } from "typebox/value";
 import { stringify } from "yaml";
-import { projectBranch } from "../../../test/support/session-projection";
+import {
+	projectBranch,
+	projectVisibleEntry,
+} from "../../../test/support/session-projection";
+import { describeActivationForm } from "../../../test/support/workflow-activation";
 import {
 	getAgentRuntimeComposition,
 	SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT,
@@ -52,7 +56,8 @@ interface FakeTool {
 }
 
 interface FakePi {
-	readonly handlers: Map<string, (...args: unknown[]) => unknown>;
+	/** Handlers of each event in registration order, as Pi keeps them. */
+	readonly handlers: Map<string, Array<(...args: unknown[]) => unknown>>;
 	readonly listeners: Map<string, Set<(...args: unknown[]) => void>>;
 	readonly tools: FakeTool[];
 	readonly appended: Array<{ customType: string; data: unknown }>;
@@ -75,6 +80,10 @@ interface FakePi {
 	readonly widgetUpdates: Array<{ key: string; content: WidgetContent }>;
 	flagValues: Map<string, boolean | string>;
 	shutdownCalls: number;
+	/** Session entries that Pi saved, which tools see through their context projection. */
+	session: unknown[];
+	/** Whether Pi drops published workflow records instead of saving them, as when Escape clears its queue. */
+	dropMessages: boolean;
 }
 
 const temporaryDirectories: string[] = [];
@@ -352,13 +361,29 @@ async function createFakePi(): Promise<FakePi> {
 		widgetUpdates,
 		flagValues: new Map(),
 		shutdownCalls: 0,
+		session: [],
+		dropMessages: false,
+	};
+	// Tool calls without a context get one that projects the saved session, as Pi does.
+	const toolContext = {
+		sessionManager: {
+			buildSessionProjection: () => ({ entries: projectBranch(fake.session) }),
+		},
 	};
 	const api = {
 		on(event: string, handler: (...args: unknown[]) => unknown) {
-			fake.handlers.set(event, handler);
+			const handlers = fake.handlers.get(event) ?? [];
+			handlers.push(handler);
+			fake.handlers.set(event, handlers);
 		},
 		registerTool(tool: FakeTool) {
-			fake.tools.push(tool);
+			fake.tools.push({
+				...tool,
+				execute: (...args: unknown[]) => {
+					const [id, params, signal, onUpdate, ctx] = args;
+					return tool.execute(id, params, signal, onUpdate, ctx ?? toolContext);
+				},
+			});
 			fake.activeTools.push(tool.name);
 		},
 		getActiveTools() {
@@ -393,13 +418,17 @@ async function createFakePi(): Promise<FakePi> {
 			},
 			options?: unknown,
 		) {
-			fake.messages.push({
+			const published = {
 				customType: message.customType,
 				content: String(message.content),
 				display: message.display,
 				details: message.details,
 				options,
-			});
+			};
+			fake.messages.push(published);
+			if (!fake.dropMessages) {
+				fake.session.push({ type: "custom_message", ...published });
+			}
 		},
 		registerFlag(
 			name: string,
@@ -455,7 +484,25 @@ function setMainWorkflowPolicy(
 	});
 }
 
-/** Models Pi storing a returned before_agent_start message before the provider request. */
+/** Returns a function that runs each handler of an event in registration order and returns their results, as Pi does. */
+function findHandler(
+	fake: FakePi,
+	event: string,
+): ((...args: unknown[]) => Promise<unknown[]>) | undefined {
+	const handlers = fake.handlers.get(event);
+	if (handlers === undefined) {
+		return undefined;
+	}
+	return async (...args) => {
+		const results: unknown[] = [];
+		for (const handler of handlers) {
+			results.push(await handler(...args));
+		}
+		return results;
+	};
+}
+
+/** Models Pi saving the messages that before_agent_start handlers return, in handler order, before the provider request. */
 async function runBeforeAgentStart(
 	fake: FakePi,
 	branch: readonly unknown[] = fake.messages.map((message) => ({
@@ -463,18 +510,23 @@ async function runBeforeAgentStart(
 		...message,
 	})),
 ): Promise<void> {
-	const handler = fake.handlers.get("before_agent_start");
+	const handler = findHandler(fake, "before_agent_start");
 	if (handler === undefined) {
 		throw new Error("missing before_agent_start handler");
 	}
-	const result = (await handler(
-		{ type: "before_agent_start" },
+	const results = (await handler(
 		{
+			type: "before_agent_start",
+			systemPrompt: "",
+			systemPromptOptions: { sections: {} },
+		},
+		{
+			cwd: tmpdir(),
 			sessionManager: {
 				buildSessionProjection: () => ({ entries: projectBranch(branch) }),
 			},
 		},
-	)) as
+	)) as Array<
 		| {
 				message?: {
 					customType: string;
@@ -483,10 +535,30 @@ async function runBeforeAgentStart(
 					details: unknown;
 				};
 		  }
-		| undefined;
-	if (result?.message !== undefined) {
-		fake.messages.push({ ...result.message, options: undefined });
+		| undefined
+	>;
+	for (const result of results) {
+		if (result?.message !== undefined) {
+			const published = { ...result.message, options: undefined };
+			fake.messages.push(published);
+			fake.session.push({ type: "custom_message", ...published });
+		}
 	}
+}
+
+/** Runs the start of an agent run over the saved session and returns the metadata of the lifecycle records that it adds. */
+async function runStartLifecycleRecords(
+	fake: FakePi,
+): Promise<Record<string, unknown>[]> {
+	const count = fake.messages.length;
+	await runBeforeAgentStart(fake, fake.session);
+	return fake.messages
+		.slice(count)
+		.flatMap(({ details }) =>
+			isWorkflowLifecycleDetails(details)
+				? [details as Record<string, unknown>]
+				: [],
+		);
 }
 
 /** Invokes one captured lifecycle handler with an isolated branch. */
@@ -495,14 +567,14 @@ async function runLifecycle(
 	event: "session_start" | "session_tree" | "session_shutdown",
 	branch: readonly unknown[] = [],
 	mode: ExtensionContext["mode"] = "tui",
-	projectedEntries = branch.map((sourceEntry) => ({
-		sourceEntry,
-		messages: [{}],
-	})) as ProjectedSessionEntry[],
+	projectedEntries = branch.map(projectVisibleEntry),
 ): Promise<void> {
-	const handler = fake.handlers.get(event);
+	const handler = findHandler(fake, event);
 	if (handler === undefined) {
 		throw new Error(`missing ${event} handler`);
+	}
+	if (event !== "session_shutdown") {
+		fake.session = [...branch];
 	}
 	await handler(
 		{ type: event },
@@ -530,14 +602,14 @@ async function runTurn(
 	terminateResults?: readonly boolean[],
 	message: unknown = {},
 ): Promise<void> {
-	const start = fake.handlers.get("turn_start");
-	const end = fake.handlers.get("turn_end");
+	const start = findHandler(fake, "turn_start");
+	const end = findHandler(fake, "turn_end");
 	if (start === undefined || end === undefined) {
 		throw new Error("missing workflow reminder turn handlers");
 	}
 	await start({ type: "turn_start", turnIndex: 0, timestamp: Date.now() });
 	if (terminateResults !== undefined) {
-		const toolEnd = fake.handlers.get("tool_execution_end");
+		const toolEnd = findHandler(fake, "tool_execution_end");
 		if (toolEnd === undefined) {
 			throw new Error("missing workflow reminder tool execution handler");
 		}
@@ -563,18 +635,23 @@ async function runTurn(
 async function runSessionCompact(
 	fake: FakePi,
 	idle = true,
-	projectedEntries: readonly ProjectedSessionEntry[] = [],
+	projectedEntries?: readonly ProjectedSessionEntry[],
 ): Promise<void> {
-	const handler = fake.handlers.get("session_compact");
+	const handler = findHandler(fake, "session_compact");
 	if (handler === undefined) {
 		throw new Error("missing session_compact handler");
 	}
+	// Without explicit entries, the compaction summarizes the whole saved session.
+	if (projectedEntries === undefined) {
+		fake.session.push({ type: "compaction" });
+	}
+	const entries = projectedEntries ?? projectBranch(fake.session);
 	await handler(
 		{ type: "session_compact" },
 		{
 			isIdle: () => idle,
 			sessionManager: {
-				buildSessionProjection: () => ({ entries: projectedEntries }),
+				buildSessionProjection: () => ({ entries }),
 			},
 		},
 	);
@@ -582,7 +659,7 @@ async function runSessionCompact(
 
 /** Invokes the session-level settlement handler without providing a UI context. */
 async function runAgentSettled(fake: FakePi): Promise<void> {
-	const handler = fake.handlers.get("agent_settled");
+	const handler = findHandler(fake, "agent_settled");
 	await handler?.({ type: "agent_settled" });
 }
 
@@ -1213,10 +1290,10 @@ describe("workflow extension lifecycle", () => {
 		expect(fake.widgetUpdates.at(-1)?.content).toBeUndefined();
 	});
 
-	test("reuses stages of a workflow that runs again until a compaction", async () => {
-		// Purpose: a second run reuses the stages that the context holds, and a compaction makes them unknown.
-		// Input and expected output: run, exit, run gives reuse; exit, compaction, run gives inline.
-		// Dependencies: session_compact wiring and journal-local known-stage tracking.
+	test("reuses stages, rules, and graph of a catalog workflow that runs again until a compaction", async () => {
+		// Purpose: a later run reuses the stages, rules, and graph that the context holds, and a compaction makes them unknown.
+		// Input and expected output: three runs give an inline full activation, then two reuse activations; exit, compaction, run gives an inline full activation.
+		// Dependencies: session_compact wiring and the saved session of the fake Pi.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -1236,8 +1313,189 @@ describe("workflow extension lifecycle", () => {
 		};
 		expect(await run()).toBe("inline");
 		expect(await run()).toBe("reuse");
+		expect(await run()).toBe("reuse");
 		await runSessionCompact(fake);
 		expect(await run()).toBe("inline");
+		expect(activationForms(fake)).toEqual([
+			"delivery:full",
+			"delivery:reuse",
+			"delivery:reuse",
+			"delivery:full",
+		]);
+	});
+
+	test("shows stage rules again after Pi drops the records that showed them", async () => {
+		// Purpose: a record that Pi drops from its queue must not make its stage known to later entries.
+		// Input and expected output: a dropped activation and a dropped entry into done; the next activation and the next entry into done are inline, a return to start reuses the saved activation.
+		// Dependencies: tool contexts that project the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		const activate = requireTool(fake, "workflow_activate");
+		const transition = requireTool(fake, "workflow_transition");
+		fake.dropMessages = true;
+		await activate.execute("dropped", { workflowId: "delivery" });
+		fake.dropMessages = false;
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "Restart.",
+		});
+		await activate.execute("saved", { workflowId: "delivery" });
+		fake.dropMessages = true;
+		await transition.execute("dropped-done", {
+			stageId: "done",
+			basis: "Ready.",
+		});
+		fake.dropMessages = false;
+		await transition.execute("start", { stageId: "start", basis: "Revise." });
+		await transition.execute("done", { stageId: "done", basis: "Ready." });
+
+		expect(
+			fake.messages.flatMap(({ details }) => {
+				const { kind, guidelines } = details as {
+					kind?: string;
+					guidelines?: string;
+				};
+				return kind === "activation" || kind === "stage_activation"
+					? [`${kind}:${guidelines}`]
+					: [];
+			}),
+		).toEqual([
+			"activation:inline",
+			"activation:inline",
+			"stage_activation:inline",
+			"stage_activation:reuse",
+			"stage_activation:inline",
+		]);
+		expect(activationForms(fake)).toEqual(["delivery:full", "delivery:full"]);
+	});
+
+	test("starts the next run with a checkpoint after Pi drops the activation", async () => {
+		// Purpose: a run must start with the current workflow state when Pi dropped the activation record.
+		// Input and expected output: a dropped activation; the next run starts with a checkpoint that shows the rules, graph, and instructions of start; a second run adds no lifecycle record.
+		// Dependencies: before_agent_start handlers, the real journal, and the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		fake.dropMessages = true;
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.dropMessages = false;
+
+		expect(await runStartLifecycleRecords(fake)).toMatchObject([
+			{
+				kind: "checkpoint",
+				workflowId: "delivery",
+				stageId: "start",
+				guidelines: "inline",
+				includesGraph: true,
+				graphWorkflowIds: ["delivery"],
+			},
+		]);
+		expect(await runStartLifecycleRecords(fake)).toEqual([]);
+	});
+
+	test("starts the next run with the stage instructions after Pi drops a stage entry", async () => {
+		// Purpose: a run must start with the current stage when Pi dropped the record of the stage entry.
+		// Input and expected output: a saved activation and a dropped entry into done; the next run starts with a checkpoint of done with its instructions inline and without the graph.
+		// Dependencies: before_agent_start handlers, the real journal, and the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.dropMessages = true;
+		await requireTool(fake, "workflow_transition").execute("done", {
+			stageId: "done",
+			basis: "Ready.",
+		});
+		fake.dropMessages = false;
+
+		expect(await runStartLifecycleRecords(fake)).toMatchObject([
+			{
+				kind: "checkpoint",
+				stageId: "done",
+				guidelines: "inline",
+				includesGraph: false,
+			},
+		]);
+	});
+
+	test("starts the next run with the exit record after Pi drops the exit of the last workflow", async () => {
+		// Purpose: a run must not continue a workflow that ended when Pi dropped the exit record.
+		// Input and expected output: a saved activation and a dropped exit; the next run starts with the exit record; a second run adds no lifecycle record.
+		// Dependencies: before_agent_start handlers, the real journal, and the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.dropMessages = true;
+		await requireTool(fake, "workflow_exit").execute("exit", {
+			basis: "No more work.",
+		});
+		fake.dropMessages = false;
+
+		expect(await runStartLifecycleRecords(fake)).toMatchObject([
+			{ kind: "exit" },
+		]);
+		expect(await runStartLifecycleRecords(fake)).toEqual([]);
+	});
+
+	test("starts the run of another selected main agent with a checkpoint after Pi drops the activation", async () => {
+		// Purpose: a switch of the selected main agent before the run must not hide a dropped activation.
+		// Input and expected output: a dropped activation, then another main agent with the same workflow; its run starts with a checkpoint of start.
+		// Dependencies: runtime composition policy, before_agent_start handlers, the real journal, and the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		setMainWorkflowPolicy(fake, ["delivery"]);
+		fake.dropMessages = true;
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.dropMessages = false;
+		setMainWorkflowPolicy(fake, ["delivery"], undefined, "Other");
+
+		expect(await runStartLifecycleRecords(fake)).toMatchObject([
+			{ kind: "checkpoint", stageId: "start", includesGraph: true },
+		]);
+	});
+
+	test("starts an ordinary run without a lifecycle record", async () => {
+		// Purpose: a run whose session shows the current workflow state gets no extra lifecycle record.
+		// Input and expected output: a saved activation; the run adds no lifecycle record.
+		// Dependencies: before_agent_start handlers, the real journal, and the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+
+		expect(await runStartLifecycleRecords(fake)).toEqual([]);
+	});
+
+	test("shows the rules and graph in each activation of a created workflow", async () => {
+		// Purpose: a workflow from `workflow_create` never reuses its rules and graph, also when the context shows them.
+		// Input and expected output: create, exit, create with the same definition give two full activations.
+		// Dependencies: tool contexts that project the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		for (const id of ["first", "second"]) {
+			await requireTool(fake, "workflow_create").execute(id, createArguments());
+			await requireTool(fake, "workflow_exit").execute(`exit-${id}`, {
+				basis: "No more work.",
+			});
+		}
+
+		expect(activationForms(fake)).toEqual([
+			"dynamic-delivery:full",
+			"dynamic-delivery:full",
+		]);
 	});
 
 	test("synchronizes empty branches after exit and respects later manual settings", async () => {
@@ -2259,7 +2517,10 @@ describe("workflow extension lifecycle", () => {
 		});
 		const create = requireTool(fake, "workflow_create");
 		const signal = new AbortController().signal;
-		const ctx = { marker: "initiating-context" } as unknown as ExtensionContext;
+		const ctx = {
+			marker: "initiating-context",
+			sessionManager: { buildSessionProjection: () => ({ entries: [] }) },
+		} as unknown as ExtensionContext;
 
 		await create.execute(
 			"create",
@@ -3080,6 +3341,33 @@ describe("workflow extension lifecycle", () => {
 		});
 	});
 
+	test("restarts the reminder interval when a run starts with a repair checkpoint", async () => {
+		// Purpose: a run-start checkpoint shows the workflow state, so the next reminder counts from it.
+		// Input and expected output: interval three, a dropped activation, two tool calls, a run-start checkpoint, then one tool call publish no reminder.
+		// Dependencies: before_agent_start handlers, turn handlers, scheduler, and the saved session of the fake Pi.
+		const suite = await createSuite(validYaml());
+		await writeFile(
+			join(suite, "workflow", "config.json"),
+			JSON.stringify({ reminderToolCallInterval: 3 }),
+		);
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start");
+		fake.dropMessages = true;
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.dropMessages = false;
+		await runTurn(fake, 2);
+
+		expect(await runStartLifecycleRecords(fake)).toMatchObject([
+			{ kind: "checkpoint" },
+		]);
+		const count = fake.messages.length;
+		await runTurn(fake, 1);
+
+		expect(fake.messages.slice(count)).toEqual([]);
+	});
+
 	/**
 	 * Proves completed reasoning contributes one retained activity unit per turn.
 	 * Input and expected output: plain and encrypted reasoning plus two tool calls reach interval four.
@@ -3210,8 +3498,8 @@ describe("workflow extension lifecycle", () => {
 			workflowId: "delivery",
 		});
 		fake.messages.length = 0;
-		const start = fake.handlers.get("turn_start");
-		const end = fake.handlers.get("turn_end");
+		const start = findHandler(fake, "turn_start");
+		const end = findHandler(fake, "turn_end");
 		if (start === undefined || end === undefined) {
 			throw new Error("missing workflow reminder turn handlers");
 		}
@@ -3318,7 +3606,7 @@ describe("workflow extension lifecycle", () => {
 		// Purpose: post-compaction history must restore exact active instructions without trusting the summary.
 		// Input and expected output: review compaction emits one checkpoint, then rework inlines implementation guidance again.
 		// Edge case: idle compaction leaves the activation options to the next tool call, which publishes them without another provider turn.
-		// Dependencies: session_compact wiring, checkpoint rendering, and known-stage reset.
+		// Dependencies: session_compact wiring, checkpoint rendering, and the saved session of the fake Pi.
 		await createSuite(validYaml());
 		const fake = await createFakePi();
 		await runLifecycle(fake, "session_start");
@@ -3377,13 +3665,9 @@ describe("workflow extension lifecycle", () => {
 		const activation = fake.messages.find(({ details }) =>
 			isWorkflowLifecycleDetails(details),
 		);
-		const visible = (message: unknown) =>
-			[
-				{
-					sourceEntry: { type: "custom_message", ...(message as object) },
-					messages: [{}],
-				},
-			] as ProjectedSessionEntry[];
+		const visible = (message: unknown) => [
+			projectVisibleEntry({ type: "custom_message", ...(message as object) }),
+		];
 
 		await runSessionCompact(fake, true, visible(activation));
 		expect(fake.messages.at(-1)?.details).toMatchObject({
@@ -3423,6 +3707,59 @@ describe("workflow extension lifecycle", () => {
 		];
 		await runLifecycle(fake, "session_start", repairedBranch);
 		expect(fake.messages).toHaveLength(beforeRepair + 1);
+	});
+
+	/** Verifies that a visible record of an earlier catalog version does not stand for the current graph. */
+	test("restores the current graph when the session shows only an earlier catalog version", async () => {
+		// Purpose: after a catalog change, compaction and session start must restore the graph that the saved state holds.
+		// Input and expected output: a session shows the activation of version 1; version 2 is activated, and Pi drops its record; the compaction checkpoint and the session-start checkpoint show the graph with the key of version 2.
+		// Dependencies: catalog loading, session_compact and session_start wiring, and the saved session of the fake Pi.
+		await createSuite(validYaml());
+		const earlier = await createFakePi();
+		await runLifecycle(earlier, "session_start");
+		await requireTool(earlier, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		const olderRecord = {
+			type: "custom_message",
+			...earlier.messages.find(({ details }) =>
+				isWorkflowLifecycleDetails(details),
+			),
+		};
+		await createSuite(validYaml().replace("Done", "Done v2"));
+		const fake = await createFakePi();
+		await runLifecycle(fake, "session_start", [olderRecord]);
+		fake.dropMessages = true;
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		fake.dropMessages = false;
+		const dropped = fake.messages.find(({ details }) =>
+			isWorkflowLifecycleDetails(details),
+		);
+		const droppedKeys = (dropped?.details as Record<string, unknown>)[
+			"definitionKeys"
+		];
+		expect(droppedKeys).not.toEqual(
+			(olderRecord.details as Record<string, unknown>)["definitionKeys"],
+		);
+
+		await runSessionCompact(fake, true, projectBranch(fake.session));
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "checkpoint",
+			includesGraph: true,
+			definitionKeys: droppedKeys,
+		});
+
+		await runLifecycle(fake, "session_start", [
+			olderRecord,
+			...savedBranch(fake),
+		]);
+		expect(fake.messages.at(-1)?.details).toMatchObject({
+			kind: "checkpoint",
+			includesGraph: true,
+			definitionKeys: droppedKeys,
+		});
 	});
 
 	/** Proves restored journal records prevent duplicate legacy-repair checkpoints. */
@@ -4205,13 +4542,7 @@ for (const role of ["main", "child"] as const) {
 				basis: "Check complete",
 			});
 			const count = fake.appended.length;
-			await exit.execute(
-				"allow",
-				{ basis: "Ready", allow: true },
-				undefined,
-				undefined,
-				{},
-			);
+			await exit.execute("allow", { basis: "Ready", allow: true });
 			expect(fake.appended).toHaveLength(count + 1);
 			expect(fake.appended.at(-1)?.data).toEqual({
 				kind: "exited",
@@ -4232,13 +4563,10 @@ for (const role of ["main", "child"] as const) {
 				"start",
 				"done",
 			]);
-			await exit.execute(
-				"skip-check",
-				{ basis: "User permits early return", allow: true },
-				undefined,
-				undefined,
-				{},
-			);
+			await exit.execute("skip-check", {
+				basis: "User permits early return",
+				allow: true,
+			});
 			expect(replayWorkflowChain(savedBranch(fake)).chain[0]?.route).toEqual([
 				"start",
 			]);
@@ -4598,7 +4926,65 @@ function recordViews(fake: FakePi, from: number): string[] {
 	});
 }
 
+/** Lists the workflow ID and the form of each published activation record. */
+function activationForms(fake: FakePi): string[] {
+	return fake.messages.flatMap(({ details }) => {
+		const record = details as Record<string, unknown>;
+		return record["kind"] === "activation"
+			? [`${record["workflowId"]}:${describeActivationForm(record)}`]
+			: [];
+	});
+}
+
 describe("stage workflows", () => {
+	test("stage and bound catalog starts refer to the rules and graph that the context shows", async () => {
+		// Purpose: a repeated start of a catalog workflow through a stage or a bound transition reuses its visible rules and graph.
+		// Input and expected output: research starts on each entry into start, check starts on each bound move to done; the first start of each is full, each later start is reuse.
+		// Dependencies: catalog loading, stage workflow and bound transition wiring, and the saved session of the fake Pi.
+		const suite = await createSuite();
+		const files = {
+			delivery: stageWorkflowYaml({
+				initialWorkflow: "research",
+				finalBinding: "check",
+			}),
+			check: stageWorkflowYaml({ nested: true }),
+			research: stageWorkflowYaml({ nested: true }),
+		};
+		for (const [id, yaml] of Object.entries(files)) {
+			await writeFile(join(suite, `workflow/workflows/${id}.yaml`), yaml);
+		}
+		const fake = await createFakePi();
+		setMainWorkflowPolicy(fake, ["delivery"]);
+		await runLifecycle(fake, "session_start");
+		const move = requireTool(fake, "workflow_transition");
+		const exit = requireTool(fake, "workflow_exit");
+
+		await requireTool(fake, "workflow_activate").execute("start", {
+			workflowId: "delivery",
+		});
+		await exit.execute("researched", { basis: "Researched" });
+		await move.execute("plan", { stageId: "middle", basis: "Ready" });
+		await move.execute("retry", {
+			stageId: "start",
+			ground: "retry",
+			basis: "Revision",
+		});
+		await exit.execute("researched-again", { basis: "Researched" });
+		await move.execute("plan-again", { stageId: "middle", basis: "Ready" });
+		await move.execute("bound", { stageId: "done", basis: "Planned" });
+		await exit.execute("refuse", { basis: "Not ready", allow: false });
+		await move.execute("bound-again", { stageId: "done", basis: "Planned" });
+
+		expect(savedChainView(fake)).toEqual(["delivery@middle", "check@start"]);
+		expect(activationForms(fake)).toEqual([
+			"delivery:full",
+			"research:full",
+			"research:reuse",
+			"check:full",
+			"check:reuse",
+		]);
+	});
+
 	test("each entry into a stage starts its workflow after the stage record, outside agent policy, and a return starts none", async () => {
 		const suite = await createSuite();
 		const files = {
