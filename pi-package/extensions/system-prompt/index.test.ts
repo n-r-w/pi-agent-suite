@@ -312,6 +312,114 @@ describe("system-prompt", () => {
 		}
 	}
 
+	for (const child of [false, true]) {
+		for (const workflows of [false, true]) {
+			const role = child ? "child" : "main";
+			const agent = `${role} agent ${workflows ? "with" : "without"} workflows`;
+			for (const fixture of [
+				{
+					name: "a top-level workflow section",
+					input: "C{{#workflowAgent}}X{{/workflowAgent}}",
+					output: workflows ? "CX" : "C",
+				},
+				{
+					name: "a workflow section inside a role section",
+					input:
+						"{{#mainAgent}}M{{#workflowAgent}}X{{/workflowAgent}}{{/mainAgent}}{{#childAgent}}S{{/childAgent}}",
+					output: child ? "S" : `M${workflows ? "X" : ""}`,
+				},
+				...(["\n", "\r\n"] as const).map((newline) => ({
+					name: `marker-only workflow lines ${JSON.stringify(newline)}`,
+					input: [
+						"A",
+						"{{#mainAgent}}",
+						"M",
+						" \t{{#workflowAgent}}  ",
+						"X",
+						"{{/workflowAgent}}",
+						"{{/mainAgent}}",
+						"{{#workflowAgent}}",
+						"W",
+						"{{/workflowAgent}}",
+					].join(newline),
+					output: [
+						"A",
+						...(child ? [] : ["M"]),
+						...(workflows && !child ? ["X"] : []),
+						...(workflows ? ["W"] : []),
+						"",
+					].join(newline),
+				})),
+			]) {
+				test(`renders ${fixture.name} for a ${agent}`, async () => {
+					await withIsolatedAgentDir(async ({ suiteDir }) => {
+						const templateFile = join(suiteDir, "sections.md");
+						await writeFile(templateFile, fixture.input);
+						await writeSuiteConfig(suiteDir, { templateFile });
+						const pi = createExtensionApiFake(
+							workflows ? ["read", "workflow_activate"] : ["read"],
+						);
+						const context = createContextFake();
+						const environment = await import("./environment");
+						const childMarker = spyOn(
+							environment,
+							"isSystemPromptChildProcess",
+						).mockReturnValue(child);
+						try {
+							systemPrompt(pi);
+							await getRegisteredHandler(pi, "session_start")({}, context.ctx);
+							expect(
+								await runBeforeAgentStartHandlers(
+									pi,
+									createBeforeAgentStartEvent(),
+									context.ctx,
+								),
+							).toBe(fixture.output);
+							expect(context.notifications).toHaveLength(0);
+						} finally {
+							childMarker.mockRestore();
+						}
+					});
+				});
+			}
+		}
+	}
+
+	test("omits workflow sections on the next run after workflow_activate leaves the active tools", async () => {
+		await withIsolatedAgentDir(async ({ suiteDir }) => {
+			const templateFile = join(suiteDir, "sections.md");
+			await writeFile(
+				templateFile,
+				"{{#mainAgent}}M{{#workflowAgent}}X{{/workflowAgent}}{{/mainAgent}}",
+			);
+			await writeSuiteConfig(suiteDir, { templateFile });
+			const pi = createExtensionApiFake(["read", "workflow_activate"]);
+			const context = createContextFake();
+			systemPrompt(pi);
+			await getRegisteredHandler(pi, "session_start")({}, context.ctx);
+			expect(
+				await runBeforeAgentStartHandlers(
+					pi,
+					createBeforeAgentStartEvent(),
+					context.ctx,
+				),
+			).toBe("MX");
+
+			// The workflow extension removes the tool through this filter when the agent loses its workflows.
+			getAgentRuntimeComposition(pi).setRestrictiveToolFilter(
+				"fixture",
+				(names) => names.filter((name) => name !== "workflow_activate"),
+			);
+			expect(
+				await runBeforeAgentStartHandlers(
+					pi,
+					createBeforeAgentStartEvent(),
+					context.ctx,
+				),
+			).toBe("M");
+		});
+	});
+
 	for (const launched of [false, true]) {
 		test(`renders ${launched ? "child" : "main"} sections when the composition ${launched ? "reports" : "does not report"} a launched subagent`, async () => {
 			await withIsolatedAgentDir(async ({ suiteDir }) => {
@@ -349,6 +457,10 @@ describe("system-prompt", () => {
 		"{{#mainAgent}}{{#mainAgent}}m{{/mainAgent}}{{/mainAgent}}",
 		"{{#other}}x{{/other}}",
 		"{{/other}}",
+		"{{#workflowAgent}}{{#workflowAgent}}X{{/workflowAgent}}{{/workflowAgent}}",
+		"{{#mainAgent}}{{#workflowAgent}}X{{/mainAgent}}{{/workflowAgent}}",
+		"{{#workflowAgent}}{{#mainAgent}}X{{/mainAgent}}{{/workflowAgent}}",
+		"{{#workflowAgent}}X",
 	]) {
 		test(`retains Pi prompt and reports invalid sections: ${input}`, async () => {
 			await withIsolatedAgentDir(async ({ suiteDir }) => {

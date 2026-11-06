@@ -440,6 +440,7 @@ function setMainWorkflowPolicy(
 	fake: FakePi,
 	workflows: readonly string[] | undefined,
 	tools?: readonly string[],
+	id = "Main",
 ): void {
 	if (fake.api === undefined) {
 		throw new Error("extension API missing");
@@ -448,7 +449,7 @@ function setMainWorkflowPolicy(
 		prompt: "main",
 		...(tools === undefined ? {} : { tools }),
 		agent: {
-			id: "Main",
+			id,
 			...(workflows === undefined ? {} : { workflows }),
 		},
 	});
@@ -3673,6 +3674,41 @@ describe("workflow extension lifecycle", () => {
 		await runLifecycle(fake, "session_tree");
 		await runLifecycle(fake, "session_tree", [activatedEntry()]);
 		expect(fake.activeTools).toEqual(["read"]);
+	});
+
+	test("offers only applicable workflow tools after the main agent changes", async () => {
+		// Purpose: a main-agent switch changes the system prompt anyway, so tools offered for the previous agent need not stay.
+		// Input and expected output: Auto with a workflow, then Simple without workflows, loses every workflow tool.
+		// Edge cases: reselecting the same agent keeps offered tools; an active workflow keeps its continuation tools.
+		// Dependencies: selected-agent change event, workflow availability, and runtime tool reconciliation.
+		await createSuite(validYaml());
+		const fake = await createFakePi();
+		const tools = [
+			"read",
+			"workflow_activate",
+			"workflow_transition",
+			"workflow_exit",
+		];
+		setMainWorkflowPolicy(fake, ["delivery"], tools, "Auto");
+		await runLifecycle(fake, "session_start");
+		expect(fake.activeTools).toEqual(tools);
+
+		setMainWorkflowPolicy(fake, [], tools, "Auto");
+		expect(fake.activeTools).toEqual(tools);
+
+		setMainWorkflowPolicy(fake, [], tools, "Simple");
+		expect(fake.activeTools).toEqual(["read"]);
+
+		setMainWorkflowPolicy(fake, ["delivery"], tools, "Auto");
+		await requireTool(fake, "workflow_activate").execute("activate", {
+			workflowId: "delivery",
+		});
+		setMainWorkflowPolicy(fake, [], tools, "Simple");
+		expect(fake.activeTools).toEqual([
+			"read",
+			"workflow_transition",
+			"workflow_exit",
+		]);
 	});
 
 	/** Proves shutdown releases the selected-agent contribution listener. */

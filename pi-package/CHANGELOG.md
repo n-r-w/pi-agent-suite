@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `{{#workflowAgent}}...{{/workflowAgent}}` sections in `system-prompt` templates: only an agent with the active `workflow_activate` tool receives their text. They may stand at the top level or inside a role section.
+
+### Changed
+
+- When `/agent` selects another main agent, the workflow extension offers only the workflow tools that apply to the new agent. For example, an agent with `workflows: []` loses `workflow_activate` after the switch.
+
 ## [2.22.1] - 2026-11-04
 
 ### Added

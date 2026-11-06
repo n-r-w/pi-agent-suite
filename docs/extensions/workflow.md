@@ -273,17 +273,17 @@ The `workflow_create` TypeBox schema adds LLM-facing length and collection-size 
 
 ### `workflow_activate`
 
-`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. A nested activation appends to the chain; an ordinary activation replaces the entire chain. Running workflows stay in the options, and an activation of a workflow whose ID runs in the chain fails with "workflow <id> already runs in the chain". The extension first offers the tool when at least one activation option exists. Once offered, the tool remains offered in the session unless the agent's tool policy excludes it. When no activation options remain, a call fails because the requested workflow cannot be activated.
+`workflow_activate` activates one ready-made workflow listed in `<workflow_activation_options>`. A nested activation appends to the chain; an ordinary activation replaces the entire chain. Running workflows stay in the options, and an activation of a workflow whose ID runs in the chain fails with "workflow <id> already runs in the chain". The extension first offers the tool when at least one activation option exists. Once offered, the tool remains offered until the main agent changes, unless the agent's tool policy excludes it. When no activation options remain, a call fails because the requested workflow cannot be activated.
 
 ### `workflow_get_stage`
 
-`workflow_get_stage` first becomes applicable while a workflow created through `workflow_create` is active. Once offered, it remains offered in the session, subject to the agent's tool policy. When no workflow remains or the top is catalog-backed, the tool rejects the call. When exit resumes a dynamic parent, the tool reads that parent's stages, even if the arguments were originally intended for the exited child. The tool accepts only `stageId`; it accepts no `workflowId` to identify an exited child and cannot read catalog workflows.
+`workflow_get_stage` first becomes applicable while a workflow created through `workflow_create` is active. Once offered, it remains offered until the main agent changes, subject to the agent's tool policy. When no workflow remains or the top is catalog-backed, the tool rejects the call. When exit resumes a dynamic parent, the tool reads that parent's stages, even if the arguments were originally intended for the exited child. The tool accepts only `stageId`; it accepts no `workflowId` to identify an exited child and cannot read catalog workflows.
 
 For a format-2 or format-3 stage, the JSON result contains `id`, `description`, `goal`, `prompt`, `model.thinking`, `initial`, and `final`. For a restored format-1 dynamic workflow, the result omits `goal`. When the inspected stage has no thinking override, the tool returns `model: {}`. The tool reads stage data without changing workflow state. It rejects an unknown stage.
 
 ### `workflow_edit_stage`
 
-`workflow_edit_stage` has the same dynamic active-workflow applicability rule as `workflow_get_stage`. Once offered, it remains offered subject to tool policy. When no dynamic workflow is on top, calls fail without editing state. When exit resumes a dynamic parent, the tool edits that parent's stages, even if the arguments were originally intended for the exited child. It requires one closed replacement object:
+`workflow_edit_stage` has the same dynamic active-workflow applicability rule as `workflow_get_stage`. Once offered, it remains offered until the main agent changes, subject to tool policy. When no dynamic workflow is on top, calls fail without editing state. When exit resumes a dynamic parent, the tool edits that parent's stages, even if the arguments were originally intended for the exited child. It requires one closed replacement object:
 
 ```json
 {
@@ -489,7 +489,7 @@ The extension first offers each tool when it becomes applicable:
 - `workflow_get_stage` and `workflow_edit_stage` require an active dynamic workflow created through `workflow_create`;
 - `workflow_transition` and `workflow_exit` require an active workflow or at least one allowed catalog workflow.
 
-Once offered, a workflow-owned tool remains offered in the session even after its operation stops applying. An inapplicable call returns an explicit error, for example `no workflow is active` after the last exit. After a nested exit, calls operate on the resumed parent when applicable.
+Once offered, a workflow-owned tool remains offered even after its operation stops applying, so the tool list of later requests keeps the provider's cached request prefix. When the selected main agent changes to another agent ID, the system prompt changes and the cached prefix is lost anyway. The extension then offers only the tools that apply to the new agent. For example, after `/agent Auto` and then `/agent Simple`, where `Simple` has `workflows: []` and no workflow is active, the extension retires `workflow_activate`, `workflow_transition`, and `workflow_exit`. Selecting the same agent again keeps the offered tools. An inapplicable call returns an explicit error, for example `no workflow is active` after the last exit. After a nested exit, calls operate on the resumed parent when applicable.
 
 The agent's `tools` policy remains a second gate. The extension never restores a tool removed by that policy.
 

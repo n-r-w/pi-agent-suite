@@ -694,9 +694,17 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 		);
 		return message === undefined ? undefined : { message };
 	});
+	const composition = getAgentRuntimeComposition(pi);
+	let selectedAgentId = composition.getSelectedAgentContribution()?.agent?.id;
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
 	).on(SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
+		const agentId = composition.getSelectedAgentContribution()?.agent?.id;
+		// A new main agent changes the system prompt, so the provider cache that kept offered tools is lost anyway.
+		if (agentId !== selectedAgentId) {
+			selectedAgentId = agentId;
+			runtime.offeredToolNames.clear();
+		}
 		refreshTools("policy-reset");
 	});
 	pi.on("session_start", async (_event, ctx) => {

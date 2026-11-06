@@ -83,7 +83,24 @@ If a line contains only one section marker and optional spaces or tabs, the exte
 
 The extension selects sections before substituting variables. Therefore, section markers in inserted runtime values remain literal text. For example, if `cwd` contains `/tmp/{{#childAgent}}x{{/childAgent}}`, the extension inserts that entire value for `{{cwd}}` in either process kind. Templates without section markers retain their variable-rendering behavior.
 
-When loading the template, the extension validates all sections. If it finds an unmatched opening or closing marker, a mismatched closing marker, a nested section, or an unknown section kind, it rejects the template. For example, `{{#mainAgent}}M{{/childAgent}}` is invalid. The extension uses its startup warning path to report the issue and retains Pi's original prompt. For ordinary unsupported variables, it uses the warning path and removes those variables during rendering.
+When loading the template, the extension validates all sections. If it finds an unmatched opening or closing marker, a mismatched closing marker, a nested section, or an unknown section kind, it rejects the template. A workflow section inside a role section is the only allowed nesting. For example, `{{#mainAgent}}M{{/childAgent}}`, `{{#workflowAgent}}{{#mainAgent}}M{{/mainAgent}}{{/workflowAgent}}`, and `{{#mainAgent}}{{#workflowAgent}}X{{/mainAgent}}{{/workflowAgent}}` are invalid. The extension uses its startup warning path to report the issue and retains Pi's original prompt. For ordinary unsupported variables, it uses the warning path and removes those variables during rendering.
+
+## Workflow sections
+
+Use `{{#workflowAgent}}...{{/workflowAgent}}` for text that only an agent that can start workflows receives, such as rules that name workflows. The extension includes this text when `workflow_activate` is among the active tools after it reconciles them for the agent run. The [workflow](workflow.md) extension offers `workflow_activate` when the workflow policy of the agent allows at least one catalog workflow. An agent with `workflows: []` therefore receives no workflow-section text in a new session and after `/agent` selects it in a running session.
+
+A workflow section may stand outside role sections or inside one role section. Inside a role section, the text requires both conditions: the matching process kind and the active `workflow_activate`. Workflow sections follow the same rules as role sections for repetition, inline use, marker-only lines, and selection before variable substitution.
+
+For example, the extension renders `C{{#workflowAgent}}W{{/workflowAgent}}{{#mainAgent}}M{{#workflowAgent}}X{{/workflowAgent}}{{/mainAgent}}` as follows:
+
+| Agent | Rendered text |
+| --- | --- |
+| Main agent with `workflow_activate` | `CWMX` |
+| Main agent without `workflow_activate` | `CM` |
+| Child agent with `workflow_activate` | `CW` |
+| Child agent without `workflow_activate` | `C` |
+
+A session restored with an active workflow under an agent with `workflows: []` keeps `workflow_transition` and `workflow_exit` without `workflow_activate`, so it receives no workflow-section text.
 
 ## Bundled rule groups
 
