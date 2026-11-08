@@ -31,9 +31,8 @@ type WorkflowJournalKind =
 	| "reminder"
 	| "activation_options";
 
-/** Publishes append-only hidden workflow records and tracks which of them the model context holds. */
+/** Publishes append-only hidden workflow records and tracks which lifecycle and options records the model context holds. */
 export class WorkflowJournal {
-	private readonly knownStages = new Set<string>();
 	private currentChainRevision: string | undefined;
 	private activationOptionsContent: string | undefined;
 	// Whether the latest model-visible lifecycle record says that no workflow is active.
@@ -48,30 +47,41 @@ export class WorkflowJournal {
 		private readonly kinds: readonly WorkflowKind[] = [],
 	) {}
 
-	public activate(chain: WorkflowChain): void {
+	public activate(
+		chain: WorkflowChain,
+		entries: readonly ProjectedSessionEntry[],
+	): void {
 		const state = requireTopWorkflow(chain);
 		const stage = requireCurrentStage(state);
 		const key = getStageKey(state, stage);
-		const guidelines = this.knownStages.has(key) ? "reuse" : "inline";
-		this.knownStages.add(key);
+		const guidelines = chooseStageGuidelines(key, readKnownStageKeys(entries));
+		// Only catalog workflows reuse, because stage edits of created workflows change the graph through records that show no complete graph.
+		const reusesDefinition =
+			state.source === "catalog" && hasVisibleWorkflowGraph(state, entries);
 		this.setCurrentState(chain);
 		this.publishRecord(
-			renderWorkflowActivation(state, stage, guidelines),
+			renderWorkflowActivation(state, stage, guidelines, reusesDefinition),
 			"activation",
 			chain,
-			{ stageId: stage.id, ...describeStageRules(key, guidelines) },
+			{
+				stageId: stage.id,
+				...describeStageRules(key, guidelines),
+				...(reusesDefinition
+					? { workflowGuidelines: "reuse" }
+					: { definitionKeys: [getDefinitionKey(state.workflow)] }),
+			},
 		);
 	}
 
 	public enterStage(
 		chain: WorkflowChain,
+		entries: readonly ProjectedSessionEntry[],
 		refusedTransition?: PendingWorkflowTransition,
 	): void {
 		const state = requireTopWorkflow(chain);
 		const stage = requireCurrentStage(state);
 		const key = getStageKey(state, stage);
-		const guidelines = this.knownStages.has(key) ? "reuse" : "inline";
-		this.knownStages.add(key);
+		const guidelines = chooseStageGuidelines(key, readKnownStageKeys(entries));
 		this.setCurrentState(chain);
 		this.publishRecord(
 			[
@@ -99,7 +109,6 @@ export class WorkflowJournal {
 			throw new Error(`workflow stage does not exist: ${stageId}`);
 		}
 		const key = getStageKey(state, stage);
-		this.knownStages.add(key);
 		this.setCurrentState(chain);
 		this.publishRecord(renderStageUpdate(state, stage), "stage_update", chain, {
 			stageId,
@@ -108,7 +117,7 @@ export class WorkflowJournal {
 		});
 	}
 
-	/** Publishes only the current active identifiers without changing journal stage knowledge. */
+	/** Publishes only the current active identifiers, without stage prompts. */
 	public reminder(
 		chain: WorkflowChain,
 		delivery: WorkflowJournalDelivery = "steer",
@@ -129,28 +138,42 @@ export class WorkflowJournal {
 
 	/** Publishes the absence of a workflow after an explicit exit or restoration. */
 	public exit(): void {
+		this.publish(this.exitForRun(), "steer", false);
+	}
+
+	/** Returns the record of the absence of a workflow and marks the exit as shown, without publishing the record. */
+	public exitForRun(): WorkflowJournalRecord {
 		this.currentChainRevision = undefined;
 		this.exitShown = true;
-		this.publish(
-			{
-				customType: "workflow",
-				content:
-					'<workflow_exited />\n<workflow_state active="false" />\n<workflow_chain />',
-				display: false,
-				details: { version: 1, kind: "exit" },
-			},
-			"steer",
-			false,
-		);
+		return {
+			customType: "workflow",
+			content:
+				'<workflow_exited />\n<workflow_state active="false" />\n<workflow_chain />',
+			display: false,
+			details: { version: 1, kind: "exit" },
+		};
 	}
 
 	public checkpoint(
 		chain: WorkflowChain,
-		projectedEntries: readonly ProjectedSessionEntry[] = [],
+		projectedEntries: readonly ProjectedSessionEntry[],
 		triggerTurn?: boolean,
 	): void {
+		this.publish(
+			this.checkpointForRun(chain, projectedEntries),
+			"steer",
+			triggerTurn,
+		);
+	}
+
+	/** Returns a checkpoint with the parts that the projected entries lack and marks its state as current, without publishing the checkpoint. */
+	public checkpointForRun(
+		chain: WorkflowChain,
+		projectedEntries: readonly ProjectedSessionEntry[],
+	): WorkflowJournalRecord {
 		const state = requireTopWorkflow(chain);
 		const stage = requireCurrentStage(state);
+		const knownStageKeys = readKnownStageKeys(projectedEntries);
 		const missingGraphs = chain.filter(
 			(item) => !hasVisibleWorkflowGraph(item, projectedEntries),
 		);
@@ -158,7 +181,7 @@ export class WorkflowJournal {
 		const waiting = chain.slice(0, -1).flatMap((item) => {
 			const waitingStage = requireCurrentStage(item);
 			const stageKey = getStageKey(item, waitingStage);
-			const includesStage = !this.knownStages.has(stageKey);
+			const includesStage = !knownStageKeys.has(stageKey);
 			const includesWaitingGraph = missingGraphs.includes(item);
 			return includesStage || includesWaitingGraph
 				? [
@@ -177,14 +200,10 @@ export class WorkflowJournal {
 		const waitingStageKeys = waiting.flatMap(({ stageKey }) =>
 			stageKey === undefined ? [] : [stageKey],
 		);
-		for (const waitingKey of waitingStageKeys) {
-			this.knownStages.add(waitingKey);
-		}
 		const key = getStageKey(state, stage);
-		const guidelines = this.knownStages.has(key) ? "reuse" : "inline";
-		this.knownStages.add(key);
+		const guidelines = chooseStageGuidelines(key, knownStageKeys);
 		this.setCurrentState(chain);
-		this.publishRecord(
+		return this.buildRecord(
 			[
 				...waiting.map(({ content }) => content),
 				renderWorkflowCheckpoint(state, stage, includesGraph, guidelines),
@@ -196,8 +215,10 @@ export class WorkflowJournal {
 				...describeStageRules(key, guidelines),
 				includesGraph,
 				graphWorkflowIds: missingGraphs.map(({ workflow }) => workflow.id),
+				definitionKeys: missingGraphs.map(({ workflow }) =>
+					getDefinitionKey(workflow),
+				),
 				...(waitingStageKeys.length === 0 ? {} : { waitingStageKeys }),
-				...(triggerTurn === undefined ? {} : { triggerTurn }),
 			},
 		);
 	}
@@ -212,17 +233,14 @@ export class WorkflowJournal {
 		}
 	}
 
-	/** Restores publication evidence from the model-visible entries before Pi appends the next run's initial message. */
+	/** Restores publication evidence from the counted records before Pi appends the next run's initial message. */
 	public activationOptionsForRun(
 		workflows: readonly WorkflowDefinition[],
 		entries: readonly ProjectedSessionEntry[],
 	): WorkflowJournalRecord | undefined {
 		this.activationOptionsContent = undefined;
-		for (const message of readVisibleWorkflowMessages(entries)) {
-			if (
-				message.details["version"] === 1 &&
-				message.details["kind"] === "activation_options"
-			) {
+		for (const message of readCountedWorkflowRecords(entries)) {
+			if (message.details["kind"] === "activation_options") {
 				this.activationOptionsContent = message.content;
 			}
 		}
@@ -250,13 +268,12 @@ export class WorkflowJournal {
 		};
 	}
 
-	/** Rebuilds journal-local deduplication state from the entries that Pi sends to the model, including those that a compaction kept. */
+	/** Rebuilds journal-local deduplication state from the records that Pi saved and sends to the model unchanged, including those that a compaction kept. */
 	public restore(entries: readonly ProjectedSessionEntry[]): void {
-		this.knownStages.clear();
 		this.currentChainRevision = undefined;
 		this.activationOptionsContent = undefined;
 		this.exitShown = false;
-		for (const message of readVisibleWorkflowMessages(entries)) {
+		for (const message of readCountedWorkflowRecords(entries)) {
 			this.restoreRecord(message.details, message.content);
 		}
 	}
@@ -275,9 +292,6 @@ export class WorkflowJournal {
 		details: Readonly<Record<string, unknown>>,
 		content: string,
 	): void {
-		if (details["version"] !== 1) {
-			return;
-		}
 		const kind = details["kind"];
 		if (kind === "activation_options") {
 			this.activationOptionsContent = content;
@@ -293,18 +307,6 @@ export class WorkflowJournal {
 			return;
 		}
 		this.exitShown = false;
-		const key = details["stageKey"];
-		if (typeof key === "string") {
-			this.knownStages.add(key);
-		}
-		const waitingKeys = details["waitingStageKeys"];
-		if (Array.isArray(waitingKeys)) {
-			for (const waitingKey of waitingKeys) {
-				if (typeof waitingKey === "string") {
-					this.knownStages.add(waitingKey);
-				}
-			}
-		}
 		this.currentChainRevision = revision;
 	}
 
@@ -320,10 +322,19 @@ export class WorkflowJournal {
 		publication: Readonly<Record<string, unknown>> & {
 			readonly stageId: string;
 			readonly delivery?: WorkflowJournalDelivery;
-			readonly triggerTurn?: boolean;
 		},
 	): void {
-		const { delivery = "steer", triggerTurn, ...metadata } = publication;
+		const { delivery = "steer", ...metadata } = publication;
+		this.publish(this.buildRecord(content, kind, chain, metadata), delivery);
+	}
+
+	/** Builds a lifecycle record that carries the chain view and the metadata of the current workflow state. */
+	private buildRecord(
+		content: string,
+		kind: Exclude<WorkflowJournalKind, "activation_options">,
+		chain: WorkflowChain,
+		metadata: Readonly<Record<string, unknown>>,
+	): WorkflowJournalRecord {
 		const state = requireTopWorkflow(chain);
 		const chainView = chain.map((item) => ({
 			workflowId: item.workflow.id,
@@ -343,42 +354,54 @@ export class WorkflowJournal {
 						},
 					],
 		);
-		this.publish(
-			{
-				customType: "workflow",
-				content: `${content}\n${renderWorkflowChain(chainView)}`,
-				display: false,
-				details: {
-					version: 1,
-					kind,
-					workflowId: state.workflow.id,
-					status: "active",
-					currentStageId: state.route.at(-1),
-					chainRevision: getChainRevision(chain),
-					...(pendingTransitions.length === 0 ? {} : { pendingTransitions }),
-					...metadata,
-				},
+		return {
+			customType: "workflow",
+			content: `${content}\n${renderWorkflowChain(chainView)}`,
+			display: false,
+			details: {
+				version: 1,
+				kind,
+				workflowId: state.workflow.id,
+				status: "active",
+				currentStageId: state.route.at(-1),
+				chainRevision: getChainRevision(chain),
+				...(pendingTransitions.length === 0 ? {} : { pendingTransitions }),
+				...metadata,
 			},
-			delivery,
-			triggerTurn,
-		);
+		};
 	}
 }
 
+/** Renders an activation with the shared rules and the graph, or with a reference to the visible record that shows them when `reusesDefinition` is true. */
 function renderWorkflowActivation(
 	state: WorkflowState,
 	stage: WorkflowStage,
 	guidelines: "inline" | "reuse",
+	reusesDefinition: boolean,
 ): string {
 	const workflow = state.workflow;
+	const opening = `<workflow_activated id="${escapeXml(workflow.id)}" source="${state.source}"`;
 	return [
-		`<workflow_activated id="${escapeXml(workflow.id)}" source="${state.source}">`,
-		...renderOptionalGuidelines(workflow.prompt, "guidelines", "  "),
-		...renderWorkflowGraph(workflow),
-		"</workflow_activated>",
+		...(reusesDefinition
+			? [`${opening} guidelines="reuse" />`]
+			: [
+					`${opening}>`,
+					...renderWorkflowDefinition(workflow),
+					"</workflow_activated>",
+				]),
 		"",
 		renderStageActivation(state, stage, guidelines),
 	].join("\n");
+}
+
+/** Renders the shared rules and the graph that activation and restoration records show. */
+function renderWorkflowDefinition(
+	workflow: WorkflowDefinition,
+): readonly string[] {
+	return [
+		...renderOptionalGuidelines(workflow.prompt, "guidelines", "  "),
+		...renderWorkflowGraph(workflow),
+	];
 }
 
 /** Renders the stage descriptions and transition graph shared by activation and restoration. */
@@ -450,16 +473,7 @@ function renderWorkflowCheckpoint(
 ): string {
 	return [
 		`<workflow_checkpoint id="${escapeXml(state.workflow.id)}" status="active" active_stage_id="${escapeXml(stage.id)}" guidelines="${guidelines}">`,
-		...(includesGraph
-			? [
-					...renderOptionalGuidelines(
-						state.workflow.prompt,
-						"guidelines",
-						"  ",
-					),
-					...renderWorkflowGraph(state.workflow),
-				]
-			: []),
+		...(includesGraph ? renderWorkflowDefinition(state.workflow) : []),
 		...renderOptionalGuidelines(stage.goal, "stage_goal", "  "),
 		...(guidelines === "inline"
 			? [
@@ -562,14 +576,50 @@ function requireCurrentStage(state: WorkflowState): WorkflowStage {
 	return stage;
 }
 
-/** Returns the workflow records that Pi sends to the model, in their order. */
-function readVisibleWorkflowMessages(
+/** Returns the workflow records that Pi saved and sends to the model with their saved text, in their order. */
+function readCountedWorkflowRecords(
 	entries: readonly ProjectedSessionEntry[],
 ): readonly NonNullable<ReturnType<typeof readWorkflowMessage>>[] {
 	return entries.flatMap(({ sourceEntry, messages }) => {
 		const message = readWorkflowMessage(sourceEntry);
-		return messages.length > 0 && message !== undefined ? [message] : [];
+		return message?.details["version"] === 1 &&
+			messages.length > 0 &&
+			messages.every(
+				(projected) =>
+					projected.role === "custom" && projected.content === message.content,
+			)
+			? [message]
+			: [];
 	});
+}
+
+/** Returns the keys of the stage definitions whose prompts the counted records show. */
+function readKnownStageKeys(
+	entries: readonly ProjectedSessionEntry[],
+): ReadonlySet<string> {
+	return new Set(
+		readCountedWorkflowRecords(entries).flatMap(({ details }) => {
+			const key = details["stageKey"];
+			const waitingKeys = details["waitingStageKeys"];
+			return [
+				...(typeof key === "string" ? [key] : []),
+				...(Array.isArray(waitingKeys)
+					? waitingKeys.filter(
+							(waitingKey): waitingKey is string =>
+								typeof waitingKey === "string",
+						)
+					: []),
+			];
+		}),
+	);
+}
+
+/** Chooses `reuse` when the known stage keys hold the key of this stage definition, and `inline` otherwise. */
+function chooseStageGuidelines(
+	key: string,
+	knownStageKeys: ReadonlySet<string>,
+): "inline" | "reuse" {
+	return knownStageKeys.has(key) ? "reuse" : "inline";
 }
 
 /** Returns the record metadata that says whether the record shows the stage rules, with their key when it does. */
@@ -600,25 +650,33 @@ function readWorkflowMessage(entry: unknown):
 	return { content: entry["content"], details: entry["details"] };
 }
 
-/** Reports whether Pi will send a graph record for the saved workflow to the model. */
+/** Reports whether the latest counted record that shows the rules and graph of the saved workflow shows its saved definition. */
 export function hasVisibleWorkflowGraph(
 	state: WorkflowState,
 	entries: readonly ProjectedSessionEntry[],
 ): boolean {
-	return entries.some(({ sourceEntry, messages }) => {
-		const message = readWorkflowMessage(sourceEntry);
-		return (
-			messages.length > 0 &&
-			message?.details["version"] === 1 &&
-			((message.details["workflowId"] === state.workflow.id &&
-				(message.details["kind"] === "activation" ||
-					(message.details["kind"] === "checkpoint" &&
-						message.details["includesGraph"] === true))) ||
-				(message.details["kind"] === "checkpoint" &&
-					Array.isArray(message.details["graphWorkflowIds"]) &&
-					message.details["graphWorkflowIds"].includes(state.workflow.id)))
-		);
-	});
+	const latest = readCountedWorkflowRecords(entries)
+		.filter(({ details }) => showsWorkflowGraph(details, state.workflow.id))
+		.at(-1);
+	const keys = latest?.details["definitionKeys"];
+	return Array.isArray(keys) && keys.includes(getDefinitionKey(state.workflow));
+}
+
+/** Reports whether a workflow record shows the shared rules and the graph of the workflow with this ID. */
+function showsWorkflowGraph(
+	details: Readonly<Record<string, unknown>>,
+	workflowId: string,
+): boolean {
+	return (
+		(details["workflowId"] === workflowId &&
+			((details["kind"] === "activation" &&
+				details["workflowGuidelines"] !== "reuse") ||
+				(details["kind"] === "checkpoint" &&
+					details["includesGraph"] === true))) ||
+		(details["kind"] === "checkpoint" &&
+			Array.isArray(details["graphWorkflowIds"]) &&
+			details["graphWorkflowIds"].includes(workflowId))
+	);
 }
 
 /** Renders a waiting workflow with the parts that no visible record shows: its shared rules and graph, and the goal and rules of the stage at which it waits. */
@@ -630,16 +688,7 @@ function renderWaitingWorkflow(
 ): string {
 	return [
 		`<workflow_waiting id="${escapeXml(state.workflow.id)}" stage_id="${escapeXml(stage.id)}">`,
-		...(includesGraph
-			? [
-					...renderOptionalGuidelines(
-						state.workflow.prompt,
-						"guidelines",
-						"  ",
-					),
-					...renderWorkflowGraph(state.workflow),
-				]
-			: []),
+		...(includesGraph ? renderWorkflowDefinition(state.workflow) : []),
 		...(includesStage
 			? [
 					...renderOptionalGuidelines(stage.goal, "stage_goal", "  "),
@@ -699,6 +748,15 @@ function sortObjectKeys(_key: string, value: unknown): unknown {
 		// Keys of one object are distinct, so no comparison returns equality.
 		Object.entries(value).sort(([left], [right]) => (left < right ? -1 : 1)),
 	);
+}
+
+/** Keys the shared rules and the graph of a workflow by its ID and the text that records show for them. */
+function getDefinitionKey(workflow: WorkflowDefinition): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify([workflow.id, ...renderWorkflowDefinition(workflow)]),
+		)
+		.digest("hex");
 }
 
 /** Keys stage knowledge by workflow identity and the exact stage definition. */

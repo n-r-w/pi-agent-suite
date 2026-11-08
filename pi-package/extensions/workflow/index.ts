@@ -4,6 +4,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	ProjectedSessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -683,6 +684,8 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 	const synchronize = createWorkflowSynchronizer(options);
 	registerWorkflowRunLifecycle(pi, runtime);
 	registerWorkflowCompaction(pi, runtime, getPolicy);
+	// Pi appends the run-start messages in registration order, so the restored state precedes the activation options.
+	registerWorkflowRunStartRepair(pi, runtime);
 	pi.on("before_agent_start", (_event, ctx) => {
 		const availability = resolveRuntimeAvailability(runtime, getPolicy());
 		const workflows = pi.getActiveTools().includes(WORKFLOW_ACTIVATE_TOOL)
@@ -694,9 +697,17 @@ function registerWorkflowLifecycle(options: WorkflowLifecycleOptions): void {
 		);
 		return message === undefined ? undefined : { message };
 	});
+	const composition = getAgentRuntimeComposition(pi);
+	let selectedAgentId = composition.getSelectedAgentContribution()?.agent?.id;
 	const unsubscribeFromAgentChanges = (
 		pi.events as unknown as WorkflowEventBus
 	).on(SELECTED_AGENT_CONTRIBUTION_CHANGE_EVENT, () => {
+		const agentId = composition.getSelectedAgentContribution()?.agent?.id;
+		// A new main agent changes the system prompt, so the provider cache that kept offered tools is lost anyway.
+		if (agentId !== selectedAgentId) {
+			selectedAgentId = agentId;
+			runtime.offeredToolNames.clear();
+		}
 		refreshTools("policy-reset");
 	});
 	pi.on("session_start", async (_event, ctx) => {
@@ -775,18 +786,10 @@ function createWorkflowSynchronizer(
 			);
 			const { entries } = ctx.sessionManager.buildSessionProjection();
 			runtime.journal.restore(entries);
-			const state = getTopWorkflow(runtime.chain);
-			if (state !== undefined) {
-				if (
-					!runtime.journal.isCurrent(runtime.chain) ||
-					runtime.chain.some((item) => !hasVisibleWorkflowGraph(item, entries))
-				) {
-					runtime.journal.checkpoint(runtime.chain, entries);
-				}
-			} else if (
-				runtime.emptyRestoration !== undefined &&
-				!runtime.journal.showsExit()
-			) {
+			const missing = findMissingLifecycleRecord(runtime, entries);
+			if (missing === "checkpoint") {
+				runtime.journal.checkpoint(runtime.chain, entries);
+			} else if (missing === "exit") {
 				runtime.journal.exit();
 			}
 			runtime.journalReady = true;
@@ -794,6 +797,48 @@ function createWorkflowSynchronizer(
 			publishWorkflowStatus(statusHolder.indicator, runtime);
 		}
 	};
+}
+
+/** Chooses the lifecycle record that the journal, restored from the projected entries, lacks for the current workflow state. */
+function findMissingLifecycleRecord(
+	runtime: WorkflowRuntime,
+	entries: readonly ProjectedSessionEntry[],
+): "checkpoint" | "exit" | undefined {
+	if (getTopWorkflow(runtime.chain) !== undefined) {
+		return !runtime.journal.isCurrent(runtime.chain) ||
+			runtime.chain.some((item) => !hasVisibleWorkflowGraph(item, entries))
+			? "checkpoint"
+			: undefined;
+	}
+	return runtime.emptyRestoration !== undefined && !runtime.journal.showsExit()
+		? "exit"
+		: undefined;
+}
+
+/** Registers the run-start record that restores the workflow state after Pi dropped a lifecycle record from its queue. */
+function registerWorkflowRunStartRepair(
+	pi: ExtensionAPI,
+	runtime: WorkflowRuntime,
+): void {
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (!runtime.journalReady) {
+			return undefined;
+		}
+		const { entries } = ctx.sessionManager.buildSessionProjection();
+		runtime.journal.restore(entries);
+		const missing = findMissingLifecycleRecord(runtime, entries);
+		if (missing === undefined) {
+			return undefined;
+		}
+		const message =
+			missing === "checkpoint"
+				? runtime.journal.checkpointForRun(runtime.chain, entries)
+				: runtime.journal.exitForRun();
+		if (recordCarriesCurrentWorkflowState(message.details)) {
+			runtime.reminderScheduler.workflowStatePublished();
+		}
+		return { message };
+	});
 }
 
 /** Tracks model selections without treating settlement as a workflow operation. */
@@ -1334,7 +1379,7 @@ async function executeWorkflowCreate(
 		route: candidate.route,
 	});
 	const chain = addWorkflow(runtime.chain, persisted);
-	runtime.journal.activate(chain);
+	runtime.journal.activate(chain, readProjectedEntries(ctx));
 	await setEnteredWorkflowChain(pi, setChain, chain, { ctx, signal });
 	return SUCCESS_RESULT;
 }
@@ -1439,7 +1484,7 @@ function registerWorkflowActivateTool(
 				},
 			);
 			const chain = addWorkflow(runtime.chain, persisted);
-			runtime.journal.activate(chain);
+			runtime.journal.activate(chain, readProjectedEntries(ctx));
 			await setEnteredWorkflowChain(pi, setChain, chain, { ctx, signal });
 			await startStageWorkflow(options, { ctx, signal });
 			return SUCCESS_RESULT;
@@ -1710,10 +1755,17 @@ async function executeWorkflowTransition(
 		route: candidate.route,
 	});
 	const chain = [...runtime.chain.slice(0, -1), persisted];
-	runtime.journal.enterStage(chain);
+	runtime.journal.enterStage(chain, readProjectedEntries(invocation.ctx));
 	await setEnteredWorkflowChain(pi, setChain, chain, invocation);
 	await startStageWorkflow(options, invocation);
 	return SUCCESS_RESULT;
+}
+
+/** Returns the entries of the session projection, which hold the records that Pi sends to the model. */
+function readProjectedEntries(
+	ctx: ExtensionContext,
+): readonly ProjectedSessionEntry[] {
+	return ctx.sessionManager.buildSessionProjection().entries;
 }
 
 /** Starts a catalog check only after authorization and chain validation. */
@@ -1767,7 +1819,7 @@ async function startNamedCatalogWorkflow(
 		...pending,
 	});
 	const chain = addWorkflow(runtime.chain, persisted);
-	runtime.journal.activate(chain);
+	runtime.journal.activate(chain, readProjectedEntries(invocation.ctx));
 	await setEnteredWorkflowChain(pi, setChain, chain, invocation);
 	await startStageWorkflow(options, invocation);
 }
@@ -1871,6 +1923,7 @@ async function executeWorkflowExit(
 	} else {
 		runtime.journal.enterStage(
 			remaining,
+			readProjectedEntries(invocation.ctx),
 			allow === false ? current.pendingTransition : undefined,
 		);
 		if (entersStage) {

@@ -16,6 +16,7 @@ import { getPromptComposition } from "../../shared/prompt-composition";
 import type { VisibleToolset } from "../../shared/toolsets/contracts";
 import { getToolsetRuntime } from "../../shared/toolsets/runtime";
 import { AVAILABLE_SUBAGENTS_PROMPT_OPENING_TAG } from "../run-subagent/contracts";
+import { WORKFLOW_ACTIVATE_TOOL } from "../workflow/availability";
 import { isSystemPromptChildProcess } from "./environment";
 import {
 	parseTemplateSections,
@@ -108,16 +109,20 @@ export default function systemPrompt(pi: ExtensionAPI): void {
 		if (typedEvent.systemPromptOptions.customPrompt) {
 			return undefined;
 		}
+		const activeTools = pi.getActiveTools();
 		const options = {
 			...typedEvent.systemPromptOptions,
-			selectedTools: [...pi.getActiveTools()],
+			selectedTools: [...activeTools],
 		};
 		// The owner of `--subagent` registers its resolver after this extension loads.
 		const agentKind =
 			hasChildMarker || composition.getLaunchedSubagentId() !== undefined
 				? "childAgent"
 				: "mainAgent";
-		const template = selectTemplateSections(templateState.parts, agentKind);
+		const template = selectTemplateSections(templateState.parts, {
+			kind: agentKind,
+			hasWorkflows: activeTools.includes(WORKFLOW_ACTIVATE_TOOL),
+		});
 		const toolsets = hasTemplateVariable(template, "toolsets")
 			? getToolsetRuntime(pi).getVisibleToolsets()
 			: [];

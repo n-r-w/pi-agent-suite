@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { projectRecords } from "../../../test/support/session-projection";
 import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
 import {
 	activateWorkflow,
@@ -990,12 +991,12 @@ describe("workflow format boundaries", () => {
 			"catalog",
 		);
 		expect(JSON.stringify(explicit)).toBe(JSON.stringify(legacy));
-		// Each definition gets its own journal, because a second activation in one journal reuses the known initial stage.
 		const records = [legacy, explicit].map((definition) => {
 			const published: WorkflowJournalRecord[] = [];
-			new WorkflowJournal((record) => published.push(record)).activate([
-				activateWorkflow(definition),
-			]);
+			new WorkflowJournal((record) => published.push(record)).activate(
+				[activateWorkflow(definition)],
+				[],
+			);
 			return published[0];
 		});
 		expect(records[1]).toEqual(records[0]);
@@ -1194,13 +1195,15 @@ describe("workflow format boundaries", () => {
 		);
 		const records: WorkflowJournalRecord[] = [];
 		const journal = new WorkflowJournal((record) => records.push(record));
+		// Pi saves each record before the next one.
+		const saved = () => projectRecords(records);
 		let state = activateWorkflow(workflow);
-		journal.activate([state]);
+		journal.activate([state], saved());
 		state = transitionWorkflow(state, "left", "ready");
-		journal.enterStage([state]);
+		journal.enterStage([state], saved());
 		state = transitionWorkflow(state, "start", "retry");
-		journal.enterStage([state]);
-		journal.checkpoint([state]);
+		journal.enterStage([state], saved());
+		journal.checkpoint([state], saved());
 		journal.updateStage([state], "start");
 		state = transitionWorkflow(state, "left", "ready");
 		journal.exit();

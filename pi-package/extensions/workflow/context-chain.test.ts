@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { projectBranch } from "../../../test/support/session-projection";
+import {
+	projectBranch,
+	projectRecords,
+} from "../../../test/support/session-projection";
 import { WorkflowJournal, type WorkflowJournalRecord } from "./context";
 import {
 	createWorkflow,
@@ -43,9 +46,9 @@ test("journal scopes known stages to each workflow and preserves published recor
 	const { journal, records } = capture();
 	const parent = state("parent");
 	const child = state("child", true);
-	journal.activate([parent]);
+	journal.activate([parent], []);
 	const original = JSON.stringify(records);
-	journal.activate([parent, child]);
+	journal.activate([parent, child], projectRecords(records));
 	expect(records.at(-1)?.details).toMatchObject({
 		workflowId: "child",
 		currentStageId: "start",
@@ -53,7 +56,7 @@ test("journal scopes known stages to each workflow and preserves published recor
 	});
 	expect(journal.isCurrent([parent, child])).toBe(true);
 	expect(JSON.stringify(records.slice(0, 1))).toBe(original);
-	journal.enterStage([parent]);
+	journal.enterStage([parent], projectRecords(records));
 	expect(records.at(-1)?.details).toMatchObject({
 		workflowId: "parent",
 		guidelines: "reuse",
@@ -66,8 +69,8 @@ test("chain revision detects waiting parent edits and checkpoints retain all def
 	const { journal, records } = capture();
 	const parent = state("parent");
 	const child = state("child", true);
-	journal.activate([parent]);
-	journal.activate([parent, child]);
+	journal.activate([parent], []);
+	journal.activate([parent, child], []);
 	const history = records.map((record) => ({
 		type: "custom_message",
 		...record,
@@ -88,22 +91,23 @@ test("chain revision detects waiting parent edits and checkpoints retain all def
 	);
 	expect(restored.journal.isCurrent([changed, child])).toBe(false);
 	restored.journal.restore([]);
-	restored.journal.checkpoint([changed, child]);
+	restored.journal.checkpoint([changed, child], []);
 	expect(restored.records.at(-1)?.details).toMatchObject({
 		kind: "checkpoint",
 		workflowId: "child",
 		currentStageId: "start",
 		graphWorkflowIds: ["parent", "child"],
 	});
+	expect(restored.records.at(-1)?.details["definitionKeys"]).toHaveLength(2);
 	const resumed = capture();
 	resumed.journal.restore(
 		projectBranch(
 			restored.records.map((record) => ({ type: "custom_message", ...record })),
 		),
 	);
-	restored.journal.enterStage([changed]);
+	restored.journal.enterStage([changed], projectRecords(restored.records));
 	expect(restored.records.at(-1)?.details["guidelines"]).toBe("reuse");
-	resumed.journal.enterStage([changed]);
+	resumed.journal.enterStage([changed], projectRecords(restored.records));
 	expect(resumed.records.at(-1)?.details["guidelines"]).toBe("reuse");
 });
 
@@ -111,17 +115,12 @@ test("checkpoint shows the stage rules of a waiting workflow only when no visibl
 	const { journal, records } = capture();
 	const parent = state("parent");
 	const child = state("child", true);
-	journal.activate([parent]);
-	journal.activate([parent, child]);
-	journal.checkpoint(
-		[parent, child],
-		projectBranch(
-			records.map((record) => ({ type: "custom_message", ...record })),
-		),
-	);
+	journal.activate([parent], []);
+	journal.activate([parent, child], []);
+	journal.checkpoint([parent, child], projectRecords(records));
 	expect(records.at(-1)?.details["waitingStageKeys"]).toBeUndefined();
 	journal.restore([]);
-	journal.checkpoint([parent, child]);
+	journal.checkpoint([parent, child], []);
 	expect(records.at(-1)?.details["waitingStageKeys"]).toHaveLength(1);
 });
 
@@ -164,6 +163,6 @@ test("journal recognizes a restored chain whose items hold the same fields in an
 	const live = { ...child, pendingTransition, restoration };
 	// Replay of the saved start builds the same item with the restoration snapshot first.
 	const replayed = { ...child, restoration, pendingTransition };
-	journal.activate([parent, live]);
+	journal.activate([parent, live], []);
 	expect(journal.isCurrent([parent, replayed])).toBe(true);
 });

@@ -134,7 +134,13 @@ test("workflow entry activates a configured workflow and projects its initial st
 	if (activate === undefined) {
 		throw new Error("activation tool missing");
 	}
-	await activate.execute("call", { workflowId: "delivery" });
+	await activate.execute(
+		"call",
+		{ workflowId: "delivery" },
+		undefined,
+		undefined,
+		context,
+	);
 	expect(appended).toHaveLength(1);
 	expect(appended[0]?.customType).toBe("workflow-state");
 	expect(handlers.has("context")).toBe(false);

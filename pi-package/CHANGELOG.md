@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `{{#workflowAgent}}...{{/workflowAgent}}` sections in `system-prompt` templates: only an agent with the active `workflow_activate` tool receives their text. They may stand at the top level or inside a role section.
+
+### Changed
+
+- When `/agent` selects another main agent, the workflow extension offers only the workflow tools that apply to the new agent. For example, an agent with `workflows: []` loses `workflow_activate` after the switch.
+- When the agent activates an unchanged catalog workflow again, the workflow extension refers to the rules and stage graph that the session already shows and does not repeat them. For a workflow from `workflow_create`, the extension still sends the rules and graph on each activation.
+
+### Fixed
+
+- When Pi drops a workflow record before saving it, for example when you press Escape during a response, the workflow extension sends the instructions of that stage again on the next entry into it. The extension also starts the next run of the agent with the current workflow state, so the agent does not continue without the dropped activation, stage entry, or exit.
+- After a compaction or a session resume, the workflow extension restores the current rules and stage graph of a workflow when the session shows only an earlier version of its definition, for example after a change of the catalog file.
+
 ## [2.22.1] - 2026-11-04
 
 ### Added
