@@ -1,5 +1,5 @@
 **DESCRIPTION**:
-1. Create and immediately activate a task-specific workflow when no workflow in `<workflow_activation_options>` fits the user's task.
+1. Create and activate a task-specific workflow when no workflow in `<workflow_activation_options>` fits the user's task.
 2. A created workflow cannot be activated again after it is replaced or exits.
 
 **RULES**:
@@ -11,10 +11,5 @@
 6. A `rework` transition targets only a strict `advance` ancestor.
 7. When completion of a stage may require a change of output of an `advance` ancestor, a path of `rework` transitions leads from this stage to this ancestor.
 8. Completion criteria of a stage use only outputs of this stage and of its `advance` ancestors, because outputs of its `advance` descendants do not exist yet.
-9. Set `thinking` of each stage to the lowest level that reliably completes the stage, by the hardest reasoning that the stage requires:
-    1) `low`: the stage needs no interpretation, trade-off, or design decision, for example extraction, predefined commands, formatting, or deterministic checks.
-    2) `medium`: the stage reasons from known evidence by established criteria, for example bounded analysis, implementation, verification, or routine user interaction.
-    3) `high`: the stage resolves ambiguity or chooses between designs, for example ambiguous requirements, architecture, multi-option planning, cross-component trade-offs, or replanning.
-    4) File count, tool count, task duration, and output size do not set the level.
-    5) Use `medium` when neither `low` nor `high` clearly applies.
+9. Set one model and one `thinking` level for the whole workflow; set them per stage only when the user explicitly asks, because a change of model or thinking level within a session invalidates the cache of most providers.
 10. General prompt holds only rules that two or more stages apply. A rule of one stage goes to the prompt of this stage.
