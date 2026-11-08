@@ -72,13 +72,8 @@ Custom `pi.dev` extensions: `pi-package/extensions/*`
     4) Use `pi --no-session -p -e .` to validate whole-package loading.
 5. For live checks of tool, agent, prompt, or active-tool availability, run real `pi` CLI with target package, a temporary cwd/state when needed, and a temporary debug extension that dumps `before_agent_start.systemPrompt` and `pi.getActiveTools()`. Inspect dumped runtime data, not only unit-test fakes, and remove temporary state after check.
 
-## Pi Documentation
-1. node_modules/@earendil-works/pi-coding-agent/README.md
-2. node_modules/@earendil-works/pi-coding-agent/docs/
-3. node_modules/@earendil-works/pi-coding-agent/examples/README.md
-
-## Pi Source Code
-node_modules/@earendil-works/pi-coding-agent/dist
+## Pi Source Code & Documentation
+Locate the active Pi installation with `command -v pi`, following symlinks and its launcher to the package root. Use `README.md`, `docs/`, and `examples/README.md` relative to that root.
 
 ## Session files (use for debugging)
 - Main agents: ~/.pi/agent/sessions
