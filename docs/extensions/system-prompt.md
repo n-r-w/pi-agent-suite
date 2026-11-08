@@ -104,13 +104,13 @@ A session restored with an active workflow under an agent with `workflows: []` k
 
 ## Bundled rule groups
 
-For sessions without a custom prompt, both process kinds receive the system, role, safety, execution-limit, skill, toolset, and tool-guideline blocks, plus append-system-prompt text and project context.
+For sessions without a custom prompt, both process kinds receive the system, safety, execution-limit, skill, toolset, and tool-guideline blocks, plus append-system-prompt text and project context. The execution-limit block forbids the agent to count remaining tokens and to base a decision on a number of tokens.
 
-Main agents also receive the conversation rules: goal guard, scope control, formatting, and user communication, including the question template. Scope-control rule 3 requires a separate finding for every defect outside the task found by the main agent or another agent. This includes pre-existing defects and defects without an effect on the task.
+Main agents also receive the role block and the conversation rules. The role block asks the agent to bring its own analysis, view, and recommendation to the user. The conversation rules are goal guard, scope control, formatting, and user communication. The agent asks a question by the question template only when the discussion of its subject is finished and the next step needs a fixed choice, and asks other questions as plain sentences. Scope-control rule 3 requires a separate finding for every defect outside the task found by the main agent or another agent. This includes pre-existing defects and defects without an effect on the task.
 
 The main agent reports each finding in the first message ending its turn. Each finding describes the initiating action, actual and expected behavior, file, triggering condition, proposed fix, and each unchecked fact. The main agent takes facts from the named code. Reproduction, fix design, and modification require user approval.
 
-Child agents receive the `defects_outside_task` block at scope control's position. This block requires the child agent to report a separate finding with the file, triggering condition, and observed behavior for each defect outside the task. Reproduction, fix design, and modification require caller approval. The extension omits the conversation rules from child-agent prompts.
+The extension omits the role block, scope control, and the conversation rules from child-agent prompts.
 
 ## Template example
 

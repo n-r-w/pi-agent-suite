@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.22.2] - 2026-11-08
 
 ### Added
 
@@ -10,6 +10,7 @@
 
 - When `/agent` selects another main agent, the workflow extension offers only the workflow tools that apply to the new agent. For example, an agent with `workflows: []` loses `workflow_activate` after the switch.
 - When the agent activates an unchanged catalog workflow again, the workflow extension refers to the rules and stage graph that the session already shows and does not repeat them. For a workflow from `workflow_create`, the extension still sends the rules and graph on each activation.
+- Refined the bundled system prompt and subagent rules: conversation style of the main agent, token usage, and skill loading.
 
 ### Fixed
 

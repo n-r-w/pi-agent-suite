@@ -1,7 +1,7 @@
 Start subagent in new session. Tool returns numeric session ID after subagent accepts prompt. Subagent works in background, so you can do other work meanwhile. When subagent completes its work, its response reaches you as a notification without a tool call. `subagent_wait` also returns this response.
 
 <usage>
-1. Load a skill yourself. Do not start a subagent to read a skill and retell it to you.
+1. Read skills for your own actions yourself. Do not read or retell instructions and templates needed only by a subagent.
 2. Choose the lowest agent level that completes the subtask in one run, because a lower level is faster and cheaper, and a second run can cost more than one run of a stronger agent. Logical complexity of subtask sets level, and number of files does not raise it.
 3. Start subagents in parallel only when no output of one subtask can change prompt, scope, sources, or acceptance criteria of another. When you are not sure, start them one after another.
 4. Subagents that change code of one project in parallel break builds of each other and see changes of each other in git status, also when they change different files. Tell each of them which changes the others make.
