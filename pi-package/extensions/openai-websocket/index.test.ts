@@ -408,7 +408,7 @@ describe("openai-websocket connections", () => {
 
 		const headers = server.handshakes[0];
 		expect(headers?.["authorization"]).toBe("Bearer sk-test");
-		expect(headers?.["session_id"]).toBe(SESSION_ID);
+		expect(headers?.["session-id"]).toBe(SESSION_ID);
 		expect(headers).not.toHaveProperty("openai-beta");
 		expect(headers).not.toHaveProperty("content-type");
 	});

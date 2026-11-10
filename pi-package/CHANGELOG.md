@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.22.3] - 2026-11-10
+
+### Changed
+
+- Require Pi 1.5.2. Update Pi before installing this release. Pi now defaults to idle prompt cache warming, which can incur cache refresh costs between agent runs; set `"cacheWarming": "streaming"` in global Pi settings to retain the previous behavior.
+
 ## [2.22.2] - 2026-11-08
 
 ### Added

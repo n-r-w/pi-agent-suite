@@ -6,7 +6,7 @@ Extensions for the [Pi coding agent](https://pi.dev/) that turn one agent into a
 
 ![Pi Agent Suite overview](https://raw.githubusercontent.com/n-r-w/pi-agent-suite/main/docs/images/overview.svg)
 
-**Supported Pi version: 1.5.0** · [Quick start](#quick-start) · [All extensions](#all-extensions)
+**Supported Pi version: 1.5.2** · [Quick start](#quick-start) · [All extensions](#all-extensions)
 
 ## What you get
 

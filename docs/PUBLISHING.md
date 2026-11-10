@@ -57,7 +57,7 @@ Restart running Pi processes after updating the global installation.
 
 Maintain user-facing changes in `pi-package/CHANGELOG.md` under `## [Unreleased]` as part of each task. Describe the effect on users and any required configuration or migration steps.
 
-Pi 1.5.0 reads `CHANGELOG.md` from the installed package root. The package manifest includes it in `files`, so npm publishes it. Pi records the installed version on first discovery and shows newer version sections under "Extension Updates" on a later fresh interactive launch. Resumed sessions skip these notices. Users can condense them with Pi's `collapseChangelog` setting.
+Pi 1.5.2 reads `CHANGELOG.md` from the installed package root. The package manifest includes it in `files`, so npm publishes it. Pi records the installed version on first discovery and shows newer version sections under "Extension Updates" on a later fresh interactive launch. Resumed sessions skip these notices. Users can condense them with Pi's `collapseChangelog` setting.
 
 GitHub Release notes remain an additional channel. The release commands do not copy GitHub notes into the package changelog or promote the unreleased section automatically.
 
