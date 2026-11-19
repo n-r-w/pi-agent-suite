@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.22.4] - 2026-11-19
+
+### Changed
+
+- activate_toolset: clarify deferred codemode activation instructions
+
 ## [2.22.3] - 2026-11-10
 
 ### Changed
