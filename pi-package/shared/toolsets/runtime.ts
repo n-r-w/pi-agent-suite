@@ -52,7 +52,9 @@ class ToolsetRuntimeImpl implements ToolsetRuntime {
 			name: ACTIVATE_TOOLSET_TOOL_NAME,
 			label: "Activate Toolset",
 			description:
-				"Activate a toolset listed in <toolsets> when its tools are needed.",
+				"Activate a toolset listed in <toolsets> when its tools are needed. " +
+				"If `codemode` is available and your script needs a deferred toolset, call `activate_toolset` directly. " +
+				"Write the script in a later response, once the tools and their parameters are available.",
 			parameters: Type.Object(
 				{
 					name: Type.String({
