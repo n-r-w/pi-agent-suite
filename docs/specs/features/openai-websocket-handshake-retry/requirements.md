@@ -54,6 +54,29 @@ Sufficiency: The extension can recover from a failed handshake before it sends t
 
 Necessity: All four requirements apply to PRM.01 under its accepted recovery, fallback, configuration, and time budget constraints.
 
+## Critical scenarios
+
+- SCN.01: Recover from a transient handshake failure
+  - Requirements: FRQ.01, FRQ.03 (defaults)
+  - Level: external.
+  - Area: Pi, `openai-websocket`, and the OpenAI Responses endpoint.
+  - Flow: With default settings, the endpoint rejects the first two handshakes and accepts the third. The extension waits 500 ms before each retry. The endpoint receives the model request once over WebSocket. Pi shows no HTTP fallback warning, and the next request of the session uses WebSocket.
+- SCN.02: Exhaust the configured retry count
+  - Requirements: FRQ.02 (fallback), FRQ.03 (`maxRetries` override, omitted `delayMs`, and retries disabled)
+  - Level: external.
+  - Area: Pi, `openai-websocket`, and the OpenAI Responses endpoint.
+  - Flow: The endpoint rejects each handshake. The extension tries no more than the configured number of retries and uses the default pause when `delayMs` is omitted. With `maxRetries: 0`, the first failure ends the attempts. The current and next model requests use HTTP, and Pi shows the fallback warning once.
+- SCN.03: Reach the connection timeout during recovery
+  - Requirements: FRQ.02 (fallback), FRQ.03 (`delayMs` override and omitted `maxRetries`), NRQ.01
+  - Level: external.
+  - Area: Pi, `openai-websocket`, and the OpenAI Responses endpoint.
+  - Flow: The first handshake fails, and the next attempt starts after a configured pause. If the endpoint does not finish that handshake, the extension switches to HTTP within the original connection budget rather than restarting the timeout. If the configured pause alone would consume the remaining budget, the extension does not open another connection after the deadline.
+- SCN.04: Cancel while opening a connection or waiting to retry
+  - Requirements: FRQ.02 (cancellation during a handshake and during a pause)
+  - Level: external.
+  - Area: Pi, `openai-websocket`, and the OpenAI Responses endpoint.
+  - Flow: The user cancels while the extension is opening a connection or waiting between attempts. No further handshake or HTTP fallback follows, and the next model request can use WebSocket.
+
 ## Open questions
 
 None.
