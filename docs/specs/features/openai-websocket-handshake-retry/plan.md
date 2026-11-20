@@ -52,7 +52,7 @@ See SCN.01–04 in [Requirements and critical scenarios](requirements.md#critica
 
 #### Work
 
-Status: Planned. Performer: SubAgentDeveloperRegular. Implement the [technical solution](technical-solution.md), starting with failing extension tests. Update the extension guide and the package change log. Work only in the isolated checkout.
+Status: Done in `31651a7`. Performer: SubAgentDeveloperRegular. Implement the [technical solution](technical-solution.md), starting with failing extension tests. Update the extension guide and the package change log. Work only in the isolated checkout.
 
 #### Verification
 
