@@ -49,7 +49,7 @@ class ActivationResult implements Component {
 		private readonly theme: Theme,
 	) {}
 
-	public render(width: number): string[] {
+	public render(width: number): readonly string[] {
 		const wrappedLines = new Text(this.outputText(), 0, 0)
 			.render(width)
 			.map((line) => line.trimEnd());

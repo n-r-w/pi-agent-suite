@@ -120,7 +120,7 @@ class PromptMessageComponent implements ExpandableComponent {
 	public invalidate(): void {}
 
 	/** Keeps previews bounded while preserving the standard user-message background. */
-	public render(width: number): string[] {
+	public render(width: number): readonly string[] {
 		if (width <= 0) {
 			return [];
 		}

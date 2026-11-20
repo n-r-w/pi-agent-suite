@@ -148,7 +148,7 @@ class CollapsedAdvice implements Component {
 	}
 
 	/** Delegates width-aware wrapping to Pi Text rendering. */
-	private renderAdviceVisualLines(width: number): string[] {
+	private renderAdviceVisualLines(width: number): readonly string[] {
 		const labelColor = this.isError ? "error" : "accent";
 		const text = `${this.theme.fg(labelColor, `${this.label}:`)} ${this.theme.fg("dim", this.advice)}`;
 		return new Text(text, 0, 0).render(width);

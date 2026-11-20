@@ -35,7 +35,7 @@ function renderCall(
 	args: unknown,
 	width: number,
 	theme: Theme = MARKED_THEME,
-): string[] {
+): readonly string[] {
 	if (definition.renderCall === undefined) {
 		throw new Error("universal definition has no call renderer");
 	}
@@ -55,7 +55,7 @@ function renderResult(
 	options: { readonly expanded: boolean; readonly isError: boolean },
 	width: number,
 	theme: Theme = MARKED_THEME,
-): string[] {
+): readonly string[] {
 	if (definition.renderResult === undefined) {
 		throw new Error("universal definition has no result renderer");
 	}

@@ -89,7 +89,7 @@ function renderLatest(
 	updates: readonly { key: string; content: WidgetContent }[],
 	width: number,
 	selectedTheme: Theme = theme(),
-): string[] {
+): readonly string[] {
 	const factory = updates.at(-1)?.content;
 	if (typeof factory !== "function") {
 		throw new Error("workflow status widget factory is missing");

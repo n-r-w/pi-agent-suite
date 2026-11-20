@@ -60,7 +60,7 @@ export class BoundedToolResult implements Component {
 	public constructor(private readonly options: BoundedToolResultOptions) {}
 
 	/** Selects original expanded Markdown or normalized collapsed text. */
-	public render(width: number): string[] {
+	public render(width: number): readonly string[] {
 		if (this.options.expanded) {
 			return this.renderExpanded(width);
 		}
@@ -94,7 +94,7 @@ export class BoundedToolResult implements Component {
 
 	public invalidate(): void {}
 
-	private renderExpanded(width: number): string[] {
+	private renderExpanded(width: number): readonly string[] {
 		const markdown = new Markdown(this.options.text, 0, 0, getMarkdownTheme());
 		if (!this.options.isError || !this.options.showExpandedErrorLabel) {
 			return markdown.render(width);

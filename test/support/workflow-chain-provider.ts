@@ -180,7 +180,10 @@ export function workflowChainProvider(
 			const call = plan[turn++];
 			const response = createResponse(target, call);
 			captureRequest(target, context, options)
-				.then((payload) => {
+				.then(({ payload, providerThinkingLevel }) => {
+					if (providerThinkingLevel !== undefined) {
+						response.providerThinkingLevel = providerThinkingLevel;
+					}
 					requests.push({
 						payload,
 						toolNames: getCurrentTools(context.messages).map(

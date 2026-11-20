@@ -27,12 +27,15 @@ export interface CacheRequestSnapshot {
 /** Tool calls used by the scripted external model. */
 type ModelAction = "activate_toolset" | "files_read" | "files_write" | "stop";
 
-/** Serializes the actual provider context while stopping before network access. */
+/** Captures the native request and the reasoning effort needed to replay its response. */
 export async function captureRequest(
 	model: Model<Api>,
 	context: Context,
 	options: SimpleStreamOptions | undefined,
-): Promise<CacheRequestPayload> {
+): Promise<{
+	payload: CacheRequestPayload;
+	providerThinkingLevel: AssistantMessage["providerThinkingLevel"];
+}> {
 	let payload: CacheRequestPayload | undefined;
 	const serializedOptions: SimpleStreamOptions = {
 		...options,
@@ -59,13 +62,13 @@ export async function captureRequest(
 					transcript,
 					serializedOptions,
 				);
-	await stream.result();
+	const { providerThinkingLevel } = await stream.result();
 	if (!payload) {
 		throw new Error(
 			"Native provider serialization did not reach the capture hook",
 		);
 	}
-	return payload;
+	return { payload, providerThinkingLevel };
 }
 
 /** Builds a model response with stable native tool-call identities. */
@@ -129,9 +132,12 @@ export function registerCacheProvider(
 				`${resumed ? "resumed" : "initial"}_${calls}`,
 			);
 			captureRequest(target, context, options)
-				.then((payload) => {
+				.then(({ payload, providerThinkingLevel }) => {
 					if (!action) {
 						throw new Error("Agent requested an unexpected model turn");
+					}
+					if (providerThinkingLevel !== undefined) {
+						response.providerThinkingLevel = providerThinkingLevel;
 					}
 					requests.push({
 						payload,
