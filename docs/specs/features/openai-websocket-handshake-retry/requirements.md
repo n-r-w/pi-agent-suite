@@ -28,7 +28,7 @@ The requirements apply before the extension sends the model request. Other provi
   - Origin: PRM.01 and the recovery scenario in [WebSocket handshake retry target](target-picture.md).
   - Goal: Recover before sending the model request.
   - Feasibility: Confirmed. The extension detects handshake failures before it sends the model request.
-- [X] FRQ.02: If the retry limit is reached or the connection timeout expires without opening a connection, the extension warns as it switches to HTTP for the current model request and later requests with the same Pi session ID. If the user cancels while the extension is connecting or waiting to retry, it stops without switching to HTTP.
+- [X] FRQ.02: If the retry limit is reached or the connection timeout expires without opening a connection, the extension switches to HTTP for the current model request and later requests with the same Pi session ID. The extension shows at most one HTTP fallback warning per load. If the user cancels while the extension is connecting or waiting to retry, it stops without switching to HTTP.
   - Origin: PRM.01 and the fallback and cancellation scenarios in [WebSocket handshake retry target](target-picture.md).
   - Goal: Preserve HTTP recovery without treating a cancellation as a transport failure.
   - Feasibility: Confirmed. The extension already receives the cancellation signal and can send the model request over HTTP when an open fails.
@@ -46,9 +46,9 @@ The requirements apply before the extension sends the model request. Other provi
 
 ## Justification of requirements
 
-| What does not work now | Requirements that fix it |
+| Behavior before this change | Requirements that fix it |
 |---|---|
-| PRM.01: The session switches to HTTP at the first failed handshake. | FRQ.01, FRQ.02, FRQ.03, NRQ.01 |
+| PRM.01: The session switched to HTTP at the first failed handshake. | FRQ.01, FRQ.02, FRQ.03, NRQ.01 |
 
 Sufficiency: The extension can recover from a failed handshake before it sends the model request, while retaining the fallback and cancellation paths.
 
@@ -65,7 +65,7 @@ Necessity: All four requirements apply to PRM.01 under its accepted recovery, fa
   - Requirements: FRQ.02 (fallback), FRQ.03 (`maxRetries` override, omitted `delayMs`, and retries disabled)
   - Level: external.
   - Area: Pi, `openai-websocket`, and the OpenAI Responses endpoint.
-  - Flow: The endpoint rejects each handshake. The extension tries no more than the configured number of retries and uses the default pause when `delayMs` is omitted. With `maxRetries: 0`, the first failure ends the attempts. The current model request and the next request with the same Pi session ID use HTTP, and Pi shows the fallback warning once.
+  - Flow: Start with a fresh extension load. The endpoint rejects each handshake. The extension tries no more than the configured number of retries and uses the default pause when `delayMs` is omitted. With `maxRetries: 0`, the first failure ends the attempts. The current model request and the next request with the same Pi session ID use HTTP, and Pi shows the fallback warning once.
 - SCN.03: Reach the connection timeout during recovery
   - Requirements: FRQ.02 (fallback), FRQ.03 (`delayMs` override and omitted `maxRetries`), NRQ.01
   - Level: external.

@@ -1,3 +1,6 @@
+import { setTimeout as delay } from "node:timers/promises";
+import type { HandshakeRetry } from "./config";
+
 /** Handshake timeout when pi has no `websocketConnectTimeoutMs` setting; pi's `openai-codex` provider uses the same value. */
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 
@@ -38,6 +41,62 @@ export function closeSocket(socket: WebSocket): void {
 	} catch {
 		// The socket is already closed or closing.
 	}
+}
+
+/** Opens a socket with retries and pauses inside one elapsed-time budget. */
+export async function connectWebSocketWithRetry(
+	url: string,
+	headers: Record<string, string>,
+	{
+		timeoutMs,
+		signal,
+		retry: { maxRetries, delayMs },
+	}: {
+		readonly timeoutMs: number | undefined;
+		readonly signal: AbortSignal | undefined;
+		readonly retry: HandshakeRetry;
+	},
+): Promise<WebSocket> {
+	const budgetMs = timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+	if (budgetMs <= 0 || maxRetries === 0) {
+		return connectWebSocket(url, headers, timeoutMs, signal);
+	}
+
+	const deadline = performance.now() + budgetMs;
+	const timeoutError = () =>
+		new Error(`WebSocket connect timeout after ${budgetMs} ms`);
+	const getRemainingMs = (): number => {
+		if (signal?.aborted) {
+			throw createAbortError();
+		}
+		const remainingMs = deadline - performance.now();
+		if (remainingMs <= 0) {
+			throw timeoutError();
+		}
+		return Math.ceil(remainingMs);
+	};
+	const attempt = async (retriesLeft: number): Promise<WebSocket> => {
+		const remainingMs = getRemainingMs();
+		let socket: WebSocket;
+		try {
+			socket = await connectWebSocket(url, headers, remainingMs, signal);
+		} catch (error) {
+			const remainingMs = getRemainingMs();
+			if (retriesLeft === 0) {
+				throw error;
+			}
+			if (delayMs > 0) {
+				await delay(Math.min(delayMs, remainingMs), undefined, { signal });
+			}
+			return attempt(retriesLeft - 1);
+		}
+		if (performance.now() >= deadline) {
+			closeSocket(socket);
+			throw timeoutError();
+		}
+		return socket;
+	};
+	return attempt(maxRetries);
 }
 
 /** Opens a connection; rejects when the handshake fails, exceeds the timeout, or the request is aborted. */

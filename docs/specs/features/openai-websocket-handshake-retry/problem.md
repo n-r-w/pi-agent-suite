@@ -10,7 +10,7 @@ The `openai-websocket` extension uses WebSocket mode for OpenAI Responses API re
 
 ## Observed problem
 
-- PRM.01: A Pi user loses WebSocket mode for the session after one failed handshake, even if the failure is temporary. The user starts a model request that needs a new connection, and the first attempt fails. The extension switches the session to HTTP before another attempt can succeed. One reported example produced `WebSocket handshake failed: error`.
+- PRM.01: Before this change, a Pi user lost WebSocket mode for the session after one failed handshake, even if the failure was temporary. When a model request needed a new connection, the extension switched the session to HTTP as soon as the first handshake failed. One reported example produced `WebSocket handshake failed: error`.
 
 ## Affected audience
 
@@ -18,15 +18,15 @@ Pi users who use the `openai` provider in WebSocket mode.
 
 ## Evidence
 
-The test cases for handshake failure and connect timeout in `pi-package/extensions/openai-websocket/index.test.ts` check that the current request completes over HTTP. The failure case also checks that the next request goes over HTTP and that Pi warns once.
+At commit `45735d6`, the handshake failure and connect timeout tests in `pi-package/extensions/openai-websocket/index.test.ts` checked that the request completed over HTTP. The failure test also checked that the next request went over HTTP and that Pi warned once.
 
 ## Impact
 
-HIGH: After a single failed handshake, the session no longer benefits from incremental model requests over WebSocket. The user can still get a model response over HTTP.
+HIGH: After a single failed handshake, the session no longer benefited from incremental model requests over WebSocket. The user could still get a model response over HTTP.
 
-## Current state
+## Behavior before this change
 
-In `pi-package/extensions/openai-websocket/websocket-fetch.ts`, `WebSocketExchange.#acquire` tries once to open a new connection. If it fails and the user did not cancel, `createStreamFunction` in `pi-package/extensions/openai-websocket/stream.ts` records that the session uses HTTP.
+In `pi-package/extensions/openai-websocket/websocket-fetch.ts`, `WebSocketExchange.#acquire` tried once to open a new connection. If the attempt failed and the user had not cancelled, `createStreamFunction` in `pi-package/extensions/openai-websocket/stream.ts` recorded that the session would use HTTP.
 
 ## Desired state
 

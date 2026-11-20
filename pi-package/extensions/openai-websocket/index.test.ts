@@ -65,6 +65,8 @@ const servers: FakeResponsesWebSocketServer[] = [];
 const httpRequests: Record<string, unknown>[] = [];
 let suiteDir: { path: string; remove: () => void } | undefined;
 let previousSuiteDir: string | undefined;
+/** Runtime WebSocket constructor restored after a test observes handshake errors. */
+const OriginalWebSocket = WebSocket;
 
 beforeEach(() => {
 	// Keeps the extension away from the configuration of the user.
@@ -75,6 +77,7 @@ beforeEach(() => {
 
 afterEach(async () => {
 	jest.useRealTimers();
+	globalThis.WebSocket = OriginalWebSocket;
 	httpRequests.length = 0;
 	await Promise.all(servers.splice(0).map((server) => server.stop()));
 	if (previousSuiteDir === undefined) {
@@ -92,9 +95,9 @@ function writeConfig(content: string): void {
 }
 
 function startServer(
-	reply: (request: Record<string, unknown>, index: number) => FakeServerReply,
+	...args: Parameters<typeof startFakeResponsesWebSocketServer>
 ): FakeResponsesWebSocketServer {
-	const server = startFakeResponsesWebSocketServer(reply);
+	const server = startFakeResponsesWebSocketServer(...args);
 	servers.push(server);
 	return server;
 }
@@ -494,22 +497,162 @@ describe("openai-websocket connections", () => {
 	});
 });
 
-describe("openai-websocket failures", () => {
-	test("completes the request over HTTP, warns once, and keeps the session on HTTP when the handshake fails", async () => {
-		const server = startServer(toolTurnReplies);
-		server.rejectHandshakes();
-		const harness = loadExtension(server.baseUrl);
+describe("openai-websocket handshake retry", () => {
+	test.each([
+		["defaults", undefined, 500],
+		["delay only", '{"handshakeRetry":{"delayMs":0}}', 0],
+	] as const)("recovers on the third attempt with %s", async (_name, config, delay) => {
+		if (config !== undefined) {
+			writeConfig(config);
+		}
+		const handshake = startTimedHandshakes((index) =>
+			index < 2 ? rejectHandshake() : undefined,
+		);
+		const harness = loadExtension(handshake.server.baseUrl);
 		await harness.emit("session_start");
+		const context = normalizeContext(userContext("hi"));
+		const pending = harness.request(context);
 
-		const first = await harness.request(normalizeContext(userContext("hi")));
-		const second = await harness.request(normalizeContext(userContext("x")));
+		await advanceAfterRejection(handshake, 1, delay);
+		await advanceAfterRejection(handshake, 2, delay);
+		expect(textOf(await pending)).toBe("ok");
+		expect(handshake.attempts).toEqual([0, delay, 2 * delay]);
+		expect(handshake.server.requests).toHaveLength(1);
+		expect(textOf(await harness.request(context))).toBe("ok");
+		expect(handshake.attempts).toHaveLength(3);
+		expect(httpRequests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(0);
+	});
 
-		expect(textOf(first)).toBe("over http");
-		expect(textOf(second)).toBe("over http");
+	test.each([
+		["the default limit", undefined, [0, 500, 1_000]],
+		["one configured retry", 1, [0, 500]],
+		["zero configured retries", 0, [0]],
+	] as const)("falls back for the session after exhausting %s", async (_name, maxRetries, expectedAttempts) => {
+		if (maxRetries !== undefined) {
+			writeConfig(JSON.stringify({ handshakeRetry: { maxRetries } }));
+		}
+		const handshake = startTimedHandshakes(rejectHandshake);
+		const harness = loadExtension(handshake.server.baseUrl);
+		await harness.emit("session_start");
+		const context = normalizeContext(userContext("hi"));
+		const pending = harness.request(context);
+		for (let attempt = 1; attempt < expectedAttempts.length; attempt++) {
+			await advanceAfterRejection(handshake, attempt, 500);
+		}
+
+		expect(textOf(await pending)).toBe("over http");
+		expect(textOf(await harness.request(context))).toBe("over http");
+		expect(handshake.attempts).toEqual([...expectedAttempts]);
+		expect(handshake.server.requests).toHaveLength(0);
 		expect(httpRequests).toHaveLength(2);
 		expect(harness.warnings).toHaveLength(1);
 	});
 
+	test.each([
+		["a later handshake", 200, 2],
+		["the retry pause", 2_000, 1],
+	] as const)("falls back at the original deadline during %s", async (_name, delayMs, attempts) => {
+		writeConfig(JSON.stringify({ handshakeRetry: { delayMs } }));
+		const handshake = startTimedHandshakes((index) =>
+			index === 0
+				? new Promise<Response>((resolve) => {
+						setTimeout(() => resolve(rejectHandshake()), 100);
+					})
+				: leaveHandshakePending(),
+		);
+		const harness = loadExtension(handshake.server.baseUrl);
+		await harness.emit("session_start");
+		const context = normalizeContext(userContext("hi"));
+		const pending = harness.request(context, {
+			websocketConnectTimeoutMs: 600,
+		});
+		await waitFor(() => handshake.attempts.length === 1);
+		jest.advanceTimersByTime(100);
+		if (attempts === 2) {
+			await advanceAfterRejection(handshake, 1, delayMs);
+			await waitFor(() => handshake.attempts.length === 2);
+		} else {
+			await waitFor(() => handshake.failures() === 1);
+		}
+
+		jest.advanceTimersByTime(599 - Date.now());
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(httpRequests).toHaveLength(0);
+		jest.advanceTimersByTime(1);
+		await waitFor(() => httpRequests.length === 1);
+		expect(textOf(await pending)).toBe("over http");
+		expect(textOf(await harness.request(context))).toBe("over http");
+		expect(handshake.attempts).toEqual(attempts === 2 ? [0, 300] : [0]);
+		expect(handshake.server.requests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(1);
+	});
+
+	test.each([
+		"handshake",
+		"pause",
+	] as const)("cancels during a %s without falling back", async (phase) => {
+		const handshake = startTimedHandshakes((index) => {
+			if (index > 0) {
+				return undefined;
+			}
+			return phase === "pause" ? rejectHandshake() : leaveHandshakePending();
+		});
+		const harness = loadExtension(handshake.server.baseUrl);
+		await harness.emit("session_start");
+		const context = normalizeContext(userContext("hi"));
+		const controller = new AbortController();
+		const pending = harness.request(context, { signal: controller.signal });
+		await waitFor(() =>
+			phase === "pause"
+				? handshake.failures() === 1
+				: handshake.attempts.length === 1,
+		);
+		controller.abort();
+
+		const result = await pending;
+		jest.advanceTimersByTime(15_000);
+		expect(result.stopReason).toBe("aborted");
+		expect(handshake.attempts).toHaveLength(1);
+		expect(handshake.server.requests).toHaveLength(0);
+		expect(textOf(await harness.request(context))).toBe("ok");
+		expect(handshake.attempts).toHaveLength(2);
+		expect(httpRequests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(0);
+	});
+
+	test.each([
+		["connection age limit", 400, "websocket_connection_limit_reached", 0],
+		["provider retry", 429, "rate_limit_exceeded", 1],
+	] as const)("opens a replacement only once after a %s", async (_name, status, code, maxRetries) => {
+		let attempts = 0;
+		const server = startServer(
+			() => ({
+				kind: "events",
+				events: [errorEvent(status, code, "Try again.")],
+			}),
+			(index) => {
+				attempts++;
+				return index === 1 ? rejectHandshake() : undefined;
+			},
+		);
+		const harness = loadExtension(server.baseUrl);
+		await harness.emit("session_start");
+
+		const result = await harness.request(normalizeContext(userContext("hi")), {
+			maxRetries,
+			maxRetryDelayMs: 1,
+		});
+
+		expect(textOf(result)).toBe("over http");
+		expect(attempts).toBe(2);
+		expect(server.requests).toHaveLength(1);
+		expect(httpRequests).toHaveLength(1);
+		expect(harness.warnings).toHaveLength(1);
+	});
+});
+
+describe("openai-websocket failures", () => {
 	test("completes the request over HTTP when the handshake exceeds the connect timeout", async () => {
 		const silentServer = await startSilentTcpServer();
 		try {
@@ -735,8 +878,17 @@ describe("openai-websocket configuration", () => {
 		expect(fake.provider?.streamSimple).toBeDefined();
 	});
 
-	test("registers no provider and reports one error for an invalid configuration", async () => {
-		writeConfig('{"enabled": true, "unexpected": 1}');
+	test.each([
+		'{"enabled":true,"unexpected":1}',
+		'{"handshakeRetry":null}',
+		'{"handshakeRetry":[]}',
+		'{"handshakeRetry":{"unexpected":1}}',
+		'{"handshakeRetry":{"maxRetries":-1}}',
+		'{"handshakeRetry":{"maxRetries":1.5}}',
+		'{"handshakeRetry":{"delayMs":"500"}}',
+		'{"handshakeRetry":{"delayMs":-1}}',
+	])("registers no provider and reports one error for invalid configuration %s", async (config) => {
+		writeConfig(config);
 
 		const fake = runExtension(openAIWebSocket);
 		await fake.emit("session_start");
@@ -782,6 +934,59 @@ describe("openai-websocket HTTP mode", () => {
 		expect(server.handshakes).toHaveLength(0);
 	});
 });
+
+/** Rejects an upgrade without opening a socket. */
+function rejectHandshake(): Response {
+	return new Response(null, { status: 403 });
+}
+
+/** Keeps the upgrade unanswered until the client closes its socket. */
+function leaveHandshakePending(): Promise<Response> {
+	return new Promise(() => {});
+}
+
+/** Records when the endpoint receives each attempt and when the client receives an upgrade rejection. */
+function startTimedHandshakes(
+	handshake: (index: number) => Response | Promise<Response> | undefined,
+) {
+	jest.useFakeTimers({ now: 0 });
+	const attempts: number[] = [];
+	let failures = 0;
+	globalThis.WebSocket = new Proxy(OriginalWebSocket, {
+		construct(target, args): WebSocket {
+			const socket = Reflect.construct(target, args) as WebSocket;
+			socket.addEventListener("error", () => failures++, { once: true });
+			return socket;
+		},
+	});
+	const server = startServer(
+		(_request, index) => ({
+			kind: "events",
+			events: textResponseEvents(`resp_${index}`, "ok"),
+		}),
+		(index) => {
+			attempts.push(Date.now());
+			return handshake(index);
+		},
+	);
+	return { server, attempts, failures: () => failures };
+}
+
+/** Advances to the next retry, checking that the request does not fall back or retry during the pause. */
+async function advanceAfterRejection(
+	handshake: ReturnType<typeof startTimedHandshakes>,
+	attempt: number,
+	delayMs: number,
+): Promise<void> {
+	await waitFor(() => handshake.failures() === attempt);
+	if (delayMs > 0) {
+		jest.advanceTimersByTime(delayMs - 1);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(handshake.attempts).toHaveLength(attempt);
+		expect(httpRequests).toHaveLength(0);
+		jest.advanceTimersByTime(1);
+	}
+}
 
 /** Waits for socket events; `setImmediate` keeps working under fake timers, where `Bun.sleep` stops. */
 async function waitFor(condition: () => boolean): Promise<void> {
