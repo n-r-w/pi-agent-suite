@@ -24,8 +24,6 @@ export interface FakeResponsesWebSocketServer {
 	readonly requests: readonly ReceivedRequest[];
 	/** Number of connections that the client closed or the server closed. */
 	closedConnections(): number;
-	/** Makes later handshakes fail with HTTP 403. */
-	rejectHandshakes(): void;
 	stop(): Promise<void>;
 }
 
@@ -33,21 +31,23 @@ interface ConnectionData {
 	readonly connectionId: number;
 }
 
-/** Starts a fake server; `reply` decides the answer to each request by its order. */
+/** Starts a fake server with scripted WebSocket replies and optional HTTP responses to upgrade attempts. */
 export function startFakeResponsesWebSocketServer(
 	reply: (request: Record<string, unknown>, index: number) => FakeServerReply,
+	handshake?: (index: number) => Response | Promise<Response> | undefined,
 ): FakeResponsesWebSocketServer {
 	const handshakes: Record<string, string>[] = [];
 	const requests: ReceivedRequest[] = [];
-	let rejecting = false;
+	let attempts = 0;
 	let closed = 0;
 
 	const server: Server<ConnectionData> = Bun.serve<ConnectionData>({
 		hostname: "127.0.0.1",
 		port: 0,
 		fetch(request, bunServer) {
-			if (rejecting) {
-				return new Response("forbidden", { status: 403 });
+			const response = handshake?.(attempts++);
+			if (response !== undefined) {
+				return response;
 			}
 			handshakes.push(Object.fromEntries(request.headers.entries()));
 			const upgraded = bunServer.upgrade(request, {
@@ -74,9 +74,6 @@ export function startFakeResponsesWebSocketServer(
 		handshakes,
 		requests,
 		closedConnections: () => closed,
-		rejectHandshakes: () => {
-			rejecting = true;
-		},
 		stop: () => server.stop(true),
 	};
 }

@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ApiStreamSimpleFunction } from "@earendil-works/pi-ai/compat";
+import type { HandshakeRetry } from "./config";
 import type { ConnectionPool } from "./connection-pool";
 import { captureResponseItems } from "./response-items";
 import { createWebSocketFetch, type RequestTrace } from "./websocket-fetch";
@@ -7,6 +8,7 @@ import { createWebSocketFetch, type RequestTrace } from "./websocket-fetch";
 /** State that the model requests of one extension instance share. */
 export interface TransportState {
 	readonly pool: ConnectionPool;
+	readonly handshakeRetry: HandshakeRetry;
 	/** Sessions whose model requests go over HTTP after WebSocket mode failed. */
 	readonly httpSessions: Set<string>;
 	/** Tells the user that WebSocket mode is unavailable. */
@@ -42,10 +44,15 @@ export function createStreamFunction(
 				`[openai-websocket] WebSocket mode is unavailable; OpenAI model requests of this session use HTTP. Reason: ${reason}`,
 			);
 		};
-		const trace: RequestTrace = { fetchCalled: false, completed: undefined };
+		const trace: RequestTrace = {
+			fetchCalled: false,
+			sent: false,
+			completed: undefined,
+		};
 		const fetch = createWebSocketFetch({
 			originalFetch: options?.fetch ?? globalThis.fetch,
 			pool: state.pool,
+			handshakeRetry: state.handshakeRetry,
 			sessionId,
 			pooled: sessionId !== undefined && transport !== "websocket",
 			connectTimeoutMs: options?.websocketConnectTimeoutMs,

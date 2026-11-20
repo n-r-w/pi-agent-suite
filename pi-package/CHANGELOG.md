@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `openai-websocket` retries a failed handshake before a model request's first WebSocket send. By default it retries up to twice, with a 500 ms pause before each retry, within the original connection timeout. Set `handshakeRetry` in the extension config to change the retry count or pause.
+
 ## [2.22.4] - 2026-11-19
 
 ### Changed

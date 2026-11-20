@@ -32,6 +32,7 @@ export function createOpenAIWebSocketExtension(
 		};
 		const state: TransportState = {
 			pool: new ConnectionPool(),
+			handshakeRetry: config.handshakeRetry,
 			httpSessions: new Set(),
 			warn: (message) => {
 				if (!warned) {

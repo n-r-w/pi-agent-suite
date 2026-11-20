@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FetchFunction } from "@earendil-works/pi-ai";
+import type { HandshakeRetry } from "./config";
 import type { Connection, ConnectionPool } from "./connection-pool";
 import {
 	buildCreateMessage,
@@ -8,6 +9,7 @@ import {
 } from "./continuation";
 import {
 	connectWebSocket,
+	connectWebSocketWithRetry,
 	createAbortError,
 	type ResponseEvent,
 	ResponseEventReader,
@@ -48,6 +50,8 @@ export interface CompletedResponse {
 /** What the extension learns about one model request while its fetch runs. */
 export interface RequestTrace {
 	fetchCalled: boolean;
+	/** True after the first send, including in later exchanges that Pi starts for this request. */
+	sent: boolean;
 	completed: CompletedResponse | undefined;
 }
 
@@ -59,6 +63,7 @@ export interface WebSocketFetchContext {
 	/** True when the request may reuse the session connection and send incremental requests. */
 	readonly pooled: boolean;
 	readonly connectTimeoutMs: number | undefined;
+	readonly handshakeRetry: HandshakeRetry;
 	readonly idleTimeoutMs: number | undefined;
 	readonly trace: RequestTrace;
 	/** Moves the session to HTTP and tells the user why. */
@@ -186,6 +191,7 @@ class WebSocketExchange {
 			this.#context.idleTimeoutMs,
 		);
 		connection.socket.send(JSON.stringify(message));
+		this.#context.trace.sent = true;
 		const first = await reader.next();
 		if (
 			first.kind === "event" &&
@@ -210,7 +216,8 @@ class WebSocketExchange {
 	async #acquire(
 		signal: AbortSignal | undefined,
 	): Promise<Connection | undefined> {
-		const { pool, sessionId, pooled, connectTimeoutMs } = this.#context;
+		const { pool, sessionId, pooled, connectTimeoutMs, handshakeRetry, trace } =
+			this.#context;
 		const { url, headers } = this.#request;
 		try {
 			return await pool.acquire(
@@ -221,7 +228,14 @@ class WebSocketExchange {
 							: undefined,
 					sessionId,
 				},
-				() => connectWebSocket(url.href, headers, connectTimeoutMs, signal),
+				() =>
+					trace.sent
+						? connectWebSocket(url.href, headers, connectTimeoutMs, signal)
+						: connectWebSocketWithRetry(url.href, headers, {
+								timeoutMs: connectTimeoutMs,
+								signal,
+								retry: handshakeRetry,
+							}),
 			);
 		} catch (error) {
 			if (signal?.aborted) {
