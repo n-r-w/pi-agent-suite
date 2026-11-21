@@ -1,5 +1,7 @@
 # Decisions
 
+These decisions describe the initial handshake retry change in 2.22.5. [WebSocket request recovery](../../issues/openai-websocket-request-recovery/solution.md) supersedes the restriction to retries before the first send.
+
 - Keep the retry settings in `openai-websocket/config.json`. Pi's retry settings apply to requests rather than handshakes, so changing them would also change behavior outside connection setup.
 - Treat `delayMs: 0` as no pause. This lets users retry immediately without disabling retries.
 - Apply the retry policy only before the first WebSocket send of a model request, including across multiple exchanges for that request. Preserve single-attempt acquisition for post-send recovery, including after a connection age-limit response and when Pi retries a provider error.

@@ -46,7 +46,6 @@ export function createStreamFunction(
 		};
 		const trace: RequestTrace = {
 			fetchCalled: false,
-			sent: false,
 			completed: undefined,
 		};
 		const fetch = createWebSocketFetch({

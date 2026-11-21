@@ -32,7 +32,7 @@ Out of scope: the `openai-codex` provider, other providers, HTTP proxies, and th
   - Goal achievement: Partial. The requirement protects behavior; NRQ-01 addresses duration.
   - Feasibility: Confirmed. The `openai-codex` provider of pi passes events that it receives in WebSocket mode to the same event processor that `openai` uses for HTTP events, and the probe of 2026-10-31 received completed responses with usage on both requests.
   - Example: the agent asks the model, the model calls `read`, and the agent receives the tool call with the same name, arguments, and usage fields as over HTTP.
-- [X] FRQ-02: When a connection in WebSocket mode cannot be opened, or closes before the response starts, the model request completes over HTTP, the session continues, and the user learns that WebSocket mode is unavailable.
+- [X] FRQ-02: If the extension cannot open a WebSocket within its retry limits, or each resend loses its connection before the response starts, the extension sends the request over HTTP. The user learns that WebSocket mode is unavailable. For retry behavior, see [WebSocket request recovery](../../issues/openai-websocket-request-recovery/prd.md).
   - Origin: formulated. A network or the endpoint can reject WebSocket, and the user must not lose the run. Without a notice, the user would see slower runs and no reason for them.
   - Goal: keep agent runs reliable.
   - Goal achievement: Partial. The requirement removes a new failure mode; it does not reduce duration.
@@ -80,12 +80,12 @@ Out of scope: the `openai-codex` provider, other providers, HTTP proxies, and th
   - Requirements: FRQ-02
   - Level: external
   - Area: the package, the network, the Responses API
-  - Flow: the handshake fails; the model request completes over HTTP; the user sees one warning; later requests of the session go over HTTP.
+  - Flow: the endpoint rejects every handshake; the extension reaches its retry limit and sends the request over HTTP; the user sees one warning; later requests of the session go over HTTP.
 - SCN-05: Connection lost during a response
   - Requirements: FRQ-01, FRQ-02
   - Level: external
   - Area: the package, the network, pi retry
-  - Flow: the connection closes after the response started; the agent receives a stream error; pi retries the model request under its retry settings; the session continues.
+  - Flow: the connection closes after the response starts; the agent receives a stream error; Pi retries the model request over WebSocket under its retry settings; the session continues if the retry succeeds.
 - SCN-06: Server no longer holds the previous response
   - Requirements: FRQ-01
   - Level: external

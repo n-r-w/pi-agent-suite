@@ -23,10 +23,10 @@ The optional configuration file is `~/.pi/agent/agent-suite/openai-websocket/con
 | Name | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `enabled` | Boolean | `true` | `false` returns model requests of the `openai` provider to Pi's own HTTP transport. Other providers keep their transport. |
-| `handshakeRetry.maxRetries` | Non-negative safe integer | `2` | Number of attempts after the first. `0` disables handshake retries. |
-| `handshakeRetry.delayMs` | Non-negative safe integer | `500` | Milliseconds to wait before each handshake retry. `0` retries without a pause. |
+| `handshakeRetry.maxRetries` | Non-negative safe integer | `2` | Number of retries when a handshake fails or a connection drops before the first response event. Each connection opening and each request exchange have their own retry count. `0` disables both kinds of retry. |
+| `handshakeRetry.delayMs` | Non-negative safe integer | `500` | Milliseconds to wait before each handshake retry or request resend after a connection loss. `0` retries without a pause. |
 
-The `handshakeRetry` object and both of its fields are optional. For example, `{"handshakeRetry":{"maxRetries":1}}` allows one retry and keeps the 500 ms pause.
+The `handshakeRetry` object and both of its fields are optional. For example, `{"handshakeRetry":{"maxRetries":1}}` allows one retry in each case and keeps the 500 ms pause.
 
 A missing file enables the extension with the defaults. If the extension cannot read the file or finds invalid JSON, an unknown field, or a value of the wrong type, it stays disabled. Pi reports one error at session start, and the `openai` provider uses Pi's built-in HTTP transport. The extension reads the file when it loads. Restart Pi after changing the file.
 
@@ -38,7 +38,9 @@ The extension also follows the pi setting `transport`:
 | `websocket` | Each model request opens its own connection, sends the whole context, and closes the connection. |
 | `sse` | Model requests go over HTTP, as without the extension. The setting also moves the `openai-codex` provider of pi to HTTP. |
 
-A positive Pi setting `websocketConnectTimeoutMs` sets one budget for opening a connection. The budget starts at the first attempt and includes the handshake attempts and the pauses between them. If you omit the setting, the budget is 15 seconds. The response idle timeout applies while waiting for the first event and between events. Pi uses `httpIdleTimeoutMs` unless the request's `timeoutMs` or `retry.provider.timeoutMs` overrides it.
+A positive Pi setting `websocketConnectTimeoutMs` limits the total time the extension spends opening a connection, including handshake retries and pauses. If you omit the setting, the limit is 15 seconds. Set it to `0` or `"disabled"` to remove this limit without disabling retries. For example, with `0` and the default `handshakeRetry` settings, the extension still retries a failed handshake up to two times.
+
+Pi uses `httpIdleTimeoutMs` for response timeouts unless the request's `timeoutMs` or `retry.provider.timeoutMs` overrides it. Before the first response event, the OpenAI SDK also applies its request timeout to the exchange, including any retries inside it.
 
 ## Incremental requests
 
@@ -65,15 +67,17 @@ After a response completes, the extension builds pi's request body twice without
 - After an aborted or failed response, the extension closes the connection. When a later request of the session already took over the connection, the extension keeps it for that request.
 - On `session_shutdown`, the extension closes all connections.
 
-## Fallback to HTTP
+## Recovery and fallback to HTTP
 
-If a model request needs a new connection before its first WebSocket send, the extension can retry a failed handshake. If a retry opens the connection, the extension sends the request over WebSocket and does not show a fallback warning. If the attempts run out or the connection budget expires, the extension sends the request over HTTP. If you cancel during a handshake or a retry pause, the extension stops without switching the session to HTTP.
+If a handshake fails, the extension retries up to the configured count and stops sooner if the connection timeout expires. The same rule applies when the extension needs a replacement connection, for example when Pi retries a model request. If the connection drops before the first response event, the extension discards that connection and tries to resend the request over WebSocket. On a new connection it sends the full context, not just the new input items. For example, with the defaults, if the first two connections drop before the first event and the third answers, the request completes over WebSocket without a fallback warning.
 
-After the extension sends a request over WebSocket, a replacement connection for that request gets one handshake attempt, including when Pi retries the provider request. The extension sends the request over HTTP if that handshake fails. It also falls back if the connection closes or the response idle timeout expires before the first event. Once the extension switches the session to HTTP, retries of that request and later requests in the session also use HTTP. The extension shows at most one HTTP fallback warning per load. Without Pi's interface, the extension writes the warning to stderr.
+If the handshake attempts run out, the connection budget expires, or every resend loses its connection before the first event, the extension sends the request over HTTP. Once the extension switches the session to HTTP, retries of that request and later requests in the session also use HTTP. The extension shows at most one HTTP fallback warning per load. Without Pi's interface, the extension writes the warning to stderr.
 
-If the connection fails or the response idle timeout expires after the response starts, the extension ends the response with an error and switches the session to HTTP. Pi may retry the request under its `retry` settings. An API error or a user abort does not by itself switch the session to HTTP. An API error that arrives before the response reaches pi with its HTTP status and response headers, such as `retry-after`, so pi retries it as over HTTP.
+If the connection drops or the idle timeout expires after the first response event, the extension ends the response with an error instead of resending it. If the SDK request deadline expires before the first event, the SDK ends the request. In either case, when Pi retries under its `retry` settings, it starts over on WebSocket. The error itself does not switch the session to HTTP. If you cancel during a handshake or a retry pause, the extension stops without switching to HTTP.
 
-If a pi update stops passing the request transport of the extension to the OpenAI SDK, the extension shows the same warning and moves the session to HTTP.
+The extension does not switch to HTTP for an OpenAI API error. If the error arrives before the response stream starts, the extension gives Pi the error's HTTP status and headers, such as `retry-after`. Pi uses those fields to decide whether and when to retry.
+
+If a Pi update stops passing the request transport of the extension to the OpenAI SDK, the extension shows the same warning and moves the session to HTTP.
 
 ## Limitations
 

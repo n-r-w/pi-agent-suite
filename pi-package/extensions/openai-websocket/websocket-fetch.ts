@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { FetchFunction } from "@earendil-works/pi-ai";
 import type { HandshakeRetry } from "./config";
 import type { Connection, ConnectionPool } from "./connection-pool";
@@ -8,7 +9,6 @@ import {
 	type ResponsesRequestBody,
 } from "./continuation";
 import {
-	connectWebSocket,
 	connectWebSocketWithRetry,
 	createAbortError,
 	type ResponseEvent,
@@ -50,8 +50,6 @@ export interface CompletedResponse {
 /** What the extension learns about one model request while its fetch runs. */
 export interface RequestTrace {
 	fetchCalled: boolean;
-	/** True after the first send, including in later exchanges that Pi starts for this request. */
-	sent: boolean;
 	completed: CompletedResponse | undefined;
 }
 
@@ -158,6 +156,8 @@ class WebSocketExchange {
 	readonly #fetchOverHttp: () => Promise<Response>;
 	#retriedMissingResponse = false;
 	#retriedConnectionLimit = false;
+	/** Number of times this exchange retried a lost connection before exposing a response. */
+	#connectionLossRetries = 0;
 
 	constructor(
 		context: WebSocketFetchContext,
@@ -191,7 +191,6 @@ class WebSocketExchange {
 			this.#context.idleTimeoutMs,
 		);
 		connection.socket.send(JSON.stringify(message));
-		this.#context.trace.sent = true;
 		const first = await reader.next();
 		if (
 			first.kind === "event" &&
@@ -209,14 +208,14 @@ class WebSocketExchange {
 			this.#context.pool.release(connection, false);
 			return this.run(signal);
 		}
-		return this.#respond(connection, reader, first);
+		return this.#respond(connection, reader, first, signal);
 	}
 
 	/** Returns a connection, or undefined after the session moved to HTTP because the handshake failed. */
 	async #acquire(
 		signal: AbortSignal | undefined,
 	): Promise<Connection | undefined> {
-		const { pool, sessionId, pooled, connectTimeoutMs, handshakeRetry, trace } =
+		const { pool, sessionId, pooled, connectTimeoutMs, handshakeRetry } =
 			this.#context;
 		const { url, headers } = this.#request;
 		try {
@@ -229,13 +228,11 @@ class WebSocketExchange {
 					sessionId,
 				},
 				() =>
-					trace.sent
-						? connectWebSocket(url.href, headers, connectTimeoutMs, signal)
-						: connectWebSocketWithRetry(url.href, headers, {
-								timeoutMs: connectTimeoutMs,
-								signal,
-								retry: handshakeRetry,
-							}),
+					connectWebSocketWithRetry(url.href, headers, {
+						timeoutMs: connectTimeoutMs,
+						signal,
+						retry: handshakeRetry,
+					}),
 			);
 		} catch (error) {
 			if (signal?.aborted) {
@@ -274,6 +271,7 @@ class WebSocketExchange {
 		connection: Connection,
 		reader: ResponseEventReader,
 		first: Awaited<ReturnType<ResponseEventReader["next"]>>,
+		signal: AbortSignal | undefined,
 	): Promise<Response> | Response {
 		const { pool } = this.#context;
 		if (first.kind === "aborted") {
@@ -285,8 +283,7 @@ class WebSocketExchange {
 			if (!first.connectionLost) {
 				throw first.error;
 			}
-			this.#context.onWebSocketUnavailable(first.error.message);
-			return this.#fetchOverHttp();
+			return this.#recoverBeforeResponse(first.error, signal);
 		}
 		const status = first.event["status"];
 		if (first.event.type === "error" && typeof status === "number") {
@@ -307,6 +304,26 @@ class WebSocketExchange {
 			).stream(first.event),
 			{ status: 200, headers: { "content-type": "text/event-stream" } },
 		);
+	}
+
+	/** Retries an exchange that lost its connection before it exposed a response. */
+	async #recoverBeforeResponse(
+		error: Error,
+		signal: AbortSignal | undefined,
+	): Promise<Response> {
+		if (signal?.aborted) {
+			throw createAbortError();
+		}
+		const { maxRetries, delayMs } = this.#context.handshakeRetry;
+		if (this.#connectionLossRetries >= maxRetries) {
+			this.#context.onWebSocketUnavailable(error.message);
+			return this.#fetchOverHttp();
+		}
+		this.#connectionLossRetries++;
+		if (delayMs > 0) {
+			await delay(delayMs, undefined, { signal });
+		}
+		return this.run(signal);
 	}
 }
 
@@ -341,9 +358,7 @@ class EventStreamBody {
 					return;
 				}
 				this.#finish(false);
-				if (read.kind === "failed" && read.connectionLost) {
-					this.#context.onWebSocketUnavailable(read.error.message);
-				}
+				// Pi owns retries once it has started processing the response.
 				controller.error(
 					read.kind === "aborted" ? createAbortError() : read.error,
 				);

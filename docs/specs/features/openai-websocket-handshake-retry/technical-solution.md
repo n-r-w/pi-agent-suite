@@ -1,5 +1,7 @@
 # Technical solution: WebSocket handshake recovery
 
+This solution describes the initial handshake retry change in 2.22.5. See [WebSocket request recovery](../../issues/openai-websocket-request-recovery/solution.md) for recovery after a send and [Disabled WebSocket connect timeout](../../issues/openai-websocket-disabled-connect-timeout/solution.md) for opening a connection without a time limit.
+
 ## Problem statement
 
 [Problem statement](problem.md) describes how a single failed handshake leaves the session on HTTP.

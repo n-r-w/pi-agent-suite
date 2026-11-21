@@ -43,12 +43,12 @@ export function closeSocket(socket: WebSocket): void {
 	}
 }
 
-/** Opens a socket with retries and pauses inside one elapsed-time budget. */
+/** Opens a socket with bounded retries and an optional elapsed-time limit. */
 export async function connectWebSocketWithRetry(
 	url: string,
 	headers: Record<string, string>,
 	{
-		timeoutMs,
+		timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
 		signal,
 		retry: { maxRetries, delayMs },
 	}: {
@@ -57,17 +57,21 @@ export async function connectWebSocketWithRetry(
 		readonly retry: HandshakeRetry;
 	},
 ): Promise<WebSocket> {
-	const budgetMs = timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-	if (budgetMs <= 0 || maxRetries === 0) {
-		return connectWebSocket(url, headers, timeoutMs, signal);
+	const budgetMs = timeoutMs > 0 ? timeoutMs : undefined;
+	if (maxRetries === 0) {
+		return connectWebSocket(url, headers, budgetMs, signal);
 	}
 
-	const deadline = performance.now() + budgetMs;
+	const deadline =
+		budgetMs === undefined ? undefined : performance.now() + budgetMs;
 	const timeoutError = () =>
-		new Error(`WebSocket connect timeout after ${budgetMs} ms`);
-	const getRemainingMs = (): number => {
+		new Error(`WebSocket connect timeout after ${timeoutMs} ms`);
+	const getRemainingMs = (): number | undefined => {
 		if (signal?.aborted) {
 			throw createAbortError();
+		}
+		if (deadline === undefined) {
+			return undefined;
 		}
 		const remainingMs = deadline - performance.now();
 		if (remainingMs <= 0) {
@@ -86,11 +90,13 @@ export async function connectWebSocketWithRetry(
 				throw error;
 			}
 			if (delayMs > 0) {
-				await delay(Math.min(delayMs, remainingMs), undefined, { signal });
+				await delay(Math.min(delayMs, remainingMs ?? delayMs), undefined, {
+					signal,
+				});
 			}
 			return attempt(retriesLeft - 1);
 		}
-		if (performance.now() >= deadline) {
+		if (deadline !== undefined && performance.now() >= deadline) {
 			closeSocket(socket);
 			throw timeoutError();
 		}
@@ -100,7 +106,7 @@ export async function connectWebSocketWithRetry(
 }
 
 /** Opens a connection; rejects when the handshake fails, exceeds the timeout, or the request is aborted. */
-export function connectWebSocket(
+function connectWebSocket(
 	url: string,
 	headers: Record<string, string>,
 	timeoutMs: number | undefined,
@@ -110,14 +116,16 @@ export function connectWebSocket(
 		const socket = new (WebSocket as unknown as WebSocketWithHeaders)(url, {
 			headers,
 		});
-		const connectTimeoutMs = timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
-		const timer = setTimeout(
-			() =>
-				fail(
-					new Error(`WebSocket connect timeout after ${connectTimeoutMs} ms`),
-				),
-			connectTimeoutMs,
-		);
+		const timer =
+			timeoutMs === undefined
+				? undefined
+				: setTimeout(
+						() =>
+							fail(
+								new Error(`WebSocket connect timeout after ${timeoutMs} ms`),
+							),
+						timeoutMs,
+					);
 		const cleanup = (): void => {
 			clearTimeout(timer);
 			socket.removeEventListener("open", onOpen);

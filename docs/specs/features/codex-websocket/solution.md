@@ -72,8 +72,8 @@ A request field that pi computes from the context size changes the request, so t
 - With `"enabled": false` in `openai-websocket/config.json` of the agent suite directory, the extension registers no stream function, and pi sends `openai` requests over HTTP. Other providers keep their transport. A missing file enables the extension; an invalid file disables it and pi reports one error at session start. This serves FRQ-03.
 - With `transport: "sse"`, the extension calls pi's implementation without its `fetch`, and requests go over HTTP. This pi setting also moves the `openai-codex` provider to HTTP.
 - With `transport: "websocket"`, each model request opens its own connection and sends a full request, as the pi setting describes.
-- When the handshake fails, or the connection closes before the first event, the extension passes the same request to the original `fetch` and marks the session as HTTP. pi-ai repeats a failed request through the same `fetch`, so the repeats of that request also go to the original `fetch`. The user sees one warning per session through the pi interface, or on stderr without an interface. This serves FRQ-02.
-- When the connection fails after the response started, the stream ends with an error, pi retries under its retry settings, and the session moves to HTTP. A user abort and an API error do not move the session.
+- If the extension cannot recover a failed handshake or a connection loss before the first event within its retry limits, it passes the same request to the original `fetch` and marks the session as HTTP. Provider retries of that request also use the original `fetch`. This serves FRQ-02. See [WebSocket request recovery](../../issues/openai-websocket-request-recovery/solution.md) for the retry policy.
+- If the connection fails after the response starts, the extension ends the stream with an error. If Pi retries under its retry settings, it starts over on WebSocket. A user abort and an API error do not move the session to HTTP.
 - A model call without a session ID opens its own connection, sends a full request, and closes the connection after the response.
 - Package extensions such as `ask_llm`, `consult_advisor`, and custom compaction call the model through `completeSimple` of `@earendil-works/pi-ai/compat`. That function uses pi's built-in provider without the extension's stream function, so these calls stay on HTTP and keep their current result.
 
@@ -86,7 +86,7 @@ If a pi update stops passing `options.fetch` to the SDK, the extension's `fetch`
 | SCN-02 subagent run | the same mechanisms in the child pi process, which loads the package |
 | SCN-03 call outside the agent loop | `completeSimple` of package extensions uses pi's built-in provider over HTTP |
 | SCN-04 WebSocket unavailable | fallback to the original `fetch`, HTTP session, warning |
-| SCN-05 connection lost during a response | stream error, pi retry, HTTP session |
+| SCN-05 connection lost during a response | stream error, Pi retry over WebSocket |
 | SCN-06 server lost the previous response | full request once on the same connection |
 | SCN-07 user aborts | pi abort handling; the extension closes the connection |
 | SCN-08 resumed session | empty pool, first request full |

@@ -524,6 +524,32 @@ describe("openai-websocket handshake retry", () => {
 		expect(harness.warnings).toHaveLength(0);
 	});
 
+	test("waits for and retries a failed handshake when the connection timeout is disabled", async () => {
+		const handshake = startTimedHandshakes((index) =>
+			index === 0
+				? new Promise<Response>((resolve) => {
+						setTimeout(() => resolve(rejectHandshake()), 16_000);
+					})
+				: undefined,
+		);
+		const harness = loadExtension(handshake.server.baseUrl);
+		await harness.emit("session_start");
+		const context = normalizeContext(userContext("hi"));
+		const pending = harness.request(context, { websocketConnectTimeoutMs: 0 });
+		await waitFor(() => handshake.attempts.length === 1);
+
+		jest.advanceTimersByTime(15_000);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(httpRequests).toHaveLength(0);
+		jest.advanceTimersByTime(1_000);
+		await advanceAfterRejection(handshake, 1, 500);
+
+		expect(textOf(await pending)).toBe("ok");
+		expect(handshake.attempts).toEqual([0, 16_500]);
+		expect(httpRequests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(0);
+	});
+
 	test.each([
 		["the default limit", undefined, [0, 500, 1_000]],
 		["one configured retry", 1, [0, 500]],
@@ -589,9 +615,11 @@ describe("openai-websocket handshake retry", () => {
 	});
 
 	test.each([
-		"handshake",
-		"pause",
-	] as const)("cancels during a %s without falling back", async (phase) => {
+		["handshake", "handshake", undefined],
+		["pause", "pause", undefined],
+		["handshake without a connection timeout", "handshake", 0],
+		["pause without a connection timeout", "pause", 0],
+	] as const)("cancels during a %s without falling back", async (_name, phase, timeout) => {
 		const handshake = startTimedHandshakes((index) => {
 			if (index > 0) {
 				return undefined;
@@ -602,7 +630,10 @@ describe("openai-websocket handshake retry", () => {
 		await harness.emit("session_start");
 		const context = normalizeContext(userContext("hi"));
 		const controller = new AbortController();
-		const pending = harness.request(context, { signal: controller.signal });
+		const pending = harness.request(context, {
+			signal: controller.signal,
+			websocketConnectTimeoutMs: timeout,
+		});
 		await waitFor(() =>
 			phase === "pause"
 				? handshake.failures() === 1
@@ -624,12 +655,16 @@ describe("openai-websocket handshake retry", () => {
 	test.each([
 		["connection age limit", 400, "websocket_connection_limit_reached", 0],
 		["provider retry", 429, "rate_limit_exceeded", 1],
-	] as const)("opens a replacement only once after a %s", async (_name, status, code, maxRetries) => {
+	] as const)("retries the replacement handshake after a %s", async (_name, status, code, maxRetries) => {
+		writeConfig('{"handshakeRetry":{"delayMs":0}}');
 		let attempts = 0;
 		const server = startServer(
-			() => ({
+			(_request, index) => ({
 				kind: "events",
-				events: [errorEvent(status, code, "Try again.")],
+				events:
+					index === 0
+						? [errorEvent(status, code, "Try again.")]
+						: textResponseEvents("resp_2", "recovered"),
 			}),
 			(index) => {
 				attempts++;
@@ -644,11 +679,11 @@ describe("openai-websocket handshake retry", () => {
 			maxRetryDelayMs: 1,
 		});
 
-		expect(textOf(result)).toBe("over http");
-		expect(attempts).toBe(2);
-		expect(server.requests).toHaveLength(1);
-		expect(httpRequests).toHaveLength(1);
-		expect(harness.warnings).toHaveLength(1);
+		expect(textOf(result)).toBe("recovered");
+		expect(attempts).toBe(3);
+		expect(server.requests).toHaveLength(2);
+		expect(httpRequests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(0);
 	});
 });
 
@@ -673,45 +708,115 @@ describe("openai-websocket failures", () => {
 		}
 	});
 
-	test("completes the request over HTTP when the connection closes before the first event", async () => {
-		const server = startServer(() => ({ kind: "close" }));
+	test("retries a lost incremental request with the full context on a new socket", async () => {
+		writeConfig('{"handshakeRetry":{"delayMs":0}}');
+		const server = startServer((request, index) =>
+			index === 1 || index === 2
+				? { kind: "close" }
+				: toolTurnReplies(request, index),
+		);
 		const harness = loadExtension(server.baseUrl);
+		await harness.emit("session_start");
 
-		const answer = await harness.request(normalizeContext(userContext("hi")));
+		const { secondAnswer } = await runToolTurn(harness);
 
-		expect(textOf(answer)).toBe("over http");
-		expect(httpRequests).toHaveLength(1);
+		expect(textOf(secondAnswer)).toBe("full");
+		expect(server.requests.map(({ connectionId }) => connectionId)).toEqual([
+			0, 0, 1, 2,
+		]);
+		expect(server.requests[1]?.message).toHaveProperty(
+			"previous_response_id",
+			"resp_1",
+		);
+		for (const attempt of server.requests.slice(2)) {
+			expect(attempt.message).not.toHaveProperty("previous_response_id");
+			expect(attempt.message["input"]).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ role: "user" }),
+					expect.objectContaining({ type: "function_call" }),
+					expect.objectContaining({ type: "function_call_output" }),
+				]),
+			);
+		}
+		expect(httpRequests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(0);
 	});
 
-	test("ends the response with a retryable error and moves the session to HTTP when the connection fails after the response started", async () => {
-		const server = startServer(() => ({
-			kind: "events-then-close",
-			events: textResponseEvents("resp_1", "partial").slice(0, 2),
-		}));
-		const harness = loadExtension(server.baseUrl);
-
-		const failed = await harness.request(normalizeContext(userContext("hi")));
-		const next = await harness.request(normalizeContext(userContext("again")));
-
-		expect(failed.stopReason).toBe("error");
-		expect(isRetryableAssistantError(failed)).toBe(true);
-		expect(textOf(next)).toBe("over http");
-		expect(server.handshakes).toHaveLength(1);
-	});
-
-	test("ends the response with a retryable error when no event arrives within the idle timeout", async () => {
-		const server = startServer(() => ({
-			kind: "events",
-			events: textResponseEvents("resp_1", "partial").slice(0, 1),
-		}));
-		const harness = loadExtension(server.baseUrl);
-
-		const failed = await harness.request(normalizeContext(userContext("hi")), {
-			timeoutMs: 200,
+	test("cancels while waiting to resend after a lost connection", async () => {
+		jest.useFakeTimers({ now: 0 });
+		let clientObservedClose = false;
+		globalThis.WebSocket = new Proxy(OriginalWebSocket, {
+			construct(target, args): WebSocket {
+				const socket = Reflect.construct(target, args) as WebSocket;
+				socket.addEventListener(
+					"close",
+					() => {
+						clientObservedClose = true;
+					},
+					{ once: true },
+				);
+				return socket;
+			},
 		});
+		const server = startServer((_request, index) =>
+			index === 0
+				? { kind: "close" }
+				: { kind: "events", events: textResponseEvents("resp_2", "ok") },
+		);
+		const harness = loadExtension(server.baseUrl);
+		await harness.emit("session_start");
+		const context = normalizeContext(userContext("hi"));
+		const controller = new AbortController();
+		const pending = harness.request(context, { signal: controller.signal });
+
+		await waitFor(() => clientObservedClose);
+		jest.advanceTimersByTime(499);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(server.handshakes).toHaveLength(1);
+		expect(httpRequests).toHaveLength(0);
+		controller.abort();
+
+		expect((await pending).stopReason).toBe("aborted");
+		jest.advanceTimersByTime(500);
+		expect(textOf(await harness.request(context))).toBe("ok");
+		expect(server.requests.map(({ connectionId }) => connectionId)).toEqual([
+			0, 1,
+		]);
+		expect(httpRequests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(0);
+	});
+
+	test.each([
+		["a lost response body", "events-then-close", 2],
+		["a response body idle timeout", "events", 2],
+		["an SDK request timeout before the first event", "events", 0],
+	] as const)("leaves %s for Pi to retry without switching to HTTP", async (_name, kind, eventCount) => {
+		const server = startServer((_request, index) =>
+			index === 0
+				? {
+						kind,
+						events: textResponseEvents("resp_1", "partial").slice(
+							0,
+							eventCount,
+						),
+					}
+				: { kind: "events", events: textResponseEvents("resp_2", "recovered") },
+		);
+		const harness = loadExtension(server.baseUrl);
+		await harness.emit("session_start");
+		const context = normalizeContext(userContext("hi"));
+
+		const failed = await harness.request(context, { timeoutMs: 200 });
 
 		expect(failed.stopReason).toBe("error");
 		expect(isRetryableAssistantError(failed)).toBe(true);
+		expect(server.requests).toHaveLength(1);
+		expect(httpRequests).toHaveLength(0);
+		expect(harness.warnings).toHaveLength(0);
+		expect(textOf(await harness.request(context))).toBe("recovered");
+		expect(server.requests.map(({ connectionId }) => connectionId)).toEqual([
+			0, 1,
+		]);
 	});
 
 	test("lets pi retry an API error that arrives before the response as over HTTP", async () => {
@@ -763,9 +868,11 @@ describe("openai-websocket failures", () => {
 		expect(server.requests).toHaveLength(1);
 	});
 
-	test("sends the retries of a request over HTTP after the request moved to HTTP", async () => {
+	test("switches to HTTP after repeated connection loss and keeps Pi's provider retries on HTTP", async () => {
+		writeConfig('{"handshakeRetry":{"delayMs":0}}');
 		const server = startServer(() => ({ kind: "close" }));
 		const harness = loadExtension(server.baseUrl);
+		await harness.emit("session_start");
 		let httpAttempts = 0;
 		const rateLimitedOnce: typeof fetch = Object.assign(
 			async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -787,7 +894,14 @@ describe("openai-websocket failures", () => {
 		});
 
 		expect(textOf(answer)).toBe("over http");
-		expect(server.handshakes).toHaveLength(1);
+		expect(server.requests.map(({ connectionId }) => connectionId)).toEqual([
+			0, 1, 2,
+		]);
+		expect(httpAttempts).toBe(2);
+		const next = await harness.request(normalizeContext(userContext("again")));
+		expect(textOf(next)).toBe("over http");
+		expect(server.requests).toHaveLength(3);
+		expect(harness.warnings).toHaveLength(1);
 	});
 
 	test("reports an API error that arrives before the response and keeps the session on WebSocket", async () => {

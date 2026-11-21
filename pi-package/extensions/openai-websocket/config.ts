@@ -6,7 +6,7 @@ const EXTENSION_DIRECTORY = "openai-websocket";
 /** Config keys accepted by this extension. */
 const CONFIG_KEYS = new Set(["enabled", "handshakeRetry"]);
 
-/** Retry policy for opening a WebSocket before the first send. */
+/** Retry settings for opening a WebSocket and recovering a request before the response starts. */
 export interface HandshakeRetry {
 	readonly maxRetries: number;
 	readonly delayMs: number;

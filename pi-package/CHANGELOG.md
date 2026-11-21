@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.22.6] - 2026-11-21
+
+### Fixed
+
+- `openai-websocket` retries a request over WebSocket if the connection drops before the first response event. If the response has already started, Pi handles the retry and still tries WebSocket first. Replacement connections also use handshake retries.
+- `openai-websocket` honors Pi's `websocketConnectTimeoutMs: 0` or `"disabled"` without disabling handshake retries.
+
 ## [2.22.5] - 2026-11-20
 
 ### Added
