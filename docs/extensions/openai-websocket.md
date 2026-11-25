@@ -84,4 +84,4 @@ If a Pi update stops passing the request transport of the extension to the OpenA
 - Model calls that other extensions make through `completeSimple` of `@earendil-works/pi-ai/compat`, for example `ask_llm`, `consult_advisor`, and custom compaction, use pi's built-in provider and stay on HTTP.
 - The handshake does not use an HTTP proxy.
 - When pi exits with an open connection, the process waits until the server confirms the close of the connection. In a check on 2026-10-31, `pi -p` exited 2.1 seconds after the end of the session; without the extension, it exited at once.
-- The extension relies on two Pi 1.6.0 behaviors that Pi does not document. Pi passes the per-request `fetch` to the OpenAI SDK and calls `onPayload` before sending the request.
+- The extension relies on two undocumented behaviors of Pi's OpenAI Responses provider. In Pi 1.6.1, the provider passes the per-request `fetch` to the OpenAI SDK and calls `onPayload` before sending the request.
