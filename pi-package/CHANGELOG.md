@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.22.8] - 2026-11-28
+
+### Changed
+
+- Require Pi 1.7.0. Update Pi before installing this release.
+
 ## [2.22.7] - 2026-11-26
 
 ### Changed
